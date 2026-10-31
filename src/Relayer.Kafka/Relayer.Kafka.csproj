@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <Description>Kafka transport for Relayer, wrapping Dekaf, a pure C# Kafka client.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Dekaf" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Relayer\Relayer.csproj" />
+  </ItemGroup>
+
+</Project>
