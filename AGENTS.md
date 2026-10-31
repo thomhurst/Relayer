@@ -12,7 +12,7 @@ The goal is code that is simple, intuitive and easy to write, without giving up 
 - Pass native configuration through unchanged (Dekaf's builders, `ServiceBusClientOptions`, `ConnectionFactory`, `AmazonSQSConfig`); never re-model it. Expose native objects through the feature collection (D6).
 - One obvious way to do each thing. Do not add parallel APIs for the same job; for example, publish versus send is a routing concern, not a separate API ([design §3.4](docs/design.md#34-sending-from-anywhere)).
 - Explicit, not magic (D4): no assembly scanning or hidden conventions. Registration is in user code or in source-generated code the user can read.
-- Fail early with an actionable message: analyzers at compile time, capability and topology validation at startup (D14, D16). Never degrade behavior silently.
+- Fail early with an actionable message: analyzers at compile time, capability and topology validation at startup (D16, D24). Never degrade behavior silently.
 - When API simplicity and performance pull apart, keep the public API simple and move the complexity into internals or the source generator.
 
 ## Performance requirements

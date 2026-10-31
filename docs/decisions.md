@@ -24,7 +24,7 @@ To change a decision, add a new entry that supersedes it rather than editing his
 | [D11](#d11-handlers-may-settle-manually) | Handlers may settle manually | Accepted |
 | [D12](#d12-outbox-dispatch-direct-for-unordered-lane-leases-for-ordered) | Outbox dispatch: direct for unordered, lane leases for ordered | Accepted |
 | [D13](#d13-kafka-gets-its-own-consumption-model) | Kafka gets its own consumption model | Accepted |
-| [D14](#d14-transports-declare-capabilities-validated-at-startup) | Transports declare capabilities, validated at startup | Accepted |
+| [D14](#d14-transports-declare-capabilities-validated-at-startup) | Transports declare capabilities, validated at startup | Superseded by [D24](#d24-capabilities-are-valued-and-declared-per-endpoint) |
 | [D15](#d15-opentelemetry-in-the-core) | OpenTelemetry in the core | Accepted |
 | [D16](#d16-topology-is-declared-default-mode-is-validate) | Topology is declared; default mode is Validate | Accepted |
 | [D17](#d17-testing-is-a-first-class-product) | Testing is a first-class product | Accepted |
@@ -33,6 +33,8 @@ To change a decision, add a new entry that supersedes it rather than editing his
 | [D20](#d20-sagas-are-out-of-scope-for-v1) | Sagas are out of scope for v1 | Accepted |
 | [D21](#d21-repository-conventions) | Repository conventions | Accepted |
 | [D22](#d22-the-kafka-transport-wraps-dekaf) | The Kafka transport wraps Dekaf | Accepted |
+| [D23](#d23-a-generic-transport-spi-owned-by-the-core) | A generic transport SPI owned by the core | Accepted |
+| [D24](#d24-capabilities-are-valued-and-declared-per-endpoint) | Capabilities are valued and declared per endpoint | Accepted |
 
 ---
 
@@ -191,6 +193,8 @@ To change a decision, add a new entry that supersedes it rather than editing his
 
 ## D14. Transports declare capabilities, validated at startup
 
+Superseded by [D24](#d24-capabilities-are-valued-and-declared-per-endpoint).
+
 **Decision.**
 - Every transport publishes `TransportCapabilities` (delayed delivery, dead-letter, ordering, batching, transactions, maximum message size).
 - Each feature either uses the native mechanism or a documented fallback. Otherwise startup fails with a clear error. Behaviour is never silently degraded.
@@ -270,3 +274,60 @@ To change a decision, add a new entry that supersedes it rather than editing his
 
 **Alternatives rejected.**
 - Confluent.Kafka: native dependency, AOT gap, and logging that bypasses `ILogger`.
+
+## D23. A generic transport SPI owned by the core
+
+**Context.**
+- D1 splits the work correctly: the core owns cross-cutting concerns and each transport owns native behaviour. But `ITransport` only declared a lifecycle. The core had no way to hand a message to a transport, a transport had no way to feed the consume pipeline, and the failure pipeline (D10) had no way to ask a transport to settle.
+- Without that seam, every transport would reimplement serialization, the CloudEvents envelope, trace propagation, retries, the dead-letter and delay fallbacks, outbox dispatch and telemetry, each slightly differently. Adding a technology would mean rewriting the basics.
+- Log-based brokers (Kafka, Event Hubs, Kinesis, Pulsar, RabbitMQ Streams, JetStream) share one consumption model. Planning it inside `Relayer.Kafka` only (D13) would make each of them rebuild it.
+- The SPI must not cost throughput or allocations (D18), and must not hide the native client (D1, D6).
+
+**Decision.**
+- The core owns everything that is the same on every broker. A transport owns the native client, the receive loop, the mapping to native messages, and settlement. The SPI is described in [design §2.4](design.md#24-transport-spi).
+- **Generics carry native types through the core.** A transport provides a struct `IMessageBinding<TIncoming>` with static abstract members (body, header lookup, delivery count). The core's `ReceivePipeline<TIncoming, TBinding>` is therefore specialized per transport by the JIT and the AOT compiler, with direct, inlinable calls and no boxing. `TIncoming` is whatever the native receive callback provides, such as Dekaf's `ConsumeResult` or ASB's `ProcessMessageEventArgs`.
+- **The core decides; the transport settles.** The pipeline returns a `Disposition` struct (`Complete`, `Redeliver(delay)`, `DeadLetter(info)`, or `SettledByHandler`), and the transport maps it to native settlement. The core never returns a disposition the endpoint's capabilities do not declare (D24); it performs every fallback itself, using the transport's send path. Transports contain no fallback code.
+- **One send shape.** The core sends through `SendAsync(OutgoingMessage)` and `SendBatchAsync(ReadOnlyMemory<OutgoingMessage>)`. `OutgoingMessage` has the same fields as an outbox row, so direct sends, outbox dispatch, scheduled re-sends and dead-letter copies share one path.
+- **Headers are read in place.** `WireString` holds a header value as the native client stores it (UTF-16 or UTF-8) and converts it only when user code asks. The transport's `HeaderNames` encodes its CloudEvents protocol binding. This replaces materializing headers into a dictionary per message.
+- **Native access is generic too.** The pipeline exposes the native message as a pooled `NativeMessage<TIncoming>` feature, and each transport's `context.Kafka()`-style extension wraps it in a struct view. No per-transport feature class is allocated per message.
+- **Builders are generic.** The core implements `RouteBuilder<TMessage, TRouteOptions>` and `ConsumerBuilder<TConsumerOptions>` once (handlers, inbox, failure policy, ordering keys). Transports supply option types and add typed extension methods on their own instantiation, so transport-specific settings cannot be applied to the wrong transport.
+- **Log-based consumption lives in the core.** `PartitionScheduler<TIncoming, TBinding, TPartition, TPosition>` implements key-ordered parallelism, contiguous-watermark commits, backpressure, drain on revoke and pause tracking. A log transport implements `IPartitionSource<TPartition, TPosition>` (`Commit`, `Pause`, `Resume`). D13 still holds; its mechanisms are now reusable.
+- The in-memory transport (phase 0) is the first SPI implementation, and the transport conformance suite is the SPI's executable contract.
+
+**Consequences.**
+- A new transport is a binding, a receive loop, a send method, capabilities, topology and option types. Everything else is inherited and behaves the same across transports.
+- The SPI is public, so third-party transports use the same seam as first-party ones.
+- `SendOptions.ConfigureNative<TNative>` is applied through `ApplyNative<TNative>(TNative)`, without a wrapping closure. Native configurators cannot be persisted, so a send that has them and is enlisted in the outbox fails immediately with an explanation instead of silently dropping them.
+- `MessageContext.Headers` moves from `IReadOnlyDictionary<string, string>` to a lazy reader over `WireString` values.
+
+**Alternatives rejected.**
+- An abstract `TransportBase<TIncoming, TOutgoing>` with template methods: it couples transports to core internals through inheritance and makes the core harder to evolve. Small generic pieces composed by the transport keep the contract explicit.
+- Instance-based binding interfaces: interface dispatch on every header read, and no specialization when `TIncoming` is a reference type. Static abstract members on a struct binding avoid both.
+- A headers dictionary per message: it allocates on every receive and loses the native representation.
+- Fallbacks implemented by each transport: they would diverge, which is the bug class D10 exists to prevent.
+
+## D24. Capabilities are valued and declared per endpoint
+
+Supersedes [D14](#d14-transports-declare-capabilities-validated-at-startup).
+
+**Context.**
+- D14 modelled capabilities as a `[Flags]` enum on the transport. Flags cannot carry limits that change behaviour: SQS delays up to 15 minutes, SQS visibility up to 12 hours, SQS batches of 10, broker message size limits. D14 also listed maximum message size, which a flag cannot express.
+- Capabilities differ per endpoint, not per transport: an SQS FIFO queue orders by key and a standard queue does not, an ASB queue may or may not have sessions, and a RabbitMQ exchange may or may not use the delayed-message plugin.
+- Some brokers have a native dead-letter queue but cannot dead-letter one message on demand with error metadata. SQS redrive moves a message only after it exceeds `maxReceiveCount`, and the RabbitMQ DLX carries only `x-death`.
+
+**Decision.**
+- Transports declare a `TransportCapabilities` record per endpoint through `GetCapabilities(endpoint)`. It includes:
+  - `MaxDeliveryDelay` (native scheduled send; `null` when none);
+  - `MaxRedeliveryDelay` (native delayed redelivery of a received message; `TimeSpan.Zero` when only immediate redelivery is possible; `null` when none);
+  - `DeadLetter` (true only if the broker can dead-letter a specific message on demand and keep Relayer's error metadata);
+  - `OrderedByKey`, `MaxBatchSize`, `Transactions`, `PauseResume`, `Replay`, `MaxMessageBytes`;
+  - `ConsumptionModel` (`Queue` or `Log`).
+- The record holds only what core features need to decide. Transport-specific features stay typed extensions (D6), so the record does not need to be extensible by transports.
+- The core resolves each failure action against the endpoint's capabilities:
+  - **Redelivery after a delay:** native redelivery if the delay is within `MaxRedeliveryDelay`; otherwise a scheduled re-send of a copy (same message ID, next attempt) if within `MaxDeliveryDelay`, then complete; otherwise an outbox row with `deliver_at`, then complete.
+  - **Dead-letter:** native if `DeadLetter` is true; otherwise send a copy with error metadata to the consumer's dead-letter endpoint, then complete.
+- Startup validates every route and consumer against its endpoint's capabilities, including the longest configured redelivery delay and the dead-letter path. If no native mechanism or fallback applies, startup fails with a clear error. Behaviour is never silently degraded.
+
+**Consequences.**
+- Re-sends and dead-letter copies are at-least-once. A crash between the re-send and the completion can produce a duplicate, which the inbox removes because the message ID is unchanged (D9).
+- The in-memory transport can emulate any broker by declaring the same capability values.
