@@ -35,6 +35,7 @@ To change a decision, add a new entry that supersedes it rather than editing his
 | [D22](#d22-the-kafka-transport-wraps-dekaf) | The Kafka transport wraps Dekaf | Accepted |
 | [D23](#d23-a-generic-transport-spi-owned-by-the-core) | A generic transport SPI owned by the core | Accepted |
 | [D24](#d24-capabilities-are-valued-and-declared-per-endpoint) | Capabilities are valued and declared per endpoint | Accepted |
+| [D25](#d25-telemetry-follows-the-opentelemetry-messaging-span-model) | Telemetry follows the OpenTelemetry messaging span model | Accepted |
 
 ---
 
@@ -331,3 +332,35 @@ Supersedes [D14](#d14-transports-declare-capabilities-validated-at-startup).
 **Consequences.**
 - Re-sends and dead-letter copies are at-least-once. A crash between the re-send and the completion can produce a duplicate, which the inbox removes because the message ID is unchanged (D9).
 - The in-memory transport can emulate any broker by declaring the same capability values.
+
+## D25. Telemetry follows the OpenTelemetry messaging span model
+
+Refines [D15](#d15-opentelemetry-in-the-core).
+
+**Context.**
+- D15 committed to the OpenTelemetry messaging semantic conventions, but design §8 listed spans (`outbox.enqueue`, `outbox.dispatch`, `receive`) and metrics (`relayer.process.duration`, `relayer.send.duration`) that the conventions do not define. Backends and dashboards built on the conventions would not recognize them.
+- The conventions define five operation types (`create`, `send`, `receive`, `process`, `settle`), a fixed span kind for each, span names of the form `{messaging.operation.name} {destination}`, and a per-message *creation context* that consumers link to.
+- The conventions are still in Development status, so details can change before they become stable.
+- Native clients (Dekaf, the Azure SDK, the AWS SDK) have their own instrumentation, which can emit overlapping spans and write trace headers.
+
+**Decision.**
+- Relayer emits only operation types, span kinds, span names, attributes and metrics defined by the conventions. Anything Relayer adds uses the `relayer.` prefix. The full mapping is in [design §8](design.md#8-observability).
+- **The outbox maps onto `create` and `send`.** Enqueue is a `create` span (`PRODUCER`) whose context is stored in the row as the creation context. Dispatch is a `send` span (`CLIENT`) that links to it. This replaces the `outbox.enqueue` and `outbox.dispatch` spans.
+- **One creation context per message,** never modified after it is written. Core-made re-sends and dead-letter copies keep the original's.
+- **Process spans link to the creation context.** For a single message with no ambient span, the creation context is also the parent, so producer and consumer share a trace; an option turns this off. With an ambient span, the process span is its child. Batch process spans use links only.
+- **No `receive` spans.** Handlers are push-based from the application's point of view, so Relayer emits `process` spans and leaves pull-level spans to the native client's instrumentation.
+- **Settlement gets `settle` spans,** named with the system's native operation (`complete`, `ack`, `commit` and so on), as children of the process span. Process duration therefore includes settlement, as D15 requires.
+- **Metrics use the convention instruments** `messaging.client.operation.duration`, `messaging.process.duration`, `messaging.client.sent.messages` and `messaging.client.consumed.messages`, in seconds. `relayer.process.duration` and `relayer.send.duration` are dropped.
+- **Exceptions are logged, not recorded as span events.** Failed spans set `error.type` and status `Error`.
+- Relayer pins the conventions version in one place, publishes it as the telemetry schema URL, and migrates through `OTEL_SEMCONV_STABILITY_OPT_IN` once messaging becomes stable.
+
+**Consequences.**
+- Messages from Relayer and non-Relayer producers or consumers correlate in any backend that follows the conventions.
+- Each transport adapter implements its system's destination format and attributes, and must keep native instrumentation from overwriting the creation context. The conformance suite checks both.
+- Span names and constant tags are precomputed per endpoint, so naming costs nothing per message. The zero-allocation budget (D18) is measured with no listener attached, and the cost with tracing on is benchmarked separately.
+- A conventions change before stability may change Relayer's telemetry. Such a change is called out in the release notes.
+
+**Alternatives rejected.**
+- Relayer-specific span and metric names (`outbox.dispatch`, `relayer.process.duration`): backends would not recognize them, and users would need custom dashboards.
+- Using the dispatch span's context as the outbox message's creation context: consumers would correlate with the dispatcher, not with the request that produced the message.
+- Always parenting process spans on the creation context: it breaks when processing runs inside another span, and batches cannot have several parents.
