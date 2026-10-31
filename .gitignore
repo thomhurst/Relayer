@@ -55,3 +55,52 @@ CodeCoverage/
 *.VisualState.xml
 TestResult.xml
 nunit-*.xml
+
+# Claude Code local overrides
+.claude.local.md
+.claude/settings.local.json
+
+# Git worktrees
+.worktrees/
+
+# Development artifacts
+/.artifacts/
+/.dotnet/
+/.tmp/
+
+# Root-level agent workflow output; source-tree fixtures remain visible.
+/*.log
+/pr-body.md
+/*-pr-body.md
+/review-disposition.md
+/*-review-disposition.md
+/review-validation.md
+/*-review-validation.md
+/rebase-validation.md
+/*-rebase-validation.md
+/comment.md
+/*-comment.md
+/issue.md
+/*-issue.md
+
+# Profiling traces and analysis
+*.nettrace
+*.etlx
+*.speedscope.json
+
+# Python bytecode
+__pycache__/
+*.pyc
+
+# BenchmarkDotNet output
+BenchmarkDotNet.Artifacts/
+benchmark-results/
+
+# Temporary test projects
+temptest/
+
+# Verify snapshot output
+*.received.*
+
+# Stryker.NET mutation-test output
+StrykerOutput/
