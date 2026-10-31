@@ -1,6 +1,19 @@
 # Relayer Development Guide
 
-Relayer is a .NET messaging library that wraps the native client for each broker (Kafka through [Dekaf](https://github.com/thomhurst/Dekaf), Azure Service Bus, Amazon SQS/SNS, RabbitMQ) and adds resiliency, outbox/inbox, telemetry, topology and a test harness. It never changes how the underlying client sends, receives, orders or acknowledges messages. [docs/design.md](docs/design.md) says how it works and [docs/decisions.md](docs/decisions.md) says why; follow both, and record a new decision there instead of silently diverging from one.
+Relayer is a .NET messaging library that wraps the native client for each broker (Kafka through [Dekaf](https://github.com/thomhurst/Dekaf), Azure Service Bus, Amazon SQS/SNS, RabbitMQ). It exists to remove the ceremony and boilerplate around those clients: resiliency, outbox/inbox, telemetry and trace propagation, serialization, topology and testing. It is not a new broker abstraction, and it never changes how the underlying client sends, receives, orders or acknowledges messages. [docs/design.md](docs/design.md) says how it works and [docs/decisions.md](docs/decisions.md) says why; follow both, and record a new decision there instead of silently diverging from one.
+
+## API design
+
+The goal is code that is simple, intuitive and easy to write, without giving up power or performance ([design §1](docs/design.md#1-principles)).
+
+- Write the user's call site first, in the style of [design §3](docs/design.md#3-developer-experience), then implement it. The common case takes a few lines and is correct by default: at-least-once delivery, poison messages dead-lettered rather than crashing or stalling a consumer, and settlement only after the work is durable.
+- Wrap, don't replace (D1). Use native send, receive, settlement, ordering, partitioning, sessions and dead-lettering as-is. Never emulate a feature the broker already has, and reuse features the native client already ships where they fit (D22).
+- Keep power reachable without cluttering the common path. Portable concerns are uniform across transports; transport-specific features are typed, discoverable extensions such as `context.Kafka()` or `o.ServiceBus(...)`, never a lowest-common-denominator option.
+- Pass native configuration through unchanged (Dekaf's builders, `ServiceBusClientOptions`, `ConnectionFactory`, `AmazonSQSConfig`); never re-model it. Expose native objects through the feature collection (D6).
+- One obvious way to do each thing. Do not add parallel APIs for the same job; for example, publish versus send is a routing concern, not a separate API ([design §3.4](docs/design.md#34-sending-from-anywhere)).
+- Explicit, not magic (D4): no assembly scanning or hidden conventions. Registration is in user code or in source-generated code the user can read.
+- Fail early with an actionable message: analyzers at compile time, capability and topology validation at startup (D14, D16). Never degrade behavior silently.
+- When API simplicity and performance pull apart, keep the public API simple and move the complexity into internals or the source generator.
 
 ## Performance requirements
 
@@ -24,10 +37,11 @@ Rules for code on the per-message path (pipeline, middleware, dispatch, serializ
 - .NET 10 and later (D2). Nullable reference types on, warnings are errors, Central Package Management in `Directory.Packages.props`, shared settings in `Directory.Build.props` (D21).
 - Native AOT and trimming safe from day one. Serialization uses System.Text.Json source generation by default (D8).
 - The core depends only on `Microsoft.Extensions.*` abstractions and the BCL. A transport package depends only on its native client and supports only its latest major version (D19).
-- Public APIs expose interfaces and options; implementations are internal or sealed. Use init-only options and fluent builders following existing code.
-- Expose native client access through the feature collection (D6) rather than re-abstracting broker behavior (D1).
+- Public APIs expose interfaces and options; implementations are internal or sealed. Use init-only options and fluent builders following existing code. Options also bind from `IConfiguration` through the Options pattern.
+- Messages are identified on the wire by their stable `[Message("name", Version = n)]` name, never the CLR type name, with CloudEvents attributes in native headers (D7).
 - All awaits in `src/` use `ConfigureAwait(false)`; tests do not require it. Do not block on tasks with `.Result` or `.Wait()`.
-- Logging uses `LoggerMessage` source generation.
+- Telemetry uses one `ActivitySource` and one `Meter`, both named `Relayer`, following the OpenTelemetry messaging semantic conventions (D15). Logging uses `LoggerMessage` source generation.
+- No mutable process-wide statics, so test suites run in parallel in one process (D17).
 
 ## Build and test
 
@@ -40,7 +54,7 @@ dotnet run -c Release --project benchmarks/Relayer.Benchmarks
 ```
 
 - Tests use TUnit. Filter with `--treenode-filter "/*/*/ClassName/TestName"` (`/<Assembly>/<Namespace>/<Class>/<Test>` segments; wildcards and `(A|B)` alternation work within a segment). With MTP, pass test options directly, without an extra `--` or VSTest's `--filter`.
-- Features require unit tests; transport behavior changes require tests against the real broker or its emulator where one exists.
+- Features require unit tests; transport behavior changes require tests against the real broker or its emulator where one exists, and every transport must pass the transport conformance suite ([design §15](docs/design.md#15-roadmap)).
 - Investigate intermittent test failures instead of rerunning CI to obtain green. Use deterministic synchronization for timing-dependent tests.
 - Review final changes for reuse, quality, and efficiency before opening a PR (`/simplify` when available). Preserve the performance requirements above.
 
