@@ -51,7 +51,7 @@ It is **not** a new broker abstraction. It does not change how the underlying te
 | **Route** | A mapping from a message type to an endpoint, plus how to derive native properties (key, session ID, partition key, message group ID). |
 | **Consumer** | A subscription to an endpoint that dispatches to handlers. |
 | **MessageContext** | The per-message context. Holds the message ID, headers, the trace context, the attempt count, and a feature collection that exposes the native message. |
-| **Capabilities** | What a transport can do natively (DLQ, delayed delivery, sessions/ordering, batching, transactions, max message size). Relayer validates configuration against capabilities at startup. |
+| **Capabilities** | What an endpoint can do natively (DLQ, delayed delivery and redelivery, ordering, batching, transactions, max message size). Declared per endpoint, because an SQS FIFO queue and a standard queue differ. Relayer validates configuration against capabilities at startup. |
 
 ### 2.2 Feature collection: the native escape hatch
 
@@ -78,15 +78,98 @@ Native configuration is passed straight through and never re-modelled: Dekaf's `
 
 ### 2.3 Capabilities
 
-Each transport declares its capabilities. A feature that needs one either uses the native mechanism or a documented fallback, and when there is neither, startup fails with a clear error (no silent degradation):
+Each transport declares the capabilities of each endpoint (decision D24). A feature that needs one either uses the native mechanism or a documented fallback, and when there is neither, startup fails with a clear error (no silent degradation). The core runs every fallback, so transports contain native code only (§2.4):
 
 | Feature | Native when available | Fallback |
 |---|---|---|
 | Delayed delivery / scheduling | ASB `ScheduledEnqueueTime`, SQS `DelaySeconds` (≤ 15 min), RabbitMQ delayed-message plugin | Outbox `deliver_at` |
-| Dead-letter | ASB DLQ, SQS redrive policy, RabbitMQ DLX | Dead-letter endpoint (Kafka DLT topic) |
+| Delayed redelivery of a received message | SQS visibility timeout (≤ 12 h); immediate only: ASB abandon, RabbitMQ requeue | Scheduled re-send of a copy, else outbox `deliver_at` |
+| Dead-letter with error metadata | ASB DLQ (`DeadLetterMessageAsync` with properties) | Send a copy to the dead-letter endpoint (Kafka DLT topic, SQS DLQ queue), then complete |
 | Ordering | Kafka partition key, ASB sessions, SQS FIFO message group | None — must be declared unordered |
 | Batching | Kafka, SQS (10), ASB batches | Client-side batching |
 | Transactions | Kafka transactions, ASB cross-entity transactions | Outbox |
+
+### 2.4 Transport SPI
+
+The transport SPI is the seam between the core and a transport (decision D23). The core owns everything that is the same on every broker: serialization, the CloudEvents envelope, routing, the failure pipeline and its fallbacks, the inbox, the outbox, and telemetry. A transport owns only what is native: the client, the receive loop, the mapping to native messages, and settlement. Generics carry the native types through the core, so the core is written once and still runs specialized, allocation-free code for each transport.
+
+A transport author writes five small pieces.
+
+**1. A message binding.** A struct that reads one native message type. Its members are static abstract, so the pipeline is specialized per transport and every call is direct and inlinable:
+
+```csharp
+public interface IMessageBinding<TIncoming>
+{
+    static abstract ReadOnlySequence<byte> GetBody(TIncoming message);
+    static abstract bool TryGetHeader(TIncoming message, string name, out WireString value);
+    static abstract int? GetDeliveryCount(TIncoming message);   // null when the broker does not count deliveries
+}
+
+// Azure Service Bus: TIncoming is whatever the native receive callback hands over.
+public readonly struct ServiceBusBinding : IMessageBinding<ProcessMessageEventArgs> { … }
+```
+
+`WireString` is a struct that holds a header value as the native client stores it: a UTF-16 `string` (ASB, SQS) or UTF-8 bytes (Kafka, RabbitMQ). The core compares and parses it in place, and converts it to a `string` only when user code asks. Header names come from the transport's `HeaderNames`, which encodes its CloudEvents protocol binding (`ce_` for Kafka, `cloudEvents:` for AMQP). Relayer's own attributes, such as the attempt count and error metadata, are CloudEvents extensions, so they follow the same binding.
+
+**2. The receive loop.** The transport keeps its native receive loop and calls the core once per message. The core returns a `Disposition`, a small struct, and the transport settles natively:
+
+```csharp
+var pipeline = pipelines.Create<ProcessMessageEventArgs, ServiceBusBinding>(consumer);   // once, at startup
+
+processor.ProcessMessageAsync += async args =>
+{
+    var disposition = await pipeline.ProcessAsync(args, args.CancellationToken).ConfigureAwait(false);
+    switch (disposition.Kind)
+    {
+        case DispositionKind.Complete:         await args.CompleteMessageAsync(args.Message).ConfigureAwait(false); break;
+        case DispositionKind.Redeliver:        await args.AbandonMessageAsync(args.Message).ConfigureAwait(false); break;
+        case DispositionKind.DeadLetter:       await args.DeadLetterMessageAsync(args.Message, disposition.DeadLetter.Headers,
+                                                   disposition.DeadLetter.Reason, disposition.DeadLetter.Description).ConfigureAwait(false); break;
+        case DispositionKind.SettledByHandler: break;   // the handler settled natively, e.g. Defer
+    }
+};
+```
+
+The core never returns a disposition the endpoint's capabilities do not declare. If ASB declares immediate redelivery only, a 10-minute retry arrives as a scheduled re-send done by the core, followed by `Complete`. If Kafka declares no native dead-letter, a dead-lettered record arrives as a send to the DLT topic, followed by `Complete`. Transports therefore contain no fallback code. Batch receive works the same way: `ProcessBatchAsync(ReadOnlyMemory<TIncoming>, Memory<Disposition>, ct)` fills one disposition per message.
+
+The pipeline puts the native message in the feature collection as `NativeMessage<TIncoming>`, which is pooled with the context. A transport's `context.ServiceBus()` extension wraps it in a struct view, so native access costs no allocation and no per-transport feature class.
+
+**3. Sending.** The core hands the transport a transport-neutral `OutgoingMessage`: destination, body bytes, named headers, ordering key, `DeliverAt`, and the native configurators from `SendOptions`. Its fields are exactly an outbox row (§6.3), so direct sends, outbox dispatch, scheduled re-sends and dead-letter copies all use the same two methods:
+
+```csharp
+ValueTask SendAsync(OutgoingMessage message, CancellationToken cancellationToken);
+ValueTask SendBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken);
+```
+
+The transport builds its native message, applies `options.ApplyNative<TNative>(native)`, and sends. Native configurators are delegates and cannot be stored in the outbox, so a send that has them and is enlisted in the outbox fails immediately with an explanation instead of dropping them.
+
+**4. Capabilities and topology.** `GetCapabilities(endpoint)` returns a `TransportCapabilities` record for one endpoint (D24). `ApplyTopologyAsync(mode, ct)` validates or provisions the endpoints the transport's builder declared and returns a report the core uses for the startup diff and for topology export.
+
+**5. Builders.** The core ships generic builders, and the transport supplies its own option types:
+
+```csharp
+public sealed class RouteBuilder<TMessage, TRouteOptions>   { … OrderingKey(…) … }      // core
+public sealed class ConsumerBuilder<TConsumerOptions>        { … Handler<T>(), Inbox(), Failures(…) … }  // core
+
+public static ConsumerBuilder<KafkaConsumerOptions> Group(this ConsumerBuilder<KafkaConsumerOptions> consumer, string group);  // Kafka
+```
+
+Handlers, inbox, failure policy and ordering keys are implemented once in the core and work the same on every transport. A Kafka-only setting such as `Group` exists only on Kafka's builder, so it cannot be applied to a queue by mistake. `OrderingKey` accepts a `string` or any `IUtf8SpanFormattable` value such as `Guid` or `long`; the latter is formatted into a pooled buffer, so a Kafka key costs no allocation.
+
+**Log-based transports.** Kafka, Event Hubs, Kinesis, Pulsar, RabbitMQ Streams and JetStream share one consumption model. The core ships it once as `PartitionScheduler<TIncoming, TBinding, TPartition, TPosition>`: key-ordered parallelism within a partition, commits at the contiguous-completed watermark, backpressure, drain on revoke, and pause tracking per partition (§7). The transport feeds records in and implements three calls:
+
+```csharp
+public interface IPartitionSource<TPartition, TPosition>
+{
+    void Commit(TPartition partition, TPosition position);   // last completed position; the transport batches and flushes
+    void Pause(TPartition partition);
+    void Resume(TPartition partition);
+}
+```
+
+`TPosition` is whatever the broker uses: a `long` offset for Kafka, a sequence-number string for Kinesis, a `MessageId` for Pulsar. The scheduler never compares positions; it tracks them in arrival order.
+
+Every transport proves the SPI contract by passing the transport conformance suite (§15). The in-memory transport is the first implementation, in phase 0.
 
 ---
 
@@ -106,7 +189,7 @@ builder.Services.AddRelayer(relayer =>
         kafka.BootstrapServers(builder.Configuration["Kafka:Servers"]);
         kafka.ConfigureProducer(p => p.WithAcks(Acks.All));                     // Dekaf's own builder
 
-        kafka.Produce<OrderPlaced>("orders.placed", p => p.Key(m => m.OrderId));
+        kafka.Produce<OrderPlaced>("orders.placed", p => p.OrderingKey(m => m.OrderId));
 
         kafka.Consume("orders.placed", c => c
             .Group("billing")
@@ -159,7 +242,7 @@ public sealed class AuditHandler : IBatchHandler<AuditEvent>
 {
     public async ValueTask<BatchResult> HandleAsync(Batch<AuditEvent> batch, CancellationToken ct)
     {
-        var failures = await _store.WriteAsync(batch.Messages, ct);
+        var failures = await _store.WriteAsync(batch.Items, ct);
         return BatchResult.PartialFailure(failures);   // only the failed messages are retried
     }
 }
@@ -321,7 +404,7 @@ Kafka gets its own consumption model instead of being forced into a queue shape 
 
 The transport wraps **[Dekaf](https://github.com/thomhurst/Dekaf)**, a pure C# Kafka client (decision D22). Dekaf has no native dependencies, supports Native AOT, and is built for zero-allocation hot paths, which matches Relayer's own goals. Dekaf already ships features such as retry and dead-letter topics, an outbox, and OpenTelemetry instrumentation. Following principle 1, the Kafka transport reuses Dekaf's mechanisms where they fit Relayer's uniform pipeline, rather than re-implementing them. Relayer's outbox remains the cross-transport outbox.
 
-- **Key-ordered parallelism:** within a partition, messages with different keys are processed concurrently (`Concurrency(perPartition: n, orderBy: OrderBy.Key)`), while messages with the same key stay ordered.
+- **Key-ordered parallelism:** within a partition, messages with different keys are processed concurrently (`Concurrency(perPartition: n, orderBy: OrderBy.Key)`), while messages with the same key stay ordered. This, the watermark commits and the rebalance handling below live in the core's partition scheduler (§2.4), so other log-based transports reuse them.
 - **Offset commits by watermark:** Relayer commits the highest *contiguous* completed offset per partition, asynchronously and batched, and flushes on rebalance and shutdown (Brighter #2269).
 - **Rebalance safety:** `cooperative-sticky` is supported. On revoke, Relayer stops dispatching for the revoked partitions, drains in-flight work up to a timeout, then commits. Pause and resume are tracked per partition, so a rebalance while paused cannot deadlock (KafkaFlow #456, #681).
 - **Consume-transform-produce:**
