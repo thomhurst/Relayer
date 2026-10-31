@@ -32,6 +32,7 @@ To change a decision, add a new entry that supersedes it rather than editing his
 | [D19](#d19-dependency-policy) | Dependency policy | Accepted |
 | [D20](#d20-sagas-are-out-of-scope-for-v1) | Sagas are out of scope for v1 | Accepted |
 | [D21](#d21-repository-conventions) | Repository conventions | Accepted |
+| [D22](#d22-the-kafka-transport-wraps-dekaf) | The Kafka transport wraps Dekaf | Accepted |
 
 ---
 
@@ -40,7 +41,7 @@ To change a decision, add a new entry that supersedes it rather than editing his
 **Context.** Existing libraries model every broker as a queue. That causes real bugs: for example, Kafka being "force fit" into a RabbitMQ shape (Wolverine #3134) and offsets only being committed after a restart (Brighter #2269). Users also lose access to native features.
 
 **Decision.**
-- Each transport wraps the official native client. Native send, receive, ordering, settlement, and dead-lettering semantics are kept unchanged.
+- Each transport wraps a native .NET client for its technology (see D22 for Kafka). Native send, receive, ordering, settlement, and dead-lettering semantics are kept unchanged.
 - Native configuration objects are passed through, never re-modelled.
 - Relayer adds cross-cutting concerns only.
 
@@ -186,7 +187,7 @@ To change a decision, add a new entry that supersedes it rather than editing his
 - Tombstones are first-class.
 - Seek and replay API.
 - Multiple clusters, each with its own schema registry.
-- librdkafka logs are routed to `ILogger`.
+- Client logs flow through `ILoggerFactory` (Dekaf supports this natively).
 
 ## D14. Transports declare capabilities, validated at startup
 
@@ -252,3 +253,20 @@ To change a decision, add a new entry that supersedes it rather than editing his
 - Nullable reference types on, and warnings treated as errors.
 - Layout: `src/`, `tests/`, `benchmarks/`, `docs/`.
 - CI on GitHub Actions.
+
+## D22. The Kafka transport wraps Dekaf
+
+**Context.** Confluent.Kafka wraps the native librdkafka library. That brings native binaries, interop overhead, logs that bypass `ILogger` (confluent #2386), and an open Native AOT gap (confluent #2146). Those conflict with D4 and D18.
+
+**Decision.**
+- `Relayer.Kafka` wraps [Dekaf](https://github.com/thomhurst/Dekaf), a pure C# Kafka client with no native dependencies, Native AOT coverage, and zero-allocation hot paths.
+- Dekaf's `ProducerBuilder` and `ConsumerBuilder` are exposed to users unchanged, and its `ConsumeResult` is exposed through `IKafkaConsumeFeature`.
+- Where Dekaf already provides a feature (retry and dead-letter topics, transactions, OpenTelemetry instrumentation), the transport reuses it rather than re-implementing it, as long as it fits Relayer's uniform failure pipeline and telemetry.
+
+**Consequences.**
+- No native binaries, and AOT works end to end on Kafka.
+- Relayer.Kafka's release cadence follows Dekaf's.
+- Users who need Confluent.Kafka specifically could be served later by a separate `Relayer.Kafka.Confluent` package. That is not planned.
+
+**Alternatives rejected.**
+- Confluent.Kafka: native dependency, AOT gap, and logging that bypasses `ILogger`.

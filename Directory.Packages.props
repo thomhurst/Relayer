@@ -16,7 +16,7 @@
   </ItemGroup>
 
   <ItemGroup Label="Transports">
-    <PackageVersion Include="Confluent.Kafka" Version="2.16.0" />
+    <PackageVersion Include="Dekaf" Version="1.25.0" />
     <PackageVersion Include="Azure.Messaging.ServiceBus" Version="7.21.0" />
     <PackageVersion Include="AWSSDK.SQS" Version="4.0.100.22" />
     <PackageVersion Include="AWSSDK.SimpleNotificationService" Version="4.0.100.22" />

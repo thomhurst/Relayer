@@ -10,7 +10,7 @@ It is **not** a new broker abstraction. It does not change how the underlying te
 
 ## 1. Principles
 
-1. **Wrap, don't replace.** Every transport uses the official native client. Native settlement, ordering, partitioning, sessions, and dead-lettering are used as-is. Relayer never emulates a feature the broker already has.
+1. **Wrap, don't replace.** Every transport uses a native .NET client for its technology: Dekaf for Kafka, and the official SDKs for Azure Service Bus, SQS/SNS, and RabbitMQ. Native settlement, ordering, partitioning, sessions, and dead-lettering are used as-is. Relayer never emulates a feature the broker already has.
 2. **No lowest common denominator.** Portable features (retry, outbox, tracing) are uniform. Transport-specific features are exposed through typed, discoverable extensions rather than hidden behind a generic API.
 3. **Explicit over magic.** No assembly scanning. No runtime code generation. Every handler, route, and piece of topology is declared in code or produced by a source generator you can read.
 4. **Correct by default.** The safe behaviour is the default behaviour: at-least-once delivery, idempotent consumers via the inbox, poison messages go to a dead-letter queue (they never crash or stall a consumer), and settlement happens only after the work is durable.
@@ -63,7 +63,7 @@ public async ValueTask HandleAsync(OrderPlaced message, MessageContext context, 
     var kafka = context.Kafka();               // IKafkaConsumeFeature, throws if not Kafka
     _logger.LogInformation("partition {P} offset {O}", kafka.Partition, kafka.Offset);
 
-    ConsumeResult<string, byte[]> raw = kafka.Result;   // the untouched native record
+    ConsumeResult<byte[], byte[]> raw = kafka.Result;   // the untouched Dekaf record
 }
 ```
 
@@ -74,7 +74,7 @@ await sender.SendAsync(new ChargeCard(orderId, amount),
     o => o.ServiceBus(m => m.SessionId = customerId.ToString()), ct);
 ```
 
-Native configuration objects (`ProducerConfig`, `ConsumerConfig`, `ServiceBusClientOptions`, `ConnectionFactory`, `AmazonSQSConfig`) are passed straight through and never re-modelled.
+Native configuration is passed straight through and never re-modelled: Dekaf's `ProducerBuilder` and `ConsumerBuilder`, `ServiceBusClientOptions`, `ConnectionFactory`, and `AmazonSQSConfig`.
 
 ### 2.3 Capabilities
 
@@ -103,7 +103,8 @@ builder.Services.AddRelayer(relayer =>
 {
     relayer.AddKafka("events", kafka =>
     {
-        kafka.Client(c => c.BootstrapServers = builder.Configuration["Kafka:Servers"]); // native config
+        kafka.BootstrapServers(builder.Configuration["Kafka:Servers"]);
+        kafka.ConfigureProducer(p => p.WithAcks(Acks.All));                     // Dekaf's own builder
 
         kafka.Produce<OrderPlaced>("orders.placed", p => p.Key(m => m.OrderId));
 
@@ -318,17 +319,19 @@ After dispatch, rows are deleted in batches. One leased **cleanup** job handles 
 
 Kafka gets its own consumption model instead of being forced into a queue shape (Wolverine #3134).
 
+The transport wraps **[Dekaf](https://github.com/thomhurst/Dekaf)**, a pure C# Kafka client (decision D22). Dekaf has no native dependencies, supports Native AOT, and is built for zero-allocation hot paths, which matches Relayer's own goals. Dekaf already ships features such as retry and dead-letter topics, an outbox, and OpenTelemetry instrumentation. Following principle 1, the Kafka transport reuses Dekaf's mechanisms where they fit Relayer's uniform pipeline, rather than re-implementing them. Relayer's outbox remains the cross-transport outbox.
+
 - **Key-ordered parallelism:** within a partition, messages with different keys are processed concurrently (`Concurrency(perPartition: n, orderBy: OrderBy.Key)`), while messages with the same key stay ordered.
 - **Offset commits by watermark:** Relayer commits the highest *contiguous* completed offset per partition, asynchronously and batched, and flushes on rebalance and shutdown (Brighter #2269).
 - **Rebalance safety:** `cooperative-sticky` is supported. On revoke, Relayer stops dispatching for the revoked partitions, drains in-flight work up to a timeout, then commits. Pause and resume are tracked per partition, so a rebalance while paused cannot deadlock (KafkaFlow #456, #681).
 - **Consume-transform-produce:**
   - *Kafka → database → anything:* the inbox, business data, and outbox are written in one database transaction. The offset is committed only after that transaction commits. Redelivery after a crash is deduplicated by the inbox.
-  - *Kafka → Kafka:* optional native Kafka transactions (`SendOffsetsToTransaction`) give exactly-once processing.
+  - *Kafka → Kafka:* optional native Kafka transactions (Dekaf's `SendOffsetsToTransactionAsync`) give exactly-once processing.
 - **Tombstones:** `sender.SendAsync(Tombstone.For<Customer>(key))` sends a record with a null value (KafkaFlow #516). A consumer receives it as `Tombstone<T>`.
 - **Ordered batch produce:** batch produce preserves order per key (KafkaFlow #594).
 - **Replay and seek:** `IKafkaConsumerControl.SeekAsync(topic, partition | timestamp)` for operational replay (Wolverine #3479).
 - **Schema registry:** works with multiple clusters, each with its own registry (KafkaFlow #558).
-- **librdkafka logs** are routed to `ILogger` (confluent #2386).
+- **Logging:** Dekaf logs through `ILoggerFactory` (`WithLoggerFactory`), so Kafka client logs land in the app's logging pipeline with no native log bridge.
 
 ---
 
@@ -417,7 +420,7 @@ Techniques:
 | Package | Contents | Dependencies |
 |---|---|---|
 | `Relayer` | Core abstractions, pipeline, routing, failure handling, telemetry, in-memory transport, analyzers and generators | `Microsoft.Extensions.*` abstractions only |
-| `Relayer.Kafka` | Kafka transport | `Confluent.Kafka` |
+| `Relayer.Kafka` | Kafka transport | `Dekaf` |
 | `Relayer.AzureServiceBus` | ASB transport | `Azure.Messaging.ServiceBus` |
 | `Relayer.AmazonSqs` | SQS and SNS transport | `AWSSDK.SQS`, `AWSSDK.SimpleNotificationService` (v4) |
 | `Relayer.RabbitMQ` | RabbitMQ transport | `RabbitMQ.Client` (7.x) |
