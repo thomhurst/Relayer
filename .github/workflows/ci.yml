@@ -1,0 +1,141 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+    # Drafts skip every job (see `changes`); `ready_for_review` starts CI on the reviewed head and
+    # `converted_to_draft` cancels an in-flight run through the concurrency group below.
+    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: read
+
+env:
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: true
+  DOTNET_CLI_TELEMETRY_OPTOUT: true
+  DOTNET_NOLOGO: true
+
+# A newer commit on the same PR or branch cancels older in-progress runs.
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Auto-merge armed on an earlier head must not carry over to a new push: GitHub would merge
+  # as soon as the required check passes, before anyone reviews the new head. Every push to a PR
+  # with auto-merge armed disarms it; scripts/Enable-AutoMerge.ps1 re-arms after the new head's
+  # review. `CI Passed` needs this job, so a failed disarm blocks the merge. Dependabot pushes
+  # get a read-only token and are exempt.
+  disarm-auto-merge:
+    name: Disarm auto-merge
+    if: >-
+      github.event_name == 'pull_request' && github.event.action == 'synchronize'
+      && github.event.pull_request.auto_merge != null && github.actor != 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Disarm auto-merge
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          gh pr merge "$PR" --disable-auto
+          echo "::notice::Auto-merge disarmed by a push; re-arm with scripts/Enable-AutoMerge.ps1 after this head's review."
+
+  # Every other job depends on this one, so drafts skip CI before renting a build runner.
+  changes:
+    name: Detect Changes
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      tooling: ${{ github.event_name != 'pull_request' && 'true' || steps.filter.outputs.tooling }}
+    steps:
+      - name: Filter changed paths
+        id: filter
+        if: github.event_name == 'pull_request'
+        uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4
+        with:
+          filters: |
+            tooling:
+              - 'scripts/**'
+              - '.github/scripts/**'
+              - '.github/workflows/**'
+
+  build:
+    name: Build & Test
+    needs: changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Check for a solution
+        id: solution
+        run: |
+          if [ -f Relayer.slnx ]; then echo "present=true" >> "$GITHUB_OUTPUT"; else echo "::notice::No Relayer.slnx yet; skipping build."; fi
+
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        if: steps.solution.outputs.present == 'true'
+        with:
+          global-json-file: global.json
+
+      - name: Restore
+        if: steps.solution.outputs.present == 'true'
+        run: dotnet restore
+
+      - name: Build
+        if: steps.solution.outputs.present == 'true'
+        run: dotnet build --no-restore -c Release
+
+      - name: Test
+        if: steps.solution.outputs.present == 'true'
+        run: dotnet test --no-build -c Release
+
+  # Tests for the issue/PR loop's merge gate and the Claude review helper. They run here, not in
+  # their own workflow, so `CI Passed` (and therefore auto-merge) waits for them.
+  agent-tooling:
+    name: Agent tooling tests
+    needs: changes
+    if: needs.changes.outputs.tooling == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Review helper tests
+        run: python3 -m unittest discover -s .github/scripts -p 'test_*.py' -v
+
+      - name: Merge gate and loop survey tests
+        shell: pwsh
+        run: |
+          ./scripts/Test-AssertPrGreenReviewHeuristics.ps1
+          ./scripts/Test-AssertPrGreenReviewThreads.ps1
+          ./scripts/Test-AssertPrGreenChecks.ps1
+          ./scripts/Test-IssuePrLoop.ps1
+
+  ci-passed:
+    # The required check name is computed: a job skipped by `if:` never evaluates `name`, so a
+    # draft run reports this expression text instead of `CI Passed` and cannot satisfy the
+    # required check (a skipped check counts as passing). Auto-merge armed right after a PR
+    # leaves draft therefore waits for the ready run.
+    name: ${{ needs.changes.result == 'success' && 'CI Passed' || 'CI Passed (incomplete)' }}
+    needs: [disarm-auto-merge, changes, build, agent-tooling]
+    if: always() && (github.event_name != 'pull_request' || github.event.pull_request.draft == false)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Verify all jobs succeeded or were skipped
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+        run: |
+          echo "$NEEDS_JSON" | jq .
+          echo "$NEEDS_JSON" | jq -e 'to_entries | all(.value.result == "success" or .value.result == "skipped")'

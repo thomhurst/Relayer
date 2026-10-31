@@ -1,0 +1,22 @@
+# Relayer
+
+Read [AGENTS.md](../../../../AGENTS.md) for validation, public contracts, and performance acceptance. It owns the zero-allocation pipeline rules, the AOT and dependency policy, and the benchmark rules; review/simplification must preserve them. [docs/design.md](../../../../docs/design.md) and [docs/decisions.md](../../../../docs/decisions.md) are the specification: an issue that conflicts with a recorded decision either follows the decision or updates the record in the same PR.
+
+- Issues carry `phase-*` and `area: *` labels. Within a priority, prefer the earliest phase: later phases build on the core.
+- Transport work against a real broker or emulator uses Docker/Testcontainers; stop only resources created for this work.
+- Add a benchmark only when [AGENTS.md](../../../../AGENTS.md#performance-requirements) requires one: the change materially moves steady-state per-message cost. Most bug fixes do not; state the one-line per-message cost in the PR instead.
+
+## Draft review lifecycle
+
+Draft policy: [AGENTS.md](../../../../AGENTS.md) applies the skill's draft review lifecycle to every agent-created PR, inside or outside the loop. Before creating or promoting a PR from an existing worktree, re-read `AGENTS.md` and this skill from the shared checkout; branch copies can predate the current policy.
+
+Required reviewers are Claude Code Review and Codex. Other review bots (CodeRabbit, Greptile) are not approvers, but their findings are review surfaces like any other.
+
+- **Claude:** `.github/workflows/claude-code-review.yml` reviews drafts on open, push, and reopen, not on `ready_for_review`. It posts one `github-actions[bot]` issue comment per run whose first line is `<!-- REVIEW_RUN: <run>/<attempt>; HEAD: <full-head-SHA> -->` and whose last line is `<!-- REVIEW_VERDICT: CLEAR -->` or `<!-- REVIEW_VERDICT: BLOCKING -->`. A positive verdict is `CLEAR` with `HEAD` equal to the current head. When a draft head has no review (a failed or cancelled run), dispatch it once: `gh workflow run claude-code-review.yml -f pr_number=<N>`. The workflow runs on `pull_request_target`, so it always uses `main`'s workflow file; a PR that changes the workflow is reviewed by the current `main` version. It needs the `CLAUDE_CODE_OAUTH_TOKEN` repository secret.
+- **Codex:** `chatgpt-codex-connector[bot]` reviews automatically when a PR opens ready or leaves draft, and on drafts only on request. Its mutable `<!-- codex-pull-request-review-summary -->` issue comment carries `<!-- codex-review-state:v1 {...} -->`; a positive verdict has `code_review.commit_sha` equal to the full current head, `status: completed`, and `has_any_findings: false`. A thumbs-up from `chatgpt-codex-connector[bot]` on this head's request (verify the author through `issues/comments/<id>/reactions`) also counts. Inline findings arrive as review threads. Re-read the summary on each visit; never infer the reviewed commit from timing.
+
+Automated review rounds (rework budget): count Claude review comments with `gh api --paginate "repos/{owner}/{repo}/issues/<N>/comments" --jq '.[] | select(.user.login == "github-actions[bot]" and (.body | startswith("<!-- REVIEW_RUN:"))) | .id' | wc -l`.
+
+Draft CI: `ci.yml` skips its jobs on draft PR events before renting a build runner. `ready_for_review` starts it on the approved head; `converted_to_draft` cancels an in-flight run through workflow concurrency. The Claude review runs on drafts and is not repeated on `ready_for_review`. `Assert-PrGreen.ps1` denies drafts.
+
+Auto-merge: the `main` ruleset requires `CI Passed`, and GitHub's auto-merge waits only for it. The `CI Passed` job name is a `${{ }}` expression that a job skipped by `if:` never evaluates, so a draft run reports the expression text, never the required name, and cannot satisfy it; auto-merge armed right after `gh pr ready` waits for the ready run. Every `CI` job feeds `CI Passed` (`Test-AssertPrGreenChecks.ps1` pins this). `Enable-AutoMerge.ps1` (with `-MarkReady` for the promotion) waits for the ready run's `Detect Changes` job to register, then runs `Assert-PrGreen.ps1 -ForAutoMerge`, which lets only `CI` checks be pending and requires a Claude review comment for the head. On any push to a PR with auto-merge armed, `ci.yml`'s `disarm-auto-merge` job disarms it, and `CI Passed` fails if disarming fails.
