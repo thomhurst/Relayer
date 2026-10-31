@@ -1,0 +1,492 @@
+# Relayer — Design
+
+Status: draft v0.1 (2026-10-31)
+
+Relayer is a modern .NET messaging library. It wraps existing messaging technologies (Kafka, Azure Service Bus, Amazon SQS/SNS, RabbitMQ, and more) and takes away the ceremony around them: resiliency, outbox/inbox, telemetry, trace propagation, serialization, topology, and testing.
+
+It is **not** a new broker abstraction. It does not change how the underlying technology sends, receives, orders, or acknowledges messages. It runs a thin, fast pipeline around the native client and gives you full access to that client whenever you need it.
+
+---
+
+## 1. Principles
+
+1. **Wrap, don't replace.** Every transport uses the official native client. Native settlement, ordering, partitioning, sessions, and dead-lettering are used as-is. Relayer never emulates a feature the broker already has.
+2. **No lowest common denominator.** Portable features (retry, outbox, tracing) are uniform. Transport-specific features are exposed through typed, discoverable extensions rather than hidden behind a generic API.
+3. **Explicit over magic.** No assembly scanning. No runtime code generation. Every handler, route, and piece of topology is declared in code or produced by a source generator you can read.
+4. **Correct by default.** The safe behaviour is the default behaviour: at-least-once delivery, idempotent consumers via the inbox, poison messages go to a dead-letter queue (they never crash or stall a consumer), and settlement happens only after the work is durable.
+5. **Native AOT and trimming from day one.** No reflection on the hot path. Serialization uses System.Text.Json source generation by default.
+6. **Performance is a feature.** The pipeline is composed once at startup, the hot path allocates as little as possible, and CI gates on benchmarks measured against the raw client.
+7. **Observable by default.** OpenTelemetry tracing and metrics, plus structured logging, are built into the core rather than shipped as an add-on.
+8. **Few dependencies.** The core depends only on `Microsoft.Extensions.*` abstractions and the BCL. Each transport package adds only its native client.
+9. **Permissive licence.** MIT, permanently.
+
+### Non-goals
+
+- Replacing or reimplementing broker features (Relayer does not emulate topics on SQS or partitions on RabbitMQ).
+- Exactly-once delivery across arbitrary systems. Relayer provides at-least-once delivery plus idempotency. The one exception is Kafka-to-Kafka exactly-once, available via native Kafka transactions.
+- Being an in-process mediator first. An in-memory transport exists for modular monoliths and tests, but it is just another transport.
+
+### Target platform
+
+- `net10.0` (current LTS) and later. .NET 8 support ends in November 2026, so it is not targeted.
+- C# 14. Source generators are incremental generators.
+
+---
+
+## 2. Core model
+
+```
+          ┌──────────── send side ────────────┐            ┌────────── receive side ──────────┐
+ your code → ISender → send middleware → outbox? → transport → native client → broker → native client → transport
+                                                                                                │
+                                         handler ← consume middleware (retry, inbox, telemetry…) ┘
+```
+
+### 2.1 Concepts
+
+| Concept | Meaning |
+|---|---|
+| **Transport** | An adapter over one native client (Kafka, ASB, SQS, RabbitMQ, …). Registered with a name, so you can have several of the same kind. |
+| **Endpoint** | A native destination or source: a Kafka topic, an ASB queue or topic/subscription, an SQS queue, a RabbitMQ exchange or queue. |
+| **Route** | A mapping from a message type to an endpoint, plus how to derive native properties (key, session ID, partition key, message group ID). |
+| **Consumer** | A subscription to an endpoint that dispatches to handlers. |
+| **MessageContext** | The per-message context. Holds the message ID, headers, the trace context, the attempt count, and a feature collection that exposes the native message. |
+| **Capabilities** | What a transport can do natively (DLQ, delayed delivery, sessions/ordering, batching, transactions, max message size). Relayer validates configuration against capabilities at startup. |
+
+### 2.2 Feature collection: the native escape hatch
+
+`MessageContext` follows the same pattern as ASP.NET Core's `HttpContext.Features`. Each transport publishes typed features, and extension methods make them discoverable:
+
+```csharp
+public async ValueTask HandleAsync(OrderPlaced message, MessageContext context, CancellationToken ct)
+{
+    var kafka = context.Kafka();               // IKafkaConsumeFeature, throws if not Kafka
+    _logger.LogInformation("partition {P} offset {O}", kafka.Partition, kafka.Offset);
+
+    ConsumeResult<string, byte[]> raw = kafka.Result;   // the untouched native record
+}
+```
+
+On the send side, a typed callback receives the native outgoing object just before it is handed to the client:
+
+```csharp
+await sender.SendAsync(new ChargeCard(orderId, amount),
+    o => o.ServiceBus(m => m.SessionId = customerId.ToString()), ct);
+```
+
+Native configuration objects (`ProducerConfig`, `ConsumerConfig`, `ServiceBusClientOptions`, `ConnectionFactory`, `AmazonSQSConfig`) are passed straight through and never re-modelled.
+
+### 2.3 Capabilities
+
+Each transport declares its capabilities. A feature that needs one either uses the native mechanism or a documented fallback, and when there is neither, startup fails with a clear error (no silent degradation):
+
+| Feature | Native when available | Fallback |
+|---|---|---|
+| Delayed delivery / scheduling | ASB `ScheduledEnqueueTime`, SQS `DelaySeconds` (≤ 15 min), RabbitMQ delayed-message plugin | Outbox `deliver_at` |
+| Dead-letter | ASB DLQ, SQS redrive policy, RabbitMQ DLX | Dead-letter endpoint (Kafka DLT topic) |
+| Ordering | Kafka partition key, ASB sessions, SQS FIFO message group | None — must be declared unordered |
+| Batching | Kafka, SQS (10), ASB batches | Client-side batching |
+| Transactions | Kafka transactions, ASB cross-entity transactions | Outbox |
+
+---
+
+## 3. Developer experience
+
+### 3.1 Configuration
+
+```csharp
+var builder = WebApplication.CreateBuilder(args);
+
+builder.Services.AddDbContext<AppDbContext>(...);
+
+builder.Services.AddRelayer(relayer =>
+{
+    relayer.AddKafka("events", kafka =>
+    {
+        kafka.Client(c => c.BootstrapServers = builder.Configuration["Kafka:Servers"]); // native config
+
+        kafka.Produce<OrderPlaced>("orders.placed", p => p.Key(m => m.OrderId));
+
+        kafka.Consume("orders.placed", c => c
+            .Group("billing")
+            .Handler<OrderPlacedHandler>()
+            .Concurrency(perPartition: 8, orderBy: OrderBy.Key));     // key-ordered parallelism
+    });
+
+    relayer.AddAzureServiceBus("commands", asb =>
+    {
+        asb.Client(sp => sp.GetRequiredService<ServiceBusClient>()); // reuse your own client
+        asb.Send<ChargeCard>("billing-charge-card");
+        asb.Consume("billing-charge-card", c => c.Handler<ChargeCardHandler>());
+    });
+
+    relayer.Outbox(o => o.UseEntityFrameworkCore<AppDbContext>());
+    relayer.Inbox(i => i.UseEntityFrameworkCore<AppDbContext>());
+
+    relayer.Failures(f => f
+        .Retry(immediate: 2)
+        .Redeliver(TimeSpan.FromSeconds(10), TimeSpan.FromMinutes(1), TimeSpan.FromMinutes(10))
+        .WithJitter()
+        .On<ValidationException>(FailureAction.DeadLetter));
+
+    relayer.Topology(TopologyMode.Validate);
+});
+```
+
+Configuration also binds from `IConfiguration` and uses the Options pattern (`IOptionsMonitor<KafkaTransportOptions>` and so on), so the same settings can live in `appsettings.json`.
+
+### 3.2 Handlers
+
+Handlers are plain classes that are resolved from a fresh DI scope for every message (or batch). They can inject scoped services such as a `DbContext`.
+
+```csharp
+public sealed class OrderPlacedHandler(AppDbContext db, ISender sender) : IHandler<OrderPlaced>
+{
+    public async ValueTask HandleAsync(OrderPlaced message, MessageContext context, CancellationToken ct)
+    {
+        db.Invoices.Add(Invoice.For(message));
+        await sender.SendAsync(new ChargeCard(message.OrderId, message.Total), ct);
+        await db.SaveChangesAsync(ct);  // business data + outbox row + inbox row, one transaction
+    }
+}
+```
+
+There are also batch handlers. Each message in a batch can succeed or fail independently, and the transport settles each message natively.
+
+```csharp
+public sealed class AuditHandler : IBatchHandler<AuditEvent>
+{
+    public async ValueTask<BatchResult> HandleAsync(Batch<AuditEvent> batch, CancellationToken ct)
+    {
+        var failures = await _store.WriteAsync(batch.Messages, ct);
+        return BatchResult.PartialFailure(failures);   // only the failed messages are retried
+    }
+}
+```
+
+### 3.3 Registration without scanning
+
+- `.Handler<THandler>()` is generic. The constraint `THandler : IHandlerMarker` together with source-generated descriptors gives the message type with zero reflection.
+- For people who want convenience, the source generator emits an explicit, readable `AddHandlersFromThisAssembly()` that lists every handler it found at compile time. This is "scanning" done by the compiler — it is visible, debuggable, and AOT-safe.
+- Analyzers report problems at compile time: a handler that is registered nowhere, a message type with no stable name, a consumer with no handler, or a feature the transport does not support (for example, ordering on a non-FIFO SQS queue).
+
+### 3.4 Sending from anywhere
+
+`ISender` is scoped. When an outbox is configured and a transaction is active in the current scope, sends are enlisted automatically. Otherwise they go straight to the transport. To be explicit, use `sender.SendNowAsync` (bypass the outbox) or `sender.SendViaOutboxAsync` (require the outbox; throws when there is no transaction).
+
+Publish versus send is a routing concern, not a separate API. Whether a destination fans out depends on what the endpoint is natively (a topic or exchange versus a queue).
+
+---
+
+## 4. Message contracts and wire format
+
+### 4.1 Stable message type names
+
+Messages are identified by a stable string name, never by the CLR type name. That way, renaming or moving a class never breaks consumers, and services do not need to share a contracts assembly.
+
+```csharp
+[Message("billing.charge-card", Version = 2)]
+public sealed record ChargeCard(Guid OrderId, decimal Amount);
+```
+
+If the attribute is missing, an analyzer warns and suggests one. A fallback convention exists but is discouraged.
+
+### 4.2 CloudEvents by default
+
+Relayer writes CloudEvents attributes using each transport's binary-mode binding, as native headers or properties: `ce_id` (UUIDv7), `ce_type`, `ce_source`, `ce_time`, `ce_specversion`, `traceparent`, and `tracestate`. As a result:
+
+- Non-Relayer applications in any language can produce and consume the same messages (Wolverine #1592, CloudEvents requests).
+- Consumers route by `ce_type`, so **several message types can share one topic or queue** (confluent#1183).
+- A raw mode (no envelope, just the native payload) exists for integrating with legacy producers. In raw mode you map the type yourself, for example from the topic name.
+
+### 4.3 Serialization
+
+- The default is System.Text.Json with a source-generated `JsonSerializerContext`. The generator builds it from the declared message types, so serialization is AOT-safe.
+- Serialization is pluggable (`IMessageSerializer`): Protobuf, Avro (with schema registry), and MessagePack ship as optional packages.
+- Serialization writes to `IBufferWriter<byte>` and reads from `ReadOnlySequence<byte>` where the native client allows it.
+
+### 4.4 Versioning
+
+- `Version` lives in the type name (`billing.charge-card;v=2`).
+- Upcasters (`IUpcaster<V1, V2>`) are registered explicitly and run before the handler.
+- Unknown types or versions are treated as poison and dead-lettered with a reason. They are never ignored silently and never crash the consumer.
+
+---
+
+## 5. Failure handling
+
+There is one pipeline for every transport. Every step is visible in headers, logs, and metrics.
+
+```
+exception
+   │
+   ├─ classify ──► permanent (configured types, deserialization, unknown type) ──► dead-letter
+   │
+   ├─ immediate retry (in-process, jittered backoff, N attempts)
+   │
+   ├─ delayed redelivery (native delay if supported, else outbox) with jitter
+   │
+   └─ dead-letter (native DLQ, or DLT endpoint) ──► redrive API
+```
+
+- **Classification** is a predicate per exception type or a custom `IFailureClassifier`. Deserialization and contract failures are permanent by default, so they never block a partition or crash a consumer (Silverback #249, SlimMessageBus #438).
+- **Error metadata** goes on the dead-lettered message: the original message ID, exception type, message and stack trace for **every** attempt (Rebus #1154), attempt count, first and last failure time, consumer name, and host.
+- **Redrive API:** `IDeadLetterManager` provides `List`, `Peek`, `Redrive(filter)`, and `Purge`. It is backed natively by the ASB DLQ, SQS redrive, RabbitMQ DLX queue, or Kafka DLT topic. It is also exposed as an optional minimal-API endpoint group and as CLI commands.
+- **Circuit breaker:** when the failure rate of a consumer crosses a threshold, Relayer **pauses the consumer natively** (Kafka `Pause`, ASB processor stop, RabbitMQ consumer cancel) instead of burning messages into the DLQ (SlimMessageBus #454). It then half-opens with a probe message.
+- **Retries never duplicate side effects.** Outbox rows written by a failed attempt are rolled back with the transaction. Without a transaction, sends made during a failed attempt are buffered and discarded (Rebus #1198, Rebus.PostgreSql #53).
+- Relayer implements this pipeline itself, because it has to integrate with native settlement and delayed redelivery, which Polly cannot model. Inside a handler, you remain free to use Polly or `Microsoft.Extensions.Resilience` for downstream calls.
+
+---
+
+## 6. Outbox and inbox
+
+The outbox is the area where every existing library has had correctness bugs, so it gets the most design attention.
+
+### 6.1 Guarantees
+
+- A message is written in the **same database transaction** as your business data. It is dispatched if and only if that transaction commits.
+- Delivery is at-least-once. The message ID (UUIDv7) is stable across retries and dispatches, so the consumer-side inbox deduplicates.
+- Ordering is preserved per ordering key when the route declares it (Kafka key, ASB session, SQS FIFO message group).
+- A poison outbox row never blocks unrelated messages.
+- The design is safe with any number of instances. There is no double dispatch under normal operation, no cleanup race between instances, and no per-replica background-job storms.
+
+### 6.2 Enlisting: hard to misuse
+
+- **EF Core:** Relayer registers a `SaveChangesInterceptor` and a `DbTransactionInterceptor`. Messages sent in the scope are added to the change set, so `SaveChangesAsync`, or a transaction you started yourself, writes them atomically. You do not need to override `SaveChanges` (Silverback #164), and it works with **multiple DbContexts** (Silverback #163). Committing the raw transaction is fine, because Relayer observes the commit through the interceptor (CAP #1675).
+- **ADO.NET / Dapper:** `await using var tx = await outbox.BeginTransactionAsync(connection)` returns a real `DbTransaction` subclass. Using it as normal is the correct usage, so there is no second "Relayer transaction" to forget.
+- **MongoDB / DynamoDB:** use their session and transaction APIs in the same style.
+
+### 6.3 Schema
+
+```
+relayer_outbox
+  id             uuid (v7)       primary key
+  lane           smallint        hash(ordering_key) % lanes, or null when unordered
+  ordering_key   text            nullable
+  transport      text
+  destination    text
+  message_type   text
+  headers        bytes           (includes traceparent captured at enqueue)
+  body           bytes
+  created_at     timestamptz
+  deliver_at     timestamptz     nullable (scheduling fallback)
+  attempts       int
+  last_error     text
+  tenant_id      text            nullable
+
+index (lane, id) where status is pending        -- partial/filtered where the database supports it
+index (deliver_at) where deliver_at is not null
+
+relayer_leases
+  name           text primary key  -- 'lane:7', 'cleanup', 'scheduler'
+  owner          text
+  expires_at     timestamptz
+```
+
+Migrations ship as EF Core migrations and as plain SQL scripts for each database (`dotnet relayer db script --provider postgres`). Indexes are created by default (CAP #1599). Tables can be prefixed and given a schema (NSB.Persistence.Sql #2093).
+
+### 6.4 Dispatching
+
+There are two paths, each chosen per message based on whether its route is ordered:
+
+1. **Unordered messages — direct dispatch.** After commit, the instance that committed dispatches immediately, in the background, without waiting for a poll. It claims the row with a conditional update (`UPDATE … SET claimed_by = @me WHERE id = @id AND claimed_by IS NULL`), so another instance never sends it twice. Latency equals the broker round trip (fixes the latency of polling designs, SlimMessageBus #275).
+2. **Ordered messages — lane leases.** Rows are hashed into N lanes (default 32). Instances lease lanes through `relayer_leases` with heartbeats and fair-share rebalancing as instances join and leave. A lane owner reads its lane in `id` order with a simple indexed range scan. There are no `SKIP LOCKED` scans across the whole table, and ordering per key is guaranteed.
+
+A **sweeper** (also leased) picks up anything that was committed but not dispatched within a threshold, for example because the instance crashed. Postgres `LISTEN/NOTIFY` and SQL Server Service Broker can optionally replace the sweeper's poll.
+
+After dispatch, rows are deleted in batches. One leased **cleanup** job handles retention for both the outbox and the inbox (CAP #1811, Rebus.SqlServer #101).
+
+**Poison rows:** after a configurable number of attempts, the row is moved to `relayer_outbox_dead` and an alert metric is raised. For ordered routes, only later rows **with the same ordering key** are parked; the rest of the lane continues. Parked keys can be inspected and released through `IDeadLetterManager`.
+
+**Change data capture** (phase 3): an optional dispatcher reads Postgres logical replication or SQL Server CDC instead of polling. The table layout is compatible with Debezium's outbox event router, so teams can use Debezium instead.
+
+### 6.5 Inbox
+
+- `relayer_inbox(consumer, message_id, processed_at)`, written in the same transaction as the handler's business changes and outbox rows.
+- A duplicate delivery is acknowledged without invoking the handler, and a metric is recorded.
+- The inbox is opt-in per consumer. It is enabled automatically when the outbox is used on the same DbContext.
+
+### 6.6 Multi-tenancy
+
+- `IOutboxStoreResolver` maps the current tenant to a connection or DbContext, supporting a database per tenant or a schema per tenant (CAP #699, Rebus #1218, Wolverine #556).
+- `ITenantSource` enumerates tenants for the dispatcher. Each tenant store gets its own lanes and leases. Dispatchers share a bounded connection budget, which avoids per-tenant connection sprawl (Wolverine #3376).
+- The tenant ID travels in a header and is restored into the consumer's scope.
+
+---
+
+## 7. Kafka done properly
+
+Kafka gets its own consumption model instead of being forced into a queue shape (Wolverine #3134).
+
+- **Key-ordered parallelism:** within a partition, messages with different keys are processed concurrently (`Concurrency(perPartition: n, orderBy: OrderBy.Key)`), while messages with the same key stay ordered.
+- **Offset commits by watermark:** Relayer commits the highest *contiguous* completed offset per partition, asynchronously and batched, and flushes on rebalance and shutdown (Brighter #2269).
+- **Rebalance safety:** `cooperative-sticky` is supported. On revoke, Relayer stops dispatching for the revoked partitions, drains in-flight work up to a timeout, then commits. Pause and resume are tracked per partition, so a rebalance while paused cannot deadlock (KafkaFlow #456, #681).
+- **Consume-transform-produce:**
+  - *Kafka → database → anything:* the inbox, business data, and outbox are written in one database transaction. The offset is committed only after that transaction commits. Redelivery after a crash is deduplicated by the inbox.
+  - *Kafka → Kafka:* optional native Kafka transactions (`SendOffsetsToTransaction`) give exactly-once processing.
+- **Tombstones:** `sender.SendAsync(Tombstone.For<Customer>(key))` sends a record with a null value (KafkaFlow #516). A consumer receives it as `Tombstone<T>`.
+- **Ordered batch produce:** batch produce preserves order per key (KafkaFlow #594).
+- **Replay and seek:** `IKafkaConsumerControl.SeekAsync(topic, partition | timestamp)` for operational replay (Wolverine #3479).
+- **Schema registry:** works with multiple clusters, each with its own registry (KafkaFlow #558).
+- **librdkafka logs** are routed to `ILogger` (confluent #2386).
+
+---
+
+## 8. Observability
+
+- One `ActivitySource` named `Relayer` and one `Meter` named `Relayer`, following the OpenTelemetry **messaging semantic conventions** (`messaging.system`, `messaging.destination.name`, `messaging.operation.type`, `messaging.message.id`, `messaging.consumer.group.name`, …).
+- W3C `traceparent`/`tracestate` are propagated in native headers on every transport. The outbox captures trace context **when the message is enqueued**, so the dispatch span links back to the originating request even if dispatch happens minutes later on another instance.
+- Spans: `send`, `outbox.enqueue`, `outbox.dispatch`, `receive`, `process`, and `settle`. Batch processing uses span links, one per message.
+- Metrics:
+  - `relayer.process.duration`, measured **after** settlement (NSB #3565).
+  - `relayer.critical_time` (now minus sent time).
+  - `relayer.send.duration`
+  - `relayer.retries`
+  - `relayer.dead_lettered`
+  - `relayer.outbox.pending`
+  - `relayer.outbox.dispatch_lag`
+  - `relayer.inbox.duplicates`
+  - `relayer.consumer.lag` (Kafka)
+  - `relayer.circuit.state`
+- Enrichers (`IActivityEnricher`) let you add tags or change span names without forking (MassTransit #4383).
+- Logging uses `LoggerMessage` source generation (zero allocations when disabled) and scopes that carry the message ID, type, and correlation ID.
+- Health checks: transport connectivity, consumer liveness (each consumer has made progress or is idle), and outbox backlog thresholds.
+
+---
+
+## 9. Topology
+
+- Topology is **declared, not inferred.** Routes and consumers form a topology model you can inspect at runtime (`ITopology`).
+- Mode is chosen per transport:
+  - `Provision` creates missing entities (development).
+  - `Validate` checks that entities exist and fails fast with a diff (**default**). It needs only least-privilege permissions (MassTransit #5613, EasyNetQ #1000).
+  - `None` skips checks entirely.
+- Export: `dotnet relayer topology export --format json|bicep|terraform` emits the topology for infrastructure-as-code (NSB #7370, MassTransit #2799).
+- Entity names come from a naming convention you can override per endpoint. Nothing is auto-created with surprising names.
+
+---
+
+## 10. Resilience of the connection itself
+
+- Transports must recover after a broker restart: they reconnect, redeclare topology when in `Provision` mode, and resume consumers. This is covered by integration tests that kill the broker container mid-stream (MassTransit #6253, Wolverine #937, EasyNetQ #560).
+- Every send has a timeout, and so does every request/response (MassTransit #3502, #6229).
+- Credential refresh is delegated to the native client's token providers (Azure `TokenCredential`, the AWS credential chain, RabbitMQ `ICredentialsProvider`) (MassTransit #2940).
+- No consumer blocks a thread-pool thread. Everything is async, with bounded channels and backpressure (CAP #1821).
+
+---
+
+## 11. Testing
+
+`Relayer.Testing` provides:
+
+- **In-memory transport** with configurable capabilities. It can pretend to be Kafka-like (partitions) or queue-like, so tests exercise the same semantics.
+- **`RelayerHarness`:**
+  - Records sent, published, consumed, failed, and dead-lettered messages.
+  - Observes messages at both the logical send and the outbox dispatch, so outbox-enabled code is fully visible (MassTransit #4874).
+  - `await harness.WaitForIdleAsync()` waits deterministically until in-flight work reaches zero. There are no sleeps and no race conditions (MassTransit #4835).
+  - `harness.Reset()` clears state between tests (MassTransit #4908).
+  - Multiple buses and transports are supported (MassTransit #4718).
+- **Unit testing handlers:** handlers are POCOs. `TestMessageContext` builds a context with arbitrary features, including fake native features.
+- `ISender` and the batch APIs are interfaces with no static state, so they are easy to mock (MassTransit #3119).
+- No process-wide statics: the full test suite runs in parallel within one process (Wolverine #3521).
+- Testcontainers-based fixtures for every transport, published in `Relayer.Testing.Containers`.
+
+---
+
+## 12. Performance
+
+Goals, measured against the raw native client in the same benchmark:
+
+- **≤ 5% throughput overhead** on the receive path and the direct send path, with no outbox, using the default JSON serializer.
+- **Zero allocations** from Relayer's own pipeline per message in steady state. Allocations by the serializer and the native client are excluded.
+- **Startup:** < 50 ms to build the pipeline for 100 handlers. Startup works under Native AOT.
+
+Techniques:
+
+- The middleware pipeline is compiled into a delegate chain once per consumer at startup. Nothing is resolved per message except the DI scope.
+- `ValueTask` everywhere. Context objects are pooled. Headers are read lazily from the native message and only materialized when accessed.
+- `IBufferWriter<byte>` / `ReadOnlySequence<byte>` serialization with pooled buffers.
+- Source-generated dispatch per message type: no `Type` lookups, no `MethodInfo.Invoke`, no `dynamic`.
+- Outbox writes are batched per transaction (one insert of N rows). Dispatch uses native batch send APIs.
+- Benchmarks (BenchmarkDotNet) run in CI, and a regression beyond a threshold fails the build.
+
+---
+
+## 13. Package layout
+
+| Package | Contents | Dependencies |
+|---|---|---|
+| `Relayer` | Core abstractions, pipeline, routing, failure handling, telemetry, in-memory transport, analyzers and generators | `Microsoft.Extensions.*` abstractions only |
+| `Relayer.Kafka` | Kafka transport | `Confluent.Kafka` |
+| `Relayer.AzureServiceBus` | ASB transport | `Azure.Messaging.ServiceBus` |
+| `Relayer.AmazonSqs` | SQS and SNS transport | `AWSSDK.SQS`, `AWSSDK.SimpleNotificationService` (v4) |
+| `Relayer.RabbitMQ` | RabbitMQ transport | `RabbitMQ.Client` (7.x) |
+| `Relayer.Outbox.EntityFrameworkCore` | EF Core outbox and inbox | `Microsoft.EntityFrameworkCore.Relational` |
+| `Relayer.Outbox.PostgreSql` / `.SqlServer` / `.MySql` | ADO.NET outbox and inbox (`NpgsqlDataSource` supported) | The provider's driver |
+| `Relayer.Outbox.MongoDB` | MongoDB outbox and inbox | `MongoDB.Driver` |
+| `Relayer.Serialization.*` | Protobuf, Avro, MessagePack | The respective library |
+| `Relayer.Testing` / `.Testing.Containers` | Harness and fixtures | `Testcontainers` |
+| `Relayer.Aspire` | Aspire integration (resources and health) | `Aspire.Hosting` |
+| Later | `Relayer.Nats`, `Relayer.GooglePubSub`, `Relayer.Pulsar`, `Relayer.RabbitMQ.Streams`, `Relayer.Sagas` | — |
+
+Transports target the latest major version of their native client. Updating clients is part of the release cadence (Rebus #1204, Rebus.RabbitMq #137, CAP #1573).
+
+---
+
+## 14. Beyond v1
+
+- **Sagas / process managers** (`Relayer.Sagas`): explicit state classes, optimistic concurrency (no hand-written lock providers), built on the inbox and outbox for idempotency, timeouts through the scheduler, and diagram export (Rebus #341, #1136, #1205; SlimMessageBus #384).
+- **Request/response** with a mandatory timeout and the reply address carried in CloudEvents extensions.
+- **Additional transports:** NATS JetStream, Google Pub/Sub, Pulsar, RabbitMQ Streams, and the Azure Service Bus emulator profile.
+- **AsyncAPI document generation** from the topology model.
+- **Outbox dispatch from CDC** (§6.4).
+
+---
+
+## 15. Roadmap
+
+| Phase | Scope | Exit criteria |
+|---|---|---|
+| 0 | Core abstractions, pipeline, source generator and analyzers, in-memory transport, harness, telemetry | Handler round trip under Native AOT; benchmarks in CI |
+| 1 | Kafka and ASB transports; failure pipeline; DLQ and redrive | Broker-restart and rebalance chaos tests pass |
+| 2 | EF Core and Postgres outbox and inbox (lanes, direct dispatch, cleanup) | Crash and duplicate tests with multiple instances pass; ≤ 5% overhead |
+| 3 | SQS/SNS and RabbitMQ; SQL Server and MySQL outbox; topology export; multi-tenancy | Every transport passes the conformance suite |
+| 4 | Sagas, request/response, CDC dispatch, more transports | — |
+
+A **transport conformance test suite** (send, receive, settle, retry, DLQ, delay, ordering, trace propagation, reconnect) is part of the core. Every transport, including third-party ones, must pass it.
+
+---
+
+## 16. Traceability to known pain points
+
+| Pain point in existing libraries | Design answer |
+|---|---|
+| No AOT, reflection, runtime code generation, slow cold start (MassTransit #4772, Wolverine #1577, Rebus #1095) | §1.5, §3.3, §4.3, §12 |
+| Assembly scanning surprises (NSB #5595, #6967; Wolverine #1444, #3521) | §3.3 |
+| Outbox duplicates, loss, misuse (CAP #1429, #1675; Wolverine #565; MassTransit #6238; Rebus.PostgreSql #55) | §6.1–6.4 |
+| Outbox poison loops, no DLQ (MassTransit #6231, SlimMessageBus #284) | §6.4 poison rows |
+| Expensive polling, missing indexes, per-replica cleanup (CAP #1599, #1811) | §6.3, §6.4 |
+| Rigid outbox: one DbContext, overriding SaveChanges, no tenants (Silverback #163/#164, CAP #699) | §6.2, §6.6 |
+| OTel missing or bolted on (EasyNetQ #1609, SlimMessageBus #149, Rebus #1163, KafkaFlow #465) | §8 |
+| Kafka treated as a queue; rebalance, offset, and ordering bugs (Wolverine #3134, Brighter #2269, KafkaFlow #594/#681/#516) | §7 |
+| Unclear retry and DLQ behaviour; no redrive (Brighter #3667/#1519, Rebus #1154, Wolverine #469) | §5 |
+| Poison deserialization stalls consumers (Silverback #249, SlimMessageBus #438) | §5 classification |
+| Consumers dead after a broker restart (MassTransit #6253, Wolverine #937, EasyNetQ #560) | §10 |
+| Topology opacity and over-privilege (MassTransit #2799/#5613, NSB #7370) | §9 |
+| Weak test harness (MassTransit #4874/#4908/#4718/#4835) | §11 |
+| Scoped DI in handlers (Brighter #1560, Wolverine #1610) | §3.2 |
+| Shared contract assemblies, type renames (Rebus #852/#905, NSB #6490) | §4.1, §4.4 |
+| No CloudEvents interop (Wolverine #1592) | §4.2 |
+| Several types per topic (confluent #1183) | §4.2 |
+| Batch consumption declined (CAP #1553, SlimMessageBus #186) | §3.2 batch handlers |
+| Thread-blocking consumers (CAP #1821) | §10 |
+| Licence cost (MassTransit v9, NServiceBus) | §1.9 |
+
+---
+
+## 17. Open questions
+
+1. **Handler signature:** should Relayer also accept method-based handlers (`Handle(OrderPlaced m)` on any class) via the source generator, or keep `IHandler<T>` only? Recommendation: `IHandler<T>` only in v1, because it is more explicit.
+2. **Settlement override:** should handlers be able to settle manually (`context.DeadLetter(reason)`, `context.Defer()`)? Recommendation: yes, through a transport-neutral `ISettlementFeature`, with native extras exposed through the transport features.
+3. **Sagas in v1?** The current recommendation is no; ship a sound core first.
+4. **Minimum native client versions:** latest major only, or latest and previous? Recommendation: latest only.
