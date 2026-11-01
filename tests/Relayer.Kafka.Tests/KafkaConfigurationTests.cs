@@ -35,12 +35,27 @@ public class KafkaConfigurationTests
     }
 
     [Test]
-    public async Task Unimplemented_consumers_fail_before_building_a_native_client()
+    public async Task Missing_group_fails_before_building_a_native_client()
     {
         var services = new ServiceCollection();
-        services.AddRelayer(builder => builder.Kafka("events", kafka => kafka.Consume("orders", _ => { })));
+        services.AddRelayer(builder => builder.Kafka("events", kafka => kafka.Consume("orders", consumer => consumer.Handler<KafkaReceiveHandler>())));
         await using var provider = services.BuildServiceProvider();
         await Assert.That(() => provider.GetServices<ITransport>().ToArray())
-            .Throws<NotSupportedException>().WithMessageContaining("consumer execution is not implemented");
+            .Throws<InvalidOperationException>().WithMessageContaining("Options.Group");
+    }
+
+    [Test]
+    public async Task Parallel_consumers_fail_with_an_actionable_message()
+    {
+        var services = new ServiceCollection();
+        services.AddRelayer(builder => builder.Kafka("events", kafka => kafka.Consume("orders", consumer =>
+        {
+            consumer.Options.Group = "orders";
+            consumer.Concurrency(2);
+            consumer.Handler<KafkaReceiveHandler>();
+        })));
+        await using var provider = services.BuildServiceProvider();
+        await Assert.That(() => provider.GetServices<ITransport>().ToArray())
+            .Throws<NotSupportedException>().WithMessageContaining("Parallel partition scheduling");
     }
 }

@@ -25,11 +25,11 @@ Relayer is in early development. Track progress in [GitHub issues](https://githu
 - Manual settlement requests through `ISettlementFeature`, with exception precedence and durable capability fallbacks.
 - Declared topology with validate and provision modes, and JSON export.
 - The [in-memory transport](transports/in-memory.md), with native queue and partitioned log semantics.
-- The [Kafka producer](transports/kafka.md), with named registration, route-derived keys, native batches, application logging and creation-context preservation. Consumer execution, health adapters and full broker conformance remain planned.
+- The [Kafka adapter](transports/kafka.md), with named producers, serial consumer groups, native batches and checkpoints, durable dead-letter copies, application logging, receive telemetry and Testcontainers conformance. Parallel partition scheduling and health adapters remain planned.
 - The packaged [transport conformance suite](transports/conformance.md), passing in-memory queue and log modes, with capability skips and native fixture hooks for third-party adapters.
 - The [test harness and standalone handler context](guides/testing.md), with logical send and native dispatch observations, deterministic in-memory idle detection, reset and provider isolation.
 - The [performance regression gate](contributing/performance.md), covering end-to-end in-memory send/receive, concurrent delivery, allocation attribution and 100-handler composition. Raw broker comparisons remain planned with each adapter.
-- Core tracing primitives, single and batch delivery spans, native settlement wrappers, consume metrics and generated failure logs. Kafka send instrumentation is implemented; native receive adapters and outbox instrumentation remain planned.
+- Core tracing primitives, single and batch delivery spans, native settlement wrappers, consume metrics and generated failure logs. Kafka send, serial receive and batch-commit instrumentation are implemented; the other native receive adapters and outbox instrumentation remain planned.
 - The optional [health integration](guides/health-checks.md), with connectivity, consumer liveness and backlog checks. The outbox adapter accepts application-provided durable stores; native broker adapters remain planned.
 
 ## Phases

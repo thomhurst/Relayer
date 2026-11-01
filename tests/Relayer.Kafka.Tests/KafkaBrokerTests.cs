@@ -183,7 +183,9 @@ public class KafkaBrokerTests
     }
 }
 
+[Message("tests.kafka.order")]
 public sealed record Order(string Customer, int Number);
+[Message("tests.kafka.other")]
 public sealed record OtherOrder(int Number);
 [JsonSerializable(typeof(Order))]
 [JsonSerializable(typeof(OtherOrder))]

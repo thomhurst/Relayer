@@ -185,7 +185,7 @@ Every transport proves the SPI contract by passing the transport conformance sui
 
 ### 3.1 Configuration
 
-The core configuration surface is available now. Transport packages supply the three option types and wrap `AddTransport` in typed extensions. The [Kafka producer](../website/docs/transports/kafka.md) is implemented through `Kafka`; native consumer execution and the other broker adapters remain roadmap work. The following call site uses the real core API:
+The core configuration surface is available now. Transport packages supply the three option types and wrap `AddTransport` in typed extensions. The [Kafka adapter](../website/docs/transports/kafka.md) implements producers and serial consumer groups through `Kafka`; parallel partition scheduling and the other broker adapters remain roadmap work. The following call site uses the real core API:
 
 ```csharp
 var services = new ServiceCollection();

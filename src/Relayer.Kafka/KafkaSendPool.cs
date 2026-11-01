@@ -50,7 +50,7 @@ internal sealed class KafkaSendPool
 internal sealed class KafkaSendOperation
 {
     internal KafkaSendState[] States = [];
-    internal readonly List<(WireString? Key, (ReadOnlyMemory<byte> Body, Headers Headers) Value)> Messages = [];
+    internal readonly List<(WireString? Key, (ReadOnlyMemory<byte> Body, Headers Headers)? Value)> Messages = [];
     private int _count;
 
     internal void Ensure(int count)

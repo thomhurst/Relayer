@@ -9,10 +9,11 @@ namespace Relayer.Kafka;
 
 internal sealed class KafkaProducerTransport : ITransport, ITransportSendTracing
 {
-    private readonly IKafkaProducer<WireString?, (ReadOnlyMemory<byte> Body, Headers Headers)> _producer;
+    private readonly IKafkaProducer<WireString?, (ReadOnlyMemory<byte> Body, Headers Headers)?> _producer;
     private readonly FrozenDictionary<string, SendTracing?> _endpoints;
     private readonly KafkaSendPool _operations = new();
     private bool _disposed;
+    internal List<KafkaConsumer> Consumers { get; } = [];
     private static readonly TransportCapabilities Capabilities = new()
     {
         OrderedByKey = true,
@@ -20,7 +21,7 @@ internal sealed class KafkaProducerTransport : ITransport, ITransportSendTracing
         ConsumptionModel = ConsumptionModel.Log,
     };
 
-    internal KafkaProducerTransport(string name, IKafkaProducer<WireString?, (ReadOnlyMemory<byte> Body, Headers Headers)> producer,
+    internal KafkaProducerTransport(string name, IKafkaProducer<WireString?, (ReadOnlyMemory<byte> Body, Headers Headers)?> producer,
         IEnumerable<string> destinations, MessageTracing? tracing = null, ILoggerFactory? loggerFactory = null)
     {
         Name = name;
@@ -62,7 +63,11 @@ internal sealed class KafkaProducerTransport : ITransport, ITransportSendTracing
         try
         {
             operation.States[0].Prepare(message);
-            await _producer.ProduceAsync(message.Destination, operation.States[0].Key, (message.Body, operation.States[0].Headers), cancellationToken).ConfigureAwait(false);
+            var state = operation.States[0];
+            if (state.Tombstone)
+                await _producer.ProduceAsync(new() { Topic = message.Destination, Key = state.Key, Value = null, Headers = state.Headers }, cancellationToken).ConfigureAwait(false);
+            else
+                await _producer.ProduceAsync(message.Destination, state.Key, (message.Body, state.Headers), cancellationToken).ConfigureAwait(false);
         }
         finally { _operations.Return(operation); }
     }
@@ -119,14 +124,19 @@ internal sealed class KafkaProducerTransport : ITransport, ITransportSendTracing
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         await _producer.InitializeAsync(cancellationToken).ConfigureAwait(false);
+        foreach (var consumer in Consumers) await consumer.StartAsync(cancellationToken).ConfigureAwait(false);
     }
-    public async Task StopAsync(CancellationToken cancellationToken) =>
+    public async Task StopAsync(CancellationToken cancellationToken)
+    {
+        foreach (var consumer in Consumers) await consumer.StopAsync(cancellationToken).ConfigureAwait(false);
         await _producer.FlushAsync(cancellationToken).ConfigureAwait(false);
+    }
     public async ValueTask DisposeAsync()
     {
         if (_disposed) return;
         _disposed = true;
-        await _producer.DisposeAsync().ConfigureAwait(false);
+        try { foreach (var consumer in Consumers) await consumer.DisposeAsync().ConfigureAwait(false); }
+        finally { await _producer.DisposeAsync().ConfigureAwait(false); }
     }
 
 }
