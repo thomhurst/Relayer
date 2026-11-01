@@ -141,7 +141,11 @@ public sealed class InMemoryTransport : ITransport
             throw;
         }
         foreach (var task in tasks)
-            _ = task.ContinueWith(static (_, state) => ((CancellationTokenSource)state!).Cancel(), _stop,
+            _ = task.ContinueWith(static (_, state) =>
+            {
+                try { ((CancellationTokenSource)state!).Cancel(); }
+                catch (ObjectDisposedException) { /* A completed run may already have been restarted or disposed. */ }
+            }, _stop,
                 CancellationToken.None, TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
         Completion = ObserveCompletionAsync(Task.WhenAll(tasks));
         return Task.CompletedTask;

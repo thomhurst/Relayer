@@ -9,13 +9,15 @@ internal sealed class InMemoryEndpoint
     private readonly InMemoryMessage?[] _pool;
     private readonly Channel<InMemoryMessage>[] _partitions;
     private readonly Channel<InMemoryMessage>[] _scheduled;
-    private readonly PriorityQueue<InMemoryMessage, DateTimeOffset>[] _due;
+    private readonly PriorityQueue<InMemoryMessage, (DateTimeOffset Due, long Sequence)>[] _due;
+    private readonly long[] _nextScheduledSequence;
     private readonly Channel<byte> _sendSlots;
     private readonly Dictionary<string, Channel<InMemoryMessage>[]> _groups = new(StringComparer.Ordinal);
     private readonly List<InMemoryReceiver> _receivers = [];
     private readonly FanOut[] _fanOut;
     private readonly int _capacity;
     private readonly InMemoryMessage _wakeup = new(true);
+    private readonly InMemoryReadState? _queueReader;
     private int _nextPartition = -1;
     internal TimeProvider Clock { get; }
     internal TransportCapabilities Capabilities { get; }
@@ -40,27 +42,30 @@ internal sealed class InMemoryEndpoint
         _capacity = options.Capacity;
         _pool = new InMemoryMessage[options.MessagePoolCapacity];
         for (var i = 0; i < _pool.Length; i++) _pool[i] = new();
-        _partitions = CreatePartitions(options.Partitions);
+        var sharedQueue = Capabilities.ConsumptionModel == ConsumptionModel.Queue && !Capabilities.OrderedByKey;
+        _partitions = CreatePartitions(options.Partitions, sharedQueue);
+        if (sharedQueue) _queueReader = new(_partitions[0], _wakeup, shared: true);
         _fanOut = new FanOut[options.Partitions];
         for (var i = 0; i < _fanOut.Length; i++) _fanOut[i] = new(new(_partitions[i], _wakeup));
         _scheduled = CreatePartitions(options.Partitions);
-        _due = new PriorityQueue<InMemoryMessage, DateTimeOffset>[options.Partitions];
+        _due = new PriorityQueue<InMemoryMessage, (DateTimeOffset, long)>[options.Partitions];
+        _nextScheduledSequence = new long[options.Partitions];
         for (var i = 0; i < _due.Length; i++) _due[i] = new();
         var slots = checked(_capacity * options.Partitions);
         _sendSlots = Channel.CreateBounded<byte>(slots);
         for (var i = 0; i < slots; i++) _sendSlots.Writer.TryWrite(0);
     }
 
-    private Channel<InMemoryMessage> CreateChannel() => Channel.CreateBounded<InMemoryMessage>(new BoundedChannelOptions(_capacity)
+    private Channel<InMemoryMessage> CreateChannel(bool wakeSlot) => Channel.CreateBounded<InMemoryMessage>(new BoundedChannelOptions(checked(_capacity + (wakeSlot ? 1 : 0)))
     {
         FullMode = BoundedChannelFullMode.Wait,
         AllowSynchronousContinuations = false,
     });
 
-    private Channel<InMemoryMessage>[] CreatePartitions(int count)
+    private Channel<InMemoryMessage>[] CreatePartitions(int count, bool wakeSlot = false)
     {
         var result = new Channel<InMemoryMessage>[count];
-        for (var i = 0; i < count; i++) result[i] = CreateChannel();
+        for (var i = 0; i < count; i++) result[i] = CreateChannel(wakeSlot);
         return result;
     }
 
@@ -86,7 +91,7 @@ internal sealed class InMemoryEndpoint
             channels = _partitions;
         }
         for (var i = 0; i < concurrency; i++)
-            _receivers.Add(new(this, new(channels[ordered ? i : 0], _wakeup), receive, group, ordered ? i : 0));
+            _receivers.Add(new(this, _queueReader ?? new(channels[ordered ? i : 0], _wakeup), receive, group, ordered ? i : 0));
     }
 
     internal long GetCommittedPosition(string group, int partition)
@@ -157,6 +162,7 @@ internal sealed class InMemoryEndpoint
 
     internal void Start(List<Task> tasks, CancellationToken stop, CancellationToken abort)
     {
+        _queueReader?.Prepare();
         // A full partition must not suspend scheduled delivery to independent partitions.
         for (var i = 0; i < _partitions.Length; i++)
         {
@@ -185,10 +191,10 @@ internal sealed class InMemoryEndpoint
             {
                 // Admission credits bound all retained messages, including the heap and group queues.
                 while (scheduled.Reader.TryRead(out var incoming))
-                    due.Enqueue(incoming, incoming.DeliverAt!.Value);
+                    due.Enqueue(incoming, (incoming.DeliverAt!.Value, _nextScheduledSequence[partition]++));
                 if (due.TryPeek(out var message, out var at))
                 {
-                    var delay = at - Clock.GetUtcNow();
+                    var delay = at.Due - Clock.GetUtcNow();
                     if (delay <= TimeSpan.Zero)
                     {
                         await _partitions[partition].Writer.WriteAsync(message, stop).ConfigureAwait(false);
@@ -350,29 +356,41 @@ internal sealed class InMemoryReceiver(InMemoryEndpoint endpoint, InMemoryReadSt
 }
 
 // One cancellation registration per loop, rather than one allocating channel read per message.
-// Stop inserts a private wake-up only while a reader can be waiting. Queued data stays available for restart.
-internal sealed class InMemoryReadState(Channel<InMemoryMessage> channel, InMemoryMessage wakeup)
+// A shared queue relays one wake-up to all readers. Admission leaves one channel slot for this wake-up.
+internal sealed class InMemoryReadState(Channel<InMemoryMessage> channel, InMemoryMessage wakeup, bool shared = false)
 {
-    private int _waiting;
-    internal CancellationTokenRegistration RegisterStop(CancellationToken stop) =>
-        stop.UnsafeRegister(static state => ((InMemoryReadState)state!).Wake(), this);
+    private int _wakeWritten;
+
+    internal void Prepare()
+    {
+        // All previous loops have stopped. Remove the relayed wake-up before the next run.
+        // Admission counts the data being rotated, so concurrent sends cannot take its channel slot.
+        var count = channel.Reader.Count;
+        for (var i = 0; i < count && channel.Reader.TryRead(out var message); i++)
+            if (!message.IsWakeup && !channel.Writer.TryWrite(message))
+                throw new InvalidOperationException("In-memory queue admission capacity was exceeded.");
+        _wakeWritten = 0;
+    }
+
+    internal CancellationTokenRegistration RegisterStop(CancellationToken stop)
+    {
+        if (!shared) _wakeWritten = 0;
+        return stop.UnsafeRegister(static state => ((InMemoryReadState)state!).Wake(), this);
+    }
 
     private void Wake()
     {
-        if (Volatile.Read(ref _waiting) != 0) channel.Writer.TryWrite(wakeup);
+        // Never depend on an individual reader's state: another reader may consume its wake-up.
+        if (Interlocked.Exchange(ref _wakeWritten, 1) == 0) channel.Writer.TryWrite(wakeup);
     }
 
     [System.Runtime.CompilerServices.AsyncMethodBuilder(typeof(System.Runtime.CompilerServices.PoolingAsyncValueTaskMethodBuilder<>))]
     internal async ValueTask<InMemoryMessage?> ReadAsync(CancellationToken stop)
     {
-        // Full fence pairs with cancellation before Wake reads _waiting; both sides cannot miss each other.
-        Interlocked.Exchange(ref _waiting, 1);
-        try
-        {
-            stop.ThrowIfCancellationRequested();
-            var message = await channel.Reader.ReadAsync().ConfigureAwait(false);
-            return message.IsWakeup ? null : message;
-        }
-        finally { Volatile.Write(ref _waiting, 0); }
+        stop.ThrowIfCancellationRequested();
+        var message = await channel.Reader.ReadAsync().ConfigureAwait(false);
+        if (!message.IsWakeup) return message;
+        if (shared && stop.IsCancellationRequested) channel.Writer.TryWrite(wakeup);
+        return null;
     }
 }

@@ -477,6 +477,91 @@ public class InMemoryTransportTests
     }
 
     [Test]
+    public async Task Shared_queue_stop_wakes_every_outstanding_read()
+    {
+        var channel = Channel.CreateBounded<InMemoryMessage>(new BoundedChannelOptions(1) { AllowSynchronousContinuations = true });
+        var reader = new InMemoryReadState(channel, new(true), shared: true);
+        using var stop = new CancellationTokenSource();
+        using var registration = reader.RegisterStop(stop.Token);
+        var first = reader.ReadAsync(stop.Token);
+        var second = reader.ReadAsync(stop.Token);
+        stop.Cancel();
+        var bothCompleted = first.IsCompleted && second.IsCompleted;
+        // Release the old implementation's stranded reader before asserting.
+        channel.Writer.TryWrite(new(true));
+        await first;
+        await second;
+        await Assert.That(bothCompleted).IsTrue();
+    }
+
+    [Test]
+    public async Task Shared_queue_restart_removes_wakeup_without_losing_full_capacity_data()
+    {
+        var channel = Channel.CreateBounded<InMemoryMessage>(3);
+        var first = new InMemoryMessage();
+        var second = new InMemoryMessage();
+        var reader = new InMemoryReadState(channel, new(true), shared: true);
+        channel.Writer.TryWrite(first);
+        for (var iteration = 0; iteration < 4; iteration++)
+        {
+            reader.Prepare();
+            using var stop = new CancellationTokenSource();
+            using var registration = reader.RegisterStop(stop.Token);
+            stop.Cancel();
+            // A handler may return its pending delivery after stop inserted the wake-up.
+            await Assert.That(channel.Writer.TryWrite(second)).IsTrue();
+            reader.Prepare();
+            await Assert.That(await reader.ReadAsync(default)).IsSameReferenceAs(first);
+            await Assert.That(await reader.ReadAsync(default)).IsSameReferenceAs(second);
+            await Assert.That(channel.Reader.Count).IsEqualTo(0);
+            channel.Writer.TryWrite(first);
+        }
+    }
+
+    [Test]
+    public async Task Small_shared_queue_restarts_at_full_admission_capacity()
+    {
+        await using var transport = Transport(new() { Capacity = 1 });
+        var values = Channel.CreateUnbounded<int>();
+        transport.RegisterConsumer("orders", (delivery, _) => { values.Writer.TryWrite(Value(delivery)); return new(Disposition.Complete); }, concurrency: 32);
+        for (var iteration = 0; iteration < 32; iteration++)
+        {
+            await Send(transport, iteration).AsTask().WaitAsync(Limit);
+            await transport.StartAsync(default);
+            await Assert.That(await Next(values)).IsEqualTo(iteration);
+            await transport.StopAsync(default).WaitAsync(Limit);
+        }
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Scheduled_batch_preserves_equal_due_time_order_across_restart(bool log)
+    {
+        var clock = new InMemoryTestClock();
+        await using var transport = Transport(new()
+        {
+            Capabilities = new() { ConsumptionModel = log ? ConsumptionModel.Log : ConsumptionModel.Queue,
+                OrderedByKey = true, MaxBatchSize = 4, MaxDeliveryDelay = TimeSpan.FromHours(1) },
+        }, clock);
+        var values = Channel.CreateUnbounded<int>();
+        transport.RegisterConsumer("orders", (delivery, _) => { values.Writer.TryWrite(Value(delivery)); return new(Disposition.Complete); }, log ? "workers" : null);
+        var at = clock.GetUtcNow().AddMinutes(1);
+        var messages = Enumerable.Range(1, 3).Select(value => new OutgoingMessage("orders", BitConverter.GetBytes(value),
+            orderingKey: new WireString("key"), deliverAt: at)).ToArray();
+        await transport.SendBatchAsync(messages, default);
+        await transport.StartAsync(default);
+        await clock.NextTimer(); // All three messages are now in the due heap.
+        await transport.StopAsync(default);
+        await Send(transport, 4, "key", at);
+        await transport.StartAsync(default);
+        await clock.NextTimer();
+        clock.Advance(TimeSpan.FromMinutes(1));
+        for (var value = 1; value <= 4; value++) await Assert.That(await Next(values)).IsEqualTo(value);
+        await transport.StopAsync(default);
+    }
+
+    [Test]
     public async Task Start_with_suppressed_execution_context_preserves_suppression_and_isolates_consumers()
     {
         await using var transport = Transport();
