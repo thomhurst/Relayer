@@ -87,8 +87,12 @@ A completion failure after a successful send logs a distinct error and leaves cl
 without changing attempts or `last_error`. If completion deletes fewer rows than were sent, a warning
 reports both counts and the duplicate-delivery risk. Increase `ClaimDuration` if native send or database
 latency exceeds the lease. Neither failure rolls back business data that already committed.
-The worker logs failures and continues with subsequent commits; it does not retry the failed commit
-in a busy loop.
+If a transport is unregistered, capability lookup throws, or the endpoint reports a nonpositive
+`MaxBatchSize`, the worker logs the error and skips that transport/destination group without claiming
+its rows or consuming send attempts. Other groups in the same commit still dispatch. The skipped rows
+need recovery dispatch after the configuration or destination is corrected.
+The worker logs failures and continues with other groups and subsequent commits; it does not retry
+the failed group in a busy loop.
 
 `QueueCapacity` bounds queued commit notifications, not transaction size. If the queue is full or the
 worker is stopped, an error states how many committed rows remain pending. Shutdown completes the

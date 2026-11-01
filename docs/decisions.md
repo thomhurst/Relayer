@@ -542,6 +542,7 @@ idempotency. Caller-owned connections remain open, while opened data-source conn
 disposing the data source. Database outbox durability does not imply native broker transaction enlistment or
 implement dispatch. Direct native lifecycle calls and SQL transaction-control commands bypass the wrapper
 and are outside this contract.
+
 ## D33. Commit-triggered dispatch transfers owned buffers to a named worker
 
 **Context.** Direct dispatch must start without a polling interval and must outlive the committing

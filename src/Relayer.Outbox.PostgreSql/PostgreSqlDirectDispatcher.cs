@@ -104,10 +104,12 @@ internal sealed class PostgreSqlDirectDispatcher : BackgroundService
         while (offset < batch.Count)
         {
             var first = batch.Rows[offset];
-            _transports.TryGetValue(first.Transport, out var transport);
-            var limit = 1;
-            if (transport is not null)
+            ITransport transport;
+            int limit;
+            try
             {
+                if (!_transports.TryGetValue(first.Transport, out transport!))
+                    throw new InvalidOperationException($"Outbox row references unregistered transport '{first.Transport}'. Register its named ITransport.");
                 var key = (first.Transport, first.Destination);
                 if (!_capabilities.TryGetValue(key, out var capabilities))
                 {
@@ -117,6 +119,16 @@ internal sealed class PostgreSqlDirectDispatcher : BackgroundService
                     _capabilities.Add(key, capabilities);
                 }
                 limit = Math.Min(_options.BatchSize, capabilities.MaxBatchSize);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
+            catch (Exception error)
+            {
+                DirectDispatchLog.Failed(_logger, error);
+                // Skip this destination without claiming its rows or abandoning unrelated groups.
+                do { offset++; }
+                while (offset < batch.Count && batch.Rows[offset].Transport == first.Transport &&
+                    batch.Rows[offset].Destination == first.Destination);
+                continue;
             }
             var count = 0;
             try
@@ -142,8 +154,6 @@ internal sealed class PostgreSqlDirectDispatcher : BackgroundService
                 }
                 try
                 {
-                    if (transport is null)
-                        throw new InvalidOperationException($"Outbox row references unregistered transport '{first.Transport}'. Register its named ITransport.");
                     if (live == 1) await transport.SendAsync(_messages[0], cancellationToken).ConfigureAwait(false);
                     else await transport.SendBatchAsync(_messages.AsMemory(0, live), cancellationToken).ConfigureAwait(false);
                 }

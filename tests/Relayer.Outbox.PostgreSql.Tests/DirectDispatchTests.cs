@@ -234,6 +234,46 @@ public class DirectDispatchTests
     }
 
     [Test]
+    [Arguments("throw")]
+    [Arguments("zero")]
+    [Arguments("negative")]
+    [Arguments("missing")]
+    public async Task Invalid_group_does_not_claim_rows_or_prevent_other_groups_in_same_commit(string failure)
+    {
+        await using var database = new Database();
+        await database.Start();
+        var transport = new Transport { CapabilityFailure = failure };
+        var log = new CaptureLogger();
+        await using var provider = database.Services(transport, new() { BatchSize = 2 }, logger: log);
+        var worker = provider.GetRequiredKeyedService<PostgreSqlDirectDispatcher>("store");
+        await worker.StartAsync(default);
+        try
+        {
+            await using (var scope = provider.CreateAsyncScope())
+            {
+                var db = scope.ServiceProvider.GetRequiredService<TestContext>();
+                using var selection = db.EnlistRelayerOutbox();
+                var outbox = scope.ServiceProvider.GetRequiredService<IOutboxEnlistment>();
+                // Sort the failed group first and make it larger than the native/worker batch limit.
+                var transportName = failure == "missing" ? "absent" : "events";
+                await outbox.EnlistAsync(Record(1, "alpha", transport: transportName), default);
+                await outbox.EnlistAsync(Record(2, "alpha", transport: transportName), default);
+                await outbox.EnlistAsync(Record(3, "alpha", transport: transportName), default);
+                await outbox.EnlistAsync(Record(4, "beta"), default);
+                await outbox.EnlistAsync(Record(5, "zeta"), default);
+                await db.SaveChangesAsync();
+            }
+            await Stop(worker);
+            await Assert.That(transport.Received.Select(sent => sent.Body[0])).IsEquivalentTo(new byte[] { 4, 5 });
+            await Assert.That(await database.Count()).IsEqualTo(3L);
+            await Assert.That(await database.Scalar($"SELECT count(*) FROM {Database.Table} WHERE attempts = 0 AND last_error IS NULL AND claim_token IS NULL")).IsEqualTo(3L);
+            await Assert.That(await database.Scalar("SELECT count(*) FROM update_log")).IsEqualTo(2L);
+            await Assert.That(log.Messages.Count(message => message.Contains("Direct outbox dispatch failed", StringComparison.Ordinal))).IsEqualTo(1);
+        }
+        finally { await Stop(worker); }
+    }
+
+    [Test]
     public async Task Ordered_and_future_rows_remain_durable_while_due_unordered_rows_dispatch()
     {
         await using var database = new Database();
@@ -500,8 +540,9 @@ public class DirectDispatchTests
     }
 
     private static OutboxRecord Record(byte value, string destination = "destination", WireString? orderingKey = null,
-        DateTimeOffset? deliverAt = null, KeyValuePair<string, WireString>[]? headers = null, byte[]? body = null) =>
-        new(Guid.CreateVersion7(), "events", "dispatch.probe;v=1",
+        DateTimeOffset? deliverAt = null, KeyValuePair<string, WireString>[]? headers = null, byte[]? body = null,
+        string transport = "events") =>
+        new(Guid.CreateVersion7(), transport, "dispatch.probe;v=1",
             new(destination, body ?? [value], headers ?? [], orderingKey, deliverAt), DateTimeOffset.UtcNow);
 
     private static async Task Stop(PostgreSqlDirectDispatcher worker)
@@ -600,6 +641,7 @@ public class DirectDispatchTests
     private sealed class Transport : ITransport
     {
         internal bool Block { get; init; }
+        internal string? CapabilityFailure { get; init; }
         internal int FailFirst;
         internal int PartialFirst;
         internal TaskCompletionSource Entered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -607,7 +649,16 @@ public class DirectDispatchTests
         internal ConcurrentQueue<Sent> Received { get; } = new();
         internal ConcurrentQueue<NativeCall> Calls { get; } = new();
         public string Name => "events";
-        public TransportCapabilities GetCapabilities(string endpoint) => new() { OrderedByKey = true, MaxBatchSize = endpoint == "single" ? 1 : 2 };
+        public TransportCapabilities GetCapabilities(string endpoint)
+        {
+            if (endpoint == "alpha")
+            {
+                if (CapabilityFailure == "throw") throw new InvalidOperationException("invalid destination");
+                if (CapabilityFailure is "zero" or "negative")
+                    return new() { MaxBatchSize = CapabilityFailure == "zero" ? 0 : -1 };
+            }
+            return new() { OrderedByKey = true, MaxBatchSize = endpoint == "single" ? 1 : 2 };
+        }
 
         public async ValueTask SendAsync(OutgoingMessage message, CancellationToken cancellationToken)
         {

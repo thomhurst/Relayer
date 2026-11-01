@@ -21,6 +21,7 @@ internal sealed class OutboxDispatchBatch
         }
     }
 
+    // Take excludes ordered lanes, so unstable sorting cannot change an ordering guarantee.
     internal void Sort() => CollectionsMarshal.AsSpan(Rows)[..Count].Sort(Comparison);
 
     internal void Clear()
