@@ -318,6 +318,8 @@ public class SenderTests
         await Assert.That(transport.ObservedToken.IsCancellationRequested).IsFalse();
     }
 
+    // Runtime timer queues share locks across tests and allocate wait state on first contention.
+    [NotInParallel]
     [Test]
     [Arguments(false)]
     [Arguments(true)]
@@ -337,6 +339,8 @@ public class SenderTests
         await Assert.That(allocated).IsEqualTo(0L);
     }
 
+    // Runtime timer queues share locks across tests and allocate wait state on first contention.
+    [NotInParallel]
     [Test]
     public async Task Overlapping_asynchronous_sends_retain_the_peak_pool_and_allocate_zero_bytes_after_warmup()
     {
