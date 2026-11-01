@@ -40,6 +40,8 @@ services.AddDbContext<OrdersDbContext>((provider, options) =>
 Direct-dispatch registration also registers the named scoped `IOutboxStore`; do not register that store
 again. The host starts and stops the worker. Resolving services without starting their hosted services
 does not dispatch messages. Dispose the data source only after the host has stopped.
+If you use `NpgsqlSlimDataSourceBuilder`, call `EnableArrays()` before `Build()`; fenced batch deletion
+uses native UUID array parameters. The regular `NpgsqlDataSource` builder enables these mappings by default.
 
 Set `DispatchStoreName` on each participating context. Names are case-sensitive. A missing dispatcher
 or mismatched schema/prefix fails when the DbContext options are built. Omitting the name keeps
