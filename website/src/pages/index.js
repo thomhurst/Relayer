@@ -273,6 +273,7 @@ function CallSite() {
 const status = [
   ['Configuration, routes and startup validation', 'Implemented', true],
   ['Source-generated handlers, messages and JSON', 'Implemented', true],
+  ['Native AOT handler round trips and trace propagation in CI', 'Implemented', true],
   ['Batch dispatch and receive executor composition', 'Implemented core seam', true],
   ['Send pipeline and middleware', 'Implemented', true],
   ['Consume pipeline and receive SPI', 'Implemented', true],

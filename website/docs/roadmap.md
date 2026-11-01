@@ -9,6 +9,7 @@ Relayer is in early development. Track progress in [GitHub issues](https://githu
 
 - Configuration, named transports, routes and consumers, with startup validation of declarations, options and endpoint capabilities.
 - Source-generated message registration, handler registration and dispatch, and System.Text.Json serialization.
+- Required CI publishes and runs the Native AOT smoke app with reflection-disabled JSON, generated in-memory handler round trips, messaging spans and creation-context propagation assertions. Trimming and AOT warnings fail the build.
 - Compile-time analyzers and a code fix ([diagnostics](reference/diagnostics.md)).
 - The scoped send pipeline, send middleware and outbox enlistment hooks.
 - Provider-owned tracing and direct single/batch send tracing, integrated with the in-memory adapter's delivery and native settlement spans. Outbox tracing remains planned.

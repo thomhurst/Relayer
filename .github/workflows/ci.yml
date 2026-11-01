@@ -104,7 +104,7 @@ jobs:
         if: steps.solution.outputs.present == 'true'
         run: dotnet test --no-build -c Release
 
-      - name: Native AOT serialization smoke test
+      - name: Native AOT smoke test
         if: steps.solution.outputs.present == 'true'
         run: |
           dotnet publish tests/Relayer.AotSmoke -c Release -r linux-x64 -o .artifacts/aot-smoke
