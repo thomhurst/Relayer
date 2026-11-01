@@ -14,6 +14,16 @@ public delegate ValueTask ConsumeFailureDelegate(MessageContext context, Excepti
 /// <summary>A consumer's composed middleware and generated dispatch, shared across concurrent deliveries.</summary>
 public sealed class ConsumePipeline
 {
+    internal BatchExecution? BatchExecution { get; init; }
+
+    /// <summary>Whether this consumer dispatches a generated batch handler.</summary>
+    public bool IsBatch => BatchExecution is not null;
+
+    /// <summary>Processes one batch, with one scope per batch attempt and only failed items retried.</summary>
+    /// <remarks>No native settlement is performed. Keep context memory unchanged until completion. Only use settlement decisions after the entire call succeeds.</remarks>
+    public ValueTask ProcessBatchAsync(ReadOnlyMemory<DefaultMessageContext> contexts, CancellationToken cancellationToken = default)
+        => (BatchExecution ?? throw new InvalidOperationException("Build a batch consumer before using batch dispatch."))
+            .ProcessAsync(this, contexts, cancellationToken);
     private readonly IServiceScopeFactory _scopes;
     private readonly FrozenDictionary<MessageType, ConsumeDelegate> _dispatch;
     private readonly ConsumeFailureDelegate _failure;
@@ -25,6 +35,7 @@ public sealed class ConsumePipeline
     private readonly EndpointTelemetry? _telemetry;
     private readonly ConsumeDelegate? _settlement;
     internal HeaderNames EnvelopeNames { get; } = new();
+    private int _batchCursor;
 
     internal ConsumePipeline(IServiceScopeFactory scopes, FrozenDictionary<MessageType, ConsumeDelegate> dispatch,
         IReadOnlyList<IConsumeMiddleware> middleware, ConsumeFailureDelegate failure, IFailureClassifier classifier,
@@ -47,7 +58,7 @@ public sealed class ConsumePipeline
         }
         for (var i = 0; i < capacity; i++)
         {
-            _contexts[i] = new DefaultMessageContext(this);
+            _contexts[i] = new DefaultMessageContext(this, i);
         }
         _pipeline = InvokeHandlerAsync;
         for (var i = middleware.Count - 1; i >= 0; i--)
@@ -70,6 +81,19 @@ public sealed class ConsumePipeline
 
     private DefaultMessageContext RentContext()
     {
+        if (IsBatch)
+        {
+            var start = Volatile.Read(ref _batchCursor);
+            for (var offset = 0; offset < _contexts.Length; offset++)
+            {
+                var index = start + offset;
+                if (index >= _contexts.Length) index -= _contexts.Length;
+                if (Interlocked.Exchange(ref _contexts[index], null) is not { } context) continue;
+                Volatile.Write(ref _batchCursor, index + 1 == _contexts.Length ? 0 : index + 1);
+                return context;
+            }
+            return new DefaultMessageContext(this);
+        }
         for (var i = 0; i < _contexts.Length; i++)
         {
             if (Interlocked.Exchange(ref _contexts[i], null) is { } context)
@@ -119,6 +143,7 @@ public sealed class ConsumePipeline
     /// <remarks>Cancellation propagates. Failure-pipeline and scope-disposal errors propagate, preventing successful settlement.</remarks>
     public ValueTask ProcessAsync(DefaultMessageContext context)
     {
+        if (IsBatch) throw new InvalidOperationException("Use ProcessBatchAsync for a batch consumer.");
         ArgumentNullException.ThrowIfNull(context);
         context.BeginProcessing(this);
         return _failures is null ? ProcessCoreAsync(context) : ProcessWithFailuresAsync(context);
@@ -307,6 +332,12 @@ public sealed class ConsumePipeline
 
     internal void Return(DefaultMessageContext context)
     {
+        if (IsBatch)
+        {
+            // Batch rentals retain their original slot, avoiding a scan for each item in a full batch.
+            if (context.PoolSlot >= 0) Interlocked.CompareExchange(ref _contexts[context.PoolSlot], context, null);
+            return;
+        }
         for (var i = 0; i < _contexts.Length; i++)
         {
             if (Interlocked.CompareExchange(ref _contexts[i], context, null) is null) return;

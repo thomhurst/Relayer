@@ -19,6 +19,34 @@ public sealed class ConsumePipelineBuilder
     private EndpointTelemetry? _telemetry;
     private ConsumeDelegate? _settlement;
 
+    /// <summary>Builds a homogeneous batch consumer using its existing size, wait and concurrency declaration.</summary>
+    /// <remarks>Batch handlers coordinate their own per-message work. Single-message middleware, telemetry, and settlement callbacks cannot be combined with batch composition.</remarks>
+    public ConsumePipeline BuildBatch(HandlerDescriptor descriptor, IConsumerDefinition consumer,
+        System.Diagnostics.ActivitySource? activitySource = null)
+    {
+        EnsureMutable();
+        ArgumentNullException.ThrowIfNull(descriptor);
+        ArgumentNullException.ThrowIfNull(consumer);
+        if (_telemetry is not null || _settlement is not null)
+            throw new InvalidOperationException("Batch consumers do not support single-message telemetry or settlement callbacks. Record telemetry and settle native deliveries around ProcessBatchAsync.");
+        if (_dispatch.Count != 0 || _middleware.Count != 0)
+            throw new InvalidOperationException("Compose batch handlers separately from single-message handlers and middleware.");
+        if (!_messages.IsFrozen || !_messages.TryGetMessageType(descriptor.MessageType, out var identity))
+            throw new InvalidOperationException("Register and freeze the batch message's stable wire identity before composition.");
+        ArgumentOutOfRangeException.ThrowIfLessThan(consumer.BatchSize, 1);
+        ArgumentOutOfRangeException.ThrowIfLessThan(consumer.Concurrency, 1);
+        if (consumer.BatchWait <= TimeSpan.Zero) throw new ArgumentOutOfRangeException(nameof(consumer));
+        var batch = descriptor.CreateBatchDispatcher(_serializer, consumer.BatchSize, consumer.Concurrency);
+        using (var scope = _scopes.CreateScope()) scope.ServiceProvider.GetService<SenderPool>()?.Enable();
+        _built = true;
+        var identities = new Dictionary<MessageType, ConsumeDelegate> { [identity] = static _ => throw new InvalidOperationException("Use ProcessBatchAsync for a batch handler.") };
+        return new ConsumePipeline(_scopes, identities.ToFrozenDictionary(), [], _failure, _classifier,
+            checked(consumer.BatchSize * consumer.Concurrency), _failures, null, null)
+        {
+            BatchExecution = new BatchExecution(_scopes, batch, identity, consumer, _failure, _classifier, _failures, activitySource)
+        };
+    }
+
     /// <summary>Creates a consumer composer with an explicit failure pipeline.</summary>
     /// <remarks>The failure delegate must finish durable failure handling before returning successfully.</remarks>
     public ConsumePipelineBuilder(IServiceScopeFactory scopes, MessageTypeRegistry messages,

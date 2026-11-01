@@ -12,6 +12,7 @@ Relayer is in early development. Track progress in [GitHub issues](https://githu
 - Compile-time analyzers and a code fix ([diagnostics](reference/diagnostics.md)).
 - The scoped send pipeline, send middleware and outbox enlistment hooks.
 - The consume pipeline and the native receive SPI.
+- Generated batch handler execution, durable partial-failure decisions, and validated native/client-side receive executors for transport authors.
 - Typed failure classification, in-process retries, delayed redelivery and dead-letter copies with error history.
 - Declared topology with validate and provision modes, and JSON export.
 - The [in-memory transport](transports/in-memory.md), with native queue and partitioned log semantics.

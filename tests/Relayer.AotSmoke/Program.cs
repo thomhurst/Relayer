@@ -41,6 +41,7 @@ await using var provider = services.AddRelayer(builder =>
         broker.Send<Order>("orders", route => route.OrderingKey(static order => order.Id));
         broker.Send<Count>("counts");
         broker.Consume("orders", consumer => consumer.Handler<OrderHandler>().Handler<CountHandler>());
+        broker.Consume("counts", consumer => consumer.Handler<CountHandler>().Batch(2, TimeSpan.FromMilliseconds(100)));
     });
     builder.UseSendMiddleware<SmokeMiddleware>();
 }).BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
@@ -161,6 +162,34 @@ var healthy = await failingReceive.ProcessAsync(new(new ReadOnlySequence<byte>(b
 if (healthy.Kind != DispositionKind.Complete || transport.CapabilityLookups != 2)
     throw new InvalidOperationException("Failure handling stalled the consumer or rediscovered capabilities.");
 Console.WriteLine("Executable failure handling and generated error metadata passed under Native AOT.");
+var batchDefinition = provider.GetRequiredService<RelayerConfiguration>().Transports[0].Consumers[1];
+Activity? batchActivity = null;
+using var batchListener = new ActivityListener
+{
+    ShouldListenTo = source => ReferenceEquals(source, tracing.Source),
+    Sample = static (ref ActivityCreationOptions<ActivityContext> _) => ActivitySamplingResult.AllDataAndRecorded,
+    ActivityStopped = activity => batchActivity = activity,
+};
+ActivitySource.AddActivityListener(batchListener);
+var batchConsumer = new ConsumePipelineBuilder(provider.GetRequiredService<IServiceScopeFactory>(),
+    provider.GetRequiredService<MessageTypeRegistry>(), serializer, static (_, error, _) => ValueTask.FromException(error))
+    .BuildBatch(handlers.GetBatchHandler<Count, CountHandler>(), batchDefinition, tracing.Source);
+var countBuffer = new ArrayBufferWriter<byte>();
+serializer.Serialize(new Count(7), countBuffer);
+var countMessage = new ConsumeMessage { MessageId = "batch-count", MessageType = new("smoke.count", 1), Body = new(countBuffer.WrittenMemory),
+    Headers = new SmokeBatchHeaders() };
+var batchReceiver = new BatchReceiveExecutor<ConsumeMessage>(provider, "smoke", batchDefinition, "aot-batch",
+    singleReceive: (destination, _, _) => { destination.Span[0] = countMessage; return new(1); });
+var receivedBatch = new ConsumeMessage[2];
+if (await batchReceiver.ReceiveAsync(receivedBatch) != 2 || batchReceiver.UsesNativeBatching)
+    throw new InvalidOperationException("Client-side batch execution failed under Native AOT.");
+using (var firstCount = batchConsumer.RentContext(receivedBatch[0]))
+using (var secondCount = batchConsumer.RentContext(receivedBatch[1]))
+    await batchConsumer.ProcessBatchAsync(new[] { firstCount, secondCount });
+if (batchActivity is null || batchActivity.Links.Count() != 2 ||
+    batchActivity.Links.Any(link => !link.Context.IsRemote || link.Context.TraceId.ToString() != "0123456789abcdef0123456789abcdef"))
+    throw new InvalidOperationException("UTF-8 batch creation links failed under Native AOT.");
+Console.WriteLine("Generated batch composition and client-side executor passed under Native AOT.");
 var sender = scope.ServiceProvider.GetRequiredService<ISender>();
 await sender.SendAsync(message, options => options.ConfigureNative<SmokeNative>(static native => native.Value = 7));
 if (transport.Destination != "orders" || transport.OrderingKey != "42" || transport.NativeValue != 7)
@@ -222,6 +251,15 @@ internal readonly record struct SmokeIncoming(ReadOnlySequence<byte> Body);
 internal readonly struct SmokeTraceHeaderReader : IMessageHeaderReader<Dictionary<string, WireString>>
 {
     public static bool TryGetHeader(Dictionary<string, WireString> message, string name, out WireString value) => message.TryGetValue(name, out value);
+}
+internal sealed class SmokeBatchHeaders : MessageHeaders
+{
+    private readonly WireString _parent = new("00-0123456789abcdef0123456789abcdef-0123456789abcdef-01"u8.ToArray());
+    public override bool TryGetValue(string name, out WireString value)
+    {
+        value = name == "traceparent" ? _parent : default;
+        return !value.IsEmpty;
+    }
 }
 internal readonly struct SmokeBinding : IMessageBinding<SmokeIncoming>
 {

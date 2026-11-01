@@ -38,6 +38,7 @@ To change a decision, add a new entry that supersedes it rather than editing his
 | [D25](#d25-telemetry-follows-the-opentelemetry-messaging-span-model) | Telemetry follows the OpenTelemetry messaging span model | Accepted |
 | [D26](#d26-generate-default-json-metadata-with-the-official-systemtextjson-generator) | Generate default JSON metadata with the official System.Text.Json generator | Accepted |
 | [D27](#d27-configuration-declarations-are-independent-of-pipeline-execution) | Configuration declarations are independent of pipeline execution | Accepted |
+| [D28](#d28-a-batch-attempt-owns-one-scope-and-one-direct-send-buffer) | A batch attempt owns one scope and one direct-send buffer | Accepted |
 
 ---
 
@@ -408,3 +409,34 @@ Refines [D8](#d8-systemtextjson-source-generation-by-default).
 - Configuration can ship independently, and the receive and send pipelines consume its immutable declaration lists during composition.
 - Native option objects retain their own mutability semantics. Reload updates named options, not routing or topology, and cannot silently restart a native client.
 - The current core example uses the generic transport-author seam; native registration extensions arrive with their adapters.
+
+## D28. A batch attempt owns one scope and one direct-send buffer
+
+**Context.** Batch handlers can report per-message failures, but a scoped `ISender`
+belongs to the whole handler invocation. A direct send cannot be attributed to a
+successful or failed batch item without a second, implicit message context.
+
+**Decision.**
+- Compose a homogeneous generated batch handler with the consumer's existing size,
+  wait, and concurrency declaration. Each batch attempt uses one fresh async DI scope.
+- Retry only failed items unless unattributed buffered sends fail the whole attempt.
+  Dispose the attempt's scope before final failure work,
+  direct-send flush, or publication of settlement decisions.
+- Buffer direct sends for the attempt. Flush only a wholly successful attempt;
+  discard a wholly failed attempt's buffer. If partial success has buffered direct
+  sends, discard the buffer and route every item through the normal failure policy.
+  This bounds poison-message attempts through configured retry, redelivery and
+  dead-letter handling. Do not guess which item produced a send or settle an item
+  successfully after discarding its sends.
+- Handlers that need partial success with outgoing messages use explicit durable
+  per-message outbox transactions. At-least-once native redelivery still applies
+  if later failure work or scope disposal fails.
+- Native batch receive and core accumulation are explicit executors selected before
+  receives start. Declaring a capability or batch size never supplies an executor.
+
+**Consequences.** Successful deliveries never settle before scope disposal and all
+required durable work. Partial failure with buffered sends can retry or dead-letter
+otherwise successful items; use per-message outbox transactions for independent
+outcomes with outgoing messages. A failed batch call can repeat already durable work on native
+redelivery, as expected for at-least-once delivery. The core does not invent native
+settlement or per-message ambient sender semantics.

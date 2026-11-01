@@ -3,6 +3,7 @@ namespace Relayer;
 /// <summary>A batch of messages delivered to an <see cref="IBatchHandler{TMessage}"/>.</summary>
 /// <typeparam name="TMessage">The message type.</typeparam>
 /// <param name="Items">The messages and their contexts, in delivery order.</param>
+/// <remarks>The batch, its items and contexts are borrowed only for the handler call. Do not retain them after returning.</remarks>
 public sealed record Batch<TMessage>(IReadOnlyList<BatchItem<TMessage>> Items)
 {
     /// <summary>The number of messages in the batch.</summary>
@@ -23,7 +24,8 @@ public sealed class BatchResult
     /// <summary>Every message succeeded.</summary>
     public static BatchResult Success { get; } = new(new Dictionary<int, Exception>());
 
-    /// <summary>Failures keyed by index within the batch. Only these messages enter the failure pipeline.</summary>
+    /// <summary>Failures keyed by index within the batch. These messages enter the failure pipeline.</summary>
+    /// <remarks>A partial failure with buffered direct sends fails the whole attempt because sends cannot be attributed to individual items.</remarks>
     public IReadOnlyDictionary<int, Exception> Failures { get; }
 
     /// <summary>Reports that the messages at the given indexes failed.</summary>

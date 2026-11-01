@@ -8,6 +8,7 @@ internal sealed class AttemptSendBuffer
 {
     private readonly Segment _entries = new();
     private int _count;
+    internal bool IsEmpty => _count == 0;
 
     internal void Add(ITransport transport, OutgoingMessage message, TimeSpan timeout)
     {
