@@ -303,6 +303,8 @@ public class CapabilityValidationTests
     {
         try
         {
+            foreach (var service in provider.GetServices<IHostedService>().OfType<IHostedLifecycleService>())
+                await service.StartingAsync(CancellationToken.None);
             foreach (var service in provider.GetServices<IHostedService>())
                 await service.StartAsync(CancellationToken.None);
             return null;

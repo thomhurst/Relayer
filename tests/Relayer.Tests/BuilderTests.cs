@@ -111,7 +111,7 @@ public class BuilderTests
             b.Consume("orders", _ => { });
         }));
         await using var provider = services.BuildServiceProvider();
-        await Assert.That(provider.GetServices<IHostedService>().First()).IsTypeOf<RelayerConfigurationValidator>();
+        await Assert.That(provider.GetServices<IHostedService>().First()).IsTypeOf<TopologyStartupService>();
         await Assert.That(async () => await Start(provider)).Throws<OptionsValidationException>();
         await Assert.That(provider.GetServices<IHostedService>().OfType<TransportService>().Single().Started).IsFalse();
     }
@@ -210,6 +210,8 @@ public class BuilderTests
 
     private static async Task Start(IServiceProvider provider)
     {
+        foreach (var service in provider.GetServices<IHostedService>().OfType<IHostedLifecycleService>())
+            await service.StartingAsync(CancellationToken.None);
         foreach (var service in provider.GetServices<IHostedService>())
             await service.StartAsync(CancellationToken.None);
     }

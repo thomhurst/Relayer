@@ -5,11 +5,13 @@ using Relayer.Transports;
 
 namespace Relayer;
 
-internal sealed class TopologyStartupService(RelayerConfiguration configuration, IServiceProvider services) : IHostedService
+internal sealed class TopologyStartupService(RelayerConfiguration configuration, IServiceProvider services,
+    RelayerConfigurationValidator validator) : IHostedLifecycleService
 {
-    public async Task StartAsync(CancellationToken cancellationToken)
+    public async Task StartingAsync(CancellationToken cancellationToken)
     {
-        // Configuration validation runs first and rejects duplicate or missing runtime adapters.
+        // Keep validation and topology in one phase so concurrent startup cannot bypass either failure.
+        validator.Validate();
         var adapters = services.GetServices<ITransport>().ToDictionary(transport => transport.Name, StringComparer.Ordinal);
         var failures = new List<string>();
         foreach (var declaration in configuration.Transports)
@@ -34,5 +36,9 @@ internal sealed class TopologyStartupService(RelayerConfiguration configuration,
             throw new OptionsValidationException(Options.DefaultName, typeof(RelayerConfiguration), failures);
     }
 
+    public Task StartAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+    public Task StartedAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+    public Task StoppingAsync(CancellationToken cancellationToken) => Task.CompletedTask;
     public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+    public Task StoppedAsync(CancellationToken cancellationToken) => Task.CompletedTask;
 }

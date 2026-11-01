@@ -2,6 +2,7 @@ using System.Text;
 using System.Text.Json;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Relayer.Transports;
 
@@ -9,6 +10,49 @@ namespace Relayer.Tests;
 
 public class TopologyTests
 {
+    [Test]
+    [Arguments(TopologyMode.Provision)]
+    [Arguments(TopologyMode.Validate)]
+    public async Task Concurrent_host_startup_waits_for_topology_before_starting_receivers(TopologyMode mode)
+    {
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var adapter = new InMemoryTransport("events") { TopologyEntered = entered, TopologyRelease = release.Task };
+        var receiver = new Receiver();
+        using var host = CreateConcurrentHost(adapter, receiver, mode);
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        var startup = host.StartAsync(timeout.Token);
+        try
+        {
+            await entered.Task.WaitAsync(timeout.Token);
+            await Assert.That(receiver.Started).IsFalse();
+            await Assert.That(startup.IsCompleted).IsFalse();
+        }
+        finally
+        {
+            release.TrySetResult();
+            // Observe startup and stop the host even when a regression assertion fails.
+            if (mode == TopologyMode.Validate)
+                await Assert.That(async () => await startup).Throws<OptionsValidationException>();
+            else
+                await startup;
+            await host.StopAsync(timeout.Token);
+        }
+        await Assert.That(receiver.Started).IsEqualTo(mode == TopologyMode.Provision);
+        await Assert.That(adapter.Entities.Contains("orders")).IsEqualTo(mode == TopologyMode.Provision);
+    }
+
+    [Test]
+    public async Task Concurrent_host_startup_rejects_invalid_configuration_before_topology_and_receivers()
+    {
+        var adapter = new InMemoryTransport("events");
+        var receiver = new Receiver();
+        using var host = CreateConcurrentHost(adapter, receiver, (TopologyMode)99);
+        await Assert.That(async () => await host.StartAsync()).Throws<OptionsValidationException>();
+        await Assert.That(adapter.Calls.Count).IsEqualTo(0);
+        await Assert.That(receiver.Started).IsFalse();
+    }
+
     [Test]
     public async Task Default_validate_reports_missing_entities_without_provisioning()
     {
@@ -169,6 +213,25 @@ public class TopologyTests
         await Assert.That(inbound.Entities.Contains("inbound-only")).IsTrue();
     }
 
+    private static IHost CreateConcurrentHost(InMemoryTransport adapter, Receiver receiver, TopologyMode mode)
+    {
+        var builder = Host.CreateApplicationBuilder();
+        builder.Logging.ClearProviders();
+        builder.Services.Configure<HostOptions>(options => options.ServicesStartConcurrently = true);
+        builder.Services.AddSingleton<IHostedService>(receiver);
+        builder.Services.AddSingleton<ITransport>(adapter);
+        builder.Services.AddRelayer(relayer =>
+        {
+            relayer.AddMessageTypesFromThisAssembly();
+            relayer.TopologyMode = mode;
+            relayer.AddTransport<BuilderTests.BrokerOptions, BuilderTests.RouteOptions, BuilderTests.ConsumerOptions>("events",
+                transport => transport.Send<OrderPlaced>("orders"));
+        });
+        var host = builder.Build();
+        adapter.Declaration = host.Services.GetRequiredService<ITopology>().Transports.Single();
+        return host;
+    }
+
     private static ServiceProvider Create(InMemoryTransport? adapter, TopologyMode? mode = null,
         Action<IRelayerBuilder>? extra = null, InMemoryTransport? second = null)
     {
@@ -196,6 +259,8 @@ public class TopologyTests
     {
         try
         {
+            foreach (var service in provider.GetServices<IHostedService>().OfType<IHostedLifecycleService>())
+                await service.StartingAsync(cancellationToken);
             foreach (var service in provider.GetServices<IHostedService>()) await service.StartAsync(cancellationToken);
             return null;
         }
@@ -218,10 +283,14 @@ public class TopologyTests
         public int Writes { get; private set; }
         public Exception? Error { get; init; }
         public CancellationTokenSource? Cancel { get; init; }
+        public TaskCompletionSource? TopologyEntered { get; init; }
+        public Task? TopologyRelease { get; init; }
         public TransportCapabilities GetCapabilities(string endpoint) => new();
         public async ValueTask<TopologyReport> ApplyTopologyAsync(TopologyMode mode, CancellationToken cancellationToken)
         {
             Calls.Add(mode);
+            TopologyEntered?.TrySetResult();
+            if (TopologyRelease is not null) await TopologyRelease.WaitAsync(cancellationToken);
             await Task.Yield(); // Exercise genuinely asynchronous startup.
             Cancel?.Cancel();
             cancellationToken.ThrowIfCancellationRequested();

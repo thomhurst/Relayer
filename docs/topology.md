@@ -28,7 +28,7 @@ The generic options in this example stand for native transport option types. Tra
 - `Provision` uses native APIs to create missing entities. It must report settings it cannot reconcile and must not delete entities.
 - `None` skips topology operations entirely. Configuration and capability validation still run.
 
-Configuration validation runs first, followed by topology operations, before registered receive services start. A declaration-only application without runtime adapters can inspect and export topology without broker access. Once runtime adapters are registered, every transport declaration must have exactly one named adapter.
+Configuration validation runs first, followed by topology operations, in the host's `IHostedLifecycleService.StartingAsync` phase. The host completes this phase before calling any receive service's `StartAsync`, even with `HostOptions.ServicesStartConcurrently` enabled. A failure prevents receive services from starting. A declaration-only application without runtime adapters can inspect and export topology without broker access. Once runtime adapters are registered, every transport declaration must have exactly one named adapter.
 
 Adapters implement `ITransport.ApplyTopologyAsync(mode, cancellationToken)`. They resolve their named declaration through `ITopology`, retain native route and consumer options, and return a `TopologyReport` containing remaining differences. Include entity names and expected/actual native settings in each difference. An empty report means the declaration matches. Broker exceptions become startup failures with transport and mode context; requested cancellation propagates unchanged. Provisioning is not transactional across transports.
 

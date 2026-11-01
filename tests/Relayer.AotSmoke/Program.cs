@@ -24,6 +24,8 @@ await using var provider = services.AddRelayer(builder =>
     });
     builder.UseSendMiddleware<SmokeMiddleware>();
 }).BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
+foreach (var service in provider.GetServices<IHostedService>().OfType<IHostedLifecycleService>())
+    await service.StartingAsync(CancellationToken.None);
 foreach (var service in provider.GetServices<IHostedService>())
     await service.StartAsync(CancellationToken.None);
 if (provider.GetRequiredService<ITransport>() is not SmokeTransport { CapabilityLookups: 2 })
@@ -92,7 +94,6 @@ public enum OrderState { Placed, Cancelled }
 [Message("smoke.count")]
 public readonly record struct Count(int Value);
 public sealed class SmokeOptions;
-
 public sealed class OrderHandler : IHandler<Order>
 {
     public Order? Order { get; private set; }
