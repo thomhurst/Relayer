@@ -745,10 +745,12 @@ regression on the per-message path must exceed both baselines by more than
 unchanged asynchronous executions can allocate different totals. Inconclusive
 results remain visible and do not prove unchanged performance. CI hashes actual
 comparison inputs after the common harness/SDK overlay. Byte-identical inventories
-make allocation differences inconclusive execution variation, even above both
-baselines; changed inputs retain the strict threshold. The site documents the
-inventory and excluded tooling/documentation. Throughput and input validation
-remain active. Candidate startup stays under 50 ms. Startup allocation totals
+make throughput and allocation differences inconclusive execution variation, even
+above both baselines; changed or unverified inputs retain the strict thresholds.
+Separate processes can produce separated timing confidence intervals for unchanged
+code; those intervals do not identify a source-change regression. The site documents
+the inventory and excluded tooling/documentation. Input validation remains active.
+Candidate startup stays under 50 ms. Startup allocation totals
 are informational: randomized
 hashes can change frozen dispatch-table layouts across unchanged processes.
 

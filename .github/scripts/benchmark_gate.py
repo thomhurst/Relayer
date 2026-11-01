@@ -36,6 +36,11 @@ NON_BUILD_FILES = {
     # Agent instruction aliases are symlinks on Linux, placeholders on Windows.
     ".claude/skills/issue-pr-loop/SKILL.md",
     ".claude/skills/issue-pr-loop/references",
+    ".agents/skills/issue-pr-loop/references/repository.md",
+    "scripts/Assert-PrGreen.ps1",
+    "scripts/AssertPrGreenChecks.ps1",
+    "scripts/Enable-AutoMerge.ps1",
+    "scripts/Test-AssertPrGreenChecks.ps1",
     ".github/scripts/benchmark_gate.py",
     ".github/scripts/test_benchmark_gate.py",
     ".github/scripts/pin_benchmark_version.py",
@@ -176,7 +181,7 @@ def compare(baseline, candidate, *, baseline_after=None, enforce_startup_budget=
         throughput_failure = max(0, after.lower_ns) > upper / (1 - MAX_THROUGHPUT_LOSS)
         startup = (after.type_name, after.method) == ("StartupBenchmarks", "Build100Handlers")
         reasons = []
-        if throughput_failure:
+        if throughput_failure and not identical_inputs:
             reasons.append("throughput loss exceeds 5%")
         allocation_increase = not startup and after.allocated_bytes > allocated + ALLOCATION_TOLERANCE_BYTES
         if allocation_increase and not identical_inputs:
@@ -184,7 +189,11 @@ def compare(baseline, candidate, *, baseline_after=None, enforce_startup_budget=
         if enforce_startup_budget and startup and after.mean_ns >= STARTUP_LIMIT_NS:
             reasons.append("100-handler startup is not under 50 ms")
         inconclusive = after.mean_ns > min(before.mean_ns, repeated.mean_ns) / (1 - MAX_THROUGHPUT_LOSS) and not throughput_failure
-        statuses = reasons + (["INCONCLUSIVE: observed throughput loss exceeds 5%; confidence bounds or baseline drift prevent confirmation"] if inconclusive else [])
+        statuses = list(reasons)
+        if identical_inputs and (throughput_failure or inconclusive):
+            statuses.append("INCONCLUSIVE: throughput variation with byte-identical comparison inputs")
+        elif inconclusive:
+            statuses.append("INCONCLUSIVE: observed throughput loss exceeds 5%; confidence bounds or baseline drift prevent confirmation")
         allocation_inconclusive = (not startup
                                   and after.allocated_bytes > min(before.allocated_bytes, repeated.allocated_bytes) + ALLOCATION_TOLERANCE_BYTES
                                   and after.allocated_bytes <= allocated + ALLOCATION_TOLERANCE_BYTES)
@@ -202,13 +211,13 @@ def compare(baseline, candidate, *, baseline_after=None, enforce_startup_budget=
     lines.extend([
         "",
         "This gate measures regressions against main, not proof of the raw-client 5% budget.",
-        "Throughput fails only when the candidate lower confidence bound exceeds each baseline upper bound / 0.95. Overlapping bounds or drift with an observed loss are inconclusive, not proof of unchanged performance.",
+        "Throughput fails only when the candidate lower confidence bound exceeds each baseline upper bound / 0.95, unless comparison inputs are verified byte-identical. Overlapping bounds or drift with an observed loss are inconclusive, not proof of unchanged performance.",
         "Per-message allocations fail only when the candidate exceeds both baselines by more than 0.5 B/op, unless comparison inputs are verified byte-identical. An increase against only the lower baseline is inconclusive, not proof of unchanged allocations. Startup allocations are informational and the candidate startup budget remains under 50 ms.",
         "Total receive allocations include fresh DI scopes. Equal scoped baselines establish only zero incremental composition allocations.",
         "D18 still requires zero pipeline allocations, excluding serializer/native-client allocations; existing positive totals remain visible above.",
     ])
     if identical_inputs:
-        lines.append("Verified byte-identical comparison inputs: allocation differences are execution variation, not evidence of a source-change regression. Totals remain visible; throughput, startup and input validation still apply.")
+        lines.append("Verified byte-identical comparison inputs: throughput and allocation differences are inconclusive execution variation, not evidence of a source-change regression. Timings, bounds and totals remain visible; startup and input validation still apply. This does not prove unchanged performance or compliance with D18.")
     return failures, "\n".join(lines)
 
 

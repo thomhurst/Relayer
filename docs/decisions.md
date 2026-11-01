@@ -254,6 +254,7 @@ Superseded by [D24](#d24-capabilities-are-valued-and-declared-per-endpoint).
   - pipeline build under 50 ms for 100 handlers.
 - BenchmarkDotNet suites run in CI, and a regression fails the build.
 - Amended 2026-11: the regression gate is an advisory workflow, not part of the required `CI Passed` check. It runs on every push to `main`, on demand, and on pull requests labelled `performance` or that change the gate. Running three full benchmark passes on every PR was slow and failed for reasons unrelated to the change (harness builds against `main`, allocation noise), which blocked merges without catching regressions.
+- Amended 2026-11 (#155): verified byte-identical comparison inputs make throughput and allocation differences inconclusive execution variation, with all timings, confidence bounds and allocation totals retained. Separate benchmark processes can produce separated confidence intervals without a source change. Changed or unverified inputs keep the 5% throughput and 0.5 B/op regression thresholds; invalid inputs and the absolute 50 ms startup budget still fail. This classification does not establish the raw-client or zero-allocation budgets. Only explicitly documented non-build tooling is excluded from verification; unknown inputs remain hashed.
 
 ## D19. Dependency policy
 

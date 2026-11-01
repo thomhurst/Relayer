@@ -192,7 +192,7 @@ class BenchmarkGateTests(unittest.TestCase):
         after["Benchmarks"][0]["Memory"]["BytesAllocatedPerOperation"] += 1
         self.assertIn("allocations increased", self.compare(report(), after)[0])
 
-    def test_verified_identical_inputs_report_allocation_variation_but_keep_other_gates(self):
+    def test_verified_identical_inputs_report_variation_but_keep_startup_budget(self):
         before, candidate = report(), report()
         candidate["Benchmarks"][0]["Memory"]["BytesAllocatedPerOperation"] += 64
         first = gate.load_reports(self.write("before", before))
@@ -205,8 +205,27 @@ class BenchmarkGateTests(unittest.TestCase):
         measurement(next(case for case in candidate["Benchmarks"] if case["Type"] == "StartupBenchmarks"), gate.STARTUP_LIMIT_NS)
         current = gate.load_reports(self.write("candidate", candidate))
         failures, _ = gate.compare(first, current, identical_inputs=True)
-        self.assertTrue(any("throughput loss" in failure for failure in failures))
+        self.assertFalse(any("throughput loss" in failure for failure in failures))
         self.assertTrue(any("not under 50 ms" in failure for failure in failures))
+
+    def test_identical_input_throughput_variation_is_inconclusive_with_all_bounds_visible(self):
+        before, candidate, repeated = report(), report(), report()
+        measurement(before["Benchmarks"][0], 117.649, 117.104, 118.194)
+        measurement(candidate["Benchmarks"][0], 135.996, 135.194, 136.798)
+        measurement(repeated["Benchmarks"][0], 121.366, 120.883, 121.849)
+        first = gate.load_reports(self.write("before", before))
+        current = gate.load_reports(self.write("candidate", candidate))
+        last = gate.load_reports(self.write("repeat", repeated))
+        for repeat in (None, last):
+            failures, summary = gate.compare(first, current, baseline_after=repeat, identical_inputs=True)
+            self.assertEqual([], failures)
+            self.assertIn("INCONCLUSIVE: throughput variation with byte-identical comparison inputs", summary)
+            self.assertIn("[117.104, 118.194]", summary)
+            self.assertIn("[135.194, 136.798]", summary)
+            if repeat is not None:
+                self.assertIn("[120.883, 121.849]", summary)
+            failures, _ = gate.compare(first, current, baseline_after=repeat)
+            self.assertTrue(any("throughput loss exceeds 5%" in failure for failure in failures))
 
     def test_identical_inputs_do_not_accept_mismatched_reports(self):
         cases = gate.load_reports(self.write("before", report()))
@@ -355,6 +374,16 @@ class ComparisonInputTests(unittest.TestCase):
             self.write(self.candidate, name, "agent instruction alias")
         self.assertEqual(gate.input_manifest(self.baseline), gate.input_manifest(self.candidate))
 
+    def test_merge_only_tooling_does_not_enter_measured_builds(self):
+        for name in (".agents/skills/issue-pr-loop/references/repository.md",
+                     "scripts/Assert-PrGreen.ps1", "scripts/AssertPrGreenChecks.ps1",
+                     "scripts/Enable-AutoMerge.ps1", "scripts/Test-AssertPrGreenChecks.ps1"):
+            with self.subTest(name=name):
+                self.write(self.candidate, name, "changed merge tooling")
+                self.assertEqual(gate.input_manifest(self.baseline), gate.input_manifest(self.candidate))
+        self.write(self.candidate, "scripts/unknown-build-input.ps1", "must remain hashed")
+        self.assertNotEqual(gate.input_manifest(self.baseline), gate.input_manifest(self.candidate))
+
     def symlink(self, name, target, *, directory=False):
         path = self.candidate / name
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -394,6 +423,7 @@ class ComparisonInputTests(unittest.TestCase):
     def test_cli_verifies_identity_and_retains_manifest(self):
         before, candidate = report(), report()
         candidate["Benchmarks"][0]["Memory"]["BytesAllocatedPerOperation"] += 1
+        measurement(candidate["Benchmarks"][0], 2000)
         first = self.write(self.root, "first/benchmarks-report-full.json", json.dumps(before)).parent
         current = self.write(self.root, "current/benchmarks-report-full.json", json.dumps(candidate)).parent
         manifest = self.root / "inputs.json"
