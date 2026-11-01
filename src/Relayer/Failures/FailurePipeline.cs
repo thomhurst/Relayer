@@ -22,6 +22,7 @@ public sealed class FailurePipeline
     private readonly TimeProvider _time;
     private readonly RedeliveryPath[] _paths;
     private readonly bool _nativeDeadLetter;
+    private readonly TransportCapabilities _capabilities;
 
     /// <summary>Validates native paths and available fallback executors for this consumer's complete policy.</summary>
     public FailurePipeline(IServiceProvider services, string transportName, string source, string consumer,
@@ -65,6 +66,7 @@ public sealed class FailurePipeline
         var capabilities = validator.GetCapabilities(_transport, source);
         if (failures.Count != 0) throw new InvalidOperationException(string.Join(Environment.NewLine, failures));
         if (capabilities is null) throw Invalid("TransportCapabilities", "Return a valid endpoint capability declaration.");
+        _capabilities = capabilities;
         _nativeDeadLetter = capabilities.DeadLetter;
         if (!_nativeDeadLetter)
         {
@@ -73,24 +75,59 @@ public sealed class FailurePipeline
             validator.GetCapabilities(_transport, _options.DeadLetterEndpoint);
         }
         _paths = new RedeliveryPath[_redeliveries.Length];
-        for (var i = 0; i < _paths.Length; i++)
-        {
-            var delay = _redeliveries[i];
-            if (capabilities.MaxRedeliveryDelay is { } native && delay <= native)
-                _paths[i] = RedeliveryPath.Native;
-            else if (copy is not null && capabilities.MaxDeliveryDelay is { } scheduled && delay <= scheduled)
-                _paths[i] = RedeliveryPath.Copy;
-            else if (copy is not null && scheduler is not null)
-                _paths[i] = RedeliveryPath.Outbox;
-            else
-                throw Invalid("MaxRedeliveryDelay/MaxDeliveryDelay", $"Delay {delay} has no executor. Shorten the delay, enable native redelivery/scheduling, or configure a message copy executor and durable IFailureScheduler.");
-        }
+        for (var i = 0; i < _paths.Length; i++) _paths[i] = ResolveRedelivery(_redeliveries[i]);
         if (failures.Count != 0) throw new InvalidOperationException(string.Join(Environment.NewLine, failures));
         // Compose direct-send routes before receives can resolve their scoped sender.
         services.GetRequiredService<SenderPool>().Enable();
 
         InvalidOperationException Invalid(string capability, string remedy) => new(
             $"Consumer '{consumer}' from '{source}' on transport '{transportName}': {capability} is unavailable. {remedy}");
+    }
+
+    internal void ValidateSettlement(Disposition disposition)
+    {
+        if (disposition.Kind == DispositionKind.Redeliver) ResolveRedelivery(disposition.Delay);
+    }
+
+    private RedeliveryPath ResolveRedelivery(TimeSpan delay)
+    {
+        if (delay > DateTimeOffset.MaxValue - _time.GetUtcNow())
+            throw new ArgumentOutOfRangeException(nameof(delay), "The retry delay must fit a delivery timestamp.");
+        if (_capabilities.MaxRedeliveryDelay is { } native && delay <= native) return RedeliveryPath.Native;
+        if (_copy is not null && _capabilities.MaxDeliveryDelay is { } scheduled && delay <= scheduled) return RedeliveryPath.Copy;
+        if (_copy is not null && _scheduler is not null) return RedeliveryPath.Outbox;
+        throw new InvalidOperationException($"Consumer '{_consumer}' from '{_source}' on transport '{_transport.Name}': redelivery delay {delay} has no executor. Shorten the delay, enable native redelivery/scheduling, or configure a message copy executor and durable IFailureScheduler.");
+    }
+
+    [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
+    internal async ValueTask HandleSettlementAsync(DefaultMessageContext context, Disposition request)
+    {
+        context.CancellationToken.ThrowIfCancellationRequested();
+        if (request.Kind == DispositionKind.Redeliver)
+        {
+            var path = ResolveRedelivery(request.Delay);
+            // A manual retry is not an exception. Preserve prior error history without inventing a failure.
+            var headers = FailureMetadata.SettlementHeaders(context, checked(context.Redeliveries + 1));
+            if (path == RedeliveryPath.Native)
+                context.FailureDisposition = Disposition.Redeliver(request.Delay, headers);
+            else
+            {
+                await CopyAsync(context, _source, _time.GetUtcNow() + request.Delay, headers,
+                    path == RedeliveryPath.Outbox).ConfigureAwait(false);
+                context.FailureDisposition = Disposition.Complete;
+            }
+        }
+        else
+        {
+            var headers = FailureMetadata.SettlementHeaders(context, context.Redeliveries, request.DeadLetter.Reason);
+            if (_nativeDeadLetter)
+                context.FailureDisposition = Disposition.DeadLettered(new(request.DeadLetter.Reason, headers: headers));
+            else
+            {
+                await CopyAsync(context, _options.DeadLetterEndpoint!, null, headers, false).ConfigureAwait(false);
+                context.FailureDisposition = Disposition.Complete;
+            }
+        }
     }
 
     internal void Record(DefaultMessageContext context, Exception error) => FailureMetadata.Record(context, error, _consumer, _time);
@@ -145,7 +182,16 @@ public sealed class FailurePipeline
         var original = _copy!(context);
         var headers = new List<KeyValuePair<string, WireString>>(original.Headers.Length + metadata.Length);
         foreach (var header in original.Headers.Span)
-            if (header.Key is not (FailureHeaders.Attempts or FailureHeaders.Redeliveries or FailureHeaders.History)) headers.Add(header);
+        {
+            var replaced = false;
+            foreach (var replacement in metadata)
+            {
+                if (header.Key != replacement.Key) continue;
+                replaced = true;
+                break;
+            }
+            if (!replaced) headers.Add(header);
+        }
         headers.AddRange(metadata);
         var copy = original.Forward(destination, headers.ToArray(), deliverAt);
         if (schedule) copy.ValidateForOutbox();

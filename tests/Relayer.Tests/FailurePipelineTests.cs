@@ -524,6 +524,221 @@ public class FailurePipelineTests
         await Assert.That(transport.Sends.Count).IsEqualTo(1);
     }
 
+    [Test]
+    [Arguments(DispositionKind.Complete)]
+    [Arguments(DispositionKind.Redeliver)]
+    [Arguments(DispositionKind.DeadLetter)]
+    public async Task Manual_requests_apply_only_after_success_and_reset_on_pool_reuse(DispositionKind kind)
+    {
+        var transport = new Transport { Capabilities = new() { DeadLetter = true, MaxRedeliveryDelay = TimeSpan.FromMinutes(1) } };
+        using var provider = Provider(transport);
+        var control = provider.GetRequiredService<Control>();
+        ISettlementFeature? feature = null;
+        control.Invoke = context =>
+        {
+            feature = context.Features.GetRequired<ISettlementFeature>();
+            Request(feature, kind);
+            return default;
+        };
+        var pipeline = Pipeline(provider);
+        var result = await pipeline.ProcessAsync(new());
+        await Assert.That(result.Kind).IsEqualTo(kind);
+        if (kind == DispositionKind.Redeliver) await Assert.That(result.Delay).IsEqualTo(TimeSpan.FromSeconds(5));
+        if (kind == DispositionKind.DeadLetter)
+        {
+            await Assert.That(result.DeadLetter.Reason).IsEqualTo("invalid order");
+            var headers = result.DeadLetter.Headers.ToArray().ToDictionary(p => p.Key, p => p.Value.ToString());
+            await Assert.That(headers[FailureHeaders.DeadLetterReason]).IsEqualTo("invalid order");
+        }
+        await Assert.That(() => feature!.Complete()).Throws<InvalidOperationException>();
+        control.Invoke = static _ => default;
+        await Assert.That((await pipeline.ProcessAsync(new())).Kind).IsEqualTo(DispositionKind.Complete);
+    }
+
+    [Test]
+    [Arguments(DispositionKind.Complete)]
+    [Arguments(DispositionKind.Redeliver)]
+    [Arguments(DispositionKind.DeadLetter)]
+    public async Task Handler_failure_overrides_request_and_retry_starts_without_request(DispositionKind kind)
+    {
+        using var provider = Provider(new Transport { Capabilities = new() { DeadLetter = true, MaxRedeliveryDelay = TimeSpan.FromMinutes(1) } });
+        var control = provider.GetRequiredService<Control>();
+        control.Invoke = context =>
+        {
+            if (context.Attempt == 1)
+            {
+                Request(context.Features.GetRequired<ISettlementFeature>(), kind);
+                throw new InvalidOperationException("failed after requesting settlement");
+            }
+            return default;
+        };
+        var result = await Pipeline(provider, new() { RetryDelays = new[] { TimeSpan.Zero } }).ProcessAsync(new());
+        await Assert.That(result.Kind).IsEqualTo(DispositionKind.Complete);
+        await Assert.That(control.Calls).IsEqualTo(2);
+        control.Invoke = context =>
+        {
+            Request(context.Features.GetRequired<ISettlementFeature>(), kind);
+            throw new InvalidOperationException("always fails");
+        };
+        result = await Pipeline(provider).ProcessAsync(new());
+        await Assert.That(result.Kind).IsEqualTo(DispositionKind.DeadLetter);
+        await Assert.That(result.DeadLetter.Reason).IsEqualTo("Processing failed");
+    }
+
+    [Test]
+    [Arguments(DispositionKind.Complete)]
+    [Arguments(DispositionKind.Redeliver)]
+    [Arguments(DispositionKind.DeadLetter)]
+    public async Task Manual_complete_flushes_sends_but_retry_and_dead_letter_discard_them(DispositionKind kind)
+    {
+        var transport = new Transport { Capabilities = new() { DeadLetter = true, MaxRedeliveryDelay = TimeSpan.FromMinutes(1) } };
+        using var provider = Provider(transport);
+        provider.GetRequiredService<Control>().Invoke = async context =>
+        {
+            await context.Services.GetRequiredService<ISender>().SendAsync(new Payload());
+            Request(context.Features.GetRequired<ISettlementFeature>(), kind);
+        };
+        var result = await Pipeline(provider).ProcessAsync(new());
+        await Assert.That(result.Kind).IsEqualTo(kind);
+        await Assert.That(transport.Sends.Count).IsEqualTo(kind == DispositionKind.Complete ? 1 : 0);
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Manual_fallback_must_be_durable_before_completion(bool retry)
+    {
+        var transport = new Transport { Capabilities = new() { MaxDeliveryDelay = TimeSpan.FromMinutes(1) } };
+        using var provider = Provider(transport);
+        provider.GetRequiredService<Control>().Invoke = context =>
+        {
+            Request(context.Features.GetRequired<ISettlementFeature>(), retry ? DispositionKind.Redeliver : DispositionKind.DeadLetter);
+            return default;
+        };
+        var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        transport.Pending = gate.Task;
+        var pipeline = Pipeline(provider, new() { DeadLetterEndpoint = "errors" }, Copy);
+        var pending = pipeline.ProcessAsync(new());
+        await Assert.That(pending.IsCompleted).IsFalse();
+        gate.SetResult();
+        await Assert.That((await pending).Kind).IsEqualTo(DispositionKind.Complete);
+        var copy = transport.Sends.Single();
+        await Assert.That(copy.Destination).IsEqualTo(retry ? "source" : "errors");
+        await Assert.That(copy.Headers["ce_id"]).IsEqualTo("original");
+        if (!retry) await Assert.That(copy.Headers[FailureHeaders.DeadLetterReason]).IsEqualTo("invalid order");
+        transport.Pending = Task.FromException(new ApplicationException("copy failed"));
+        await Assert.That(async () => await pipeline.ProcessAsync(new())).Throws<ApplicationException>();
+    }
+
+    [Test]
+    public async Task Invalid_and_duplicate_requests_fail_without_replacing_valid_request()
+    {
+        using var provider = Provider(new Transport());
+        provider.GetRequiredService<Control>().Invoke = async context =>
+        {
+            var settlement = context.Features.GetRequired<ISettlementFeature>();
+            await Assert.That(() => settlement.Retry(TimeSpan.FromTicks(-1))).Throws<ArgumentOutOfRangeException>();
+            await Assert.That(() => settlement.DeadLetter(" ")).Throws<ArgumentException>();
+            await Assert.That(() => settlement.Retry(TimeSpan.FromSeconds(1))).Throws<InvalidOperationException>();
+            settlement.Complete();
+            await Assert.That(() => settlement.DeadLetter("later request")).Throws<InvalidOperationException>();
+        };
+        await Assert.That((await Pipeline(provider).ProcessAsync(new())).Kind).IsEqualTo(DispositionKind.Complete);
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Manual_completion_waits_for_disposal_and_never_settles_failed_durability(bool failDisposal)
+    {
+        var transport = new Transport { FailAfter = failDisposal ? int.MaxValue : 0 };
+        using var provider = Provider(transport);
+        var control = provider.GetRequiredService<Control>();
+        var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        control.Dispose = () => new(gate.Task);
+        control.Invoke = async context =>
+        {
+            context.Features.GetRequired<ISettlementFeature>().Complete();
+            await context.Services.GetRequiredService<ISender>().SendAsync(new Payload());
+        };
+        var pending = Pipeline(provider).ProcessAsync(new());
+        await Assert.That(pending.IsCompleted).IsFalse();
+        await Assert.That(transport.Sends.Count).IsEqualTo(0);
+        if (failDisposal) gate.SetException(new ApplicationException("disposal failed"));
+        else gate.SetResult();
+        await Assert.That(async () => await pending).Throws<ApplicationException>();
+        await Assert.That(control.Calls).IsEqualTo(1);
+        await Assert.That(transport.Sends.Count).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task Manual_requests_are_isolated_across_concurrent_deliveries()
+    {
+        using var provider = Provider(new Transport());
+        var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        provider.GetRequiredService<Control>().Invoke = async context =>
+        {
+            if (context.MessageId == "first")
+            {
+                context.Features.GetRequired<ISettlementFeature>().DeadLetter("first only");
+                await gate.Task;
+            }
+        };
+        var first = new Incoming();
+        first.Headers["ce_id"] = "first";
+        var pipeline = Pipeline(provider);
+        var pending = pipeline.ProcessAsync(first);
+        await Assert.That((await pipeline.ProcessAsync(new())).Kind).IsEqualTo(DispositionKind.Complete);
+        gate.SetResult();
+        await Assert.That((await pending).Kind).IsEqualTo(DispositionKind.DeadLetter);
+    }
+
+    [Test]
+    public async Task Cancellation_overrides_manual_completion()
+    {
+        using var provider = Provider(new Transport());
+        using var cancellation = new CancellationTokenSource();
+        provider.GetRequiredService<Control>().Invoke = context =>
+        {
+            context.Features.GetRequired<ISettlementFeature>().Complete();
+            cancellation.Cancel();
+            return default;
+        };
+        await Assert.That(async () => await Pipeline(provider).ProcessAsync(new(), cancellation.Token)).Throws<OperationCanceledException>();
+    }
+
+    [Test]
+    public async Task Manual_retry_uses_durable_scheduler_and_preserves_prior_failure_history()
+    {
+        var transport = new Transport();
+        using var provider = Provider(transport);
+        provider.GetRequiredService<Control>().Invoke = context =>
+        {
+            if (context.Attempt == 1) throw new InvalidOperationException("first failure");
+            context.Features.GetRequired<ISettlementFeature>().Retry(TimeSpan.FromSeconds(5));
+            return default;
+        };
+        var scheduler = new Scheduler();
+        await Assert.That((await Pipeline(provider, new() { RetryDelays = new[] { TimeSpan.Zero } }, Copy, scheduler).ProcessAsync(new())).Kind)
+            .IsEqualTo(DispositionKind.Complete);
+        var copy = scheduler.Copies.Single();
+        await Assert.That(copy.Headers[FailureHeaders.Attempts]).IsEqualTo("2");
+        await Assert.That(copy.Headers[FailureHeaders.Redeliveries]).IsEqualTo("1");
+        using var history = JsonDocument.Parse(copy.Headers[FailureHeaders.History]);
+        await Assert.That(history.RootElement.GetProperty("Attempts").GetArrayLength()).IsEqualTo(1);
+    }
+
+    private static void Request(ISettlementFeature settlement, DispositionKind kind)
+    {
+        switch (kind)
+        {
+            case DispositionKind.Complete: settlement.Complete(); break;
+            case DispositionKind.Redeliver: settlement.Retry(TimeSpan.FromSeconds(5)); break;
+            case DispositionKind.DeadLetter: settlement.DeadLetter("invalid order"); break;
+            default: throw new ArgumentOutOfRangeException(nameof(kind));
+        }
+    }
+
     private static ValueTask Throw(MessageContext context) => throw new InvalidOperationException("failed attempt");
 
     private static ServiceProvider Provider(Transport transport, Action<IServiceCollection>? configure = null)

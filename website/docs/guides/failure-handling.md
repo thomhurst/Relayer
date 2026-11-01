@@ -59,6 +59,29 @@ Native dead-lettering is used only when the endpoint guarantees error metadata. 
 
 Each immediate retry runs in a fresh DI scope. Messages the handler sends through `ISender` are buffered and only sent after the handler, middleware and scope disposal all succeed; a failed attempt discards them. Sends enlisted in an outbox transaction are rolled back with that transaction. Calls you make directly on a native client are your responsibility.
 
+## Manual settlement
+
+Settlement is automatic by default. A handler or consume middleware can request an explicit outcome through the context:
+
+```csharp
+var settlement = context.Features.GetRequired<ISettlementFeature>();
+settlement.DeadLetter("Order has no customer");
+// Or: settlement.Retry(TimeSpan.FromMinutes(1));
+// Or: settlement.Complete();
+```
+
+These calls queue a decision; they do not acknowledge the native delivery inline. Only one request is allowed per attempt. Another request throws `InvalidOperationException`. Negative retry delays and empty dead-letter reasons are rejected. Do not retain this pooled feature after processing, or use it concurrently.
+
+Requests apply after the handler, consume middleware and async scope disposal succeed. `Complete()` also waits for buffered sends to flush. If the handler or middleware throws after any request, the exception wins: the request is cleared and the normal classification, retry and dead-letter policy runs. Each immediate retry starts without a request. Cancellation, scope-disposal errors, send-flush errors and durable fallback errors propagate without a settlement decision.
+
+With an executable `FailurePipeline`, `Retry` and `DeadLetter` discard buffered direct sends, including sends made during scope disposal. They do not roll back a transaction or undo calls to native clients; the application owns those effects. `Complete` and automatic completion flush successful direct sends as usual.
+
+`Retry(delay)` requests a new delivery using the exact delay, without jitter or the configured in-process retry sequence. `FailurePipeline` chooses native redelivery, then a scheduled copy, then a durable scheduler, using the same capability limits and executors as exception handling. A delay without an executor throws at the request call with an actionable message. The request can then be handled by the normal exception policy. Manual dead-lettering uses native dead-lettering or a durable copy. Copies include the requested reason in `FailureHeaders.DeadLetterReason` (`relayer.dead_letter.reason`). Prior exception history is preserved; manual outcomes do not invent an exception.
+
+Batch handlers use the feature on each `batch.Items[i].Context`. A reported per-item failure overrides that item's request; a thrown batch exception overrides every request. Requests from failed items are cleared before in-process retry. Batch sends share one buffer: when some items complete and others fail, retry or dead-letter, buffered sends make the entire attempt fail because those sends cannot be attributed safely. If every item retries or dead-letters, buffered sends are discarded. With no buffered sends, outcomes remain independent. Cancellation, disposal and fallback failures prevent returning any batch settlement decisions.
+
+When composing the lower-level `ConsumePipelineBuilder` with an explicit `ConsumeFailureDelegate`, successful manual requests become native dispositions directly. That composer owns capability validation, side-effect durability and fallback handling. The in-memory hosted consumer uses this direct native path. Transport-specific operations such as Azure Service Bus defer remain available through native transport features.
+
 ## Error history
 
 Copies keep the original message ID and trace context. Dead-lettered and redelivered messages carry their failure history: the original ID, total failed attempts, first and last failure times, and for every attempt the consumer, host, exception type, message and stack trace. The history is serialized with generated JSON, so it works under Native AOT.

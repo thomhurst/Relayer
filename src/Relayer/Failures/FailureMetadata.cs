@@ -14,6 +14,8 @@ public static class FailureHeaders
     public const string Redeliveries = "relayer.failure.redeliveries";
     /// <summary>JSON error history, including original identity, location and every attempt's exception.</summary>
     public const string History = "relayer.failure.history";
+    /// <summary>The handler's reason when manual dead-lettering requires a durable copy.</summary>
+    public const string DeadLetterReason = "relayer.dead_letter.reason";
 }
 
 internal sealed class FailureHistory
@@ -86,6 +88,22 @@ internal static class FailureMetadata
             ExceptionType = error.GetType().FullName ?? error.GetType().Name,
             Message = error.Message, StackTrace = error.StackTrace,
         });
+    }
+
+    internal static KeyValuePair<string, WireString>[] SettlementHeaders(DefaultMessageContext context, int redeliveries,
+        string? reason = null)
+    {
+        var headers = new List<KeyValuePair<string, WireString>>(4)
+        {
+            new(FailureHeaders.Attempts, new(context.Attempt.ToString(CultureInfo.InvariantCulture))),
+            new(FailureHeaders.Redeliveries, new(redeliveries.ToString(CultureInfo.InvariantCulture))),
+        };
+        if (context.FailureHistory is { } history)
+            headers.Add(new(FailureHeaders.History, new(JsonSerializer.Serialize(history, FailureJsonContext.Default.FailureHistory))));
+        else if (context.Headers.TryGetValue(FailureHeaders.History, out var prior))
+            headers.Add(new(FailureHeaders.History, prior));
+        if (reason is not null) headers.Add(new(FailureHeaders.DeadLetterReason, new(reason)));
+        return headers.ToArray();
     }
 
     internal static KeyValuePair<string, WireString>[] Headers(DefaultMessageContext context, int redeliveries)

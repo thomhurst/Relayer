@@ -277,6 +277,7 @@ const status = [
   ['Send pipeline and middleware', 'Implemented', true],
   ['Consume pipeline and receive SPI', 'Implemented', true],
   ['Failure classification, retries and dead-letter copies', 'Implemented', true],
+  ['Manual settlement requests with exception precedence', 'Implemented', true],
   ['Declared topology and JSON export', 'Implemented', true],
   ['In-memory transport for tests and samples', 'Implemented', true],
   ['Kafka, Service Bus, SQS/SNS and RabbitMQ transports', 'In progress', false],

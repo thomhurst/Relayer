@@ -15,6 +15,7 @@ public class FailurePipelineBenchmarks
     private IServiceScopeFactory _scopes = null!;
     private ConsumePipeline _consumer = null!;
     private ConsumePipeline _failures = null!;
+    private ConsumePipeline _manualFailures = null!;
     private ConsumePipeline _instrumentedFailures = null!;
     private HandlerDescriptor<Payload> _descriptor = null!;
     private readonly DirectContext _direct = new();
@@ -45,6 +46,8 @@ public class FailurePipelineBenchmarks
                 static (_, error, _) => ValueTask.FromException(error)).Handler(_descriptor).Build(1);
         _failures = new ConsumePipelineBuilder(_scopes, _provider.GetRequiredService<MessageTypeRegistry>(), _serializer,
                 policy).Handler(_descriptor).Build(1);
+        _manualFailures = new ConsumePipelineBuilder(_scopes, _provider.GetRequiredService<MessageTypeRegistry>(), _serializer,
+                policy).Handler(_descriptor).Use(new CompleteMiddleware()).Build(1);
         var telemetry = _provider.GetRequiredService<RelayerInstrumentation>().CreateEndpoint(new()
         {
             System = "relayer.inmemory", Destination = "source",
@@ -86,6 +89,22 @@ public class FailurePipelineBenchmarks
     {
         using var context = _instrumentedFailures.RentContext(_message);
         await _instrumentedFailures.ProcessAsync(context).ConfigureAwait(false);
+    }
+
+    [Benchmark]
+    public async ValueTask ManualCompletion()
+    {
+        using var context = _manualFailures.RentContext(_message);
+        await _manualFailures.ProcessAsync(context).ConfigureAwait(false);
+    }
+
+    private sealed class CompleteMiddleware : IConsumeMiddleware
+    {
+        public ValueTask InvokeAsync(MessageContext context, ConsumeDelegate next)
+        {
+            context.Features.GetRequired<ISettlementFeature>().Complete();
+            return next(context);
+        }
     }
 
     [GlobalCleanup]

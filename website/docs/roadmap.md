@@ -15,6 +15,7 @@ Relayer is in early development. Track progress in [GitHub issues](https://githu
 - The consume pipeline and the native receive SPI.
 - Generated batch handler execution, durable partial-failure decisions, and validated native/client-side receive executors for transport authors.
 - Typed failure classification, in-process retries, delayed redelivery and dead-letter copies with error history.
+- Manual settlement requests through `ISettlementFeature`, with exception precedence and durable capability fallbacks.
 - Declared topology with validate and provision modes, and JSON export.
 - The [in-memory transport](transports/in-memory.md), with native queue and partitioned log semantics.
 - Core tracing, consume metrics and generated failure logs; native transport and outbox instrumentation remains planned.
