@@ -345,7 +345,8 @@ public class SendTracingTests
         public void Dispose() { _scope.Dispose(); _listener?.Dispose(); _provider.Dispose(); }
     }
 
-    private sealed class Probe;
+    [Message("send.probe")]
+    public sealed class Probe;
     private sealed class EmptyOptions;
     private sealed class ConfigureMiddleware(Action<SendOptions> configure) : ISendMiddleware
     {
