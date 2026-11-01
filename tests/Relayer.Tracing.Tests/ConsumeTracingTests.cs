@@ -341,6 +341,150 @@ public class ConsumeTracingTests
         await Assert.That(capture.Stopped.Single().Status).IsEqualTo(ActivityStatusCode.Error);
     }
 
+    [Test]
+    [Arguments(1, false)]
+    [Arguments(1, true)]
+    [Arguments(3, false)]
+    [Arguments(3, true)]
+    public async Task Composed_batch_uses_shared_source_endpoint_tags_and_links_only(int size, bool ambient)
+    {
+        using var capture = new Capture();
+        await using var provider = BatchProvider();
+        using var parent = ambient ? new Activity("request").Start() : null;
+        var pipeline = BatchBuilder(provider).Tracing(capture.Tracing, Endpoint).BuildBatch(
+            provider.GetRequiredService<HandlerRegistry>().GetBatchHandler<int, BatchHandler>(), BatchDefinition(provider));
+        var receive = new ReceivePipeline<Incoming, Binding>(pipeline, new("cloudEvents:"), 4);
+        await receive.ProcessBatchAsync(Enumerable.Range(0, size).Select(_ => new Incoming()).ToArray(), new Disposition[size]);
+        var process = capture.Stopped.Single();
+        await Assert.That(process.ParentSpanId).IsEqualTo(parent?.SpanId ?? default);
+        await Assert.That(process.Links.Count()).IsEqualTo(size);
+        await Assert.That(process.GetTagItem("messaging.batch.message_count")).IsEqualTo(size);
+        await Assert.That(capture.SamplingTags["messaging.batch.message_count"]).IsEqualTo(size);
+        await Assert.That(capture.SamplingTags["messaging.system"]).IsEqualTo("kafka");
+        await Assert.That(process.GetTagItem("messaging.message.id")).IsNull();
+        await Assert.That(process.GetTagItem("messaging.destination.partition.id")).IsNull();
+        await Assert.That(process.GetTagItem("messaging.kafka.offset")).IsNull();
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Batch_settlement_runs_after_durability_inside_process_and_preserves_manual_disposition(bool poison)
+    {
+        using var capture = new Capture();
+        await using var provider = BatchProvider();
+        if (poison) provider.GetRequiredService<BatchControl>().Handle = static _ => throw new ApplicationException("batch");
+        var failures = new FailurePipeline(provider, "test", "orders", "billing", new() { RetryDelays = ReadOnlyMemory<TimeSpan>.Empty });
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var finished = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var settled = 0;
+        var complete = new MessageOperationTracing(capture.Tracing, Endpoint, MessagingOperation.Settle, "complete")
+            .WrapSettlement(async context =>
+            {
+                var native = context.Features.GetRequired<NativeMessage<Incoming>>();
+                if (native.Disposition.Kind != (poison ? DispositionKind.DeadLetter : DispositionKind.Complete))
+                    throw new InvalidOperationException("Durable disposition missing before settlement.");
+                if (++settled == 1) { entered.SetResult(); await finished.Task; }
+                native.Disposition = Disposition.SettledByHandler;
+            });
+        var builder = new ConsumePipelineBuilder(provider.GetRequiredService<IServiceScopeFactory>(),
+            provider.GetRequiredService<MessageTypeRegistry>(), new Serializer(), failures);
+        var pipeline = builder.Tracing(capture.Tracing, Endpoint).Settle(complete).BuildBatch(
+            provider.GetRequiredService<HandlerRegistry>().GetBatchHandler<int, BatchHandler>(), BatchDefinition(provider));
+        var receive = new ReceivePipeline<Incoming, Binding>(pipeline, new("cloudEvents:"), 4);
+        var output = new Disposition[2];
+        var pending = receive.ProcessBatchAsync(new Incoming[] { new(), new() }, output).AsTask();
+        await Task.WhenAny(entered.Task, pending);
+        try
+        {
+            await Assert.That(entered.Task.IsCompleted).IsTrue();
+            await Assert.That(capture.Stopped).IsEmpty();
+        }
+        finally { finished.TrySetResult(); }
+        await pending;
+        await Assert.That(output.All(d => d.Kind == DispositionKind.SettledByHandler)).IsTrue();
+        var process = capture.Stopped.Last();
+        await Assert.That(process.GetTagItem("messaging.batch.message_count")).IsEqualTo(2);
+        await Assert.That(process.Status).IsEqualTo(poison ? ActivityStatusCode.Error : ActivityStatusCode.Unset);
+        await Assert.That(capture.Stopped.Count).IsEqualTo(3);
+        await Assert.That(capture.Stopped.Take(2).All(a => a.ParentSpanId == process.SpanId)).IsTrue();
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Batch_retry_recovery_clears_status_but_cancellation_retains_unrecovered_failure(bool cancel)
+    {
+        using var capture = new Capture();
+        await using var provider = BatchProvider();
+        using var cancellation = new CancellationTokenSource();
+        var attempts = 0;
+        provider.GetRequiredService<BatchControl>().Handle = _ =>
+        {
+            if (++attempts == 1) throw new ApplicationException("retry");
+            if (cancel) { cancellation.Cancel(); return ValueTask.FromCanceled<BatchResult>(cancellation.Token); }
+            return new(BatchResult.Success);
+        };
+        var failures = new FailurePipeline(provider, "test", "orders", "billing", new() { RetryDelays = new[] { TimeSpan.Zero }, Jitter = 0 });
+        var builder = new ConsumePipelineBuilder(provider.GetRequiredService<IServiceScopeFactory>(),
+            provider.GetRequiredService<MessageTypeRegistry>(), new Serializer(), failures);
+        var pipeline = builder.Tracing(capture.Tracing, Endpoint).BuildBatch(
+            provider.GetRequiredService<HandlerRegistry>().GetBatchHandler<int, BatchHandler>(), BatchDefinition(provider));
+        var receive = new ReceivePipeline<Incoming, Binding>(pipeline, new("cloudEvents:"), 4);
+        if (cancel)
+            await Assert.That(async () => await receive.ProcessBatchAsync(new Incoming[] { new() }, new Disposition[1], cancellation.Token)).Throws<OperationCanceledException>();
+        else await receive.ProcessBatchAsync(new Incoming[] { new() }, new Disposition[1]);
+        await Assert.That(attempts).IsEqualTo(2);
+        await Assert.That(capture.Stopped.Single().Status).IsEqualTo(cancel ? ActivityStatusCode.Error : ActivityStatusCode.Unset);
+    }
+
+    private static ServiceProvider BatchProvider()
+    {
+        var services = new ServiceCollection();
+        services.AddSingleton<BatchControl>();
+        services.AddSingleton<BatchHandler>();
+        services.AddSingleton<IMessageSerializer, Serializer>();
+        services.AddSingleton<ITransport>(new InMemoryTransport("test", new Dictionary<string, InMemoryEndpointOptions> { ["orders"] = new() }));
+        services.AddRelayer(r =>
+        {
+            r.MessageTypes.Add<int>("number");
+            r.Handler<BatchHandler>();
+            r.AddTransport<BatchOptions, BatchOptions, BatchOptions>("test", transport =>
+                transport.Consume("orders", consumer => consumer.Handler<BatchHandler>().Batch(4, TimeSpan.FromMilliseconds(100))));
+        });
+        return services.BuildServiceProvider();
+    }
+
+    [Test]
+    public async Task Batch_settlement_error_logs_native_span_once_without_reentering_failure_handling()
+    {
+        var logger = new Logger();
+        using var capture = new Capture(logger: logger);
+        await using var provider = BatchProvider();
+        var failureCalls = 0;
+        var complete = new MessageOperationTracing(capture.Tracing, Endpoint, MessagingOperation.Settle, "complete")
+            .WrapSettlement(static _ => ValueTask.FromException(new ApplicationException("native")));
+        var builder = new ConsumePipelineBuilder(provider.GetRequiredService<IServiceScopeFactory>(),
+            provider.GetRequiredService<MessageTypeRegistry>(), new Serializer(), (_, _, _) => { failureCalls++; return default; });
+        var pipeline = builder.Tracing(capture.Tracing, Endpoint).Settle(complete).BuildBatch(
+            provider.GetRequiredService<HandlerRegistry>().GetBatchHandler<int, BatchHandler>(), BatchDefinition(provider));
+        var receive = new ReceivePipeline<Incoming, Binding>(pipeline, new("cloudEvents:"), 4);
+        await Assert.That(async () => await receive.ProcessBatchAsync(new Incoming[] { new(), new() }, new Disposition[2])).Throws<ApplicationException>();
+        await Assert.That(failureCalls).IsEqualTo(0);
+        await Assert.That(logger.Entries.Single().SpanId).IsEqualTo(capture.Stopped[0].SpanId.ToString());
+        await Assert.That(capture.Stopped.Count).IsEqualTo(2);
+        await Assert.That(capture.Stopped.All(a => a.Status == ActivityStatusCode.Error)).IsTrue();
+    }
+    private static IConsumerDefinition BatchDefinition(ServiceProvider provider) => provider.GetRequiredService<RelayerConfiguration>().Transports[0].Consumers[0];
+    private static ConsumePipelineBuilder BatchBuilder(ServiceProvider provider) => new(provider.GetRequiredService<IServiceScopeFactory>(),
+        provider.GetRequiredService<MessageTypeRegistry>(), new Serializer(), static (_, error, _) => ValueTask.FromException(error));
+    public sealed class BatchOptions;
+    public sealed class BatchControl { public Func<Batch<int>, ValueTask<BatchResult>>? Handle { get; set; } }
+    public sealed class BatchHandler(BatchControl control) : IBatchHandler<int>
+    {
+        public ValueTask<BatchResult> HandleAsync(Batch<int> batch, CancellationToken cancellationToken) => control.Handle?.Invoke(batch) ?? new(BatchResult.Success);
+    }
+
     private static ServiceProvider Provider(Action<ServiceCollection>? configure = null)
     {
         var services = new ServiceCollection();

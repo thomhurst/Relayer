@@ -9,17 +9,14 @@ namespace Relayer.Tests;
 public class BatchPipelineTests
 {
     [Test]
-    [Arguments(false)]
-    [Arguments(true)]
-    public async Task Batch_composition_rejects_single_message_callbacks(bool telemetry)
+    public async Task Batch_composition_rejects_single_message_metrics()
     {
         await using var provider = Provider();
         using var instrumentation = new RelayerInstrumentation();
         var builder = new ConsumePipelineBuilder(provider.GetRequiredService<IServiceScopeFactory>(),
             provider.GetRequiredService<MessageTypeRegistry>(), provider.GetRequiredService<IMessageSerializer>(),
             static (_, error, _) => ValueTask.FromException(error));
-        if (telemetry) builder.Telemetry(instrumentation.CreateEndpoint(new() { System = "test" }));
-        else builder.Settle(static _ => default);
+        builder.Telemetry(instrumentation.CreateEndpoint(new() { System = "test" }));
 
         await Assert.That(() => builder.BuildBatch(
             provider.GetRequiredService<HandlerRegistry>().GetBatchHandler<Payload, Handler>(), Definition(provider)))
@@ -621,7 +618,7 @@ public class BatchPipelineTests
         provider.GetRequiredService<Control>().Invoke = (_, _) => ValueTask.FromException<BatchResult>(new ApplicationException("handler"));
         await Pipeline(provider, static (_, _, _) => default, source: source).ProcessBatchAsync(Input(3), new Disposition[3]);
         await Assert.That(observed!.Status).IsEqualTo(ActivityStatusCode.Error);
-        await Assert.That(observed.GetTagItem("error.type") as string).IsEqualTo("System.ApplicationException");
+        await Assert.That(observed.GetTagItem("error.type") as string).IsEqualTo("_OTHER");
         await Assert.That(observed.Events.Count()).IsEqualTo(0);
     }
 

@@ -21,15 +21,17 @@ public sealed class ConsumePipelineBuilder
     private ConsumeTracing? _tracing;
 
     /// <summary>Builds a homogeneous batch consumer using its existing size, wait and concurrency declaration.</summary>
-    /// <remarks>Batch handlers coordinate their own per-message work. Single-message middleware, telemetry, and settlement callbacks cannot be combined with batch composition.</remarks>
+    /// <remarks>Batch handlers coordinate their own per-message work. Tracing and native settlement callbacks are supported; single-message middleware and metrics are not.</remarks>
     public ConsumePipeline BuildBatch(HandlerDescriptor descriptor, IConsumerDefinition consumer,
         System.Diagnostics.ActivitySource? activitySource = null)
     {
         EnsureMutable();
         ArgumentNullException.ThrowIfNull(descriptor);
         ArgumentNullException.ThrowIfNull(consumer);
-        if (_telemetry is not null || _settlement is not null)
-            throw new InvalidOperationException("Batch consumers do not support single-message telemetry or settlement callbacks. Record telemetry and settle native deliveries around ProcessBatchAsync.");
+        if (_telemetry is not null)
+            throw new InvalidOperationException("Batch consumers do not support single-message metrics. Record batch metrics around ProcessBatchAsync.");
+        if (_tracing is not null && activitySource is not null)
+            throw new InvalidOperationException("Use Tracing for the shared Relayer source, or supply an ActivitySource, but not both.");
         if (_dispatch.Count != 0 || _middleware.Count != 0)
             throw new InvalidOperationException("Compose batch handlers separately from single-message handlers and middleware.");
         if (!_messages.IsFrozen || !_messages.TryGetMessageType(descriptor.MessageType, out var identity))
@@ -42,9 +44,9 @@ public sealed class ConsumePipelineBuilder
         _built = true;
         var identities = new Dictionary<MessageType, ConsumeDelegate> { [identity] = static _ => throw new InvalidOperationException("Use ProcessBatchAsync for a batch handler.") };
         return new ConsumePipeline(_scopes, identities.ToFrozenDictionary(), [], _failure, _classifier,
-            checked(consumer.BatchSize * consumer.Concurrency), _failures, null, null)
+            checked(consumer.BatchSize * consumer.Concurrency), _failures, null, _settlement, _tracing)
         {
-            BatchExecution = new BatchExecution(_scopes, batch, identity, consumer, _failure, _classifier, _failures, activitySource)
+            BatchExecution = new BatchExecution(_scopes, batch, identity, consumer, _failure, _classifier, _failures, activitySource, _tracing)
         };
     }
 

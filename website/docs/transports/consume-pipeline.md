@@ -119,8 +119,9 @@ Pass the existing `IConsumerDefinition` to `BuildBatch` and `BatchReceiveExecuto
 
 ```csharp
 var execution = new ConsumePipelineBuilder(scopeFactory, messageTypes, serializer, failurePipeline)
-    .BuildBatch(handlers.GetBatchHandler<AuditEvent, AuditHandler>(), definition,
-        activitySource: relayerActivitySource);
+    .Tracing(tracing, endpoint)
+    .Settle(SettleNativeMessageAsync)
+    .BuildBatch(handlers.GetBatchHandler<AuditEvent, AuditHandler>(), definition);
 var receive = new ReceivePipeline<NativeDelivery, NativeBinding>(execution, headerNames,
     contextPoolCapacity: definition.BatchSize * definition.Concurrency);
 var executor = new BatchReceiveExecutor<NativeDelivery>(services, transportName, definition,
@@ -130,13 +131,16 @@ var executor = new BatchReceiveExecutor<NativeDelivery>(services, transportName,
 var count = await executor.ReceiveAsync(deliveries, cancellationToken).ConfigureAwait(false);
 await receive.ProcessBatchAsync(deliveries[..count], dispositions[..count], cancellationToken)
     .ConfigureAwait(false);
-// Only now apply dispositions[..count] through the native client's settlement API.
+// The settlement callback has run for each delivery inside the batch process span.
 ```
 
 `BuildBatch` uses one fresh async scope per batch attempt. It rejects mixing
-single-message middleware, dispatch, endpoint telemetry, or settlement callbacks into
-that composition. Record endpoint metrics and settle native deliveries around the
-batch call; these single-message callbacks are not silently ignored.
+single-message middleware, dispatch, or endpoint metrics into that composition.
+`Tracing` supplies the shared source and native endpoint metadata. The optional
+`Settle` callback runs for each context after all durable work and scope disposal,
+inside the batch process span. It reads the resolved native disposition and skips
+`SettledByHandler`. Record batch metrics around the call. Without a settlement
+callback, apply the returned dispositions through the native client's settlement API.
 Message types not handled by that batch consumer enter failure handling individually.
 Invalid bodies also enter failure handling individually; the handler sees only decoded
 items, so partial-failure indexes refer to the batch actually passed to the handler.
@@ -160,14 +164,14 @@ no item settles successfully with its outgoing messages discarded. Use explicit 
 partial success also produces messages (D28). Failure handling and disposal errors
 propagate without publishing any batch dispositions.
 
-Pass the application's shared `Relayer` ActivitySource to `BuildBatch` to trace one
+Configure `Tracing` with the application's shared `MessageTracing` to trace one
 `process {source}` CONSUMER span for the batch, including retries. It links each valid
 creation context and uses only the ambient span as parent. It includes
-`messaging.batch.message_count`. The caller owns the source; no process-wide source
-or second source owner is created. UTF-8 traceparent headers are parsed without allocating
+`messaging.batch.message_count` and the endpoint's sampling attributes. DI owns the source;
+no process-wide source or second source owner is created. UTF-8 traceparent headers are parsed without allocating
 an intermediate header string; UTF-8 tracestate decoding can still allocate.
-This is the batch execution seam for #13's shared
-tracing integration. Native settlement and its tracing remain the adapter's work.
+The optional native settlement callback runs inside that span after durable processing.
+It reuses the same operation wrappers as single-message consumers.
 Do not retain the borrowed `Batch.Items`, message contexts, or native features after
 handler completion. Pools retain bounded reusable storage sized by the declaration's
 batch size and concurrency; overflow is temporary.

@@ -10,6 +10,22 @@ internal sealed class ConsumeTracing(MessageTracing tracing, MessagingEndpoint e
 
     internal Activity? Start(DefaultMessageContext context) => Start(tracing, _process, context, linkCreation: true);
 
+    internal KeyValuePair<string, object?>[] CreateBatchTags() => _process.CreateBatchTags();
+
+    internal Activity? StartBatch(ReadOnlyMemory<DefaultMessageContext> contexts,
+        KeyValuePair<string, object?>[] tags, List<ActivityLink> links, KeyValuePair<string, object?> countTag)
+    {
+        if (!tracing.Source.HasListeners()) return null;
+        for (var i = 0; i < contexts.Length; i++)
+        {
+            var context = contexts.Span[i];
+            var creation = MessageCreationContext.Read<DefaultMessageContext, HeaderReader>(context, context.EnvelopeNames);
+            if (creation != default) links.Add(new(creation));
+        }
+        tags[^1] = countTag;
+        return _process.StartBatch(tags, links);
+    }
+
     internal static Activity? Start(MessageTracing tracing, MessageOperationTracing operation, DefaultMessageContext context, bool linkCreation)
     {
         if (!tracing.Source.HasListeners()) return null;

@@ -9,13 +9,15 @@ namespace Relayer.Tests;
 public class BatchTracingTests
 {
     [Test]
-    [Arguments(1, false, false)]
-    [Arguments(1, true, false)]
-    [Arguments(1, true, true)]
-    [Arguments(10, false, false)]
-    [Arguments(10, true, false)]
-    [Arguments(10, true, true)]
-    public async Task Dropped_batch_spans_add_no_allocations_beyond_scope_and_framework_context_parsing(int size, bool links, bool utf8)
+    [Arguments(1, false, false, true)]
+    [Arguments(1, true, false, true)]
+    [Arguments(1, true, true, true)]
+    [Arguments(10, false, false, true)]
+    [Arguments(10, true, false, true)]
+    [Arguments(10, true, true, true)]
+    [Arguments(1, true, false, false)]
+    [Arguments(10, true, true, false)]
+    public async Task Batch_spans_add_no_allocations_beyond_scope_and_framework_context_parsing(int size, bool links, bool utf8, bool listenerAttached)
     {
         var services = new ServiceCollection();
         services.AddSingleton<IMessageSerializer, Serializer>();
@@ -28,10 +30,10 @@ public class BatchTracingTests
         });
         await using var provider = services.BuildServiceProvider();
         var scopes = provider.GetRequiredService<IServiceScopeFactory>();
-        using var source = new ActivitySource("Relayer");
+        using var tracing = new MessageTracing(Microsoft.Extensions.Options.Options.Create(new TracingOptions()), []);
         using var listener = new ActivityListener
         {
-            ShouldListenTo = candidate => ReferenceEquals(candidate, source),
+            ShouldListenTo = candidate => listenerAttached && ReferenceEquals(candidate, tracing.Source),
             Sample = static (ref ActivityCreationOptions<ActivityContext> _) => ActivitySamplingResult.None
         };
         ActivitySource.AddActivityListener(listener);
@@ -39,8 +41,9 @@ public class BatchTracingTests
         using var ambient = new Activity("request").Start();
         var consumer = new ConsumePipelineBuilder(scopes, provider.GetRequiredService<MessageTypeRegistry>(),
             provider.GetRequiredService<IMessageSerializer>(), static (_, error, _) => ValueTask.FromException(error))
+            .Tracing(tracing, new() { System = "relayer.inmemory", Destination = "source" })
             .BuildBatch(provider.GetRequiredService<HandlerRegistry>().GetBatchHandler<Payload, Handler>(),
-                provider.GetRequiredService<RelayerConfiguration>().Transports[0].Consumers[0], source);
+                provider.GetRequiredService<RelayerConfiguration>().Transports[0].Consumers[0]);
         var message = new ConsumeMessage
         {
             MessageId = "allocation", MessageType = new("batch.tracing", 1), Body = ReadOnlySequence<byte>.Empty,
@@ -71,7 +74,7 @@ public class BatchTracingTests
         {
             using var scope = scopes.CreateScope();
             _ = scope.ServiceProvider.GetRequiredService<ISender>();
-            if (links)
+            if (links && listenerAttached)
                 for (var i = 0; i < size; i++) ActivityContext.TryParse(TraceHeaders.Parent, null, true, out _);
         }
     }

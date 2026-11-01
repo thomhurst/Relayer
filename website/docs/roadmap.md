@@ -19,7 +19,7 @@ Relayer is in early development. Track progress in [GitHub issues](https://githu
 - Manual settlement requests through `ISettlementFeature`, with exception precedence and durable capability fallbacks.
 - Declared topology with validate and provision modes, and JSON export.
 - The [in-memory transport](transports/in-memory.md), with native queue and partitioned log semantics.
-- Core tracing primitives, delivery process spans and native settlement wrappers, consume metrics and generated failure logs. Batch-handler execution, native broker adapters and outbox instrumentation remain planned.
+- Core tracing primitives, single and batch delivery spans, native settlement wrappers, consume metrics and generated failure logs. Native broker adapters and outbox instrumentation remain planned.
 - The optional [health integration](guides/health-checks.md), with connectivity, consumer liveness and backlog checks. The outbox adapter accepts application-provided durable stores; native broker adapters remain planned.
 
 ## Phases

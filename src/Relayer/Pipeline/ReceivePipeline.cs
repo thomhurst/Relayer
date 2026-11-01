@@ -105,7 +105,11 @@ public sealed class ReceivePipeline<TIncoming, TBinding>
             }
             await _consumer.ProcessBatchAsync(batch.Contexts.AsMemory(0, count), cancellationToken).ConfigureAwait(false);
             for (var i = 0; i < count; i++)
-                dispositions.Span[i] = batch.Contexts[i].FailureDisposition ?? batch.States[i]!.Native.Disposition;
+            {
+                var native = batch.States[i]!.Native.Disposition;
+                dispositions.Span[i] = native.Kind == DispositionKind.SettledByHandler
+                    ? native : batch.Contexts[i].FailureDisposition ?? native;
+            }
         }
         finally
         {

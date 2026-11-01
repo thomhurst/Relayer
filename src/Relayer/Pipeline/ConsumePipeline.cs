@@ -20,7 +20,7 @@ public sealed class ConsumePipeline
     public bool IsBatch => BatchExecution is not null;
 
     /// <summary>Processes one batch, with one scope per batch attempt and only failed items retried.</summary>
-    /// <remarks>No native settlement is performed. Keep context memory unchanged until completion. Only use settlement decisions after the entire call succeeds.</remarks>
+    /// <remarks>Optional native settlement callbacks run after all durable work. Keep context memory unchanged until completion. Only use settlement decisions after the entire call succeeds.</remarks>
     public ValueTask ProcessBatchAsync(ReadOnlyMemory<DefaultMessageContext> contexts, CancellationToken cancellationToken = default)
         => (BatchExecution ?? throw new InvalidOperationException("Build a batch consumer before using batch dispatch."))
             .ProcessAsync(this, contexts, cancellationToken);
@@ -356,7 +356,9 @@ public sealed class ConsumePipeline
 
     internal void ValidateSettlement(Disposition disposition) => _failures?.ValidateSettlement(disposition);
 
-    private void LogFailure(DefaultMessageContext context, Exception error)
+    internal ConsumeDelegate? Settlement => _settlement;
+
+    internal void LogFailure(DefaultMessageContext context, Exception error)
     {
         if (ReferenceEquals(context.LoggedSettlementError, error))
         {

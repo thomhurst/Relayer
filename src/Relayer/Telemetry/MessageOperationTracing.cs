@@ -180,6 +180,20 @@ public sealed class MessageOperationTracing
         }
     }
 
+    internal KeyValuePair<string, object?>[] CreateBatchTags()
+    {
+        var tags = new KeyValuePair<string, object?>[_tags.Length + 1];
+        _tags.CopyTo(tags, 0);
+        return tags;
+    }
+
+    internal Activity? StartBatch(KeyValuePair<string, object?>[] tags, List<ActivityLink> links)
+    {
+        var activity = _tracing.Source.StartActivity(_name, ActivityKind.Consumer, Activity.Current?.Context ?? default, tags, links);
+        if (activity is not null) _tracing.Enrich(activity);
+        return activity;
+    }
+
     private SamplingState Rent()
     {
         for (var i = 0; i < _states.Length; i++)

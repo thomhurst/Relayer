@@ -193,7 +193,8 @@ using var batchListener = new ActivityListener
 ActivitySource.AddActivityListener(batchListener);
 var batchConsumer = new ConsumePipelineBuilder(provider.GetRequiredService<IServiceScopeFactory>(),
     provider.GetRequiredService<MessageTypeRegistry>(), serializer, static (_, error, _) => ValueTask.FromException(error))
-    .BuildBatch(handlers.GetBatchHandler<Count, CountHandler>(), batchDefinition, tracing.Source);
+    .Tracing(tracing, receiveEndpoint)
+    .BuildBatch(handlers.GetBatchHandler<Count, CountHandler>(), batchDefinition);
 var countBuffer = new ArrayBufferWriter<byte>();
 serializer.Serialize(new Count(7), countBuffer);
 var countMessage = new ConsumeMessage { MessageId = "batch-count", MessageType = new("smoke.count", 1), Body = new(countBuffer.WrittenMemory),
