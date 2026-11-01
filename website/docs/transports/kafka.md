@@ -3,7 +3,7 @@ title: Kafka
 description: "Named Kafka producers and serial consumers backed by Dekaf, with durable failure handling."
 ---
 
-`Relayer.Kafka` implements producers and serial consumer groups on [Dekaf](https://github.com/thomhurst/Dekaf). Consumers use the core failure pipeline and acknowledge offsets after durable handling, including dead-letter copies. Parallel partition scheduling, drain-on-revoke, typed tombstones, health adapters, topology management and transactions remain planned.
+`Relayer.Kafka` implements producers and serial consumer groups on [Dekaf](https://github.com/thomhurst/Dekaf). Consumers use the core failure pipeline and acknowledge offsets after durable handling, including dead-letter copies. Optional health adapters are available in `Relayer.Kafka.HealthChecks`. Parallel partition scheduling, drain-on-revoke, typed tombstones, topology management and transactions remain planned.
 
 ## Register a producer
 
@@ -87,6 +87,49 @@ Producer delivery and protocol retries use Dekaf's native retry machinery. Consu
 
 Testcontainers tests run the reusable send/settle/restart, key ordering, trace propagation, stored creation-context and broker reconnect contracts. Separate broker tests cover core retries, durable dead-letter copies, native feature cleanup, and non-commit after failed copies. Native scheduled-delivery, native redelivery and native dead-letter conformance cases do not apply to Kafka.
 
+## Health checks
+
+Reference `Relayer.Kafka.HealthChecks` for the optional native adapters:
+
+```csharp
+using Relayer.Kafka;
+using Relayer.HealthChecks;
+
+builder.Services.AddRelayerKafkaHealthProviders("events", admin =>
+{
+    admin.WithClientId("orders-health");
+    // Configure native TLS/SASL here when required by the broker.
+});
+builder.Services.AddRelayerHealthChecks(new RelayerHealthCheckOptions
+{
+    ConsumerStallTimeout = TimeSpan.FromMinutes(2),
+});
+```
+
+Use the exact case-sensitive name from `relayer.Kafka("events", ...)`. Registration can precede or follow
+`AddRelayer`. Each name gets one reusable, DI-owned Dekaf admin client with the transport's bootstrap servers
+and application's `ILoggerFactory`. The callback receives Dekaf's native `AdminClientBuilder`; configure its
+security settings explicitly because producer and consumer callbacks do not configure the admin client.
+Repeated registration preserves existing adapters, including application-supplied adapters.
+
+Connectivity uses Dekaf's live `DescribeClusterAsync(new DescribeClusterOptions(), token)` operation on every
+poll. The no-options overload uses cached metadata and is unsuitable for connectivity. The probe neither
+sends nor consumes messages, creates topics nor commits offsets. Broker errors retain their exception and
+failure text; caller cancellation propagates. Apply the native admin client's connection settings and the
+application's health-check timeout policy to bound probe latency.
+
+Liveness comes from each exact consumer declaration's receiver state. Workers waiting for native batches
+are idle and healthy regardless of elapsed time. Processing remains active through retries, durable failure
+copies and the batch commit; completed records refresh progress. The oldest active worker determines
+liveness, so idle workers and healthy declarations on the same source cannot mask a stall. Before receiver
+startup and after receiver shutdown or failure, state is unavailable and health is unhealthy. Connectivity
+and liveness are separate checks: an idle receiver does not prove broker connectivity. Parallel workers
+remain planned, but the health snapshot already aggregates every registered worker.
+
+Without this optional registration, Kafka consumers do not read the health clock or record health state.
+The Kafka transport itself has no dependency on the health-check packages. See [health integration](../guides/health-checks.md)
+for endpoint registration, thresholds and the adapter contracts.
+
 ## Performance validation
 
 `KafkaSendBenchmarks` compares acknowledged single sends and 32-message batches with raw Dekaf, with tracing disabled and `MemoryDiagnoser`. Set `RELAYER_KAFKA_BOOTSTRAP_SERVERS` to a test broker, then run:
@@ -97,4 +140,4 @@ dotnet run -c Release --project benchmarks/Relayer.Benchmarks -- --filter "*Kafk
 
 Each benchmark creates and deletes its own topic. The comparison measures the serialized adapter seam, including header conversion. It does not establish the full default-JSON send pipeline's 5% throughput budget. That acceptance gate remains part of the transport rollout.
 
-`KafkaReceiveBenchmarks` replays a fixed 4096-record topic through raw Dekaf and the production serial receive adapter. Both paths deserialize the same source-generated JSON contract and commit native fetch-batch checkpoints. Tracing is disabled and `MemoryDiagnoser` reports allocations. This comparison includes the core receive pipeline and generated handler dispatch; it does not measure the planned parallel scheduler. With the same broker environment variable set, run `--filter "*KafkaReceiveBenchmarks*"`. Results are local diagnostics, not a claim that the 5% receive budget has passed.
+`KafkaReceiveBenchmarks` replays a fixed 4096-record topic through raw Dekaf and the production serial receive adapter. Both paths deserialize the same source-generated JSON contract and commit native fetch-batch checkpoints. `HealthEnabled` compares receiver health tracking enabled and disabled against raw Dekaf. Tracing is disabled and `MemoryDiagnoser` reports allocations. This comparison includes the core receive pipeline and generated handler dispatch; it does not measure the planned parallel scheduler. With the same broker environment variable set, run `--filter "*KafkaReceiveBenchmarks*"`. Results are local diagnostics, not a claim that the 5% receive budget has passed.

@@ -781,6 +781,7 @@ hashes can change frozen dispatch-table layouts across unchanged processes.
 | `Relayer.Testing` / `.Testing.Containers` | Harness and fixtures | `Testcontainers` |
 | `Relayer.Aspire` | Aspire integration (resources and health) | `Aspire.Hosting` |
 | `Relayer.HealthChecks` | Connectivity, consumer liveness and outbox backlog health integration | `Microsoft.Extensions.Diagnostics.HealthChecks` |
+| `Relayer.Kafka.HealthChecks` | Optional native Kafka connectivity and receiver liveness adapters | `Relayer.Kafka`, `Relayer.HealthChecks` |
 | Later | `Relayer.Nats`, `Relayer.GooglePubSub`, `Relayer.Pulsar`, `Relayer.RabbitMQ.Streams`, `Relayer.Sagas` | — |
 
 Transports target the latest major version of their native client. Updating clients is part of the release cadence (Rebus #1204, Rebus.RabbitMq #137, CAP #1573).

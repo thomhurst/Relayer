@@ -22,10 +22,14 @@ public class KafkaReceiveBenchmarks
     private IKafkaConsumer<byte[], byte[]> _raw = null!;
     private IKafkaConsumer<byte[], byte[]> _native = null!;
     private KafkaConsumer _adapter = null!;
+    private KafkaWorkerHealth? _health;
     private ServiceProvider _provider = null!;
     private readonly TopicPartitionOffset[] _offset = new TopicPartitionOffset[1];
     private readonly MessageTracing _tracing = new(Options.Create(new TracingOptions()), []);
     private string _topic = null!;
+
+    [Params(false, true)]
+    public bool HealthEnabled { get; set; }
 
     [GlobalSetup]
     public async Task Setup()
@@ -57,7 +61,8 @@ public class KafkaReceiveBenchmarks
             static (_, error, _) => ValueTask.FromException(error))
             .Handler(_provider.GetRequiredService<HandlerRegistry>().GetHandler<KafkaBenchmarkPayload, KafkaBenchmarkHandler>()).Build(1);
         var receive = new ReceivePipeline<KafkaDelivery, KafkaMessageBinding>(pipeline, new(), 1);
-        _adapter = new(_native, receive.ProcessAsync, _tracing, new() { System = "kafka", Destination = _topic }, new());
+        _health = HealthEnabled ? new KafkaWorkerHealth(TimeProvider.System) : null;
+        _adapter = new(_native, receive.ProcessAsync, _tracing, new() { System = "kafka", Destination = _topic }, new(), _health);
     }
 
     private async Task<IKafkaConsumer<byte[], byte[]>> BuildConsumer(string bootstrap, string suffix)
@@ -106,7 +111,9 @@ public class KafkaReceiveBenchmarks
         var count = 0;
         await foreach (var batch in _native.ConsumeBatchAsync(timeout.Token))
         {
+            _health?.Progress();
             count += await _adapter.ProcessBatchAsync(batch, timeout.Token);
+            _health?.Idle();
             if (count >= Records) return count;
         }
         throw new InvalidOperationException("Native stream ended before all benchmark records.");
