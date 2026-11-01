@@ -52,12 +52,23 @@ public class KafkaReceiveTests
         var tombstone = Message(source, 4);
         await fixture.Transport.SendAsync(new(source, default, tombstone.Headers, tombstone.OrderingKey,
             options: new SendOptions().ConfigureNative<Dekaf.Serialization.Headers>(static headers => headers.Add(KafkaSendState.TombstoneHeader, "true"))), token);
+        // Bypass Relayer's send marker handling to simulate an untrusted source header.
+        await using var rawProducer = new ProducerBuilder<byte[], byte[]>().WithBootstrapServers(fixture.Bootstrap).Build();
+        await rawProducer.InitializeAsync(token);
+        await rawProducer.ProduceAsync(new()
+        {
+            Topic = source, Key = "customer-1"u8.ToArray(), Value = [],
+            Headers = new Dekaf.Serialization.Headers().Add("ce_id", "empty-with-marker")
+                .Add("ce_type", "tests.kafka.receive;v=1").Add("traceparent", Creation)
+                .Add(KafkaSendState.TombstoneHeader, "true")
+                .Add(new Dekaf.Serialization.Header(KafkaSendState.TombstoneHeader, (byte[]?)null)),
+        }, token);
         await fixture.Transport.SendAsync(Message(source, 3), token);
         await Assert.That(await control.Handled.Reader.ReadAsync(token)).IsEqualTo(3);
         await host.StopAsync(token);
         await Assert.That(control.FirstAttempts).IsEqualTo(2);
         await Assert.That(control.LastFeature.ConsumeResult.Topic).IsNull();
-        await Assert.That(await offsets.GetCommittedOffsetAsync(new(source, 0), token)).IsEqualTo(4L);
+        await Assert.That(await offsets.GetCommittedOffsetAsync(new(source, 0), token)).IsEqualTo(5L);
 
         await using var deadReader = new ConsumerBuilder<byte[], byte[]>().WithBootstrapServers(fixture.Bootstrap)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest).WithOffsetCommitMode(OffsetCommitMode.Manual).Build();
@@ -77,8 +88,12 @@ public class KafkaReceiveTests
         await Assert.That(deadTombstone.Value).IsNull();
         await Assert.That(deadTombstone.Headers.First(header => header.Key == "traceparent").GetValueAsString()).IsEqualTo(Creation);
         await Assert.That(deadTombstone.Headers.First(header => header.Key == "tracestate").GetValueAsString()).IsEqualTo("tenant=original");
+        var deadEmpty = (await deadReader.ConsumeOneAsync(TimeSpan.FromSeconds(30), token))!.Value;
+        await Assert.That(deadEmpty.Value).IsNotNull();
+        await Assert.That(deadEmpty.Value.Length).IsEqualTo(0);
+        await Assert.That(deadEmpty.Headers.Any(header => header.Key == KafkaSendState.TombstoneHeader)).IsFalse();
         var processes = spans.Where(span => span.Source.Name == "Relayer" && span.DisplayName == "process " + source).ToArray();
-        await Assert.That(processes.Length).IsEqualTo(4);
+        await Assert.That(processes.Length).IsEqualTo(5);
         await Assert.That(processes.Count(span => Equals(span.GetTagItem("messaging.kafka.message.tombstone"), true))).IsEqualTo(1);
         await Assert.That(processes.All(span => Equals(span.GetTagItem("messaging.consumer.group.name"), source))).IsTrue();
         await Assert.That(processes.All(span => Equals(span.GetTagItem("messaging.destination.partition.id"), "0"))).IsTrue();
@@ -112,12 +127,40 @@ public class KafkaReceiveTests
         await Assert.That(committed is null or < 0).IsTrue();
     }
 
+    [Test]
+    public async Task Failed_consumer_reaches_host_while_sibling_is_running_and_shutdown_stops_both()
+    {
+        using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(2));
+        var token = timeout.Token;
+        using var tracing = new MessageTracing(Options.Create(new TracingOptions()), []);
+        await using var fixture = (KafkaFixture)await KafkaFixture.CreateAsync(tracing, token);
+        var control = new KafkaReceiveControl();
+        using var host = BuildHost(fixture, control, missingDeadLetter: true, healthySibling: true);
+        await host.StartAsync(token);
+        await fixture.Transport.StartAsync(token);
+        await fixture.Transport.SendAsync(Message(fixture.Destination, 3), token);
+        await Assert.That(await control.Handled.Reader.ReadAsync(token)).IsEqualTo(3);
+        await Assert.That(await control.Handled.Reader.ReadAsync(token)).IsEqualTo(3);
+        var transport = host.Services.GetRequiredKeyedService<KafkaProducerTransport>("events");
+        var service = host.Services.GetServices<IHostedService>().OfType<KafkaHostedService>().Single();
+        await fixture.Transport.SendAsync(Message(fixture.Destination, 2), token);
+        await Assert.That(async () => await transport.Consumers[0].Completion.WaitAsync(token)).Throws<OperationCanceledException>();
+        await Assert.That(transport.Consumers[1].Completion.IsCompleted).IsFalse();
+        await Assert.That(async () => await service.ExecuteTask!.WaitAsync(TimeSpan.FromSeconds(10), token))
+            .Throws<OperationCanceledException>();
+        await Assert.That(async () => await host.StopAsync(token)).Throws<OperationCanceledException>();
+        await Assert.That(transport.Consumers[0].Completion.IsCompleted).IsTrue();
+        await Assert.That(transport.Consumers[1].Completion.IsCompletedSuccessfully).IsTrue();
+        await Assert.That(timeout.IsCancellationRequested).IsFalse();
+    }
+
     private const string Creation = "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01";
     private static OutgoingMessage Message(string topic, int number) => new(topic, Encoding.UTF8.GetBytes($"{{\"Number\":{number}}}"),
         new KeyValuePair<string, WireString>[] { new("ce_id", new("record-" + number)), new("ce_type", new("tests.kafka.receive;v=1")),
             new("traceparent", new(Creation)), new("tracestate", new("tenant=original")) }, new WireString("customer-1"));
 
-    private static IHost BuildHost(KafkaFixture fixture, KafkaReceiveControl control, bool missingDeadLetter = false)
+    private static IHost BuildHost(KafkaFixture fixture, KafkaReceiveControl control, bool missingDeadLetter = false,
+        bool healthySibling = false)
     {
         var builder = Host.CreateApplicationBuilder();
         builder.Logging.ClearProviders();
@@ -148,6 +191,12 @@ public class KafkaReceiveTests
                     };
                     consumer.Handler<KafkaReceiveHandler>();
                 });
+                if (healthySibling)
+                    kafka.Consume(fixture.Destination, consumer =>
+                    {
+                        consumer.Options.Group = fixture.Destination + ".sibling";
+                        consumer.Handler<KafkaReceiveHandler>();
+                    });
             });
         });
         return builder.Build();

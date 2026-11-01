@@ -128,8 +128,9 @@ internal sealed class KafkaProducerTransport : ITransport, ITransportSendTracing
     }
     public async Task StopAsync(CancellationToken cancellationToken)
     {
-        foreach (var consumer in Consumers) await consumer.StopAsync(cancellationToken).ConfigureAwait(false);
-        await _producer.FlushAsync(cancellationToken).ConfigureAwait(false);
+        // Signal every receiver before awaiting any failure or a slow batch drain.
+        try { await Task.WhenAll(Consumers.Select(consumer => consumer.StopAsync(cancellationToken))).ConfigureAwait(false); }
+        finally { await _producer.FlushAsync(cancellationToken).ConfigureAwait(false); }
     }
     public async ValueTask DisposeAsync()
     {

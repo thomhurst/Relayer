@@ -62,17 +62,18 @@ internal sealed class KafkaHostedService(IServiceProvider provider, string name)
         for (var i = 0; i < headers.Length; i++)
         {
             headers[i] = new(record.Headers[i].Key, new(record.Headers[i].Value));
-            nativeCopy |= record.Headers[i].IsValueNull;
+            nativeCopy |= record.Headers[i].IsValueNull || record.Headers[i].Key == KafkaSendState.TombstoneHeader;
         }
         if (!nativeCopy) return new(record.Topic, record.Value, headers, record.IsKeyNull ? null : new WireString(record.Key!));
         var options = new SendOptions().ConfigureNative<Headers>(native =>
         {
+            native.Remove(KafkaSendState.TombstoneHeader);
             // WireString represents bytes but not Kafka's null header value. Restore native
             // nulls on this error-only copy path, retaining duplicates in their native order.
             for (var i = 0; i < record.Headers.Count; i++)
             {
                 var header = record.Headers[i];
-                if (!header.IsValueNull || header.Key is FailureHeaders.History or FailureHeaders.Attempts or FailureHeaders.Redeliveries or FailureHeaders.DeadLetterReason) continue;
+                if (!header.IsValueNull || header.Key is KafkaSendState.TombstoneHeader or FailureHeaders.History or FailureHeaders.Attempts or FailureHeaders.Redeliveries or FailureHeaders.DeadLetterReason) continue;
                 native.Remove(header.Key);
                 for (var j = 0; j < record.Headers.Count; j++)
                     if (record.Headers[j].Key == header.Key) native.Add(record.Headers[j]);
@@ -82,11 +83,19 @@ internal sealed class KafkaHostedService(IServiceProvider provider, string name)
         return new(record.Topic, record.Value ?? [], headers, record.IsKeyNull ? null : new WireString(record.Key!), options: options);
     }
 
-    protected override Task ExecuteAsync(CancellationToken stoppingToken) => Task.WhenAll(_nativeTransport!.Consumers.Select(consumer => consumer.Completion));
+    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+    {
+        // Report each failure immediately; a healthy sibling can run indefinitely.
+        await foreach (var completion in Task.WhenEach(_nativeTransport!.Consumers.Select(consumer => consumer.Completion)).ConfigureAwait(false))
+            await completion.ConfigureAwait(false);
+    }
 
     public override async Task StopAsync(CancellationToken cancellationToken)
     {
-        if (_transport is not null) await _transport.StopAsync(cancellationToken).ConfigureAwait(false);
-        await base.StopAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            if (_transport is not null) await _transport.StopAsync(cancellationToken).ConfigureAwait(false);
+        }
+        finally { await base.StopAsync(cancellationToken).ConfigureAwait(false); }
     }
 }

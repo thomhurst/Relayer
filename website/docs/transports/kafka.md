@@ -73,6 +73,10 @@ One declaration currently processes records serially, with `Concurrency(1)` and 
 
 Inside a handler, `context.Kafka().ConsumeResult` exposes Dekaf's original record. Durable dead-letter copies retain native null values and nullable application headers. The struct view wraps a pooled `NativeMessage<KafkaDelivery>` feature and is valid only during processing. It provides native headers, key, partition, offset and timestamp without allocating a feature for each record. Null-value records receive the tombstone telemetry attribute; typed `Tombstone<T>` dispatch remains planned, so an unsupported tombstone body follows the core deserialization failure policy.
 
+Consumer failures reach the application's background-service supervision immediately, even when another consumer is still running. The host's default policy stops the application. Shutdown signals every consumer before waiting for their current batches, so a failed consumer cannot prevent its siblings from stopping. Override `HostOptions.BackgroundServiceExceptionBehavior` only when the application provides its own recovery policy.
+
+Failure copies discard any incoming `relayer.internal.kafka.tombstone` header. This private send marker cannot turn a non-null empty Kafka value into a tombstone; copies derive null-value state from the native record.
+
 ## Tracing and native feature reuse
 
 Relayer emits `send {topic}` spans with `messaging.system = kafka`. Enable `Relayer` as an activity source; enabling Dekaf's source additionally produces native child spans. The record-header serializer installs the original CloudEvents and creation-context headers after native tracing starts, preserving `traceparent` and `tracestate` rather than propagating the native send span. Broker tests cover both sources together.
