@@ -30,6 +30,7 @@ const sidebars = {
       items: [
         'transports/in-memory',
         'transports/kafka',
+        'transports/service-bus-receive',
         'transports/authoring',
         'transports/conformance',
         'transports/receive',

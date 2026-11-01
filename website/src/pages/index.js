@@ -281,6 +281,7 @@ const status = [
   ['Manual settlement requests with exception precedence', 'Implemented', true],
   ['Declared topology and JSON export', 'Implemented', true],
   ['In-memory transport for tests and samples', 'Implemented', true],
+    ['Service Bus receive binding and manual settlement', 'Implemented', true],
   ['Packaged transport conformance suite', 'Implemented', true],
   ['Test harness and standalone handler context', 'Implemented', true],
   ['Kafka producer', 'Implemented', true],

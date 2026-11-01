@@ -2,6 +2,7 @@ using System.Buffers;
 using System.Diagnostics;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using Azure.Messaging.ServiceBus;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
@@ -9,11 +10,20 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Relayer;
+using Relayer.AzureServiceBus;
 using Relayer.HealthChecks;
 using Relayer.Outbox.EntityFrameworkCore;
 using Relayer.Outbox.PostgreSql;
 using Relayer.Serialization;
 using Relayer.Transports;
+
+var serviceBusMessage = ServiceBusModelFactory.ServiceBusReceivedMessage(new BinaryData(new byte[] { 42 }),
+    properties: new Dictionary<string, object> { ["cloudEvents:type"] = "smoke;v=1" }, deliveryCount: 2);
+var serviceBusArgs = new ProcessMessageEventArgs(serviceBusMessage, new SmokeServiceBusReceiver(), "aot", default);
+if (ServiceBusBinding.GetBody(serviceBusArgs).First.Span[0] != 42 ||
+    ServiceBusBinding.GetDeliveryCount(serviceBusArgs) != 2 ||
+    !ServiceBusBinding.TryGetHeader(serviceBusArgs, "cloudEvents:type", out var serviceBusType) || serviceBusType.Text != "smoke;v=1")
+    throw new InvalidOperationException("Service Bus binding failed under Native AOT.");
 
 var postgresConnectionString = Environment.GetEnvironmentVariable("RELAYER_AOT_POSTGRES_CONNECTION");
 await using (var dataSource = new Npgsql.NpgsqlSlimDataSourceBuilder(postgresConnectionString ?? "Host=127.0.0.1;Port=1;Timeout=1").Build())
@@ -403,3 +413,5 @@ public sealed class SmokeHealthProvider : ITransportHealthProbe, IConsumerHealth
     public ValueTask<ConsumerHealthState?> GetStateAsync(IConsumerDefinition consumer, CancellationToken cancellationToken) =>
         ValueTask.FromResult<ConsumerHealthState?>(new(true, DateTimeOffset.MinValue));
 }
+
+public sealed class SmokeServiceBusReceiver : ServiceBusReceiver;
