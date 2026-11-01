@@ -6,7 +6,9 @@ description: "Commit business changes and buffered messages atomically through a
 `Relayer.Outbox.PostgreSql` registers a scoped `PostgreSqlOutbox` and `IOutboxEnlistment`.
 Messages sent in its active transaction are copied into owned buffers. `Commit` or `CommitAsync` writes
 all messages in one PostgreSQL insert, then commits the native transaction containing your business changes.
-No broker send occurs on this path. Dispatch workers, lane ownership and inbox deduplication remain planned.
+No broker send occurs on this path. ADO.NET commit-triggered dispatch remains planned.
+[Ordered PostgreSQL dispatch and lane leases](ordered-dispatch.md) are available through separate registration.
+[Inbox deduplication](ef-core-inbox.md) is available through the EF Core consumer boundary.
 Use [EF Core enlistment](ef-core-outbox.md) instead when EF owns the transaction.
 
 ## Registration

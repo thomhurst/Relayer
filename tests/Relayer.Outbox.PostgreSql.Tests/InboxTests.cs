@@ -190,6 +190,47 @@ public class InboxTests
     }
 
     [Test]
+    [Arguments(false, false, "retry")]
+    [Arguments(false, false, "deadletter")]
+    [Arguments(false, true, "retry")]
+    [Arguments(false, true, "deadletter")]
+    [Arguments(true, false, "retry")]
+    [Arguments(true, false, "deadletter")]
+    [Arguments(true, true, "retry")]
+    [Arguments(true, true, "deadletter")]
+    public async Task Settlement_requests_during_disposal_cannot_change_a_committed_outcome(bool failures, bool duplicate, string request)
+    {
+        await using var database = new Database();
+        await database.Start();
+        await using var provider = database.Services(outbox: true);
+        var control = provider.GetRequiredService<Control>();
+        var failurePipeline = failures ? new FailurePipeline(provider, "events", "source", "orders", new()) : null;
+        var settled = 0;
+        var pipeline = Pipeline(provider, failures: failurePipeline).Settle(_ => { settled++; return default; }).Build();
+        var message = Message();
+        if (duplicate) await Deliver(pipeline, message);
+        using var context = pipeline.RentContext(message);
+        control.OnDispose = () =>
+        {
+            var settlement = context.Features.GetRequired<ISettlementFeature>();
+            if (request == "retry") settlement.Retry(TimeSpan.Zero);
+            else settlement.DeadLetter("Rejected during disposal");
+        };
+        await Assert.That(async () => await pipeline.ProcessAsync(context)).Throws<InvalidOperationException>()
+            .WithMessage("Only one settlement request is allowed per processing attempt.");
+        control.OnDispose = null;
+        await Assert.That(settled).IsEqualTo(duplicate ? 1 : 0);
+        await Assert.That(await database.Count("inbox")).IsEqualTo(1L);
+        await Assert.That(await database.Count("outbox")).IsEqualTo(1L);
+        await Assert.That(await database.Orders()).IsEqualTo(1L);
+        await Assert.That(provider.GetRequiredService<Transport>().Sends).IsEqualTo(0);
+        // A fresh attempt acknowledges the committed duplicate without repeating business work.
+        await Deliver(pipeline, message);
+        await Assert.That(control.Invocations).IsEqualTo(1);
+        await Assert.That(settled).IsEqualTo(duplicate ? 2 : 1);
+    }
+
+    [Test]
     public async Task Immediate_retry_uses_a_fresh_scope_and_commits_only_the_successful_attempt()
     {
         await using var database = new Database();
@@ -282,6 +323,7 @@ public class InboxTests
         public int Invocations;
         public bool Outbox;
         public Func<MessageContext, ValueTask>? AfterSave;
+        public Action? OnDispose;
     }
 
     public sealed class Handler(OrdersContext db, ISender sender, Control control) : IHandler<Probe>
@@ -296,9 +338,14 @@ public class InboxTests
         }
     }
 
-    public sealed class OrdersContext(DbContextOptions<OrdersContext> options) : DbContext(options)
+    public sealed class OrdersContext(DbContextOptions<OrdersContext> options, Control control) : DbContext(options)
     {
         protected override void OnModelCreating(ModelBuilder modelBuilder) => modelBuilder.Entity<Order>().ToTable("orders").HasKey(x => x.Id);
+        public override async ValueTask DisposeAsync()
+        {
+            await base.DisposeAsync();
+            control.OnDispose?.Invoke();
+        }
     }
     public sealed class OtherContext(DbContextOptions<OtherContext> options) : DbContext(options);
     public sealed class Order { public Guid Id { get; set; } }

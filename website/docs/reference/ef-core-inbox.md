@@ -34,7 +34,9 @@ When that context has `AddRelayerOutbox`, the inbox is enabled automatically and
 schema and table prefix. Outbox registration on another context does not enable it. `SendAsync`
 joins the active transaction; the handler calls `SaveChangesAsync` as usual. Several saves stay in
 the same transaction. The middleware commits after the handler returns, including when handling
-produces no outgoing messages. No built-in outbox dispatcher is implemented yet.
+produces no outgoing messages. To send due unordered rows after commit, configure
+[unordered direct dispatch](direct-dispatch.md) on the selected outbox context. Without a dispatcher,
+committed rows remain pending.
 
 ## Inbox without an outbox
 
@@ -60,7 +62,13 @@ delivery inserts its own inbox row and runs the handler.
 Handler errors, failed saves, failed outbox writes and cancellation roll back the transaction before
 normal failure handling. A requested `ISettlementFeature.Retry` or `DeadLetter` also rolls back
 business changes, inbox and outbox; `Complete` commits. `RequestedDisposition` exposes the pending
-request to transaction middleware. An acknowledgement failure after commit leaves durable data
+request to transaction middleware; custom `ISettlementFeature` implementations must supply this
+property. Make settlement requests before the handler and inner middleware
+return. Before committing, the boundary requests `Complete` when no outcome is pending, including
+for duplicates. The one-request-per-attempt rule then rejects further requests during scope disposal
+with `InvalidOperationException`; disposal cannot retry or dead-letter already committed work. A
+disposal error prevents native settlement, and redelivery acknowledges the committed duplicate.
+An acknowledgement failure after commit leaves durable data
 intact, and redelivery skips the handler. Commit failures with an unknown outcome remain safe to
 redeliver: the committed inbox row determines whether the handler runs again.
 

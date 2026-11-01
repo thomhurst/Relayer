@@ -531,7 +531,9 @@ The implemented PostgreSQL EF Core consumer boundary explicitly selects its scop
 composition time, validates its provider and owns the transaction around the complete handler attempt.
 It inserts the inbox key before dispatch with `ON CONFLICT DO NOTHING`; the database unique constraint
 coordinates overlapping instances and permits a waiting delivery to run if the first rolls back.
-Outbox configuration on the selected context enables inbox deduplication automatically (D32).
+Outbox configuration on the selected context enables inbox deduplication automatically (D36).
+Before commit the boundary requests completion if no settlement outcome is pending. The existing
+one-request rule rejects settlement changes during scope disposal after the work is durable.
 See [consumer configuration and failure boundaries](https://relayer.tomlonghurst.dev/docs/reference/ef-core-inbox).
 
 ### 6.6 Multi-tenancy

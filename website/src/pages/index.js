@@ -107,7 +107,7 @@ function Layers() {
             ))}
             <div>
               <dt>traceparent</dt>
-              <dd>00-4bf92f35â€¦-00f067aaâ€¦-01</dd>
+              <dd>00-4bf92f35…-00f067aa…-01</dd>
             </div>
           </dl>
           <div className={styles.payload}>
@@ -135,7 +135,7 @@ function Hero() {
             Relayer
           </Heading>
           <p className={styles.lede}>
-            Messaging for .NET that wraps your brokerâ€™s own client. Relayer handles retries, dead-lettering, the outbox,
+            Messaging for .NET that wraps your broker’s own client. Relayer handles retries, dead-lettering, the outbox,
             tracing and serialization. Kafka, Service Bus, SQS and RabbitMQ keep sending, ordering and settling messages
             the way they already do.
           </p>
@@ -298,3 +298,47 @@ const status = [
   ['Native broker health adapters', 'Planned', false],
   ['Ordered PostgreSQL dispatch and lane leases', 'Implemented', true],
   ['Outbox recovery and cleanup', 'Planned', false],
+  ['Send and delivery tracing, settlement, metrics and logs', 'Implemented', true],
+  ['Native receive and outbox telemetry', 'Planned', false],
+];
+
+function Status() {
+  return (
+    <section className={styles.section}>
+      <div className="container">
+        <Heading as="h2" className={styles.sectionTitle}>
+          Where it stands
+        </Heading>
+        <p className={styles.sectionLede}>
+          Relayer is built in the open. This is what works on <code>main</code> today.
+        </p>
+        <table className={styles.statusTable}>
+          <tbody>
+            {status.map(([area, state, done]) => (
+              <tr key={area}>
+                <th scope="row">{area}</th>
+                <td className={done ? styles.done : styles.pending}>{state}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        <Link to="/docs/roadmap">See the full roadmap</Link>
+      </div>
+    </section>
+  );
+}
+
+export default function Home() {
+  return (
+    <Layout
+      title="Messaging for .NET that wraps your broker’s client"
+      description="Relayer wraps the native client for Kafka, Azure Service Bus, Amazon SQS/SNS and RabbitMQ, and adds resiliency, outbox/inbox, telemetry, serialization, topology and testing.">
+      <Hero />
+      <main>
+        <Split />
+        <CallSite />
+        <Status />
+      </main>
+    </Layout>
+  );
+}

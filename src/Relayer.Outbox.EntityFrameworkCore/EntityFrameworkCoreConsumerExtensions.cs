@@ -10,6 +10,8 @@ public static class EntityFrameworkCoreConsumerExtensions
     /// <summary>Wraps handling in one PostgreSQL transaction. Inbox is automatic with AddRelayerOutbox, otherwise opt in.</summary>
     /// <remarks>
     /// Register first, before other middleware. Handlers save changes but must not commit, roll back or replace this transaction.
+    /// Request retry or dead-letter before returning from handling. Before commit the boundary requests completion
+    /// if no outcome is pending; further settlement requests, including during scope disposal, throw.
     /// Use a stable consumer identity across replicas and restarts. Batch consumers are not supported.
     /// </remarks>
     public static ConsumePipelineBuilder EntityFrameworkCore<TContext>(this ConsumePipelineBuilder builder,

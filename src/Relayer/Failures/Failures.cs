@@ -24,6 +24,7 @@ public interface IFailureClassifier
 /// <remarks>
 /// Get from MessageContext.Features. One request is allowed per attempt. A handler or middleware exception
 /// overrides the request; cancellation, scope disposal and durable-write failures prevent settlement.
+/// Transaction boundaries may request completion before commit; further requests during scope disposal then throw.
 /// Do not retain this pooled feature beyond processing. Native settlement is deferred until durable work succeeds.
 /// </remarks>
 public interface ISettlementFeature

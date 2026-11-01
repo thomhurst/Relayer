@@ -46,6 +46,7 @@ To change a decision, add a new entry that supersedes it rather than editing his
 | [D33](#d33-commit-triggered-dispatch-transfers-owned-buffers-to-a-named-worker) | Commit-triggered dispatch transfers owned buffers to a named worker | Accepted |
 | [D34](#d34-ordered-postgresql-dispatch-drains-a-locked-lane-before-transfer) | Ordered PostgreSQL lane ownership and transfer | Accepted |
 | [D35](#d35-direct-dispatch-bounds-endpoint-capability-retention) | Direct dispatch bounds endpoint capability retention | Accepted |
+| [D36](#d36-an-explicit-ef-core-consumer-boundary-owns-the-inbox-transaction) | An explicit EF Core consumer boundary owns the inbox transaction | Accepted |
 
 ---
 
@@ -659,7 +660,9 @@ normal native settlement. A rollback lets the waiting delivery process the origi
 
 **Consequences.** Handler saves do not commit the unit. Exceptions, cancellation and non-complete
 settlement requests roll back business data, inbox and outgoing rows before ordinary failure handling.
-Successful handling commits before scope disposal and native settlement. Native acknowledgement loss
+Successful handling requests completion if no outcome is pending, then commits before scope disposal
+and native settlement. The one-request rule rejects any later settlement request, so disposal cannot
+retry or dead-letter work after commit. Native acknowledgement loss
 therefore redelivers safely. Retrying EF strategies, pooled contexts, ambient transactions and batch
 consumers are rejected; Relayer retries with fresh scopes instead. Handlers must not end the owned
 transaction or perform native settlement. Inbox retention remains separate work.

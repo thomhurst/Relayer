@@ -32,6 +32,7 @@ internal sealed class EntityFrameworkCoreConsumer<TContext>(string consumer, boo
                 // The unique key waits for an overlapping transaction. A rollback lets this insert succeed.
                 if (await command.ExecuteNonQueryAsync(cancellation).ConfigureAwait(false) == 0)
                 {
+                    RequestCompletion(context);
                     await transaction.CommitAsync(cancellation).ConfigureAwait(false);
                     instrumentation.RecordInboxDuplicate(consumer);
                     return;
@@ -44,13 +45,23 @@ internal sealed class EntityFrameworkCoreConsumer<TContext>(string consumer, boo
             if (disposition is { Kind: not DispositionKind.Complete })
                 await transaction.RollbackAsync(cancellation).ConfigureAwait(false);
             else
+            {
+                RequestCompletion(context);
                 await transaction.CommitAsync(cancellation).ConfigureAwait(false);
+            }
         }
         finally
         {
             // Disposal rolls back on every exception and cancellation path before failure handling runs.
             await transaction.DisposeAsync().ConfigureAwait(false);
         }
+    }
+
+    private static void RequestCompletion(MessageContext context)
+    {
+        // Fix the outcome before commit. Scope disposers cannot reject work that is already durable.
+        if (context.Features.Get<ISettlementFeature>() is { RequestedDisposition: null } settlement)
+            settlement.Complete();
     }
 
     internal static Guid ParseMessageId(string messageId)

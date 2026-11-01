@@ -12,3 +12,81 @@ and [EF Core transaction enlistment for PostgreSQL](ef-core-outbox.md).
 Recovery polling remains planned.
 [Inbox deduplication](ef-core-inbox.md) is implemented
 through the EF Core consumer boundary, separately from the read/claim store contract.
+
+## Register a named store
+
+Use normal keyed DI with an explicit, case-sensitive name. This example assumes an application-supplied
+`OrdersOutboxStore` that implements `IOutboxStore`; Relayer does not ship that type:
+
+```csharp
+using Relayer;
+using Relayer.HealthChecks;
+
+services.AddKeyedScoped<IOutboxStore, OrdersOutboxStore>("orders-store");
+services.AddRelayerOutboxHealthProvider("orders-store");
+services.AddRelayerHealthChecks(new RelayerHealthCheckOptions
+{
+    OutboxNames = ["orders-store"]
+});
+```
+
+The optional `Relayer.HealthChecks` package adapts the store's pending count to health thresholds. The core
+does not depend on health abstractions. Register stores separately from scoped `IOutboxEnlistment` services:
+enlistment writes through the application's native transaction, while `IOutboxStore` serves dispatch and health.
+Neither registration enables a background dispatcher.
+
+The send pipeline calls `IOutboxEnlistment.EnlistAsync(OutboxRecord, CancellationToken)` with the original
+identity, wire type and creation time. The enlistment takes owned copies of borrowed payload memory before
+returning and persists buffered rows before transaction commit. These metadata fields remain available in raw
+envelope mode and with custom header names. New records have no dispatch attempts, error or caller-supplied lane.
+
+## Rows and bounded reads
+
+An `OutboxRecord` contains the original UUIDv7 ID, named transport, stable wire message type including version,
+serialized `OutgoingMessage`, creation time, optional lane, attempt count, last error and optional tenant ID.
+Never substitute a CLR type name or generate a new envelope when reading a row. Preserve native header names
+and values, the CloudEvents identity and creation context, body, ordering key and delivery time. Reject native
+callbacks before transactional writes; callbacks cannot be persisted.
+
+`ReadPendingAsync(request, destination, cancellationToken)` fills caller-owned `Memory<OutboxRecord>` and returns
+the number of rows written. A zero-length buffer returns zero. `OutboxReadRequest` selects one nonnegative lane,
+or null for unordered rows, a fixed time instant and an optional exclusive `AfterId`. Results use ascending UUIDv7
+ID order. A cursor bounds a scan; a later sweep must start without a cursor to revisit rows that become eligible.
+
+Rows are eligible when they are pending, not parked or dead, their `DeliverAt` is null or at most the query time,
+and they have no live claim. A claim expires when its expiry is at most the query time. Compare timestamps as
+UTC instants. Reads do not claim rows, so the dispatcher must claim again before sending. A read or claim does
+not establish ordering: ordered dispatch also needs a lane lease protocol, such as the [PostgreSQL worker](ordered-dispatch.md).
+
+Providers may reuse payload buffers. Borrowed body, headers and ordering-key memory remain valid until the
+next read on that store instance or its disposal. Finish all sends before another read. Callers own the row slots
+and clear the slots after use. Store instances need not support concurrent calls.
+
+## Claims and outcomes
+
+`OutboxClaim` combines the message ID with a new nonempty fencing token for one attempt. Never reuse a token.
+`TryClaimAsync` checks current eligibility atomically and stores the token and expiry. The expiry must be later
+than the supplied current time. An absent or ineligible row returns false without mutation.
+
+`RenewClaimAsync` extends a matching live claim without shortening its expiry. `CompleteAsync` deletes a sent
+row. `RecordFailureAsync` increments attempts, persists the error and releases the claim in one operation.
+Repeating a failure operation with the released token must not increment attempts again. All three operations
+require a matching token and a claim that is still live at the supplied time; otherwise they return false without
+mutation. Empty IDs/tokens, invalid claim expiry and null error text are invalid arguments. Poison-row movement
+and key parking belong to a separate integration.
+
+All mutations are atomic and durable before completion. Observe cancellation and propagate database errors.
+Cancellation or an error can occur after a database commit; callers must tolerate that uncertainty and
+at-least-once delivery. An expired dispatcher cannot update a row reclaimed with a newer token. Fencing database
+updates does not undo a broker send, so duplicate delivery after a crash or lost claim remains possible.
+
+## Eligible backlog
+
+`GetPendingCountAsync(now, cancellationToken)` uses the same eligibility rules across all lanes without an ID
+filter. Count rows, not keys or lanes. Include schedules exactly at `now` and expired claims; exclude future
+schedules, live claims and parked/dead rows. Return zero only after a successful query finds no eligible rows.
+Return null for an unavailable count and propagate query errors rather than returning zero.
+
+The [health adapter](../guides/health-checks.md) forwards the query time and cancellation token without changing
+the result. Provider implementations must verify these predicates and threshold inputs against real database
+fixtures; the core adapter's unit tests do not establish database correctness.
