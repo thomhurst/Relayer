@@ -102,11 +102,18 @@ The gate fails when any case:
   baseline intervals; its throughput percentage uses the first baseline.
   Separate process runs can still vary; bracketing does not prove unchanged
   performance or eliminate all runner noise;
-- increases allocations by more than **0.5 B/op**, a sub-byte allowance for
+- increases **per-message** allocations by more than **0.5 B/op**, a sub-byte allowance for
   amortization and rounding, not an extra allocation budget. The candidate must
   satisfy this limit against **each** baseline, so a noisier repeat cannot hide
   an allocation increase;
 - takes **50 ms or more** to compose 100 handlers.
+
+Startup allocation totals remain visible but are informational. D18 sets an
+allocation budget per message and a time budget for startup. Building frozen
+dispatch tables can allocate different bucket layouts across processes because
+message identities use randomized hashes. The same unchanged 100-handler
+composition can therefore report different allocation totals. This does not
+relax the per-message allocation threshold or the startup time budget.
 
 Missing, duplicated, invalid, failed or mismatched benchmark cases fail closed,
 including an incomplete or missing requested baseline repeat. Local comparisons

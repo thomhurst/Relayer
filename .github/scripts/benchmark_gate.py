@@ -122,15 +122,18 @@ def compare(baseline, candidate, *, baseline_after=None, enforce_startup_budget=
         upper = max(before.upper_ns, repeated.upper_ns)
         allocated = min(before.allocated_bytes, repeated.allocated_bytes)
         throughput_failure = max(0, after.lower_ns) > upper / (1 - MAX_THROUGHPUT_LOSS)
+        startup = (after.type_name, after.method) == ("StartupBenchmarks", "Build100Handlers")
         reasons = []
         if throughput_failure:
             reasons.append("throughput loss exceeds 5%")
-        if after.allocated_bytes > allocated + ALLOCATION_TOLERANCE_BYTES:
+        if not startup and after.allocated_bytes > allocated + ALLOCATION_TOLERANCE_BYTES:
             reasons.append("allocations increased by more than 0.5 B/op")
-        if enforce_startup_budget and (after.type_name, after.method) == ("StartupBenchmarks", "Build100Handlers") and after.mean_ns >= STARTUP_LIMIT_NS:
+        if enforce_startup_budget and startup and after.mean_ns >= STARTUP_LIMIT_NS:
             reasons.append("100-handler startup is not under 50 ms")
         inconclusive = after.mean_ns > min(before.mean_ns, repeated.mean_ns) / (1 - MAX_THROUGHPUT_LOSS) and not throughput_failure
         statuses = reasons + (["INCONCLUSIVE: observed throughput loss exceeds 5%; confidence bounds or baseline drift prevent confirmation"] if inconclusive else [])
+        if startup:
+            statuses.append("startup allocations are informational")
         status = "; ".join(statuses) if statuses else "PASS"
         repeat_interval = "not measured" if baseline_after is None else f"[{repeated.lower_ns:g}, {repeated.upper_ns:g}]"
         repeat_allocated = "not measured" if baseline_after is None else f"{repeated.allocated_bytes:g}"
@@ -140,7 +143,7 @@ def compare(baseline, candidate, *, baseline_after=None, enforce_startup_budget=
         "",
         "This gate measures regressions against main, not proof of the raw-client 5% budget.",
         "Throughput fails only when the candidate lower confidence bound exceeds each baseline upper bound / 0.95. Overlapping bounds or drift with an observed loss are inconclusive, not proof of unchanged performance.",
-        "Allocations must stay within 0.5 B/op of both baselines; the candidate startup budget remains under 50 ms.",
+        "Per-message allocations must stay within 0.5 B/op of both baselines; startup allocations are informational and the candidate startup budget remains under 50 ms.",
         "Total receive allocations include fresh DI scopes. Equal scoped baselines establish only zero incremental composition allocations.",
         "D18 still requires zero pipeline allocations, excluding serializer/native-client allocations; existing positive totals remain visible above.",
     ])
@@ -152,7 +155,8 @@ def self_test(cases):
     failures, _ = compare(cases, cases, baseline_after=cases, enforce_startup_budget=False)
     if failures:
         raise GateError("Detector self-test rejected identical measurements: " + "; ".join(failures))
-    identity = next(iter(cases))
+    identity = next(identity for identity, case in cases.items()
+                    if (case.type_name, case.method) != ("StartupBenchmarks", "Build100Handlers"))
     slow = dict(cases)
     measurement = cases[identity]
     # Translate the whole interval to prove detection even when the original run is noisy.

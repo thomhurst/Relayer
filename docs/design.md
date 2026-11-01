@@ -728,7 +728,9 @@ overhead compliance. Fresh receive DI scope costs remain in the reported totals;
 zero incremental composition allocations do not establish zero total pipeline allocations.
 CI brackets the candidate with two fixed baseline executions to expose runner
 drift. A throughput regression must exceed 5% against both; allocation increases
-must stay within 0.5 B/op of each baseline, and candidate startup stays under 50 ms.
+on the per-message path must stay within 0.5 B/op of each baseline, and candidate
+startup stays under 50 ms. Startup allocation totals are informational: randomized
+hashes can change frozen dispatch-table layouts across unchanged processes.
 
 ---
 

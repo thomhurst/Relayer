@@ -163,6 +163,32 @@ class BenchmarkGateTests(unittest.TestCase):
         after["Benchmarks"][0]["Memory"]["BytesAllocatedPerOperation"] += 0.5
         self.assertEqual([], self.compare(report(), after))
 
+    def test_startup_allocations_are_reported_without_a_per_message_budget(self):
+        before, candidate, after = report(), report(), report()
+        for data, allocated in ((before, 94640), (candidate, 96560), (after, 95520)):
+            startup = next(case for case in data["Benchmarks"] if case["Type"] == "StartupBenchmarks")
+            startup["Memory"]["BytesAllocatedPerOperation"] = allocated
+        first = gate.load_reports(self.write("before", before))
+        current = gate.load_reports(self.write("candidate", candidate))
+        last = gate.load_reports(self.write("after", after))
+        for repeat in (None, last):
+            failures, summary = gate.compare(first, current, baseline_after=repeat)
+            self.assertEqual([], failures)
+            self.assertIn("94640", summary)
+            self.assertIn("96560", summary)
+            self.assertIn("startup allocations are informational", summary)
+        measurement(next(case for case in candidate["Benchmarks"] if case["Type"] == "StartupBenchmarks"), gate.STARTUP_LIMIT_NS)
+        current = gate.load_reports(self.write("candidate", candidate))
+        failures, _ = gate.compare(first, current, baseline_after=last)
+        self.assertTrue(any("not under 50 ms" in failure for failure in failures))
+
+    def test_self_test_injects_per_message_allocations_when_startup_is_first(self):
+        data = report()
+        data["Benchmarks"].sort(key=lambda case: case["Type"] != "StartupBenchmarks")
+        cases = gate.load_reports(self.write("startup-first", data))
+        with contextlib.redirect_stdout(io.StringIO()):
+            gate.self_test(cases)
+
     def test_startup_absolute_budget_fails_even_when_baseline_is_equal(self):
         data = report()
         measurement(next(case for case in data["Benchmarks"] if case["Type"] == "StartupBenchmarks"), gate.STARTUP_LIMIT_NS)
