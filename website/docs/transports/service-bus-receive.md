@@ -3,7 +3,7 @@ title: Service Bus receive primitives
 description: "Use the native Service Bus callback with Relayer's receive pipeline and manual settlement view."
 ---
 
-`Relayer.AzureServiceBus` provides a `ServiceBusBinding` for `ProcessMessageEventArgs` and a borrowed `context.ServiceBus()` view. These are low-level building blocks for applications that already own an Azure SDK processor. The complete named transport registration, send adapter, sessions, topology, health adapters and transport instrumentation remain planned in [#24](https://github.com/thomhurst/Relayer/issues/24).
+`Relayer.AzureServiceBus` provides a `ServiceBusBinding` for `ProcessMessageEventArgs` and a borrowed `context.ServiceBus()` view. These are low-level building blocks for applications that already own an Azure SDK processor. [Named sending, client ownership and topology](service-bus.md) are implemented independently. Complete receiver composition, session processor bindings and health adapters remain planned in [#130](https://github.com/thomhurst/Relayer/issues/130).
 
 Compose a [consume pipeline](consume-pipeline.md) with generated handlers, serialization and an explicit durable failure delegate. Then adapt your existing native processor:
 

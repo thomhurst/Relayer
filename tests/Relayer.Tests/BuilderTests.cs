@@ -9,6 +9,30 @@ namespace Relayer.Tests;
 public class BuilderTests
 {
     [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Send_defaults_apply_to_later_routes_and_route_overrides_take_precedence(bool replace)
+    {
+        var services = new ServiceCollection();
+        services.AddRelayer(relayer => relayer.AddTransport<BrokerOptions, RouteOptions, ConsumerOptions>("events", broker =>
+        {
+            broker.Send<OrderPlaced>("before");
+            broker.SendDefaults = new() { Source = "/defaults", HeaderNames = new("cloudEvents:") };
+            broker.Send<OrderCancelled>("after", route =>
+            {
+                if (replace) route.SendOptions = new() { Source = "/override", HeaderNames = new("custom:") };
+            });
+        }));
+        await using var provider = services.BuildServiceProvider();
+        var routes = provider.GetRequiredService<RelayerConfiguration>().Transports[0].Routes;
+        var before = (RouteDefinition<OrderPlaced, RouteOptions>)routes[0];
+        var after = (RouteDefinition<OrderCancelled, RouteOptions>)routes[1];
+        await Assert.That(before.SendOptions.HeaderNames.Id).IsEqualTo("ce_id");
+        await Assert.That(after.SendOptions.HeaderNames.Id).IsEqualTo(replace ? "custom:id" : "cloudEvents:id");
+        await Assert.That(after.SendOptions.Source).IsEqualTo(replace ? "/override" : "/defaults");
+    }
+
+    [Test]
     public async Task Configuration_call_site_preserves_native_types_and_typed_keys()
     {
         var services = new ServiceCollection();
@@ -160,6 +184,7 @@ public class BuilderTests
         await Assert.That(() => root!.AddTransport<BrokerOptions, RouteOptions, ConsumerOptions>("late", _ => { }))
             .Throws<InvalidOperationException>();
         await Assert.That(() => transport!.Send<OrderCancelled>("late")).Throws<InvalidOperationException>();
+        await Assert.That(() => transport!.SendDefaults = new()).Throws<InvalidOperationException>();
         await Assert.That(() => consumer!.Concurrency(10)).Throws<InvalidOperationException>();
         var serviceCount = root!.Services.Count;
         await Assert.That(() => consumer!.Handler<OrderHandler>()).Throws<InvalidOperationException>();

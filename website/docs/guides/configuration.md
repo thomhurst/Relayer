@@ -3,7 +3,7 @@ title: Configuration
 description: "Declare transports, routes and consumers, bind native options, and understand what Relayer validates at startup."
 ---
 
-`AddRelayer` is the single entry point. Inside it you register message types and handlers, then declare each transport with its routes and consumers. Transport packages wrap `AddTransport` in extensions such as `AddKafka` or `AddAzureServiceBus` and supply their native option types; until they ship, the core surface below is what you call.
+`AddRelayer` is the single entry point. Inside it you register message types and handlers, then declare each transport with its routes and consumers. Transport packages wrap `AddTransport` in typed extensions such as [`Kafka`](../transports/kafka.md) or [`ServiceBus`](../transports/service-bus.md) and supply their native option types. The generic core surface below also supports transport authors and adapters whose named integration has not shipped yet.
 
 ```csharp
 var services = new ServiceCollection();
@@ -34,6 +34,8 @@ public sealed class ConsumerOptions { public string Group { get; set; } = ""; }
 ```
 
 `Send<T>` declares a destination. Publishing versus sending is native routing (a topic or exchange fans out, a queue does not), not a separate API. An ordering selector derives the native partition key, session ID or message group ID. `string` and `IUtf8SpanFormattable` values such as `Guid` stay typed, so a scalar key is formatted without boxing.
+
+`broker.SendDefaults` supplies portable `SendRouteOptions` for routes declared afterward. A route's explicit `route.SendOptions` replaces those defaults. Transport packages use this to supply their native CloudEvents header binding; Service Bus defaults to `cloudEvents:`, while generic core routes retain `ce_`. Assign defaults before declaring routes, and preserve the binding when replacing the full options object. Defaults are captured at registration and cannot be changed through a retained builder afterward.
 
 Transport names are case-sensitive and unique across all transport kinds. Several transports can use the same option type with independent named configuration; read them through `IOptionsMonitor<BrokerOptions>.Get("events")`. Call `AddRelayer` once per service collection; a second call throws.
 
