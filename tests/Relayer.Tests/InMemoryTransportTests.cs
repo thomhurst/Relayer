@@ -420,13 +420,20 @@ public class InMemoryTransportTests
     {
         await using var transport = Transport();
         var entered = Signal();
+        var unwinding = Signal();
+        var release = Signal();
         var values = Channel.CreateUnbounded<int>();
         transport.RegisterConsumer("orders", async (delivery, token) =>
         {
             if (delivery.Attempt == 1)
             {
                 entered.SetResult();
-                await Task.Delay(Timeout.InfiniteTimeSpan, token);
+                try { await Task.Delay(Timeout.InfiniteTimeSpan, token); }
+                finally
+                {
+                    unwinding.SetResult();
+                    await release.Task;
+                }
             }
             values.Writer.TryWrite(delivery.Attempt);
             return Disposition.Complete;
@@ -437,11 +444,90 @@ public class InMemoryTransportTests
         using var cancellation = new CancellationTokenSource();
         var stop = transport.StopAsync(cancellation.Token);
         cancellation.Cancel();
-        try { await stop; } catch (OperationCanceledException) { }
+        try
+        {
+            await Assert.That(async () => await stop.WaitAsync(Limit)).Throws<OperationCanceledException>();
+            await unwinding.Task.WaitAsync(Limit);
+            await Assert.That(transport.Completion.IsCompleted).IsFalse();
+            await Assert.That(() => transport.StartAsync(default)).Throws<InvalidOperationException>();
+        }
+        finally { release.TrySetResult(); }
         await transport.Completion.WaitAsync(Limit);
-        await transport.StopAsync(default);
         await transport.StartAsync(default);
         await Assert.That(await Next(values)).IsEqualTo(2);
+        await transport.StopAsync(default);
+    }
+
+    [Test]
+    public async Task Start_with_suppressed_execution_context_preserves_suppression_and_isolates_consumers()
+    {
+        await using var transport = Transport();
+        var ambient = new AsyncLocal<string?> { Value = "caller" };
+        var seen = new TaskCompletionSource<string?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        transport.RegisterConsumer("orders", (_, _) =>
+        {
+            seen.SetResult(ambient.Value);
+            return new(Disposition.Complete);
+        });
+        Task start;
+        using (ExecutionContext.SuppressFlow())
+        {
+            start = transport.StartAsync(default);
+            if (!ExecutionContext.IsFlowSuppressed()) throw new InvalidOperationException("Caller suppression was restored early.");
+        }
+        await start;
+        await Send(transport, 1);
+        await Assert.That(await seen.Task.WaitAsync(Limit)).IsNull();
+        await transport.StopAsync(default);
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Full_partition_does_not_block_scheduled_delivery_to_other_partitions(bool log)
+    {
+        var clock = new InMemoryTestClock();
+        await using var transport = Transport(new()
+        {
+            Capacity = 3,
+            Partitions = 4,
+            Capabilities = new() { ConsumptionModel = log ? ConsumptionModel.Log : ConsumptionModel.Queue, OrderedByKey = true, MaxDeliveryDelay = TimeSpan.FromHours(1) },
+        }, clock);
+        var entered = Signal();
+        var release = Signal();
+        var values = Channel.CreateUnbounded<int>();
+        transport.RegisterConsumer("orders", async (delivery, token) =>
+        {
+            if (Value(delivery) == 1)
+            {
+                entered.SetResult();
+                await release.Task.WaitAsync(token);
+            }
+            values.Writer.TryWrite(Value(delivery));
+            return Disposition.Complete;
+        }, log ? "workers" : null, 4);
+        await transport.StartAsync(default);
+        try
+        {
+            await Send(transport, 1, "a");
+            await entered.Task.WaitAsync(Limit);
+            // Fill the partition, plus the group queue and fan-out pending slot for logs.
+            var last = log ? 8 : 4;
+            for (var i = 2; i <= last; i++) await Send(transport, i, "a").AsTask().WaitAsync(Limit);
+            await Send(transport, 20, "a", clock.GetUtcNow().AddMinutes(1));
+            await clock.NextTimer();
+            await Send(transport, 21, "b", clock.GetUtcNow().AddMinutes(2));
+            await clock.NextTimer();
+            clock.Advance(TimeSpan.FromMinutes(2));
+            await Assert.That(await Next(values)).IsEqualTo(21);
+            var stop = transport.StopAsync(default);
+            release.SetResult();
+            await stop.WaitAsync(Limit);
+            await transport.StartAsync(default);
+            for (var i = 1; i <= last; i++) await Assert.That(await Next(values)).IsEqualTo(i);
+            await Assert.That(await Next(values)).IsEqualTo(20);
+        }
+        finally { release.TrySetResult(); }
         await transport.StopAsync(default);
     }
 

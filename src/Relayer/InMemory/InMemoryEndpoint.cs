@@ -8,8 +8,8 @@ internal sealed class InMemoryEndpoint
     private readonly string _name;
     private readonly InMemoryMessage?[] _pool;
     private readonly Channel<InMemoryMessage>[] _partitions;
-    private readonly Channel<InMemoryMessage> _scheduled;
-    private readonly PriorityQueue<InMemoryMessage, DateTimeOffset> _due = new();
+    private readonly Channel<InMemoryMessage>[] _scheduled;
+    private readonly PriorityQueue<InMemoryMessage, DateTimeOffset>[] _due;
     private readonly Channel<byte> _sendSlots;
     private readonly Dictionary<string, Channel<InMemoryMessage>[]> _groups = new(StringComparer.Ordinal);
     private readonly List<InMemoryReceiver> _receivers = [];
@@ -43,7 +43,9 @@ internal sealed class InMemoryEndpoint
         _partitions = CreatePartitions(options.Partitions);
         _fanOut = new FanOut[options.Partitions];
         for (var i = 0; i < _fanOut.Length; i++) _fanOut[i] = new(new(_partitions[i], _wakeup));
-        _scheduled = CreateChannel();
+        _scheduled = CreatePartitions(options.Partitions);
+        _due = new PriorityQueue<InMemoryMessage, DateTimeOffset>[options.Partitions];
+        for (var i = 0; i < _due.Length; i++) _due[i] = new();
         var slots = checked(_capacity * options.Partitions);
         _sendSlots = Channel.CreateBounded<byte>(slots);
         for (var i = 0; i < slots; i++) _sendSlots.Writer.TryWrite(0);
@@ -150,12 +152,17 @@ internal sealed class InMemoryEndpoint
 
     internal ValueTask EnqueueAsync(InMemoryMessage message, CancellationToken cancellationToken) =>
         message.DeliverAt is { } due && due > Clock.GetUtcNow()
-            ? _scheduled.Writer.WriteAsync(message, cancellationToken)
+            ? _scheduled[message.Partition].Writer.WriteAsync(message, cancellationToken)
             : _partitions[message.Partition].Writer.WriteAsync(message, cancellationToken);
 
     internal void Start(List<Task> tasks, CancellationToken stop, CancellationToken abort)
     {
-        tasks.Add(Task.Run(() => ScheduleAsync(stop), CancellationToken.None));
+        // A full partition must not suspend scheduled delivery to independent partitions.
+        for (var i = 0; i < _partitions.Length; i++)
+        {
+            var partition = i;
+            tasks.Add(Task.Run(() => ScheduleAsync(partition, stop), CancellationToken.None));
+        }
         if (Capabilities.ConsumptionModel == ConsumptionModel.Log && _groups.Count != 0)
         {
             var groups = _groups.Values.ToArray(); // Frozen once at first start; no per-message discovery.
@@ -168,33 +175,35 @@ internal sealed class InMemoryEndpoint
         foreach (var receiver in _receivers) tasks.Add(Task.Run(() => receiver.RunAsync(stop, abort), CancellationToken.None));
     }
 
-    private async Task ScheduleAsync(CancellationToken stop)
+    private async Task ScheduleAsync(int partition, CancellationToken stop)
     {
+        var scheduled = _scheduled[partition];
+        var due = _due[partition];
         try
         {
             while (!stop.IsCancellationRequested)
             {
                 // Admission credits bound all retained messages, including the heap and group queues.
-                while (_scheduled.Reader.TryRead(out var incoming))
-                    _due.Enqueue(incoming, incoming.DeliverAt!.Value);
-                if (_due.TryPeek(out var message, out var at))
+                while (scheduled.Reader.TryRead(out var incoming))
+                    due.Enqueue(incoming, incoming.DeliverAt!.Value);
+                if (due.TryPeek(out var message, out var at))
                 {
                     var delay = at - Clock.GetUtcNow();
                     if (delay <= TimeSpan.Zero)
                     {
-                        await _partitions[message.Partition].Writer.WriteAsync(message, stop).ConfigureAwait(false);
-                        _due.Dequeue();
+                        await _partitions[partition].Writer.WriteAsync(message, stop).ConfigureAwait(false);
+                        due.Dequeue();
                         continue;
                     }
                     using var timeout = new CancellationTokenSource(delay > TimeSpan.FromDays(1) ? TimeSpan.FromDays(1) : delay, Clock);
                     using var wait = CancellationTokenSource.CreateLinkedTokenSource(stop, timeout.Token);
                     try
                     {
-                        await _scheduled.Reader.WaitToReadAsync(wait.Token).ConfigureAwait(false);
+                        await scheduled.Reader.WaitToReadAsync(wait.Token).ConfigureAwait(false);
                     }
                     catch (OperationCanceledException) when (!stop.IsCancellationRequested) { }
                 }
-                else await _scheduled.Reader.WaitToReadAsync(stop).ConfigureAwait(false);
+                else await scheduled.Reader.WaitToReadAsync(stop).ConfigureAwait(false);
             }
         }
         catch (OperationCanceledException) when (stop.IsCancellationRequested) { }
@@ -239,9 +248,8 @@ internal sealed class InMemoryEndpoint
 
     internal void Dispose()
     {
-        _scheduled.Writer.TryComplete();
-        while (_scheduled.Reader.TryRead(out _)) { }
-        _due.Clear();
+        foreach (var scheduled in _scheduled) { scheduled.Writer.TryComplete(); while (scheduled.Reader.TryRead(out _)) { } }
+        foreach (var due in _due) due.Clear();
         foreach (var partition in _partitions) { partition.Writer.TryComplete(); while (partition.Reader.TryRead(out _)) { } }
         foreach (var group in _groups.Values)
             foreach (var partition in group) { partition.Writer.TryComplete(); while (partition.Reader.TryRead(out _)) { } }

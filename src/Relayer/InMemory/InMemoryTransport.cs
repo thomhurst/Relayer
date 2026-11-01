@@ -123,16 +123,37 @@ public sealed class InMemoryTransport : ITransport
         _abort = new();
         var tasks = new List<Task>();
         // Native background receive loops must not inherit the caller's ambient producer Activity or scope.
-        var flow = ExecutionContext.IsFlowSuppressed() ? default : ExecutionContext.SuppressFlow();
-        using (flow)
+        try
         {
-            foreach (var endpoint in _endpoints.Values) endpoint.Start(tasks, _stop.Token, _abort.Token);
+            if (ExecutionContext.IsFlowSuppressed()) StartLoops(tasks);
+            else
+            {
+                using (ExecutionContext.SuppressFlow()) StartLoops(tasks);
+            }
+        }
+        catch
+        {
+            _stop.Cancel();
+            _abort.Cancel();
+            Completion = ObserveCompletionAsync(Task.WhenAll(tasks));
+            throw;
         }
         foreach (var task in tasks)
             _ = task.ContinueWith(static (_, state) => ((CancellationTokenSource)state!).Cancel(), _stop,
                 CancellationToken.None, TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
-        Completion = Task.WhenAll(tasks);
+        Completion = ObserveCompletionAsync(Task.WhenAll(tasks));
         return Task.CompletedTask;
+    }
+
+    private void StartLoops(List<Task> tasks)
+    {
+        foreach (var endpoint in _endpoints.Values) endpoint.Start(tasks, _stop!.Token, _abort!.Token);
+    }
+
+    private async Task ObserveCompletionAsync(Task loops)
+    {
+        try { await loops.ConfigureAwait(false); }
+        finally { Interlocked.Exchange(ref _running, 0); }
     }
 
     /// <inheritdoc />
@@ -148,7 +169,6 @@ public sealed class InMemoryTransport : ITransport
             _abort!.Cancel();
             throw;
         }
-        finally { if (Completion.IsCompleted) Interlocked.Exchange(ref _running, 0); }
     }
 
     /// <inheritdoc />
