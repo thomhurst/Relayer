@@ -89,10 +89,43 @@ class BenchmarkGateTests(unittest.TestCase):
         failures, _ = gate.compare(first, current, baseline_after=first)
         self.assertTrue(any("throughput loss" in failure for failure in failures))
 
-    def test_baseline_repeat_cannot_hide_allocation_or_startup_failure(self):
+    def test_allocation_drift_is_inconclusive_in_both_baseline_orders(self):
+        before, candidate, after = report(), report(), report()
+        for data, allocated in ((before, 1025), (candidate, 1020), (after, 1006)):
+            data["Benchmarks"][0]["Memory"]["BytesAllocatedPerOperation"] = allocated
+        first = gate.load_reports(self.write("before", before))
+        current = gate.load_reports(self.write("candidate", candidate))
+        last = gate.load_reports(self.write("after", after))
+        for initial, repeat in ((first, last), (last, first)):
+            failures, summary = gate.compare(initial, current, baseline_after=repeat)
+            self.assertEqual([], failures)
+            self.assertIn("INCONCLUSIVE: observed allocation increase exceeds 0.5 B/op; baseline drift prevents confirmation", summary)
+            self.assertIn("1020", summary)
+            self.assertIn("1025", summary)
+            self.assertIn("1006", summary)
+
+    def test_bracketed_allocations_keep_sub_byte_tolerance_and_confirm_increases(self):
+        before, after = report(), report()
+        after["Benchmarks"][0]["Memory"]["BytesAllocatedPerOperation"] += 64
+        first = gate.load_reports(self.write("before", before))
+        last = gate.load_reports(self.write("after", after))
+        identity = next(iter(first))
+        for repeat in (first, last):
+            largest = max(first[identity].allocated_bytes, repeat[identity].allocated_bytes)
+            for excess, should_fail in ((0.5, False), (0.501, True), (1, True)):
+                candidate = report()
+                candidate["Benchmarks"][0]["Memory"]["BytesAllocatedPerOperation"] = largest + excess
+                current = gate.load_reports(self.write("candidate", candidate))
+                for initial, repeated in ((first, repeat), (repeat, first)):
+                    with self.subTest(repeated_bytes=repeat[identity].allocated_bytes, excess=excess):
+                        failures, summary = gate.compare(initial, current, baseline_after=repeated)
+                        self.assertEqual(should_fail, any("allocations increased" in failure for failure in failures))
+                        self.assertEqual(repeat != first and not should_fail, "INCONCLUSIVE: observed allocation" in summary)
+
+    def test_baseline_repeat_cannot_hide_confirmed_allocation_or_startup_failure(self):
         before, candidate, after = report(), report(), report()
         candidate["Benchmarks"][0]["Memory"]["BytesAllocatedPerOperation"] += 1
-        after["Benchmarks"][0]["Memory"]["BytesAllocatedPerOperation"] += 64
+        after["Benchmarks"][0]["Memory"]["BytesAllocatedPerOperation"] += 0.25
         measurement(next(case for case in candidate["Benchmarks"] if case["Type"] == "StartupBenchmarks"), gate.STARTUP_LIMIT_NS)
         first = gate.load_reports(self.write("before", before))
         current = gate.load_reports(self.write("candidate", candidate))

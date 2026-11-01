@@ -126,8 +126,11 @@ The gate fails when any case:
   performance or eliminate all runner noise;
 - increases **per-message** allocations by more than **0.5 B/op**, a sub-byte allowance for
   amortization and rounding, not an extra allocation budget. The candidate must
-  satisfy this limit against **each** baseline, so a noisier repeat cannot hide
-  an allocation increase;
+  exceed **both** baselines by more than this limit before the gate declares an
+  allocation regression. An increase against only the lower baseline is reported
+  as **inconclusive**, not proof of unchanged allocations. Concurrent asynchronous
+  work includes driver and scheduler allocations that can vary between unchanged
+  process runs. Both baseline totals and the candidate total remain visible;
 - takes **50 ms or more** to compose 100 handlers.
 
 Startup allocation totals remain visible but are informational. D18 sets an

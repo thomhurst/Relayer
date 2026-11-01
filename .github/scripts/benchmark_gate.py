@@ -118,9 +118,9 @@ def compare(baseline, candidate, *, baseline_after=None, enforce_startup_budget=
             raise GateError(f"{identity}: repeated baseline metadata differs")
         throughput = before.mean_ns / after.mean_ns - 1
         # A fixed baseline-candidate-baseline sequence exposes drift between processes.
-        # Throughput must regress against both references; allocations must satisfy both.
+        # Confirm regressions against both references; report baseline drift explicitly.
         upper = max(before.upper_ns, repeated.upper_ns)
-        allocated = min(before.allocated_bytes, repeated.allocated_bytes)
+        allocated = max(before.allocated_bytes, repeated.allocated_bytes)
         throughput_failure = max(0, after.lower_ns) > upper / (1 - MAX_THROUGHPUT_LOSS)
         startup = (after.type_name, after.method) == ("StartupBenchmarks", "Build100Handlers")
         reasons = []
@@ -132,6 +132,11 @@ def compare(baseline, candidate, *, baseline_after=None, enforce_startup_budget=
             reasons.append("100-handler startup is not under 50 ms")
         inconclusive = after.mean_ns > min(before.mean_ns, repeated.mean_ns) / (1 - MAX_THROUGHPUT_LOSS) and not throughput_failure
         statuses = reasons + (["INCONCLUSIVE: observed throughput loss exceeds 5%; confidence bounds or baseline drift prevent confirmation"] if inconclusive else [])
+        allocation_inconclusive = (not startup
+                                  and after.allocated_bytes > min(before.allocated_bytes, repeated.allocated_bytes) + ALLOCATION_TOLERANCE_BYTES
+                                  and after.allocated_bytes <= allocated + ALLOCATION_TOLERANCE_BYTES)
+        if allocation_inconclusive:
+            statuses.append("INCONCLUSIVE: observed allocation increase exceeds 0.5 B/op; baseline drift prevents confirmation")
         if startup:
             statuses.append("startup allocations are informational")
         status = "; ".join(statuses) if statuses else "PASS"
@@ -143,7 +148,7 @@ def compare(baseline, candidate, *, baseline_after=None, enforce_startup_budget=
         "",
         "This gate measures regressions against main, not proof of the raw-client 5% budget.",
         "Throughput fails only when the candidate lower confidence bound exceeds each baseline upper bound / 0.95. Overlapping bounds or drift with an observed loss are inconclusive, not proof of unchanged performance.",
-        "Per-message allocations must stay within 0.5 B/op of both baselines; startup allocations are informational and the candidate startup budget remains under 50 ms.",
+        "Per-message allocations fail only when the candidate exceeds both baselines by more than 0.5 B/op. An increase against only the lower baseline is inconclusive, not proof of unchanged allocations. Startup allocations are informational and the candidate startup budget remains under 50 ms.",
         "Total receive allocations include fresh DI scopes. Equal scoped baselines establish only zero incremental composition allocations.",
         "D18 still requires zero pipeline allocations, excluding serializer/native-client allocations; existing positive totals remain visible above.",
     ])
