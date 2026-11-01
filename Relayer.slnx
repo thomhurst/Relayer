@@ -16,6 +16,7 @@
   <Folder Name="/tests/">
     <Project Path="tests/Relayer.Testing.Tests/Relayer.Testing.Tests.csproj" />
     <Project Path="tests/Relayer.AotSmoke/Relayer.AotSmoke.csproj" />
+    <Project Path="tests/Relayer.Kafka.Tests/Relayer.Kafka.Tests.csproj" />
     <Project Path="tests/Relayer.Tests/Relayer.Tests.csproj" />
     <Project Path="tests/Relayer.Conformance.Tests/Relayer.Conformance.Tests.csproj" />
     <Project Path="tests/Relayer.Tracing.Tests/Relayer.Tracing.Tests.csproj" />

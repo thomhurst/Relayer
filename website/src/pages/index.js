@@ -283,7 +283,8 @@ const status = [
   ['In-memory transport for tests and samples', 'Implemented', true],
   ['Packaged transport conformance suite', 'Implemented', true],
   ['Test harness and standalone handler context', 'Implemented', true],
-  ['Kafka, Service Bus, SQS/SNS and RabbitMQ transports', 'In progress', false],
+  ['Kafka producer', 'Implemented', true],
+  ['Kafka consumers, Service Bus, SQS/SNS and RabbitMQ transports', 'In progress', false],
   ['Health checks with application-provided adapters', 'Implemented', true],
   ['Durable outbox contracts and keyed health adapter', 'Implemented core seam', true],
   ['PostgreSQL schema scripts, CLI and EF migration path', 'Implemented schema tooling', true],
@@ -292,7 +293,7 @@ const status = [
   ['Native broker health adapters', 'Planned', false],
   ['Outbox dispatch, leases, cleanup and inbox', 'Planned', false],
   ['Send and delivery tracing, settlement, metrics and logs', 'Implemented', true],
-  ['Native broker and outbox telemetry', 'Planned', false],
+  ['Native receive and outbox telemetry', 'Planned', false],
 ];
 
 function Status() {
