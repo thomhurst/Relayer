@@ -6,8 +6,10 @@ public interface ITransport : IAsyncDisposable
     /// <summary>The transport name, unique within the application.</summary>
     string Name { get; }
 
-    /// <summary>The native capabilities of this transport.</summary>
-    TransportCapabilities Capabilities { get; }
+    /// <summary>Resolves the native capabilities of a declared endpoint at startup (docs/decisions.md D24).</summary>
+    /// <param name="endpoint">The native source or destination name used in the transport declaration.</param>
+    /// <remarks>Resolve limits and endpoint features from native configuration or topology, without silently assuming support.</remarks>
+    TransportCapabilities GetCapabilities(string endpoint);
 
     /// <summary>Sends a serialized message using the native client.</summary>
     /// <remarks>

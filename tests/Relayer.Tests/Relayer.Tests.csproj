@@ -13,6 +13,10 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\Relayer\Relayer.csproj" />
+    <ProjectReference Include="..\..\src\Relayer.Kafka\Relayer.Kafka.csproj" />
+    <ProjectReference Include="..\..\src\Relayer.AzureServiceBus\Relayer.AzureServiceBus.csproj" />
+    <ProjectReference Include="..\..\src\Relayer.AmazonSqs\Relayer.AmazonSqs.csproj" />
+    <ProjectReference Include="..\..\src\Relayer.RabbitMQ\Relayer.RabbitMQ.csproj" />
     <!-- In-repo consumers must reference the generator explicitly; the NuGet package bundles it. -->
     <ProjectReference Include="..\..\src\Relayer.SourceGenerators\Relayer.SourceGenerators.csproj"
                       ReferenceOutputAssembly="false"
