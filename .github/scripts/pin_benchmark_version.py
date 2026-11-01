@@ -33,6 +33,12 @@ def pin_version(candidate, baseline):
     parser = ET.XMLParser(target=ET.TreeBuilder(insert_comments=True))
     tree = ET.parse(baseline / PROJECT, parser=parser)
     reference = package_element(tree.getroot(), "PackageReference")
+    baseline_version = reference.get("VersionOverride")
+    if not baseline_version:
+        central = ET.parse(baseline / "Directory.Packages.props").getroot()
+        baseline_version = package_element(central, "PackageVersion").get("Version")
+    if baseline_version == version:
+        return version
     reference.set("VersionOverride", version)
     tree.write(baseline / PROJECT, encoding="utf-8", xml_declaration=False)
     return version

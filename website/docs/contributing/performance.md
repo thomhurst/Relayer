@@ -133,6 +133,28 @@ The gate fails when any case:
   process runs. Both baseline totals and the candidate total remain visible;
 - takes **50 ms or more** to compose 100 handlers.
 
+CI also hashes the actual comparison inputs after overlaying the common harness
+and SDK. When the inventories are byte-identical, allocation increases are
+reported as **inconclusive execution variation**, even above both baselines:
+there is no implementation change to attribute them to. This is not evidence
+that the allocation goal is met. The inventory includes production source,
+generators, the benchmark harness, SDK selection, dependency versions and build
+configuration. Only `docs/`, `website/`, the CI workflow, the detector and its
+tests, and the common benchmark-version pinning script are excluded; those do
+not enter the measured builds. Every other tracked or unignored file is hashed,
+including unknown files. Different inventories retain the strict 0.5 B/op rule.
+Throughput, startup and invalid-input checks remain active in both cases.
+
+To use this check locally, add all three options to the comparison command:
+
+```powershell
+python .github/scripts/benchmark_gate.py compare C:/benchmark-results/baseline C:/benchmark-results/candidate --baseline-source C:/checkouts/baseline --candidate-source C:/checkouts/candidate --input-manifest C:/benchmark-results/performance-inputs.json
+```
+
+Use the separate checkouts that produced the reports, with their harness and SDK
+overlay still in place. CI retains `performance-inputs.json` with the raw reports.
+Comparisons without source verification keep the strict allocation rule.
+
 Startup allocation totals remain visible but are informational. D18 sets an
 allocation budget per message and a time budget for startup. Building frozen
 dispatch tables can allocate different bucket layouts across processes because
@@ -146,9 +168,9 @@ without `--baseline-after` retain the single-baseline rule.
 The CI detector self-test shows that unchanged measurements pass and injected
 regressions fail. The comparison prints mean timings as throughput changes and
 allocation totals in the job summary. When a benchmark run fails, the job
-prints the end of its log. The job uploads raw reports, logs,
-comparison commits and harness hashes for investigation. Inspect BenchmarkDotNet
-error and variation columns when timings are noisy; do not rerun until a noisy
+prints the end of its log. The job uploads raw reports, logs, comparison
+commits, input inventories and harness hashes for investigation. Inspect
+BenchmarkDotNet error and variation columns when timings are noisy; do not rerun until a noisy
 failure happens to pass. Local numbers are diagnostic only. Do not commit
 benchmark reports, logs or evidence Markdown.
 

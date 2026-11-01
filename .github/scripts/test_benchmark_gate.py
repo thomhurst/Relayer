@@ -3,6 +3,7 @@ import copy
 import io
 import json
 from pathlib import Path
+import subprocess
 import tempfile
 import unittest
 import xml.etree.ElementTree as ET
@@ -191,6 +192,27 @@ class BenchmarkGateTests(unittest.TestCase):
         after["Benchmarks"][0]["Memory"]["BytesAllocatedPerOperation"] += 1
         self.assertIn("allocations increased", self.compare(report(), after)[0])
 
+    def test_verified_identical_inputs_report_allocation_variation_but_keep_other_gates(self):
+        before, candidate = report(), report()
+        candidate["Benchmarks"][0]["Memory"]["BytesAllocatedPerOperation"] += 64
+        first = gate.load_reports(self.write("before", before))
+        current = gate.load_reports(self.write("candidate", candidate))
+        failures, summary = gate.compare(first, current, baseline_after=first, identical_inputs=True)
+        self.assertEqual([], failures)
+        self.assertIn("INCONCLUSIVE: allocation variation with byte-identical comparison inputs", summary)
+        self.assertIn("216", summary)
+        measurement(candidate["Benchmarks"][0], 2000)
+        measurement(next(case for case in candidate["Benchmarks"] if case["Type"] == "StartupBenchmarks"), gate.STARTUP_LIMIT_NS)
+        current = gate.load_reports(self.write("candidate", candidate))
+        failures, _ = gate.compare(first, current, identical_inputs=True)
+        self.assertTrue(any("throughput loss" in failure for failure in failures))
+        self.assertTrue(any("not under 50 ms" in failure for failure in failures))
+
+    def test_identical_inputs_do_not_accept_mismatched_reports(self):
+        cases = gate.load_reports(self.write("before", report()))
+        with self.assertRaisesRegex(gate.GateError, "case sets differ"):
+            gate.compare(cases, {}, identical_inputs=True)
+
     def test_fractional_allocation_rounding_passes(self):
         after = report()
         after["Benchmarks"][0]["Memory"]["BytesAllocatedPerOperation"] += 0.5
@@ -288,6 +310,69 @@ class BenchmarkGateTests(unittest.TestCase):
             self.assertEqual(0, gate.main(["self-test", str(before)]))
 
 
+class ComparisonInputTests(unittest.TestCase):
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.root = Path(self.directory.name)
+        self.baseline, self.candidate = self.root / "baseline", self.root / "candidate"
+        for checkout in (self.baseline, self.candidate):
+            checkout.mkdir()
+            subprocess.run(["git", "init", "--quiet", str(checkout)], check=True)
+            for name in gate.REQUIRED_INPUTS:
+                self.write(checkout, name, "same content")
+            subprocess.run(["git", "-C", str(checkout), "add", "."], check=True)
+
+    def write(self, checkout, name, content):
+        path = checkout / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+        return path
+
+    def test_only_documentation_and_detector_changes_preserve_identity(self):
+        for name in ("docs/design.md", "website/docs/contributing/performance.md",
+                     ".github/scripts/benchmark_gate.py", ".github/scripts/test_benchmark_gate.py",
+                     ".github/scripts/pin_benchmark_version.py",
+                     ".github/workflows/ci.yml", ".github/workflows/performance.yml"):
+            self.write(self.candidate, name, "changed")
+        self.assertEqual(gate.input_manifest(self.baseline), gate.input_manifest(self.candidate))
+
+    def test_source_generator_dependencies_sdk_harness_and_unknown_inputs_disable_identity(self):
+        for name in (*gate.REQUIRED_INPUTS, "src/Relayer/Changed.cs", "new-build-input.targets"):
+            with self.subTest(name=name):
+                path = self.candidate / name
+                original = path.read_bytes() if path.exists() else None
+                self.write(self.candidate, name, "changed")
+                self.assertNotEqual(gate.input_manifest(self.baseline), gate.input_manifest(self.candidate))
+                if original is None:
+                    path.unlink()
+                else:
+                    path.write_bytes(original)
+
+    def test_missing_inputs_or_non_checkout_root_fail_closed(self):
+        (self.candidate / "global.json").unlink()
+        with self.assertRaises(gate.GateError):
+            gate.input_manifest(self.candidate)
+        with self.assertRaises(gate.GateError):
+            gate.input_manifest(self.baseline / "src")
+
+    def test_cli_verifies_identity_and_retains_manifest(self):
+        before, candidate = report(), report()
+        candidate["Benchmarks"][0]["Memory"]["BytesAllocatedPerOperation"] += 1
+        first = self.write(self.root, "first/benchmarks-report-full.json", json.dumps(before)).parent
+        current = self.write(self.root, "current/benchmarks-report-full.json", json.dumps(candidate)).parent
+        manifest = self.root / "inputs.json"
+        arguments = ["compare", str(first), str(current), "--baseline-source", str(self.baseline),
+                     "--candidate-source", str(self.candidate), "--input-manifest", str(manifest)]
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(0, gate.main(arguments))
+            self.assertTrue(json.loads(manifest.read_text())["identical"])
+            self.write(self.candidate, "Directory.Build.props", "changed")
+            self.assertEqual(1, gate.main(arguments))
+            self.assertFalse(json.loads(manifest.read_text())["identical"])
+            self.assertEqual(1, gate.main(["compare", str(first), str(current), "--baseline-source", str(self.baseline)]))
+
+
 class BenchmarkVersionTests(unittest.TestCase):
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
@@ -317,6 +402,12 @@ class BenchmarkVersionTests(unittest.TestCase):
         project = self.candidate / pin_benchmark_version.PROJECT
         project.write_text(project.read_text().replace('Include="BenchmarkDotNet"', 'Include="BenchmarkDotNet" VersionOverride="0.16.0"'))
         self.assertEqual("0.16.0", pin_benchmark_version.pin_version(self.candidate, self.baseline))
+
+    def test_equal_versions_preserve_byte_identical_harness(self):
+        (self.baseline / "Directory.Packages.props").write_bytes((self.candidate / "Directory.Packages.props").read_bytes())
+        original = (self.baseline / pin_benchmark_version.PROJECT).read_bytes()
+        self.assertEqual("0.15.8", pin_benchmark_version.pin_version(self.candidate, self.baseline))
+        self.assertEqual(original, (self.baseline / pin_benchmark_version.PROJECT).read_bytes())
 
     def test_missing_or_unresolved_candidate_version_fails_without_baseline_change(self):
         original = (self.baseline / pin_benchmark_version.PROJECT).read_bytes()
