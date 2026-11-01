@@ -168,6 +168,146 @@ public class TracingTests
     }
 
     [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Dropped_spans_allocate_nothing_after_warmup(bool batch)
+    {
+        using var tracing = new MessageTracing(Options.Create(new TracingOptions { IncludeBodySize = true }), []);
+        using var listener = new ActivityListener
+        {
+            ShouldListenTo = source => ReferenceEquals(source, tracing.Source),
+            Sample = static (ref ActivityCreationOptions<ActivityContext> _) => ActivitySamplingResult.None,
+        };
+        ActivitySource.AddActivityListener(listener);
+        var operation = new MessageOperationTracing(tracing, Endpoint, MessagingOperation.Process);
+        // Exclude ActivitySource's root trace ID string allocation from Relayer's sampling preparation.
+        using var ambient = new Activity("request").Start();
+        var links = new[] { new ActivityLink(RemoteContext()), new ActivityLink(RemoteContext()), new ActivityLink(RemoteContext()) };
+        var data = new MessageTraceData
+        {
+            CreationContext = links[0].Context, PartitionId = "3", MessageId = "id", BodySize = 42,
+            BatchCount = batch ? 2 : null, Links = batch ? links.AsMemory(1, 2) : default,
+        };
+        for (var i = 0; i < 1000; i++) operation.Start(data)?.Dispose();
+        var before = GC.GetAllocatedBytesForCurrentThread();
+        for (var i = 0; i < 1000; i++) operation.Start(data)?.Dispose();
+        var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+        await Assert.That(allocated).IsEqualTo(0L);
+    }
+
+    [Test]
+    public async Task Sampling_links_and_partition_survive_reentrant_starts_and_borrowed_buffer_reuse()
+    {
+        using var tracing = new MessageTracing(Options.Create(new TracingOptions()), []);
+        var operation = new MessageOperationTracing(tracing, Endpoint, MessagingOperation.Process);
+        var first = RemoteContext();
+        var second = RemoteContext();
+        var nested = false;
+        var samples = 0;
+        using var listener = new ActivityListener
+        {
+            ShouldListenTo = source => ReferenceEquals(source, tracing.Source),
+            Sample = (ref ActivityCreationOptions<ActivityContext> creation) =>
+            {
+                var expected = nested ? second : first;
+                if (!creation.Links!.Single().Context.Equals(expected)) throw new InvalidOperationException("Wrong sampling link.");
+                if (!nested)
+                {
+                    nested = true;
+                    using var inner = operation.Start(new() { CreationContext = second, PartitionId = "inner" });
+                    nested = false;
+                    if (!creation.Links!.Single().Context.Equals(first)) throw new InvalidOperationException("Link overwritten by reentrancy.");
+                    if (!Equals(creation.Tags!.Single(tag => tag.Key == "messaging.destination.partition.id").Value, "outer"))
+                        throw new InvalidOperationException("Partition overwritten by reentrancy.");
+                }
+                samples++;
+                return ActivitySamplingResult.AllDataAndRecorded;
+            },
+        };
+        ActivitySource.AddActivityListener(listener);
+        var borrowed = new[] { new ActivityLink(second), new ActivityLink(first), new ActivityLink(second) };
+        using var activity = operation.Start(new() { Links = borrowed.AsMemory(1, 1), PartitionId = "outer" });
+        borrowed[1] = new ActivityLink(second);
+        using var reused = operation.Start(new() { CreationContext = first, PartitionId = "outer" });
+        await Assert.That(samples).IsEqualTo(4);
+        await Assert.That(activity!.Links.Single().Context).IsEqualTo(first);
+        await Assert.That(activity.GetTagItem("messaging.destination.partition.id")).IsEqualTo("outer");
+    }
+
+    [Test]
+    public async Task Concurrent_starts_do_not_share_sampling_state()
+    {
+        using var tracing = new MessageTracing(Options.Create(new TracingOptions()), []);
+        var operation = new MessageOperationTracing(tracing, Endpoint, MessagingOperation.Process);
+        using var barrier = new Barrier(8);
+        using var listener = new ActivityListener
+        {
+            ShouldListenTo = source => ReferenceEquals(source, tracing.Source),
+            Sample = (ref ActivityCreationOptions<ActivityContext> creation) =>
+            {
+                barrier.SignalAndWait();
+                var partition = creation.Tags!.Single(tag => tag.Key == "messaging.destination.partition.id").Value;
+                if (!Equals(partition, creation.Links!.Single().Context.SpanId.ToHexString()))
+                    throw new InvalidOperationException("Concurrent sampling state overwritten.");
+                return ActivitySamplingResult.AllDataAndRecorded;
+            },
+        };
+        ActivitySource.AddActivityListener(listener);
+        var tasks = new Task[8];
+        for (var i = 0; i < tasks.Length; i++)
+            tasks[i] = Task.Factory.StartNew(() =>
+            {
+                var context = RemoteContext();
+                using var activity = operation.Start(new() { CreationContext = context, PartitionId = context.SpanId.ToHexString() });
+            }, CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default);
+        await Task.WhenAll(tasks);
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Context_parser_matches_framework_for_valid_and_invalid_inputs(bool utf8)
+    {
+        const string valid = "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01";
+        string[] inputs = [valid, "01" + valid[2..], "fe" + valid[2..], "ff" + valid[2..],
+            valid[..53] + "ff", valid[..53] + "00", valid.ToUpperInvariant(), valid + "-extra", valid[..54], "",
+            valid[..3] + new string('0', 32) + valid[35..], valid[..36] + new string('0', 16) + valid[52..],
+            valid[..10] + "g" + valid[11..], valid[..53] + "0G", valid.Replace('-', '_'), valid.Replace('-', 'é')];
+        var names = new HeaderNames();
+        foreach (var input in inputs)
+        {
+            var headers = new Dictionary<string, WireString>
+            {
+                [names.TraceParent] = utf8 ? new(Encoding.UTF8.GetBytes(input)) : new(input),
+                [names.TraceState] = new("vendor=value"),
+            };
+            ActivityContext.TryParse(input, "vendor=value", true, out var expected);
+            await Assert.That(MessageCreationContext.Read<Dictionary<string, WireString>, Binding>(headers, names)).IsEqualTo(expected);
+        }
+    }
+
+    [Test]
+    public async Task Utf8_context_parsing_allocates_only_framework_context_storage()
+    {
+        const string parent = "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01";
+        var names = new HeaderNames();
+        var utf8 = new Dictionary<string, WireString> { [names.TraceParent] = new(Encoding.UTF8.GetBytes(parent)) };
+        var text = new Dictionary<string, WireString> { [names.TraceParent] = new(parent) };
+        for (var i = 0; i < 1000; i++)
+        {
+            MessageCreationContext.Read<Dictionary<string, WireString>, Binding>(utf8, names);
+            MessageCreationContext.Read<Dictionary<string, WireString>, Binding>(text, names);
+        }
+        var before = GC.GetAllocatedBytesForCurrentThread();
+        for (var i = 0; i < 1000; i++) MessageCreationContext.Read<Dictionary<string, WireString>, Binding>(text, names);
+        var textBytes = GC.GetAllocatedBytesForCurrentThread() - before;
+        before = GC.GetAllocatedBytesForCurrentThread();
+        for (var i = 0; i < 1000; i++) MessageCreationContext.Read<Dictionary<string, WireString>, Binding>(utf8, names);
+        var utf8Bytes = GC.GetAllocatedBytesForCurrentThread() - before;
+        await Assert.That(utf8Bytes).IsEqualTo(textBytes);
+    }
+
+    [Test]
     public async Task Temporary_names_omit_destination_and_template_takes_precedence()
     {
         using var capture = new Capture();

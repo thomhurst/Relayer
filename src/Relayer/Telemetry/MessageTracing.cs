@@ -52,7 +52,7 @@ public sealed class MessageTracing : IDisposable
 public static class TracingBuilderExtensions
 {
     /// <summary>Registers tracing primitives. Bind TracingOptions or register IActivityEnricher services before building the provider.</summary>
-    /// <remarks>One source owner is shared per service provider; separate providers own separate sources named Relayer.</remarks>
+    /// <remarks>Keep one service provider in production. One source owner is shared per provider; separate providers own separate sources named Relayer.</remarks>
     public static IRelayerBuilder Telemetry(this IRelayerBuilder builder)
     {
         ArgumentNullException.ThrowIfNull(builder);

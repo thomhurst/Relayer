@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Runtime.CompilerServices;
 
 namespace Relayer;
 
@@ -9,6 +10,7 @@ public sealed class MessageOperationTracing
     private readonly MessagingOperation _operation;
     private readonly string _name;
     private readonly KeyValuePair<string, object?>[] _tags;
+    private readonly SamplingState?[] _states = new SamplingState[64];
 
     /// <summary>Precomputes the span name and constant sampling attributes.</summary>
     /// <param name="tracing">The application's source owner.</param>
@@ -58,6 +60,7 @@ public sealed class MessageOperationTracing
             Add(tags, "messaging.destination.subscription.name", endpoint.Subscription);
         }
         _tags = tags.ToArray();
+        _states[0] = new(_tags);
     }
 
     /// <summary>Starts an activity, or returns null without tag work or allocations when no listener is attached.</summary>
@@ -67,6 +70,7 @@ public sealed class MessageOperationTracing
     /// Existing creation contexts skip Create and make Send a client span. Invalid batch metadata is rejected even
     /// without a listener or when creation is skipped. No exception events are recorded.
     /// </remarks>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public Activity? Start(in MessageTraceData data = default)
     {
         if (data.BatchCount is < 1) throw new ArgumentOutOfRangeException(nameof(data), "Batch count must be positive.");
@@ -74,17 +78,11 @@ public sealed class MessageOperationTracing
             throw new ArgumentException("A create span describes one message, never a batch.", nameof(data));
         if (!_tracing.Source.HasListeners()) return null;
         if (_operation == MessagingOperation.Create && data.CreationContext != default) return null;
-        var tags = new ActivityTagsCollection(_tags);
-        if (data.BatchCount is { } count) tags.Add("messaging.batch.message_count", count);
-        else
-        {
-            Add(tags, "messaging.message.id", data.MessageId);
-            Add(tags, "messaging.message.conversation_id", data.ConversationId);
-            Add(tags, "messaging.destination.partition.id", data.PartitionId);
-            Add(tags, "cloudevents.event_type", data.EventType);
-            Add(tags, "cloudevents.event_source", data.EventSource);
-            if (_tracing.Options.IncludeBodySize && data.BodySize is { } size) tags.Add("messaging.message.body.size", size);
-        }
+        return StartActivity(data);
+    }
+
+    private Activity? StartActivity(in MessageTraceData data)
+    {
         var kind = _operation switch
         {
             MessagingOperation.Create => ActivityKind.Producer,
@@ -95,15 +93,78 @@ public sealed class MessageOperationTracing
         var parent = Activity.Current?.Context ?? default;
         if (_operation == MessagingOperation.Process && parent == default && data.BatchCount is null &&
             _tracing.Options.CreationContextAsParent) parent = data.CreationContext;
-        IEnumerable<ActivityLink>? links = null;
-        if (_operation is MessagingOperation.Send or MessagingOperation.Process)
+        var hasLinks = _operation is MessagingOperation.Send or MessagingOperation.Process &&
+            (!data.Links.IsEmpty || data.CreationContext != default);
+        var hasPartition = data.BatchCount is null && data.PartitionId is not null;
+        SamplingState? state = null;
+        try
         {
-            if (!data.Links.IsEmpty) links = data.Links.ToArray();
-            else if (data.CreationContext != default) links = new[] { new ActivityLink(data.CreationContext) };
+            IEnumerable<KeyValuePair<string, object?>> tags = _tags;
+            IEnumerable<ActivityLink>? links = null;
+            if (hasPartition || hasLinks)
+            {
+                state = Rent();
+                if (hasPartition)
+                {
+                    state.Tags[^1] = new("messaging.destination.partition.id", data.PartitionId);
+                    tags = state.Tags;
+                }
+                if (hasLinks)
+                {
+                    if (data.Links.IsEmpty) state.Links.Add(new ActivityLink(data.CreationContext));
+                    else
+                        foreach (var link in data.Links.Span) state.Links.Add(link);
+                    links = state.Links;
+                }
+            }
+            // ActivitySource consumes tags and links synchronously, including sampling and its own copies.
+            var activity = _tracing.Source.StartActivity(_name, kind, parent, tags, links);
+            if (activity is { IsAllDataRequested: true })
+            {
+                if (data.BatchCount is { } count) activity.SetTag("messaging.batch.message_count", count);
+                else
+                {
+                    activity.SetTag("messaging.message.id", data.MessageId);
+                    activity.SetTag("messaging.message.conversation_id", data.ConversationId);
+                    activity.SetTag("cloudevents.event_type", data.EventType);
+                    activity.SetTag("cloudevents.event_source", data.EventSource);
+                    if (_tracing.Options.IncludeBodySize && data.BodySize is { } size) activity.SetTag("messaging.message.body.size", size);
+                }
+            }
+            if (activity is not null) _tracing.Enrich(activity);
+            return activity;
         }
-        var activity = _tracing.Source.StartActivity(_name, kind, parent, tags, links);
-        if (activity is not null) _tracing.Enrich(activity);
-        return activity;
+        finally
+        {
+            if (state is not null) Return(state);
+        }
+    }
+
+    private SamplingState Rent()
+    {
+        for (var i = 0; i < _states.Length; i++)
+            if (Interlocked.Exchange(ref _states[i], null) is { } state) return state;
+        return new(_tags);
+    }
+
+    private void Return(SamplingState state)
+    {
+        state.Tags[^1] = default;
+        state.Links.Clear();
+        for (var i = 0; i < _states.Length; i++)
+            if (Interlocked.CompareExchange(ref _states[i], state, null) is null) return;
+    }
+
+    private sealed class SamplingState
+    {
+        internal KeyValuePair<string, object?>[] Tags { get; }
+        internal List<ActivityLink> Links { get; } = new(4);
+
+        internal SamplingState(KeyValuePair<string, object?>[] tags)
+        {
+            Tags = new KeyValuePair<string, object?>[tags.Length + 1];
+            tags.CopyTo(Tags, 0);
+        }
     }
 
     /// <summary>Marks failure without reflection or exception events. The caller logs the exception with trace IDs.</summary>

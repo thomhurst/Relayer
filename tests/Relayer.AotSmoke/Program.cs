@@ -58,6 +58,18 @@ using (var listener = new ActivityListener
         activity.GetTagItem("messaging.system") is not "relayer.inmemory" ||
         tracing.Source.TelemetrySchemaUrl != RelayerTelemetry.SchemaUrl)
         throw new InvalidOperationException("Tracing primitives failed under Native AOT.");
+    var names = new HeaderNames();
+    var headers = new Dictionary<string, WireString>
+    {
+        [names.TraceParent] = new("00-0123456789abcdef0123456789abcdef-0123456789abcdef-01"u8.ToArray()),
+    };
+    var creation = MessageCreationContext.Read<Dictionary<string, WireString>, SmokeTraceHeaderReader>(headers, names);
+    using var process = new MessageOperationTracing(tracing,
+        new() { System = "relayer.inmemory", Destination = "orders" }, MessagingOperation.Process)
+        .Start(new() { CreationContext = creation, PartitionId = "3" });
+    if (!creation.IsRemote || creation.TraceId == default || process is null ||
+        process.GetTagItem("messaging.destination.partition.id") is not "3" || process.Links.Single().Context != creation)
+        throw new InvalidOperationException("UTF-8 creation context and pooled sampling state failed under Native AOT.");
 }
 Console.WriteLine("Tracing primitives passed with reflection disabled.");
 var serializer = provider.GetRequiredService<IMessageSerializer>();
@@ -147,6 +159,10 @@ public sealed class OrderHandler : IHandler<Order>
     }
 }
 internal readonly record struct SmokeIncoming(ReadOnlySequence<byte> Body);
+internal readonly struct SmokeTraceHeaderReader : IMessageHeaderReader<Dictionary<string, WireString>>
+{
+    public static bool TryGetHeader(Dictionary<string, WireString> message, string name, out WireString value) => message.TryGetValue(name, out value);
+}
 internal readonly struct SmokeBinding : IMessageBinding<SmokeIncoming>
 {
     public static ReadOnlySequence<byte> GetBody(SmokeIncoming message) => message.Body;
