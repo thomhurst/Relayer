@@ -37,7 +37,7 @@ const sidebars = {
     {
       type: 'category',
       label: 'Reference',
-      items: ['reference/diagnostics'],
+      items: ['reference/diagnostics', 'reference/outbox-stores'],
     },
     'roadmap',
     'contributing/documentation',

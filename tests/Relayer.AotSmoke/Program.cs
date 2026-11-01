@@ -28,7 +28,8 @@ services.AddRelayerHealthChecks(new ConfigurationBuilder().AddInMemoryCollection
 }).Build());
 services.AddKeyedSingleton<ITransportHealthProbe, SmokeHealthProvider>("smoke");
 services.AddKeyedSingleton<IConsumerHealthProvider, SmokeHealthProvider>("smoke");
-services.AddKeyedSingleton<IOutboxHealthProvider, SmokeHealthProvider>("smoke-store");
+services.AddKeyedScoped<IOutboxStore, SmokeOutboxStore>("smoke-store");
+services.AddRelayerOutboxHealthProvider("smoke-store");
 await using var provider = services.AddRelayer(builder =>
 {
     builder.Telemetry();
@@ -353,10 +354,9 @@ public sealed class InMemorySmokeHandler(Channel<int> received) : IHandler<Count
     }
 }
 
-public sealed class SmokeHealthProvider : ITransportHealthProbe, IConsumerHealthProvider, IOutboxHealthProvider
+public sealed class SmokeHealthProvider : ITransportHealthProbe, IConsumerHealthProvider
 {
     public ValueTask<HealthCheckResult> CheckAsync(CancellationToken cancellationToken) => ValueTask.FromResult(HealthCheckResult.Healthy());
     public ValueTask<ConsumerHealthState?> GetStateAsync(IConsumerDefinition consumer, CancellationToken cancellationToken) =>
         ValueTask.FromResult<ConsumerHealthState?>(new(true, DateTimeOffset.MinValue));
-    public ValueTask<long?> GetPendingCountAsync(CancellationToken cancellationToken) => ValueTask.FromResult<long?>(5);
 }
