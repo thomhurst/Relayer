@@ -94,6 +94,7 @@ Reference `Relayer.Kafka.HealthChecks` for the optional native adapters:
 ```csharp
 using Relayer.Kafka;
 using Relayer.HealthChecks;
+using Microsoft.Extensions.Diagnostics.HealthChecks;
 
 builder.Services.AddRelayerKafkaHealthProviders("events", admin =>
 {
@@ -104,6 +105,8 @@ builder.Services.AddRelayerHealthChecks(new RelayerHealthCheckOptions
 {
     ConsumerStallTimeout = TimeSpan.FromMinutes(2),
 });
+builder.Services.Configure<HealthCheckServiceOptions>(options =>
+    options.Registrations.Single(check => check.Name == "relayer.transport").Timeout = TimeSpan.FromSeconds(5));
 ```
 
 Use the exact case-sensitive name from `relayer.Kafka("events", ...)`. Registration can precede or follow
@@ -116,7 +119,9 @@ Connectivity uses Dekaf's live `DescribeClusterAsync(new DescribeClusterOptions(
 poll. The no-options overload uses cached metadata and is unsuitable for connectivity. The probe neither
 sends nor consumes messages, creates topics nor commits offsets. Broker errors retain their exception and
 failure text; caller cancellation propagates. Apply the native admin client's connection settings and the
-application's health-check timeout policy to bound probe latency.
+application's health-check timeout policy to bound probe latency, as in the example above. A connection
+timeout bounds one native connection attempt; it does not bound all retries of the admin operation.
+The health service reports a timed-out probe as unhealthy and passes cancellation to the native client.
 
 Liveness comes from each exact consumer declaration's receiver state. Workers waiting for native batches
 are idle and healthy regardless of elapsed time. Processing remains active through retries, durable failure

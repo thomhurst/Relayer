@@ -97,6 +97,10 @@ public class KafkaHealthTests
             native.WithClientId("relayer-health-test").WithConnectionTimeout(TimeSpan.FromSeconds(1));
         });
         builder.Services.AddRelayerHealthChecks(new RelayerHealthCheckOptions { ConsumerStallTimeout = TimeSpan.FromMinutes(1) });
+        // Bound each native probe independently of the overall test deadline. ConnectionTimeout
+        // bounds one connection attempt, not the admin operation's retries while disconnected.
+        builder.Services.Configure<HealthCheckServiceOptions>(options =>
+            options.Registrations.Single(check => check.Name == "relayer.transport").Timeout = TimeSpan.FromSeconds(5));
         builder.Services.AddRelayer(relayer =>
         {
             relayer.AddMessageTypesFromThisAssembly();
