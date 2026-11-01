@@ -83,7 +83,11 @@ internal sealed class BatchExecution
                 var buffer = state.Active[0].SendBuffer;
                 try
                 {
-                    for (var i = 0; i < count; i++) state.Active[i].SetServices(scope.ServiceProvider);
+                    for (var i = 0; i < count; i++)
+                    {
+                        state.Active[i].CancellationToken.ThrowIfCancellationRequested();
+                        state.Active[i].SetServices(scope.ServiceProvider);
+                    }
                     var service = scope.ServiceProvider.GetService<ISender>();
                     if (service is not null && service is not Sender)
                         throw new InvalidOperationException("Batch execution requires Relayer's scoped ISender to buffer failed-attempt sends.");
@@ -98,7 +102,11 @@ internal sealed class BatchExecution
                 }
                 cancellationToken.ThrowIfCancellationRequested();
                 var failed = 0;
-                for (var i = 0; i < count; i++) if (state.Errors[i] is not null) failed++;
+                for (var i = 0; i < count; i++)
+                {
+                    state.Active[i].CancellationToken.ThrowIfCancellationRequested();
+                    if (state.Errors[i] is not null) failed++;
+                }
                 if (failed == 0) await buffer.FlushAsync(cancellationToken).ConfigureAwait(false);
                 else if (failed < count && !buffer.IsEmpty)
                 {

@@ -142,8 +142,13 @@ The executable `FailurePipeline` retries only failed items, in a fresh scope, th
 produces durable per-message redelivery or dead-letter decisions. The explicit failure
 delegate remains available to transport integrations that own durable failure handling.
 
-Successful results wait for asynchronous scope disposal and buffered sends. Failed
-attempts discard their buffered direct sends. A partially failed attempt with buffered
+Successful results wait for asynchronous scope disposal and buffered sends.
+The batch-call token and each active delivery token are checked before handler
+invocation and again after scope disposal, before flushing sends or handling failures.
+Delivery cancellation also prevents that item from entering another retry invocation,
+even when `ProcessBatchAsync` uses its default batch-call token. Cancellation propagates
+without publishing batch dispositions; buffered sends from the cancelled attempt are discarded.
+Failed attempts discard their buffered direct sends. A partially failed attempt with buffered
 sends discards those sends and routes every item through the normal retry,
 redelivery and dead-letter policy: one scoped sender cannot attribute those sends
 to individual messages. Otherwise successful items can retry or dead-letter too;

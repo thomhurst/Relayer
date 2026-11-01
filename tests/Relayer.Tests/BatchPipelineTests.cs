@@ -171,6 +171,73 @@ public class BatchPipelineTests
     }
 
     [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Delivery_cancellation_during_handler_or_disposal_discards_sends_and_releases_contexts(bool duringDisposal)
+    {
+        await using var provider = Provider();
+        var control = provider.GetRequiredService<Control>();
+        var transport = provider.GetRequiredService<Transport>();
+        using var cancellation = new CancellationTokenSource();
+        var disposalDone = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        if (duringDisposal)
+        {
+            control.Disposal = disposalDone.Task;
+            control.DisposalStarted = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        }
+        control.Invoke = async (batch, _) =>
+        {
+            await batch.Items[0].Context.Services.GetRequiredService<ISender>().SendNowAsync(new Payload());
+            if (!duringDisposal) cancellation.Cancel();
+            return BatchResult.Success;
+        };
+        var failures = 0;
+        var pipeline = Consumer(provider, (_, _, _) => { failures++; return default; });
+        var message = new ConsumeMessage { MessageId = "cancelled", MessageType = new("batch.payload", 1), Body = new(new byte[] { 1 }) };
+        {
+            using var first = pipeline.RentContext(message);
+            using var second = pipeline.RentContext(message, cancellation.Token);
+            var contexts = new[] { first, second };
+            var pending = pipeline.ProcessBatchAsync(contexts);
+            if (duringDisposal)
+            {
+                await control.DisposalStarted!.Task;
+                cancellation.Cancel();
+                disposalDone.SetResult();
+            }
+            await Assert.That(async () => await pending).Throws<OperationCanceledException>();
+            await Assert.That(transport.Sends).IsEqualTo(0);
+            await Assert.That(failures).IsEqualTo(0);
+            await Assert.That(control.Disposed).IsEqualTo(1);
+        }
+        control.Invoke = null;
+        using var reused = pipeline.RentContext(message);
+        await pipeline.ProcessBatchAsync(new[] { reused });
+        await Assert.That(transport.Sends).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task Delivery_cancelled_between_attempts_is_not_dispatched_again()
+    {
+        await using var provider = Provider();
+        using var cancellation = new CancellationTokenSource();
+        var control = provider.GetRequiredService<Control>();
+        control.Invoke = (_, _) => new(BatchResult.PartialFailure(new Dictionary<int, Exception> { [1] = new Exception("retry") }));
+        var failures = new FailurePipeline(provider, "test", "source", "batch", new() { RetryDelays = new[] { TimeSpan.Zero }, Jitter = 0 });
+        var pipeline = new ConsumePipelineBuilder(provider.GetRequiredService<IServiceScopeFactory>(),
+            provider.GetRequiredService<MessageTypeRegistry>(), provider.GetRequiredService<IMessageSerializer>(),
+            failures, new CancelOnClassify(cancellation))
+            .BuildBatch(provider.GetRequiredService<HandlerRegistry>().GetBatchHandler<Payload, Handler>(), Definition(provider));
+        var message = new ConsumeMessage { MessageId = "retry", MessageType = new("batch.payload", 1), Body = new(new byte[] { 1 }) };
+        using var first = pipeline.RentContext(message);
+        using var second = pipeline.RentContext(message, cancellation.Token);
+        await Assert.That(async () => await pipeline.ProcessBatchAsync(new[] { first, second })).Throws<OperationCanceledException>();
+        await Assert.That(control.Scopes.Count).IsEqualTo(1);
+        await Assert.That(control.Disposed).IsEqualTo(1);
+        await Assert.That(provider.GetRequiredService<Transport>().Sends).IsEqualTo(0);
+    }
+
+    [Test]
     public async Task Each_batch_owns_one_scope_and_concurrent_batches_do_not_share_storage()
     {
         await using var provider = Provider();
@@ -461,6 +528,15 @@ public class BatchPipelineTests
         public Task? Disposal { get; set; }
         public TaskCompletionSource? DisposalStarted { get; set; }
     }
+    private sealed class CancelOnClassify(CancellationTokenSource cancellation) : IFailureClassifier
+    {
+        public FailureAction Classify(Exception exception, MessageContext context)
+        {
+            cancellation.Cancel();
+            return FailureAction.Retry;
+        }
+    }
+
     public sealed class Lifetime(Control control) : IAsyncDisposable
     {
         public async ValueTask DisposeAsync()
