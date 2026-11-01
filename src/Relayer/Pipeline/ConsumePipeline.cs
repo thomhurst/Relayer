@@ -158,11 +158,10 @@ public sealed class ConsumePipeline
             context.ClearServices();
             if (_settlement is { } settle) await settle(context).ConfigureAwait(false);
         }
+        catch (OperationCanceledException) when (context.CancellationToken.IsCancellationRequested) { throw; }
         catch (Exception error)
         {
-            if (!ReferenceEquals(failure, error) &&
-                (error is not OperationCanceledException || !context.CancellationToken.IsCancellationRequested))
-                LogFailure(telemetry, error);
+            if (!ReferenceEquals(failure, error)) LogFailure(telemetry, error);
             failure = error;
             throw;
         }

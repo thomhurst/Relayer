@@ -27,7 +27,7 @@ internal sealed class ConsumeLogScope : IReadOnlyList<KeyValuePair<string, objec
     internal void Initialize(DefaultMessageContext context)
     {
         context.GetLogIdentity(out _id, out _type);
-        _correlation = context.Headers.TryGetValue("correlation-id", out var value) ? value.ToString() : null;
+        _correlation = context.Headers.TryGetValue(context.EnvelopeNames.CorrelationId, out var value) ? value.ToString() : null;
     }
 
     internal void Clear() => (_id, _type, _correlation) = (null, null, null);

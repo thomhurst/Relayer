@@ -149,6 +149,45 @@ public class TelemetryTests
     }
 
     [Test]
+    [Arguments("ce_", false)]
+    [Arguments("ce_", true)]
+    [Arguments("cloudEvents:", false)]
+    [Arguments("cloudEvents:", true)]
+    public async Task Correlation_scope_reads_the_native_binding_and_clears_on_reuse(string prefix, bool utf8)
+    {
+        var logger = new Logger();
+        using var instrumentation = new RelayerInstrumentation(new LoggerFactory(logger));
+        await using var provider = Provider();
+        provider.GetRequiredService<Control>().Handle = _ => ValueTask.FromException(new Exception("handler"));
+        var pipeline = Builder(provider).Telemetry(instrumentation.CreateEndpoint(Options())).Build(1);
+        var receive = new ReceivePipeline<Incoming, Binding>(pipeline, new HeaderNames(prefix), 1);
+        await receive.ProcessAsync(new Incoming { Prefix = prefix, CorrelationId = "conversation", Utf8 = utf8 });
+        await receive.ProcessAsync(new Incoming { Prefix = prefix, Utf8 = utf8 });
+        await Assert.That(logger.Entries[0].Scope["CorrelationId"]).IsEqualTo("conversation");
+        await Assert.That(logger.Entries[1].Scope["CorrelationId"]).IsNull();
+    }
+
+    [Test]
+    public async Task Settlement_cancellation_preserves_an_earlier_handler_failure_metric()
+    {
+        await using var provider = Provider();
+        var instrumentation = provider.GetRequiredService<RelayerInstrumentation>();
+        using var capture = new Capture(instrumentation);
+        using var cancellation = new CancellationTokenSource();
+        provider.GetRequiredService<Control>().Handle = _ => ValueTask.FromException(new Exception("handler"));
+        var pipeline = Builder(provider).Telemetry(instrumentation.CreateEndpoint(Options()))
+            .Settle(context =>
+            {
+                cancellation.Cancel();
+                context.CancellationToken.ThrowIfCancellationRequested();
+                return default;
+            }).Build();
+        using var context = pipeline.RentContext(Message(), cancellation.Token);
+        await Assert.That(async () => await pipeline.ProcessAsync(context)).Throws<OperationCanceledException>();
+        await Assert.That(capture.Values.Single(v => v.Name == "messaging.process.duration").Tags["error.type"]).IsEqualTo("_OTHER");
+    }
+
+    [Test]
     [Arguments(false)]
     [Arguments(true)]
     public async Task Settlement_is_skipped_after_failed_durability_and_settlement_errors_are_not_reclassified(bool failSettlement)
@@ -205,7 +244,7 @@ public class TelemetryTests
     [Arguments("before")]
     [Arguments("handler")]
     [Arguments("settlement")]
-    public async Task Delivery_cancellation_is_counted_without_error_logging(string stage)
+    public async Task Delivery_cancellation_is_counted_without_error_logging_or_error_metric(string stage)
     {
         var logger = new Logger();
         using var instrumentation = new RelayerInstrumentation(new LoggerFactory(logger));
@@ -240,7 +279,7 @@ public class TelemetryTests
         await Assert.That(logger.Entries.Count).IsEqualTo(0);
         await Assert.That(logger.CurrentScope).IsNull();
         await Assert.That(capture.Values.Count(v => v.Name == "messaging.client.consumed.messages")).IsEqualTo(1);
-        await Assert.That(capture.Values.Single(v => v.Name == "messaging.process.duration").Tags["error.type"]).IsEqualTo("_OTHER");
+        await Assert.That(capture.Values.Single(v => v.Name == "messaging.process.duration").Tags.ContainsKey("error.type")).IsFalse();
     }
 
     [Test]
@@ -249,6 +288,7 @@ public class TelemetryTests
         var logger = new Logger();
         using var instrumentation = new RelayerInstrumentation(new LoggerFactory(logger));
         await using var provider = Provider();
+        using var capture = new Capture(instrumentation);
         var error = new OperationCanceledException("Handler's independent operation was canceled.");
         provider.GetRequiredService<Control>().Handle = _ => ValueTask.FromException(error);
         var failures = 0;
@@ -258,6 +298,7 @@ public class TelemetryTests
         await pipeline.ProcessAsync(context);
         await Assert.That(failures).IsEqualTo(1);
         await Assert.That(logger.Entries.Single().Exception).IsSameReferenceAs(error);
+        await Assert.That(capture.Values.Single(v => v.Name == "messaging.process.duration").Tags["error.type"]).IsEqualTo("_OTHER");
     }
 
     [Test]
@@ -336,7 +377,7 @@ public class TelemetryTests
     {
         public override bool TryGetValue(string name, out WireString value)
         {
-            value = name == "correlation-id" ? new WireString("conversation") : default;
+            value = name == "ce_correlationid" ? new WireString("conversation") : default;
             return !value.IsEmpty;
         }
     }
@@ -357,6 +398,9 @@ public class TelemetryTests
     private sealed class Incoming
     {
         public string? Type { get; init; } = "number;v=1";
+        public string Prefix { get; init; } = "cloudEvents:";
+        public string? CorrelationId { get; init; }
+        public bool Utf8 { get; init; }
         public string Time { get; } = DateTimeOffset.UtcNow.AddMinutes(-1).ToString("O");
     }
     private readonly struct Binding : IMessageBinding<Incoming>
@@ -365,13 +409,14 @@ public class TelemetryTests
         public static int? GetDeliveryCount(Incoming message) => 1;
         public static bool TryGetHeader(Incoming message, string name, out WireString value)
         {
-            value = name switch
-            {
-                "cloudEvents:type" => message.Type is { } type ? new(type) : default,
-                "cloudEvents:id" => new("native"),
-                "cloudEvents:time" => new(message.Time),
-                _ => default,
-            };
+            string? text = null;
+            if (name == message.Prefix + "type") text = message.Type;
+            else if (name == message.Prefix + "id") text = "native";
+            else if (name == message.Prefix + "time") text = message.Time;
+            else if (name == message.Prefix + "correlationid") text = message.CorrelationId;
+            value = default;
+            if (text is not null)
+                value = message.Utf8 ? new(System.Text.Encoding.UTF8.GetBytes(text)) : new(text);
             return !value.IsEmpty;
         }
     }
