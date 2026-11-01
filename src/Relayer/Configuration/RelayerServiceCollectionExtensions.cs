@@ -26,6 +26,7 @@ public static class RelayerServiceCollectionExtensions
         configure(builder);
         builder.MessageTypes.Freeze();
         builder.Handlers.Freeze();
+        builder.Upcasters.Freeze(builder.MessageTypes);
 
         services.TryAddSingleton<IMessageSerializer>(static provider =>
         {
@@ -41,6 +42,7 @@ public static class RelayerServiceCollectionExtensions
 
         services.AddSingleton(builder.MessageTypes);
         services.AddSingleton(builder.Handlers);
+        services.AddSingleton(builder.Upcasters);
         services.AddSingleton<IRelayerBuilder>(builder);
         services.AddSingleton(new RelayerConfiguration(builder.TopologyMode, builder.Transports.ToArray()));
         services.AddSingleton<ITopology, Topology>();

@@ -1,3 +1,4 @@
+using System.Collections.Frozen;
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using Microsoft.Extensions.DependencyInjection;
@@ -9,6 +10,7 @@ internal sealed class BatchExecution
     private readonly IServiceScopeFactory _scopes;
     private readonly BatchDispatcher _dispatch;
     private readonly MessageType _identity;
+    private readonly FrozenSet<MessageType>? _upcastIdentities;
     private readonly ConsumeFailureDelegate _failure;
     private readonly IFailureClassifier _classifier;
     private readonly FailurePipeline? _failures;
@@ -22,11 +24,12 @@ internal sealed class BatchExecution
 
     internal BatchExecution(IServiceScopeFactory scopes, BatchDispatcher dispatch, MessageType identity,
         IConsumerDefinition consumer, ConsumeFailureDelegate failure, IFailureClassifier classifier,
-        FailurePipeline? failures, ActivitySource? source, ConsumeTracing? tracing)
+        FailurePipeline? failures, ActivitySource? source, ConsumeTracing? tracing, FrozenSet<MessageType>? upcastIdentities)
     {
         _scopes = scopes;
         _dispatch = dispatch;
         _identity = identity;
+        _upcastIdentities = upcastIdentities;
         _failure = failure;
         _classifier = classifier;
         _failures = failures;
@@ -66,7 +69,8 @@ internal sealed class BatchExecution
                 try
                 {
                     context.CancellationToken.ThrowIfCancellationRequested();
-                    if (context.MessageType != _identity) throw new UnknownMessageTypeException(context.MessageType);
+                    if (context.MessageType != _identity && _upcastIdentities?.Contains(context.MessageType) != true)
+                        throw new UnknownMessageTypeException(context.MessageType);
                     if (_failures is not null) context.InitializeAttempts();
                 }
                 catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested || context.CancellationToken.IsCancellationRequested) { throw; }

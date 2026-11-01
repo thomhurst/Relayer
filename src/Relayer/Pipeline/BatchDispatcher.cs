@@ -1,4 +1,5 @@
 using System.Collections;
+using System.Collections.Frozen;
 using System.Runtime.CompilerServices;
 using Relayer.Serialization;
 
@@ -13,14 +14,18 @@ internal abstract class BatchDispatcher
 internal sealed class BatchDispatcher<TMessage> : BatchDispatcher
 {
     private readonly BatchHandlerDescriptor<TMessage> _descriptor;
-    private readonly IMessageSerializer _serializer;
+    private readonly SerializedReader<TMessage> _reader;
+    private readonly FrozenDictionary<MessageType, UpcastReader<TMessage>>? _upcastReaders;
     private readonly State?[] _states;
     private readonly int _size;
 
-    internal BatchDispatcher(BatchHandlerDescriptor<TMessage> descriptor, IMessageSerializer serializer, int size, int concurrency)
+    internal BatchDispatcher(BatchHandlerDescriptor<TMessage> descriptor, IMessageSerializer serializer, int size, int concurrency,
+        Dictionary<MessageType, UpcastReader> readers)
     {
         _descriptor = descriptor;
-        _serializer = serializer;
+        _reader = new(serializer);
+        if (readers.Count != 0)
+            _upcastReaders = readers.ToFrozenDictionary(pair => pair.Key, pair => (UpcastReader<TMessage>)pair.Value);
         _size = size;
         _states = new State[concurrency];
         for (var i = 0; i < concurrency; i++) _states[i] = new State(size);
@@ -38,12 +43,13 @@ internal sealed class BatchDispatcher<TMessage> : BatchDispatcher
                 var context = contexts.Span[i];
                 try
                 {
-                    var message = _serializer.Deserialize<TMessage>(context.Body);
+                    var message = _upcastReaders is { } readers && readers.TryGetValue(context.MessageType, out var reader)
+                        ? reader.Read(context) : _reader.Read(context);
                     state.Items[state.Count] = new(message, context);
                     state.Indexes[state.Count++] = i;
                 }
                 catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
-                catch (Exception error) { errors.Span[i] = new MessageDeserializationException(context.MessageType, error); }
+                catch (Exception error) { errors.Span[i] = error; }
             }
             if (state.Count == 0) return;
             BatchResult result;

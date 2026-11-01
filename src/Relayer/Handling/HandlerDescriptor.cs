@@ -23,7 +23,11 @@ public abstract class HandlerDescriptor(Type handlerType, Type messageType, bool
     internal virtual ConsumeDelegate CreateConsumeDelegate(IMessageSerializer serializer)
         => throw new InvalidOperationException("A batch handler cannot be composed as a single-message consumer.");
 
-    internal virtual BatchDispatcher CreateBatchDispatcher(IMessageSerializer serializer, int size, int concurrency)
+    internal virtual ConsumeDelegate CreateUpcastDelegate(UpcastReader reader)
+        => throw new InvalidOperationException("A batch handler cannot be composed as a single-message consumer.");
+
+    internal virtual BatchDispatcher CreateBatchDispatcher(IMessageSerializer serializer, int size, int concurrency,
+        Dictionary<MessageType, UpcastReader> readers)
         => throw new InvalidOperationException("Select a generated batch handler when composing batch consumption.");
 }
 
@@ -37,6 +41,19 @@ public abstract class HandlerDescriptor<TMessage>(Type handlerType)
 
     internal sealed override ConsumeDelegate CreateConsumeDelegate(IMessageSerializer serializer)
         => new Dispatch(serializer, this).InvokeAsync;
+
+    internal sealed override ConsumeDelegate CreateUpcastDelegate(UpcastReader reader)
+        => new UpcastDispatch((UpcastReader<TMessage>)reader, this).InvokeAsync;
+
+    private sealed class UpcastDispatch(UpcastReader<TMessage> reader, HandlerDescriptor<TMessage> descriptor)
+    {
+        public ValueTask InvokeAsync(MessageContext context)
+        {
+            var message = reader.Read((DefaultMessageContext)context);
+            var handler = descriptor.Resolve(context.Services);
+            return descriptor.DispatchAsync(handler, message, context, context.CancellationToken);
+        }
+    }
 
     private sealed class Dispatch(IMessageSerializer serializer, HandlerDescriptor<TMessage> descriptor)
     {
@@ -67,6 +84,7 @@ public abstract class BatchHandlerDescriptor<TMessage>(Type handlerType)
     public abstract ValueTask<BatchResult> DispatchAsync(
         IHandlerMarker handler, Batch<TMessage> batch, CancellationToken cancellationToken);
 
-    internal sealed override BatchDispatcher CreateBatchDispatcher(IMessageSerializer serializer, int size, int concurrency)
-        => new BatchDispatcher<TMessage>(this, serializer, size, concurrency);
+    internal sealed override BatchDispatcher CreateBatchDispatcher(IMessageSerializer serializer, int size, int concurrency,
+        Dictionary<MessageType, UpcastReader> readers)
+        => new BatchDispatcher<TMessage>(this, serializer, size, concurrency, readers);
 }

@@ -14,6 +14,9 @@ public interface IRelayerBuilder
     /// <summary>The explicitly registered, source-generated handler descriptors.</summary>
     HandlerRegistry Handlers { get; }
 
+    /// <summary>Explicit upgrades between registered versions of a message.</summary>
+    UpcasterRegistry Upcasters { get; }
+
     /// <summary>How broker entities are treated at startup. Defaults to <see cref="TopologyMode.Validate"/>.</summary>
     TopologyMode TopologyMode { get; set; }
 
@@ -33,6 +36,8 @@ internal sealed class RelayerBuilder(IServiceCollection services) : IRelayerBuil
     public MessageTypeRegistry MessageTypes { get; } = new();
 
     public HandlerRegistry Handlers { get; } = new();
+
+    public UpcasterRegistry Upcasters { get; } = new();
 
     public TopologyMode TopologyMode
     {

@@ -373,6 +373,7 @@ if (transport.CapabilityLookups != 2)
 Console.WriteLine("Send routing, middleware and native configuration passed with reflection disabled.");
 
 await InMemoryTracingSmoke.RunAsync();
+await UpcasterSmoke.RunAsync();
 
 [Message("smoke.order")]
 public sealed record Order(int Id, Customer Customer, int[] Items, OrderState State);
