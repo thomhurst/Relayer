@@ -2,7 +2,6 @@ using System.Buffers;
 using System.Diagnostics;
 using System.Text.Json;
 using System.Text.Json.Serialization;
-using System.Threading.Channels;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
@@ -11,7 +10,6 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Relayer;
 using Relayer.HealthChecks;
-using Relayer.InMemory;
 using Relayer.Outbox.PostgreSql;
 using Relayer.Serialization;
 using Relayer.Transports;
@@ -262,30 +260,7 @@ if (transport.CapabilityLookups != 2)
     throw new InvalidOperationException("Endpoint capabilities were resolved on the per-message path.");
 Console.WriteLine("Send routing, middleware and native configuration passed with reflection disabled.");
 
-var nativeReceived = Channel.CreateBounded<int>(1);
-var localServices = new ServiceCollection();
-localServices.AddSingleton(nativeReceived);
-localServices.AddRelayer(builder =>
-{
-    builder.AddMessageTypesFromThisAssembly();
-    builder.InMemory("local", local =>
-    {
-        local.Send<Count>("counts");
-        local.Consume("counts", consumer => consumer.Handler<InMemorySmokeHandler>());
-    });
-});
-await using (var localProvider = localServices.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true }))
-{
-    var hosted = localProvider.GetServices<IHostedService>().ToArray();
-    foreach (var lifecycle in hosted.OfType<IHostedLifecycleService>()) await lifecycle.StartingAsync(default);
-    foreach (var service in hosted) await service.StartAsync(default);
-    using var localScope = localProvider.CreateScope();
-    await localScope.ServiceProvider.GetRequiredService<ISender>().SendAsync(new Count(123));
-    if (await nativeReceived.Reader.ReadAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(10)) != 123)
-        throw new InvalidOperationException("In-memory generated-handler round trip failed under Native AOT.");
-    for (var i = hosted.Length - 1; i >= 0; i--) await hosted[i].StopAsync(default);
-}
-Console.WriteLine("In-memory hosted transport and generated-handler round trip passed under Native AOT.");
+await InMemoryTracingSmoke.RunAsync();
 
 [Message("smoke.order")]
 public sealed record Order(int Id, Customer Customer, int[] Items, OrderState State);
@@ -404,18 +379,6 @@ internal sealed class SmokeTransport : ITransport
     public Task StartAsync(CancellationToken cancellationToken) => Task.CompletedTask;
     public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
     public ValueTask DisposeAsync() => ValueTask.CompletedTask;
-}
-
-public sealed class InMemorySmokeHandler(Channel<int> received) : IHandler<Count>
-{
-    public ValueTask HandleAsync(Count message, MessageContext context, CancellationToken cancellationToken)
-    {
-        if (context.Features.GetRequired<NativeMessage<InMemoryDelivery>>().Message.Message.Body.IsEmpty)
-            throw new InvalidOperationException("In-memory native binding was lost.");
-        context.Features.GetRequired<ISettlementFeature>().Complete();
-        received.Writer.TryWrite(message.Value);
-        return default;
-    }
 }
 
 public sealed class SmokeHealthProvider : ITransportHealthProbe, IConsumerHealthProvider
