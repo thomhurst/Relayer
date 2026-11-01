@@ -81,6 +81,19 @@ var disposition = await receive.ProcessAsync(new(new ReadOnlySequence<byte>(buff
 if (disposition.Kind != DispositionKind.Complete)
     throw new InvalidOperationException("Native receive SPI failed under Native AOT.");
 Console.WriteLine("Native receive binding, lazy headers and pooled native feature passed under Native AOT.");
+var failurePolicy = new FailurePipeline(provider, "smoke", "orders", "aot-consumer",
+    new FailureOptions { RetryDelays = new[] { TimeSpan.Zero } });
+var failingConsumer = new ConsumePipelineBuilder(provider.GetRequiredService<IServiceScopeFactory>(),
+        provider.GetRequiredService<MessageTypeRegistry>(), serializer, failurePolicy)
+    .Handler(orderDescriptor).Build(1);
+var failingReceive = new ReceivePipeline<SmokeIncoming, SmokeBinding>(failingConsumer, new HeaderNames(), 1);
+var poison = await failingReceive.ProcessAsync(new(new ReadOnlySequence<byte>("invalid-json"u8.ToArray())));
+if (poison.Kind != DispositionKind.DeadLetter || poison.DeadLetter.Headers.Length != 3)
+    throw new InvalidOperationException("Permanent failure handling or generated error metadata failed under Native AOT.");
+var healthy = await failingReceive.ProcessAsync(new(new ReadOnlySequence<byte>(buffer.WrittenMemory)));
+if (healthy.Kind != DispositionKind.Complete || transport.CapabilityLookups != 2)
+    throw new InvalidOperationException("Failure handling stalled the consumer or rediscovered capabilities.");
+Console.WriteLine("Executable failure handling and generated error metadata passed under Native AOT.");
 var sender = scope.ServiceProvider.GetRequiredService<ISender>();
 await sender.SendAsync(message, options => options.ConfigureNative<SmokeNative>(static native => native.Value = 7));
 if (transport.Destination != "orders" || transport.OrderingKey != "42" || transport.NativeValue != 7)
@@ -169,7 +182,7 @@ internal sealed class SmokeTransport : ITransport
     {
         if (endpoint is not ("orders" or "counts")) throw new ArgumentException("Unknown smoke endpoint.", nameof(endpoint));
         CapabilityLookups++;
-        return new() { OrderedByKey = true };
+        return new() { OrderedByKey = true, DeadLetter = true };
     }
     public ValueTask<TopologyReport> ApplyTopologyAsync(TopologyMode mode, CancellationToken cancellationToken)
         => ValueTask.FromResult(new TopologyReport([]));

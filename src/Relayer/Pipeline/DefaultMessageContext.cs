@@ -21,7 +21,7 @@ public sealed class DefaultMessageContext : MessageContext, IDisposable
     /// <inheritdoc />
     public override MessageHeaders Headers => _receive ?? _message.Headers ?? MessageHeaders.Empty;
     /// <inheritdoc />
-    public override int Attempt => _receive?.Attempt ?? _message.Attempt;
+    public override int Attempt => _attempt > 0 ? _attempt : _receive?.Attempt ?? _message.Attempt;
     /// <inheritdoc />
     public override IServiceProvider Services => _services ?? throw new InvalidOperationException("Services are available only during message processing.");
     /// <inheritdoc />
@@ -30,6 +30,17 @@ public sealed class DefaultMessageContext : MessageContext, IDisposable
     public override CancellationToken CancellationToken => _cancellation;
 
     internal System.Buffers.ReadOnlySequence<byte> Body => _receive is { } receive ? receive.Body : _message.Body;
+    private int _attempt;
+    internal int Redeliveries { get; private set; }
+    internal FailureHistory? FailureHistory { get; set; }
+    internal Disposition? FailureDisposition { get; set; }
+    internal AttemptSendBuffer SendBuffer { get; } = new();
+    internal void InitializeAttempts()
+    {
+        _attempt = Math.Max(Attempt, checked(FailureMetadata.ReadCount(Headers, FailureHeaders.Attempts) + 1));
+        Redeliveries = FailureMetadata.ReadCount(Headers, FailureHeaders.Redeliveries);
+    }
+    internal void NextAttempt() => _attempt = checked(Attempt + 1);
     internal ConsumeDelegate Dispatch { get; set; } = null!;
 
     internal void Initialize(in ConsumeMessage message, CancellationToken cancellationToken)
@@ -72,6 +83,11 @@ public sealed class DefaultMessageContext : MessageContext, IDisposable
             throw new InvalidOperationException("Await message processing before disposing its context.");
         }
         _message = default;
+        _attempt = 0;
+        Redeliveries = 0;
+        FailureHistory = null;
+        FailureDisposition = null;
+        SendBuffer.Clear();
         _receive = null;
         _cancellation = default;
         _services = null;

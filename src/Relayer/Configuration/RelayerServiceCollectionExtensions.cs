@@ -33,7 +33,9 @@ public static class RelayerServiceCollectionExtensions
         services.TryAddEnumerable(ServiceDescriptor.Singleton<IHostedService, MessageSerializerStartupValidator>());
         services.TryAddSingleton<EndpointCapabilityCache>();
         services.TryAddSingleton<SendPipeline>();
-        services.TryAddScoped<ISender, Sender>();
+        services.TryAddSingleton<SenderPool>();
+        services.TryAddScoped<ISender>(static provider => provider.GetRequiredService<SenderPool>()
+            .Rent(provider.GetService<IOutboxEnlistment>()));
 
         services.AddSingleton(builder.MessageTypes);
         services.AddSingleton(builder.Handlers);

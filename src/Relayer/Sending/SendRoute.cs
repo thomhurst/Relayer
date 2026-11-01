@@ -37,7 +37,7 @@ internal sealed class SendRoute<TMessage>
     }
 
     internal ValueTask SendAsync(TMessage message, Action<SendOptions>? configure,
-        IOutboxEnlistment? outbox, CancellationToken callerToken) => Rent().Start(message, configure, outbox, callerToken);
+        IOutboxEnlistment? outbox, CancellationToken callerToken, AttemptSendBuffer? buffer) => Rent().Start(message, configure, outbox, callerToken, buffer);
 
     private Operation Rent()
     {
@@ -93,6 +93,7 @@ internal sealed class SendRoute<TMessage>
         private CancellationTokenRegistration _registration;
         private TMessage _message = default!;
         private IOutboxEnlistment? _outbox;
+        private AttemptSendBuffer? _buffer;
         private MessageEnvelopeMetadata _metadata;
         private string? _messageId;
         private readonly ArrayBufferWriter<byte> _body = new(256);
@@ -112,10 +113,11 @@ internal sealed class SendRoute<TMessage>
         public override SendOptions Options { get; } = new();
         public override CancellationToken CancellationToken => Timeout.Token;
 
-        internal ValueTask Start(TMessage message, Action<SendOptions>? configure, IOutboxEnlistment? outbox, CancellationToken callerToken)
+        internal ValueTask Start(TMessage message, Action<SendOptions>? configure, IOutboxEnlistment? outbox, CancellationToken callerToken, AttemptSendBuffer? buffer)
         {
             _message = message;
             _outbox = outbox;
+            _buffer = buffer;
             _callerToken = callerToken;
             _metadata = MessageEnvelopeMetadata.Create(Activity.Current?.Context ?? default);
             Exception? error = null;
@@ -211,6 +213,11 @@ internal sealed class SendRoute<TMessage>
             var outgoing = new OutgoingMessage(_route._destination, _body.WrittenMemory, _headers.Written,
                 Options.OrderingKey is { } key ? new WireString(key) : _route._orderingKey?.Select(_message, _key), Options.DeliverAt, Options);
             CancellationToken.ThrowIfCancellationRequested();
+            if (_outbox is null && _buffer is not null)
+            {
+                _buffer.Add(_route._transport, outgoing, _route._options.Timeout);
+                return ValueTask.CompletedTask;
+            }
             return _outbox is null
                 ? _route._transport.SendAsync(outgoing, CancellationToken)
                 : _outbox.EnlistAsync(_route._transport.Name, outgoing, CancellationToken);
@@ -236,6 +243,7 @@ internal sealed class SendRoute<TMessage>
             }
             _message = default!;
             _outbox = null;
+            _buffer = null;
             _metadata = default;
             _messageId = null;
             _pending = default;

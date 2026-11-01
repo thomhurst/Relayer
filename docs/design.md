@@ -363,7 +363,60 @@ var classifier = new FailureClassifierBuilder()
     .Build();
 ```
 
-Rules match the declared exception type and its derived types, in registration order. The first matching rule with a true predicate wins. Unmatched failures use `DefaultFailureClassifier`, or the custom `IFailureClassifier` passed to `Build`. Explicit rules can override permanent defaults. Builders freeze after `Build`; the resulting classifiers can be shared across consumers. Predicates and custom fallbacks must support concurrent calls. Predicate failures propagate without producing a settlement decision. Classification does not retry, send, or settle a delivery; the consumer's failure delegate still owns durable failure handling.
+Rules match the declared exception type and its derived types, in registration order. The first matching rule with a true predicate wins. Unmatched failures use `DefaultFailureClassifier`, or the custom `IFailureClassifier` passed to `Build`. Explicit rules can override permanent defaults. Builders freeze after `Build`; the resulting classifiers can be shared across consumers. Predicates and custom fallbacks must support concurrent calls. Predicate failures propagate without producing a settlement decision. Classification does not retry, send, or settle a delivery; the consumer's failure handler owns durable failure handling.
+
+Compose executable failure handling before starting native receive services:
+
+```csharp
+var failures = new FailurePipeline(services, "broker", "orders", "billing",
+    new FailureOptions
+    {
+        RetryDelays = new[] { TimeSpan.FromMilliseconds(100), TimeSpan.FromMilliseconds(500) },
+        RedeliveryDelays = new[] { TimeSpan.FromSeconds(30), TimeSpan.FromMinutes(5) },
+        DeadLetterEndpoint = "orders.errors"
+    }, copy: CopyOriginalDelivery, scheduler: durableScheduler);
+
+var consumer = new ConsumePipelineBuilder(scopeFactory, messageTypes, serializer, failures, classifier)
+    .Handler(orderHandlerDescriptor).Build();
+var receive = new ReceivePipeline<NativeDelivery, NativeBinding>(consumer, headerNames);
+```
+
+`services` is the application service provider. `CopyOriginalDelivery` reads the native feature and returns
+an `OutgoingMessage` with the original body, **all** headers, and ordering key. It must preserve malformed
+envelopes as-is; it must not access `context.MessageType` to rebuild them. A copy factory is required only
+when a configured path needs a copy. `IFailureScheduler` is an available durable executor, not an Options
+flag: it must commit the scheduled message independently of the failed handler transaction before returning.
+Concrete outbox integrations supply that executor. No outbox integration is implied by configuring delays.
+
+Composition reuses the hosted validator's endpoint capability cache. It validates every configured delay
+(including the longest) and the dead-letter destination, and requires each fallback's executor. Native
+redelivery wins within `MaxRedeliveryDelay`, then native scheduled copy within `MaxDeliveryDelay`, then
+a durable scheduler. Native dead-lettering is used only when `DeadLetter` guarantees error metadata.
+Each delay entry permits one further attempt. Empty retry/redelivery lists default to immediate dead-lettering.
+Jitter shortens delays by up to 20% by default, keeping configured capability boundaries valid.
+
+Each immediate retry uses a fresh async DI scope. Direct `ISender` sends, including `SendNowAsync`, are
+serialized into reusable buffers and sent only after the handler, middleware and async scope disposal succeed. Failed attempts
+clear those buffers. Await every send started by the handler; concurrent awaited sends use distinct buffer slots. Native send callbacks run during the flush after scope disposal. The scoped sender is pooled for failure-enabled consumers; ordinary sender scopes
+retain their existing behavior. Active outbox sends still enlist in their transaction: the transaction owner
+must roll back a failed attempt, as required by the outbox contract. Native client calls made directly by user
+code remain the user's responsibility. A failure while flushing successful sends propagates without an
+in-process retry or successful settlement, because an earlier send may already have succeeded.
+
+Copies preserve the original identity and creation context. Native redelivery dispositions carry
+`FailureHeaders` that the adapter **must persist before releasing the original**. Native dead-letter dispositions
+carry the same history in `DeadLetterInfo.Headers`. Their owned metadata survives pooled-context disposal.
+Adapters must not advertise native redelivery if they cannot preserve that metadata. History records the
+original ID (null for a missing ID), total failed attempts, first/last failure times, and each attempt's consumer,
+host, exception type, message and stack. Error metadata uses generated JSON, including under Native AOT.
+Malformed failure counters are permanent envelope errors; corrupt history is replaced so poison messages can
+still reach the dead-letter destination. History construction and exception type diagnostics run only on failure.
+
+The receive adapter returns Complete for a copy fallback only after the send or durable schedule succeeds.
+Fallback exceptions, timeouts, cancellation, scope-disposal errors and flush failures propagate without a
+settlement decision. The native adapter must retain or release the delivery using its own failure semantics.
+Copies remain at-least-once: a crash between the copy and completion can duplicate it (D24).
+
 
 - **Error metadata** goes on the dead-lettered message: the original message ID, exception type, message and stack trace for **every** attempt (Rebus #1154), attempt count, first and last failure time, consumer name, and host.
 - **Redrive API:** `IDeadLetterManager` provides `List`, `Peek`, `Redrive(filter)`, and `Purge`. It is backed natively by the ASB DLQ, SQS redrive, RabbitMQ DLX queue, or Kafka DLT topic. It is also exposed as an optional minimal-API endpoint group and as CLI commands.
