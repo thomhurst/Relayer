@@ -34,6 +34,8 @@ Messages need a stable `[Message]` identity and a source-generated JSON context.
 
 Declare destinations with native `CreateQueueOptions` or `CreateTopicOptions` in `Queues` or `Topics`. Every send destination needs exactly one declaration. Native `CreateSubscriptionOptions` in `Subscriptions` declare subscriptions of a declared topic, independently of receiver composition. Consumer registrations currently fail with an actionable error rather than starting no receiver.
 
+For single and batch sends, the serializer's `content-type` header maps to native `ServiceBusMessage.ContentType`, as required by the CloudEvents AMQP binary binding. It is not copied to application properties. The serializer's media type takes precedence over a native callback's `ContentType`; when no `content-type` header is present, a callback may set the native property.
+
 ## Topology and permissions
 
 `Validate` is the default. It creates an empty native message batch to open each declared destination's authenticated send link, then disposes the batch and sender. No probe message is sent. It peeks declared subscriptions with a native receiver; peeking does not lock, consume or settle a message. Send destinations need Send rights; subscription checks need Listen rights. Validate never constructs or calls the administration client, even when one is supplied.
@@ -56,7 +58,6 @@ For native ordered queue sends, declare `CreateQueueOptions("orders") { Requires
 await sender.SendAsync(order, options => options.ServiceBus(message =>
 {
     message.Subject = "priority";
-    message.ContentType = "application/json";
 }));
 ```
 

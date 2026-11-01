@@ -50,20 +50,23 @@ public class ServiceBusSendEmulatorTests
 
             KeyValuePair<string, WireString>[] headers = [new("cloudEvents:id", new("original-id")),
                 new("cloudEvents:type", new("orders;v=1")), new("traceparent", new("00-0123456789abcdef0123456789abcdef-0123456789abcdef-01"))];
+            KeyValuePair<string, WireString>[] contentHeaders = [.. headers, new("content-type", new("application/x-protobuf"))];
             var native = new SendOptions().ServiceBus(message => { message.Subject = "native"; message.ContentType = "application/json"; });
-            await transport.SendAsync(new("send-orders", new byte[] { 42 }, headers, options: native), token);
+            await transport.SendAsync(new("send-orders", new byte[] { 42 }, contentHeaders, options: native), token);
             await using var orders = client.CreateReceiver("send-orders");
             var order = await orders.ReceiveMessageAsync(TimeSpan.FromSeconds(30), token)
                 ?? throw new InvalidOperationException("Queue send was not delivered.");
             await Assert.That(order.Body.ToMemory().Span[0]).IsEqualTo((byte)42);
             await Assert.That(order.Subject).IsEqualTo("native");
+            await Assert.That(order.ContentType).IsEqualTo("application/x-protobuf");
+            await Assert.That(order.ApplicationProperties.ContainsKey("content-type")).IsFalse();
             foreach (var header in headers) await Assert.That(order.ApplicationProperties[header.Key]).IsEqualTo(header.Value.ToString());
             await orders.CompleteMessageAsync(order, token);
 
             await transport.SendBatchAsync(new[] {
                 new OutgoingMessage("send-sessions", new byte[] { 1 }, orderingKey: new WireString("customer")),
                 new OutgoingMessage("send-sessions", new byte[] { 2 }, orderingKey: new WireString("customer")),
-                new OutgoingMessage("send-events", new byte[] { 3 }, headers) }, token);
+                new OutgoingMessage("send-events", new byte[] { 3 }, contentHeaders) }, token);
             await using var session = await client.AcceptSessionAsync("send-sessions", "customer", cancellationToken: token);
             for (byte expected = 1; expected <= 2; expected++)
             {
@@ -77,6 +80,8 @@ public class ServiceBusSendEmulatorTests
             var published = await audit.ReceiveMessageAsync(TimeSpan.FromSeconds(30), token)
                 ?? throw new InvalidOperationException("Topic send was not delivered to the subscription.");
             await Assert.That(published.Body.ToMemory().Span[0]).IsEqualTo((byte)3);
+            await Assert.That(published.ContentType).IsEqualTo("application/x-protobuf");
+            await Assert.That(published.ApplicationProperties.ContainsKey("content-type")).IsFalse();
             await audit.CompleteMessageAsync(published, token);
 
             var scheduledAt = DateTimeOffset.UtcNow.AddSeconds(2);

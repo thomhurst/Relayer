@@ -57,7 +57,10 @@ internal sealed class ServiceBusSendState
         outgoing.ApplyNative(Message);
         // The original envelope and creation context take precedence over a native callback.
         foreach (var header in outgoing.Headers.Span)
-            Message.ApplicationProperties[header.Key] = header.Value.ToString();
+        {
+            if (header.Key == "content-type") Message.ContentType = header.Value.ToString();
+            else Message.ApplicationProperties[header.Key] = header.Value.ToString();
+        }
     }
 
     internal void Clear()

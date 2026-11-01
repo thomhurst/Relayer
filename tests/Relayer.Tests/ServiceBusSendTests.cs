@@ -107,6 +107,32 @@ public class ServiceBusSendTests
     }
 
     [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Serializer_content_type_uses_native_property_and_does_not_leak_between_sends(bool batch)
+    {
+        var client = new NativeClient { BatchCapacity = 1 };
+        await using var transport = Transport(client);
+        var native = new SendOptions().ServiceBus(message => message.ContentType = "application/native");
+        KeyValuePair<string, WireString>[] utf8 = [new("content-type", new("application/x-protobuf"u8.ToArray()))];
+        KeyValuePair<string, WireString>[] utf16 = [new("content-type", new("application/json"))];
+        OutgoingMessage[] messages = [
+            new("orders", new byte[] { 1 }, utf8, options: native),
+            new("orders", new byte[] { 2 }),
+            new("orders", new byte[] { 3 }, options: native),
+            new("orders", new byte[] { 4 }, utf16)];
+        if (batch) await transport.SendBatchAsync(messages, default);
+        else foreach (var message in messages) await transport.SendAsync(message, default);
+
+        var sent = client.Senders[0].Sent;
+        await Assert.That(sent[0].ContentType).IsEqualTo("application/x-protobuf");
+        await Assert.That(sent[1].ContentType).IsNull();
+        await Assert.That(sent[2].ContentType).IsEqualTo("application/native");
+        await Assert.That(sent[3].ContentType).IsEqualTo("application/json");
+        await Assert.That(sent.All(message => !message.ApplicationProperties.ContainsKey("content-type"))).IsTrue();
+    }
+
+    [Test]
     public async Task Native_batches_split_by_bytes_destination_and_session_and_apply_callbacks_once()
     {
         var client = new NativeClient { BatchCapacity = 2 };
