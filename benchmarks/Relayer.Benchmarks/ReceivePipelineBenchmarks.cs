@@ -58,6 +58,7 @@ public class ReceivePipelineBenchmarks
     [GlobalCleanup]
     public void Cleanup() => _provider.Dispose();
 
+    [Message("benchmark.payload")]
     public sealed class Payload;
     public sealed class Handler : IHandler<Payload>
     {
