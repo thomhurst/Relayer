@@ -60,6 +60,24 @@ try {
     Invoke-TestGit -C $repo worktree add $path clean
     Assert ((& git -C $path rev-parse HEAD) -eq $head) 'Cannot re-checkout retained branch.'
 
+    foreach ($directory in @('.cache', '.docusaurus', 'build')) {
+        $path = New-Checkout "website-$directory"
+        $generatedFile = Join-Path $path "website/$directory/generated.txt"
+        New-Item -ItemType Directory -Path (Split-Path $generatedFile -Parent) | Out-Null
+        Set-Content -LiteralPath $generatedFile -Value 'generated'
+        $sourceFile = Join-Path $path 'website/source/NewFeature.js'
+        New-Item -ItemType Directory -Path (Split-Path $sourceFile -Parent) | Out-Null
+        Set-Content -LiteralPath $sourceFile -Value 'source'
+        $key = Claim "website-$directory-source" $path
+        Lock release -LockName $key
+        Assert (Test-Path -LiteralPath $sourceFile) 'Release removed unknown website source.'
+        Assert (Test-Path -LiteralPath $generatedFile) 'Release removed generated output from a worktree with source changes.'
+        Remove-Item -LiteralPath $sourceFile
+        $key = Claim "website-$directory-output" $path
+        Lock release -LockName $key
+        Assert (-not (Test-Path -LiteralPath $path)) "Website $directory output prevented release cleanup."
+    }
+
     $path = New-Checkout detached -Detached
     Set-Content (Join-Path $path 'source.txt') 'detached commit'
     Invoke-TestGit -C $path commit -am detached

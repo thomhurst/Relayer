@@ -55,6 +55,24 @@ exit 0
     Remove-MergedWorktree -Repo $repo -Worktree $artifactWorktree -Label 'artifact fixture'
     Assert-True (-not (Test-Path -LiteralPath $artifactWorktree)) 'Artifact-only worktree was not removed.'
 
+    foreach ($directory in @('.cache', '.docusaurus', 'build')) {
+        $websiteWorktree = Join-Path $testRoot "website-$directory"
+        git -C $repo worktree add --quiet --detach $websiteWorktree HEAD
+        $generatedFile = Join-Path $websiteWorktree "website/$directory/generated.txt"
+        New-Item -ItemType Directory -Path (Split-Path $generatedFile -Parent) | Out-Null
+        Set-Content -LiteralPath $generatedFile -Value 'generated'
+        $sourceFile = Join-Path $websiteWorktree 'website/source/NewFeature.js'
+        New-Item -ItemType Directory -Path (Split-Path $sourceFile -Parent) | Out-Null
+        Set-Content -LiteralPath $sourceFile -Value 'source'
+
+        Remove-MergedWorktree -Repo $repo -Worktree $websiteWorktree
+        Assert-True (Test-Path -LiteralPath $sourceFile) 'Unknown website source was removed.'
+        Assert-True (Test-Path -LiteralPath $generatedFile) 'Generated output was removed from a worktree with source changes.'
+        Remove-Item -LiteralPath $sourceFile
+        Remove-MergedWorktree -Repo $repo -Worktree $websiteWorktree
+        Assert-True (-not (Test-Path -LiteralPath $websiteWorktree)) "Website $directory output prevented cleanup."
+    }
+
     $logWorktree = Join-Path $testRoot 'issue-125-logs'
     git -C $repo worktree add --quiet -b issue-125-logs $logWorktree
     $logPath = Join-Path $logWorktree 'test-run.log'
@@ -145,10 +163,15 @@ exit 0
     foreach ($sourcePath in @(
         'src/build/NewFeature.cs',
         'src/.cache/NewFeature.cs',
-        'src/.docusaurus/NewFeature.cs'
+        'src/.docusaurus/NewFeature.cs',
+        'website/source/NewFeature.js',
+        'website/build-source/NewFeature.js',
+        'website/.cache-source/NewFeature.js',
+        'website/.docusaurus-source/NewFeature.js',
+        'src/website/build/NewFeature.js'
     )) {
         Assert-True (-not (Test-DisposableWorktreePath -Path $sourcePath)) `
-            "Docs-scoped generated directory was treated as disposable outside docs: $sourcePath"
+            "Unknown source path was treated as disposable: $sourcePath"
     }
     foreach ($sourcePath in @('src/source.log', 'README.md', 'new-feature.md', 'src/NewFeature.cs', '"quoted.log"')) {
         Assert-True (-not (Test-DisposableWorktreePath -Path $sourcePath)) "Unknown file was treated as workflow output: $sourcePath"
@@ -163,6 +186,9 @@ exit 0
         'docs/build/index.html',
         'docs/.docusaurus/client-manifest.json',
         'docs/.cache/webpack/default-development.pack',
+        'website/build/index.html',
+        'website/.docusaurus/client-manifest.json',
+        'website/.cache/webpack/default-development.pack',
         'CodeCoverage/report.xml',
         'src/Fixture/Debug/fixture.dll',
         'src/Fixture/Release/fixture.dll',

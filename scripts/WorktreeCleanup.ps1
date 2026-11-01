@@ -56,6 +56,9 @@ $script:DisposableWorktreeScopedDirectories = @(
     'docs/.cache',
     'docs/.docusaurus',
     'docs/build',
+    'website/.cache',
+    'website/.docusaurus',
+    'website/build',
     # Root-level SDK installs and agent scratch space.
     '.dotnet',
     '.tmp'
