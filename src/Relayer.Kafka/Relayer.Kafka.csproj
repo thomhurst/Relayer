@@ -12,4 +12,9 @@
     <ProjectReference Include="..\Relayer\Relayer.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <InternalsVisibleTo Include="Relayer.Kafka.Tests" />
+    <InternalsVisibleTo Include="Relayer.Benchmarks" />
+  </ItemGroup>
+
 </Project>

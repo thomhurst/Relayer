@@ -434,8 +434,10 @@ public class HarnessTests
     {
         public bool IsActive => true;
         public OutgoingMessage Message { get; private set; }
-        public ValueTask EnlistAsync(string transportName, OutgoingMessage message, CancellationToken cancellationToken)
+        public ValueTask EnlistAsync(OutboxRecord record, CancellationToken cancellationToken)
         {
+            cancellationToken.ThrowIfCancellationRequested();
+            var message = record.Message;
             var headers = message.Headers.ToArray();
             for (var i = 0; i < headers.Length; i++) headers[i] = new(headers[i].Key, new WireString(headers[i].Value.ToString()));
             Message = new(message.Destination, message.Body.ToArray(), headers);

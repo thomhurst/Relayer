@@ -8,7 +8,7 @@ A transport is an adapter over one native client. Each transport package depends
 | Package | Broker | Native client | Status |
 |---|---|---|---|
 | `Relayer` | [In-memory](in-memory.md), for tests and samples | Built in | Implemented |
-| `Relayer.Kafka` | Apache Kafka | [Dekaf](https://dekaf.tomlonghurst.dev/), a pure C# Kafka client | In development |
+| `Relayer.Kafka` | [Apache Kafka](kafka.md) | [Dekaf](https://dekaf.tomlonghurst.dev/), a pure C# Kafka client | Producer implemented; consumers planned |
 | `Relayer.AzureServiceBus` | Azure Service Bus | `Azure.Messaging.ServiceBus` | In development |
 | `Relayer.AmazonSqs` | Amazon SQS and SNS | `AWSSDK.SQS` and `AWSSDK.SimpleNotificationService` | In development |
 | `Relayer.RabbitMQ` | RabbitMQ | `RabbitMQ.Client` | In development |

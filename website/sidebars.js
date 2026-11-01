@@ -29,6 +29,7 @@ const sidebars = {
       link: {type: 'doc', id: 'transports/index'},
       items: [
         'transports/in-memory',
+        'transports/kafka',
         'transports/authoring',
         'transports/conformance',
         'transports/receive',
