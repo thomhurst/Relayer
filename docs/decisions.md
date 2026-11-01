@@ -36,6 +36,8 @@ To change a decision, add a new entry that supersedes it rather than editing his
 | [D23](#d23-a-generic-transport-spi-owned-by-the-core) | A generic transport SPI owned by the core | Accepted |
 | [D24](#d24-capabilities-are-valued-and-declared-per-endpoint) | Capabilities are valued and declared per endpoint | Accepted |
 | [D25](#d25-telemetry-follows-the-opentelemetry-messaging-span-model) | Telemetry follows the OpenTelemetry messaging span model | Accepted |
+| [D26](#d26-generate-default-json-metadata-with-the-official-systemtextjson-generator) | Generate default JSON metadata with the official System.Text.Json generator | Accepted |
+| [D27](#d27-configuration-declarations-are-independent-of-pipeline-execution) | Configuration declarations are independent of pipeline execution | Accepted |
 
 ---
 
@@ -387,3 +389,18 @@ Refines [D8](#d8-systemtextjson-source-generation-by-default).
 - Emit a context declaration for the SDK generator to finish: ordinary generators cannot see one another's output on the supported Roslyn baseline.
 - Generate JSON contracts ourselves: duplicates System.Text.Json's constructor, converter and member-access rules and risks behavioral divergence.
 - Require users to maintain a second list of all message types: adds ceremony to the default registration path and allows the lists to drift.
+
+## D27. Configuration declarations are independent of pipeline execution
+
+**Context.** Issue #6 originally depended on receive and send execution (#4 and #5). Both pipelines need declared routes and consumers to compose, while declaration and named Options validation need neither pipeline. The design also used both `Produce<T>` and `Send<T>` for a destination, despite the single routing API principle.
+
+**Decision.**
+- The core owns named, typed transport, route and consumer declarations, available before execution pipelines. Native transport packages wrap `AddTransport<TTransportOptions, TRouteOptions, TConsumerOptions>` in their own simple registration extensions.
+- The single route declaration is `Send<T>` for any native destination. Sending versus publishing remains native routing, as in §3.4.
+- Transport option configuration uses named `OptionsBuilder<T>` and `IOptionsMonitor<T>`. Applications use generated binding for Native AOT rather than a generic reflection-based binder inside the core.
+- A core hosted validator reports declaration and named-option errors together before later native transport hosted services start. Pipeline, native capability and topology checks remain responsible for their own execution-specific contracts.
+
+**Consequences.**
+- Configuration can ship independently, and the receive and send pipelines consume its immutable declaration lists during composition.
+- Native option objects retain their own mutability semantics. Reload updates named options, not routing or topology, and cannot silently restart a native client.
+- The current core example uses the generic transport-author seam; native registration extensions arrive with their adapters.
