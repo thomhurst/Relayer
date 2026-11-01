@@ -107,7 +107,7 @@ await using (var dataSource = new Npgsql.NpgsqlSlimDataSourceBuilder(postgresCon
         Console.WriteLine("Real PostgreSQL transaction wrapper and batched enqueue passed under Native AOT.");
     }
 }
-await using (var orderedSource = new Npgsql.NpgsqlSlimDataSourceBuilder(postgresConnectionString ?? "Host=127.0.0.1;Port=1;Timeout=1").Build())
+await using (var orderedSource = new Npgsql.NpgsqlSlimDataSourceBuilder(postgresConnectionString ?? "Host=127.0.0.1;Port=1;Timeout=1").EnableArrays().Build())
 {
     var native = new OrderedSmokeTransport();
     var orderedServices = new ServiceCollection().AddLogging();

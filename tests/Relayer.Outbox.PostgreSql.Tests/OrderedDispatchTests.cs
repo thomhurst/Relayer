@@ -1,5 +1,6 @@
 using System.Buffers;
 using System.Collections.Concurrent;
+using System.Threading.Channels;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -374,6 +375,179 @@ public class OrderedDispatchTests
         }
         finally { await worker.StopAsync(timeout.Token); }
         await Assert.That(transport.Ids.SequenceEqual(Enumerable.Range(1, 5).Select(Id))).IsTrue();
+    }
+
+    [Test]
+    public async Task Idle_scans_do_not_write_lane_leases_and_refresh_membership_only_when_due()
+    {
+        await using var fixture = new PostgreSqlFixture();
+        await fixture.StartAsync();
+        await using var source = NpgsqlDataSource.Create(fixture.ConnectionString);
+        await PostgreSqlOutboxStoreTests.CreateSchema(source);
+        var clock = new ScanClock();
+        using var worker = new PostgreSqlOrderedDispatcher(source, new(), [new RecordingTransport()],
+            NullLogger<PostgreSqlOrderedDispatcher>.Instance, clock);
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+        await worker.StartAsync(timeout.Token);
+        try
+        {
+            var poll = await clock.Polls.Reader.ReadAsync(timeout.Token);
+            await using var lanes = source.CreateCommand("SELECT count(*) FROM relayer_leases WHERE name LIKE 'lane:%'");
+            await Assert.That((long)(await lanes.ExecuteScalarAsync(timeout.Token))!).IsEqualTo(0);
+            await using var member = source.CreateCommand("SELECT xmin::text FROM relayer_leases WHERE name LIKE 'member:%'");
+            var firstVersion = (string)(await member.ExecuteScalarAsync(timeout.Token))!;
+            poll.Callback(poll.State);
+            poll = await clock.Polls.Reader.ReadAsync(timeout.Token);
+            await Assert.That((string)(await member.ExecuteScalarAsync(timeout.Token))!).IsEqualTo(firstVersion);
+            clock.Advance(TimeSpan.FromSeconds(10));
+            poll.Callback(poll.State);
+            poll = await clock.Polls.Reader.ReadAsync(timeout.Token);
+            await Assert.That((string)(await member.ExecuteScalarAsync(timeout.Token))!).IsNotEqualTo(firstVersion);
+            await Assert.That((long)(await lanes.ExecuteScalarAsync(timeout.Token))!).IsEqualTo(0);
+            // A read-only empty scan must not hide rows committed before the next poll.
+            await Insert(source, Id(1), 0);
+            poll.Callback(poll.State);
+            await clock.Polls.Reader.ReadAsync(timeout.Token);
+            await using var remaining = source.CreateCommand("SELECT count(*) FROM relayer_outbox");
+            await Assert.That((long)(await remaining.ExecuteScalarAsync(timeout.Token))!).IsEqualTo(0);
+        }
+        finally { await worker.StopAsync(timeout.Token); }
+    }
+
+    [Test]
+    [Arguments("future")]
+    [Arguments("claimed")]
+    [Arguments("parked")]
+    public async Task Hosted_probe_respects_ineligible_heads_and_still_dispatches_other_lanes(string kind)
+    {
+        await using var fixture = new PostgreSqlFixture();
+        await fixture.StartAsync();
+        await using var source = NpgsqlDataSource.Create(fixture.ConnectionString);
+        await PostgreSqlOutboxStoreTests.CreateSchema(source);
+        await Insert(source, Id(1), 0);
+        await Insert(source, Id(2), 0);
+        await Insert(source, Id(3), 1);
+        var change = kind switch
+        {
+            "future" => "deliver_at = clock_timestamp() + interval '1 day'",
+            "claimed" => "claim_token = gen_random_uuid(), claim_expires_at = clock_timestamp() + interval '1 day'",
+            _ => "status = 'parked'"
+        };
+        await using (var command = source.CreateCommand($"UPDATE relayer_outbox SET {change} WHERE id = @id"))
+        {
+            command.Parameters.AddWithValue("id", Id(1));
+            await command.ExecuteNonQueryAsync();
+        }
+        var clock = new ScanClock();
+        var transport = new RecordingTransport();
+        using var worker = new PostgreSqlOrderedDispatcher(source, new() { Lanes = 2 }, [transport],
+            NullLogger<PostgreSqlOrderedDispatcher>.Instance, clock);
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+        await worker.StartAsync(timeout.Token);
+        try
+        {
+            var poll = await clock.Polls.Reader.ReadAsync(timeout.Token);
+            await Assert.That(transport.Ids.SequenceEqual([Id(3)])).IsTrue();
+            await using var lanes = source.CreateCommand("SELECT count(*) FROM relayer_leases WHERE name = 'lane:0'");
+            await Assert.That((long)(await lanes.ExecuteScalarAsync(timeout.Token))!).IsEqualTo(0);
+            await using (var command = source.CreateCommand("UPDATE relayer_outbox SET status = 'pending', deliver_at = clock_timestamp(), claim_token = NULL, claim_expires_at = NULL WHERE id = @id"))
+            {
+                command.Parameters.AddWithValue("id", Id(1));
+                await command.ExecuteNonQueryAsync(timeout.Token);
+            }
+            poll.Callback(poll.State);
+            await clock.Polls.Reader.ReadAsync(timeout.Token);
+            await Assert.That(transport.Ids.SequenceEqual([Id(3), Id(1), Id(2)])).IsTrue();
+        }
+        finally { await worker.StopAsync(timeout.Token); }
+    }
+
+    [Test]
+    public async Task Hosted_worker_refreshes_membership_after_a_slow_lane_before_renewing_another()
+    {
+        await using var fixture = new PostgreSqlFixture();
+        await fixture.StartAsync();
+        await using var source = NpgsqlDataSource.Create(fixture.ConnectionString);
+        await PostgreSqlOutboxStoreTests.CreateSchema(source);
+        await Insert(source, Id(1), 0);
+        await Insert(source, Id(2), 1);
+        var clock = new ScanClock();
+        var transport = new RecordingTransport(async (_, _) =>
+        {
+            // This member sorts after the worker, so the worker retains only even lanes after refreshing.
+            await using var join = source.CreateCommand("INSERT INTO relayer_leases (name, owner, expires_at) VALUES ('member:zzzz', 'member:zzzz', clock_timestamp() + interval '1 day')");
+            await join.ExecuteNonQueryAsync();
+            clock.Advance(TimeSpan.FromSeconds(10));
+        });
+        using var worker = new PostgreSqlOrderedDispatcher(source, new() { Lanes = 2 }, [transport],
+            NullLogger<PostgreSqlOrderedDispatcher>.Instance, clock);
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+        await worker.StartAsync(timeout.Token);
+        try
+        {
+            await clock.Polls.Reader.ReadAsync(timeout.Token);
+            await Assert.That(transport.Ids.SequenceEqual([Id(1)])).IsTrue();
+            await using var lane = source.CreateCommand("SELECT count(*) FROM relayer_leases WHERE name = 'lane:1'");
+            await Assert.That((long)(await lane.ExecuteScalarAsync(timeout.Token))!).IsEqualTo(0);
+        }
+        finally { await worker.StopAsync(timeout.Token); }
+    }
+
+    [Test]
+    [Arguments("stale")]
+    [Arguments("expired")]
+    public async Task Reused_mutation_commands_preserve_token_and_expiry_fences(string kind)
+    {
+        await using var fixture = new PostgreSqlFixture();
+        await fixture.StartAsync();
+        await using var source = NpgsqlDataSource.Create(fixture.ConnectionString);
+        await PostgreSqlOutboxStoreTests.CreateSchema(source);
+        await Insert(source, Id(1), 0);
+        using var lane = new PostgreSqlOrderedLane(source, new(), TimeSpan.FromSeconds(30));
+        await using var connection = await source.OpenConnectionAsync();
+        await using (var transaction = await connection.BeginTransactionAsync())
+        {
+            var claim = new OutboxClaim(Id(1), Guid.NewGuid());
+            await Assert.That(await lane.ClaimAsync(connection, transaction, claim, default)).IsTrue();
+            if (kind == "stale") claim = new(claim.MessageId, Guid.NewGuid());
+            else
+            {
+                await using var expire = new NpgsqlCommand("UPDATE relayer_outbox SET claim_expires_at = clock_timestamp() - interval '1 second'", connection, transaction);
+                await expire.ExecuteNonQueryAsync();
+            }
+            await Assert.That(await lane.CompleteAsync(connection, transaction, claim, default)).IsFalse();
+            await Assert.That(await lane.FailAsync(connection, transaction, claim, "stale failure", default)).IsFalse();
+            await transaction.RollbackAsync();
+        }
+        // A new transaction must not retain a disposed transaction, prior token or error parameter.
+        await using (var transaction = await connection.BeginTransactionAsync())
+        {
+            var claim = new OutboxClaim(Id(1), Guid.NewGuid());
+            await Assert.That(await lane.ClaimAsync(connection, transaction, claim, default)).IsTrue();
+            await Assert.That(await lane.CompleteAsync(connection, transaction, claim, default)).IsTrue();
+            await transaction.CommitAsync();
+        }
+    }
+
+    private sealed class ScanClock : TimeProvider
+    {
+        private long _ticks;
+        internal Channel<(TimerCallback Callback, object? State)> Polls { get; } =
+            Channel.CreateUnbounded<(TimerCallback, object?)>();
+        public override long TimestampFrequency => TimeSpan.TicksPerSecond;
+        public override long GetTimestamp() => Interlocked.Read(ref _ticks);
+        internal void Advance(TimeSpan duration) => Interlocked.Add(ref _ticks, duration.Ticks);
+        public override ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period)
+        {
+            Polls.Writer.TryWrite((callback, state));
+            return new SilentTimer();
+        }
+        private sealed class SilentTimer : ITimer
+        {
+            public bool Change(TimeSpan dueTime, TimeSpan period) => true;
+            public void Dispose() { }
+            public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+        }
     }
 
     private sealed class PollClock : TimeProvider

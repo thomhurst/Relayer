@@ -31,6 +31,8 @@ The application owns `dataSource`. Dispose it after the host stops. Worker names
 case-sensitive; duplicate names fail immediately. Use the same database, schema, prefix and lane count
 on every writer and worker. Drain the outbox before changing the lane count. Distinct stores have separate
 membership and leases. Two worker names pointing to the same tables join the same group.
+When using `NpgsqlSlimDataSourceBuilder`, call `EnableArrays()` before `Build()` so the assigned-lane
+probe can send PostgreSQL integer arrays, including under Native AOT. Standard data sources enable arrays by default.
 
 Options are init-only and available through `IOptionsMonitor<PostgreSqlOrderedDispatchOptions>.Get("orders")`.
 An overload accepts `IConfiguration`, for example `configuration.GetSection("Outbox:Orders")`, with explicit
@@ -50,6 +52,12 @@ live members divide the lanes by rank, differing by at most one lane. Members st
 their share; a new owner waits for expiry. Graceful shutdown releases membership and owned lanes. A crash
 leaves leases to expire. Expired membership rows are removed during heartbeats.
 
+Membership refreshes after one third of `LeaseDuration` has elapsed, including between slow lane batches.
+New membership can therefore take that interval to affect assignments, before any existing lane lease
+expires. Every scan uses one read-only query to probe assigned lanes' first non-parked heads. Empty lanes
+and lanes blocked by a scheduled or live-claimed head cause no lease writes. The worker re-reads under
+the lane lock before sending; a probe never grants ownership or permits overtaking a head.
+
 A worker scans its assigned lanes and sends one bounded batch per lane per cycle. After any committed progress it immediately starts another cycle, including when the time budget shortened a batch. PollInterval applies only to scans with no progress, so a backlog is not limited to one batch per polling interval. Each lane lease has
 an instance-specific owner token. Its database row stays locked in a transaction until native sends and
 fenced row outcomes finish. A competing owner cannot take over while that transaction remains connected,
@@ -60,6 +68,7 @@ Reads follow the partial `(lane, id)` pending index, in PostgreSQL UUID order. S
 never cause the worker to skip a head row. A future or live-claimed head temporarily stalls its lane.
 Later rows with a parked head's ordering key stay parked while other keys can continue, using the parked-key
 index. This worker does not itself move poison rows or expose redrive management yet.
+Poison handling, retry limits and key-scoped parking are tracked by [#34](https://github.com/thomhurst/Relayer/issues/34).
 
 Messages are sent sequentially through the registered native `ITransport`, preserving original bodies,
 headers, identities and ordering keys. Due delivery timestamps are consumed by the database rather than
@@ -68,6 +77,8 @@ and the dispatch error and stop the batch. Preparation failures, including missi
 and unsupported native ordering, use the same durable failure path. Completed rows before the failure commit,
 so a bad row does not repeatedly replay a successful prefix. Database or completion uncertainty rolls back the batch, retaining
 rows for retry. Up to `BatchSize` accepted sends can replay when their batch does not commit. Unordered rows are untouched.
+The single dispatch loop reuses mutation commands and typed parameters across rows and batches. Each
+successful row still uses one conditional claim UPDATE and one fenced DELETE around its native send.
 
 ## Failure boundaries
 

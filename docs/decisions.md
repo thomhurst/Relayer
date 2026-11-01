@@ -591,6 +591,17 @@ forcibly revoked. Reads use the pending lane/ID index and never skip a scheduled
 An indexed anti-join excludes later rows of parked keys while allowing other keys to continue.
 After committed progress, the worker immediately starts another fair scan; only scans with no progress wait
 for the polling interval. A busy lane cannot consume another lane's turn by draining without a scan boundary.
+Each scan probes assigned lanes' first non-parked heads in one read-only query. Empty, scheduled and
+live-claimed lanes incur no lease writes. This probe is only a hint: the worker re-reads and claims under
+the lane transaction lock, so a stale probe cannot authorize a send or skip a head. Membership refreshes
+when one third of the lease duration has elapsed on the monotonic clock, including between slow lane
+batches, rather than once for every lane. The database clock still decides expiry and ownership.
+Mutation commands and their typed parameters belong to the single dispatch loop and are reused across
+rows and batches. Per-row claim and completion statements deliberately remain: each send checks the
+head's eligibility, and each outcome checks its live token before advancing. Removing these fences or
+batching outcomes would require a separate protocol change; command reuse removes their construction
+allocations without weakening that boundary. Native execution, materialization and I/O costs remain
+outside the managed command-binding benchmark.
 
 **Consequences.** Database failure or uncertain completion rolls back the batch, so accepted sends can replay.
 Ordering describes ascending visible UUIDs, not concurrent writers' commit order. When a database connection

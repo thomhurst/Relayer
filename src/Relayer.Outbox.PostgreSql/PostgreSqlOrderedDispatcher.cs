@@ -14,6 +14,7 @@ internal sealed partial class PostgreSqlOrderedDispatcher : BackgroundService
     private readonly PostgreSqlOrderedLane _lane;
     private readonly Dictionary<string, ITransport> _transports = new(StringComparer.Ordinal);
     private readonly OutboxRecord[] _rows;
+    private readonly bool[] _ready;
     private readonly Dictionary<(ITransport Transport, string Destination), TransportCapabilities> _capabilities = [];
     private readonly ILogger<PostgreSqlOrderedDispatcher> _logger;
     private readonly TimeProvider _timeProvider;
@@ -27,6 +28,7 @@ internal sealed partial class PostgreSqlOrderedDispatcher : BackgroundService
         _coordinator = new(source, options);
         _lane = new(source, store, options.LeaseDuration);
         _rows = new OutboxRecord[options.BatchSize];
+        _ready = new bool[options.Lanes];
         _logger = logger;
         _timeProvider = timeProvider ?? TimeProvider.System;
         foreach (var transport in transports)
@@ -40,6 +42,7 @@ internal sealed partial class PostgreSqlOrderedDispatcher : BackgroundService
     {
         // Reuse the deadline source across successful batches. Cancellation is an exceptional path.
         var deadline = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
+        long? lastRebalance = null;
         try
         {
             while (!stoppingToken.IsCancellationRequested)
@@ -47,11 +50,13 @@ internal sealed partial class PostgreSqlOrderedDispatcher : BackgroundService
                 var madeProgress = false;
                 try
                 {
-                    await _coordinator.RebalanceAsync(stoppingToken).ConfigureAwait(false);
+                    await RebalanceIfDueAsync().ConfigureAwait(false);
+                    await _lane.FindReadyAsync(_coordinator.Assigned, _ready, stoppingToken).ConfigureAwait(false);
                     for (var lane = 0; lane < _options.Lanes; lane++)
                     {
-                        if (!_coordinator.Assigned[lane]) continue;
-                        await _coordinator.RebalanceAsync(stoppingToken).ConfigureAwait(false);
+                        if (!_ready[lane] || !_coordinator.Assigned[lane]) continue;
+                        // A preceding slow batch can consume the heartbeat interval. Refresh before renewing another lane.
+                        await RebalanceIfDueAsync().ConfigureAwait(false);
                         if (!_coordinator.Assigned[lane]) continue;
                         deadline.CancelAfter(_options.LeaseDuration / 2);
                         try
@@ -85,6 +90,20 @@ internal sealed partial class PostgreSqlOrderedDispatcher : BackgroundService
             try { await _coordinator.ReleaseAsync(cleanup.Token).ConfigureAwait(false); }
             catch (Exception error) { ReleaseFailed(_logger, error); }
         }
+
+        async ValueTask RebalanceIfDueAsync()
+        {
+            if (lastRebalance is { } last && _timeProvider.GetElapsedTime(last) < _options.LeaseDuration / 3) return;
+            var started = _timeProvider.GetTimestamp();
+            await _coordinator.RebalanceAsync(stoppingToken).ConfigureAwait(false);
+            lastRebalance = started;
+        }
+    }
+
+    public override void Dispose()
+    {
+        base.Dispose();
+        _lane.Dispose();
     }
 
     // One connection and lease-row transaction lock per batch. Never run concurrent sends within a lane.
