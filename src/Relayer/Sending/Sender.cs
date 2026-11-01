@@ -7,6 +7,8 @@ internal class Sender(SendPipeline pipeline, IOutboxEnlistment? outbox = null) :
     internal IOutboxEnlistment? Outbox { get; set; } = outbox;
     internal AttemptSendBuffer? AttemptBuffer { get; set; }
 
+    internal virtual void EndAttempt() => AttemptBuffer = null;
+
     public ValueTask SendAsync<TMessage>(TMessage message, CancellationToken cancellationToken = default) =>
         Send(message, null, SendMode.Automatic, cancellationToken);
 

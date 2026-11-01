@@ -56,9 +56,16 @@ internal sealed class SenderPool(SendPipeline pipeline)
 
     private sealed class PooledSender(SenderPool owner, SendPipeline pipeline) : Sender(pipeline), IDisposable
     {
+        internal override void EndAttempt()
+        {
+            base.EndAttempt();
+            Dispose();
+        }
+
         public void Dispose()
         {
-            AttemptBuffer = null;
+            // The consume pipeline returns an attached sender after the entire scope finishes disposing.
+            if (AttemptBuffer is not null) return;
             Outbox = null;
             owner.Return(this);
         }

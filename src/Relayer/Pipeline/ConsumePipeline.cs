@@ -187,8 +187,16 @@ public sealed class ConsumePipeline
                 }
                 finally
                 {
-                    if (sender is not null) sender.AttemptBuffer = null;
-                    await scope.DisposeAsync().ConfigureAwait(false);
+                    try
+                    {
+                        await scope.DisposeAsync().ConfigureAwait(false);
+                    }
+                    finally
+                    {
+                        // Disposers can send too. Keep the buffer and sender reserved until all disposal ends,
+                        // including when a disposer throws before DI reaches the sender's own Dispose.
+                        sender?.EndAttempt();
+                    }
                 }
                 context.CancellationToken.ThrowIfCancellationRequested();
                 if (failure is null)

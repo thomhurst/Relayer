@@ -297,10 +297,109 @@ public class FailurePipelineTests
     }
 
     [Test]
-    public async Task Successful_processing_adds_no_allocations_beyond_equivalent_native_DI_and_JSON()
+    [Arguments(false, false)]
+    [Arguments(true, false)]
+    [Arguments(false, true)]
+    public async Task Disposal_sends_escape_only_when_handler_and_scope_succeed(bool failHandler, bool failDisposal)
     {
         var transport = new Transport();
         using var provider = Provider(transport);
+        var control = provider.GetRequiredService<Control>();
+        ISender sender = null!;
+        control.Invoke = context =>
+        {
+            sender = context.Services.GetRequiredService<ISender>();
+            return failHandler ? Throw(context) : default;
+        };
+        control.Dispose = async () =>
+        {
+            await sender.SendNowAsync(new Payload());
+            await Assert.That(transport.Sends.Count).IsEqualTo(0);
+            if (failDisposal) throw new ApplicationException("scope failed after sending");
+        };
+        var pipeline = Pipeline(provider);
+        if (failDisposal)
+            await Assert.That(async () => await pipeline.ProcessAsync(new())).Throws<ApplicationException>();
+        else
+            await Assert.That((await pipeline.ProcessAsync(new())).Kind)
+                .IsEqualTo(failHandler ? DispositionKind.DeadLetter : DispositionKind.Complete);
+        await Assert.That(transport.Sends.Count).IsEqualTo(failHandler || failDisposal ? 0 : 1);
+
+        control.Invoke = null;
+        control.Dispose = null;
+        await pipeline.ProcessAsync(new());
+        await Assert.That(transport.Sends.Count).IsEqualTo(failHandler || failDisposal ? 0 : 1);
+        await using var scope = provider.CreateAsyncScope();
+        var reused = scope.ServiceProvider.GetRequiredService<ISender>();
+        await Assert.That(reused).IsSameReferenceAs(sender);
+        await reused.SendAsync(new Payload());
+        await Assert.That(transport.Sends.Count).IsEqualTo(failHandler || failDisposal ? 1 : 2);
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Sender_stays_reserved_until_every_disposer_finishes(bool failDisposal)
+    {
+        var transport = new Transport();
+        using var provider = Provider(transport, services => services.AddScoped<IOutboxEnlistment>(scope =>
+        {
+            // Sender resolves its outbox first, so DI disposes Sender before Lifetime.
+            _ = scope.GetRequiredService<Lifetime>();
+            return new InactiveOutbox();
+        }));
+        var control = provider.GetRequiredService<Control>();
+        var disposing = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var finish = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        ISender sender = null!;
+        control.Invoke = context =>
+        {
+            sender = context.Services.GetRequiredService<ISender>();
+            return default;
+        };
+        control.Dispose = async () =>
+        {
+            disposing.SetResult();
+            await finish.Task;
+            await sender.SendAsync(new Payload());
+            if (failDisposal) throw new ApplicationException("scope failed after sending");
+        };
+        var pipeline = Pipeline(provider);
+        var pending = pipeline.ProcessAsync(new());
+        await disposing.Task;
+        // The other scope also owns a Lifetime. Only the suspended disposer uses this callback.
+        control.Dispose = null;
+        try
+        {
+            await Assert.That(pending.IsCompleted).IsFalse();
+            await using var other = provider.CreateAsyncScope();
+            var otherSender = other.ServiceProvider.GetRequiredService<ISender>();
+            await Assert.That(otherSender).IsNotSameReferenceAs(sender);
+            await otherSender.SendAsync(new Payload());
+            await Assert.That(transport.Sends.Count).IsEqualTo(1);
+        }
+        finally
+        {
+            finish.SetResult();
+        }
+        if (failDisposal)
+            await Assert.That(async () => await pending).Throws<ApplicationException>();
+        else
+            await Assert.That((await pending).Kind).IsEqualTo(DispositionKind.Complete);
+        await Assert.That(transport.Sends.Count).IsEqualTo(failDisposal ? 1 : 2);
+    }
+
+    [Test]
+    public async Task Successful_processing_adds_no_allocations_beyond_equivalent_native_DI_and_JSON()
+    {
+        var transport = new Transport();
+        using var provider = Provider(transport, static services =>
+        {
+            // DI compiles constructor call sites in the background. Factories avoid temporary argument
+            // arrays in its interpreter, so compilation timing cannot change either allocation sample.
+            services.AddScoped(static scope => new Lifetime(scope.GetRequiredService<Control>()));
+            services.AddScoped(static scope => new Handler(scope.GetRequiredService<Control>(), scope.GetRequiredService<Lifetime>()));
+        });
         var pipeline = Pipeline(provider);
         var incoming = new Incoming();
         var serializer = provider.GetRequiredService<Relayer.Serialization.IMessageSerializer>();
@@ -309,6 +408,7 @@ public class FailurePipelineTests
         {
             await pipeline.ProcessAsync(incoming);
             var scope = new AsyncServiceScope(scopes.CreateScope());
+            _ = scope.ServiceProvider.GetRequiredService<ISender>();
             _ = scope.ServiceProvider.GetRequiredService<Handler>();
             _ = serializer.Deserialize<Payload>(new(incoming.Body));
             await scope.DisposeAsync();
@@ -426,7 +526,7 @@ public class FailurePipelineTests
 
     private static ValueTask Throw(MessageContext context) => throw new InvalidOperationException("failed attempt");
 
-    private static ServiceProvider Provider(Transport transport)
+    private static ServiceProvider Provider(Transport transport, Action<IServiceCollection>? configure = null)
     {
         var services = new ServiceCollection();
         services.AddSingleton<ITransport>(transport);
@@ -438,6 +538,7 @@ public class FailurePipelineTests
             r.Handler<Handler>();
             r.DeclareRoute<Payload>("test", "destination");
         });
+        configure?.Invoke(services);
         return services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
     }
 
@@ -478,6 +579,12 @@ public class FailurePipelineTests
     public sealed class Lifetime(Control control) : IAsyncDisposable
     {
         public ValueTask DisposeAsync() => control.Dispose?.Invoke() ?? default;
+    }
+    private sealed class InactiveOutbox : IOutboxEnlistment
+    {
+        public bool IsActive => false;
+        public ValueTask EnlistAsync(string transportName, OutgoingMessage message, CancellationToken cancellationToken)
+            => throw new NotSupportedException();
     }
     private sealed class Incoming
     {
