@@ -48,7 +48,7 @@ live members divide the lanes by rank, differing by at most one lane. Members st
 their share; a new owner waits for expiry. Graceful shutdown releases membership and owned lanes. A crash
 leaves leases to expire. Expired membership rows are removed during heartbeats.
 
-A worker scans its assigned lanes and sends one bounded batch per lane per cycle. Each lane lease has
+A worker scans its assigned lanes and sends one bounded batch per lane per cycle. After any committed progress it immediately starts another cycle, including when the time budget shortened a batch. PollInterval applies only to scans with no progress, so a backlog is not limited to one batch per polling interval. Each lane lease has
 an instance-specific owner token. Its database row stays locked in a transaction until native sends and
 fenced row outcomes finish. A competing owner cannot take over while that transaction remains connected,
 even after lease expiry. The worker sets a deadline of half the lease duration for acquiring, reading,

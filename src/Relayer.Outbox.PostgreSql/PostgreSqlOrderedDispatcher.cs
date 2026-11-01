@@ -44,6 +44,7 @@ internal sealed partial class PostgreSqlOrderedDispatcher : BackgroundService
         {
             while (!stoppingToken.IsCancellationRequested)
             {
+                var madeProgress = false;
                 try
                 {
                     await _coordinator.RebalanceAsync(stoppingToken).ConfigureAwait(false);
@@ -53,7 +54,10 @@ internal sealed partial class PostgreSqlOrderedDispatcher : BackgroundService
                         await _coordinator.RebalanceAsync(stoppingToken).ConfigureAwait(false);
                         if (!_coordinator.Assigned[lane]) continue;
                         deadline.CancelAfter(_options.LeaseDuration / 2);
-                        try { await DispatchLaneAsync(lane, deadline.Token).ConfigureAwait(false); }
+                        try
+                        {
+                            madeProgress |= await DispatchLaneAsync(lane, deadline.Token).ConfigureAwait(false) > 0;
+                        }
                         catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { throw; }
                         catch (Exception error) { DispatchFailed(_logger, error); }
                         finally
@@ -69,7 +73,8 @@ internal sealed partial class PostgreSqlOrderedDispatcher : BackgroundService
                 }
                 catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { break; }
                 catch (Exception error) { DispatchFailed(_logger, error); }
-                await Task.Delay(_options.PollInterval, stoppingToken).ConfigureAwait(false);
+                if (!madeProgress)
+                    await Task.Delay(_options.PollInterval, _timeProvider, stoppingToken).ConfigureAwait(false);
             }
         }
         catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { }

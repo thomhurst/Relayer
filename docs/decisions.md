@@ -589,6 +589,8 @@ of the lease duration to reserve time for the final send and commit; healthy slo
 A single native operation must still fit the hard deadline. A connected transaction is never
 forcibly revoked. Reads use the pending lane/ID index and never skip a scheduled or live-claimed head.
 An indexed anti-join excludes later rows of parked keys while allowing other keys to continue.
+After committed progress, the worker immediately starts another fair scan; only scans with no progress wait
+for the polling interval. A busy lane cannot consume another lane's turn by draining without a scan boundary.
 
 **Consequences.** Database failure or uncertain completion rolls back the batch, so accepted sends can replay.
 Ordering describes ascending visible UUIDs, not concurrent writers' commit order. When a database connection
