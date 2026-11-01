@@ -10,7 +10,9 @@ services.AddOptions<TracingOptions>().Bind(configuration.GetSection("Relayer:Tra
 services.AddSingleton<IActivityEnricher, ApplicationEnricher>();
 ```
 
-`TracingOptions` uses init-only properties. `CreationContextAsParent` and `CreateSpansForBatches` default to true; `IncludeBodySize` defaults to false. The source is named `Relayer` and carries schema URL `https://opentelemetry.io/schemas/1.37.0`. This pin matches the `messaging.system` attribute mapping in design §8 and [semantic conventions 1.37.0](https://github.com/open-telemetry/semantic-conventions/blob/v1.37.0/docs/messaging/messaging-spans.md). Future changes to that pin require a release note and a mapping review.
+`TracingOptions` uses init-only properties. `CreationContextAsParent` and `CreateSpansForBatches` default to true; `IncludeBodySize` defaults to false. The source is named `Relayer` and carries schema URL `https://opentelemetry.io/schemas/1.44.0`. Tracing and metrics share the single `RelayerTelemetry.SemanticConventionsVersion` pin. This pin matches the `messaging.system` attribute mapping in design §8 and [semantic conventions 1.44.0](https://github.com/open-telemetry/semantic-conventions/blob/v1.44.0/docs/messaging/messaging-spans.md).
+
+Integration note: the shared 1.44.0 pin supersedes the tracing foundation's independent 1.37.0 declaration, retaining the version already used by metrics. Span names, kinds, attributes and creation-context behavior are unchanged. Future changes to that pin require a release note and a mapping review.
 
 Adapters compose operations once at startup, using native metadata rather than the configured transport instance name:
 
