@@ -60,6 +60,13 @@ public sealed class PostgreSqlOutboxStore : IOutboxStore
         Add(command, "lane", NpgsqlDbType.Integer, request.Lane);
         Add(command, "after", NpgsqlDbType.Uuid, request.AfterId);
         Add(command, "limit", NpgsqlDbType.Integer, destination.Length);
+        return await ReadRowsAsync(command, destination, cancellationToken).ConfigureAwait(false);
+    }
+
+    [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder<>))]
+    internal async ValueTask<int> ReadRowsAsync(NpgsqlCommand command, Memory<OutboxRecord> destination,
+        CancellationToken cancellationToken)
+    {
         await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
         var count = 0;
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))

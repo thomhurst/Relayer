@@ -71,9 +71,10 @@ public class DatabaseSchemaTests
         await using var reader = await indexes.ExecuteReaderAsync();
         var definitions = new List<string>();
         while (await reader.ReadAsync()) definitions.Add(reader.GetString(0));
-        await Assert.That(definitions.Count).IsEqualTo(3);
+        await Assert.That(definitions.Count).IsEqualTo(4);
         await Assert.That(definitions.Any(x => x.Contains("(lane, id) WHERE (status = 'pending'::text)"))).IsTrue();
         await Assert.That(definitions.Any(x => x.Contains("(deliver_at) WHERE (deliver_at IS NOT NULL)"))).IsTrue();
+        await Assert.That(definitions.Any(x => x.Contains("(lane, ordering_key, id) WHERE (status = 'parked'::text)"))).IsTrue();
     }
 
     private static async Task VerifyRowsAndHealth(NpgsqlConnection connection, PostgreSqlOutboxOptions options)

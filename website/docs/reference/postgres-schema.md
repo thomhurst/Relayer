@@ -7,7 +7,7 @@ Relayer implements PostgreSQL schema creation in `Relayer.Outbox.PostgreSql`, pl
 extension in `Relayer.Outbox.EntityFrameworkCore`. Schema creation does **not** enable durable sending,
 transaction enlistment, dispatch, lease acquisition, poison-row handling or inbox deduplication.
 Register [EF Core transaction enlistment](ef-core-outbox.md) separately to persist outgoing rows.
-Dispatch, lease acquisition, poison-row handling and inbox deduplication remain [planned](../roadmap.md).
+[Ordered dispatch and lease acquisition](ordered-dispatch.md) are implemented separately. Unordered dispatch, poison-row handling and inbox deduplication remain [planned](../roadmap.md).
 SQL Server and MySQL scripts are not implemented.
 
 ## Print SQL
@@ -63,7 +63,7 @@ Message IDs and claim tokens cannot be empty UUIDs. A claim token and its expiry
 present. The [PostgreSQL store](postgres-store.md) enforces conditional, live-token updates; columns and constraints alone
 do not implement [fencing](outbox-stores.md#claims-and-outcomes).
 
-The outbox has a partial `(lane, id)` index for `status = 'pending'` and a partial `deliver_at` index for non-null
+The outbox has a partial `(lane, ordering_key, id)` index for parked-key barriers, a partial `(lane, id)` index for `status = 'pending'` and a partial `deliver_at` index for non-null
 schedules. The inbox has a `processed_at` retention index. Primary keys create their normal unique indexes.
 
 Creation uses `IF NOT EXISTS` for schemas, tables and indexes. Running the script again preserves existing data.

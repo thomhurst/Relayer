@@ -6,8 +6,9 @@ description: "Register PostgreSQL outbox reads, atomic claims, fenced outcomes a
 `Relayer.Outbox.PostgreSql` implements `IOutboxStore` over the [shared PostgreSQL schema](postgres-schema.md).
 It supplies durable reads, atomic claims, renewal, completion, failure persistence and eligible backlog counts.
 [EF Core transaction enlistment](ef-core-outbox.md) and [ADO.NET/Dapper transactions](postgres-outbox.md)
-supply atomic enqueue. Recovery polling, ordered lane leases and inbox deduplication remain planned.
-[Unordered direct dispatch](direct-dispatch.md) can send due rows immediately after an EF commit.
+supply atomic enqueue. [Unordered direct dispatch](direct-dispatch.md) can send due rows immediately after
+an EF commit. [Ordered dispatch with lane leases](ordered-dispatch.md) is available through separate
+registration. Recovery polling and inbox deduplication remain planned.
 
 ## Registration
 

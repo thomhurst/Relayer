@@ -8,7 +8,8 @@ integration authors. These contracts, the optional health adapter and [PostgreSQ
 are implemented, together with [PostgreSQL durable reads and fenced claims](postgres-store.md)
 and [EF Core transaction enlistment for PostgreSQL](ef-core-outbox.md).
 [Unordered PostgreSQL direct dispatch](direct-dispatch.md) is available for EF commits.
-Recovery polling, lane leases and inbox deduplication remain planned.
+[Ordered PostgreSQL dispatch and lane leases](ordered-dispatch.md) are implemented separately.
+Recovery polling and inbox deduplication remain planned.
 
 ## Register a named store
 
@@ -53,7 +54,7 @@ ID order. A cursor bounds a scan; a later sweep must start without a cursor to r
 Rows are eligible when they are pending, not parked or dead, their `DeliverAt` is null or at most the query time,
 and they have no live claim. A claim expires when its expiry is at most the query time. Compare timestamps as
 UTC instants. Reads do not claim rows, so the dispatcher must claim again before sending. A read or claim does
-not establish ordering: ordered dispatch also needs the planned lane lease protocol.
+not establish ordering: ordered dispatch also needs a lane lease protocol, such as the [PostgreSQL worker](ordered-dispatch.md).
 
 Providers may reuse payload buffers. Borrowed body, headers and ordering-key memory remain valid until the
 next read on that store instance or its disposal. Finish all sends before another read. Callers own the row slots
