@@ -10,7 +10,7 @@ public abstract class MessageContext
     public abstract MessageType MessageType { get; }
 
     /// <summary>The message headers, read lazily from the native message.</summary>
-    public abstract IReadOnlyDictionary<string, string> Headers { get; }
+    public abstract MessageHeaders Headers { get; }
 
     /// <summary>The delivery attempt, starting at 1.</summary>
     public abstract int Attempt { get; }

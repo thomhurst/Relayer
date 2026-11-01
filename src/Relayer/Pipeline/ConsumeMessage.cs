@@ -19,7 +19,7 @@ public readonly record struct ConsumeMessage
     public required ReadOnlySequence<byte> Body { get; init; }
 
     /// <summary>A lazy native header view, when available. The pipeline never enumerates it.</summary>
-    public IReadOnlyDictionary<string, string>? Headers { get; init; }
+    public MessageHeaders? Headers { get; init; }
 
     /// <summary>The delivery attempt, starting at one.</summary>
     public int Attempt { get; init; } = 1;

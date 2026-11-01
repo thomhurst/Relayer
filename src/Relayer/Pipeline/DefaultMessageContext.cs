@@ -1,5 +1,3 @@
-using System.Collections.ObjectModel;
-
 namespace Relayer;
 
 /// <summary>A context rented from a consumer's pool. Dispose it after awaiting processing.</summary>
@@ -8,6 +6,7 @@ public sealed class DefaultMessageContext : MessageContext, IDisposable
 {
     private readonly ConsumePipeline _owner;
     private ConsumeMessage _message;
+    private ReceiveMessageState? _receive;
     private CancellationToken _cancellation;
     private IServiceProvider? _services;
     // 0: pooled, 1: rented, 2: processing, 3: processed. A delivery can run only once.
@@ -16,13 +15,13 @@ public sealed class DefaultMessageContext : MessageContext, IDisposable
     internal DefaultMessageContext(ConsumePipeline owner) => _owner = owner;
 
     /// <inheritdoc />
-    public override string MessageId => _message.MessageId;
+    public override string MessageId => _receive?.MessageId ?? _message.MessageId;
     /// <inheritdoc />
-    public override MessageType MessageType => _message.MessageType;
+    public override MessageType MessageType => _receive?.MessageType ?? _message.MessageType;
     /// <inheritdoc />
-    public override IReadOnlyDictionary<string, string> Headers => _message.Headers ?? ReadOnlyDictionary<string, string>.Empty;
+    public override MessageHeaders Headers => _receive ?? _message.Headers ?? MessageHeaders.Empty;
     /// <inheritdoc />
-    public override int Attempt => _message.Attempt;
+    public override int Attempt => _receive?.Attempt ?? _message.Attempt;
     /// <inheritdoc />
     public override IServiceProvider Services => _services ?? throw new InvalidOperationException("Services are available only during message processing.");
     /// <inheritdoc />
@@ -30,12 +29,19 @@ public sealed class DefaultMessageContext : MessageContext, IDisposable
     /// <inheritdoc />
     public override CancellationToken CancellationToken => _cancellation;
 
-    internal ConsumeMessage Message => _message;
+    internal System.Buffers.ReadOnlySequence<byte> Body => _receive is { } receive ? receive.Body : _message.Body;
     internal ConsumeDelegate Dispatch { get; set; } = null!;
 
     internal void Initialize(in ConsumeMessage message, CancellationToken cancellationToken)
     {
         _message = message;
+        _cancellation = cancellationToken;
+        _state = 1;
+    }
+
+    internal void Initialize(ReceiveMessageState receive, CancellationToken cancellationToken)
+    {
+        _receive = receive;
         _cancellation = cancellationToken;
         _state = 1;
     }
@@ -66,6 +72,7 @@ public sealed class DefaultMessageContext : MessageContext, IDisposable
             throw new InvalidOperationException("Await message processing before disposing its context.");
         }
         _message = default;
+        _receive = null;
         _cancellation = default;
         _services = null;
         Dispatch = null!;

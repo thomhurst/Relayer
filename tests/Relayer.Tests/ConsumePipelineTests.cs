@@ -129,7 +129,7 @@ public class ConsumePipelineTests
         using var second = pipeline.RentContext(Message());
         await Assert.That(second).IsSameReferenceAs(first);
         await Assert.That(second.Features.Get<object>()).IsNull();
-        await Assert.That(second.Headers.Count).IsEqualTo(0);
+        await Assert.That(second.Headers.TryGetValue("missing", out _)).IsFalse();
         await Assert.That(second.Attempt).IsEqualTo(1);
         await pipeline.ProcessAsync(second);
     }
@@ -328,16 +328,9 @@ public class ConsumePipelineTests
         public FailureAction Classify(Exception exception, MessageContext context) => FailureAction.Discard;
     }
 
-    private sealed class UnreadHeaders : IReadOnlyDictionary<string, string>
+    private sealed class UnreadHeaders : MessageHeaders
     {
-        public int Count => throw new InvalidOperationException("Headers were read eagerly.");
-        public IEnumerable<string> Keys => throw new NotSupportedException();
-        public IEnumerable<string> Values => throw new NotSupportedException();
-        public string this[string key] => throw new NotSupportedException();
-        public bool ContainsKey(string key) => throw new NotSupportedException();
-        public bool TryGetValue(string key, out string value) => throw new NotSupportedException();
-        public IEnumerator<KeyValuePair<string, string>> GetEnumerator() => throw new NotSupportedException();
-        System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => GetEnumerator();
+        public override bool TryGetValue(string name, out WireString value) => throw new InvalidOperationException("Headers were read eagerly.");
     }
 
     private sealed class Middleware(string name, List<string> events, List<Dependency> dependencies) : IConsumeMiddleware
