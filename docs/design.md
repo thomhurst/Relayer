@@ -466,6 +466,9 @@ relayer_outbox
   attempts       int
   last_error     text
   tenant_id      text            nullable
+  status         text            pending or parked
+  claim_token    uuid            nullable, unique per dispatch attempt
+  claim_expires_at timestamptz   nullable
 
 index (lane, id) where status is pending        -- partial/filtered where the database supports it
 index (deliver_at) where deliver_at is not null
@@ -478,11 +481,18 @@ relayer_leases
 
 Migrations ship as EF Core migrations and as plain SQL scripts for each database (`dotnet relayer db script --provider postgres`). Indexes are created by default (CAP #1599). Tables can be prefixed and given a schema (NSB.Persistence.Sql #2093).
 
+The implemented [durable store contract](../website/docs/reference/outbox-stores.md) separates transaction
+enlistment from dispatch reads and mutations. Reads fill caller-owned bounded buffers. Eligible rows are pending,
+not parked or dead, due at the query instant and without a live claim. Health uses the same predicate across
+all lanes. Claims use a unique token and an expiry; renew, completion and failure updates require the matching
+live token, so a stale dispatcher cannot mutate a reclaimed row. Database stores, scripts and dispatch workers
+remain planned; the contract alone does not implement lane ownership or durable sending.
+
 ### 6.4 Dispatching
 
 There are two paths, each chosen per message based on whether its route is ordered:
 
-1. **Unordered messages — direct dispatch.** After commit, the instance that committed dispatches immediately, in the background, without waiting for a poll. It claims the row with a conditional update (`UPDATE … SET claimed_by = @me WHERE id = @id AND claimed_by IS NULL`), so another instance never sends it twice. Latency equals the broker round trip (fixes the latency of polling designs, SlimMessageBus #275).
+1. **Unordered messages — direct dispatch.** After commit, the instance that committed dispatches immediately, in the background, without waiting for a poll. It claims an eligible row with a conditional update that sets a fresh claim token and expiry only when no live claim exists. Completion, renewal and failure updates require that token and an unexpired claim. This prevents concurrent claims and stale database mutations; a crash or a broker send that outlives its claim can still duplicate delivery, as allowed by the at-least-once guarantee. Latency equals the broker round trip (fixes the latency of polling designs, SlimMessageBus #275).
 2. **Ordered messages — lane leases.** Rows are hashed into N lanes (default 32). Instances lease lanes through `relayer_leases` with heartbeats and fair-share rebalancing as instances join and leave. A lane owner reads its lane in `id` order with a simple indexed range scan. There are no `SKIP LOCKED` scans across the whole table, and ordering per key is guaranteed.
 
 A **sweeper** (also leased) picks up anything that was committed but not dispatched within a threshold, for example because the instance crashed. Postgres `LISTEN/NOTIFY` and SQL Server Service Broker can optionally replace the sweeper's poll.

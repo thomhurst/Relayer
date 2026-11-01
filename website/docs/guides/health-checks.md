@@ -30,8 +30,9 @@ The core package has no health-check dependency. Health polls add no work to the
 
 ## Explicit adapters
 
-Native broker connectivity and outbox health adapters are not supplied yet. This package defines the adapter
-seams; it does not claim that registering a transport makes its native client healthy. Applications or future native
+Native broker connectivity adapters and database stores are not supplied yet. This package supplies an outbox
+health adapter for `IOutboxStore`; applications or future database integrations supply the store itself.
+Registering a transport does not establish native connectivity. Applications or future native
 integrations register their adapters explicitly as keyed services. Without these adapters, configured transports,
 consumers and stores report unhealthy. Built-in adapter work is tracked with the
 [Kafka](https://github.com/thomhurst/Relayer/issues/21),
@@ -44,7 +45,9 @@ consumers and stores report unhealthy. Built-in adapter work is tracked with the
 // Adapter types implement the contracts below and use the application's existing clients/state.
 builder.Services.AddKeyedSingleton<ITransportHealthProbe, OrdersConnectivity>("orders-broker");
 builder.Services.AddKeyedSingleton<IConsumerHealthProvider, OrdersConsumers>("orders-broker");
-builder.Services.AddKeyedSingleton<IOutboxHealthProvider, OrdersBacklog>("orders-store");
+// OrdersOutboxStore is an application implementation of IOutboxStore, not a built-in database provider.
+builder.Services.AddKeyedScoped<IOutboxStore, OrdersOutboxStore>("orders-store");
+builder.Services.AddRelayerOutboxHealthProvider("orders-store");
 builder.Services.AddRelayerHealthChecks(new RelayerHealthCheckOptions
 {
     OutboxNames = ["orders-store"],
@@ -67,10 +70,23 @@ inside the health service's scope; adapters may be scoped if their native depend
   oldest last-progress time, or activation time before first progress. One busy worker must not hide another
   stalled worker. Return null if state is unavailable; lack of progress alone does not establish idleness.
 - `IOutboxHealthProvider.GetPendingCountAsync` returns pending rows eligible for dispatch. Exclude rows whose
-  scheduled delivery time is in the future. Return null if the count is unavailable. List every expected store
-  in `OutboxNames`, including stores whose adapter is not available yet. No store declaration model exists in
-  the current outbox placeholders. A registered `IOutboxEnlistment` with an empty `OutboxNames` fails health to
+  scheduled delivery time is in the future, parked/dead rows and rows with live claims. Return null if the count
+  is unavailable. List every expected store in `OutboxNames`, including stores whose adapter is not available yet.
+  A registered `IOutboxEnlistment` with an empty `OutboxNames` fails health to
   catch an accidentally omitted declaration without constructing a scoped transaction service.
+
+`AddRelayerOutboxHealthProvider(name)` registers a scoped keyed `IOutboxHealthProvider` that resolves the
+keyed `IOutboxStore` with exactly the same case-sensitive name. The adapter queries
+`GetPendingCountAsync(now, cancellationToken)` with the DI `TimeProvider`'s current UTC instant on every poll.
+It preserves null counts, errors and cancellation. EF Core integrations can use scoped store dependencies;
+the health scope disposes them after the poll. Repeated registration preserves an existing provider for that name.
+Applications may still register `IOutboxHealthProvider` directly for other storage integrations.
+
+Register the adapter in addition to `AddRelayerHealthChecks`, and include its name in `OutboxNames`.
+Adapter registration does not change the expected names, create a database store, or start dispatch. A missing
+keyed store reports unhealthy. An adapter registered through this extension whose name is absent from
+`OutboxNames` also reports unhealthy, including when another declared store is healthy.
+See the [durable store contract](../reference/outbox-stores.md) for provider requirements.
 
 A missing provider fails its configured resource. Null consumer state or backlog, a negative count and an active
 consumer's future progress timestamp also fail health. No configured resources in a category means healthy

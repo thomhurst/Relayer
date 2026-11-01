@@ -12,6 +12,7 @@ Relayer is in early development. Track progress in [GitHub issues](https://githu
 - Compile-time analyzers and a code fix ([diagnostics](reference/diagnostics.md)).
 - The scoped send pipeline, send middleware and outbox enlistment hooks.
 - Provider-owned tracing primitives and direct single/batch send tracing, integrated with the in-memory adapter. Automatic consume/settlement and outbox tracing remain planned.
+- The [durable outbox store contract](reference/outbox-stores.md), with bounded reads, fenced claims and an optional keyed health adapter. Database implementations and dispatch workers remain planned.
 - The consume pipeline and the native receive SPI.
 - Generated batch handler execution, durable partial-failure decisions, and validated native/client-side receive executors for transport authors.
 - Typed failure classification, in-process retries, delayed redelivery and dead-letter copies with error history.
@@ -19,7 +20,7 @@ Relayer is in early development. Track progress in [GitHub issues](https://githu
 - Declared topology with validate and provision modes, and JSON export.
 - The [in-memory transport](transports/in-memory.md), with native queue and partitioned log semantics.
 - Core tracing, consume metrics and generated failure logs; native transport and outbox instrumentation remains planned.
-- The optional [health integration](guides/health-checks.md), with connectivity, consumer liveness and backlog checks. Native adapters remain planned; applications supply keyed providers today.
+- The optional [health integration](guides/health-checks.md), with connectivity, consumer liveness and backlog checks. The outbox adapter accepts application-provided durable stores; native broker adapters remain planned.
 
 ## Phases
 

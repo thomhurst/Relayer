@@ -14,6 +14,12 @@ internal sealed class OutboxBacklogHealthCheck(IServiceProvider services, IOptio
         if (settings.OutboxNames.Count == 0 &&
             services.GetService<IServiceProviderIsService>()?.IsService(typeof(IOutboxEnlistment)) == true)
             return HealthCheckResult.Unhealthy("An IOutboxEnlistment is registered. Declare every expected store in OutboxNames.");
+        foreach (var registration in services.GetServices<OutboxHealthRegistration>())
+        {
+            if (!settings.OutboxNames.Contains(registration.StoreName, StringComparer.Ordinal))
+                report.Add(registration.StoreName, HealthCheckResult.Unhealthy(
+                    "An outbox health adapter is registered. Declare this store in OutboxNames."));
+        }
         foreach (var name in settings.OutboxNames)
         {
             var result = await HealthReport.RunAsync(async token =>

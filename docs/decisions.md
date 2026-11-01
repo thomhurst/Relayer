@@ -22,7 +22,7 @@ To change a decision, add a new entry that supersedes it rather than editing his
 | [D9](#d9-at-least-once-delivery-plus-idempotency) | At-least-once delivery plus idempotency | Accepted |
 | [D10](#d10-relayer-owns-the-failure-pipeline) | Relayer owns the failure pipeline | Accepted |
 | [D11](#d11-handlers-may-settle-manually) | Handlers may settle manually | Accepted |
-| [D12](#d12-outbox-dispatch-direct-for-unordered-lane-leases-for-ordered) | Outbox dispatch: direct for unordered, lane leases for ordered | Accepted |
+| [D12](#d12-outbox-dispatch-direct-for-unordered-lane-leases-for-ordered) | Outbox dispatch: direct for unordered, lane leases for ordered | Accepted; claim protocol superseded by [D29](#d29-durable-dispatch-claims-use-expiring-fencing-tokens) |
 | [D13](#d13-kafka-gets-its-own-consumption-model) | Kafka gets its own consumption model | Accepted |
 | [D14](#d14-transports-declare-capabilities-validated-at-startup) | Transports declare capabilities, validated at startup | Superseded by [D24](#d24-capabilities-are-valued-and-declared-per-endpoint) |
 | [D15](#d15-opentelemetry-in-the-core) | OpenTelemetry in the core | Accepted |
@@ -39,6 +39,7 @@ To change a decision, add a new entry that supersedes it rather than editing his
 | [D26](#d26-generate-default-json-metadata-with-the-official-systemtextjson-generator) | Generate default JSON metadata with the official System.Text.Json generator | Accepted |
 | [D27](#d27-configuration-declarations-are-independent-of-pipeline-execution) | Configuration declarations are independent of pipeline execution | Accepted |
 | [D28](#d28-a-batch-attempt-owns-one-scope-and-one-direct-send-buffer) | A batch attempt owns one scope and one direct-send buffer | Accepted |
+| [D29](#d29-durable-dispatch-claims-use-expiring-fencing-tokens) | Durable dispatch claims use expiring fencing tokens | Accepted |
 
 ---
 
@@ -445,3 +446,23 @@ otherwise successful items; use per-message outbox transactions for independent
 outcomes with outgoing messages. A failed batch call can repeat already durable work on native
 redelivery, as expected for at-least-once delivery. The core does not invent native
 settlement or per-message ambient sender semantics.
+
+## D29. Durable dispatch claims use expiring fencing tokens
+
+**Context.** The original conditional-claim sketch in §6.4 does not describe recovery after a claimant crashes.
+An instance name alone cannot distinguish an old attempt from a newer attempt by that same instance.
+The durable store contract needs explicit recovery and ownership rules before database implementations ship.
+
+**Decision.** Supersede D12's row-claim protocol detail while retaining its direct-dispatch and lane-lease design.
+- Claim only pending, unparked rows that are due and have no live claim, using an atomic conditional update.
+- Give every dispatch attempt a fresh nonempty fencing token and a future expiry. Never reuse tokens.
+- Renewal, completion and failed-attempt updates require the matching token and a claim live at the supplied UTC instant.
+  Renewal never shortens an expiry. Failure increments attempts, records the error and releases the claim atomically.
+- Count the same eligible rows for health, across all lanes. Future schedules, live claims and parked/dead rows are excluded.
+- Keep transactional enqueue in the native integration and `IOutboxEnlistment`; expose bounded reads and durable
+  dispatch mutations through `IOutboxStore`. The optional health package adapts explicitly named stores.
+
+**Consequences.** Expired claims are recoverable, and stale attempts cannot mutate a newer claim. Database fencing
+cannot undo a broker send; crash recovery and sends that outlive their claims can still duplicate delivery.
+This preserves the at-least-once contract. Ordered routes additionally require lane ownership; row claims alone
+do not guarantee ordering. Schema scripts must persist claim tokens and expiry alongside pending/parked state.
