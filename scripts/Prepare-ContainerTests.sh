@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Run only on a dedicated Linux test host, before starting/restarting Docker.
+# Run only on a dedicated Linux test host, before starting Docker 28.5.1 or later.
 # Docker snapshots ip_local_port_range when its allocator initializes. Reserve the
 # low portion from kernel-assigned outbound sockets, while Docker still selects
 # and atomically binds published ports. This also covers Testcontainers' Ryuk,
