@@ -17,6 +17,8 @@ internal sealed class RelayerConfigurationValidator(RelayerConfiguration configu
         var routes = new HashSet<Type>();
         foreach (var transport in configuration.Transports)
         {
+            if (transport.TopologyMode is { } mode && !Enum.IsDefined(mode))
+                failures.Add($"Transport '{transport.Name}': TopologyMode is not a defined value.");
             if (string.IsNullOrWhiteSpace(transport.Name)) failures.Add("A transport name must not be blank.");
             else if (!names.Add(transport.Name)) failures.Add($"Transport '{transport.Name}' is declared more than once.");
             transport.ValidateOptions(services, failures);

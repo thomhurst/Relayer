@@ -29,6 +29,15 @@ foreach (var service in provider.GetServices<IHostedService>())
 if (provider.GetRequiredService<ITransport>() is not SmokeTransport { CapabilityLookups: 2 })
     throw new InvalidOperationException("Endpoint capability validation failed under Native AOT.");
 Console.WriteLine("Endpoint capability validation passed under Native AOT.");
+using (var topologyJson = new MemoryStream())
+{
+    provider.GetRequiredService<ITopology>().ExportJson(topologyJson);
+    using var topology = JsonDocument.Parse(topologyJson.ToArray());
+    if (topology.RootElement.GetProperty("transports")[0].GetProperty("routes")[0]
+        .GetProperty("message").GetProperty("name").GetString() != "smoke.order")
+        throw new InvalidOperationException("Topology export failed under Native AOT.");
+}
+Console.WriteLine("Topology startup and JSON export passed with reflection disabled.");
 var serializer = provider.GetRequiredService<IMessageSerializer>();
 var buffer = new ArrayBufferWriter<byte>();
 var message = new Order(42, new Customer("Ada"), [1, 2], OrderState.Placed);
@@ -83,6 +92,7 @@ public enum OrderState { Placed, Cancelled }
 [Message("smoke.count")]
 public readonly record struct Count(int Value);
 public sealed class SmokeOptions;
+
 public sealed class OrderHandler : IHandler<Order>
 {
     public Order? Order { get; private set; }
@@ -154,6 +164,8 @@ internal sealed class SmokeTransport : ITransport
         CapabilityLookups++;
         return new() { OrderedByKey = true };
     }
+    public ValueTask<TopologyReport> ApplyTopologyAsync(TopologyMode mode, CancellationToken cancellationToken)
+        => ValueTask.FromResult(new TopologyReport([]));
     public string? Destination { get; private set; }
     public string? OrderingKey { get; private set; }
     public int NativeValue { get; private set; }

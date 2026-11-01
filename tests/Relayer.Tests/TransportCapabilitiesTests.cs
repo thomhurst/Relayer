@@ -94,6 +94,8 @@ public class TransportCapabilitiesTests
             _ => throw new ArgumentException("Unknown endpoint.", nameof(endpoint)),
         };
 
+        public ValueTask<TopologyReport> ApplyTopologyAsync(TopologyMode mode, CancellationToken cancellationToken)
+            => ValueTask.FromResult(new TopologyReport([]));
         public ValueTask SendAsync(OutgoingMessage message, CancellationToken cancellationToken) =>
             throw new NotSupportedException();
         public ValueTask SendBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken) =>

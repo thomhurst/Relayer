@@ -11,6 +11,14 @@ public interface ITransport : IAsyncDisposable
     /// <remarks>Resolve limits and endpoint features from native configuration or topology, without silently assuming support.</remarks>
     TransportCapabilities GetCapabilities(string endpoint);
 
+    /// <summary>Validates or provisions the entities in this adapter's named transport declaration.</summary>
+    /// <remarks>
+    /// Resolve declarations through ITopology. Validate must only read broker state using least-privilege permissions;
+    /// Provision creates missing entities using native APIs and never deletes entities. Return remaining differences
+    /// with native entity names and expected/actual settings. The core skips this call for None.
+    /// </remarks>
+    ValueTask<TopologyReport> ApplyTopologyAsync(TopologyMode mode, CancellationToken cancellationToken);
+
     /// <summary>Sends a serialized message using the native client.</summary>
     /// <remarks>
     /// Observe cancellation and preserve native delivery semantics. Apply the message's native callbacks immediately
