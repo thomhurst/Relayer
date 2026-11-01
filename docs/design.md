@@ -510,6 +510,8 @@ fenced statement. Completion errors after a successful send leave claims held wi
 send attempts; incomplete deletions warn about duplicate delivery. It does not poll, heartbeat
 during native sends or retry failed commits. Queue overflow and shutdown leave durable work pending with
 an error log; recovery polling remains planned; ordered lane dispatch is implemented separately.
+Each worker bounds successful endpoint capability retention to 256 entries using FIFO eviction (D35).
+Cache hits remain read-only; an evicted endpoint is resolved again before claiming its next group.
 
 A **sweeper** (also leased) picks up anything that was committed but not dispatched within a threshold, for example because the instance crashed. Postgres `LISTEN/NOTIFY` and SQL Server Service Broker can optionally replace the sweeper's poll.
 
