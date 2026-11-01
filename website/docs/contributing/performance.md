@@ -6,7 +6,25 @@ description: Run the benchmark gate, interpret allocations, and add raw-client t
 Relayer's CI compares the current code with a pinned `main` snapshot on the same
 runner. The gate covers public direct sends, hosted in-memory round trips,
 concurrent asynchronous delivery, receive allocation attribution, and composition
-of 100 distinct handlers. It reuses the existing BenchmarkDotNet suite.
+of 100 distinct handlers. Its benchmarks live in
+`benchmarks/Relayer.Benchmarks/RegressionGate/`, in the same project as the rest
+of the BenchmarkDotNet suite.
+
+## When it runs
+
+The gate is the advisory `Performance` workflow
+(`.github/workflows/performance.yml`). It is not part of `CI Passed` and never
+blocks a merge. It runs:
+
+- on every push to `main`, comparing with the previous `main` head;
+- on demand from the Actions tab (`workflow_dispatch`);
+- on ready pull requests labelled `performance`. Add the label when a change can
+  move per-message cost; adding it starts a run;
+- on ready pull requests that change the gate itself: `RegressionGate/`,
+  `Program.cs`, the benchmark project file, the gate scripts or the workflow.
+
+A red `Performance` run on `main` is a regression to investigate, not a reason
+to rerun.
 
 ## Run locally
 
@@ -21,9 +39,11 @@ steady-state performance. Use the default job for comparisons; `--job Short` is
 useful during development but has less statistical confidence.
 
 To compare two revisions, create separate worktrees for the candidate and a
-pinned `origin/main` commit. Copy the candidate's `benchmarks/` directory and
-`global.json` into the baseline worktree, replacing its benchmark harness, then
-run the command above in each checkout with separate absolute artifact paths.
+pinned `origin/main` commit. In both worktrees, delete every benchmark source
+file except `Program.cs` and `RegressionGate/`. Copy the candidate's
+`Program.cs`, `RegressionGate/` and `global.json` into the baseline worktree,
+replacing its versions. Each side keeps its own project file. Then run the
+command above in each checkout with separate absolute artifact paths.
 To match CI's sampling plan, run the baseline once before the candidate and once
 after it, using a third artifact directory for the baseline repeat.
 Before running the baseline, pin its benchmark driver to the candidate version:
@@ -32,11 +52,15 @@ Before running the baseline, pin its benchmark driver to the candidate version:
 python .github/scripts/pin_benchmark_version.py C:/checkouts/candidate C:/checkouts/baseline
 ```
 
-This changes only the copied benchmark project's BenchmarkDotNet reference.
+This changes only the baseline benchmark project's BenchmarkDotNet reference.
 Keep the baseline's production source and package versions unchanged. This
-measures both implementations with the same workload, even when the candidate
-introduces a benchmark. If the harness cannot build against the baseline API,
-update the harness to support both revisions before claiming a comparison.
+measures both implementations with the same workload. Benchmarks outside
+`RegressionGate/` never enter the comparison, so a pull request can add a
+benchmark for a new API without breaking the baseline build. The source
+generator also sees the same messages and handlers on both sides. Code in
+`RegressionGate/` must use only API that exists on `main`; if the harness cannot
+build against the baseline, update it to support both revisions before claiming
+a comparison.
 
 Compare the directories containing the full JSON reports:
 
@@ -81,9 +105,7 @@ total as pipeline-only allocation evidence.
 
 ## CI thresholds and evidence
 
-The `Performance regression gate` job feeds the required `CI Passed` check.
-Draft PRs skip CI; the job runs after draft review, when the PR becomes ready.
-PRs use their pinned target commit as baseline; pushes to `main` use its previous
+Draft PRs never run the gate. PRs use their pinned target commit as baseline; pushes to `main` use its previous
 head. Manual runs use the current `main` snapshot. All executions use the
 candidate harness and SDK on one runner, in a fixed **baseline, candidate,
 baseline** sequence, with separate artifact directories. The second baseline
@@ -120,7 +142,8 @@ including an incomplete or missing requested baseline repeat. Local comparisons
 without `--baseline-after` retain the single-baseline rule.
 The CI detector self-test shows that unchanged measurements pass and injected
 regressions fail. The comparison prints mean timings as throughput changes and
-allocation totals in the job summary. The job uploads raw reports, logs,
+allocation totals in the job summary. When a benchmark run fails, the job
+prints the end of its log. The job uploads raw reports, logs,
 comparison commits and harness hashes for investigation. Inspect BenchmarkDotNet
 error and variation columns when timings are noisy; do not rerun until a noisy
 failure happens to pass. Local numbers are diagnostic only. Do not commit

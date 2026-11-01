@@ -1,0 +1,186 @@
+name: Performance
+
+# The benchmark regression gate is advisory: it is not part of `CI Passed`, so it never blocks a
+# merge. It runs on every push to main (comparing with the previous main head), on demand, and on
+# ready pull requests that carry the `performance` label or change the gate itself.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review, labeled]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: read
+
+env:
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: true
+  DOTNET_CLI_TELEMETRY_OPTOUT: true
+  DOTNET_NOLOGO: true
+
+# A newer commit cancels an older run. Adding an unrelated label gets its own group, so it cannot
+# cancel a gate that is already running.
+concurrency:
+  group: >-
+    performance-${{ github.event.pull_request.number || github.ref }}${{
+    github.event.action == 'labeled' && github.event.label.name != 'performance'
+    && format('-{0}', github.run_id) || '' }}
+  cancel-in-progress: true
+
+jobs:
+  scope:
+    name: Decide whether to benchmark
+    if: >-
+      github.event_name != 'pull_request'
+      || (github.event.pull_request.draft == false
+          && (github.event.action != 'labeled' || github.event.label.name == 'performance'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      run: >-
+        ${{ github.event_name != 'pull_request'
+        || contains(github.event.pull_request.labels.*.name, 'performance')
+        || steps.filter.outputs.gate == 'true' }}
+    steps:
+      - name: Filter changed paths
+        id: filter
+        if: github.event_name == 'pull_request'
+        uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4
+        with:
+          filters: |
+            gate:
+              - 'benchmarks/Relayer.Benchmarks/RegressionGate/**'
+              - 'benchmarks/Relayer.Benchmarks/Program.cs'
+              - 'benchmarks/Relayer.Benchmarks/Relayer.Benchmarks.csproj'
+              - '.github/scripts/benchmark_gate.py'
+              - '.github/scripts/test_benchmark_gate.py'
+              - '.github/scripts/pin_benchmark_version.py'
+              - '.github/workflows/performance.yml'
+
+  performance:
+    name: Performance regression gate
+    needs: scope
+    if: needs.scope.outputs.run == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: candidate
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+
+      # Pin main once. Pull requests compare to their target snapshot; pushes compare to the
+      # previous main head. Manual runs compare the selected head to the current main snapshot.
+      - name: Pin comparison commits
+        id: commits
+        working-directory: candidate
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PUSH_BEFORE: ${{ github.event.before }}
+        run: |
+          if [ "$EVENT_NAME" = pull_request ]; then
+            baseline="$PR_BASE"
+          elif [ "$EVENT_NAME" = push ] && [ "$PUSH_BEFORE" != 0000000000000000000000000000000000000000 ]; then
+            baseline="$PUSH_BEFORE"
+          else
+            baseline="$(git rev-parse origin/main)"
+          fi
+          git cat-file -e "$baseline^{commit}"
+          echo "baseline=$baseline" >> "$GITHUB_OUTPUT"
+          echo "Baseline: $baseline; candidate: $(git rev-parse HEAD)" | tee ../performance-commits.txt
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: baseline
+          ref: ${{ steps.commits.outputs.baseline }}
+
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          global-json-file: candidate/global.json
+
+      # Only Program.cs and RegressionGate/ enter either build. Benchmarks a PR adds for new
+      # APIs therefore never have to compile against main, and the source generator sees the
+      # same message and handler set on both sides. Each side keeps its own project file, so a
+      # new project reference on the candidate cannot break the baseline restore.
+      - name: Use identical benchmark harnesses
+        run: |
+          harness=benchmarks/Relayer.Benchmarks
+          for tree in candidate baseline; do
+            find "$tree/$harness" -name '*.cs' -not -path "$tree/$harness/RegressionGate/*" -not -path "$tree/$harness/Program.cs" -delete
+          done
+          rm -rf "baseline/$harness/RegressionGate"
+          cp -r "candidate/$harness/RegressionGate" "baseline/$harness/RegressionGate"
+          cp "candidate/$harness/Program.cs" "baseline/$harness/Program.cs"
+          diff -r --exclude='*.csproj' "candidate/$harness" "baseline/$harness"
+          cp candidate/global.json baseline/global.json
+          python3 candidate/.github/scripts/pin_benchmark_version.py candidate baseline >> performance-commits.txt
+          candidate_sdk="$(cd candidate && dotnet --version)"
+          baseline_sdk="$(cd baseline && dotnet --version)"
+          test "$candidate_sdk" = "$baseline_sdk"
+          echo "SDK: $candidate_sdk" >> performance-commits.txt
+          find "candidate/$harness" -name '*.cs' -print0 | sort -z | xargs -0 sha256sum > performance-harness.sha256
+
+      - name: Test regression detector
+        run: python3 -m unittest discover -s candidate/.github/scripts -p test_benchmark_gate.py -v
+
+      - name: Benchmark main snapshot
+        working-directory: baseline
+        run: |
+          dotnet run -c Release --project benchmarks/Relayer.Benchmarks -- \
+            --filter '*' --anyCategories RegressionGate --exporters fulljson \
+            --artifacts "$GITHUB_WORKSPACE/performance-results/baseline" \
+            > "$GITHUB_WORKSPACE/performance-baseline.log" 2>&1 \
+            || { tail -n 80 "$GITHUB_WORKSPACE/performance-baseline.log"; exit 1; }
+
+      - name: Prove unchanged measurements pass and injected regressions fail
+        run: python3 candidate/.github/scripts/benchmark_gate.py self-test performance-results/baseline
+
+      - name: Benchmark candidate
+        working-directory: candidate
+        run: |
+          dotnet run -c Release --project benchmarks/Relayer.Benchmarks -- \
+            --filter '*' --anyCategories RegressionGate --exporters fulljson \
+            --artifacts "$GITHUB_WORKSPACE/performance-results/candidate" \
+            > "$GITHUB_WORKSPACE/performance-candidate.log" 2>&1 \
+            || { tail -n 80 "$GITHUB_WORKSPACE/performance-candidate.log"; exit 1; }
+
+      # Always bracket the candidate, even when the first comparison would pass.
+      # This is a fixed sampling plan, not a retry of a failed measurement.
+      - name: Benchmark main snapshot after candidate
+        working-directory: baseline
+        run: |
+          dotnet run -c Release --project benchmarks/Relayer.Benchmarks -- \
+            --filter '*' --anyCategories RegressionGate --exporters fulljson \
+            --artifacts "$GITHUB_WORKSPACE/performance-results/baseline-after" \
+            > "$GITHUB_WORKSPACE/performance-baseline-after.log" 2>&1 \
+            || { tail -n 80 "$GITHUB_WORKSPACE/performance-baseline-after.log"; exit 1; }
+
+      - name: Compare bracketed throughput, allocations and startup
+        run: >-
+          python3 candidate/.github/scripts/benchmark_gate.py compare
+          performance-results/baseline performance-results/candidate
+          --baseline-after performance-results/baseline-after
+          --summary performance-summary.md
+
+      - name: Publish comparison summary
+        if: always()
+        run: |
+          cat performance-commits.txt >> "$GITHUB_STEP_SUMMARY"
+          if [ -f performance-summary.md ]; then cat performance-summary.md >> "$GITHUB_STEP_SUMMARY"; fi
+
+      - name: Retain benchmark measurements and logs
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: performance-${{ github.run_id }}-${{ github.run_attempt }}
+          retention-days: 14
+          path: |
+            performance-results/
+            performance-*.log
+            performance-commits.txt
+            performance-harness.sha256
+            performance-summary.md
