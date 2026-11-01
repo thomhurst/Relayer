@@ -211,6 +211,7 @@ Superseded by [D24](#d24-capabilities-are-valued-and-declared-per-endpoint).
 - W3C trace context is propagated in native headers.
 - The outbox captures trace context at enqueue time.
 - Processing duration is measured after settlement.
+- Immediate retries share one delivery duration. A retry that completes handling, scope disposal and buffered send flushing clears earlier failures from the duration's `error.type`; each failed attempt is still logged. Unrecovered failures retain the tag, including after durable dead-letter handling or subsequent delivery-token cancellation. A settlement error marks the duration as failed; delivery-token cancellation alone does not.
 - Generated failure logs open an identity scope only around the log call. `LoggerFactory` allocates when it pushes an external scope, so successful deliveries must not open a Relayer scope. Failure scopes contain read-only snapshots rather than pooled context references, allowing providers to retain them for asynchronous export. Logging provider failures must not replace the delivery error or bypass durable failure handling.
 - Enrichers are supported.
 

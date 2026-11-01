@@ -85,8 +85,55 @@ public class TelemetryTests
         await Assert.That((await pending).Kind).IsEqualTo(expected);
         await Assert.That(attempts).IsEqualTo(2);
         await Assert.That(logger.Entries.Count).IsEqualTo(recover ? 1 : 2);
-        await Assert.That(capture.Values.Single(v => v.Name == "messaging.process.duration").Tags["error.type"]).IsEqualTo("_OTHER");
+        var duration = capture.Values.Single(v => v.Name == "messaging.process.duration");
+        await Assert.That(duration.Tags.ContainsKey("error.type")).IsEqualTo(!recover);
+        if (!recover) await Assert.That(duration.Tags["error.type"]).IsEqualTo("_OTHER");
         await Assert.That(capture.Values.Count(v => v.Name == "relayer.critical_time")).IsEqualTo(1);
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Executable_retry_cancellation_retains_only_unrecovered_failure_metrics(bool recover)
+    {
+        var logger = new Logger();
+        using var instrumentation = new RelayerInstrumentation(new LoggerFactory(logger));
+        using var capture = new Capture(instrumentation);
+        await using var provider = Provider(services => { services.AddSingleton<ITransport, Transport>(); services.AddSingleton<IMessageSerializer, Serializer>(); });
+        using var cancellation = new CancellationTokenSource();
+        var attempts = 0;
+        provider.GetRequiredService<Control>().Handle = context =>
+        {
+            if (++attempts == 1) throw new InvalidOperationException("handler");
+            if (!recover)
+            {
+                cancellation.Cancel();
+                context.CancellationToken.ThrowIfCancellationRequested();
+            }
+            return default;
+        };
+        var failures = new FailurePipeline(provider, "test", "orders", "billing",
+            new() { RetryDelays = new[] { TimeSpan.Zero }, Jitter = 0 });
+        var settlements = 0;
+        var pipeline = new ConsumePipelineBuilder(provider.GetRequiredService<IServiceScopeFactory>(),
+                provider.GetRequiredService<MessageTypeRegistry>(), new Serializer(), failures)
+            .Handler(provider.GetRequiredService<HandlerRegistry>().GetHandler<int, Handler>())
+            .Telemetry(instrumentation.CreateEndpoint(Options())).Settle(context =>
+            {
+                settlements++;
+                cancellation.Cancel();
+                context.CancellationToken.ThrowIfCancellationRequested();
+                return default;
+            }).Build(1);
+        using var context = pipeline.RentContext(Message(), cancellation.Token);
+        await Assert.That(async () => await pipeline.ProcessAsync(context)).Throws<OperationCanceledException>();
+        await Assert.That(attempts).IsEqualTo(2);
+        await Assert.That(settlements).IsEqualTo(recover ? 1 : 0);
+        await Assert.That(logger.Entries.Count).IsEqualTo(1);
+        await Assert.That(capture.Values.Count(v => v.Name == "messaging.client.consumed.messages")).IsEqualTo(1);
+        var duration = capture.Values.Single(v => v.Name == "messaging.process.duration");
+        await Assert.That(duration.Tags.ContainsKey("error.type")).IsEqualTo(!recover);
+        if (!recover) await Assert.That(duration.Tags["error.type"]).IsEqualTo("_OTHER");
     }
 
     [Test]

@@ -249,6 +249,7 @@ public sealed class ConsumePipeline
                     // Dispose the successful scope before allowing sends to escape. A flush failure propagates:
                     // some sends may have succeeded, so do not retry the handler or return a settlement decision.
                     await context.SendBuffer.FlushAsync(context.CancellationToken).ConfigureAwait(false);
+                    failure = null;
                     break;
                 }
                 context.SendBuffer.Clear();
