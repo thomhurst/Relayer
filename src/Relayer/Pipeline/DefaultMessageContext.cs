@@ -1,0 +1,75 @@
+using System.Collections.ObjectModel;
+
+namespace Relayer;
+
+/// <summary>A context rented from a consumer's pool. Dispose it after awaiting processing.</summary>
+/// <remarks>Do not retain a context or use it after disposal. Native features can be populated before processing.</remarks>
+public sealed class DefaultMessageContext : MessageContext, IDisposable
+{
+    private readonly ConsumePipeline _owner;
+    private ConsumeMessage _message;
+    private CancellationToken _cancellation;
+    private IServiceProvider? _services;
+    // 0: pooled, 1: rented, 2: processing, 3: processed. A delivery can run only once.
+    private int _state;
+
+    internal DefaultMessageContext(ConsumePipeline owner) => _owner = owner;
+
+    /// <inheritdoc />
+    public override string MessageId => _message.MessageId;
+    /// <inheritdoc />
+    public override MessageType MessageType => _message.MessageType;
+    /// <inheritdoc />
+    public override IReadOnlyDictionary<string, string> Headers => _message.Headers ?? ReadOnlyDictionary<string, string>.Empty;
+    /// <inheritdoc />
+    public override int Attempt => _message.Attempt;
+    /// <inheritdoc />
+    public override IServiceProvider Services => _services ?? throw new InvalidOperationException("Services are available only during message processing.");
+    /// <inheritdoc />
+    public override MessageFeatures Features { get; } = new();
+    /// <inheritdoc />
+    public override CancellationToken CancellationToken => _cancellation;
+
+    internal ConsumeMessage Message => _message;
+    internal ConsumeDelegate Dispatch { get; set; } = null!;
+
+    internal void Initialize(in ConsumeMessage message, CancellationToken cancellationToken)
+    {
+        _message = message;
+        _cancellation = cancellationToken;
+        _state = 1;
+    }
+
+    internal void BeginProcessing(ConsumePipeline owner)
+    {
+        if (!ReferenceEquals(owner, _owner) || Interlocked.CompareExchange(ref _state, 2, 1) != 1)
+        {
+            throw new InvalidOperationException("The context must be rented from this pipeline and cannot be processed concurrently or after disposal.");
+        }
+    }
+
+    internal void SetServices(IServiceProvider services) => _services = services;
+
+    internal void EndProcessing()
+    {
+        _services = null;
+        Volatile.Write(ref _state, 3);
+    }
+
+    /// <summary>Clears message references and native features, then returns this context to its consumer.</summary>
+    public void Dispose()
+    {
+        var previous = Volatile.Read(ref _state);
+        if (previous == 0) return;
+        if (previous == 2 || Interlocked.CompareExchange(ref _state, 0, previous) != previous)
+        {
+            throw new InvalidOperationException("Await message processing before disposing its context.");
+        }
+        _message = default;
+        _cancellation = default;
+        _services = null;
+        Dispatch = null!;
+        Features.Clear();
+        _owner.Return(this);
+    }
+}
