@@ -28,6 +28,9 @@ public interface IFailureClassifier
 /// </remarks>
 public interface ISettlementFeature
 {
+    /// <summary>The requested outcome, or null when handling has not requested settlement.</summary>
+    Disposition? RequestedDisposition { get; }
+
     /// <summary>Requests completion after successful handling and durable sends.</summary>
     void Complete();
 

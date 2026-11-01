@@ -8,6 +8,7 @@ internal sealed class OutboxConfiguration
     internal int Lanes { get; }
     internal string InsertSql { get; }
     internal PostgreSqlDirectDispatcher? Dispatcher { get; }
+    internal string InboxInsertSql { get; }
 
     internal OutboxConfiguration(EntityFrameworkCoreOutboxOptions options, PostgreSqlDirectDispatcher? dispatcher = null)
     {
@@ -20,6 +21,9 @@ internal sealed class OutboxConfiguration
         if (options.DispatchStoreName is not null) ArgumentException.ThrowIfNullOrWhiteSpace(options.DispatchStoreName);
         dispatcher?.ValidateStore(options.Schema, options.TablePrefix);
         Dispatcher = dispatcher;
+        var inbox = PostgreSqlOutboxSchema.QuoteIdentifier(options.Schema ?? "public") + "." +
+            PostgreSqlOutboxSchema.QuoteIdentifier(options.TablePrefix + "inbox");
+        InboxInsertSql = $"INSERT INTO {inbox} (consumer, message_id, processed_at) VALUES (@consumer, @id, clock_timestamp()) ON CONFLICT (consumer, message_id) DO NOTHING";
         InsertSql = PostgreSqlOutboxBatch.CreateInsertSql(Table);
     }
 }

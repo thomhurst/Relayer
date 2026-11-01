@@ -62,6 +62,10 @@ public sealed class RelayerInstrumentation : IDisposable
         return new(this, options, _logger);
     }
 
+    /// <summary>Counts a suppressed duplicate for a stable, application-declared consumer identity.</summary>
+    public void RecordInboxDuplicate(string consumer)
+        => Duplicates.Add(1, new KeyValuePair<string, object?>("relayer.consumer", consumer));
+
     /// <summary>Stops publishing every instrument owned by this instance.</summary>
     public void Dispose() => _meter.Dispose();
 }

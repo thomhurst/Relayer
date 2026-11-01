@@ -8,6 +8,12 @@ handler descriptors and stable identities from `HandlerRegistry` and the frozen
 `MessageTypeRegistry`. It does not discover CLR types while receiving messages.
 The first middleware registered with `Use` is outermost; middleware instances
 are shared by the consumer and must support concurrent calls.
+`Use(factory)` can inspect services in a temporary synchronous startup scope to create middleware;
+resolved services must support synchronous disposal and the middleware must not retain scoped services.
+The [EF Core consumer boundary](../reference/ef-core-inbox.md)
+uses this seam to validate its provider and enable inbox deduplication for the selected outbox context.
+Middleware implementing `IConsumeTransactionMiddleware` must be registered once, before any other
+middleware. Composition rejects another transaction boundary or a boundary placed after middleware.
 
 Transport authors can compose and invoke the execution layer as follows:
 

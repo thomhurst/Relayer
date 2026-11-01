@@ -642,3 +642,24 @@ against the previous unbounded lookup; their raw results remain outside the repo
 **Alternatives rejected.** Transport-only keys lose endpoint-specific limits. LRU adds maintenance to
 every hit. Clearing the entire cache discards unrelated hot entries at once. A public cache setting
 adds configuration surface before evidence shows applications need one.
+
+## D36. An explicit EF Core consumer boundary owns the inbox transaction
+
+**Context.** The inbox key must be durable in the same transaction as business data and outgoing rows.
+Inspecting handler dependencies would introduce hidden conventions and cannot identify one owner when
+several DbContexts share a scope. A preflight existence query alone races with concurrent deliveries.
+
+**Decision.** `ConsumePipelineBuilder.EntityFrameworkCore<TContext>(consumer)` explicitly selects the
+scoped context and owns a transaction around the handler and all inner middleware. Install it first.
+The inbox is automatic when that context has outbox interceptors; without them it is opt-in per
+consumer. Schema and prefix follow the outbox context's scoped configuration. PostgreSQL's unique
+`(consumer, message_id)` key and `INSERT ... ON CONFLICT DO NOTHING` serialize concurrent duplicates.
+An insert that loses to a committed row skips the handler, records a duplicate metric and permits
+normal native settlement. A rollback lets the waiting delivery process the original UUIDv7 identity.
+
+**Consequences.** Handler saves do not commit the unit. Exceptions, cancellation and non-complete
+settlement requests roll back business data, inbox and outgoing rows before ordinary failure handling.
+Successful handling commits before scope disposal and native settlement. Native acknowledgement loss
+therefore redelivers safely. Retrying EF strategies, pooled contexts, ambient transactions and batch
+consumers are rejected; Relayer retries with fresh scopes instead. Handlers must not end the owned
+transaction or perform native settlement. Inbox retention remains separate work.
