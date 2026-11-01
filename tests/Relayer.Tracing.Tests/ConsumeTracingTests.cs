@@ -461,6 +461,7 @@ public class ConsumeTracingTests
     [Arguments(0)]
     [Arguments(1)]
     [Arguments(2)]
+    [Arguments(3)]
     public async Task Hosted_in_memory_transport_traces_send_process_and_core_or_manual_settlement(int mode)
     {
         var services = new ServiceCollection();
@@ -480,6 +481,7 @@ public class ConsumeTracingTests
         provider.GetRequiredService<Control>().Handle = context =>
         {
             if (mode == 2) throw new ApplicationException("poison");
+            if (mode == 3) context.Features.GetRequired<ISettlementFeature>().DeadLetter("manual");
             if (mode == 1)
             {
                 var native = context.Features.GetRequired<NativeMessage<InMemoryDelivery>>();
@@ -519,7 +521,7 @@ public class ConsumeTracingTests
         var settlement = stopped.Single(a => a.GetTagItem("messaging.operation.type") as string == "settle");
         await Assert.That(process.Links.Single().Context.SpanId).IsEqualTo(send.SpanId);
         await Assert.That(settlement.ParentSpanId).IsEqualTo(process.SpanId);
-        await Assert.That(settlement.OperationName).IsEqualTo(mode == 2 ? "dead_letter orders" : "complete orders");
+        await Assert.That(settlement.OperationName).IsEqualTo(mode >= 2 ? "dead_letter orders" : "complete orders");
         await Assert.That(process.Status).IsEqualTo(mode == 2 ? ActivityStatusCode.Error : ActivityStatusCode.Unset);
         await Assert.That(process.GetTagItem("messaging.destination.partition.id")).IsEqualTo("0");
         await Assert.That(stopped.Count).IsEqualTo(3);
