@@ -98,3 +98,82 @@ a real native client, or its total receive allocation goal. Those require the
 transport and CI regression suites tracked in [#19](https://github.com/thomhurst/Relayer/issues/19). Pending asynchronous operations
 use a pooled `ValueTask` state machine in the execution layer; custom middleware
 and user handlers retain responsibility for their own asynchronous allocations.
+
+## Batch consumers
+
+Configure the user call site with the same `Batch(maxSize, maxWait)` declaration:
+
+```csharp
+transport.Consume("audit", consumer => consumer
+    .Handler<AuditHandler>()
+    .Batch(maxSize: 10, maxWait: TimeSpan.FromMilliseconds(20)));
+```
+
+The transport composes one homogeneous batch handler at startup. Select its generated
+`BatchHandlerDescriptor<T>` once; do not use reflection to find its message contract.
+Pass the existing `IConsumerDefinition` to `BuildBatch` and `BatchReceiveExecutor<TIncoming>`:
+
+```csharp
+var execution = new ConsumePipelineBuilder(scopeFactory, messageTypes, serializer, failurePipeline)
+    .BuildBatch(handlers.GetBatchHandler<AuditEvent, AuditHandler>(), definition,
+        activitySource: relayerActivitySource);
+var receive = new ReceivePipeline<NativeDelivery, NativeBinding>(execution, headerNames,
+    contextPoolCapacity: definition.BatchSize * definition.Concurrency);
+var executor = new BatchReceiveExecutor<NativeDelivery>(services, transportName, definition,
+    consumerName, nativeReceive: nativeBatchReceive, singleReceive: nativeSingleReceive);
+
+// Inside the native receive loop; storage belongs to this loop until settlement finishes.
+var count = await executor.ReceiveAsync(deliveries, cancellationToken).ConfigureAwait(false);
+await receive.ProcessBatchAsync(deliveries[..count], dispositions[..count], cancellationToken)
+    .ConfigureAwait(false);
+// Only now apply dispositions[..count] through the native client's settlement API.
+```
+
+`BuildBatch` uses one fresh async scope per batch attempt. It rejects mixing
+single-message middleware, dispatch, endpoint telemetry, or settlement callbacks into
+that composition. Record endpoint metrics and settle native deliveries around the
+batch call; these single-message callbacks are not silently ignored.
+Message types not handled by that batch consumer enter failure handling individually.
+Invalid bodies also enter failure handling individually; the handler sees only decoded
+items, so partial-failure indexes refer to the batch actually passed to the handler.
+A thrown handler exception fails every item passed to that invocation. Invalid result
+indexes or null exceptions fail that invocation rather than losing a failure.
+The executable `FailurePipeline` retries only failed items, in a fresh scope, then
+produces durable per-message redelivery or dead-letter decisions. The explicit failure
+delegate remains available to transport integrations that own durable failure handling.
+
+Successful results wait for asynchronous scope disposal and buffered sends. Failed
+attempts discard their buffered direct sends. A partially failed attempt with buffered
+sends fails the entire receive call: one scoped sender cannot attribute those sends
+to individual messages. Use explicit per-message durable outbox transactions when
+partial success also produces messages (D28). Failure handling and disposal errors
+propagate without publishing any batch dispositions.
+
+Pass the application's shared `Relayer` ActivitySource to `BuildBatch` to trace one
+`process {source}` CONSUMER span for the batch, including retries. It links each valid
+creation context and uses only the ambient span as parent. It includes
+`messaging.batch.message_count`. The caller owns the source; no process-wide source
+or second source owner is created. This is the batch execution seam for #13's shared
+tracing integration. Native settlement and its tracing remain the adapter's work.
+Do not retain the borrowed `Batch.Items`, message contexts, or native features after
+handler completion. Pools retain bounded reusable storage sized by the declaration's
+batch size and concurrency; overflow is temporary.
+
+`BatchReceiveExecutor` resolves cached endpoint capabilities once during construction.
+When a native executor exists and `MaxBatchSize` permits native batching, it uses that
+executor with `min(BatchSize, MaxBatchSize)` slots and `BatchWait`. Native byte limits
+can yield a smaller batch. Otherwise it requires an individual receive executor and
+accumulates one delivery at a time, preserving delivery order. The partial-batch
+deadline starts with the first delivery and never resets after later deliveries.
+Each receive delegate must honor the supplied wait and cancellation, returning zero
+on timeout. No background receives are left running. A declaration without either
+usable executor fails construction with transport, source, consumer, and remedy.
+Adapters must construct the executor before starting their receive services.
+On receive exceptions, the caller still owns any deliveries already written into its
+buffer and uses native shutdown/redelivery to release them; it must not acknowledge
+them as successful. No broker or transport settlement behavior is emulated.
+
+The `BatchConsumePipelineBenchmarks` comparison reports per-batch allocations against
+matching fresh DI scope, scoped sender, cached serializer, and generated dispatch.
+It does not establish the end-to-end native-client throughput budget; #19 owns that
+transport regression measurement.

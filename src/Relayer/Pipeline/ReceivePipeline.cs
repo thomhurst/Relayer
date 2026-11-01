@@ -16,6 +16,8 @@ public sealed class ReceivePipeline<TIncoming, TBinding>
     private readonly ConsumePipeline _consumer;
     private readonly HeaderNames _names;
     private readonly State?[] _states;
+    private readonly BatchState?[] _batches;
+    private int _batchCursor;
 
     /// <summary>Adapts a consumer with its transport's CloudEvents header binding.</summary>
     public ReceivePipeline(ConsumePipeline consumer, HeaderNames names, int contextPoolCapacity = 64)
@@ -26,7 +28,10 @@ public sealed class ReceivePipeline<TIncoming, TBinding>
         _consumer = consumer;
         _names = names;
         _states = new State[contextPoolCapacity];
-        for (var i = 0; i < _states.Length; i++) _states[i] = new State(consumer, names);
+        for (var i = 0; i < _states.Length; i++) _states[i] = new State(consumer, names, i);
+        _batches = consumer.BatchExecution is { } batch
+            ? new BatchState[Math.Max(1, contextPoolCapacity / batch.Size)] : [];
+        for (var i = 0; i < _batches.Length; i++) _batches[i] = new BatchState(consumer.BatchExecution!.Size);
     }
 
     /// <summary>Processes one delivery and releases all native references before returning its disposition.</summary>
@@ -52,7 +57,7 @@ public sealed class ReceivePipeline<TIncoming, TBinding>
 
     /// <summary>Processes deliveries in input order, writing one disposition per delivery.</summary>
     /// <remarks>
-    /// This is a transport batch entry point, not batch-handler dispatch. Output may be larger than input;
+    /// A consumer built with BuildBatch dispatches its generated batch handler; other consumers process deliveries individually. Output may be larger than input;
     /// its unused tail is untouched. Only settle from this output when the entire call succeeds.
     /// On failure or cancellation, some earlier deliveries may have completed durable work; native redelivery
     /// remains at-least-once. Both memories must remain valid and unchanged until the call completes.
@@ -64,6 +69,11 @@ public sealed class ReceivePipeline<TIncoming, TBinding>
         if (dispositions.Length < messages.Length)
             throw new ArgumentException("Provide at least one disposition slot per incoming message.", nameof(dispositions));
         cancellationToken.ThrowIfCancellationRequested();
+        if (_consumer.IsBatch)
+        {
+            await ProcessHandlerBatchAsync(messages, dispositions, cancellationToken).ConfigureAwait(false);
+            return;
+        }
         for (var i = 0; i < messages.Length; i++)
         {
             var disposition = await ProcessAsync(messages.Span[i], cancellationToken).ConfigureAwait(false);
@@ -71,8 +81,70 @@ public sealed class ReceivePipeline<TIncoming, TBinding>
         }
     }
 
+    [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
+    private async ValueTask ProcessHandlerBatchAsync(ReadOnlyMemory<TIncoming> messages, Memory<Disposition> dispositions,
+        CancellationToken cancellationToken)
+    {
+        var maximum = _consumer.BatchExecution!.Size;
+        if (messages.Length > maximum) throw new ArgumentOutOfRangeException(nameof(messages), "Batch exceeds the configured maximum size.");
+        if (messages.IsEmpty) return;
+        BatchState? batch = null;
+        for (var i = 0; i < _batches.Length && batch is null; i++) batch = Interlocked.Exchange(ref _batches[i], null);
+        batch ??= new BatchState(maximum);
+        var count = 0;
+        try
+        {
+            for (; count < messages.Length; count++)
+            {
+                var state = Rent();
+                batch.States[count] = state;
+                state.Initialize(messages.Span[count]);
+                var context = _consumer.RentContext(state, cancellationToken);
+                batch.Contexts[count] = context;
+                context.Features.Set(state.Native);
+            }
+            await _consumer.ProcessBatchAsync(batch.Contexts.AsMemory(0, count), cancellationToken).ConfigureAwait(false);
+            for (var i = 0; i < count; i++)
+                dispositions.Span[i] = batch.Contexts[i].FailureDisposition ?? batch.States[i]!.Native.Disposition;
+        }
+        finally
+        {
+            // Include the slot whose native binding or context initialization threw.
+            for (var i = 0; i < messages.Length; i++)
+            {
+                batch.Contexts[i]?.Dispose();
+                batch.Contexts[i] = null!;
+                if (batch.States[i] is not { } state) continue;
+                state.Clear();
+                Return(state);
+                batch.States[i] = null;
+            }
+            for (var i = 0; i < _batches.Length; i++)
+                if (Interlocked.CompareExchange(ref _batches[i], batch, null) is null) break;
+        }
+    }
+
+    private sealed class BatchState(int size)
+    {
+        internal readonly DefaultMessageContext[] Contexts = new DefaultMessageContext[size];
+        internal readonly State?[] States = new State[size];
+    }
+
     private State Rent()
     {
+        if (_consumer.IsBatch)
+        {
+            var start = Volatile.Read(ref _batchCursor);
+            for (var offset = 0; offset < _states.Length; offset++)
+            {
+                var index = start + offset;
+                if (index >= _states.Length) index -= _states.Length;
+                if (Interlocked.Exchange(ref _states[index], null) is not { } state) continue;
+                Volatile.Write(ref _batchCursor, index + 1 == _states.Length ? 0 : index + 1);
+                return state;
+            }
+            return new State(_consumer, _names);
+        }
         for (var i = 0; i < _states.Length; i++)
             if (Interlocked.Exchange(ref _states[i], null) is { } state) return state;
         return new State(_consumer, _names);
@@ -80,13 +152,19 @@ public sealed class ReceivePipeline<TIncoming, TBinding>
 
     private void Return(State state)
     {
+        if (_consumer.IsBatch)
+        {
+            if (state.PoolSlot >= 0) Interlocked.CompareExchange(ref _states[state.PoolSlot], state, null);
+            return;
+        }
         for (var i = 0; i < _states.Length; i++)
             if (Interlocked.CompareExchange(ref _states[i], state, null) is null) return;
     }
 
-    private sealed class State(ConsumePipeline consumer, HeaderNames names) : ReceiveMessageState
+    private sealed class State(ConsumePipeline consumer, HeaderNames names, int poolSlot = -1) : ReceiveMessageState
     {
         internal override HeaderNames EnvelopeNames => names;
+        internal int PoolSlot { get; } = poolSlot;
         private MessageHeaders<TIncoming, TBinding> _headers;
         private WireString _id;
         private string? _messageId;

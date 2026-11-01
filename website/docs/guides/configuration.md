@@ -41,6 +41,13 @@ Transport names are case-sensitive and unique across all transport kinds. Severa
 
 `Concurrency` defaults to 1. `BatchSize` defaults to 1, which disables batching; `BatchWait` defaults to 100 ms. Transports honor these with native behavior and the core scheduler where applicable, and validate their native limits before starting. Declaring them never installs an emulated batching or ordering feature.
 
+The core's [batch receive executor](../transports/consume-pipeline.md#batch-consumers)
+uses native receive batching when both its executor and endpoint capability exist,
+capped by `min(BatchSize, MaxBatchSize)`. Otherwise an individual receive executor
+supplies core accumulation up to `BatchSize`, with one partial-batch deadline from
+the first delivery. Native byte limits remain authoritative. Missing executors
+fail composition before receives start with consumer, source, and transport context.
+
 ## Startup and reload
 
 

@@ -38,6 +38,24 @@ public sealed class AuditHandler(AuditStore store) : IBatchHandler<AuditEvent>
 
 Return `BatchResult.Success` when every message succeeded.
 
+Configure the existing consumer declaration with `.Batch(maxSize, maxWait)`.
+The core composes generated batch dispatch in one fresh scope per batch attempt.
+Only failed items are retried; an exception from the handler fails every item in
+that invocation. Success waits for asynchronous scope disposal and durable work
+before the adapter receives settlement decisions.
+
+Direct sends from the scoped `ISender` are buffered until the entire attempt
+succeeds. A partial failure with buffered sends fails the receive call because
+those sends cannot be attributed to individual items. Use explicit per-message
+durable outbox transactions when partial success also produces messages. Do not
+retain the borrowed batch or its item contexts after handler completion.
+
+Adapters must install a native or core client-side receive executor before
+starting consumers; declaring a size does not supply one. The core execution
+seam is available now; the in-memory hosted adapter still explicitly rejects
+batch-handler composition. See [batch composition](../transports/consume-pipeline.md#batch-consumers)
+for transport-author integration and native count/wait limits.
+
 ## Registration without scanning
 
 Relayer never scans assemblies at runtime. Register handlers inside `AddRelayer`:

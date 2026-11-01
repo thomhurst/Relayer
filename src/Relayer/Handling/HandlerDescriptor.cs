@@ -22,6 +22,9 @@ public abstract class HandlerDescriptor(Type handlerType, Type messageType, bool
 
     internal virtual ConsumeDelegate CreateConsumeDelegate(IMessageSerializer serializer)
         => throw new InvalidOperationException("A batch handler cannot be composed as a single-message consumer.");
+
+    internal virtual BatchDispatcher CreateBatchDispatcher(IMessageSerializer serializer, int size, int concurrency)
+        => throw new InvalidOperationException("Select a generated batch handler when composing batch consumption.");
 }
 
 /// <summary>A generated, typed single-message dispatcher. Cache it when composing the pipeline.</summary>
@@ -63,4 +66,7 @@ public abstract class BatchHandlerDescriptor<TMessage>(Type handlerType)
     /// <summary>Invokes the resolved handler, preserving its per-message results.</summary>
     public abstract ValueTask<BatchResult> DispatchAsync(
         IHandlerMarker handler, Batch<TMessage> batch, CancellationToken cancellationToken);
+
+    internal sealed override BatchDispatcher CreateBatchDispatcher(IMessageSerializer serializer, int size, int concurrency)
+        => new BatchDispatcher<TMessage>(this, serializer, size, concurrency);
 }

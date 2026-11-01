@@ -12,7 +12,8 @@ public sealed class DefaultMessageContext : MessageContext, IDisposable
     // 0: pooled, 1: rented, 2: processing, 3: processed. A delivery can run only once.
     private int _state;
 
-    internal DefaultMessageContext(ConsumePipeline owner) => _owner = owner;
+    internal int PoolSlot { get; }
+    internal DefaultMessageContext(ConsumePipeline owner, int poolSlot = -1) { _owner = owner; PoolSlot = poolSlot; }
 
     /// <inheritdoc />
     public override string MessageId => _receive?.MessageId ?? _message.MessageId;
