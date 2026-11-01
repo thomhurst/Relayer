@@ -1,3 +1,4 @@
+#pragma warning disable RLY001 // Dispatch-only fixtures use primitive messages and do not send wire messages.
 using Microsoft.Extensions.DependencyInjection;
 
 namespace Relayer.Tests;

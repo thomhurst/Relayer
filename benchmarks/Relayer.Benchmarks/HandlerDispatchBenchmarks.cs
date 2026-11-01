@@ -1,3 +1,4 @@
+#pragma warning disable RLY001 // This dispatch-only benchmark uses int and does not send wire messages.
 using BenchmarkDotNet.Attributes;
 using Microsoft.Extensions.DependencyInjection;
 

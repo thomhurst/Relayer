@@ -1,3 +1,4 @@
+#pragma warning disable RLY001 // This pipeline-only benchmark registers its serializer and message identity explicitly.
 using System.Buffers;
 using BenchmarkDotNet.Attributes;
 using Microsoft.Extensions.DependencyInjection;
