@@ -75,3 +75,5 @@ var sendTracing = new SendTracing(
 The seam borrows prepared headers and batch memory until the native delegate completes. It preserves body, ordering, scheduling, native callbacks, input order and partial-failure behavior. Supply the native system identifier and destination format from the semantic conventions, rather than the arbitrary registration name. Endpoint metadata and span names are computed at startup. Deferred handler sends use a create span before their envelope is copied into the attempt buffer, then a linked send span when the buffer flushes.
 
 `InMemoryTransport` implements this seam. DI registration supplies `MessageTracing` automatically. For a standalone instance, pass `tracing:` to its constructor. Its homogeneous batches use one batch span; mixed-destination batches retain native input order and use one single-message span per message. Broker adapters remain planned; they must provide this integration when implemented.
+
+Run the reusable [transport conformance suite](conformance.md) against the real broker or emulator before shipping an adapter.

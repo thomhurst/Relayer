@@ -29,6 +29,7 @@ const sidebars = {
       items: [
         'transports/in-memory',
         'transports/authoring',
+        'transports/conformance',
         'transports/receive',
         'transports/consume-pipeline',
         'transports/envelopes',
