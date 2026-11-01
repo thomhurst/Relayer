@@ -3,6 +3,7 @@
     <OutputType>Exe</OutputType>
   </PropertyGroup>
   <ItemGroup>
+    <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" />
     <PackageReference Include="TUnit" />
     <PackageReference Include="Microsoft.Extensions.Hosting" />
   </ItemGroup>

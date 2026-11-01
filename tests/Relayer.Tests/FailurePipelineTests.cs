@@ -798,7 +798,7 @@ public class FailurePipelineTests
     private sealed class InactiveOutbox : IOutboxEnlistment
     {
         public bool IsActive => false;
-        public ValueTask EnlistAsync(string transportName, OutgoingMessage message, CancellationToken cancellationToken)
+        public ValueTask EnlistAsync(OutboxRecord record, CancellationToken cancellationToken)
             => throw new NotSupportedException();
     }
     private sealed class Incoming

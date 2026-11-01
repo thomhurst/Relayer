@@ -256,7 +256,8 @@ internal sealed class SendRoute<TMessage>
             }
             return _outbox is null
                 ? _route._transport.SendAsync(outgoing, CancellationToken)
-                : _outbox.EnlistAsync(_route._transport.Name, outgoing, CancellationToken);
+                : _outbox.EnlistAsync(new OutboxRecord(_metadata.MessageId, _route._transport.Name,
+                    _route._wireType, outgoing, _metadata.Time), CancellationToken);
         }
 
         private bool IsEnvelopeHeader(string name)

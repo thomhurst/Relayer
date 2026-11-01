@@ -5,9 +5,9 @@ description: "Durable row reads, fenced claims, memory ownership and optional he
 
 The core package defines `IOutboxStore`, `OutboxRecord`, `OutboxReadRequest` and `OutboxClaim` for database
 integration authors. These contracts, the optional health adapter and [PostgreSQL schema scripts](postgres-schema.md)
-are implemented, together with [PostgreSQL durable reads and fenced claims](postgres-store.md).
-Transaction enlistment implementations, dispatch workers, lane leases and inbox deduplication
-remain planned in [the outbox work](../roadmap.md).
+are implemented, together with [PostgreSQL durable reads and fenced claims](postgres-store.md)
+and [EF Core transaction enlistment for PostgreSQL](ef-core-outbox.md).
+Dispatch workers, lane leases and inbox deduplication remain planned.
 
 ## Register a named store
 
@@ -30,6 +30,11 @@ The optional `Relayer.HealthChecks` package adapts the store's pending count to 
 does not depend on health abstractions. Register stores separately from scoped `IOutboxEnlistment` services:
 enlistment writes through the application's native transaction, while `IOutboxStore` serves dispatch and health.
 Neither registration enables a background dispatcher.
+
+The send pipeline calls `IOutboxEnlistment.EnlistAsync(OutboxRecord, CancellationToken)` with the original
+identity, wire type and creation time. The enlistment takes owned copies of borrowed payload memory before
+returning and persists buffered rows before transaction commit. These metadata fields remain available in raw
+envelope mode and with custom header names. New records have no dispatch attempts, error or caller-supplied lane.
 
 ## Rows and bounded reads
 

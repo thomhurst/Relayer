@@ -41,7 +41,7 @@ var outgoing = new OutgoingMessage(
 await transport.SendAsync(outgoing, cancellationToken);
 ```
 
-The body, header entries, header value buffers, batch array, and native options must remain alive and unchanged until the send completes, including faulted or cancelled completion. A transport must finish using that memory before completion; it cannot return early while a native operation still uses the buffers. The caller can then return pooled storage. An outbox copies the body and headers into durable storage before enlistment completes; dispatch reconstructs the same send shape from the persisted fields. The transport name belongs to routing/outbox storage rather than the message passed to an already selected transport.
+The body, header entries, header value buffers, batch array, and native options must remain alive and unchanged until the send completes, including faulted or cancelled completion. A transport must finish using that memory before completion; it cannot return early while a native operation still uses the buffers. The caller can then return pooled storage. An outbox takes owned copies of the body and headers before enlistment completes and persists them before transaction commit; dispatch reconstructs the same send shape from the persisted fields. The transport name belongs to routing/outbox storage rather than the message passed to an already selected transport.
 
 `options` carries only the native callbacks at this seam. The caller has already resolved `SendOptions.Headers`, `OrderingKey`, and `DeliverAt` into the other arguments. Options are borrowed, so callers must not mutate them during a send.
 

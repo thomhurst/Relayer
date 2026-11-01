@@ -10,6 +10,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Relayer;
 using Relayer.HealthChecks;
+using Relayer.Outbox.EntityFrameworkCore;
 using Relayer.Outbox.PostgreSql;
 using Relayer.Serialization;
 using Relayer.Transports;
@@ -52,6 +53,21 @@ await using (var dataSource = new Npgsql.NpgsqlSlimDataSourceBuilder(postgresCon
     }
 }
 Console.WriteLine("PostgreSQL keyed stores and cancellation passed under Native AOT.");
+// This validates scoped registration and immutable configuration, without claiming an EF compiled-model round trip.
+var outboxServices = new ServiceCollection();
+outboxServices.AddRelayerEntityFrameworkCoreOutbox(new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
+{
+    ["Schema"] = "messaging", ["TablePrefix"] = "smoke_", ["Lanes"] = "8"
+}).Build());
+using (var outboxProvider = outboxServices.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true }))
+using (var outboxScope = outboxProvider.CreateScope())
+{
+    var options = outboxScope.ServiceProvider.GetRequiredService<Microsoft.Extensions.Options.IOptionsSnapshot<EntityFrameworkCoreOutboxOptions>>().Value;
+    if (options.Schema != "messaging" || options.TablePrefix != "smoke_" || options.Lanes != 8 ||
+        outboxScope.ServiceProvider.GetRequiredService<IOutboxEnlistment>().IsActive)
+        throw new InvalidOperationException("EF outbox registration or immutable configuration failed under Native AOT.");
+}
+Console.WriteLine("EF outbox registration and immutable configuration passed under Native AOT.");
 
 var transport = new SmokeTransport();
 var services = new ServiceCollection();
