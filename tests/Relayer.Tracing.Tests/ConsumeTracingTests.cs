@@ -1,7 +1,9 @@
 #pragma warning disable RLY001 // Fixtures explicitly register their cached payload and wire identity.
 using System.Buffers;
 using System.Diagnostics;
+using System.Collections.Concurrent;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Options;
 using Microsoft.Extensions.Logging;
 using Relayer.Serialization;
@@ -456,6 +458,74 @@ public class ConsumeTracingTests
     }
 
     [Test]
+    [Arguments(0)]
+    [Arguments(1)]
+    [Arguments(2)]
+    public async Task Hosted_in_memory_transport_traces_send_process_and_core_or_manual_settlement(int mode)
+    {
+        var services = new ServiceCollection();
+        services.AddSingleton<Control>();
+        services.AddSingleton<Handler>();
+        services.AddSingleton<IMessageSerializer, Serializer>();
+        services.AddRelayer(r =>
+        {
+            r.MessageTypes.Add<int>("number");
+            r.InMemory("local", transport =>
+            {
+                transport.Send<int>("orders");
+                transport.Consume("orders", consumer => consumer.Handler<Handler>());
+            });
+        });
+        await using var provider = services.BuildServiceProvider();
+        provider.GetRequiredService<Control>().Handle = context =>
+        {
+            if (mode == 2) throw new ApplicationException("poison");
+            if (mode == 1)
+            {
+                var native = context.Features.GetRequired<NativeMessage<InMemoryDelivery>>();
+                native.Message.Complete();
+                native.Disposition = Disposition.SettledByHandler;
+            }
+            return default;
+        };
+        var tracing = provider.GetRequiredService<MessageTracing>();
+        var stopped = new ConcurrentQueue<Activity>();
+        var processed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var listener = new ActivityListener
+        {
+            ShouldListenTo = source => ReferenceEquals(source, tracing.Source),
+            Sample = static (ref ActivityCreationOptions<ActivityContext> _) => ActivitySamplingResult.AllDataAndRecorded,
+            ActivityStopped = activity =>
+            {
+                stopped.Enqueue(activity);
+                if (activity.OperationName == "process orders") processed.TrySetResult();
+            },
+        };
+        ActivitySource.AddActivityListener(listener);
+        var hosted = provider.GetServices<IHostedService>().ToArray();
+        try
+        {
+            foreach (var service in hosted) await service.StartAsync(default);
+            await using var scope = provider.CreateAsyncScope();
+            await scope.ServiceProvider.GetRequiredService<ISender>().SendAsync(1);
+            await processed.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        }
+        finally
+        {
+            for (var i = hosted.Length - 1; i >= 0; i--) await hosted[i].StopAsync(default);
+        }
+        var send = stopped.Single(a => a.OperationName == "send orders");
+        var process = stopped.Single(a => a.OperationName == "process orders");
+        var settlement = stopped.Single(a => a.GetTagItem("messaging.operation.type") as string == "settle");
+        await Assert.That(process.Links.Single().Context.SpanId).IsEqualTo(send.SpanId);
+        await Assert.That(settlement.ParentSpanId).IsEqualTo(process.SpanId);
+        await Assert.That(settlement.OperationName).IsEqualTo(mode == 2 ? "dead_letter orders" : "complete orders");
+        await Assert.That(process.Status).IsEqualTo(mode == 2 ? ActivityStatusCode.Error : ActivityStatusCode.Unset);
+        await Assert.That(process.GetTagItem("messaging.destination.partition.id")).IsEqualTo("0");
+        await Assert.That(stopped.Count).IsEqualTo(3);
+    }
+
+    [Test]
     public async Task Batch_settlement_error_logs_native_span_once_without_reentering_failure_handling()
     {
         var logger = new Logger();
@@ -510,7 +580,7 @@ public class ConsumeTracingTests
     {
         public string ContentType => "test/cached";
         public T Deserialize<T>(ReadOnlySequence<byte> source) => (T)(object)1;
-        public void Serialize<T>(T message, IBufferWriter<byte> destination) => throw new NotSupportedException();
+        public void Serialize<T>(T message, IBufferWriter<byte> destination) { destination.GetSpan(1)[0] = 1; destination.Advance(1); }
     }
     private sealed class Settled;
     private sealed class DisposalGate : IAsyncDisposable

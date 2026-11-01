@@ -1,3 +1,4 @@
+#pragma warning disable RLY001 // This fixture explicitly registers its probe identity and cached serializer.
 using System.Buffers;
 using System.Diagnostics;
 using System.Text;

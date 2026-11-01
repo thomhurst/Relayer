@@ -11,7 +11,7 @@ Relayer is in early development. Track progress in [GitHub issues](https://githu
 - Source-generated message registration, handler registration and dispatch, and System.Text.Json serialization.
 - Compile-time analyzers and a code fix ([diagnostics](reference/diagnostics.md)).
 - The scoped send pipeline, send middleware and outbox enlistment hooks.
-- Provider-owned tracing primitives and direct single/batch send tracing, integrated with the in-memory adapter. Automatic consume/settlement and outbox tracing remain planned.
+- Provider-owned tracing and direct single/batch send tracing, integrated with the in-memory adapter's delivery and native settlement spans. Outbox tracing remains planned.
 - The [durable outbox store contract](reference/outbox-stores.md), with bounded reads, fenced claims and an optional keyed health adapter. Database implementations and dispatch workers remain planned.
 - The consume pipeline and the native receive SPI.
 - Generated batch handler execution, durable partial-failure decisions, and validated native/client-side receive executors for transport authors.

@@ -50,7 +50,7 @@ Scope identities are captured in a read-only snapshot only when a generated fail
 
 ## Delivery and settlement tracing
 
-Register the DI-owned `MessageTracing` source with `AddRelayer(r => r.Telemetry())`, then subscribe with your OpenTelemetry provider's `AddSource(RelayerTelemetry.ActivitySourceName)`. The source is named `Relayer` and publishes `RelayerTelemetry.SchemaUrl`. Configure `TracingOptions` through the Options pattern; setting `CreationContextAsParent = false` disables creation-context parenting, and `IncludeBodySize = true` records serialized body sizes.
+`AddRelayer` registers the DI-owned `MessageTracing` source automatically. Subscribe with your OpenTelemetry provider's `AddSource(RelayerTelemetry.ActivitySourceName)`. The source is named `Relayer` and publishes `RelayerTelemetry.SchemaUrl`. Configure `TracingOptions` through the Options pattern; setting `CreationContextAsParent = false` disables creation-context parenting, and `IncludeBodySize = true` records serialized body sizes.
 
 Compose tracing once per consumer, alongside the metrics recorder:
 
@@ -97,5 +97,7 @@ With no listener, the integration does not read tracing headers, partition IDs o
 For single-message consumers, `ReceivePipeline.ProcessBatchAsync` invokes each delivery separately and creates one process span per delivery. A consumer composed with `BuildBatch` instead creates one process span per batch, using the same `.Tracing(tracing, endpoint)` configuration. The batch span has one creation link per message, `messaging.batch.message_count`, and only ambient parenting, even for a one-message batch. It omits per-message and partition attributes. Immediate retries stay inside that span, and a fully recovered batch clears earlier error status. A cancellation while failed items remain retains failure status.
 
 `BuildBatch` also supports `.Settle(callback)`: after all durable batch work and scope disposal succeed, it invokes the callback for each context inside the batch process span. Failure dispositions are already applied to native features. Use the same native wrappers and honor `SettledByHandler`; successful manual settlement takes precedence over an earlier failure disposition in the returned decisions. A settlement error propagates without retrying batch handling. Single-message metric recorders remain unsupported on batch composition; record batch metrics around the call. The existing `BuildBatch(..., activitySource)` entry point remains available for custom source composition; do not combine it with `.Tracing`, which supplies the shared source and complete endpoint metadata.
+
+Hosted in-memory consumers configure delivery tracing automatically. Their native `Complete`, `Redeliver` and `DeadLetter` methods emit settlement spans, including manual calls. Core completion runs after durable processing and scope disposal, and skips a successfully settled delivery. For standalone `InMemoryTransport` instances, pass `tracing:` to the constructor and configure `.Tracing` on the composed consumer. In-memory native methods already trace settlement; do not additionally wrap them with `WrapSettlement`.
 
 See [Health checks](health-checks.md) for readiness integration. Native broker adapters and outbox instrumentation remain planned; see the [roadmap](../roadmap.md).
