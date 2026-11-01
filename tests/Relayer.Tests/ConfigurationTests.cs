@@ -50,7 +50,7 @@ public class ConfigurationTests
 
         await Assert.That(() => options.ApplyNative(new object()))
             .Throws<InvalidOperationException>()
-            .WithMessageContaining(nameof(StringBuilderStandIn));
+            .WithMessageContaining("native outgoing type");
     }
 
     [Test]
