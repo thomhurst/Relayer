@@ -48,3 +48,30 @@ The body, header entries, header value buffers, batch array, and native options 
 A transport constructs its outgoing native object, maps body/headers/ordering/scheduling, then calls `outgoing.ApplyNative(native)` immediately before handing it to the native client. `ApplyNative<TNative>` uses the transport's declared native outgoing type. Callbacks accepting that type or a base type run in registration order. An incompatible callback throws an actionable error instead of being dropped. Callbacks are stored directly, without wrapping closures, reflection, or dynamic invocation.
 
 Before persisting or enlisting a message, outbox integrations call `outgoing.ValidateForOutbox()`. A send containing native callbacks fails because delegates cannot be persisted; portable headers, ordering, and scheduling remain available. The scoped sender performs this validation before calling `IOutboxEnlistment`.
+
+### Send tracing
+
+Implement `ITransportSendTracing` alongside `ITransport`. Construct one `SendTracing` per declared endpoint at startup, using the provider's `MessageTracing`, the adapter's `MessagingEndpoint`, and cached delegates to its native single and batch implementations:
+
+```csharp
+var sendTracing = new SendTracing(
+    tracing,
+    new MessagingEndpoint
+    {
+        System = "kafka",
+        Destination = topic,
+        ServerAddress = brokerHost,
+        ServerPort = brokerPort,
+        ClientId = clientId,
+    },
+    SendNativeAsync,
+    SendBatchNativeAsync,
+    logger,
+    headerNames);
+```
+
+`GetSendTracing(destination)` returns that endpoint's instance. The scoped pipeline uses it to capture the producer context before serialization. Implement `ITransport.SendAsync` by forwarding to `sendTracing.SendAsync`; implement homogeneous native batches through `sendTracing.SendBatchAsync`. The native delegates must call the client directly, rather than re-entering these tracing entry points. The seam suppresses duplicate spans for sends already traced by the scoped pipeline, and preserves existing header values byte for byte. Native instrumentation and native configuration callbacks must not overwrite the resulting creation context.
+
+The seam borrows prepared headers and batch memory until the native delegate completes. It preserves body, ordering, scheduling, native callbacks, input order and partial-failure behavior. Supply the native system identifier and destination format from the semantic conventions, rather than the arbitrary registration name. Endpoint metadata and span names are computed at startup. Deferred handler sends use a create span before their envelope is copied into the attempt buffer, then a linked send span when the buffer flushes.
+
+`InMemoryTransport` implements this seam. DI registration supplies `MessageTracing` automatically. For a standalone instance, pass `tracing:` to its constructor. Its homogeneous batches use one batch span; mixed-destination batches retain native input order and use one single-message span per message. Broker adapters remain planned; they must provide this integration when implemented.

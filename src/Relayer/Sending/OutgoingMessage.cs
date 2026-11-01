@@ -11,6 +11,7 @@ namespace Relayer;
 public readonly struct OutgoingMessage
 {
     private readonly SendOptions? _options;
+    internal bool TracingStarted { get; private init; }
 
     /// <summary>Creates a send without copying its body, headers, or native options.</summary>
     /// <param name="destination">The native destination on the selected named transport.</param>
@@ -58,6 +59,8 @@ public readonly struct OutgoingMessage
 
     internal OutgoingMessage Forward(string destination, ReadOnlyMemory<KeyValuePair<string, WireString>> headers,
         DateTimeOffset? deliverAt) => new(destination, Body, headers, OrderingKey, deliverAt, _options);
+
+    internal OutgoingMessage WithTracingStarted() => new(Destination, Body, Headers, OrderingKey, DeliverAt, _options) { TracingStarted = true };
 
     internal void CopyNativeOptionsTo(SendOptions target)
     {

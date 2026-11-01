@@ -1,6 +1,7 @@
 using System.Collections.Frozen;
 using System.Runtime.CompilerServices;
 using System.Threading.Channels;
+using Microsoft.Extensions.Logging;
 using Relayer.Transports;
 
 namespace Relayer.InMemory;
@@ -9,9 +10,10 @@ namespace Relayer.InMemory;
 public delegate ValueTask<Disposition> InMemoryReceiveDelegate(InMemoryDelivery delivery, CancellationToken cancellationToken);
 
 /// <summary>A bounded, process-local native transport. Instances do not share state.</summary>
-public sealed class InMemoryTransport : ITransport
+public sealed class InMemoryTransport : ITransport, ITransportSendTracing
 {
     private readonly FrozenDictionary<string, InMemoryEndpoint> _endpoints;
+    private readonly FrozenDictionary<string, SendTracing>? _sendTracing;
     private CancellationTokenSource? _stop;
     private CancellationTokenSource? _abort;
     private bool _frozen;
@@ -22,7 +24,8 @@ public sealed class InMemoryTransport : ITransport
     public const string MessagingSystem = "relayer.inmemory";
 
     /// <summary>Creates explicit native endpoints. No unknown destination is auto-created.</summary>
-    public InMemoryTransport(string name, IReadOnlyDictionary<string, InMemoryEndpointOptions> endpoints, TimeProvider? timeProvider = null)
+    public InMemoryTransport(string name, IReadOnlyDictionary<string, InMemoryEndpointOptions> endpoints, TimeProvider? timeProvider = null,
+        MessageTracing? tracing = null, ILoggerFactory? loggerFactory = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(name);
         ArgumentNullException.ThrowIfNull(endpoints);
@@ -34,6 +37,15 @@ public sealed class InMemoryTransport : ITransport
             built.Add(pair.Key, new(pair.Key, pair.Value, timeProvider ?? TimeProvider.System));
         }
         _endpoints = built.ToFrozenDictionary(StringComparer.Ordinal);
+        if (tracing is not null)
+        {
+            var operations = new Dictionary<string, SendTracing>(StringComparer.Ordinal);
+            var logger = loggerFactory?.CreateLogger<InMemoryTransport>();
+            foreach (var endpoint in endpoints.Keys)
+                operations.Add(endpoint, new(tracing, new() { System = MessagingSystem, Destination = endpoint },
+                    SendCoreAsync, SendBatchCoreAsync, logger));
+            _sendTracing = operations.ToFrozenDictionary(StringComparer.Ordinal);
+        }
     }
 
     /// <inheritdoc />
@@ -42,6 +54,14 @@ public sealed class InMemoryTransport : ITransport
     public Task Completion { get; private set; } = Task.CompletedTask;
     /// <inheritdoc />
     public TransportCapabilities GetCapabilities(string endpoint) => Endpoint(endpoint).Capabilities;
+
+    /// <inheritdoc />
+    public SendTracing? GetSendTracing(string destination)
+    {
+        if (_sendTracing is null) return null;
+        return _sendTracing.TryGetValue(destination, out var tracing) ? tracing
+            : throw new InvalidOperationException($"In-memory transport '{Name}' has no endpoint '{destination}'. Declare it before building the transport.");
+    }
 
     /// <inheritdoc />
     public ValueTask<TopologyReport> ApplyTopologyAsync(TopologyMode mode, CancellationToken cancellationToken)
@@ -70,9 +90,8 @@ public sealed class InMemoryTransport : ITransport
     /// <summary>Returns the last completed log position for one group and partition, or -1 before processing.</summary>
     public long GetCommittedPosition(string endpoint, string group, int partition) => Endpoint(endpoint).GetCommittedPosition(group, partition);
 
-    /// <inheritdoc />
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
-    public async ValueTask SendAsync(OutgoingMessage message, CancellationToken cancellationToken)
+    private async ValueTask SendCoreAsync(OutgoingMessage message, CancellationToken cancellationToken)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         cancellationToken.ThrowIfCancellationRequested();
@@ -94,19 +113,46 @@ public sealed class InMemoryTransport : ITransport
     }
 
     /// <inheritdoc />
-    /// <remarks>The total batch length must fit every destination's MaxBatchSize, including batches with mixed destinations.</remarks>
+    public ValueTask SendAsync(OutgoingMessage message, CancellationToken cancellationToken) =>
+        GetSendTracing(message.Destination) is { } tracing ? tracing.SendAsync(message, cancellationToken) : SendCoreAsync(message, cancellationToken);
+
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
-    public async ValueTask SendBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken)
+    private async ValueTask SendBatchCoreAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken)
+    {
+        ValidateBatch(messages, cancellationToken);
+        // Native batches preserve input order and allow partial completion, as specified by ITransport.
+        for (var i = 0; i < messages.Length; i++)
+            await SendCoreAsync(messages.Span[i], cancellationToken).ConfigureAwait(false);
+    }
+
+    private void ValidateBatch(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         cancellationToken.ThrowIfCancellationRequested();
-        // Native batches preserve input order and allow partial completion, as specified by ITransport.
         for (var i = 0; i < messages.Length; i++)
         {
             var message = messages.Span[i];
             if (messages.Length > Endpoint(message.Destination).Capabilities.MaxBatchSize)
                 throw new InvalidOperationException($"Endpoint '{message.Destination}': batch exceeds MaxBatchSize.");
         }
+    }
+
+    /// <inheritdoc />
+    /// <remarks>The total batch length must fit every destination's MaxBatchSize. Mixed destinations retain native input order and use separate single-message spans.</remarks>
+    public ValueTask SendBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken)
+    {
+        if (messages.IsEmpty || GetSendTracing(messages.Span[0].Destination) is not { } tracing)
+            return SendBatchCoreAsync(messages, cancellationToken);
+        var destination = messages.Span[0].Destination;
+        for (var i = 1; i < messages.Length; i++)
+            if (messages.Span[i].Destination != destination) return SendMixedBatchAsync(messages, cancellationToken);
+        return tracing.SendBatchAsync(messages, cancellationToken);
+    }
+
+    [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
+    private async ValueTask SendMixedBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken)
+    {
+        ValidateBatch(messages, cancellationToken);
         for (var i = 0; i < messages.Length; i++)
             await SendAsync(messages.Span[i], cancellationToken).ConfigureAwait(false);
     }

@@ -1,5 +1,6 @@
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Relayer.Serialization;
 using Relayer.Transports;
@@ -29,7 +30,8 @@ public static class InMemoryBuilderExtensions
                     throw new InvalidOperationException($"In-memory transport '{name}': endpoint '{pair.Key}' has options but no route or consumer declaration.");
                 endpoints[pair.Key] = pair.Value;
             }
-            return new InMemoryTransport(name, endpoints, options.TimeProvider);
+            return new InMemoryTransport(name, endpoints, options.TimeProvider, provider.GetRequiredService<MessageTracing>(),
+                provider.GetService<ILoggerFactory>());
         });
         builder.Services.AddSingleton<IHostedService>(provider => new InMemoryHostedService(provider, name));
         return builder;
