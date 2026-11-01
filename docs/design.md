@@ -604,6 +604,8 @@ Attributes that only Relayer defines use the `relayer.` prefix and never the `me
 
 ### 8.4 Metrics
 
+See [metrics and logging integration](telemetry.md) for the implemented transport-author call site and recording contracts.
+
 Instruments from the semantic conventions, with the conventions' recommended histogram buckets given as instrument advice:
 
 | Instrument | Type | Unit | Measures |

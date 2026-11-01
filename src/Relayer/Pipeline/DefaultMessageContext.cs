@@ -42,6 +42,21 @@ public sealed class DefaultMessageContext : MessageContext, IDisposable
     }
     internal void NextAttempt() => _attempt = checked(Attempt + 1);
     internal ConsumeDelegate Dispatch { get; set; } = null!;
+    internal ConsumeLogScope LogScope { get; } = new();
+    internal HeaderNames EnvelopeNames => _receive?.EnvelopeNames ?? _owner.EnvelopeNames;
+
+    internal void GetLogIdentity(out string? id, out string? type)
+    {
+        if (_receive is null)
+        {
+            id = _message.MessageId;
+            type = _message.MessageType.ToString();
+            return;
+        }
+        // Logging must also work for malformed envelopes without trying to parse their required fields.
+        id = _receive.TryGetValue(EnvelopeNames.Id, out var rawId) ? rawId.ToString() : null;
+        type = _receive.TryGetValue(EnvelopeNames.Type, out var rawType) ? rawType.ToString() : null;
+    }
 
     internal void Initialize(in ConsumeMessage message, CancellationToken cancellationToken)
     {
@@ -66,6 +81,7 @@ public sealed class DefaultMessageContext : MessageContext, IDisposable
     }
 
     internal void SetServices(IServiceProvider services) => _services = services;
+    internal void ClearServices() => _services = null;
 
     internal void EndProcessing()
     {
