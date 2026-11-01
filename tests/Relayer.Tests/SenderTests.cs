@@ -441,6 +441,8 @@ public class SenderTests
         using var provider = services.BuildServiceProvider();
         Func<Task> start = async () =>
         {
+            foreach (var service in provider.GetServices<IHostedService>().OfType<IHostedLifecycleService>())
+                await service.StartingAsync(default);
             foreach (var service in provider.GetServices<IHostedService>()) await service.StartAsync(default);
         };
         await Assert.That(start).Throws<OptionsValidationException>();
@@ -463,6 +465,8 @@ public class SenderTests
         }), transport);
         Func<Task> start = async () =>
         {
+            foreach (var service in provider.GetServices<IHostedService>().OfType<IHostedLifecycleService>())
+                await service.StartingAsync(default);
             foreach (var service in provider.GetServices<IHostedService>()) await service.StartAsync(default);
         };
 
@@ -689,6 +693,8 @@ public class SenderTests
             CompletedBodies[index] = Encoding.UTF8.GetString(message.Body.Span);
         }
         public ValueTask SendBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken) => throw new NotSupportedException();
+        public ValueTask<TopologyReport> ApplyTopologyAsync(TopologyMode mode, CancellationToken cancellationToken)
+            => ValueTask.FromResult(new TopologyReport([]));
         public Task StartAsync(CancellationToken cancellationToken) => Task.CompletedTask;
         public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
@@ -700,6 +706,8 @@ public class SenderTests
         public TransportCapabilities GetCapabilities(string endpoint) => new() { OrderedByKey = true };
         public ValueTask SendAsync(OutgoingMessage message, CancellationToken cancellationToken) => ValueTask.CompletedTask;
         public ValueTask SendBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken) => throw new NotSupportedException();
+        public ValueTask<TopologyReport> ApplyTopologyAsync(TopologyMode mode, CancellationToken cancellationToken)
+            => ValueTask.FromResult(new TopologyReport([]));
         public Task StartAsync(CancellationToken cancellationToken) => Task.CompletedTask;
         public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
@@ -723,6 +731,8 @@ public class SenderTests
         }
         public ValueTask SendAsync(OutgoingMessage message, CancellationToken cancellationToken) => _completions[_next++].Task;
         public ValueTask SendBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken) => throw new NotSupportedException();
+        public ValueTask<TopologyReport> ApplyTopologyAsync(TopologyMode mode, CancellationToken cancellationToken)
+            => ValueTask.FromResult(new TopologyReport([]));
         public Task StartAsync(CancellationToken cancellationToken) => Task.CompletedTask;
         public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
@@ -813,6 +823,8 @@ public class SenderTests
             return Completion?.Task ?? ValueTask.CompletedTask;
         }
         public ValueTask SendBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken) => throw new NotSupportedException();
+        public ValueTask<TopologyReport> ApplyTopologyAsync(TopologyMode mode, CancellationToken cancellationToken)
+            => ValueTask.FromResult(new TopologyReport([]));
         public Task StartAsync(CancellationToken cancellationToken) => Task.CompletedTask;
         public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;

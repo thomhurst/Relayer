@@ -19,12 +19,13 @@ public sealed class RelayerConfiguration
 public sealed class TransportDefinition
 {
     internal TransportDefinition(string name, Type optionsType, IRouteDefinition[] routes,
-        IConsumerDefinition[] consumers, Action<IServiceProvider, List<string>> validateOptions)
+        IConsumerDefinition[] consumers, TopologyMode? topologyMode, Action<IServiceProvider, List<string>> validateOptions)
     {
         Name = name;
         OptionsType = optionsType;
         Routes = Array.AsReadOnly(routes);
         Consumers = Array.AsReadOnly(consumers);
+        TopologyMode = topologyMode;
         ValidateOptions = validateOptions;
     }
 
@@ -32,6 +33,8 @@ public sealed class TransportDefinition
     public string Name { get; }
     /// <summary>The native options type used by this transport.</summary>
     public Type OptionsType { get; }
+    /// <summary>The transport override, or null to inherit the Relayer default.</summary>
+    public TopologyMode? TopologyMode { get; }
     /// <summary>The declared destinations.</summary>
     public IReadOnlyList<IRouteDefinition> Routes { get; }
     /// <summary>The declared consumers.</summary>

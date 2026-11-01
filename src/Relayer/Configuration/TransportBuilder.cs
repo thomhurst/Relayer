@@ -14,6 +14,7 @@ public sealed class TransportBuilder<TTransportOptions, TRouteOptions, TConsumer
     private readonly List<IRouteDefinition> _routes = [];
     private readonly List<IConsumerDefinition> _consumers = [];
     private bool _built;
+    private TopologyMode? _topologyMode;
 
     internal TransportBuilder(IServiceCollection services, HandlerRegistry handlers, string name)
     {
@@ -25,6 +26,13 @@ public sealed class TransportBuilder<TTransportOptions, TRouteOptions, TConsumer
 
     /// <summary>The transport's case-sensitive registration and Options name.</summary>
     public string Name { get; }
+
+    /// <summary>Overrides the Relayer topology mode for this transport; null inherits the default.</summary>
+    public TopologyMode? TopologyMode
+    {
+        get => _topologyMode;
+        set { EnsureMutable(); _topologyMode = value; }
+    }
 
     /// <summary>Named Options pattern configuration, binding, validation and reload registration.</summary>
     public OptionsBuilder<TTransportOptions> Options { get; }
@@ -62,7 +70,7 @@ public sealed class TransportBuilder<TTransportOptions, TRouteOptions, TConsumer
     internal TransportDefinition Build()
     {
         _built = true;
-        return new TransportDefinition(Name, typeof(TTransportOptions), _routes.ToArray(), _consumers.ToArray(),
+        return new TransportDefinition(Name, typeof(TTransportOptions), _routes.ToArray(), _consumers.ToArray(), _topologyMode,
             (provider, failures) =>
             {
                 try { _ = provider.GetRequiredService<IOptionsMonitor<TTransportOptions>>().Get(Name); }

@@ -1,5 +1,4 @@
 using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Options;
 using Relayer.Transports;
 
@@ -7,9 +6,9 @@ namespace Relayer;
 
 /// <summary>Reports all invalid Relayer declarations together before consumers start.</summary>
 internal sealed class RelayerConfigurationValidator(RelayerConfiguration configuration, MessageTypeRegistry messages,
-    IServiceProvider services) : IHostedService
+    IServiceProvider services)
 {
-    public Task StartAsync(CancellationToken cancellationToken)
+    public void Validate()
     {
         var failures = new List<string>();
         if (!Enum.IsDefined(configuration.TopologyMode)) failures.Add("TopologyMode is not a defined value.");
@@ -17,6 +16,8 @@ internal sealed class RelayerConfigurationValidator(RelayerConfiguration configu
         var routes = new HashSet<Type>();
         foreach (var transport in configuration.Transports)
         {
+            if (transport.TopologyMode is { } mode && !Enum.IsDefined(mode))
+                failures.Add($"Transport '{transport.Name}': TopologyMode is not a defined value.");
             if (string.IsNullOrWhiteSpace(transport.Name)) failures.Add("A transport name must not be blank.");
             else if (!names.Add(transport.Name)) failures.Add($"Transport '{transport.Name}' is declared more than once.");
             transport.ValidateOptions(services, failures);
@@ -51,8 +52,5 @@ internal sealed class RelayerConfigurationValidator(RelayerConfiguration configu
         }
         if (failures.Count != 0)
             throw new OptionsValidationException(Options.DefaultName, typeof(RelayerConfiguration), failures);
-        return Task.CompletedTask;
     }
-
-    public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
 }

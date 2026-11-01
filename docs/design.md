@@ -589,7 +589,7 @@ Relayer-specific instruments, for which the conventions define nothing:
 
 ## 9. Topology
 
-- Topology is **declared, not inferred.** Routes and consumers form a topology model you can inspect at runtime (`ITopology`).
+- Topology is **declared, not inferred.** Routes and consumers form a topology model you can inspect at runtime (`ITopology`). See [topology.md](topology.md) for startup modes, the adapter contract and JSON export.
 - Mode is chosen per transport:
   - `Provision` creates missing entities (development).
   - `Validate` checks that entities exist and fails fast with a diff (**default**). It needs only least-privilege permissions (MassTransit #5613, EasyNetQ #1000).
