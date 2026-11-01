@@ -126,7 +126,7 @@ Verify the repository and intended base; examples use `origin/main`. Use a writa
 
 Write nothing loose beside the repository. Every file an agent produces outside its worktree has one home, so cleanup can find it:
 
-- Evidence (build and test logs, reports, PR and comment body drafts, diffs, validation projects) goes in `$evidenceRoot/<lock-name>/`, for example `C:/git/Relayer-evidence/issue-12/build.log`. `scripts/Remove-MergedWorktrees.ps1` deletes an evidence entry once its newest file is older than 7 days (`-EvidenceRetentionDays`).
+- Evidence (build and test logs, reports, PR and comment body drafts, diffs, validation projects) goes in `$evidenceRoot/<lock-name>/`, for example `C:/git/Relayer-evidence/issue-12/build.log`. `scripts/Remove-MergedWorktrees.ps1` deletes a `pr-<N>` or `issue-<N>` entry once that item is closed (merged or not) and no registered worktree uses it, and any other entry once its newest file is older than 7 days (`-EvidenceRetentionDays`). Release keeps the evidence of an open item.
 - Throwaway checkouts and baselines are worktrees under `$worktreeRoot`, never plain copies and never sibling folders such as `C:/git/Relayer-wt-12`.
 - Downloaded SDKs and CLI tools go in `<repo-parent>/toolchains/<name>-<version>/` (for example `C:/git/toolchains/`), shared by every repository.
 - Never write to the repository's parent directory itself or to the shared checkout.
@@ -217,7 +217,7 @@ Arming auto-merge ([Draft review lifecycle](#draft-review-lifecycle) step 5) is 
 
 Use current repository rules/instructions for approval requirements. Historical merges without approval do not prove approval is optional; inaccessible protection APIs do not prove no protection exists.
 
-Archive validation evidence when first citing it in a PR, outside every removable worktree: in `$evidenceRoot/pr-<N>/<measured SHA>/` ([Isolation and ownership](#isolation-and-ownership)), or in a durable uploaded artifact when it must outlive the evidence retention window. Include raw benchmark/test reports, experiment inputs and hashes, fixture/probe sources, and loaded binaries needed to reproduce or reanalyze the evidence. Include both head-branch and detached review checkouts.
+Archive validation evidence when first citing it in a PR, outside every removable worktree: in `$evidenceRoot/pr-<N>/<measured SHA>/` ([Isolation and ownership](#isolation-and-ownership)), or in a durable uploaded artifact when it must outlive the PR: local evidence is deleted once the item closes. Include raw benchmark/test reports, experiment inputs and hashes, fixture/probe sources, and loaded binaries needed to reproduce or reanalyze the evidence. Include both head-branch and detached review checkouts.
 
 Before invoking the merge wrapper or arming auto-merge, verify the archived file inventory and SHA-256 hashes against the originals, then update the PR with the durable location. `.artifacts`, `bin`, `TestResults`, and similar generated directories inside a worktree are disposable under [WorktreeCleanup.ps1](../../../scripts/WorktreeCleanup.ps1); another worker's merge or sweep can remove them. If archival fails, defer the merge and take another item. If evidence is already lost, correct its retention claim explicitly; a rerun is new evidence, not recovery of deleted results.
 
