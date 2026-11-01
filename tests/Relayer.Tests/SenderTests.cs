@@ -448,6 +448,127 @@ public class SenderTests
     }
 
     [Test]
+    [Arguments(false, false)]
+    [Arguments(false, true)]
+    [Arguments(true, false)]
+    [Arguments(true, true)]
+    public async Task Unsupported_ordering_override_fails_before_sending_or_enlisting(bool activeOutbox, bool middleware)
+    {
+        var transport = new RecordingTransport("events") { UnorderedEndpoint = "orders" };
+        var services = Services(transport);
+        services.AddScoped<IOutboxEnlistment, TestOutbox>();
+        if (middleware) services.AddSingleton<ISendMiddleware>(new ConfigureOptionsMiddleware(static options => options.OrderingKey = "customer"));
+        services.AddRelayer(builder =>
+        {
+            builder.AddMessageTypesFromThisAssembly();
+            builder.DeclareRoute<OrderPlaced>("events", "orders");
+        });
+        using var provider = services.BuildServiceProvider();
+        using var scope = provider.CreateScope();
+        var outbox = (TestOutbox)scope.ServiceProvider.GetRequiredService<IOutboxEnlistment>();
+        outbox.IsActive = activeOutbox;
+        var sender = scope.ServiceProvider.GetRequiredService<ISender>();
+        await Assert.That(async () => await sender.SendAsync(new OrderPlaced(Guid.NewGuid()), options =>
+        {
+            if (!middleware) options.OrderingKey = "customer";
+        })).Throws<InvalidOperationException>()
+            .WithMessageContaining("Send route 'tests.order-placed;v=2' on transport 'events' to endpoint 'orders' specifies an OrderingKey, but the endpoint does not support OrderedByKey.");
+        await Assert.That(transport.Count).IsEqualTo(0);
+        await Assert.That(outbox.Count).IsEqualTo(0);
+        await Assert.That(transport.CapabilityEndpoints).IsEquivalentTo(new[] { "orders" });
+        if (!middleware)
+        {
+            await sender.SendAsync(new OrderPlaced(Guid.NewGuid()));
+            await Assert.That(transport.Count + outbox.Count).IsEqualTo(1);
+        }
+    }
+
+    [Test]
+    [Arguments(-1, false)]
+    [Arguments(0, false)]
+    [Arguments(15, false)]
+    [Arguments(-1, true)]
+    [Arguments(0, true)]
+    [Arguments(15, true)]
+    public async Task Direct_scheduling_rejects_unsupported_or_excessive_delays(int maxMinutes, bool middleware)
+    {
+        var transport = new RecordingTransport("events") { MaxDeliveryDelay = maxMinutes < 0 ? null : TimeSpan.FromMinutes(maxMinutes) };
+        var services = Services(transport);
+        var deliverAt = DateTimeOffset.UtcNow.AddDays(1);
+        if (middleware) services.AddSingleton<ISendMiddleware>(new ConfigureOptionsMiddleware(options => options.DeliverAt = deliverAt));
+        services.AddRelayer(builder =>
+        {
+            builder.AddMessageTypesFromThisAssembly();
+            builder.DeclareRoute<OrderPlaced>("events", "orders");
+        });
+        using var provider = services.BuildServiceProvider();
+        using var scope = provider.CreateScope();
+        var sender = scope.ServiceProvider.GetRequiredService<ISender>();
+        await Assert.That(async () => await sender.SendAsync(new OrderPlaced(Guid.NewGuid()), options =>
+        {
+            if (!middleware) options.DeliverAt = deliverAt;
+        })).Throws<InvalidOperationException>()
+            .WithMessageContaining("Send route 'tests.order-placed;v=2' on transport 'events' to endpoint 'orders' specifies a DeliverAt outside the endpoint's MaxDeliveryDelay. Use an endpoint with a sufficient native delay, shorten or remove DeliverAt, or send through an active outbox transaction.");
+        await Assert.That(transport.Count).IsEqualTo(0);
+        await Assert.That(transport.CapabilityEndpoints).IsEquivalentTo(new[] { "orders" });
+        if (!middleware)
+        {
+            await sender.SendAsync(new OrderPlaced(Guid.NewGuid()));
+            await Assert.That(transport.Count).IsEqualTo(1);
+            await Assert.That(transport.DeliverAt).IsNull();
+        }
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Direct_scheduling_preserves_supported_and_elapsed_delivery_times(bool elapsed)
+    {
+        var transport = new RecordingTransport("events") { MaxDeliveryDelay = elapsed ? TimeSpan.Zero : TimeSpan.FromMinutes(15) };
+        using var provider = CreateProvider(builder => builder.DeclareRoute<OrderPlaced>("events", "orders"), transport);
+        using var scope = provider.CreateScope();
+        var deliverAt = DateTimeOffset.UtcNow.AddMinutes(elapsed ? -1 : 15);
+        await scope.ServiceProvider.GetRequiredService<ISender>().SendAsync(new OrderPlaced(Guid.NewGuid()), options => options.DeliverAt = deliverAt);
+        await Assert.That(transport.DeliverAt).IsEqualTo(deliverAt);
+        await Assert.That(transport.Count).IsEqualTo(1);
+        await Assert.That(transport.CapabilityEndpoints).IsEquivalentTo(new[] { "orders" });
+    }
+
+    [Test]
+    [Arguments(-1)]
+    [Arguments(0)]
+    [Arguments(15)]
+    public async Task Active_outbox_preserves_scheduling_fallback_but_explicit_direct_send_validates_native_delay(int maxMinutes)
+    {
+        var transport = new RecordingTransport("events") { MaxDeliveryDelay = maxMinutes < 0 ? null : TimeSpan.FromMinutes(maxMinutes) };
+        var services = Services(transport);
+        services.AddScoped<IOutboxEnlistment, TestOutbox>();
+        services.AddRelayer(builder =>
+        {
+            builder.AddMessageTypesFromThisAssembly();
+            builder.DeclareRoute<OrderPlaced>("events", "orders");
+        });
+        using var provider = services.BuildServiceProvider();
+        using var scope = provider.CreateScope();
+        var outbox = (TestOutbox)scope.ServiceProvider.GetRequiredService<IOutboxEnlistment>();
+        outbox.IsActive = true;
+        var sender = scope.ServiceProvider.GetRequiredService<ISender>();
+        var deliverAt = DateTimeOffset.UtcNow.AddDays(1);
+        await sender.SendAsync(new OrderPlaced(Guid.NewGuid()), options => options.DeliverAt = deliverAt);
+        await Assert.That(outbox.DeliverAt).IsEqualTo(deliverAt);
+        await sender.SendViaOutboxAsync(new OrderPlaced(Guid.NewGuid()), options => options.DeliverAt = deliverAt);
+        await Assert.That(outbox.DeliverAt).IsEqualTo(deliverAt);
+        await Assert.That(async () => await sender.SendNowAsync(new OrderPlaced(Guid.NewGuid()), options => options.DeliverAt = deliverAt))
+            .Throws<InvalidOperationException>().WithMessageContaining("MaxDeliveryDelay");
+        outbox.IsActive = false;
+        await Assert.That(async () => await sender.SendAsync(new OrderPlaced(Guid.NewGuid()), options => options.DeliverAt = deliverAt))
+            .Throws<InvalidOperationException>().WithMessageContaining("MaxDeliveryDelay");
+        await Assert.That(transport.Count).IsEqualTo(0);
+        await Assert.That(outbox.Count).IsEqualTo(2);
+        await Assert.That(transport.CapabilityEndpoints).IsEquivalentTo(new[] { "orders" });
+    }
+
+    [Test]
     public async Task Raw_mode_preserves_custom_headers_and_writes_no_envelope()
     {
         var transport = new RecordingTransport("events");
@@ -586,11 +707,12 @@ public class SenderTests
     {
         public string Name => name;
         public string? UnorderedEndpoint { get; init; }
+        public TimeSpan? MaxDeliveryDelay { get; init; } = TimeSpan.MaxValue;
         public List<string> CapabilityEndpoints { get; } = [];
         public TransportCapabilities GetCapabilities(string endpoint)
         {
             CapabilityEndpoints.Add(endpoint);
-            return new() { MaxDeliveryDelay = TimeSpan.MaxValue, OrderedByKey = endpoint != UnorderedEndpoint };
+            return new() { MaxDeliveryDelay = MaxDeliveryDelay, OrderedByKey = endpoint != UnorderedEndpoint };
         }
         public string? Destination { get; private set; }
         public string? Body { get; private set; }
@@ -632,6 +754,15 @@ public class SenderTests
         public Task StartAsync(CancellationToken cancellationToken) => Task.CompletedTask;
         public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+    }
+
+    private sealed class ConfigureOptionsMiddleware(Action<SendOptions> configure) : ISendMiddleware
+    {
+        public ValueTask InvokeAsync(SendContext context, SendDelegate next)
+        {
+            configure(context.Options);
+            return next(context);
+        }
     }
 
     private sealed class RecordingMiddleware(string name, List<string> calls) : ISendMiddleware

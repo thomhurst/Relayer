@@ -17,11 +17,13 @@ internal sealed class SendRoute<TMessage>
     private readonly IOrderingKeySelector<TMessage>? _orderingKey;
     private readonly IMessageSerializer _serializer;
     private readonly SendDelegate _pipeline;
+    private readonly TransportCapabilities _capabilities;
     private readonly MessageEnvelope _envelope;
     private readonly PoolSegment _operations = new();
 
     internal SendRoute(ITransport transport, string destination, MessageType messageType, SendRouteOptions options,
-        IOrderingKeySelector<TMessage>? orderingKey, IMessageSerializer serializer, SendDelegate pipeline)
+        IOrderingKeySelector<TMessage>? orderingKey, IMessageSerializer serializer, SendDelegate pipeline,
+        TransportCapabilities capabilities)
     {
         _transport = transport;
         _destination = destination;
@@ -30,6 +32,7 @@ internal sealed class SendRoute<TMessage>
         _orderingKey = orderingKey;
         _serializer = serializer;
         _pipeline = pipeline;
+        _capabilities = capabilities;
         _envelope = new(messageType, options.Source, options.HeaderNames, options.EnvelopeMode);
     }
 
@@ -181,6 +184,15 @@ internal sealed class SendRoute<TMessage>
         public ValueTask DispatchAsync()
         {
             CancellationToken.ThrowIfCancellationRequested();
+            if (Options.OrderingKey is not null && !_route._capabilities.OrderedByKey)
+            {
+                throw new InvalidOperationException($"Send route '{_route._messageType}' on transport '{_route._transport.Name}' to endpoint '{_route._destination}' specifies an OrderingKey, but the endpoint does not support OrderedByKey. Configure an endpoint with native ordering or remove the OrderingKey override.");
+            }
+            if (_outbox is null && Options.DeliverAt is { } deliverAt &&
+                (_route._capabilities.MaxDeliveryDelay is not { } maxDelay || deliverAt - DateTimeOffset.UtcNow > maxDelay))
+            {
+                throw new InvalidOperationException($"Send route '{_route._messageType}' on transport '{_route._transport.Name}' to endpoint '{_route._destination}' specifies a DeliverAt outside the endpoint's MaxDeliveryDelay. Use an endpoint with a sufficient native delay, shorten or remove DeliverAt, or send through an active outbox transaction.");
+            }
             if (_outbox is not null && Options.HasNativeConfigurators)
             {
                 // Reject before serialization or any durable side effect.
@@ -243,6 +255,7 @@ internal sealed class SendRoute<TMessage>
 }
 
 /// <summary>Reusable storage for the transport-neutral envelope. Values remain valid through send completion.</summary>
+/// <remarks>Header value buffers grow on demand and are retained per pooled operation for subsequent sends.</remarks>
 internal sealed class SendHeaders : IMessageHeaderWriter<SendHeaders>
 {
     private KeyValuePair<string, WireString>[] _entries = new KeyValuePair<string, WireString>[8];
