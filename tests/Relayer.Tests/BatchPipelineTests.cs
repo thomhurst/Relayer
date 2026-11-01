@@ -217,6 +217,61 @@ public class BatchPipelineTests
     }
 
     [Test]
+    [Arguments(0, false)]
+    [Arguments(1, false)]
+    [Arguments(2, false)]
+    [Arguments(0, true)]
+    [Arguments(1, true)]
+    [Arguments(2, true)]
+    public async Task Cancellation_during_flush_reaches_transport_and_prevents_batch_success(int tokenIndex, bool lastSend)
+    {
+        await using var provider = Provider();
+        var control = provider.GetRequiredService<Control>();
+        var transport = provider.GetRequiredService<Transport>();
+        using var cancellation = new CancellationTokenSource();
+        using var otherDelivery = new CancellationTokenSource();
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var observed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        control.Invoke = async (batch, _) =>
+        {
+            var sender = batch.Items[0].Context.Services.GetRequiredService<ISender>();
+            for (var i = 0; i < 3; i++) await sender.SendNowAsync(new Payload());
+            return BatchResult.Success;
+        };
+        transport.Send = async (_, token) =>
+        {
+            if (transport.Sends != (lastSend ? 3 : 1)) return;
+            using var registration = token.Register(() => observed.TrySetResult());
+            started.TrySetResult();
+            // Deliberately return success after cancellation, as a native client may do.
+            await release.Task;
+        };
+        var failures = 0;
+        var pipeline = Consumer(provider, (_, _, _) => { failures++; return default; });
+        var message = new ConsumeMessage { MessageId = "flush", MessageType = new("batch.payload", 1), Body = new(new byte[] { 1 }) };
+        {
+            using var first = pipeline.RentContext(message, tokenIndex == 0 ? cancellation.Token : otherDelivery.Token);
+            using var second = pipeline.RentContext(message, tokenIndex == 1 ? cancellation.Token : otherDelivery.Token);
+            var pending = pipeline.ProcessBatchAsync(new[] { first, second }, tokenIndex == 2 ? cancellation.Token : default);
+            await started.Task;
+            cancellation.Cancel();
+            var reachedTransport = observed.Task.IsCompleted;
+            release.SetResult();
+            await Assert.That(async () => await pending).Throws<OperationCanceledException>();
+            await Assert.That(reachedTransport).IsTrue();
+            await Assert.That(transport.Sends).IsEqualTo(lastSend ? 3 : 1);
+            await Assert.That(failures).IsEqualTo(0);
+            await Assert.That(control.Disposed).IsEqualTo(1);
+        }
+        // A cancelled flush must release registrations and reset pooled state for a later flush.
+        using var reused = pipeline.RentContext(message, otherDelivery.Token);
+        await pipeline.ProcessBatchAsync(new[] { reused });
+        await Assert.That(transport.Sends).IsEqualTo((lastSend ? 3 : 1) + 3);
+        otherDelivery.Cancel();
+    }
+
+    [Test]
     public async Task Delivery_cancelled_between_attempts_is_not_dispatched_again()
     {
         await using var provider = Provider();
@@ -407,9 +462,14 @@ public class BatchPipelineTests
     }
 
     [Test]
-    public async Task Warmed_batches_add_no_allocations_beyond_identical_fresh_DI_scope_and_sender()
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Warmed_batches_add_no_allocations_beyond_identical_fresh_DI_scope_and_sender(bool bufferedSends)
     {
         await using var provider = Provider(size: 10);
+        provider.GetRequiredService<AllocationHandler>().BufferedSends = bufferedSends;
+        using var batchCancellation = new CancellationTokenSource();
+        var deliveries = Enumerable.Range(0, 10).Select(_ => new CancellationTokenSource()).ToArray();
         var scopes = provider.GetRequiredService<IServiceScopeFactory>();
         var consumer = new ConsumePipelineBuilder(scopes, provider.GetRequiredService<MessageTypeRegistry>(),
             provider.GetRequiredService<IMessageSerializer>(), static (_, error, _) => ValueTask.FromException(error))
@@ -418,8 +478,8 @@ public class BatchPipelineTests
         var contexts = new DefaultMessageContext[10];
         for (var iteration = 0; iteration < 1000; iteration++)
         {
-            for (var i = 0; i < contexts.Length; i++) contexts[i] = consumer.RentContext(message);
-            await consumer.ProcessBatchAsync(contexts);
+            for (var i = 0; i < contexts.Length; i++) contexts[i] = consumer.RentContext(message, deliveries[i].Token);
+            await consumer.ProcessBatchAsync(contexts, batchCancellation.Token);
             for (var i = 0; i < contexts.Length; i++) contexts[i].Dispose();
             using var scope = scopes.CreateScope();
             _ = scope.ServiceProvider.GetRequiredService<ISender>();
@@ -434,11 +494,12 @@ public class BatchPipelineTests
         start = GC.GetAllocatedBytesForCurrentThread();
         for (var iteration = 0; iteration < 1000; iteration++)
         {
-            for (var i = 0; i < contexts.Length; i++) contexts[i] = consumer.RentContext(message);
-            await consumer.ProcessBatchAsync(contexts);
+            for (var i = 0; i < contexts.Length; i++) contexts[i] = consumer.RentContext(message, deliveries[i].Token);
+            await consumer.ProcessBatchAsync(contexts, batchCancellation.Token);
             for (var i = 0; i < contexts.Length; i++) contexts[i].Dispose();
         }
         var composed = GC.GetAllocatedBytesForCurrentThread() - start;
+        foreach (var delivery in deliveries) delivery.Dispose();
         await Assert.That(composed).IsEqualTo(baseline);
     }
 
@@ -566,7 +627,16 @@ public class BatchPipelineTests
     }
     public sealed class AllocationHandler : IBatchHandler<Payload>
     {
-        public ValueTask<BatchResult> HandleAsync(Batch<Payload> batch, CancellationToken cancellationToken) => new(BatchResult.Success);
+        public bool BufferedSends { get; set; }
+        public async ValueTask<BatchResult> HandleAsync(Batch<Payload> batch, CancellationToken cancellationToken)
+        {
+            if (BufferedSends)
+            {
+                var sender = batch.Items[0].Context.Services.GetRequiredService<ISender>();
+                for (var i = 0; i < batch.Count; i++) await sender.SendNowAsync(batch.Items[i].Message, cancellationToken);
+            }
+            return BatchResult.Success;
+        }
     }
     internal sealed class Serializer : IMessageSerializer
     {

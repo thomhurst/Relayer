@@ -108,7 +108,7 @@ internal sealed class BatchExecution
                     state.Active[i].CancellationToken.ThrowIfCancellationRequested();
                     if (state.Errors[i] is not null) failed++;
                 }
-                if (failed == 0) await buffer.FlushAsync(cancellationToken).ConfigureAwait(false);
+                if (failed == 0) await state.FlushAsync(buffer, count, cancellationToken).ConfigureAwait(false);
                 else if (failed < count && !buffer.IsEmpty)
                 {
                     // One scoped sender cannot attribute output to individual items. Fail the
@@ -116,11 +116,13 @@ internal sealed class BatchExecution
                     var error = new InvalidOperationException("A partially failed batch has buffered sends that cannot be attributed to individual messages. The whole attempt failed; use per-message durable outbox transactions for independent success.");
                     for (var i = 0; i < count; i++) state.Errors[i] ??= error;
                 }
+                cancellationToken.ThrowIfCancellationRequested();
                 buffer.Clear();
                 var pending = 0;
                 for (var i = 0; i < count; i++)
                 {
                     var context = state.Active[i];
+                    context.CancellationToken.ThrowIfCancellationRequested();
                     context.ClearServices();
                     if (state.Errors[i] is not { } error) continue;
                     RecordError(activity, error);
@@ -219,5 +221,38 @@ internal sealed class BatchExecution
             new("messaging.operation.type", "process"), new("messaging.operation.name", "process"),
             new("messaging.destination.name", destination), default
         ];
+        private CancellationTokenSource _flushCancellation = new();
+        private readonly CancellationTokenRegistration[] _flushRegistrations = new CancellationTokenRegistration[size + 1];
+
+        [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
+        internal async ValueTask FlushAsync(AttemptSendBuffer buffer, int count, CancellationToken cancellationToken)
+        {
+            if (buffer.IsEmpty) return;
+            // Reuse the source and registration storage; replace only after cancellation.
+            if (!_flushCancellation.TryReset())
+            {
+                _flushCancellation.Dispose();
+                _flushCancellation = new();
+            }
+            var registered = 0;
+            try
+            {
+                _flushRegistrations[registered++] = Register(cancellationToken);
+                for (var i = 0; i < count; i++)
+                    _flushRegistrations[registered++] = Register(Active[i].CancellationToken);
+                await buffer.FlushAsync(_flushCancellation.Token).ConfigureAwait(false);
+            }
+            finally
+            {
+                for (var i = 0; i < registered; i++)
+                {
+                    _flushRegistrations[i].Dispose();
+                    _flushRegistrations[i] = default;
+                }
+            }
+        }
+
+        private CancellationTokenRegistration Register(CancellationToken token) =>
+            token.UnsafeRegister(static state => ((CancellationTokenSource)state!).Cancel(), _flushCancellation);
     }
 }

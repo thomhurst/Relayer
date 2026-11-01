@@ -53,6 +53,11 @@ Use explicit per-message
 durable outbox transactions when partial success also produces messages. Do not
 retain the borrowed batch or its item contexts after handler completion.
 
+Cancellation of any active delivery or the batch call cancels an in-flight
+buffered-send flush, including when the batch-call token is omitted. The batch
+cannot complete successfully after cancellation. Sends already accepted by the
+broker can repeat on redelivery; cancellation does not undo them.
+
 Adapters must install a native or core client-side receive executor before
 starting consumers; declaring a size does not supply one. The core execution
 seam is available now; the in-memory hosted adapter still explicitly rejects
