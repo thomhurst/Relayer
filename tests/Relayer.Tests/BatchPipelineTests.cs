@@ -534,6 +534,8 @@ public class BatchPipelineTests
         await Assert.That(provider.GetRequiredService<Control>().Scopes.Count).IsEqualTo(1);
     }
 
+    // Runtime timer queues share locks across tests and allocate wait state on first contention.
+    [NotInParallel]
     [Test]
     [Arguments(false)]
     [Arguments(true)]
