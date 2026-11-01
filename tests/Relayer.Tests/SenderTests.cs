@@ -395,7 +395,9 @@ public class SenderTests
                         EnvelopeMode = error == "mode" ? (MessageEnvelopeMode)99 : MessageEnvelopeMode.CloudEvents
                     });
                 if (error == "duplicate-route") broker.Send<OrderPlaced>("other");
+#pragma warning disable RLY001 // Deliberately omit the message identity to exercise startup validation.
                 if (error == "identity") broker.Send<string>("other");
+#pragma warning restore RLY001
             });
         });
         using var provider = services.BuildServiceProvider();
