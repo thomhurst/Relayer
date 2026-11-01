@@ -1,8 +1,10 @@
 using System.Collections.Frozen;
+using System.Diagnostics;
+using System.Globalization;
 using System.Runtime.CompilerServices;
 using System.Text;
-using System.Globalization;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 
 namespace Relayer;
 
@@ -20,15 +22,21 @@ public sealed class ConsumePipeline
     private readonly ConsumeDelegate _pipeline;
     private readonly DefaultMessageContext?[] _contexts;
     private readonly WireIdentity[] _wireIdentities;
+    private readonly EndpointTelemetry? _telemetry;
+    private readonly ConsumeDelegate? _settlement;
+    internal HeaderNames EnvelopeNames { get; } = new();
 
     internal ConsumePipeline(IServiceScopeFactory scopes, FrozenDictionary<MessageType, ConsumeDelegate> dispatch,
-        IReadOnlyList<IConsumeMiddleware> middleware, ConsumeFailureDelegate failure, IFailureClassifier classifier, int capacity, FailurePipeline? failures)
+        IReadOnlyList<IConsumeMiddleware> middleware, ConsumeFailureDelegate failure, IFailureClassifier classifier,
+        int capacity, FailurePipeline? failures, EndpointTelemetry? telemetry, ConsumeDelegate? settlement)
     {
         _scopes = scopes;
         _failures = failures;
         _dispatch = dispatch;
         _failure = failure;
         _classifier = classifier;
+        _telemetry = telemetry;
+        _settlement = settlement;
         _contexts = new DefaultMessageContext[capacity];
         _wireIdentities = new WireIdentity[dispatch.Count];
         var identityIndex = 0;
@@ -96,9 +104,18 @@ public sealed class ConsumePipeline
         return new(unknown[..separator], version);
     }
 
+    internal string GetWireIdentityText(MessageType messageType)
+    {
+        foreach (var identity in _wireIdentities)
+        {
+            if (identity.Identity == messageType) return identity.Text;
+        }
+        return messageType.ToString();
+    }
+
     private readonly record struct WireIdentity(MessageType Identity, string Text, byte[] Utf8);
 
-    /// <summary>Processes one delivery in a fresh async DI scope. Does not settle the native message.</summary>
+    /// <summary>Processes one delivery in a fresh async DI scope, then invokes the configured native settlement callback.</summary>
     /// <remarks>Cancellation propagates. Failure-pipeline and scope-disposal errors propagate, preventing successful settlement.</remarks>
     public ValueTask ProcessAsync(DefaultMessageContext context)
     {
@@ -110,8 +127,12 @@ public sealed class ConsumePipeline
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
     private async ValueTask ProcessCoreAsync(DefaultMessageContext context)
     {
+        var telemetry = _telemetry;
+        var start = telemetry is { DurationEnabled: true } ? Stopwatch.GetTimestamp() : 0;
+        Exception? failure = null;
         try
         {
+            telemetry?.RecordConsumed();
             context.CancellationToken.ThrowIfCancellationRequested();
             var scope = new AsyncServiceScope(_scopes.CreateScope());
             try
@@ -127,6 +148,8 @@ public sealed class ConsumePipeline
                 catch (OperationCanceledException) when (context.CancellationToken.IsCancellationRequested) { throw; }
                 catch (Exception error)
                 {
+                    failure = error;
+                    LogFailure(telemetry, context, error);
                     await _failure(context, error, _classifier.Classify(error, context)).ConfigureAwait(false);
                 }
             }
@@ -135,24 +158,45 @@ public sealed class ConsumePipeline
                 // Calling the struct directly avoids boxing it through IAsyncDisposable.ConfigureAwait.
                 await scope.DisposeAsync().ConfigureAwait(false);
             }
+            context.ClearServices();
+            if (_settlement is { } settle) await settle(context).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (context.CancellationToken.IsCancellationRequested) { throw; }
+        catch (Exception error)
+        {
+            if (!ReferenceEquals(failure, error)) LogFailure(telemetry, context, error);
+            failure = error;
+            throw;
         }
         finally
         {
-            context.EndProcessing();
+            try
+            {
+                if (start != 0) telemetry!.RecordDuration(Stopwatch.GetElapsedTime(start), failure is not null);
+                telemetry?.RecordCriticalTime(context);
+            }
+            finally
+            {
+                context.EndProcessing();
+            }
         }
     }
 
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
     private async ValueTask ProcessWithFailuresAsync(DefaultMessageContext context)
     {
+        var telemetry = _telemetry;
+        var start = telemetry is { DurationEnabled: true } ? Stopwatch.GetTimestamp() : 0;
+        Exception? failure = null;
         try
         {
+            telemetry?.RecordConsumed();
             var retry = 0;
             var initialize = true;
             while (true)
             {
                 context.CancellationToken.ThrowIfCancellationRequested();
-                Exception? failure = null;
+                Exception? attemptFailure = null;
                 var action = FailureAction.Retry;
                 var scope = new AsyncServiceScope(_scopes.CreateScope());
                 Sender? sender = null;
@@ -180,7 +224,8 @@ public sealed class ConsumePipeline
                     catch (OperationCanceledException) when (context.CancellationToken.IsCancellationRequested) { throw; }
                     catch (Exception error)
                     {
-                        failure = error;
+                        failure = attemptFailure = error;
+                        LogFailure(telemetry, context, error);
                         action = _classifier.Classify(error, context);
                         _failures!.Record(context, error);
                     }
@@ -199,12 +244,13 @@ public sealed class ConsumePipeline
                     }
                 }
                 context.CancellationToken.ThrowIfCancellationRequested();
-                if (failure is null)
+                if (attemptFailure is null)
                 {
                     // Dispose the successful scope before allowing sends to escape. A flush failure propagates:
                     // some sends may have succeeded, so do not retry the handler or return a settlement decision.
                     await context.SendBuffer.FlushAsync(context.CancellationToken).ConfigureAwait(false);
-                    return;
+                    failure = null;
+                    break;
                 }
                 context.SendBuffer.Clear();
                 if (action == FailureAction.Retry && _failures!.CanRetry(retry))
@@ -213,14 +259,47 @@ public sealed class ConsumePipeline
                     context.NextAttempt();
                     continue;
                 }
-                await _failures!.HandleAsync(context, failure, action).ConfigureAwait(false);
-                return;
+                await _failures!.HandleAsync(context, attemptFailure, action).ConfigureAwait(false);
+                context.ApplyFailureDisposition();
+                break;
             }
+            context.ClearServices();
+            if (_settlement is { } settle) await settle(context).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (context.CancellationToken.IsCancellationRequested) { throw; }
+        catch (Exception error)
+        {
+            if (!ReferenceEquals(failure, error)) LogFailure(telemetry, context, error);
+            failure = error;
+            throw;
         }
         finally
         {
             context.SendBuffer.Clear();
-            context.EndProcessing();
+            try
+            {
+                if (start != 0) telemetry!.RecordDuration(Stopwatch.GetElapsedTime(start), failure is not null);
+                telemetry?.RecordCriticalTime(context);
+            }
+            finally
+            {
+                context.EndProcessing();
+            }
+        }
+    }
+
+    private static void LogFailure(EndpointTelemetry? telemetry, DefaultMessageContext context, Exception error)
+    {
+        try
+        {
+            if (telemetry?.Logger.IsEnabled(LogLevel.Error) != true) return;
+            using var scope = telemetry.Logger.BeginScope(ConsumeLog.CreateScope(context));
+            var activity = Activity.Current;
+            ConsumeLog.Failed(telemetry.Logger, error, activity?.TraceId.ToString(), activity?.SpanId.ToString());
+        }
+        catch (Exception)
+        {
+            // A broken logging provider must not replace the delivery error or skip durable failure handling.
         }
     }
 

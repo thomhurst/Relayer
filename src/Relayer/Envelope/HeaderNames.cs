@@ -12,6 +12,7 @@ public sealed class HeaderNames
         Source = prefix + "source";
         Time = prefix + "time";
         SpecVersion = prefix + "specversion";
+        CorrelationId = prefix + "correlationid";
     }
 
     /// <summary>The event ID header.</summary>
@@ -24,6 +25,8 @@ public sealed class HeaderNames
     public string Time { get; }
     /// <summary>The CloudEvents version header.</summary>
     public string SpecVersion { get; }
+    /// <summary>The optional CloudEvents correlationid extension header.</summary>
+    public string CorrelationId { get; }
     /// <summary>The W3C trace parent header.</summary>
     public string TraceParent => "traceparent";
     /// <summary>The W3C trace state header.</summary>

@@ -6,7 +6,7 @@ namespace Relayer;
 /// <summary>Feeds untouched native deliveries into a composed consumer and returns native settlement decisions.</summary>
 /// <remarks>
 /// Compose once per consumer. Body and header storage must remain valid until processing completes.
-/// This adapter does not settle messages or implement capability fallbacks. The configured failure delegate
+/// This adapter invokes the consumer's optional native settlement callback; it does not implement capability fallbacks. The configured failure delegate
 /// sets NativeMessage&lt;TIncoming&gt;.Disposition after durable failure handling. Exceptions and cancellation
 /// propagate without returning a settlement decision. Size both pools for maximum concurrent deliveries.
 /// </remarks>
@@ -41,7 +41,7 @@ public sealed class ReceivePipeline<TIncoming, TBinding>
             using var context = _consumer.RentContext(state, cancellationToken);
             context.Features.Set(state.Native);
             await _consumer.ProcessAsync(context).ConfigureAwait(false);
-            return context.FailureDisposition ?? state.Native.Disposition;
+            return state.Native.Disposition;
         }
         finally
         {
@@ -86,6 +86,7 @@ public sealed class ReceivePipeline<TIncoming, TBinding>
 
     private sealed class State(ConsumePipeline consumer, HeaderNames names) : ReceiveMessageState
     {
+        internal override HeaderNames EnvelopeNames => names;
         private MessageHeaders<TIncoming, TBinding> _headers;
         private WireString _id;
         private string? _messageId;
@@ -93,6 +94,8 @@ public sealed class ReceivePipeline<TIncoming, TBinding>
         private int _attempt;
         private ReadOnlySequence<byte> _body;
         internal NativeMessage<TIncoming> Native { get; } = new();
+
+        internal override void SetDisposition(Disposition disposition) => Native.Disposition = disposition;
 
         internal void Initialize(TIncoming message)
         {

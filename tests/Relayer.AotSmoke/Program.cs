@@ -77,7 +77,17 @@ serializer.Serialize(message, buffer);
 var consumer = new ConsumePipelineBuilder(provider.GetRequiredService<IServiceScopeFactory>(),
         provider.GetRequiredService<MessageTypeRegistry>(), serializer,
         static (_, error, _) => ValueTask.FromException(error))
-    .Handler(orderDescriptor).Build(1);
+    .Handler(orderDescriptor)
+    .Telemetry(provider.GetRequiredService<RelayerInstrumentation>().CreateEndpoint(new()
+    {
+        System = "relayer.inmemory", Destination = "orders",
+    }))
+    .Settle(static context =>
+    {
+        if (context.Features.Get<NativeMessage<SmokeIncoming>>() is null)
+            throw new InvalidOperationException("Settlement lost its native feature.");
+        return default;
+    }).Build(1);
 var receive = new ReceivePipeline<SmokeIncoming, SmokeBinding>(consumer, new HeaderNames(), 1);
 var disposition = await receive.ProcessAsync(new(new ReadOnlySequence<byte>(buffer.WrittenMemory)));
 if (disposition.Kind != DispositionKind.Complete)

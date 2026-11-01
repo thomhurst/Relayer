@@ -21,6 +21,7 @@ public static class RelayerServiceCollectionExtensions
         }
 
         var builder = new RelayerBuilder(services);
+        services.TryAddSingleton<RelayerInstrumentation>();
         configure(builder);
         builder.MessageTypes.Freeze();
         builder.Handlers.Freeze();

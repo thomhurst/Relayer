@@ -16,6 +16,8 @@ public sealed class ConsumePipelineBuilder
     private readonly Dictionary<MessageType, ConsumeDelegate> _dispatch = [];
     private readonly List<IConsumeMiddleware> _middleware = [];
     private bool _built;
+    private EndpointTelemetry? _telemetry;
+    private ConsumeDelegate? _settlement;
 
     /// <summary>Creates a consumer composer with an explicit failure pipeline.</summary>
     /// <remarks>The failure delegate must finish durable failure handling before returning successfully.</remarks>
@@ -72,6 +74,30 @@ public sealed class ConsumePipelineBuilder
         return this;
     }
 
+    /// <summary>Attaches this endpoint's process metrics and generated failure logging.</summary>
+    public ConsumePipelineBuilder Telemetry(EndpointTelemetry telemetry)
+    {
+        EnsureMutable();
+        ArgumentNullException.ThrowIfNull(telemetry);
+        if (!telemetry.IsProcess)
+            throw new ArgumentException("A consumer requires an endpoint recorder with OperationName 'process'.", nameof(telemetry));
+        _telemetry = telemetry;
+        return this;
+    }
+
+    /// <summary>Runs native settlement after durable handling and async scope disposal, inside processing duration.</summary>
+    /// <remarks>
+    /// Transports read their native feature and disposition from the context. Honor SettledByHandler without settling twice.
+    /// Exceptions propagate without re-entering failure handling. Context.Services is unavailable during settlement.
+    /// </remarks>
+    public ConsumePipelineBuilder Settle(ConsumeDelegate settlement)
+    {
+        EnsureMutable();
+        ArgumentNullException.ThrowIfNull(settlement);
+        _settlement = settlement;
+        return this;
+    }
+
     /// <summary>Builds this consumer once. Size the context pool for its maximum concurrent deliveries.</summary>
     public ConsumePipeline Build(int contextPoolCapacity = 64)
     {
@@ -82,7 +108,8 @@ public sealed class ConsumePipelineBuilder
             throw new InvalidOperationException("Register at least one generated handler before building a consumer.");
         }
         _built = true;
-        return new ConsumePipeline(_scopes, _dispatch.ToFrozenDictionary(), _middleware, _failure, _classifier, contextPoolCapacity, _failures);
+        return new ConsumePipeline(_scopes, _dispatch.ToFrozenDictionary(), _middleware, _failure, _classifier,
+            contextPoolCapacity, _failures, _telemetry, _settlement);
     }
 
     private void EnsureMutable()

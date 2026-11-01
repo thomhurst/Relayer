@@ -34,6 +34,10 @@ public sealed class DefaultMessageContext : MessageContext, IDisposable
     internal int Redeliveries { get; private set; }
     internal FailureHistory? FailureHistory { get; set; }
     internal Disposition? FailureDisposition { get; set; }
+    internal void ApplyFailureDisposition()
+    {
+        if (FailureDisposition is { } disposition) _receive?.SetDisposition(disposition);
+    }
     internal AttemptSendBuffer SendBuffer { get; } = new();
     internal void InitializeAttempts()
     {
@@ -42,6 +46,20 @@ public sealed class DefaultMessageContext : MessageContext, IDisposable
     }
     internal void NextAttempt() => _attempt = checked(Attempt + 1);
     internal ConsumeDelegate Dispatch { get; set; } = null!;
+    internal HeaderNames EnvelopeNames => _receive?.EnvelopeNames ?? _owner.EnvelopeNames;
+
+    // Read raw native fields so malformed envelopes remain loggable without parsing required fields.
+    internal string? GetLogMessageId()
+    {
+        if (_receive is null) return _message.MessageId;
+        return _receive.TryGetValue(EnvelopeNames.Id, out var id) ? id.ToString() : null;
+    }
+
+    internal string? GetLogMessageType()
+    {
+        if (_receive is null) return _owner.GetWireIdentityText(_message.MessageType);
+        return _receive.TryGetValue(EnvelopeNames.Type, out var type) ? type.ToString() : null;
+    }
 
     internal void Initialize(in ConsumeMessage message, CancellationToken cancellationToken)
     {
@@ -66,6 +84,7 @@ public sealed class DefaultMessageContext : MessageContext, IDisposable
     }
 
     internal void SetServices(IServiceProvider services) => _services = services;
+    internal void ClearServices() => _services = null;
 
     internal void EndProcessing()
     {
