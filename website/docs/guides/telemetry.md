@@ -1,4 +1,7 @@
-# Metrics and logging
+---
+title: Metrics and logging
+description: Consume metrics, endpoint recorders and generated failure logs.
+---
 
 `AddRelayer` registers a single DI-owned `RelayerInstrumentation`. Its meter is named `Relayer`; subscribe with your OpenTelemetry provider's `AddMeter(RelayerTelemetry.MeterName)`. `RelayerTelemetry.SchemaUrl` pins the semantic conventions version. No OpenTelemetry SDK dependency is needed in the library.
 
@@ -45,4 +48,4 @@ NativeHeaderWriter.SetHeader(nativeMessage, names.CorrelationId, correlationId);
 
 Scope identities are captured in a read-only snapshot only when a generated failure log is emitted. Successful deliveries do not format identities or read optional correlation headers merely because Error logging is enabled. Typed deliveries reuse the precomputed wire type string; native malformed fields remain available without envelope parsing. A provider can retain the scope snapshot for asynchronous export after the context is cleared or reused. Snapshot, scope-push and enumeration allocations occur only on the failure path. Exceptions from logging providers are contained so they cannot replace the delivery error or bypass durable failure handling.
 
-Health integration is tracked separately in #85; tracing in #13. See [design §8](design.md#8-observability) for their contracts.
+See [Health checks](health-checks.md) for the implemented readiness integration. Native transport and outbox instrumentation remains planned; see the [roadmap](../roadmap.md).

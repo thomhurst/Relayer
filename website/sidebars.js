@@ -18,6 +18,7 @@ const sidebars = {
         'guides/sending',
         'guides/failure-handling',
         'guides/topology',
+        'guides/telemetry',
         'guides/health-checks',
       ],
     },
