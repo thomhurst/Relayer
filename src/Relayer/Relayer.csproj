@@ -20,6 +20,10 @@
           Pack="true"
           PackagePath="analyzers/dotnet/cs"
           Visible="false" />
+    <None Include="..\Relayer.SourceGenerators\bin\$(Configuration)\netstandard2.0\System.Text.Json.SourceGeneration.dll"
+          Pack="true" PackagePath="analyzers/dotnet/cs" Visible="false" />
+    <None Include="..\Relayer.SourceGenerators\bin\$(Configuration)\netstandard2.0\System.Text.Json.SourceGeneration.LICENSE.txt;..\Relayer.SourceGenerators\bin\$(Configuration)\netstandard2.0\System.Text.Json.SourceGeneration.NOTICES.txt"
+          Pack="true" PackagePath="analyzers/dotnet/cs" Visible="false" />
   </ItemGroup>
 
   <ItemGroup>

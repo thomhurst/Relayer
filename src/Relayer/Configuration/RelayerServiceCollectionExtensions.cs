@@ -1,4 +1,5 @@
 using Microsoft.Extensions.DependencyInjection;
+using Relayer.Serialization;
 
 namespace Relayer;
 
@@ -20,6 +21,13 @@ public static class RelayerServiceCollectionExtensions
         var builder = new RelayerBuilder(services);
         configure(builder);
         builder.MessageTypes.Freeze();
+
+        if (!services.Any(d => d.ServiceType == typeof(IMessageSerializer)))
+        {
+            var contexts = services.Where(d => d.ServiceType == typeof(JsonSerializerRegistration))
+                .Select(d => ((JsonSerializerRegistration)d.ImplementationInstance!).Context).ToArray();
+            services.AddSingleton<IMessageSerializer>(new JsonMessageSerializer(builder.MessageTypes.CreateJsonTypes(contexts)));
+        }
 
         services.AddSingleton(builder.MessageTypes);
         services.AddSingleton<IRelayerBuilder>(builder);

@@ -10,6 +10,7 @@
     <Project Path="src/Relayer.Outbox.PostgreSql/Relayer.Outbox.PostgreSql.csproj" />
   </Folder>
   <Folder Name="/tests/">
+    <Project Path="tests/Relayer.AotSmoke/Relayer.AotSmoke.csproj" />
     <Project Path="tests/Relayer.Tests/Relayer.Tests.csproj" />
   </Folder>
   <Folder Name="/benchmarks/">

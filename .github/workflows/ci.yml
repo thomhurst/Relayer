@@ -100,6 +100,12 @@ jobs:
         if: steps.solution.outputs.present == 'true'
         run: dotnet test --no-build -c Release
 
+      - name: Native AOT serialization smoke test
+        if: steps.solution.outputs.present == 'true'
+        run: |
+          dotnet publish tests/Relayer.AotSmoke -c Release -r linux-x64 -o .artifacts/aot-smoke
+          .artifacts/aot-smoke/Relayer.AotSmoke
+
   # Tests for the issue/PR loop's merge gate and the Claude review helper. They run here, not in
   # their own workflow, so `CI Passed` (and therefore auto-merge) waits for them.
   agent-tooling:

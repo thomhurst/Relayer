@@ -291,6 +291,22 @@ The core header and envelope primitives, their native binding contracts, and raw
 - Serialization is pluggable (`IMessageSerializer`): Protobuf, Avro (with schema registry), and MessagePack ship as optional packages.
 - Serialization writes to `IBufferWriter<byte>` and reads from `ReadOnlySequence<byte>` where the native client allows it.
 
+`AddMessageTypesFromThisAssembly()` registers the declared messages and their generated JSON context together. Pass `JsonSerializerOptions` to that method to customize JSON, or add a context with `UseJsonSerializer(MyJsonContext.Default)`. When contexts overlap, the last registered context supplies the metadata for that type. A custom context can also cover explicitly registered message types from a contracts assembly. Missing metadata fails during `AddRelayer`; there is no reflection fallback.
+
+```csharp
+services.AddRelayer(relayer =>
+{
+    relayer.AddMessageTypesFromThisAssembly(new JsonSerializerOptions
+    {
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase
+    });
+    // Optional: override metadata for the types covered by this context.
+    relayer.UseJsonSerializer(MyJsonContext.Default);
+});
+```
+
+Register a custom `IMessageSerializer` in the service collection before or inside `AddRelayer` to replace JSON. Separate `AddRelayer` registrations keep their generated contexts, options and writer pools isolated. Typed metadata is resolved at startup. Serialization reuses a bounded writer pool per options instance; deserialization reads the sequence directly and rejects null bodies and trailing JSON values.
+
 ### 4.4 Versioning
 
 - `Version` lives in the type name (`billing.charge-card;v=2`).
