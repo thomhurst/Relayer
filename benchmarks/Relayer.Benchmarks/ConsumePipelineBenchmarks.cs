@@ -13,6 +13,7 @@ namespace Relayer.Benchmarks;
 /// The serializer returns a cached reference so serialization does not obscure allocations.
 /// </remarks>
 [MemoryDiagnoser]
+[BenchmarkCategory("RegressionGate")]
 public class ConsumePipelineBenchmarks
 {
     private ServiceProvider _provider = null!;

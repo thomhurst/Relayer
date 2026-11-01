@@ -12,6 +12,7 @@ namespace Relayer.Benchmarks;
 /// <summary>Compares a serialized native round trip with the same adapter plus generated core receive dispatch.</summary>
 /// <remarks>Includes native buffer ownership and scheduling, JSON serialization, and an acknowledgement channel in both paths.</remarks>
 [MemoryDiagnoser]
+[BenchmarkCategory("RegressionGate")]
 public class InMemoryTransportBenchmarks
 {
     private InMemoryTransport _native = null!;

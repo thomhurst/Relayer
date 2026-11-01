@@ -161,13 +161,124 @@ jobs:
       - name: Build
         run: npm run build
 
+  performance:
+    name: Performance regression gate
+    needs: changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: candidate
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+
+      # Pin main once. Pull requests compare to their target snapshot; pushes compare to the
+      # previous main head. Manual runs compare the selected head to the current main snapshot.
+      - name: Pin comparison commits
+        id: commits
+        working-directory: candidate
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PUSH_BEFORE: ${{ github.event.before }}
+        run: |
+          if [ "$EVENT_NAME" = pull_request ]; then
+            baseline="$PR_BASE"
+          elif [ "$EVENT_NAME" = push ] && [ "$PUSH_BEFORE" != 0000000000000000000000000000000000000000 ]; then
+            baseline="$PUSH_BEFORE"
+          else
+            baseline="$(git rev-parse origin/main)"
+          fi
+          git cat-file -e "$baseline^{commit}"
+          echo "baseline=$baseline" >> "$GITHUB_OUTPUT"
+          echo "Baseline: $baseline; candidate: $(git rev-parse HEAD)" | tee ../performance-commits.txt
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: baseline
+          ref: ${{ steps.commits.outputs.baseline }}
+
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          global-json-file: candidate/global.json
+
+      - name: Use identical benchmark harnesses
+        run: |
+          rsync -a --delete candidate/benchmarks/ baseline/benchmarks/
+          cp candidate/global.json baseline/global.json
+          python3 candidate/.github/scripts/pin_benchmark_version.py candidate baseline >> performance-commits.txt
+          candidate_sdk="$(cd candidate && dotnet --version)"
+          baseline_sdk="$(cd baseline && dotnet --version)"
+          test "$candidate_sdk" = "$baseline_sdk"
+          echo "SDK: $candidate_sdk" >> performance-commits.txt
+          sha256sum candidate/benchmarks/Relayer.Benchmarks/*.cs > performance-harness.sha256
+
+      - name: Test regression detector
+        run: python3 -m unittest discover -s candidate/.github/scripts -p test_benchmark_gate.py -v
+
+      - name: Benchmark main snapshot
+        working-directory: baseline
+        run: >-
+          dotnet run -c Release --project benchmarks/Relayer.Benchmarks --
+          --filter '*' --anyCategories RegressionGate --exporters fulljson
+          --artifacts "$GITHUB_WORKSPACE/performance-results/baseline"
+          > "$GITHUB_WORKSPACE/performance-baseline.log" 2>&1
+
+      - name: Prove unchanged measurements pass and injected regressions fail
+        run: python3 candidate/.github/scripts/benchmark_gate.py self-test performance-results/baseline
+
+      - name: Benchmark candidate
+        working-directory: candidate
+        run: >-
+          dotnet run -c Release --project benchmarks/Relayer.Benchmarks --
+          --filter '*' --anyCategories RegressionGate --exporters fulljson
+          --artifacts "$GITHUB_WORKSPACE/performance-results/candidate"
+          > "$GITHUB_WORKSPACE/performance-candidate.log" 2>&1
+
+      # Always bracket the candidate, even when the first comparison would pass.
+      # This is a fixed sampling plan, not a retry of a failed measurement.
+      - name: Benchmark main snapshot after candidate
+        working-directory: baseline
+        run: >-
+          dotnet run -c Release --project benchmarks/Relayer.Benchmarks --
+          --filter '*' --anyCategories RegressionGate --exporters fulljson
+          --artifacts "$GITHUB_WORKSPACE/performance-results/baseline-after"
+          > "$GITHUB_WORKSPACE/performance-baseline-after.log" 2>&1
+
+      - name: Compare bracketed throughput, allocations and startup
+        run: >-
+          python3 candidate/.github/scripts/benchmark_gate.py compare
+          performance-results/baseline performance-results/candidate
+          --baseline-after performance-results/baseline-after
+          --summary performance-summary.md
+
+      - name: Publish comparison summary
+        if: always()
+        run: |
+          cat performance-commits.txt >> "$GITHUB_STEP_SUMMARY"
+          if [ -f performance-summary.md ]; then cat performance-summary.md >> "$GITHUB_STEP_SUMMARY"; fi
+
+      - name: Retain benchmark measurements and logs
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: performance-${{ github.run_id }}-${{ github.run_attempt }}
+          retention-days: 14
+          path: |
+            performance-results/
+            performance-*.log
+            performance-commits.txt
+            performance-harness.sha256
+            performance-summary.md
+
   ci-passed:
     # The required check name is computed: a job skipped by `if:` never evaluates `name`, so a
     # draft run reports this expression text instead of `CI Passed` and cannot satisfy the
     # required check (a skipped check counts as passing). Auto-merge armed right after a PR
     # leaves draft therefore waits for the ready run.
     name: ${{ needs.changes.result == 'success' && 'CI Passed' || 'CI Passed (incomplete)' }}
-    needs: [disarm-auto-merge, changes, build, agent-tooling, website]
+    needs: [disarm-auto-merge, changes, build, agent-tooling, website, performance]
     if: always() && (github.event_name != 'pull_request' || github.event.pull_request.draft == false)
     runs-on: ubuntu-latest
     timeout-minutes: 5

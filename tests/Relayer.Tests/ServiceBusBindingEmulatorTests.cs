@@ -1,7 +1,9 @@
 using Azure.Messaging.ServiceBus;
+using DotNet.Testcontainers.Builders;
 using Microsoft.Extensions.DependencyInjection;
 using Relayer.AzureServiceBus;
 using Relayer.Transports;
+using Testcontainers.MsSql;
 using Testcontainers.ServiceBus;
 
 namespace Relayer.Tests;
@@ -13,10 +15,24 @@ public partial class ServiceBusBindingTests
     {
         using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(5));
         var token = timeout.Token;
-        await using var emulator = new ServiceBusBuilder("mcr.microsoft.com/azure-messaging/servicebus-emulator:1.1.2")
+        await using var network = new NetworkBuilder().Build();
+        var databaseBuilder = new MsSqlBuilder("mcr.microsoft.com/mssql/server:2022-CU14-ubuntu-22.04")
+            .WithNetwork(network)
+            .WithNetworkAliases(ServiceBusBuilder.DatabaseNetworkAlias);
+        var emulatorBuilder = new ServiceBusBuilder("mcr.microsoft.com/azure-messaging/servicebus-emulator:1.1.2")
             .WithAcceptLicenseAgreement(true)
-            .WithConfig(Path.Combine(AppContext.BaseDirectory, "servicebus-config.json"))
-            .Build();
+            .WithConfig(Path.Combine(AppContext.BaseDirectory, "servicebus-config.json"));
+        if (OperatingSystem.IsLinux())
+        {
+            // Keep every published dependency port outside Linux's outbound ephemeral range,
+            // matching the Kafka fixture's mitigation for moby/moby#54079.
+            databaseBuilder = databaseBuilder.WithPortBinding("20000-29999", "1433");
+            emulatorBuilder = emulatorBuilder.WithPortBinding("20000-29999", "5672")
+                .WithPortBinding("20000-29999", "5300");
+        }
+        await using var database = databaseBuilder.Build();
+        await using var emulator = emulatorBuilder
+            .WithMsSqlContainer(network, database, ServiceBusBuilder.DatabaseNetworkAlias).Build();
         await emulator.StartAsync(token);
         await using var client = new ServiceBusClient(emulator.GetConnectionString());
         await using var sender = client.CreateSender("settlement");

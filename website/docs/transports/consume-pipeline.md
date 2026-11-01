@@ -98,8 +98,10 @@ not zero total receive allocations. Fresh Microsoft DI scopes allocate even for
 a singleton handler. No scopes or scoped handlers are reused to hide that cost.
 
 This microbenchmark does not establish D18's end-to-end throughput budget against
-a real native client, or its total receive allocation goal. Those require the
-transport and CI regression suites tracked in [#19](https://github.com/thomhurst/Relayer/issues/19). Pending asynchronous operations
+a real native client, or its total receive allocation goal. The
+[CI regression suite](../contributing/performance.md) includes these attribution
+cases and end-to-end in-memory workloads; raw broker comparisons accompany each
+adapter. Pending asynchronous operations
 use a pooled `ValueTask` state machine in the execution layer; custom middleware
 and user handlers retain responsibility for their own asynchronous allocations.
 

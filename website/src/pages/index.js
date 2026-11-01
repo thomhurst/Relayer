@@ -284,6 +284,7 @@ const status = [
     ['Service Bus receive binding and manual settlement', 'Implemented', true],
   ['Packaged transport conformance suite', 'Implemented', true],
   ['Test harness and standalone handler context', 'Implemented', true],
+  ['CI performance regression gate and in-memory benchmarks', 'Implemented; raw broker cases planned', true],
   ['Kafka producer', 'Implemented', true],
   ['Kafka consumers, Service Bus, SQS/SNS and RabbitMQ transports', 'In progress', false],
   ['Health checks with application-provided adapters', 'Implemented', true],
