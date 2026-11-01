@@ -97,7 +97,7 @@ def load_reports(directory):
     return cases
 
 
-def compare(baseline, candidate):
+def compare(baseline, candidate, *, enforce_startup_budget=True):
     if baseline.keys() != candidate.keys():
         missing = sorted(baseline.keys() - candidate.keys())
         added = sorted(candidate.keys() - baseline.keys())
@@ -117,7 +117,7 @@ def compare(baseline, candidate):
             reasons.append("throughput loss exceeds 5%")
         if after.allocated_bytes > before.allocated_bytes + ALLOCATION_TOLERANCE_BYTES:
             reasons.append("allocations increased by more than 0.5 B/op")
-        if (after.type_name, after.method) == ("StartupBenchmarks", "Build100Handlers") and after.mean_ns >= STARTUP_LIMIT_NS:
+        if enforce_startup_budget and (after.type_name, after.method) == ("StartupBenchmarks", "Build100Handlers") and after.mean_ns >= STARTUP_LIMIT_NS:
             reasons.append("100-handler startup is not under 50 ms")
         inconclusive = after.mean_ns > before.mean_ns / (1 - MAX_THROUGHPUT_LOSS) and not any("throughput loss" in reason for reason in reasons)
         statuses = reasons + (["INCONCLUSIVE: observed throughput loss exceeds 5%; confidence bounds overlap threshold"] if inconclusive else [])
@@ -135,9 +135,10 @@ def compare(baseline, candidate):
 
 
 def self_test(cases):
-    failures, _ = compare(cases, cases)
+    # The baseline can exceed the startup budget that the real candidate must meet.
+    failures, _ = compare(cases, cases, enforce_startup_budget=False)
     if failures:
-        raise GateError("Unchanged baseline fails its absolute startup budget: " + "; ".join(failures))
+        raise GateError("Detector self-test rejected identical measurements: " + "; ".join(failures))
     identity = next(iter(cases))
     slow = dict(cases)
     measurement = cases[identity]
@@ -145,12 +146,12 @@ def self_test(cases):
     shift = measurement.upper_ns / (1 - MAX_THROUGHPUT_LOSS) * 2 - measurement.lower_ns
     slow[identity] = replace(measurement, mean_ns=measurement.mean_ns + shift,
                              lower_ns=measurement.lower_ns + shift, upper_ns=measurement.upper_ns + shift)
-    failures, _ = compare(cases, slow)
+    failures, _ = compare(cases, slow, enforce_startup_budget=False)
     if not any("throughput loss" in failure for failure in failures):
         raise GateError("Detector self-test failed to reject injected throughput regression")
     allocated = dict(cases)
     allocated[identity] = replace(cases[identity], allocated_bytes=cases[identity].allocated_bytes + 64)
-    failures, _ = compare(cases, allocated)
+    failures, _ = compare(cases, allocated, enforce_startup_budget=False)
     if not any("allocations increased" in failure for failure in failures):
         raise GateError("Detector self-test failed to reject injected allocation regression")
     print("PASS: identical measurements; REJECTED: injected throughput loss with separated confidence bounds and +64 B/op allocation regression")

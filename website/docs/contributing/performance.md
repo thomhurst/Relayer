@@ -45,7 +45,10 @@ python .github/scripts/benchmark_gate.py self-test C:/benchmark-results/baseline
 
 The self-test accepts identical measurements and rejects deliberately injected
 throughput and allocation regressions. It tests the detector; it does not prove
-that separate executions produce identical timings.
+that separate executions produce identical timings. The self-test checks relative
+regressions independently of the baseline's absolute startup time. The comparison
+command still requires the candidate to compose 100 handlers in under 50 ms, so a
+slow baseline cannot prevent a candidate that fixes startup from being measured.
 
 ## Cases and allocation attribution
 
@@ -106,8 +109,12 @@ benchmark reports, logs or evidence Markdown.
 
 The regression threshold against `main` is distinct from D18's **at most 5%
 throughput overhead against the raw native client**. In-memory and callback
-microbenchmarks do not establish that real-broker budget. Real transport adapters
-and their raw-client cases remain planned.
+microbenchmarks do not establish that real-broker budget. `KafkaSendBenchmarks`
+already pairs raw Dekaf and Relayer adapter sends against a real broker for
+pre-serialized single messages and native batches. These cases are outside the
+`RegressionGate` category and do not cover the public default-JSON send pipeline
+or receive path. Complete default-JSON send and receive comparisons for real
+transports remain planned.
 
 Each adapter must add paired raw-client and Relayer cases in the same benchmark
 class, using `[MemoryDiagnoser]`, with the raw case marked

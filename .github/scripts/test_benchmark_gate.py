@@ -102,8 +102,19 @@ class BenchmarkGateTests(unittest.TestCase):
         data = report()
         measurement(next(case for case in data["Benchmarks"] if case["Type"] == "StartupBenchmarks"), gate.STARTUP_LIMIT_NS)
         self.assertTrue(any("not under 50 ms" in failure for failure in self.compare(data, data)))
-        with self.assertRaisesRegex(gate.GateError, "absolute startup budget"):
-            gate.self_test(gate.load_reports(self.write("slow-startup", data)))
+
+    def test_slow_baseline_does_not_block_self_test_or_fixed_candidate(self):
+        for startup_ns in (gate.STARTUP_LIMIT_NS, gate.STARTUP_LIMIT_NS * 2):
+            with self.subTest(startup_ns=startup_ns):
+                data = report()
+                measurement(next(case for case in data["Benchmarks"] if case["Type"] == "StartupBenchmarks"), startup_ns)
+                baseline = self.write("slow-startup", data)
+                candidate = self.write("fixed-startup", report())
+                with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                    self.assertEqual(0, gate.main(["self-test", str(baseline)]))
+                    self.assertEqual(0, gate.main(["compare", str(baseline), str(candidate)]))
+                    self.assertEqual(1, gate.main(["compare", str(baseline), str(baseline)]))
+                    self.assertEqual(1, gate.main(["compare", str(candidate), str(baseline)]))
 
     def test_missing_required_method_fails(self):
         data = report()
