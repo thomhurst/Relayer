@@ -365,7 +365,8 @@ internal sealed class InMemoryReadState(Channel<InMemoryMessage> channel, InMemo
     [System.Runtime.CompilerServices.AsyncMethodBuilder(typeof(System.Runtime.CompilerServices.PoolingAsyncValueTaskMethodBuilder<>))]
     internal async ValueTask<InMemoryMessage?> ReadAsync(CancellationToken stop)
     {
-        Volatile.Write(ref _waiting, 1);
+        // Full fence pairs with cancellation before Wake reads _waiting; both sides cannot miss each other.
+        Interlocked.Exchange(ref _waiting, 1);
         try
         {
             stop.ThrowIfCancellationRequested();

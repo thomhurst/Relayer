@@ -459,6 +459,24 @@ public class InMemoryTransportTests
     }
 
     [Test]
+    public async Task Repeated_stop_of_idle_receivers_completes_during_reader_startup()
+    {
+        await using var transport = Transport();
+        transport.RegisterConsumer("orders", static (_, _) => new(Disposition.Complete), concurrency: 32);
+        for (var iteration = 0; iteration < 64; iteration++)
+        {
+            await transport.StartAsync(default);
+            try { await transport.StopAsync(default).WaitAsync(Limit); }
+            catch
+            {
+                // Unblock a stranded read so a failure cannot hang asynchronous disposal.
+                for (var receiver = 0; receiver < 32; receiver++) await Send(transport, receiver);
+                throw;
+            }
+        }
+    }
+
+    [Test]
     public async Task Start_with_suppressed_execution_context_preserves_suppression_and_isolates_consumers()
     {
         await using var transport = Transport();

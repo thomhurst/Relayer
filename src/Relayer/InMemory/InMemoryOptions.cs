@@ -5,7 +5,8 @@ namespace Relayer.InMemory;
 /// <summary>Native in-memory endpoint settings, captured when the transport is built.</summary>
 public sealed record InMemoryEndpointOptions
 {
-    /// <summary>Native channel capacity per partition. Capacity times Partitions bounds all outstanding messages.</summary>
+    /// <summary>Native channel capacity per partition. Capacity times Partitions bounds outstanding unsettled messages.</summary>
+    /// <remarks>Dead-letter snapshots are independently owned and unbounded; drain DeadLetters to release their copied bodies.</remarks>
     public int Capacity { get; init; } = 256;
     /// <summary>Native partitions. Ordered queues and logs use one serial receiver per partition.</summary>
     public int Partitions { get; init; } = 1;

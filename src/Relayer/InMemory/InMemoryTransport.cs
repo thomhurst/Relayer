@@ -64,6 +64,7 @@ public sealed class InMemoryTransport : ITransport
     }
 
     /// <summary>Reads independently owned native dead-letter snapshots.</summary>
+    /// <remarks>Snapshots are unbounded and excluded from native admission capacity. Drain the reader to release their copied bodies.</remarks>
     public ChannelReader<InMemoryDeadLetter> DeadLetters(string endpoint) => Endpoint(endpoint).DeadLetters.Reader;
 
     /// <summary>Returns the last completed log position for one group and partition, or -1 before processing.</summary>
@@ -93,6 +94,7 @@ public sealed class InMemoryTransport : ITransport
     }
 
     /// <inheritdoc />
+    /// <remarks>The total batch length must fit every destination's MaxBatchSize, including batches with mixed destinations.</remarks>
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
     public async ValueTask SendBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken)
     {
