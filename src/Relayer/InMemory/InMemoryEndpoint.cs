@@ -20,15 +20,17 @@ internal sealed class InMemoryEndpoint
     private readonly InMemoryReadState? _queueReader;
     private int _nextPartition = -1;
     internal TimeProvider Clock { get; }
+    internal InMemorySettlementTracing? SettlementTracing { get; }
     internal TransportCapabilities Capabilities { get; }
     internal Channel<InMemoryDeadLetter> DeadLetters { get; } = Channel.CreateUnbounded<InMemoryDeadLetter>();
 
-    internal InMemoryEndpoint(string name, InMemoryEndpointOptions options, TimeProvider clock)
+    internal InMemoryEndpoint(string name, InMemoryEndpointOptions options, TimeProvider clock, MessageTracing? tracing = null)
     {
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(options.Capabilities);
         _name = name;
         Clock = clock;
+        SettlementTracing = tracing is null ? null : new(tracing, name);
         Capabilities = options.Capabilities;
         if (options.Capacity < 1 || options.Partitions < 1 || options.MessagePoolCapacity < 1)
             throw new ArgumentException($"Endpoint '{name}': Capacity, Partitions and MessagePoolCapacity must be positive.", nameof(options));
@@ -281,19 +283,37 @@ internal sealed class InMemoryReceiver(InMemoryEndpoint endpoint, InMemoryReadSt
     private InMemoryMessage? _pending;
     private bool _manual;
     private Disposition _settlement;
+    private Exception? _loggedSettlementError;
     private long _committed = -1;
     private TimeSpan _retryDelay;
     internal string? Group { get; } = group;
     internal int Partition { get; } = partition;
+    internal string PartitionId { get; } = partition.ToString(System.Globalization.CultureInfo.InvariantCulture);
     internal int Attempt { get; private set; } = 1;
     internal long CommittedPosition => Interlocked.Read(ref _committed);
 
     internal void Settle(Disposition disposition)
     {
-        if (_pending is null || _manual) throw new InvalidOperationException("This native delivery is not active or has already been settled.");
-        endpoint.ValidateSettlement(disposition);
-        _settlement = disposition;
-        _manual = true;
+        using var activity = endpoint.SettlementTracing?.Start(disposition, PartitionId, _pending);
+        try
+        {
+            if (_pending is null || _manual) throw new InvalidOperationException("This native delivery is not active or has already been settled.");
+            endpoint.ValidateSettlement(disposition);
+            _settlement = disposition;
+            _manual = true;
+        }
+        catch (Exception error)
+        {
+            if (endpoint.SettlementTracing?.Fail(activity, error, _pending) == true) _loggedSettlementError = error;
+            throw;
+        }
+    }
+
+    internal bool TryConsumeLoggedSettlementError(Exception error)
+    {
+        if (!ReferenceEquals(_loggedSettlementError, error)) return false;
+        _loggedSettlementError = null;
+        return true;
     }
 
     internal async Task RunAsync(CancellationToken stop, CancellationToken abort)
@@ -321,6 +341,7 @@ internal sealed class InMemoryReceiver(InMemoryEndpoint endpoint, InMemoryReadSt
                 Disposition disposition;
                 try { disposition = await receive(delivery, abort).ConfigureAwait(false); }
                 catch { Attempt++; throw; }
+                finally { _loggedSettlementError = null; }
                 if (disposition.Kind == DispositionKind.SettledByHandler)
                 {
                     if (!_manual) throw new InvalidOperationException("SettledByHandler requires successful native settlement through InMemoryDelivery.");
@@ -352,7 +373,7 @@ internal sealed class InMemoryReceiver(InMemoryEndpoint endpoint, InMemoryReadSt
         catch (OperationCanceledException) when (stop.IsCancellationRequested || abort.IsCancellationRequested) { }
     }
 
-    internal void Clear() => _pending = null;
+    internal void Clear() { _pending = null; _loggedSettlementError = null; }
 }
 
 // One cancellation registration per loop, rather than one allocating channel read per message.

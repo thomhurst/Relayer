@@ -72,16 +72,19 @@ public sealed class MessageOperationTracing
     /// </remarks>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public Activity? Start(in MessageTraceData data = default)
+        => Start(data, enrich: true);
+
+    internal Activity? Start(in MessageTraceData data, bool enrich)
     {
         if (data.BatchCount is < 1) throw new ArgumentOutOfRangeException(nameof(data), "Batch count must be positive.");
         if (_operation == MessagingOperation.Create && data.BatchCount is not null)
             throw new ArgumentException("A create span describes one message, never a batch.", nameof(data));
         if (!_tracing.Source.HasListeners()) return null;
         if (_operation == MessagingOperation.Create && data.CreationContext != default) return null;
-        return StartActivity(data);
+        return StartActivity(data, enrich);
     }
 
-    private Activity? StartActivity(in MessageTraceData data)
+    private Activity? StartActivity(in MessageTraceData data, bool enrich)
     {
         var kind = _operation switch
         {
@@ -131,13 +134,95 @@ public sealed class MessageOperationTracing
                     if (_tracing.Options.IncludeBodySize && data.BodySize is { } size) activity.SetTag("messaging.message.body.size", size);
                 }
             }
-            if (activity is not null) _tracing.Enrich(activity);
+            if (enrich && activity is not null) _tracing.Enrich(activity);
             return activity;
         }
         finally
         {
             if (state is not null) Return(state);
         }
+    }
+
+    /// <summary>Wraps one actual native settlement call with a settle span. Cache the returned delegate at startup.</summary>
+    /// <remarks>
+    /// Use the same wrapper for core and manual settlement. Select the native operation before invoking it;
+    /// skip it for SettledByHandler. The wrapper does not change dispositions or implement settlement.
+    /// </remarks>
+    public ConsumeDelegate WrapSettlement(ConsumeDelegate settlement)
+    {
+        ArgumentNullException.ThrowIfNull(settlement);
+        if (_operation != MessagingOperation.Settle)
+            throw new InvalidOperationException("WrapSettlement requires a settle operation with the native operation name.");
+        return new Settlement(this, settlement).InvokeAsync;
+    }
+
+    private sealed class Settlement(MessageOperationTracing operation, ConsumeDelegate settlement)
+    {
+        internal ValueTask InvokeAsync(MessageContext context)
+        {
+            ArgumentNullException.ThrowIfNull(context);
+            if (operation._tracing.Source.HasListeners()) return InvokeTracedAsync(context);
+            try
+            {
+                var pending = settlement(context);
+                if (!pending.IsCompletedSuccessfully) return AwaitUntracedAsync(context, pending);
+                // Consume a completed ValueTask without creating an async state machine.
+                pending.GetAwaiter().GetResult();
+                return default;
+            }
+            catch (OperationCanceledException) when (context.CancellationToken.IsCancellationRequested) { throw; }
+            catch (Exception error)
+            {
+                (context as DefaultMessageContext)?.LogSettlementFailure(error);
+                throw;
+            }
+        }
+
+        [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
+        private static async ValueTask AwaitUntracedAsync(MessageContext context, ValueTask pending)
+        {
+            try { await pending.ConfigureAwait(false); }
+            catch (OperationCanceledException) when (context.CancellationToken.IsCancellationRequested) { throw; }
+            catch (Exception error)
+            {
+                (context as DefaultMessageContext)?.LogSettlementFailure(error);
+                throw;
+            }
+        }
+
+        [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
+        private async ValueTask InvokeTracedAsync(MessageContext context)
+        {
+            var native = context as DefaultMessageContext;
+            using var activity = native is not null
+                ? ConsumeTracing.Start(operation._tracing, operation, native, linkCreation: false)
+                : operation.Start();
+            try
+            {
+                await settlement(context).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (context.CancellationToken.IsCancellationRequested) { throw; }
+            catch (Exception error)
+            {
+                Fail(activity, "_OTHER");
+                native?.LogSettlementFailure(error);
+                throw;
+            }
+        }
+    }
+
+    internal KeyValuePair<string, object?>[] CreateBatchTags()
+    {
+        var tags = new KeyValuePair<string, object?>[_tags.Length + 1];
+        _tags.CopyTo(tags, 0);
+        return tags;
+    }
+
+    internal Activity? StartBatch(KeyValuePair<string, object?>[] tags, List<ActivityLink> links)
+    {
+        var activity = _tracing.Source.StartActivity(_name, ActivityKind.Consumer, Activity.Current?.Context ?? default, tags, links);
+        if (activity is not null) _tracing.Enrich(activity);
+        return activity;
     }
 
     private SamplingState Rent()

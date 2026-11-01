@@ -88,6 +88,8 @@ public readonly struct InMemoryDelivery
     public InMemoryMessage Message { get; }
     /// <summary>Native partition number.</summary>
     public int Partition => Message.Partition;
+    internal string PartitionId => _receiver.PartitionId;
+    internal bool TryConsumeLoggedSettlementError(Exception error) => _receiver.TryConsumeLoggedSettlementError(error);
     /// <summary>Native position, starting at zero. Logs commit after processing succeeds.</summary>
     public long Position => Message.Position;
     /// <summary>Delivery count, starting at one.</summary>
@@ -103,6 +105,10 @@ public readonly struct InMemoryDelivery
 /// <summary>Zero-copy native receive binding with lazy header access.</summary>
 public readonly struct InMemoryMessageBinding : IMessageBinding<InMemoryDelivery>
 {
+    /// <inheritdoc />
+    public static string? GetPartitionId(InMemoryDelivery message) => message.PartitionId;
+    /// <inheritdoc />
+    public static bool TryConsumeLoggedSettlementError(InMemoryDelivery message, Exception error) => message.TryConsumeLoggedSettlementError(error);
     /// <inheritdoc />
     public static ReadOnlySequence<byte> GetBody(InMemoryDelivery message) => new(message.Message.Body);
     /// <inheritdoc />

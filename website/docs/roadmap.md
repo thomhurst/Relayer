@@ -11,7 +11,7 @@ Relayer is in early development. Track progress in [GitHub issues](https://githu
 - Source-generated message registration, handler registration and dispatch, and System.Text.Json serialization.
 - Compile-time analyzers and a code fix ([diagnostics](reference/diagnostics.md)).
 - The scoped send pipeline, send middleware and outbox enlistment hooks.
-- Provider-owned tracing primitives and direct single/batch send tracing, integrated with the in-memory adapter. Automatic consume/settlement and outbox tracing remain planned.
+- Provider-owned tracing and direct single/batch send tracing, integrated with the in-memory adapter's delivery and native settlement spans. Outbox tracing remains planned.
 - The [durable outbox store contract](reference/outbox-stores.md), with bounded reads, fenced claims and an optional keyed health adapter. Database implementations and dispatch workers remain planned.
 - [PostgreSQL schema scripts and database CLI](reference/postgres-schema.md), including an application-owned EF Core migration path. Durable sending and dispatch remain planned.
 - The consume pipeline and the native receive SPI.
@@ -20,7 +20,7 @@ Relayer is in early development. Track progress in [GitHub issues](https://githu
 - Manual settlement requests through `ISettlementFeature`, with exception precedence and durable capability fallbacks.
 - Declared topology with validate and provision modes, and JSON export.
 - The [in-memory transport](transports/in-memory.md), with native queue and partitioned log semantics.
-- Core tracing, consume metrics and generated failure logs; native transport and outbox instrumentation remains planned.
+- Core tracing primitives, single and batch delivery spans, native settlement wrappers, consume metrics and generated failure logs. Native broker adapters and outbox instrumentation remain planned.
 - The optional [health integration](guides/health-checks.md), with connectivity, consumer liveness and backlog checks. The outbox adapter accepts application-provided durable stores; native broker adapters remain planned.
 
 ## Phases

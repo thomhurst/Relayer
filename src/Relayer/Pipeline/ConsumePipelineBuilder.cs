@@ -18,17 +18,20 @@ public sealed class ConsumePipelineBuilder
     private bool _built;
     private EndpointTelemetry? _telemetry;
     private ConsumeDelegate? _settlement;
+    private ConsumeTracing? _tracing;
 
     /// <summary>Builds a homogeneous batch consumer using its existing size, wait and concurrency declaration.</summary>
-    /// <remarks>Batch handlers coordinate their own per-message work. Single-message middleware, telemetry, and settlement callbacks cannot be combined with batch composition.</remarks>
+    /// <remarks>Batch handlers coordinate their own per-message work. Tracing and native settlement callbacks are supported; single-message middleware and metrics are not.</remarks>
     public ConsumePipeline BuildBatch(HandlerDescriptor descriptor, IConsumerDefinition consumer,
         System.Diagnostics.ActivitySource? activitySource = null)
     {
         EnsureMutable();
         ArgumentNullException.ThrowIfNull(descriptor);
         ArgumentNullException.ThrowIfNull(consumer);
-        if (_telemetry is not null || _settlement is not null)
-            throw new InvalidOperationException("Batch consumers do not support single-message telemetry or settlement callbacks. Record telemetry and settle native deliveries around ProcessBatchAsync.");
+        if (_telemetry is not null)
+            throw new InvalidOperationException("Batch consumers do not support single-message metrics. Record batch metrics around ProcessBatchAsync.");
+        if (_tracing is not null && activitySource is not null)
+            throw new InvalidOperationException("Use Tracing for the shared Relayer source, or supply an ActivitySource, but not both.");
         if (_dispatch.Count != 0 || _middleware.Count != 0)
             throw new InvalidOperationException("Compose batch handlers separately from single-message handlers and middleware.");
         if (!_messages.IsFrozen || !_messages.TryGetMessageType(descriptor.MessageType, out var identity))
@@ -41,9 +44,9 @@ public sealed class ConsumePipelineBuilder
         _built = true;
         var identities = new Dictionary<MessageType, ConsumeDelegate> { [identity] = static _ => throw new InvalidOperationException("Use ProcessBatchAsync for a batch handler.") };
         return new ConsumePipeline(_scopes, identities.ToFrozenDictionary(), [], _failure, _classifier,
-            checked(consumer.BatchSize * consumer.Concurrency), _failures, null, null)
+            checked(consumer.BatchSize * consumer.Concurrency), _failures, null, _settlement, _tracing)
         {
-            BatchExecution = new BatchExecution(_scopes, batch, identity, consumer, _failure, _classifier, _failures, activitySource)
+            BatchExecution = new BatchExecution(_scopes, batch, identity, consumer, _failure, _classifier, _failures, activitySource, _tracing)
         };
     }
 
@@ -113,6 +116,17 @@ public sealed class ConsumePipelineBuilder
         return this;
     }
 
+    /// <summary>Surrounds each delivery, including native settlement, with a process span.</summary>
+    /// <remarks>Compose once per endpoint. No receive span is emitted. Native settlement callbacks wrap each actual call with WrapSettlement.</remarks>
+    public ConsumePipelineBuilder Tracing(MessageTracing tracing, MessagingEndpoint endpoint)
+    {
+        EnsureMutable();
+        ArgumentNullException.ThrowIfNull(tracing);
+        ArgumentNullException.ThrowIfNull(endpoint);
+        _tracing = new(tracing, endpoint);
+        return this;
+    }
+
     /// <summary>Runs native settlement after durable handling and async scope disposal, inside processing duration.</summary>
     /// <remarks>
     /// Transports read their native feature and disposition from the context. Honor SettledByHandler without settling twice.
@@ -137,7 +151,7 @@ public sealed class ConsumePipelineBuilder
         }
         _built = true;
         return new ConsumePipeline(_scopes, _dispatch.ToFrozenDictionary(), _middleware, _failure, _classifier,
-            contextPoolCapacity, _failures, _telemetry, _settlement);
+            contextPoolCapacity, _failures, _telemetry, _settlement, _tracing);
     }
 
     private void EnsureMutable()

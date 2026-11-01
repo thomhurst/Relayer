@@ -56,6 +56,11 @@ public sealed class DefaultMessageContext : MessageContext, IDisposable
     internal void NextAttempt() => _attempt = checked(Attempt + 1);
     internal ConsumeDelegate Dispatch { get; set; } = null!;
     internal HeaderNames EnvelopeNames => _receive?.EnvelopeNames ?? _owner.EnvelopeNames;
+    internal string? TracePartitionId => _receive?.TracePartitionId;
+    internal void EnrichActivity(System.Diagnostics.Activity activity) => _receive?.EnrichActivity(activity);
+    internal Exception? LoggedSettlementError { get; set; }
+    internal void LogSettlementFailure(Exception error) => _owner.LogSettlementFailure(this, error);
+    internal bool TryConsumeNativeSettlementError(Exception error) => _receive?.TryConsumeLoggedSettlementError(error) == true;
 
     // Read raw native fields so malformed envelopes remain loggable without parsing required fields.
     internal string? GetLogMessageId()
@@ -122,6 +127,7 @@ public sealed class DefaultMessageContext : MessageContext, IDisposable
         _cancellation = default;
         _services = null;
         Dispatch = null!;
+        LoggedSettlementError = null;
         Features.Clear();
         _owner.Return(this);
     }

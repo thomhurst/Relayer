@@ -20,7 +20,7 @@ public sealed class ConsumePipeline
     public bool IsBatch => BatchExecution is not null;
 
     /// <summary>Processes one batch, with one scope per batch attempt and only failed items retried.</summary>
-    /// <remarks>No native settlement is performed. Keep context memory unchanged until completion. Only use settlement decisions after the entire call succeeds.</remarks>
+    /// <remarks>Optional native settlement callbacks run after all durable work. Keep context memory unchanged until completion. Only use settlement decisions after the entire call succeeds.</remarks>
     public ValueTask ProcessBatchAsync(ReadOnlyMemory<DefaultMessageContext> contexts, CancellationToken cancellationToken = default)
         => (BatchExecution ?? throw new InvalidOperationException("Build a batch consumer before using batch dispatch."))
             .ProcessAsync(this, contexts, cancellationToken);
@@ -34,12 +34,14 @@ public sealed class ConsumePipeline
     private readonly WireIdentity[] _wireIdentities;
     private readonly EndpointTelemetry? _telemetry;
     private readonly ConsumeDelegate? _settlement;
+    private readonly ConsumeTracing? _tracing;
+    private readonly ILogger? _logger;
     internal HeaderNames EnvelopeNames { get; } = new();
     private int _batchCursor;
 
     internal ConsumePipeline(IServiceScopeFactory scopes, FrozenDictionary<MessageType, ConsumeDelegate> dispatch,
         IReadOnlyList<IConsumeMiddleware> middleware, ConsumeFailureDelegate failure, IFailureClassifier classifier,
-        int capacity, FailurePipeline? failures, EndpointTelemetry? telemetry, ConsumeDelegate? settlement)
+        int capacity, FailurePipeline? failures, EndpointTelemetry? telemetry, ConsumeDelegate? settlement, ConsumeTracing? tracing)
     {
         _scopes = scopes;
         _failures = failures;
@@ -48,6 +50,8 @@ public sealed class ConsumePipeline
         _classifier = classifier;
         _telemetry = telemetry;
         _settlement = settlement;
+        _tracing = tracing;
+        _logger = telemetry?.Logger ?? tracing?.Logger;
         _contexts = new DefaultMessageContext[capacity];
         _wireIdentities = new WireIdentity[dispatch.Count];
         var identityIndex = 0;
@@ -155,8 +159,10 @@ public sealed class ConsumePipeline
         var telemetry = _telemetry;
         var start = telemetry is { DurationEnabled: true } ? Stopwatch.GetTimestamp() : 0;
         Exception? failure = null;
+        Activity? activity = null;
         try
         {
+            activity = _tracing?.Start(context);
             telemetry?.RecordConsumed();
             context.CancellationToken.ThrowIfCancellationRequested();
             var scope = new AsyncServiceScope(_scopes.CreateScope());
@@ -175,7 +181,7 @@ public sealed class ConsumePipeline
                 {
                     context.Settlement.Clear();
                     failure = error;
-                    LogFailure(telemetry, context, error);
+                    LogFailure(context, error);
                     await _failure(context, error, _classifier.Classify(error, context)).ConfigureAwait(false);
                 }
             }
@@ -196,7 +202,7 @@ public sealed class ConsumePipeline
         catch (OperationCanceledException) when (context.CancellationToken.IsCancellationRequested) { throw; }
         catch (Exception error)
         {
-            if (!ReferenceEquals(failure, error)) LogFailure(telemetry, context, error);
+            if (!ReferenceEquals(failure, error)) LogFailure(context, error);
             failure = error;
             throw;
         }
@@ -209,7 +215,12 @@ public sealed class ConsumePipeline
             }
             finally
             {
-                context.EndProcessing();
+                try
+                {
+                    if (failure is not null) MessageOperationTracing.Fail(activity, "_OTHER");
+                    activity?.Dispose();
+                }
+                finally { context.EndProcessing(); }
             }
         }
     }
@@ -220,8 +231,10 @@ public sealed class ConsumePipeline
         var telemetry = _telemetry;
         var start = telemetry is { DurationEnabled: true } ? Stopwatch.GetTimestamp() : 0;
         Exception? failure = null;
+        Activity? activity = null;
         try
         {
+            activity = _tracing?.Start(context);
             telemetry?.RecordConsumed();
             var retry = 0;
             var initialize = true;
@@ -258,7 +271,7 @@ public sealed class ConsumePipeline
                     {
                         context.Settlement.Clear();
                         failure = attemptFailure = error;
-                        LogFailure(telemetry, context, error);
+                        LogFailure(context, error);
                         action = _classifier.Classify(error, context);
                         _failures!.Record(context, error);
                     }
@@ -317,7 +330,7 @@ public sealed class ConsumePipeline
         catch (OperationCanceledException) when (context.CancellationToken.IsCancellationRequested) { throw; }
         catch (Exception error)
         {
-            if (!ReferenceEquals(failure, error)) LogFailure(telemetry, context, error);
+            if (!ReferenceEquals(failure, error)) LogFailure(context, error);
             failure = error;
             throw;
         }
@@ -331,26 +344,45 @@ public sealed class ConsumePipeline
             }
             finally
             {
-                context.EndProcessing();
+                try
+                {
+                    if (failure is not null) MessageOperationTracing.Fail(activity, "_OTHER");
+                    activity?.Dispose();
+                }
+                finally { context.EndProcessing(); }
             }
         }
     }
 
     internal void ValidateSettlement(Disposition disposition) => _failures?.ValidateSettlement(disposition);
 
-    private static void LogFailure(EndpointTelemetry? telemetry, DefaultMessageContext context, Exception error)
+    internal ConsumeDelegate? Settlement => _settlement;
+
+    internal void LogFailure(DefaultMessageContext context, Exception error)
     {
+        if (ReferenceEquals(context.LoggedSettlementError, error) || context.TryConsumeNativeSettlementError(error))
+        {
+            context.LoggedSettlementError = null;
+            return;
+        }
         try
         {
-            if (telemetry?.Logger.IsEnabled(LogLevel.Error) != true) return;
-            using var scope = telemetry.Logger.BeginScope(ConsumeLog.CreateScope(context));
+            if (_logger?.IsEnabled(LogLevel.Error) != true) return;
+            using var scope = _logger.BeginScope(ConsumeLog.CreateScope(context));
             var activity = Activity.Current;
-            ConsumeLog.Failed(telemetry.Logger, error, activity?.TraceId.ToString(), activity?.SpanId.ToString());
+            ConsumeLog.Failed(_logger, error, activity?.TraceId.ToString(), activity?.SpanId.ToString());
         }
         catch (Exception)
         {
             // A broken logging provider must not replace the delivery error or skip durable failure handling.
         }
+    }
+
+    internal void LogSettlementFailure(DefaultMessageContext context, Exception error)
+    {
+        context.LoggedSettlementError = null;
+        LogFailure(context, error);
+        context.LoggedSettlementError = error;
     }
 
     private static ValueTask InvokeHandlerAsync(MessageContext context) => ((DefaultMessageContext)context).Dispatch(context);

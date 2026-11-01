@@ -1,6 +1,8 @@
 using System.Diagnostics;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 
 namespace Relayer;
@@ -11,14 +13,16 @@ public sealed class MessageTracing : IDisposable
     private readonly IActivityEnricher[] _enrichers;
     /// <summary>The immutable policy used by operations and batch send composition.</summary>
     public TracingOptions Options { get; }
+    internal ILogger Logger { get; }
 
     /// <summary>Creates an isolated source owner; DI disposes it with its service provider.</summary>
-    public MessageTracing(IOptions<TracingOptions> options, IEnumerable<IActivityEnricher> enrichers)
+    public MessageTracing(IOptions<TracingOptions> options, IEnumerable<IActivityEnricher> enrichers, ILoggerFactory? loggerFactory = null)
     {
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(enrichers);
         Options = options.Value;
         _enrichers = enrichers.ToArray();
+        Logger = loggerFactory?.CreateLogger<ConsumePipeline>() ?? NullLogger<ConsumePipeline>.Instance;
         Source = new(new ActivitySourceOptions(RelayerTelemetry.ActivitySourceName)
         {
             TelemetrySchemaUrl = RelayerTelemetry.SchemaUrl,

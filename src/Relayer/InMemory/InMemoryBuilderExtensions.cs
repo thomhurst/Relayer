@@ -68,6 +68,10 @@ internal sealed class InMemoryHostedService(IServiceProvider provider, string na
             var pipeline = new ConsumePipelineBuilder(provider.GetRequiredService<IServiceScopeFactory>(),
                 provider.GetRequiredService<MessageTypeRegistry>(), provider.GetRequiredService<IMessageSerializer>(),
                 failure, provider.GetService<IFailureClassifier>());
+            pipeline.Tracing(provider.GetRequiredService<MessageTracing>(), new()
+            {
+                System = InMemoryTransport.MessagingSystem, Destination = consumer.Source, ConsumerGroup = consumer.Options.Group,
+            }).Settle(SettleAsync);
             foreach (var handler in handlers.Descriptors)
                 if (consumer.Handlers.Contains(handler.HandlerType)) pipeline.Handler(handler);
             var receive = new ReceivePipeline<InMemoryDelivery, InMemoryMessageBinding>(pipeline.Build(consumer.Concurrency), new HeaderNames(), consumer.Concurrency);
@@ -75,6 +79,22 @@ internal sealed class InMemoryHostedService(IServiceProvider provider, string na
         }
         await _transport.StartAsync(cancellationToken).ConfigureAwait(false);
         await base.StartAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    private static ValueTask SettleAsync(MessageContext context)
+    {
+        var native = context.Features.GetRequired<NativeMessage<InMemoryDelivery>>();
+        var disposition = native.Disposition;
+        switch (disposition.Kind)
+        {
+            case DispositionKind.SettledByHandler: return default;
+            case DispositionKind.Complete: native.Message.Complete(); break;
+            case DispositionKind.Redeliver: native.Message.Redeliver(disposition.Delay); break;
+            case DispositionKind.DeadLetter: native.Message.DeadLetter(disposition.DeadLetter); break;
+            default: throw new InvalidOperationException("Unknown in-memory settlement disposition.");
+        }
+        native.Disposition = Disposition.SettledByHandler;
+        return default;
     }
 
     protected override Task ExecuteAsync(CancellationToken stoppingToken) => _transport!.Completion;

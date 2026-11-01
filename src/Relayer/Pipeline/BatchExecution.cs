@@ -13,16 +13,16 @@ internal sealed class BatchExecution
     private readonly IFailureClassifier _classifier;
     private readonly FailurePipeline? _failures;
     private readonly ActivitySource? _source;
+    private readonly ConsumeTracing? _tracing;
     private readonly string _spanName;
     private readonly string _destination;
-    private readonly HeaderNames _headerNames = new();
     private readonly KeyValuePair<string, object?>[] _batchCountTags;
     private readonly State?[] _states;
     internal int Size { get; }
 
     internal BatchExecution(IServiceScopeFactory scopes, BatchDispatcher dispatch, MessageType identity,
         IConsumerDefinition consumer, ConsumeFailureDelegate failure, IFailureClassifier classifier,
-        FailurePipeline? failures, ActivitySource? source)
+        FailurePipeline? failures, ActivitySource? source, ConsumeTracing? tracing)
     {
         _scopes = scopes;
         _dispatch = dispatch;
@@ -31,13 +31,14 @@ internal sealed class BatchExecution
         _classifier = classifier;
         _failures = failures;
         _source = source;
+        _tracing = tracing;
         Size = consumer.BatchSize;
         _destination = consumer.Source;
         _spanName = "process " + consumer.Source;
         _batchCountTags = new KeyValuePair<string, object?>[Size];
         for (var i = 0; i < Size; i++) _batchCountTags[i] = new("messaging.batch.message_count", i + 1);
         _states = new State[consumer.Concurrency];
-        for (var i = 0; i < _states.Length; i++) _states[i] = new State(Size, _destination);
+        for (var i = 0; i < _states.Length; i++) _states[i] = new State(Size, _destination, _tracing);
     }
 
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
@@ -49,6 +50,9 @@ internal sealed class BatchExecution
         var state = Rent();
         var begun = 0;
         Activity? activity = null;
+        var unrecovered = false;
+        var pendingFailure = false;
+        Exception? loggedFailure = null;
         try
         {
             for (; begun < contexts.Length; begun++)
@@ -70,7 +74,9 @@ internal sealed class BatchExecution
                 if (error is null) state.Active[count++] = context;
                 else
                 {
-                    RecordError(activity, error);
+                    unrecovered = true;
+                    owner.LogFailure(context, error);
+                    loggedFailure = error;
                     await HandleFailureAsync(context, error).ConfigureAwait(false);
                 }
             }
@@ -110,7 +116,11 @@ internal sealed class BatchExecution
                     if (state.Errors[i] is not null) failed++;
                     else if (state.Active[i].Settlement.Request is { Kind: not DispositionKind.Complete }) redirected++;
                 }
-                if (failed == 0 && redirected == 0) await state.FlushAsync(buffer, count, cancellationToken).ConfigureAwait(false);
+                if (failed == 0 && redirected == 0)
+                {
+                    await state.FlushAsync(buffer, count, cancellationToken).ConfigureAwait(false);
+                    pendingFailure = false;
+                }
                 else if (failed + redirected < count && !buffer.IsEmpty)
                 {
                     // One scoped sender cannot attribute output to individual items. Fail the
@@ -118,6 +128,7 @@ internal sealed class BatchExecution
                     var error = new InvalidOperationException("A partially failed or manually redirected batch has buffered sends that cannot be attributed to individual messages. The whole attempt failed; use per-message durable outbox transactions for independent success.");
                     for (var i = 0; i < count; i++) state.Errors[i] ??= error;
                 }
+                if (failed != 0) pendingFailure = true;
                 cancellationToken.ThrowIfCancellationRequested();
                 buffer.Clear();
                 var pending = 0;
@@ -137,7 +148,9 @@ internal sealed class BatchExecution
                         continue;
                     }
                     context.Settlement.Clear();
-                    RecordError(activity, error);
+                    pendingFailure = true;
+                    owner.LogFailure(context, error);
+                    loggedFailure = error;
                     var action = _classifier.Classify(error, context);
                     if (_failures is not null)
                     {
@@ -148,32 +161,65 @@ internal sealed class BatchExecution
                             state.Active[pending++] = context;
                             continue;
                         }
+                        unrecovered = true;
                         await _failures.HandleAsync(context, error, action).ConfigureAwait(false);
                     }
-                    else await _failure(context, error, action).ConfigureAwait(false);
+                    else
+                    {
+                        unrecovered = true;
+                        await _failure(context, error, action).ConfigureAwait(false);
+                    }
                 }
                 count = pending;
                 if (count > 0) await _failures!.WaitRetryAsync(retry++, cancellationToken).ConfigureAwait(false);
             }
+            if (owner.Settlement is { } settle)
+            {
+                for (var i = 0; i < contexts.Length; i++)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    var context = contexts.Span[i];
+                    context.CancellationToken.ThrowIfCancellationRequested();
+                    context.ClearServices();
+                    context.ApplyFailureDisposition();
+                    try { await settle(context).ConfigureAwait(false); }
+                    catch (Exception error)
+                    {
+                        if (error is not OperationCanceledException || !context.CancellationToken.IsCancellationRequested)
+                            owner.LogFailure(context, error);
+                        loggedFailure = error;
+                        throw;
+                    }
+                }
+            }
         }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested || DeliveryCancelled(contexts)) { throw; }
         catch (Exception error)
         {
-            RecordError(activity, error);
+            unrecovered = true;
+            if (!ReferenceEquals(loggedFailure, error)) owner.LogFailure(contexts.Span[0], error);
             throw;
         }
         finally
         {
-            activity?.Dispose();
-            for (var i = 0; i < begun; i++)
+            try
             {
-                contexts.Span[i].SendBuffer.Clear();
-                contexts.Span[i].EndProcessing();
+                if (unrecovered || pendingFailure) MessageOperationTracing.Fail(activity, "_OTHER");
+                activity?.Dispose();
             }
-            Array.Clear(state.Active);
-            Array.Clear(state.Errors);
-            state.Links.Clear();
-            for (var i = 0; i < _states.Length; i++)
-                if (Interlocked.CompareExchange(ref _states[i], state, null) is null) break;
+            finally
+            {
+                for (var i = 0; i < begun; i++)
+                {
+                    contexts.Span[i].SendBuffer.Clear();
+                    contexts.Span[i].EndProcessing();
+                }
+                Array.Clear(state.Active);
+                Array.Clear(state.Errors);
+                state.Links.Clear();
+                for (var i = 0; i < _states.Length; i++)
+                    if (Interlocked.CompareExchange(ref _states[i], state, null) is null) break;
+            }
         }
     }
 
@@ -188,20 +234,22 @@ internal sealed class BatchExecution
         }
     }
 
-    private static void RecordError(Activity? activity, Exception error)
+    private static bool DeliveryCancelled(ReadOnlyMemory<DefaultMessageContext> contexts)
     {
-        if (activity is null) return;
-        // Exception type is error-path diagnostic metadata, never a dispatch lookup.
-        activity.SetTag("error.type", error.GetType().FullName ?? "_OTHER");
-        activity.SetStatus(ActivityStatusCode.Error);
+        for (var i = 0; i < contexts.Length; i++)
+            if (contexts.Span[i].CancellationToken.IsCancellationRequested) return true;
+        return false;
     }
 
     private Activity? StartActivity(ReadOnlyMemory<DefaultMessageContext> contexts, State state)
     {
+        if (_tracing is not null)
+            return _tracing.StartBatch(contexts, state.Tags, state.Links, _batchCountTags[contexts.Length - 1]);
         if (_source is null || !_source.HasListeners()) return null;
         for (var i = 0; i < contexts.Length; i++)
         {
-            var creation = MessageCreationContext.Read<MessageHeaders, CreationHeaderReader>(contexts.Span[i].Headers, _headerNames);
+            var context = contexts.Span[i];
+            var creation = MessageCreationContext.Read<MessageHeaders, CreationHeaderReader>(context.Headers, context.EnvelopeNames);
             if (creation != default) state.Links.Add(new(creation));
         }
         state.Tags[^1] = _batchCountTags[contexts.Length - 1];
@@ -214,7 +262,7 @@ internal sealed class BatchExecution
     {
         for (var i = 0; i < _states.Length; i++)
             if (Interlocked.Exchange(ref _states[i], null) is { } state) return state;
-        return new State(Size, _destination);
+        return new State(Size, _destination, _tracing);
     }
 
     private readonly struct CreationHeaderReader : IMessageHeaderReader<MessageHeaders>
@@ -223,12 +271,12 @@ internal sealed class BatchExecution
             message.TryGetValue(name, out value);
     }
 
-    private sealed class State(int size, string destination)
+    private sealed class State(int size, string destination, ConsumeTracing? tracing)
     {
         internal readonly DefaultMessageContext[] Active = new DefaultMessageContext[size];
         internal readonly Exception?[] Errors = new Exception[size];
         internal readonly List<ActivityLink> Links = new(size);
-        internal readonly KeyValuePair<string, object?>[] Tags =
+        internal readonly KeyValuePair<string, object?>[] Tags = tracing?.CreateBatchTags() ??
         [
             new("messaging.operation.type", "process"), new("messaging.operation.name", "process"),
             new("messaging.destination.name", destination), default
