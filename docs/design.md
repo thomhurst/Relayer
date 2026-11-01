@@ -305,7 +305,7 @@ services.AddRelayer(relayer =>
 });
 ```
 
-Register a custom `IMessageSerializer` in the service collection before or inside `AddRelayer` to replace JSON. Separate `AddRelayer` registrations keep their generated contexts, options and writer pools isolated. Typed metadata is resolved at startup. Serialization reuses a bounded writer pool per options instance; deserialization reads the sequence directly and rejects null bodies and trailing JSON values.
+Register a custom `IMessageSerializer` in the service collection before or inside `AddRelayer` to replace JSON. Call `AddRelayer` once per service collection; a second call throws before running its configuration callback. Registrations on separate service collections keep their generated contexts, options and writer pools isolated. Typed metadata is resolved at startup. Serialization reuses a bounded writer pool per options instance; deserialization reads the sequence directly and rejects null bodies and trailing JSON values.
 
 ### 4.4 Versioning
 

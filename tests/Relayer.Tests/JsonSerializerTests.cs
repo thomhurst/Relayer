@@ -209,10 +209,49 @@ public class JsonSerializerTests
             {
                 buffer.Clear();
                 serializer.Serialize(new JsonValue(count), buffer);
+                var expectedName = index % 2 == 0 ? "count" : "Count";
+                if (Encoding.UTF8.GetString(buffer.WrittenSpan) != $"{{\"{expectedName}\":{count}}}")
+                    throw new InvalidOperationException("Serializer options leaked across providers.");
                 var result = serializer.Deserialize<JsonValue>(new ReadOnlySequence<byte>(buffer.WrittenMemory));
                 if (result.Count != count) throw new InvalidOperationException("Concurrent writer corruption.");
             }
         })));
+    }
+
+    [Test]
+    public async Task Second_registration_fails_before_configuring_or_changing_the_serializer()
+    {
+        var services = new ServiceCollection().AddRelayer(builder => builder.AddMessageTypesFromThisAssembly());
+        var configured = false;
+        await Assert.That(() => services.AddRelayer(builder =>
+        {
+            configured = true;
+            builder.AddMessageTypesFromThisAssembly(new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase });
+        })).Throws<InvalidOperationException>().WithMessageContaining("single call");
+
+        await Assert.That(configured).IsFalse();
+        using var provider = services.BuildServiceProvider();
+        var buffer = new ArrayBufferWriter<byte>();
+        provider.GetRequiredService<IMessageSerializer>().Serialize(new JsonValue(42), buffer);
+        await Assert.That(Encoding.UTF8.GetString(buffer.WrittenSpan)).IsEqualTo("{\"Count\":42}");
+    }
+
+    [Test]
+    public async Task Context_metadata_does_not_register_additional_message_types()
+    {
+        using var provider = new ServiceCollection().AddRelayer(builder =>
+        {
+            builder.MessageTypes.Add<JsonValue>("manual");
+            builder.UseJsonSerializer(new RelayerGeneratedJsonContext());
+        }).BuildServiceProvider();
+        var serializer = provider.GetRequiredService<IMessageSerializer>();
+        var buffer = new ArrayBufferWriter<byte>();
+        serializer.Serialize(new JsonValue(42), buffer);
+        await Assert.That(serializer.Deserialize<JsonValue>(new ReadOnlySequence<byte>(buffer.WrittenMemory))).IsEqualTo(new JsonValue(42));
+        await Assert.That(() => serializer.Serialize(new JsonOrder("Ada", 1, []), buffer))
+            .Throws<InvalidOperationException>().WithMessageContaining("UseJsonSerializer");
+        await Assert.That(() => serializer.Deserialize<JsonOrder>(new ReadOnlySequence<byte>(buffer.WrittenMemory)))
+            .Throws<InvalidOperationException>().WithMessageContaining("UseJsonSerializer");
     }
 
     private static ServiceProvider CreateProvider(JsonSerializerOptions? options = null) =>

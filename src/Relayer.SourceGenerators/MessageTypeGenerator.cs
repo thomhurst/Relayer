@@ -133,13 +133,17 @@ public sealed class MessageTypeGenerator : IIncrementalGenerator
         }
         foreach (var diagnostic in result.Diagnostics)
         {
+            if (diagnostic.Location.SourceTree != declaration)
+            {
+                context.ReportDiagnostic(diagnostic);
+                continue;
+            }
             // The temporary declaration is not part of Roslyn's input compilation, so
             // diagnostics referring to it must be forwarded without that source location.
-            var location = diagnostic.Location.SourceTree == declaration ? Location.None : diagnostic.Location;
             var descriptor = new DiagnosticDescriptor(diagnostic.Id, diagnostic.Descriptor.Title, "{0}",
                 diagnostic.Descriptor.Category, diagnostic.Severity, isEnabledByDefault: true,
                 helpLinkUri: diagnostic.Descriptor.HelpLinkUri);
-            context.ReportDiagnostic(Diagnostic.Create(descriptor, location, diagnostic.GetMessage()));
+            context.ReportDiagnostic(Diagnostic.Create(descriptor, Location.None, diagnostic.GetMessage()));
         }
     }
 

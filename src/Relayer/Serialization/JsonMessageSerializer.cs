@@ -1,4 +1,5 @@
 using System.Buffers;
+using System.Collections.Frozen;
 using System.Text.Json;
 using System.Text.Json.Serialization.Metadata;
 
@@ -6,22 +7,23 @@ namespace Relayer.Serialization;
 
 internal sealed class JsonMessageSerializer : IMessageSerializer
 {
-    private readonly Entry[] _messageTypes;
+    private readonly FrozenDictionary<object, Entry> _messageTypes;
 
-    public JsonMessageSerializer(JsonTypeInfo[] messageTypes)
+    public JsonMessageSerializer(JsonMessageType[] messageTypes)
     {
-        _messageTypes = new Entry[messageTypes.Length];
+        var entries = new Dictionary<object, Entry>(messageTypes.Length, ReferenceEqualityComparer.Instance);
         var pools = new Dictionary<JsonSerializerOptions, WriterPool>(ReferenceEqualityComparer.Instance);
         for (var i = 0; i < messageTypes.Length; i++)
         {
-            var typeInfo = messageTypes[i];
+            var typeInfo = messageTypes[i].TypeInfo;
             if (!pools.TryGetValue(typeInfo.Options, out var pool))
             {
                 pool = new WriterPool(typeInfo.Options);
                 pools.Add(typeInfo.Options, pool);
             }
-            _messageTypes[i] = new Entry(typeInfo, pool);
+            entries.Add(messageTypes[i].Key, new Entry(typeInfo, pool));
         }
+        _messageTypes = entries.ToFrozenDictionary(ReferenceEqualityComparer.Instance);
     }
 
     public string ContentType => "application/json";
@@ -29,7 +31,9 @@ internal sealed class JsonMessageSerializer : IMessageSerializer
     public void Serialize<TMessage>(TMessage message, IBufferWriter<byte> destination)
     {
         ArgumentNullException.ThrowIfNull(destination);
-        var typeInfo = GetTypeInfo<TMessage>(out var pool);
+        var entry = GetEntry<TMessage>();
+        var typeInfo = (JsonTypeInfo<TMessage>)entry.TypeInfo;
+        var pool = entry.Pool;
         var writer = pool.Rent(destination);
         try
         {
@@ -44,14 +48,9 @@ internal sealed class JsonMessageSerializer : IMessageSerializer
 
     public TMessage Deserialize<TMessage>(ReadOnlySequence<byte> source)
     {
-        var typeInfo = GetTypeInfo<TMessage>(out _);
-        var options = typeInfo.Options;
-        var reader = new Utf8JsonReader(source, new JsonReaderOptions
-        {
-            AllowTrailingCommas = options.AllowTrailingCommas,
-            CommentHandling = options.ReadCommentHandling,
-            MaxDepth = options.MaxDepth
-        });
+        var entry = GetEntry<TMessage>();
+        var typeInfo = (JsonTypeInfo<TMessage>)entry.TypeInfo;
+        var reader = new Utf8JsonReader(source, entry.ReaderOptions);
         var message = JsonSerializer.Deserialize(ref reader, typeInfo);
         if (reader.Read())
         {
@@ -60,21 +59,27 @@ internal sealed class JsonMessageSerializer : IMessageSerializer
         return message is null ? throw new JsonException("A message body cannot be null.") : message;
     }
 
-    private JsonTypeInfo<TMessage> GetTypeInfo<TMessage>(out WriterPool pool)
+    private Entry GetEntry<TMessage>()
     {
-        // Typed metadata is resolved once at startup. No reflection, Type lookup or boxing here.
-        foreach (var entry in _messageTypes)
+        // The generic key is initialized at registration. No reflection, Type lookup or boxing here.
+        if (_messageTypes.TryGetValue(JsonMessageType<TMessage>.Key, out var entry))
         {
-            if (entry.TypeInfo is JsonTypeInfo<TMessage> typed)
-            {
-                pool = entry.Pool;
-                return typed;
-            }
+            return entry;
         }
         throw new InvalidOperationException("No JSON metadata is registered for this message. Register its [Message] type and call AddMessageTypesFromThisAssembly or UseJsonSerializer with a source-generated context.");
     }
 
-    private readonly record struct Entry(JsonTypeInfo TypeInfo, WriterPool Pool);
+    private sealed class Entry(JsonTypeInfo typeInfo, WriterPool pool)
+    {
+        public JsonTypeInfo TypeInfo { get; } = typeInfo;
+        public WriterPool Pool { get; } = pool;
+        public JsonReaderOptions ReaderOptions { get; } = new()
+        {
+            AllowTrailingCommas = typeInfo.Options.AllowTrailingCommas,
+            CommentHandling = typeInfo.Options.ReadCommentHandling,
+            MaxDepth = typeInfo.Options.MaxDepth
+        };
+    }
 
     private sealed class WriterPool(JsonSerializerOptions options)
     {

@@ -25,12 +25,27 @@ public class JsonSerializerBenchmarks
     private ReadOnlySequence<byte> _source;
     private JsonTypeInfo<JsonOrder> _typeInfo = null!;
 
+    [Params(1, 100)]
+    public int MessageTypeCount { get; set; }
+
     [GlobalSetup]
     public void Setup()
     {
-        _provider = new ServiceCollection().AddRelayer(builder => builder.AddMessageTypesFromThisAssembly()).BuildServiceProvider();
+        var context = new RelayerGeneratedJsonContext();
+        _provider = new ServiceCollection().AddRelayer(builder =>
+        {
+            if (MessageTypeCount == 100)
+            {
+                builder.AddMessageTypesFromThisAssembly();
+            }
+            else
+            {
+                builder.MessageTypes.Add<JsonOrder>("bench.json-order");
+            }
+            builder.UseJsonSerializer(context);
+        }).BuildServiceProvider();
         _serializer = _provider.GetRequiredService<IMessageSerializer>();
-        _typeInfo = (JsonTypeInfo<JsonOrder>)RelayerGeneratedJsonContext.Default.GetTypeInfo(typeof(JsonOrder))!;
+        _typeInfo = (JsonTypeInfo<JsonOrder>)context.GetTypeInfo(typeof(JsonOrder))!;
         _serializer.Serialize(_message, _buffer);
         _source = new ReadOnlySequence<byte>(_buffer.WrittenMemory.ToArray());
         _buffer.Clear();
