@@ -295,7 +295,8 @@ const status = [
   ['PostgreSQL ADO.NET and Dapper transactions', 'Implemented enqueue path', true],
   ['Unordered PostgreSQL direct dispatch after EF commit', 'Implemented direct path', true],
   ['Native broker health adapters', 'Planned', false],
-  ['Outbox recovery, ordered dispatch, leases, cleanup and inbox', 'Planned', false],
+  ['Ordered PostgreSQL dispatch and lane leases', 'Implemented', true],
+  ['Outbox recovery, cleanup and inbox', 'Planned', false],
   ['Send and delivery tracing, settlement, metrics and logs', 'Implemented', true],
   ['Native receive and outbox telemetry', 'Planned', false],
 ];

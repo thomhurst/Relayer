@@ -99,4 +99,73 @@ public static class PostgreSqlOutboxServiceCollectionExtensions
         services.AddKeyedScoped<IOutboxStore>(storeName, (_, _) => new PostgreSqlOutboxStore(dataSource, snapshot));
         return services;
     }
+
+    /// <summary>Starts one named worker for ordered rows. Deploy schema and register native transports first.</summary>
+    /// <remarks>The application owns the data source. Writer and all workers must use identical schema, prefix and lane count.</remarks>
+    public static IServiceCollection AddRelayerPostgreSqlOrderedDispatch(this IServiceCollection services,
+        string name, Npgsql.NpgsqlDataSource dataSource, PostgreSqlOrderedDispatchOptions? options = null)
+    {
+        ArgumentNullException.ThrowIfNull(services);
+        ArgumentException.ThrowIfNullOrWhiteSpace(name);
+        ArgumentNullException.ThrowIfNull(dataSource);
+        options ??= new();
+        _ = options.Validate();
+        foreach (var descriptor in services)
+            if (descriptor.ServiceType == typeof(PostgreSqlOrderedDispatcher) && Equals(descriptor.ServiceKey, name))
+                throw new InvalidOperationException($"Ordered outbox dispatcher '{name}' is already registered.");
+        var snapshot = options;
+        services.AddOptions<PostgreSqlOrderedDispatchOptions>(name);
+        services.AddSingleton(new OrderedRegistration(name, snapshot));
+        services.TryAddSingleton<IOptionsFactory<PostgreSqlOrderedDispatchOptions>>(provider =>
+            new OrderedOptionsFactory(provider.GetServices<OrderedRegistration>(), provider.GetServices<IConfigureOptions<PostgreSqlOrderedDispatchOptions>>(),
+                provider.GetServices<IPostConfigureOptions<PostgreSqlOrderedDispatchOptions>>(),
+                provider.GetServices<IValidateOptions<PostgreSqlOrderedDispatchOptions>>()));
+        services.AddKeyedSingleton<PostgreSqlOrderedDispatcher>(name, (provider, _) =>
+            new(dataSource, provider.GetRequiredService<IOptionsMonitor<PostgreSqlOrderedDispatchOptions>>().Get(name),
+                provider.GetServices<ITransport>(), provider.GetRequiredService<ILogger<PostgreSqlOrderedDispatcher>>()));
+        services.AddSingleton<IHostedService>(provider => provider.GetRequiredKeyedService<PostgreSqlOrderedDispatcher>(name));
+        return services;
+    }
+
+    /// <summary>Binds immutable ordered-dispatch settings without reflection, including under Native AOT.</summary>
+    public static IServiceCollection AddRelayerPostgreSqlOrderedDispatch(this IServiceCollection services,
+        string name, Npgsql.NpgsqlDataSource dataSource, IConfiguration configuration)
+    {
+        ArgumentNullException.ThrowIfNull(configuration);
+        var defaults = new PostgreSqlOrderedDispatchOptions();
+        return services.AddRelayerPostgreSqlOrderedDispatch(name, dataSource, new PostgreSqlOrderedDispatchOptions
+        {
+            Schema = configuration[nameof(defaults.Schema)],
+            TablePrefix = configuration[nameof(defaults.TablePrefix)] ?? defaults.TablePrefix,
+            Lanes = ReadOrdered(configuration, nameof(defaults.Lanes), defaults.Lanes),
+            LeaseDuration = ReadOrdered(configuration, nameof(defaults.LeaseDuration), defaults.LeaseDuration),
+            PollInterval = ReadOrdered(configuration, nameof(defaults.PollInterval), defaults.PollInterval),
+            BatchSize = ReadOrdered(configuration, nameof(defaults.BatchSize), defaults.BatchSize)
+        });
+    }
+
+    private static T ReadOrdered<T>(IConfiguration configuration, string key, T fallback) where T : IParsable<T>
+    {
+        var value = configuration[key];
+        if (value is null) return fallback;
+        if (T.TryParse(value, CultureInfo.InvariantCulture, out var result)) return result;
+        throw new ArgumentException($"Ordered dispatch {key}: '{value}' is invalid.", nameof(configuration));
+    }
+
+    private sealed record OrderedRegistration(string Name, PostgreSqlOrderedDispatchOptions Options);
+
+    private sealed class OrderedOptionsFactory(IEnumerable<OrderedRegistration> registrations,
+        IEnumerable<IConfigureOptions<PostgreSqlOrderedDispatchOptions>> setups,
+        IEnumerable<IPostConfigureOptions<PostgreSqlOrderedDispatchOptions>> postConfigures,
+        IEnumerable<IValidateOptions<PostgreSqlOrderedDispatchOptions>> validations)
+        : OptionsFactory<PostgreSqlOrderedDispatchOptions>(setups, postConfigures, validations)
+    {
+        protected override PostgreSqlOrderedDispatchOptions CreateInstance(string requestedName)
+        {
+            foreach (var registration in registrations)
+                if (registration.Name == requestedName) return registration.Options;
+            return new();
+        }
+    }
+
 }

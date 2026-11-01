@@ -22,6 +22,8 @@ CREATE TABLE IF NOT EXISTS {{schema}}.{{outbox}} (
 
 CREATE INDEX IF NOT EXISTS {{outbox_pending_idx}} ON {{schema}}.{{outbox}} (lane, id)
     WHERE status = 'pending';
+CREATE INDEX IF NOT EXISTS {{outbox_parked_idx}} ON {{schema}}.{{outbox}} (lane, ordering_key, id)
+    WHERE status = 'parked';
 CREATE INDEX IF NOT EXISTS {{outbox_scheduled_idx}} ON {{schema}}.{{outbox}} (deliver_at)
     WHERE deliver_at IS NOT NULL;
 

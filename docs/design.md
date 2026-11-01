@@ -490,16 +490,18 @@ not parked or dead, due at the query instant and without a live claim. Health us
 all lanes. Claims use a unique token and an expiry; renew, completion and failure updates require the matching
 live token, so a stale dispatcher cannot mutate a reclaimed row. PostgreSQL schema creation and the
 [PostgreSQL read/claim store](../website/docs/reference/postgres-store.md),
-[EF Core transactional enqueue](../website/docs/reference/ef-core-outbox.md) and
-[unordered direct dispatch](../website/docs/reference/direct-dispatch.md) are implemented. Recovery polling,
-ordered lane ownership and cleanup remain planned; registering the read/claim store alone does not start dispatch.
+[EF Core transactional enqueue](../website/docs/reference/ef-core-outbox.md),
+[ADO.NET/Dapper transactions](../website/docs/reference/postgres-outbox.md),
+[unordered direct dispatch](../website/docs/reference/direct-dispatch.md) and
+[ordered lane dispatch](../website/docs/reference/ordered-dispatch.md) are implemented. Recovery polling
+and cleanup remain planned; registering the read/claim store alone does not start dispatch.
 
 ### 6.4 Dispatching
 
 There are two paths, each chosen per message based on whether its route is ordered:
 
 1. **Unordered messages — direct dispatch.** After commit, the instance that committed dispatches immediately, in the background, without waiting for a poll. It claims an eligible row with a conditional update that sets a fresh claim token and expiry only when no live claim exists. Completion, renewal and failure updates require that token and an unexpired claim. This prevents concurrent claims and stale database mutations; a crash or a broker send that outlives its claim can still duplicate delivery, as allowed by the at-least-once guarantee. Latency equals the broker round trip (fixes the latency of polling designs, SlimMessageBus #275).
-2. **Ordered messages — lane leases.** Rows are hashed into N lanes (default 32). Instances lease lanes through `relayer_leases` with heartbeats and fair-share rebalancing as instances join and leave. A lane owner reads its lane in `id` order with a simple indexed range scan. There are no `SKIP LOCKED` scans across the whole table, and ordering per key is guaranteed.
+2. **Ordered messages — lane leases.** Rows are hashed into N lanes (default 32). Instances lease lanes through `relayer_leases` with heartbeats and fair-share rebalancing as instances join and leave. A lane owner reads its lane in `id` order with a simple indexed range scan. There are no `SKIP LOCKED` scans across the whole table, and connected owners do not overlap. D34 specifies transaction locks, deadlines and the at-least-once/native-send failure boundary; ordering follows visible UUID order rather than concurrent transaction commit order.
 
 The implemented PostgreSQL direct path transfers reusable buffers after EF commit to an explicitly named
 hosted worker (D33). It claims each native group of due unordered rows with one conditional statement,
@@ -507,7 +509,7 @@ excludes competing claims, respects native batch-count limits and deletes succes
 fenced statement. Completion errors after a successful send leave claims held without incrementing
 send attempts; incomplete deletions warn about duplicate delivery. It does not poll, heartbeat
 during native sends or retry failed commits. Queue overflow and shutdown leave durable work pending with
-an error log; the recovery and ordered paths below remain planned.
+an error log; recovery polling remains planned; ordered lane dispatch is implemented separately.
 
 A **sweeper** (also leased) picks up anything that was committed but not dispatched within a threshold, for example because the instance crashed. Postgres `LISTEN/NOTIFY` and SQL Server Service Broker can optionally replace the sweeper's poll.
 

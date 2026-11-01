@@ -44,6 +44,7 @@ To change a decision, add a new entry that supersedes it rather than editing his
 | [D31](#d31-ef-core-buffers-sends-for-an-explicitly-owned-context-and-flushes-at-commit) | EF Core buffers sends for an explicitly owned context and flushes at commit | Accepted |
 | [D32](#d32-postgresql-outbox-transactions-own-commit-and-expose-a-compatible-command-connection) | PostgreSQL outbox transactions own commit and expose a compatible command connection | Accepted |
 | [D33](#d33-commit-triggered-dispatch-transfers-owned-buffers-to-a-named-worker) | Commit-triggered dispatch transfers owned buffers to a named worker | Accepted |
+| [D34](#d34-ordered-postgresql-dispatch-drains-a-locked-lane-before-transfer) | Ordered PostgreSQL lane ownership and transfer | Accepted |
 
 ---
 
@@ -574,3 +575,44 @@ failing a business transaction that already committed. Shutdown drains queued co
 Recovery polling, ordered lane dispatch and poison-row processing remain separate work; direct dispatch
 alone does not recover rows left by overflow, failure or process death. Buffer handoff, sorting and
 projection have dedicated allocation benchmarks; native client and database allocations remain excluded.
+
+## D34. Ordered PostgreSQL dispatch drains a locked lane before transfer
+
+**Context.** Expiring leases alone let a successor overtake a slow connected sender. UUIDv7 ordering also
+cannot imply transaction commit order, and a database token cannot fence a request already sent to a broker.
+
+**Decision.** Refine D12's ordered dispatch protocol. Members heartbeat in the existing lease table using the
+database clock. Live members, sorted by their unique IDs, divide lanes by rank. A member stops renewing
+lanes outside its fair share. Successors wait for expiry; shutdown releases leases after native work drains.
+Each bounded batch holds its lane lease row lock in a separate database transaction through sequential
+native sends, row claims and fenced outcomes. Broker latency never enters the business transaction.
+A cancellation deadline of half the lease duration covers the entire batch. Admission stops after one quarter
+of the lease duration to reserve time for the final send and commit; healthy slow batches commit their prefix.
+A single native operation must still fit the hard deadline. A connected transaction is never
+forcibly revoked. Reads use the pending lane/ID index and never skip a scheduled or live-claimed head.
+An indexed anti-join excludes later rows of parked keys while allowing other keys to continue.
+After committed progress, the worker immediately starts another fair scan; only scans with no progress wait
+for the polling interval. A busy lane cannot consume another lane's turn by draining without a scan boundary.
+Each scan probes assigned lanes' first non-parked heads in one read-only query. Empty, scheduled and
+live-claimed lanes incur no lease writes. This probe is only a hint: the worker re-reads and claims under
+the lane transaction lock, so a stale probe cannot authorize a send or skip a head. Membership refreshes
+when one third of the lease duration has elapsed on the monotonic clock, including between slow lane
+batches, rather than once for every lane. The database clock still decides expiry and ownership.
+Mutation commands and their typed parameters belong to the single dispatch loop and are reused across
+rows and batches. Per-row claim and completion statements deliberately remain: each send checks the
+head's eligibility, and each outcome checks its live token before advancing. Removing these fences or
+batching outcomes would require a separate protocol change; command reuse removes their construction
+allocations without weakening that boundary. Native execution, materialization and I/O costs remain
+outside the managed command-binding benchmark.
+
+**Consequences.** Database failure or uncertain completion rolls back the batch, so accepted sends can replay.
+Ordering describes ascending visible UUIDs, not concurrent writers' commit order. When a database connection
+fails while a native request is in flight, that request can arrive late: neither cancellation nor the lease can
+retract it. Native ordering semantics and the at-least-once contract remain unchanged. Strict fencing of native
+requests requires broker support and is not emulated. Idempotent consumers remain necessary.
+Poison-row handling, retry limits and key-scoped parking remain tracked by
+[#34](https://github.com/thomhurst/Relayer/issues/34).
+
+**Alternatives rejected.** Lease expiry without a transaction guard permits concurrent connected senders.
+Stealing live ownership for faster rebalancing violates safe drain. Claim-only scans can skip a live or
+scheduled head. Holding a business transaction across broker I/O couples application durability to the broker.

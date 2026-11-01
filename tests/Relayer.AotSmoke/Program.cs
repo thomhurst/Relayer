@@ -107,6 +107,47 @@ await using (var dataSource = new Npgsql.NpgsqlSlimDataSourceBuilder(postgresCon
         Console.WriteLine("Real PostgreSQL transaction wrapper and batched enqueue passed under Native AOT.");
     }
 }
+await using (var orderedSource = new Npgsql.NpgsqlSlimDataSourceBuilder(postgresConnectionString ?? "Host=127.0.0.1;Port=1;Timeout=1").EnableArrays().Build())
+{
+    var native = new OrderedSmokeTransport();
+    var orderedServices = new ServiceCollection().AddLogging();
+    orderedServices.AddSingleton<ITransport>(native);
+    orderedServices.AddRelayerPostgreSqlOrderedDispatch("ordered-smoke", orderedSource,
+        new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
+        {
+            ["Lanes"] = "1", ["BatchSize"] = "2", ["PollInterval"] = "00:00:00.05"
+        }).Build());
+    await using var orderedProvider = orderedServices.BuildServiceProvider();
+    var worker = orderedProvider.GetRequiredService<IHostedService>();
+    var settings = orderedProvider.GetRequiredService<Microsoft.Extensions.Options.IOptionsMonitor<PostgreSqlOrderedDispatchOptions>>().Get("ordered-smoke");
+    if (settings.Lanes != 1 || settings.BatchSize != 2) throw new InvalidOperationException("Ordered dispatch options failed under Native AOT.");
+    if (postgresConnectionString is not null)
+    {
+        await using (var seed = orderedSource.CreateCommand("""
+            INSERT INTO relayer_outbox (id, lane, ordering_key, transport, destination, message_type, headers, body, created_at)
+            VALUES ('01900000-0000-7000-8000-000000000002', 0, 'customer-42', 'ordered-smoke', 'orders', 'order.v1',
+                '\x0100000001000000040000007479706502000000c3a9', '\x0102', now())
+            """))
+            await seed.ExecuteNonQueryAsync();
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+        await worker.StartAsync(timeout.Token);
+        await native.Sent.Task.WaitAsync(timeout.Token);
+        // Database completion happens after the native callback. Observe commit before stopping the worker.
+        while (true)
+        {
+            await using var count = orderedSource.CreateCommand("SELECT count(*) FROM relayer_outbox WHERE lane = 0");
+            if ((long)(await count.ExecuteScalarAsync(timeout.Token))! == 0) break;
+            await Task.Yield();
+        }
+        await worker.StopAsync(timeout.Token);
+        await using var leases = orderedSource.CreateCommand("SELECT count(*) FROM relayer_leases");
+        if ((long)(await leases.ExecuteScalarAsync(timeout.Token))! != 0)
+            throw new InvalidOperationException("Ordered leases were not released under Native AOT.");
+        Console.WriteLine("Real PostgreSQL ordered dispatch and lease release passed under Native AOT.");
+    }
+}
+Console.WriteLine("Ordered PostgreSQL dispatch registration and immutable options passed under Native AOT.");
+
 Console.WriteLine("PostgreSQL keyed stores and cancellation passed under Native AOT.");
 // This validates scoped registration and immutable configuration, without claiming an EF compiled-model round trip.
 var outboxServices = new ServiceCollection();
@@ -460,3 +501,23 @@ public sealed class SmokeHealthProvider : ITransportHealthProbe, IConsumerHealth
 }
 
 public sealed class SmokeServiceBusReceiver : ServiceBusReceiver;
+
+internal sealed class OrderedSmokeTransport : ITransport
+{
+    public string Name => "ordered-smoke";
+    internal TaskCompletionSource Sent { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    public TransportCapabilities GetCapabilities(string endpoint) => new() { OrderedByKey = true };
+    public ValueTask SendAsync(OutgoingMessage message, CancellationToken cancellationToken)
+    {
+        if (message.OrderingKey?.ToString() != "customer-42" || !message.Body.Span.SequenceEqual(new byte[] { 1, 2 }) ||
+            message.Headers.Span[0].Value.ToString() != "é" || message.DeliverAt is not null)
+            throw new InvalidOperationException("Ordered payload failed under Native AOT.");
+        Sent.TrySetResult();
+        return ValueTask.CompletedTask;
+    }
+    public ValueTask SendBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken) => throw new NotSupportedException();
+    public ValueTask<TopologyReport> ApplyTopologyAsync(TopologyMode mode, CancellationToken cancellationToken) => new(new TopologyReport([]));
+    public Task StartAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+    public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+    public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+}

@@ -9,9 +9,9 @@ PostgreSQL `INSERT` immediately before commit. The insert uses the same connecti
 the business data. No `SaveChanges` override or outbox entity mapping is required.
 
 Enlistment alone persists rows. Enable [unordered direct dispatch](direct-dispatch.md) to send due messages
-in the background after commit. Otherwise register the [PostgreSQL durable store](postgres-store.md)
-separately for reads, claims and backlog health queries. Recovery polling, inbox, lane leases, cleanup
-and outbox tracing remain planned.
+in the background after commit, or register [ordered dispatch and lane leases](ordered-dispatch.md) separately.
+Register the [PostgreSQL durable store](postgres-store.md) separately for reads, claims and backlog health queries.
+Recovery polling, inbox, cleanup and outbox tracing remain planned.
 There are no published NuGet packages yet; use project references from a repository checkout.
 
 ## Registration
@@ -50,8 +50,9 @@ binds immutable defaults through the Options pattern. `IOptionsSnapshot<EntityFr
 keeps a scope's settings stable; configuration changes apply to newly created scopes. Invalid identifiers,
 nonpositive lane counts and malformed numeric values fail validation. A per-context options argument
 overrides those defaults. Always match the deployed schema and prefix. Drain the outbox before changing lanes.
-`LeaseDuration` and `MaxDispatchAttempts` belong to planned lease and poison-row integrations and do not
-affect enlistment. Direct dispatch uses its own `PostgreSqlDirectDispatchOptions.ClaimDuration`.
+`LeaseDuration` and `MaxDispatchAttempts` do not affect enlistment. Configure ordered worker deadlines
+through `PostgreSqlOrderedDispatchOptions`; direct dispatch uses `PostgreSqlDirectDispatchOptions.ClaimDuration`.
+Poison-row movement remains planned.
 
 ## Save without an explicit transaction
 
