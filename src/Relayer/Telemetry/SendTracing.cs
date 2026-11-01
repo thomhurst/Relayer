@@ -23,7 +23,7 @@ public sealed class SendTracing
     private readonly Func<ReadOnlyMemory<OutgoingMessage>, CancellationToken, ValueTask> _sendBatchNative;
     private readonly ILogger _logger;
     private readonly HeaderNames _names;
-    private readonly State?[] _states = new State?[64];
+    private readonly PoolSegment _states = new();
 
     /// <summary>Precomputes endpoint names and attributes supplied by the native adapter.</summary>
     public SendTracing(MessageTracing tracing, MessagingEndpoint endpoint,
@@ -41,7 +41,7 @@ public sealed class SendTracing
         _sendBatchNative = sendBatch;
         _logger = logger ?? NullLogger.Instance;
         _names = headerNames ?? new();
-        _states[0] = new();
+        _states.Items[0] = new();
     }
 
     internal Activity? Start(ActivityContext creationContext, bool deferred) =>
@@ -172,23 +172,48 @@ public sealed class SendTracing
 
     private State Rent(int count)
     {
-        State? state = null;
-        for (var i = 0; i < _states.Length; i++)
-            if ((state = Interlocked.Exchange(ref _states[i], null)) is not null) break;
-        state ??= new();
-        state.Ensure(count);
-        return state;
+        var segment = _states;
+        while (true)
+        {
+            for (var i = 0; i < segment.Items.Length; i++)
+            {
+                var state = Volatile.Read(ref segment.Items[i]);
+                if (state is null)
+                {
+                    var added = new State();
+                    state = Interlocked.CompareExchange(ref segment.Items[i], added, null) ?? added;
+                }
+                if (Interlocked.CompareExchange(ref state.InUse, 1, 0) != 0) continue;
+                state.Ensure(count);
+                return state;
+            }
+            // Retain the observed concurrency high-water mark instead of dropping overflow states each burst.
+            var next = Volatile.Read(ref segment.Next);
+            if (next is null)
+            {
+                var added = new PoolSegment();
+                next = Interlocked.CompareExchange(ref segment.Next, added, null) ?? added;
+            }
+            segment = next;
+        }
     }
 
-    private void Return(State state)
+    private static void Return(State state)
     {
         state.Clear();
-        for (var i = 0; i < _states.Length; i++)
-            if (Interlocked.CompareExchange(ref _states[i], state, null) is null) return;
+        // States stay in their slots. Publish availability only after all borrowed storage is cleared.
+        Volatile.Write(ref state.InUse, 0);
+    }
+
+    private sealed class PoolSegment
+    {
+        internal readonly State?[] Items = new State?[64];
+        internal PoolSegment? Next;
     }
 
     private sealed class State
     {
+        internal int InUse;
         internal OutgoingMessage[] Messages = [];
         internal ActivityContext[] Contexts = [];
         internal ActivityLink[] Links = [];
