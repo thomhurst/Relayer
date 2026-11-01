@@ -26,6 +26,12 @@ blocks a merge. It runs:
 A red `Performance` run on `main` is a regression to investigate, not a reason
 to rerun.
 
+The merge and auto-merge scripts also treat this workflow as advisory, including
+failed, cancelled and pending runs. They still enforce required CI, reviews and
+conflict checks. A failure in another workflow remains blocking even if its job
+has the same name as the performance job. Keep the reports and investigate the
+measurement; an advisory result does not establish compliance with D18.
+
 ## Run locally
 
 Use a Release build with no debugger or telemetry listener attached:

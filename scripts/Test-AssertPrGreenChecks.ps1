@@ -40,6 +40,26 @@ Assert-Equal @(Get-CheckDenial @(New-Check 'Unit Tests' 'CI' 'COMPLETED' 'FAILUR
 Assert-Equal @(Get-CheckDenial @(New-Check 'Lint' 'Other' 'IN_PROGRESS') -ForAutoMerge) @('Lint: state=IN_PROGRESS') 'A pending check of a non-required workflow denies arming'
 Assert-Equal @(Get-CheckDenial @(New-Check 'Greptile Review' '' 'IN_PROGRESS') -ForAutoMerge) @('Greptile Review: state=IN_PROGRESS') 'A pending app check denies arming'
 
+# The Performance workflow is advisory (D18); it must not become a local merge requirement.
+foreach ($mode in @($false, $true)) {
+    foreach ($state in @('FAILURE', 'CANCELLED', 'TIMED_OUT', 'IN_PROGRESS', 'QUEUED')) {
+        $check = if ($state -in @('IN_PROGRESS', 'QUEUED')) {
+            New-Check 'Performance regression gate' 'Performance' $state
+        } else { New-Check 'Performance regression gate' 'Performance' 'COMPLETED' $state }
+        Assert-Equal @(Get-CheckDenial @($green + $check) -ForAutoMerge:$mode).Count 0 "Advisory $state does not block (auto=$mode)"
+    }
+    $requiredFailure = New-Check 'Performance regression gate' 'CI' 'COMPLETED' 'FAILURE'
+    Assert-Equal @(Get-CheckDenial @($requiredFailure) -ForAutoMerge:$mode) @('Performance regression gate: state=FAILURE') 'A matching job name in CI is still required'
+}
+$advisoryFailure = New-Check 'Performance regression gate' 'Performance' 'COMPLETED' 'FAILURE'
+Assert-Equal (Test-MergeStateAllowed 'UNSTABLE' @($green + $advisoryFailure)) $true 'Advisory failure can explain UNSTABLE'
+Assert-Equal (Test-MergeStateAllowed 'UNSTABLE' $green) $false 'Unexplained UNSTABLE still denies merging'
+Assert-Equal (Test-MergeStateAllowed 'BLOCKED' @($green + $advisoryFailure)) $false 'Advisory failure cannot explain blocked protection'
+Assert-Equal (Test-MergeStateAllowed 'DIRTY' @($green + $advisoryFailure) -ForAutoMerge) $false 'Conflicts still deny arming'
+Assert-Equal @(Get-CheckDenial @($green + $advisoryFailure + $pendingCi)) @('Build & Pack: state=IN_PROGRESS') 'Advisory failure does not hide pending CI'
+Assert-Equal @(Get-CheckDenial @($advisoryFailure, $requiredFailure) -ForAutoMerge) @('Performance regression gate: state=FAILURE') 'Advisory failure does not hide failed CI'
+Assert-Equal @(Get-CheckDenial @([pscustomobject]@{ context = 'Performance'; state = 'FAILURE' })) @('Performance: state=FAILURE') 'A legacy status cannot impersonate the advisory workflow'
+
 # Claude review of the current head.
 $review = [pscustomobject]@{ user = [pscustomobject]@{ login = 'github-actions[bot]' }; body = "<!-- REVIEW_RUN: 1/1; HEAD: abc -->`nLooks good." }
 Assert-Equal (Test-ClaudeReviewForHead -Comments @($review) -Head 'abc') $true 'A review comment for the head counts'
@@ -51,6 +71,8 @@ Assert-Equal (Test-ClaudeReviewForHead -Comments @($forged) -Head 'abc') $false 
 $ci = Get-Content -Raw (Join-Path $workflows 'ci.yml')
 Assert-Equal ([regex]::Match($ci, '(?m)^name:\s*(.+)$').Groups[1].Value.Trim()) 'CI' 'ci.yml is the awaited CI workflow'
 Assert-Equal (@($AutoMergeAwaitedWorkflows) -join ',') 'CI' 'Only required-check workflows are awaited'
+$performance = Get-Content -Raw (Join-Path $workflows 'performance.yml')
+Assert-Equal ([regex]::Match($performance, '(?m)^name:\s*(.+)$').Groups[1].Value.Trim()) 'Performance' 'The advisory workflow identity matches the gate'
 $aggregator = [regex]::Match($ci, '(?ms)^  ci-passed:\r?\n(.*?)(?=^  \S|\z)').Groups[1].Value
 if (-not $aggregator) { throw 'ci.yml has no ci-passed job' }
 if ($aggregator -notmatch "(?m)^    name: \$\{\{ needs\.changes\.result == 'success' && 'CI Passed' \|\| 'CI Passed \(incomplete\)' \}\}\s*$") {

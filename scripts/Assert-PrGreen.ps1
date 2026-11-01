@@ -4,9 +4,10 @@
 # Exits 0 ONLY when PR #<N> is provably safe to merge:
 #   - state OPEN and not a draft
 #   - mergeable == MERGEABLE
-#   - mergeStateStatus == CLEAN
-#   - every current status check is terminal AND passing (CheckRun: status=COMPLETED and
-#     conclusion in SUCCESS/SKIPPED/NEUTRAL; StatusContext: state=SUCCESS). Only the newest
+#   - mergeStateStatus == CLEAN, or UNSTABLE explained by advisory Performance checks
+#   - every non-advisory current status check is terminal AND passing (CheckRun: status=COMPLETED and
+#     conclusion in SUCCESS/SKIPPED/NEUTRAL; StatusContext: state=SUCCESS).
+#     Performance is advisory under D18 and never blocks merging or arming. Only the newest
 #     execution of each check counts, so a run superseded on the same head (a skipped draft
 #     run, or one cancelled by `converted_to_draft`) does not deny forever.
 #   - no current-head top-level review has actionable finding headings
@@ -14,13 +15,13 @@
 #
 # -ForAutoMerge is the gate for arming native auto-merge (Enable-AutoMerge.ps1). GitHub's
 # auto-merge waits only for the `Main` ruleset's required checks, so this mode lets checks of
-# the workflow those aggregate (CI) still be pending, and nothing else:
+# the workflow those aggregate (CI) still be pending, plus advisory Performance:
 #   - mergeStateStatus may be BLOCKED or UNSTABLE while required checks run
-#   - every other check is terminal and passing, and no check has failed
+#   - every other non-advisory check is terminal and passing, and none has failed
 #   - the Claude review workflow has posted its review of the current head
 #   - no actionable top-level review and no unresolved review threads
 #
-# Any other state — pending/queued/in-progress checks, an empty rollup, a failed
+# Any other state — blocking pending checks, an empty rollup, a failed non-advisory
 # check, an unresolved thread, or an API hiccup — exits 1 so the caller MUST NOT
 # merge. The default on uncertainty is DENY. The caller still judges review content.
 #
@@ -68,16 +69,15 @@ catch {
 if ($view.state -ne 'OPEN') { Deny "state=$($view.state) (need OPEN)" }
 if ($view.isDraft) { Deny "PR is a draft; mark it ready only after the draft review lifecycle approves its head" }
 if ($view.mergeable -ne 'MERGEABLE') { Deny "mergeable=$($view.mergeable) (need MERGEABLE)" }
-$allowedMergeStates = if ($ForAutoMerge) { @('CLEAN', 'BLOCKED', 'UNSTABLE', 'HAS_HOOKS') } else { @('CLEAN') }
-if ($allowedMergeStates -notcontains $view.mergeStateStatus) {
-    Deny "mergeStateStatus=$($view.mergeStateStatus) (need $($allowedMergeStates -join '/'))"
-}
 $head = [string]$view.headRefOid
 if (-not $head) { Deny "PR state omitted headRefOid" }
 
 $checks = @(Select-CurrentCheck @($view.statusCheckRollup))
 if ($checks.Count -eq 0) {
     Deny "statusCheckRollup is empty -- no checks registered yet; refusing to merge blind"
+}
+if (-not (Test-MergeStateAllowed -State $view.mergeStateStatus -Checks $checks -ForAutoMerge:$ForAutoMerge)) {
+    Deny "mergeStateStatus=$($view.mergeStateStatus) is not allowed by the merge policy"
 }
 
 $bad = @(Get-CheckDenial -Checks $checks -ForAutoMerge:$ForAutoMerge)
@@ -164,9 +164,9 @@ $unresolved = @($reviewThreads | Where-Object { -not $_.isResolved }).Count
 if ($unresolved -gt 0) { Deny "$unresolved unresolved review thread(s)" }
 
 if ($ForAutoMerge) {
-    Write-Host "OK #${Pr} -- MERGEABLE, no failed or unawaited checks, Claude reviewed $head, no unresolved threads. Safe to arm auto-merge."
+    Write-Host "OK #${Pr} -- MERGEABLE, no blocking checks, Claude reviewed $head, no unresolved threads. Safe to arm auto-merge."
 }
 else {
-    Write-Host "OK #${Pr} -- MERGEABLE, CLEAN, $($checks.Count) check(s) green, no unresolved threads. Safe to merge."
+    Write-Host "OK #${Pr} -- MERGEABLE, $($view.mergeStateStatus), all non-advisory checks green, no unresolved threads. Safe to merge."
 }
 exit 0
