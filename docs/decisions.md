@@ -45,6 +45,7 @@ To change a decision, add a new entry that supersedes it rather than editing his
 | [D32](#d32-postgresql-outbox-transactions-own-commit-and-expose-a-compatible-command-connection) | PostgreSQL outbox transactions own commit and expose a compatible command connection | Accepted |
 | [D33](#d33-commit-triggered-dispatch-transfers-owned-buffers-to-a-named-worker) | Commit-triggered dispatch transfers owned buffers to a named worker | Accepted |
 | [D34](#d34-ordered-postgresql-dispatch-drains-a-locked-lane-before-transfer) | Ordered PostgreSQL lane ownership and transfer | Accepted |
+| [D35](#d35-direct-dispatch-bounds-endpoint-capability-retention) | Direct dispatch bounds endpoint capability retention | Accepted |
 
 ---
 
@@ -616,3 +617,28 @@ Poison-row handling, retry limits and key-scoped parking remain tracked by
 **Alternatives rejected.** Lease expiry without a transaction guard permits concurrent connected senders.
 Stealing live ownership for faster rebalancing violates safe drain. Claim-only scans can skip a live or
 scheduled head. Holding a business transaction across broker I/O couples application durability to the broker.
+
+## D35. Direct dispatch bounds endpoint capability retention
+
+**Context.** Dynamic tenant destinations make a worker-lifetime capability dictionary grow with all
+historical destinations, even after their durable messages complete. Native limits vary by endpoint,
+so a transport-wide capability entry cannot replace endpoint-specific resolution.
+
+**Decision.** Each unordered PostgreSQL direct worker caches at most 256 successful
+`(transport name, destination)` lookups in a preallocated dictionary and insertion-order ring.
+On a successful miss at capacity, evict the oldest inserted entry. Resolve and validate native
+capabilities before eviction, so failures do not displace valid entries. The next use of an evicted
+endpoint resolves its native limits again before claiming rows. Hits do not update eviction order.
+The cache belongs exclusively to the existing single-reader worker; it needs no locks or reflection.
+
+**Consequences.** Retained destination references and capability entries are bounded by count.
+Hot hits keep one dictionary lookup with no recency writes or managed allocations. A miss at capacity
+adds one dictionary removal and ring replacement; dictionary storage is reused. Working sets exceeding
+256 entries can cause repeated native capability resolution, including any allocations the native
+transport performs. This is the bounded-retention policy requested by #138, rather than a change to
+native send, batch limits or durable claims. Dedicated benchmarks compare hot sets and eviction churn
+against the previous unbounded lookup; their raw results remain outside the repository.
+
+**Alternatives rejected.** Transport-only keys lose endpoint-specific limits. LRU adds maintenance to
+every hit. Clearing the entire cache discards unrelated hot entries at once. A public cache setting
+adds configuration surface before evidence shows applications need one.

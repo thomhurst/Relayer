@@ -75,6 +75,13 @@ success, one SQL statement deletes the group's rows, checking every token and li
 The concrete `PostgreSqlOutboxStore.CompleteBatchAsync` exposes this fenced batch deletion to other
 PostgreSQL integration authors and returns the number of rows deleted.
 
+Each worker retains at most 256 successful capability lookups, keyed by both named transport and
+exact destination. The cache evicts the oldest inserted entry when full; hits do not change eviction
+order. An evicted destination is resolved again through `ITransport.GetCapabilities` before its next
+group is claimed, so its own native `MaxBatchSize` still applies. Failed lookups are never cached.
+This bounds retained destination metadata for applications with changing tenant destinations. Working
+sets larger than 256 entries can require more native capability lookups; there is no cache setting.
+
 ## Failures and current boundaries
 
 Delivery remains at-least-once. A crash after a broker send, a partial native batch failure or a send

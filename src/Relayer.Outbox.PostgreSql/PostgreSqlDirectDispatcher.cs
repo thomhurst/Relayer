@@ -15,7 +15,7 @@ internal sealed class PostgreSqlDirectDispatcher : BackgroundService
     private readonly Channel<OutboxDispatchBatch> _queue;
     private readonly OutboxDispatchBatch?[] _pool;
     private readonly FrozenDictionary<string, ITransport> _transports;
-    private readonly Dictionary<(string Transport, string Destination), TransportCapabilities> _capabilities = [];
+    private readonly DirectDispatchCapabilityCache _capabilities = new();
     private readonly OutgoingMessage[] _messages;
     private readonly OutboxClaim[] _claims;
     private readonly bool[] _claimed;
@@ -110,14 +110,7 @@ internal sealed class PostgreSqlDirectDispatcher : BackgroundService
             {
                 if (!_transports.TryGetValue(first.Transport, out transport!))
                     throw new InvalidOperationException($"Outbox row references unregistered transport '{first.Transport}'. Register its named ITransport.");
-                var key = (first.Transport, first.Destination);
-                if (!_capabilities.TryGetValue(key, out var capabilities))
-                {
-                    capabilities = transport.GetCapabilities(first.Destination);
-                    if (capabilities.MaxBatchSize <= 0)
-                        throw new InvalidOperationException("Outbox dispatch requires a positive native MaxBatchSize.");
-                    _capabilities.Add(key, capabilities);
-                }
+                var capabilities = _capabilities.Get(transport, first.Destination);
                 limit = Math.Min(_options.BatchSize, capabilities.MaxBatchSize);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
