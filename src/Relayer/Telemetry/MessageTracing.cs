@@ -31,7 +31,17 @@ public sealed class MessageTracing : IDisposable
     internal void Enrich(Activity activity)
     {
         if (!activity.Recorded) return;
-        foreach (var enricher in _enrichers) enricher.Enrich(activity);
+        foreach (var enricher in _enrichers)
+        {
+            try
+            {
+                enricher.Enrich(activity);
+            }
+            catch (Exception)
+            {
+                // An extension must not interrupt delivery or leave an undisposed Activity.Current.
+            }
+        }
     }
 
     /// <summary>Disposes this owner's activity source.</summary>
@@ -42,6 +52,7 @@ public sealed class MessageTracing : IDisposable
 public static class TracingBuilderExtensions
 {
     /// <summary>Registers tracing primitives. Bind TracingOptions or register IActivityEnricher services before building the provider.</summary>
+    /// <remarks>One source owner is shared per service provider; separate providers own separate sources named Relayer.</remarks>
     public static IRelayerBuilder Telemetry(this IRelayerBuilder builder)
     {
         ArgumentNullException.ThrowIfNull(builder);

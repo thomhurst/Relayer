@@ -148,7 +148,7 @@ public class TracingTests
     public async Task Enrichers_run_only_for_recorded_spans(ActivitySamplingResult sampling, int expected)
     {
         var enricher = new Enricher();
-        using var capture = new Capture(sampling: sampling, enricher: enricher);
+        using var capture = new Capture(sampling: sampling, enrichers: [enricher]);
         using var activity = new MessageOperationTracing(capture.Tracing, Endpoint, MessagingOperation.Send).Start();
         await Assert.That(enricher.Calls).IsEqualTo(expected);
         if (expected != 0) await Assert.That(activity!.DisplayName).IsEqualTo("custom send");
@@ -246,6 +246,67 @@ public class TracingTests
             .Throws<ArgumentException>();
     }
 
+    [Test]
+    [Arguments(false, 0)]
+    [Arguments(false, -1)]
+    [Arguments(true, 0)]
+    [Arguments(true, -1)]
+    public async Task Invalid_batch_count_fails_with_or_without_listener(bool listener, int count)
+    {
+        using var capture = listener ? new Capture() : null;
+        using var tracing = new MessageTracing(Options.Create(new TracingOptions()), []);
+        var operation = new MessageOperationTracing(capture?.Tracing ?? tracing, Endpoint, MessagingOperation.Send);
+        await Assert.That(() => operation.Start(new() { BatchCount = count })).Throws<ArgumentOutOfRangeException>();
+    }
+
+    [Test]
+    [Arguments(false, false)]
+    [Arguments(false, true)]
+    [Arguments(true, false)]
+    [Arguments(true, true)]
+    public async Task Create_rejects_batch_even_with_existing_context_or_no_listener(bool listener, bool existingContext)
+    {
+        using var capture = listener ? new Capture() : null;
+        using var tracing = new MessageTracing(Options.Create(new TracingOptions()), []);
+        var operation = new MessageOperationTracing(capture?.Tracing ?? tracing, Endpoint, MessagingOperation.Create);
+        var data = new MessageTraceData { BatchCount = 1, CreationContext = existingContext ? RemoteContext() : default };
+        await Assert.That(() => operation.Start(data)).Throws<ArgumentException>();
+    }
+
+    [Test]
+    [Arguments(null)]
+    [Arguments("")]
+    [Arguments(" ")]
+    public async Task Failure_with_missing_error_type_uses_fallback(string? errorType)
+    {
+        using var capture = new Capture();
+        using var activity = new MessageOperationTracing(capture.Tracing, Endpoint, MessagingOperation.Send).Start();
+        MessageOperationTracing.Fail(activity, errorType!);
+        await Assert.That(activity!.Status).IsEqualTo(ActivityStatusCode.Error);
+        await Assert.That(activity.GetTagItem("error.type")).IsEqualTo("_OTHER");
+        await Assert.That(activity.Events).IsEmpty();
+    }
+
+    [Test]
+    public async Task Throwing_enricher_does_not_interrupt_operation_or_leak_current_activity()
+    {
+        var enricher = new Enricher();
+        using var capture = new Capture(enrichers: [new ThrowingEnricher(), enricher]);
+        using var ambient = new Activity("request").Start();
+        using (var activity = new MessageOperationTracing(capture.Tracing, Endpoint, MessagingOperation.Send).Start())
+        {
+            await Assert.That(activity).IsNotNull();
+            await Assert.That(Activity.Current).IsSameReferenceAs(activity);
+        }
+        await Assert.That(Activity.Current).IsSameReferenceAs(ambient);
+        await Assert.That(enricher.Calls).IsEqualTo(1);
+    }
+
+    private sealed class ThrowingEnricher : IActivityEnricher
+    {
+        public void Enrich(Activity activity) => throw new InvalidOperationException("Enricher failed.");
+    }
+
     private sealed class Binding : IMessageHeaderReader<Dictionary<string, WireString>>, IMessageHeaderWriter<Dictionary<string, WireString>>
     {
         public static bool TryGetHeader(Dictionary<string, WireString> message, string name, out WireString value) => message.TryGetValue(name, out value);
@@ -264,9 +325,9 @@ public class TracingTests
         internal MessageTracing Tracing { get; }
         internal Dictionary<string, object?> SampleTags { get; } = [];
         private readonly ActivityListener _listener;
-        internal Capture(TracingOptions? options = null, ActivitySamplingResult sampling = ActivitySamplingResult.AllDataAndRecorded, IActivityEnricher? enricher = null)
+        internal Capture(TracingOptions? options = null, ActivitySamplingResult sampling = ActivitySamplingResult.AllDataAndRecorded, IActivityEnricher[]? enrichers = null)
         {
-            Tracing = new(Options.Create(options ?? new()), enricher is null ? [] : [enricher]);
+            Tracing = new(Options.Create(options ?? new()), enrichers ?? []);
             _listener = new()
             {
                 ShouldListenTo = source => ReferenceEquals(source, Tracing.Source),

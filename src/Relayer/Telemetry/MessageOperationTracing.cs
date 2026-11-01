@@ -64,15 +64,16 @@ public sealed class MessageOperationTracing
     /// <remarks>
     /// Dispose the result after the native operation completes. Use its context as creation context only when the
     /// message has none. Batch send callers create per-message Create operations first unless disabled in TracingOptions.
-    /// Existing creation contexts skip Create and make Send a client span. No exception events are recorded.
+    /// Existing creation contexts skip Create and make Send a client span. Invalid batch metadata is rejected even
+    /// without a listener or when creation is skipped. No exception events are recorded.
     /// </remarks>
     public Activity? Start(in MessageTraceData data = default)
     {
-        if (!_tracing.Source.HasListeners()) return null;
-        if (_operation == MessagingOperation.Create && data.CreationContext != default) return null;
         if (data.BatchCount is < 1) throw new ArgumentOutOfRangeException(nameof(data), "Batch count must be positive.");
         if (_operation == MessagingOperation.Create && data.BatchCount is not null)
             throw new ArgumentException("A create span describes one message, never a batch.", nameof(data));
+        if (!_tracing.Source.HasListeners()) return null;
+        if (_operation == MessagingOperation.Create && data.CreationContext != default) return null;
         var tags = new ActivityTagsCollection(_tags);
         if (data.BatchCount is { } count) tags.Add("messaging.batch.message_count", count);
         else
@@ -106,11 +107,11 @@ public sealed class MessageOperationTracing
     }
 
     /// <summary>Marks failure without reflection or exception events. The caller logs the exception with trace IDs.</summary>
+    /// <remarks>Missing or whitespace error types use _OTHER so diagnostics never mask the original failure.</remarks>
     public static void Fail(Activity? activity, string errorType)
     {
         if (activity is not { IsAllDataRequested: true }) return;
-        ArgumentException.ThrowIfNullOrWhiteSpace(errorType);
-        activity.SetTag("error.type", errorType);
+        activity.SetTag("error.type", string.IsNullOrWhiteSpace(errorType) ? "_OTHER" : errorType);
         activity.SetStatus(ActivityStatusCode.Error);
     }
 
