@@ -103,17 +103,19 @@ internal sealed class BatchExecution
                 }
                 cancellationToken.ThrowIfCancellationRequested();
                 var failed = 0;
+                var redirected = 0;
                 for (var i = 0; i < count; i++)
                 {
                     state.Active[i].CancellationToken.ThrowIfCancellationRequested();
                     if (state.Errors[i] is not null) failed++;
+                    else if (state.Active[i].Settlement.Request is { Kind: not DispositionKind.Complete }) redirected++;
                 }
-                if (failed == 0) await state.FlushAsync(buffer, count, cancellationToken).ConfigureAwait(false);
-                else if (failed < count && !buffer.IsEmpty)
+                if (failed == 0 && redirected == 0) await state.FlushAsync(buffer, count, cancellationToken).ConfigureAwait(false);
+                else if (failed + redirected < count && !buffer.IsEmpty)
                 {
                     // One scoped sender cannot attribute output to individual items. Fail the
                     // whole attempt so discarded sends never accompany successful settlement.
-                    var error = new InvalidOperationException("A partially failed batch has buffered sends that cannot be attributed to individual messages. The whole attempt failed; use per-message durable outbox transactions for independent success.");
+                    var error = new InvalidOperationException("A partially failed or manually redirected batch has buffered sends that cannot be attributed to individual messages. The whole attempt failed; use per-message durable outbox transactions for independent success.");
                     for (var i = 0; i < count; i++) state.Errors[i] ??= error;
                 }
                 cancellationToken.ThrowIfCancellationRequested();
@@ -124,7 +126,17 @@ internal sealed class BatchExecution
                     var context = state.Active[i];
                     context.CancellationToken.ThrowIfCancellationRequested();
                     context.ClearServices();
-                    if (state.Errors[i] is not { } error) continue;
+                    if (state.Errors[i] is not { } error)
+                    {
+                        if (context.Settlement.Request is { } request)
+                        {
+                            if (_failures is null || request.Kind == DispositionKind.Complete)
+                                context.FailureDisposition = request;
+                            else await _failures.HandleSettlementAsync(context, request).ConfigureAwait(false);
+                        }
+                        continue;
+                    }
+                    context.Settlement.Clear();
                     RecordError(activity, error);
                     var action = _classifier.Classify(error, context);
                     if (_failures is not null)

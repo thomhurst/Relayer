@@ -15,6 +15,7 @@ public class BatchConsumePipelineBenchmarks
     private ServiceProvider _provider = null!;
     private IServiceScopeFactory _scopes = null!;
     private ConsumePipeline _pipeline = null!;
+    private Handler _handler = null!;
     private BatchHandlerDescriptor<Payload> _descriptor = null!;
     private readonly Serializer _serializer = new();
     private readonly DirectContext _directContext = new();
@@ -48,6 +49,7 @@ public class BatchConsumePipelineBenchmarks
         });
         _provider = services.BuildServiceProvider();
         _scopes = _provider.GetRequiredService<IServiceScopeFactory>();
+        _handler = _provider.GetRequiredService<Handler>();
         _descriptor = _provider.GetRequiredService<HandlerRegistry>().GetBatchHandler<Payload, Handler>();
         var definition = _provider.GetRequiredService<RelayerConfiguration>().Transports[0].Consumers[0];
         _source = new ActivitySource("Relayer");
@@ -101,8 +103,11 @@ public class BatchConsumePipelineBenchmarks
     }
 
     [Benchmark]
-    public async ValueTask ComposedBatch()
+    [Arguments(false)]
+    [Arguments(true)]
+    public async ValueTask ComposedBatch(bool manualCompletion)
     {
+        _handler.ManualCompletion = manualCompletion;
         for (var i = 0; i < BatchSize; i++) _contexts[i] = _pipeline.RentContext(_message);
         try { await _pipeline.ProcessBatchAsync(_contexts).ConfigureAwait(false); }
         finally
@@ -125,10 +130,15 @@ public class BatchConsumePipelineBenchmarks
     public sealed class Handler : IBatchHandler<Payload>
     {
         public int Total { get; private set; }
+        public bool ManualCompletion { get; set; }
         public ValueTask<BatchResult> HandleAsync(Batch<Payload> batch, CancellationToken cancellationToken)
         {
             var total = 0;
-            for (var i = 0; i < batch.Count; i++) total += batch.Items[i].Message.Value;
+            for (var i = 0; i < batch.Count; i++)
+            {
+                total += batch.Items[i].Message.Value;
+                if (ManualCompletion) batch.Items[i].Context.Features.GetRequired<ISettlementFeature>().Complete();
+            }
             Total = total;
             return new(BatchResult.Success);
         }

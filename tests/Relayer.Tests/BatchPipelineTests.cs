@@ -446,6 +446,82 @@ public class BatchPipelineTests
     }
 
     [Test]
+    [Arguments(false, 0)]
+    [Arguments(true, 0)]
+    [Arguments(false, 1)]
+    [Arguments(true, 1)]
+    [Arguments(false, 2)]
+    [Arguments(true, 2)]
+    public async Task Manual_batch_outcomes_follow_per_item_exception_precedence(bool executable, int failureMode)
+    {
+        await using var provider = Provider();
+        provider.GetRequiredService<Transport>().RedeliveryDelay = TimeSpan.FromSeconds(5);
+        var control = provider.GetRequiredService<Control>();
+        control.Invoke = (batch, _) =>
+        {
+            batch.Items[0].Context.Features.GetRequired<ISettlementFeature>().Complete();
+            batch.Items[1].Context.Features.GetRequired<ISettlementFeature>().Retry(TimeSpan.FromSeconds(5));
+            batch.Items[2].Context.Features.GetRequired<ISettlementFeature>().DeadLetter("manual");
+            if (failureMode == 2) throw new InvalidOperationException("whole batch failed");
+            return new(failureMode == 1 ? BatchResult.PartialFailure(new Dictionary<int, Exception> { [0] = new InvalidOperationException("first failed") }) : BatchResult.Success);
+        };
+        var failures = executable ? new FailurePipeline(provider, "test", "source", "consumer") : null;
+        var pipeline = Pipeline(provider, static (context, _, _) =>
+        {
+            context.Features.GetRequired<NativeMessage<Incoming>>().Disposition = Disposition.DeadLettered(new("failure"));
+            return default;
+        }, failures);
+        var output = new Disposition[3];
+        await pipeline.ProcessBatchAsync(Input(3), output);
+        await Assert.That(output[0].Kind).IsEqualTo(failureMode == 0 ? DispositionKind.Complete : DispositionKind.DeadLetter);
+        await Assert.That(output[1].Kind).IsEqualTo(failureMode == 2 ? DispositionKind.DeadLetter : DispositionKind.Redeliver);
+        var failureReason = executable ? "Processing failed" : "failure";
+        await Assert.That(output[2].DeadLetter.Reason).IsEqualTo(failureMode == 2 ? failureReason : "manual");
+        control.Invoke = static (_, _) => new(BatchResult.Success);
+        await pipeline.ProcessBatchAsync(Input(3), output);
+        await Assert.That(output.All(item => item.Kind == DispositionKind.Complete)).IsTrue();
+    }
+
+    [Test]
+    public async Task Batch_manual_retry_clears_request_before_exception_retry()
+    {
+        await using var provider = Provider();
+        provider.GetRequiredService<Control>().Invoke = (batch, _) =>
+        {
+            var context = batch.Items[0].Context;
+            context.Features.GetRequired<ISettlementFeature>().Complete();
+            if (context.Attempt > 1) return new(BatchResult.Success);
+            return new(BatchResult.PartialFailure(new Dictionary<int, Exception> { [0] = new InvalidOperationException("retry") }));
+        };
+        var failures = new FailurePipeline(provider, "test", "source", "consumer", new() { RetryDelays = new[] { TimeSpan.Zero } });
+        var output = new Disposition[1];
+        await Pipeline(provider, failures: failures).ProcessBatchAsync(Input(1), output);
+        await Assert.That(output[0].Kind).IsEqualTo(DispositionKind.Complete);
+        await Assert.That(provider.GetRequiredService<Control>().Scopes.Count).IsEqualTo(2);
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Buffered_batch_sends_are_discarded_and_mixed_manual_outcomes_fail_explicitly(bool mixed)
+    {
+        await using var provider = Provider();
+        provider.GetRequiredService<Control>().Invoke = async (batch, _) =>
+        {
+            batch.Items[0].Context.Features.GetRequired<ISettlementFeature>().DeadLetter("manual");
+            if (!mixed) batch.Items[1].Context.Features.GetRequired<ISettlementFeature>().DeadLetter("manual");
+            await batch.Items[0].Context.Services.GetRequiredService<ISender>().SendAsync(new Payload());
+            return BatchResult.Success;
+        };
+        var output = new Disposition[2];
+        var failures = new FailurePipeline(provider, "test", "source", "consumer");
+        await Pipeline(provider, failures: failures).ProcessBatchAsync(Input(2), output);
+        await Assert.That(provider.GetRequiredService<Transport>().Sends).IsEqualTo(0);
+        await Assert.That(output.All(item => item.Kind == DispositionKind.DeadLetter)).IsTrue();
+        await Assert.That(output[0].DeadLetter.Reason).IsEqualTo(mixed ? "Processing failed" : "manual");
+    }
+
+    [Test]
     public async Task Batch_context_ownership_and_single_message_entry_are_validated_before_dispatch()
     {
         await using var provider = Provider();
@@ -667,8 +743,9 @@ public class BatchPipelineTests
         public int Reads { get; private set; }
         public int Sends { get; private set; }
         public bool NativeDeadLetter { get; set; } = true;
+        public TimeSpan? RedeliveryDelay { get; set; }
         public Func<OutgoingMessage, CancellationToken, ValueTask>? Send { get; set; }
-        public TransportCapabilities GetCapabilities(string endpoint) { Reads++; return new() { DeadLetter = NativeDeadLetter, MaxBatchSize = nativeSize }; }
+        public TransportCapabilities GetCapabilities(string endpoint) { Reads++; return new() { DeadLetter = NativeDeadLetter, MaxBatchSize = nativeSize, MaxRedeliveryDelay = RedeliveryDelay }; }
         public ValueTask SendAsync(OutgoingMessage message, CancellationToken cancellationToken) { Sends++; return Send?.Invoke(message, cancellationToken) ?? default; }
         public ValueTask SendBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken) => throw new NotSupportedException();
         public ValueTask<TopologyReport> ApplyTopologyAsync(TopologyMode mode, CancellationToken cancellationToken) => new(new TopologyReport([]));
