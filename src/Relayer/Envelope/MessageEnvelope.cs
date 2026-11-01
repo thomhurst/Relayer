@@ -59,11 +59,17 @@ public sealed class MessageEnvelope
         TWriter.SetHeader(message, _names.Time, buffer[..length]);
         TWriter.SetHeader(message, _names.SpecVersion, "1.0");
 
-        var context = metadata.CreationContext;
+        WriteCreationContext<TOutgoing, TWriter>(message, _names, metadata.CreationContext, buffer[..55]);
+    }
+
+    internal static void WriteCreationContext<TOutgoing, TWriter>(TOutgoing message, HeaderNames names, ActivityContext context,
+        Span<char> buffer)
+        where TWriter : IMessageHeaderWriter<TOutgoing>
+    {
         if (context.TraceId == default || context.SpanId == default)
         {
-            TWriter.RemoveHeader(message, _names.TraceParent);
-            TWriter.RemoveHeader(message, _names.TraceState);
+            TWriter.RemoveHeader(message, names.TraceParent);
+            TWriter.RemoveHeader(message, names.TraceState);
             return;
         }
 
@@ -80,14 +86,14 @@ public sealed class MessageEnvelope
         buffer[52] = '-';
         buffer[53] = '0';
         buffer[54] = (context.TraceFlags & ActivityTraceFlags.Recorded) != 0 ? '1' : '0';
-        TWriter.SetHeader(message, _names.TraceParent, buffer[..55]);
+        TWriter.SetHeader(message, names.TraceParent, buffer);
         if (!string.IsNullOrEmpty(context.TraceState))
         {
-            TWriter.SetHeader(message, _names.TraceState, context.TraceState);
+            TWriter.SetHeader(message, names.TraceState, context.TraceState);
         }
         else
         {
-            TWriter.RemoveHeader(message, _names.TraceState);
+            TWriter.RemoveHeader(message, names.TraceState);
         }
     }
 }
