@@ -1,4 +1,7 @@
-# Native receive SPI
+---
+title: Receiving messages
+description: "Adapt a composed consume pipeline to a native receive callback with a struct binding, and settle from the returned disposition."
+---
 
 Compose a `ConsumePipeline` once with generated handler descriptors, the serializer, middleware, and an explicit durable failure delegate. Adapt it to the native callback with a struct binding:
 

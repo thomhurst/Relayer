@@ -1,0 +1,137 @@
+/*
+ * Relayer palette: cool slate paper, ink text, cobalt for the Relayer layer, teal for the
+ * payload (your message), slate for the native client. The three layers of the logo and the
+ * homepage diagram use the same three colours everywhere.
+ */
+:root {
+  --rl-paper: #eef1f5;
+  --rl-surface: #ffffff;
+  --rl-ink: #1b2633;
+  --rl-muted: #566273;
+  --rl-line: #cdd5df;
+  --rl-native: #5b6b80;
+  --rl-relayer: #2741c4;
+  --rl-payload: #0d6e60;
+
+  --ifm-color-primary: #2741c4;
+  --ifm-color-primary-dark: #2339b0;
+  --ifm-color-primary-darker: #2136a6;
+  --ifm-color-primary-darkest: #1b2c89;
+  --ifm-color-primary-light: #3a54d5;
+  --ifm-color-primary-lighter: #4760d8;
+  --ifm-color-primary-lightest: #6c81e0;
+
+  --ifm-background-color: var(--rl-paper);
+  --ifm-background-surface-color: var(--rl-surface);
+  --ifm-navbar-background-color: var(--rl-paper);
+  --ifm-font-color-base: var(--rl-ink);
+  --ifm-toc-border-color: var(--rl-line);
+  --ifm-hr-border-color: var(--rl-line);
+  --ifm-table-border-color: var(--rl-line);
+  --ifm-table-stripe-background: rgba(39, 65, 196, 0.035);
+
+  --ifm-font-family-base: 'Hanken Grotesk', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --ifm-heading-font-family: 'Hanken Grotesk', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --ifm-font-family-monospace: 'Fragment Mono', ui-monospace, 'Cascadia Code', Consolas, monospace;
+  --ifm-font-size-base: 106.25%;
+  --ifm-line-height-base: 1.62;
+  --ifm-heading-font-weight: 700;
+  --ifm-code-font-size: 88%;
+  --ifm-code-border-radius: 6px;
+  --ifm-global-radius: 8px;
+  --docusaurus-highlighted-code-line-bg: rgba(39, 65, 196, 0.1);
+  --docusaurus-announcement-bar-height: auto;
+}
+
+[data-theme='dark'] {
+  --rl-paper: #10161f;
+  --rl-surface: #161d28;
+  --rl-ink: #dfe5ee;
+  --rl-muted: #9aa6b6;
+  --rl-line: #2a3443;
+  --rl-native: #8b9bb0;
+  --rl-relayer: #9db0ff;
+  --rl-payload: #5fd0bb;
+
+  --ifm-color-primary: #9db0ff;
+  --ifm-color-primary-dark: #7f97ff;
+  --ifm-color-primary-darker: #708aff;
+  --ifm-color-primary-darkest: #4366ff;
+  --ifm-color-primary-light: #bbc9ff;
+  --ifm-color-primary-lighter: #cad5ff;
+  --ifm-color-primary-lightest: #f6f8ff;
+  --ifm-table-stripe-background: rgba(157, 176, 255, 0.04);
+  --docusaurus-highlighted-code-line-bg: rgba(157, 176, 255, 0.12);
+}
+
+body {
+  background: var(--rl-paper);
+  font-feature-settings: 'ss01';
+}
+
+h1,
+h2,
+h3 {
+  letter-spacing: -0.015em;
+}
+
+.markdown h1:first-child {
+  --ifm-h1-font-size: 2.4rem;
+  letter-spacing: -0.025em;
+}
+
+.markdown > p,
+.markdown > ul,
+.markdown > ol {
+  max-width: 72ch;
+}
+
+.navbar {
+  box-shadow: none;
+  border-bottom: 1px solid var(--rl-line);
+}
+
+.navbar__title {
+  font-weight: 800;
+  letter-spacing: -0.02em;
+}
+
+.footer--dark {
+  --ifm-footer-background-color: #151c27;
+}
+
+div[class^='announcementBar'] {
+  background: #1b2633;
+  color: #eef1f5;
+  font-size: 0.9rem;
+  border-bottom: 0;
+}
+
+div[class^='announcementBar'] a {
+  color: inherit;
+  text-decoration: underline;
+}
+
+code {
+  border: 1px solid var(--rl-line);
+  /* Fragment Mono's ligatures turn C# `=>` into an arrow glyph. */
+  font-variant-ligatures: none;
+}
+
+.theme-code-block {
+  border: 1px solid var(--rl-line);
+  box-shadow: none;
+}
+
+.theme-code-block code {
+  border: 0;
+}
+
+.table-of-contents__link--active {
+  font-weight: 600;
+}
+
+:focus-visible {
+  outline: 2px solid var(--ifm-color-primary);
+  outline-offset: 2px;
+}

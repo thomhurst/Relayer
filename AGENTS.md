@@ -58,6 +58,17 @@ dotnet run -c Release --project benchmarks/Relayer.Benchmarks
 - Investigate intermittent test failures instead of rerunning CI to obtain green. Use deterministic synchronization for timing-dependent tests.
 - Review final changes for reuse, quality, and efficiency before opening a PR (`/simplify` when available). Preserve the performance requirements above.
 
+## Documentation
+
+User documentation is the Docusaurus site in `website/` ([relayer.tomlonghurst.dev](https://relayer.tomlonghurst.dev/)). `docs/design.md` and `docs/decisions.md` are the contributor-facing design record; they link to the site for usage rather than duplicating it. Do not add user guides under `docs/`.
+
+- Keep the site current in the same PR as the change, whatever the work: a feature, bug fix that changes observable behavior, public API or option change, new default, new or changed diagnostic, or a status change. Update the page that covers it, or add one and list it in `website/sidebars.js`. A PR that changes user-facing behavior without a matching docs change is incomplete; state "no docs impact" in the PR description when that is true.
+- Samples use the real API on `main`; update them in the same PR that changes the API. Mark anything not implemented yet as planned. Never document a planned feature as if it works.
+- A new analyzer or generator diagnostic gets an anchor on `website/docs/reference/diagnostics.md`, which its `helpLinkUri` targets. When a feature moves from planned to implemented, update `website/docs/roadmap.md` and the status table in `website/src/pages/index.js`.
+- When you change a design decision, update `docs/design.md` or `docs/decisions.md` as well as the affected site pages.
+- Verify with `npm ci` and `npm run build` in `website/` (Node.js 22+) whenever you touch it. The build fails on broken links and anchors, so moving or renaming a page means fixing every link to it. CI runs the same build in the `Documentation site` job and deploys `main` to GitHub Pages through `.github/workflows/docs.yml`.
+- Treat documentation that contradicts the code as a bug: fix it in the current PR when it is in scope, otherwise file an issue.
+
 ## Pull requests
 
 - Open every agent-created PR as a draft (`gh pr create --draft`) and follow the [draft review lifecycle](.agents/skills/issue-pr-loop/SKILL.md#draft-review-lifecycle), inside or outside the issue/PR loop: reviewers approve the draft's head before it is marked ready, and build/test CI runs only on ready PRs. Once both reviewers approve the current head, mark it ready and arm auto-merge in one step with `scripts/Enable-AutoMerge.ps1 -Pr <N> -MarkReady` (never a bare `gh pr ready`, never `gh pr merge --auto` directly); GitHub squash-merges that head when the required checks pass. Any later push, including a rebase, disarms auto-merge and needs a new review cycle.
@@ -82,5 +93,5 @@ Keep agent instructions focused on non-obvious project requirements. Prefer link
 - `src/Relayer.Kafka/`, `Relayer.AzureServiceBus/`, `Relayer.AmazonSqs/`, `Relayer.RabbitMQ/`: transports.
 - `src/Relayer.Outbox.*/`: outbox stores.
 - `tests/`: TUnit suites; `benchmarks/Relayer.Benchmarks/`: BenchmarkDotNet suites.
-- `docs/`: design and decision record.
+- `docs/`: design and decision record; `website/`: the Docusaurus documentation site (`website/docs/` holds the pages).
 - `scripts/` and `.agents/skills/issue-pr-loop/`: issue/PR loop tooling. `scripts/Start-IssuePrLoop.ps1` drives the loop with a fresh agent per unit.

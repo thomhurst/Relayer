@@ -1,4 +1,7 @@
-# Consume pipeline composition
+---
+title: Consume pipeline
+description: "How a consumer composes generated handler descriptors, middleware and failure handling once at startup."
+---
 
 `ConsumePipelineBuilder` composes one consumer at startup. It selects generated
 handler descriptors and stable identities from `HandlerRegistry` and the frozen
@@ -68,7 +71,7 @@ processed once, by its owner, and cannot be disposed during processing.
 
 This is the execution layer below the generic receive SPI in design section 2.4.
 The SPI owns native binding, envelope decoding, native feature reuse, batch
-delivery and dispositions. Its integration is tracked in #55. The existing
+delivery and dispositions. Its integration is tracked in [#55](https://github.com/thomhurst/Relayer/issues/55). The existing
 `MessageContext.Headers` contract is retained here for that coordinated migration;
 the pipeline does not enumerate or copy a transport's lazy header view.
 
@@ -92,6 +95,6 @@ a singleton handler. No scopes or scoped handlers are reused to hide that cost.
 
 This microbenchmark does not establish D18's end-to-end throughput budget against
 a real native client, or its total receive allocation goal. Those require the
-transport and CI regression suites tracked in #19. Pending asynchronous operations
+transport and CI regression suites tracked in [#19](https://github.com/thomhurst/Relayer/issues/19). Pending asynchronous operations
 use a pooled `ValueTask` state machine in the execution layer; custom middleware
 and user handlers retain responsibility for their own asynchronous allocations.

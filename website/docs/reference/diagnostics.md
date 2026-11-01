@@ -1,4 +1,7 @@
-# Configuration diagnostics
+---
+title: Diagnostics
+description: "Compile-time analyzers RLY001 to RLY004 and generator error RLYH001: what each reports and how to fix it."
+---
 
 Relayer ships compile-time analyzers and an IDE code fix in its NuGet package. They inspect symbols, not naming conventions, and add no runtime work. Startup validation still checks the complete configuration, including declarations assembled through helpers or other assemblies.
 
@@ -57,4 +60,4 @@ The analyzer checks inline lambdas and anonymous delegates. It does not follow m
 
 Use `dotnet_diagnostic.<ID>.severity` in `.editorconfig`, or a targeted `#pragma warning disable <ID>` for intentionally invalid test fixtures. Generated code is excluded. Diagnostics run concurrently, with all mutable state scoped to one compilation.
 
-`RLYH001` is the existing generator error for handler message types that generated dispatch cannot access. Make those message types assembly-accessible and non-file-local; see [handler discovery](design.md#33-registration-without-scanning).
+`RLYH001` is the existing generator error for handler message types that generated dispatch cannot access. Make those message types assembly-accessible and non-file-local; see [handler discovery](../guides/handlers.md#registration-without-scanning).

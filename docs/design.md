@@ -140,7 +140,7 @@ The core never returns a disposition the endpoint's capabilities do not declare.
 
 The pipeline puts the native message in the feature collection as `NativeMessage<TIncoming>`, which is pooled with the context. A transport's `context.ServiceBus()` extension wraps it in a struct view, so native access costs no allocation and no per-transport feature class.
 
-The implemented receive seam adapts a composed `ConsumePipeline` with `new ReceivePipeline<TIncoming,TBinding>(consumer, headerNames, contextPoolCapacity)`. See [native receive SPI](receive-spi.md) for binding, settlement, pooling, and batch lifetime contracts. Failure-policy and capability fallback composition remain separate from this seam.
+The implemented receive seam adapts a composed `ConsumePipeline` with `new ReceivePipeline<TIncoming,TBinding>(consumer, headerNames, contextPoolCapacity)`. See [Receiving messages](https://relayer.tomlonghurst.dev/docs/transports/receive) for binding, settlement, pooling, and batch lifetime contracts. Failure-policy and capability fallback composition remain separate from this seam.
 
 **3. Sending.** The core hands the transport a transport-neutral `OutgoingMessage`: destination, body bytes, named headers, ordering key, `DeliverAt`, and the native configurators from `SendOptions`. Its fields are exactly an outbox row (§6.3), so direct sends, outbox dispatch, scheduled re-sends and dead-letter copies all use the same two methods:
 
@@ -221,7 +221,7 @@ Names are case-sensitive and unique across all transport kinds. Several transpor
 
 `AddRelayer` captures `RelayerConfiguration`; declarations freeze when their callbacks finish. Its first hosted service checks all declarations and all named option validators before later transport hosted services start, and reports their errors together in `OptionsValidationException.Failures`. Handler types are registered explicitly as scoped services, preserving existing registrations. Message names must be registered explicitly or through the generated `AddMessageTypesFromThisAssembly` method.
 
-This API declares configuration. Startup validates runtime adapters' endpoint capability values and rejects ordering keys on destinations without native ordering support. Receive dispatch (#4), sender execution (#5), native adapters, failure policies, inbox/outbox integration and topology validation consume these declarations in their own roadmap work. Feature-specific capability and fallback selection ships with the corresponding execution path. See [configuration.md](configuration.md) for the transport-author contract and validation boundaries.
+This API declares configuration. Startup validates runtime adapters' endpoint capability values and rejects ordering keys on destinations without native ordering support. Receive dispatch (#4), sender execution (#5), native adapters, failure policies, inbox/outbox integration and topology validation consume these declarations in their own roadmap work. Feature-specific capability and fallback selection ships with the corresponding execution path. See [Writing a transport](https://relayer.tomlonghurst.dev/docs/transports/authoring) and [Configuration](https://relayer.tomlonghurst.dev/docs/guides/configuration) for the transport-author contract and validation boundaries.
 
 ### 3.2 Handlers
 
@@ -258,7 +258,7 @@ public sealed class AuditHandler : IBatchHandler<AuditEvent>
 - For people who want convenience, the source generator emits an explicit, readable `AddHandlersFromThisAssembly()` that lists every handler it found at compile time. This is "scanning" done by the compiler — it is visible, debuggable, and AOT-safe.
 - Analyzers report problems at compile time: a handler that is registered nowhere, a message type with no stable name, a consumer with no handler, or a feature the transport does not support (for example, ordering on a non-FIFO SQS queue).
 
-The [configuration diagnostics reference](analyzers.md) documents `RLY001`–`RLY004`, their limits, suppression and the `[Message]` code fix. Transport capability validation remains a startup check when configuration values are not statically known.
+The [diagnostics reference](https://relayer.tomlonghurst.dev/docs/reference/diagnostics) documents `RLY001`–`RLY004`, their limits, suppression and the `[Message]` code fix. Transport capability validation remains a startup check when configuration values are not statically known.
 
 Register handlers inside `AddRelayer`. Both forms use the same generated descriptors; explicit registration adds only the requested handler:
 
@@ -278,7 +278,7 @@ The core's `HandlerRegistry` freezes after configuration. Pipeline composition s
 
 Publish versus send is a routing concern, not a separate API. Whether a destination fans out depends on what the endpoint is natively (a topic or exchange versus a queue).
 
-The core route registration seam, middleware lifetime, timeout contract, and scoped outbox integration are documented in [Sending messages](sending.md).
+The core route registration seam, middleware lifetime, timeout contract, and scoped outbox integration are documented in [Sending messages](https://relayer.tomlonghurst.dev/docs/guides/sending).
 
 ---
 
@@ -303,7 +303,7 @@ Relayer writes CloudEvents attributes using each transport's binary-mode binding
 - Consumers route by `ce_type`, so **several message types can share one topic or queue** (confluent#1183).
 - A raw mode (no envelope, just the native payload) exists for integrating with legacy producers. In raw mode you map the type yourself, for example from the topic name.
 
-The core header and envelope primitives, their native binding contracts, and raw-mode examples are documented in [Message envelopes and native headers](envelopes.md).
+The core header and envelope primitives, their native binding contracts, and raw-mode examples are documented in [Envelopes and headers](https://relayer.tomlonghurst.dev/docs/transports/envelopes).
 
 ### 4.3 Serialization
 
@@ -642,7 +642,7 @@ Relayer-specific instruments, for which the conventions define nothing:
 
 ## 9. Topology
 
-- Topology is **declared, not inferred.** Routes and consumers form a topology model you can inspect at runtime (`ITopology`). See [topology.md](topology.md) for startup modes, the adapter contract and JSON export.
+- Topology is **declared, not inferred.** Routes and consumers form a topology model you can inspect at runtime (`ITopology`). See [Topology](https://relayer.tomlonghurst.dev/docs/guides/topology) for startup modes, the adapter contract and JSON export.
 - Mode is chosen per transport:
   - `Provision` creates missing entities (development).
   - `Validate` checks that entities exist and fails fast with a diff (**default**). It needs only least-privilege permissions (MassTransit #5613, EasyNetQ #1000).

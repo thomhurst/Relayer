@@ -102,5 +102,10 @@ temptest/
 # Verify snapshot output
 *.received.*
 
+# Documentation site
+website/node_modules/
+website/build/
+website/.docusaurus/
+
 # Stryker.NET mutation-test output
 StrykerOutput/

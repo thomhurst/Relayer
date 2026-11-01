@@ -1,0 +1,45 @@
+{
+  "name": "relayer-docs",
+  "version": "0.0.0",
+  "description": "Documentation website for Relayer.",
+  "private": true,
+  "license": "MIT",
+  "homepage": "https://relayer.tomlonghurst.dev/",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/thomhurst/Relayer.git",
+    "directory": "website"
+  },
+  "bugs": {
+    "url": "https://github.com/thomhurst/Relayer/issues"
+  },
+  "scripts": {
+    "docusaurus": "docusaurus",
+    "start": "docusaurus start",
+    "build": "docusaurus build",
+    "serve": "docusaurus serve",
+    "clear": "docusaurus clear"
+  },
+  "dependencies": {
+    "@docusaurus/core": "^3.10.2",
+    "@docusaurus/preset-classic": "^3.10.2",
+    "@easyops-cn/docusaurus-search-local": "^0.55.3",
+    "@mdx-js/react": "^3.1.1",
+    "@signalwire/docusaurus-plugin-llms-txt": "^1.2.2",
+    "clsx": "^2.1.1",
+    "prism-react-renderer": "^2.4.1",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1"
+  },
+  "devDependencies": {
+    "@docusaurus/module-type-aliases": "^3.10.2",
+    "@docusaurus/types": "^3.10.2"
+  },
+  "browserslist": {
+    "production": [">0.5%", "not dead", "not op_mini all"],
+    "development": ["last 3 chrome version", "last 3 firefox version", "last 5 safari version"]
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

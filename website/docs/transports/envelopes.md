@@ -1,4 +1,7 @@
-# Message envelopes and native headers
+---
+title: Envelopes and headers
+description: "The CloudEvents envelope Relayer writes, and how transports map header reads and writes to native messages."
+---
 
 The core owns the CloudEvents envelope. A transport maps individual header reads and writes to its native message; it does not copy the incoming header collection into a dictionary. These primitives are ready for the receive/send pipelines and transport SPI; the transport stubs do not send or consume yet.
 

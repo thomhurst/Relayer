@@ -1,4 +1,7 @@
-# In-memory transport
+---
+title: In-memory transport
+description: "A process-local transport in the core package for tests, samples and modular monoliths, with native queue and log semantics."
+---
 
 The in-memory transport ships in `Relayer`. Use it for process-local delivery, tests and samples. Each instance owns its endpoints; named transports and service providers do not share messages.
 
@@ -55,4 +58,4 @@ Stop first stops fetching and drains active handlers. Cancelling stop cancels ac
 
 Inspect owned dead-letter snapshots with `transport.DeadLetters(endpoint)` and native group progress with `GetCommittedPosition`. Copied body, headers and UTF-8 ordering keys outlive the borrowed send buffers; completed messages return their storage to a bounded pool. Size `MessagePoolCapacity` for expected retained traffic and warm representative body/header sizes when measuring steady-state allocation.
 
-The native adapter preserves `traceparent` and `tracestate` unchanged. Its system identifier is `InMemoryTransport.MessagingSystem` (`relayer.inmemory`). Shared tracing and span verification remain in #13 and the packaged transport conformance suite in #17. Parent #15 retains that integration acceptance; #87 supplies the native adapter and executable SPI contract tests.
+The native adapter preserves `traceparent` and `tracestate` unchanged. Its system identifier is `InMemoryTransport.MessagingSystem` (`relayer.inmemory`). Shared tracing and span verification remain in [#13](https://github.com/thomhurst/Relayer/issues/13) and the packaged transport conformance suite in [#17](https://github.com/thomhurst/Relayer/issues/17). Parent [#15](https://github.com/thomhurst/Relayer/issues/15) retains that integration acceptance; [#87](https://github.com/thomhurst/Relayer/issues/87) supplies the native adapter and executable SPI contract tests.

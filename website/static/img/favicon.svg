@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" fill="none">
+  <style>
+    .o{stroke:#1b2633}.m{stroke:#2741c4}.i{fill:#0d6e60}
+    @media (prefers-color-scheme: dark){.o{stroke:#dfe5ee}.m{stroke:#9db0ff}.i{fill:#5fd0bb}}
+  </style>
+  <rect class="o" x="2.5" y="2.5" width="27" height="27" rx="7" stroke-width="2.5"/>
+  <rect class="m" x="8.5" y="8.5" width="15" height="15" rx="4" stroke-width="2.5"/>
+  <rect class="i" x="13" y="13" width="6" height="6" rx="1.5"/>
+</svg>

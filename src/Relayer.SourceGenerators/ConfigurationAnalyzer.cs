@@ -24,7 +24,7 @@ public sealed class ConfigurationAnalyzer : DiagnosticAnalyzer
 
     private static DiagnosticDescriptor Rule(string id, string title, string message,
         DiagnosticSeverity severity = DiagnosticSeverity.Warning) => new(id, title, message, "Relayer", severity,
-        isEnabledByDefault: true, helpLinkUri: "https://github.com/thomhurst/Relayer/blob/main/docs/analyzers.md#" + id.ToLowerInvariant());
+        isEnabledByDefault: true, helpLinkUri: "https://relayer.tomlonghurst.dev/docs/reference/diagnostics#" + id.ToLowerInvariant());
 
     public override void Initialize(AnalysisContext context)
     {
