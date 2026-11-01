@@ -739,9 +739,17 @@ raw-client benchmark pattern. The in-memory gate does not establish real-broker
 overhead compliance. Fresh receive DI scope costs remain in the reported totals;
 zero incremental composition allocations do not establish zero total pipeline allocations.
 CI brackets the candidate with two fixed baseline executions to expose runner
-drift. A throughput regression must exceed 5% against both; allocation increases
-on the per-message path must stay within 0.5 B/op of each baseline, and candidate
-startup stays under 50 ms. Startup allocation totals are informational: randomized
+drift. A throughput regression must exceed 5% against both. An allocation
+regression on the per-message path must exceed both baselines by more than
+0.5 B/op; an increase against only the lower baseline is inconclusive because
+unchanged asynchronous executions can allocate different totals. Inconclusive
+results remain visible and do not prove unchanged performance. CI hashes actual
+comparison inputs after the common harness/SDK overlay. Byte-identical inventories
+make allocation differences inconclusive execution variation, even above both
+baselines; changed inputs retain the strict threshold. The site documents the
+inventory and excluded tooling/documentation. Throughput and input validation
+remain active. Candidate startup stays under 50 ms. Startup allocation totals
+are informational: randomized
 hashes can change frozen dispatch-table layouts across unchanged processes.
 
 ---

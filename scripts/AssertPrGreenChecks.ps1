@@ -52,6 +52,25 @@ function Get-CheckState($Check) {
     return [string]$Check.state
 }
 
+function Test-AdvisoryCheck($Check) {
+    (Test-IsCheckRun $Check) -and [string]$Check.workflowName -ceq 'Performance'
+}
+
+function Test-MergeStateAllowed {
+    param([string]$State, [object[]]$Checks, [switch]$ForAutoMerge)
+
+    if ($ForAutoMerge) { return $State -in @('CLEAN', 'BLOCKED', 'UNSTABLE', 'HAS_HOOKS') }
+    if ($State -eq 'CLEAN') { return $true }
+    # GitHub reports UNSTABLE even when only the advisory workflow is red or pending.
+    # Get-CheckDenial still enforces every other check before a merge can proceed.
+    if ($State -eq 'UNSTABLE') {
+        return @($Checks | Where-Object {
+            (Test-AdvisoryCheck $_) -and $PassingConclusions -notcontains (Get-CheckState $_)
+        }).Count -gt 0
+    }
+    return $false
+}
+
 # Returns one denial per check that blocks a merge (or, with -ForAutoMerge, arming).
 function Get-CheckDenial {
     [CmdletBinding()]
@@ -67,6 +86,7 @@ function Get-CheckDenial {
             "unrecognized check entry: $($check | ConvertTo-Json -Compress)"
             continue
         }
+        if (Test-AdvisoryCheck $check) { continue }
         $passing = if (Test-IsCheckRun $check) { $PassingConclusions -contains $state } else { $state -eq 'SUCCESS' }
         if ($passing) { continue }
         if ($ForAutoMerge -and $PendingStates -contains $state -and

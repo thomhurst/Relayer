@@ -164,6 +164,8 @@ jobs:
           python3 candidate/.github/scripts/benchmark_gate.py compare
           performance-results/baseline performance-results/candidate
           --baseline-after performance-results/baseline-after
+          --baseline-source baseline --candidate-source candidate
+          --input-manifest performance-inputs.json
           --summary performance-summary.md
 
       - name: Publish comparison summary
@@ -183,4 +185,5 @@ jobs:
             performance-*.log
             performance-commits.txt
             performance-harness.sha256
+            performance-inputs.json
             performance-summary.md

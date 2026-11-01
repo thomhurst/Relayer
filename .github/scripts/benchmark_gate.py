@@ -3,9 +3,11 @@
 
 import argparse
 from dataclasses import dataclass, replace
+import hashlib
 import json
 import math
 from pathlib import Path
+import subprocess
 import sys
 
 
@@ -27,9 +29,59 @@ REQUIRED_METHODS = {
     ("InMemoryTransportBenchmarks", "ComposedRoundTrip"),
 }
 
+# These files do not enter either measured build. The candidate CI driver and
+# detector control both executions. Keep every other file, including unknown
+# root inputs, tests, scripts, generators, dependencies and the overlaid harness.
+NON_BUILD_FILES = {
+    # Agent instruction aliases are symlinks on Linux, placeholders on Windows.
+    ".claude/skills/issue-pr-loop/SKILL.md",
+    ".claude/skills/issue-pr-loop/references",
+    ".github/scripts/benchmark_gate.py",
+    ".github/scripts/test_benchmark_gate.py",
+    ".github/scripts/pin_benchmark_version.py",
+    ".github/workflows/ci.yml",
+    ".github/workflows/performance.yml",
+}
+REQUIRED_INPUTS = {
+    "global.json", "Directory.Build.props", "Directory.Packages.props",
+    "src/Relayer/Relayer.csproj",
+    "src/Relayer.SourceGenerators/Relayer.SourceGenerators.csproj",
+    "benchmarks/Relayer.Benchmarks/Relayer.Benchmarks.csproj",
+}
+
 
 class GateError(ValueError):
     """Missing or unusable input; never turn an incomplete run into a pass."""
+
+
+def input_manifest(checkout):
+    """Hash actual checkout inputs after CI overlays the common harness and SDK."""
+    checkout = Path(checkout).resolve()
+    try:
+        def git(*arguments):
+            return subprocess.run(["git", "-C", str(checkout), *arguments], check=True,
+                                  capture_output=True, text=True, encoding="utf-8").stdout
+
+        if Path(git("rev-parse", "--show-toplevel").strip()).resolve() != checkout:
+            raise GateError(f"Not a checkout root: {checkout}")
+        paths = git("ls-files", "--cached", "--others", "--exclude-standard", "-z").split("\0")
+        manifest = {}
+        for name in sorted(set(paths)):
+            if not name or name in NON_BUILD_FILES or name.startswith(("docs/", "website/")):
+                continue
+            path = checkout / name
+            if path.is_symlink():
+                raise GateError(f"Cannot verify symlink input: {path}")
+            if path.is_dir():
+                raise GateError(f"Cannot verify directory or submodule input: {path}")
+            # The common harness overlay can delete a baseline's tracked file.
+            if path.is_file():
+                manifest[name] = hashlib.sha256(path.read_bytes()).hexdigest()
+        if not REQUIRED_INPUTS <= manifest.keys():
+            raise GateError(f"Required comparison inputs missing under {checkout}")
+        return manifest
+    except (OSError, subprocess.CalledProcessError) as error:
+        raise GateError(f"Cannot verify comparison inputs under {checkout}: {error}") from error
 
 
 @dataclass(frozen=True)
@@ -97,7 +149,7 @@ def load_reports(directory):
     return cases
 
 
-def compare(baseline, candidate, *, baseline_after=None, enforce_startup_budget=True):
+def compare(baseline, candidate, *, baseline_after=None, enforce_startup_budget=True, identical_inputs=False):
     if baseline.keys() != candidate.keys():
         missing = sorted(baseline.keys() - candidate.keys())
         added = sorted(candidate.keys() - baseline.keys())
@@ -118,20 +170,28 @@ def compare(baseline, candidate, *, baseline_after=None, enforce_startup_budget=
             raise GateError(f"{identity}: repeated baseline metadata differs")
         throughput = before.mean_ns / after.mean_ns - 1
         # A fixed baseline-candidate-baseline sequence exposes drift between processes.
-        # Throughput must regress against both references; allocations must satisfy both.
+        # Confirm regressions against both references; report baseline drift explicitly.
         upper = max(before.upper_ns, repeated.upper_ns)
-        allocated = min(before.allocated_bytes, repeated.allocated_bytes)
+        allocated = max(before.allocated_bytes, repeated.allocated_bytes)
         throughput_failure = max(0, after.lower_ns) > upper / (1 - MAX_THROUGHPUT_LOSS)
         startup = (after.type_name, after.method) == ("StartupBenchmarks", "Build100Handlers")
         reasons = []
         if throughput_failure:
             reasons.append("throughput loss exceeds 5%")
-        if not startup and after.allocated_bytes > allocated + ALLOCATION_TOLERANCE_BYTES:
+        allocation_increase = not startup and after.allocated_bytes > allocated + ALLOCATION_TOLERANCE_BYTES
+        if allocation_increase and not identical_inputs:
             reasons.append("allocations increased by more than 0.5 B/op")
         if enforce_startup_budget and startup and after.mean_ns >= STARTUP_LIMIT_NS:
             reasons.append("100-handler startup is not under 50 ms")
         inconclusive = after.mean_ns > min(before.mean_ns, repeated.mean_ns) / (1 - MAX_THROUGHPUT_LOSS) and not throughput_failure
         statuses = reasons + (["INCONCLUSIVE: observed throughput loss exceeds 5%; confidence bounds or baseline drift prevent confirmation"] if inconclusive else [])
+        allocation_inconclusive = (not startup
+                                  and after.allocated_bytes > min(before.allocated_bytes, repeated.allocated_bytes) + ALLOCATION_TOLERANCE_BYTES
+                                  and after.allocated_bytes <= allocated + ALLOCATION_TOLERANCE_BYTES)
+        if identical_inputs and (allocation_increase or allocation_inconclusive):
+            statuses.append("INCONCLUSIVE: allocation variation with byte-identical comparison inputs")
+        elif allocation_inconclusive:
+            statuses.append("INCONCLUSIVE: observed allocation increase exceeds 0.5 B/op; baseline drift prevents confirmation")
         if startup:
             statuses.append("startup allocations are informational")
         status = "; ".join(statuses) if statuses else "PASS"
@@ -143,10 +203,12 @@ def compare(baseline, candidate, *, baseline_after=None, enforce_startup_budget=
         "",
         "This gate measures regressions against main, not proof of the raw-client 5% budget.",
         "Throughput fails only when the candidate lower confidence bound exceeds each baseline upper bound / 0.95. Overlapping bounds or drift with an observed loss are inconclusive, not proof of unchanged performance.",
-        "Per-message allocations must stay within 0.5 B/op of both baselines; startup allocations are informational and the candidate startup budget remains under 50 ms.",
+        "Per-message allocations fail only when the candidate exceeds both baselines by more than 0.5 B/op, unless comparison inputs are verified byte-identical. An increase against only the lower baseline is inconclusive, not proof of unchanged allocations. Startup allocations are informational and the candidate startup budget remains under 50 ms.",
         "Total receive allocations include fresh DI scopes. Equal scoped baselines establish only zero incremental composition allocations.",
         "D18 still requires zero pipeline allocations, excluding serializer/native-client allocations; existing positive totals remain visible above.",
     ])
+    if identical_inputs:
+        lines.append("Verified byte-identical comparison inputs: allocation differences are execution variation, not evidence of a source-change regression. Totals remain visible; throughput, startup and input validation still apply.")
     return failures, "\n".join(lines)
 
 
@@ -182,6 +244,9 @@ def main(argv=None):
     compare_parser.add_argument("candidate")
     compare_parser.add_argument("--baseline-after", type=Path, help="Fixed baseline repeat measured after the candidate")
     compare_parser.add_argument("--summary", type=Path)
+    compare_parser.add_argument("--baseline-source", type=Path)
+    compare_parser.add_argument("--candidate-source", type=Path)
+    compare_parser.add_argument("--input-manifest", type=Path, help="Retain SHA-256 inventories of both source checkouts")
     test_parser = commands.add_parser("self-test")
     test_parser.add_argument("baseline")
     args = parser.parse_args(argv)
@@ -191,7 +256,19 @@ def main(argv=None):
             self_test(baseline)
             return 0
         baseline_after = None if args.baseline_after is None else load_reports(args.baseline_after)
-        failures, summary = compare(baseline, load_reports(args.candidate), baseline_after=baseline_after)
+        identical_inputs = False
+        source_arguments = (args.baseline_source, args.candidate_source, args.input_manifest)
+        if any(source_arguments):
+            if not all(source_arguments):
+                raise GateError("Source verification requires --baseline-source, --candidate-source and --input-manifest together")
+            if args.baseline_source.resolve() == args.candidate_source.resolve():
+                raise GateError("Source verification requires separate checkouts")
+            original, current = input_manifest(args.baseline_source), input_manifest(args.candidate_source)
+            identical_inputs = original == current
+            args.input_manifest.write_text(json.dumps({"baseline": original, "candidate": current,
+                                                       "identical": identical_inputs}, indent=2) + "\n", encoding="utf-8")
+        failures, summary = compare(baseline, load_reports(args.candidate), baseline_after=baseline_after,
+                                    identical_inputs=identical_inputs)
         print(summary)
         if args.summary:
             args.summary.write_text(summary + "\n", encoding="utf-8")

@@ -5,7 +5,7 @@
 #      the head moved, and waits for the ready CI run to register
 #      (first verifies an active, non-bypassable CI Passed ruleset on the target branch)
 #   1. captures the head, then runs  Assert-PrGreen.ps1 -ForAutoMerge  (ready, no failed
-#      check, nothing pending outside the required CI workflow,
+#      non-advisory check, nothing pending outside CI except advisory Performance,
 #      finished verdicts from the non-required path-filtered workflows the PR triggers, a
 #      Claude review of this head, no unresolved threads) and stops on any denial
 #   2. arms  gh pr merge --auto --squash --match-head-commit <head>

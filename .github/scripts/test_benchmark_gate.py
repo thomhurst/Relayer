@@ -3,6 +3,7 @@ import copy
 import io
 import json
 from pathlib import Path
+import subprocess
 import tempfile
 import unittest
 import xml.etree.ElementTree as ET
@@ -89,10 +90,43 @@ class BenchmarkGateTests(unittest.TestCase):
         failures, _ = gate.compare(first, current, baseline_after=first)
         self.assertTrue(any("throughput loss" in failure for failure in failures))
 
-    def test_baseline_repeat_cannot_hide_allocation_or_startup_failure(self):
+    def test_allocation_drift_is_inconclusive_in_both_baseline_orders(self):
+        before, candidate, after = report(), report(), report()
+        for data, allocated in ((before, 1025), (candidate, 1020), (after, 1006)):
+            data["Benchmarks"][0]["Memory"]["BytesAllocatedPerOperation"] = allocated
+        first = gate.load_reports(self.write("before", before))
+        current = gate.load_reports(self.write("candidate", candidate))
+        last = gate.load_reports(self.write("after", after))
+        for initial, repeat in ((first, last), (last, first)):
+            failures, summary = gate.compare(initial, current, baseline_after=repeat)
+            self.assertEqual([], failures)
+            self.assertIn("INCONCLUSIVE: observed allocation increase exceeds 0.5 B/op; baseline drift prevents confirmation", summary)
+            self.assertIn("1020", summary)
+            self.assertIn("1025", summary)
+            self.assertIn("1006", summary)
+
+    def test_bracketed_allocations_keep_sub_byte_tolerance_and_confirm_increases(self):
+        before, after = report(), report()
+        after["Benchmarks"][0]["Memory"]["BytesAllocatedPerOperation"] += 64
+        first = gate.load_reports(self.write("before", before))
+        last = gate.load_reports(self.write("after", after))
+        identity = next(iter(first))
+        for repeat in (first, last):
+            largest = max(first[identity].allocated_bytes, repeat[identity].allocated_bytes)
+            for excess, should_fail in ((0.5, False), (0.501, True), (1, True)):
+                candidate = report()
+                candidate["Benchmarks"][0]["Memory"]["BytesAllocatedPerOperation"] = largest + excess
+                current = gate.load_reports(self.write("candidate", candidate))
+                for initial, repeated in ((first, repeat), (repeat, first)):
+                    with self.subTest(repeated_bytes=repeat[identity].allocated_bytes, excess=excess):
+                        failures, summary = gate.compare(initial, current, baseline_after=repeated)
+                        self.assertEqual(should_fail, any("allocations increased" in failure for failure in failures))
+                        self.assertEqual(repeat != first and not should_fail, "INCONCLUSIVE: observed allocation" in summary)
+
+    def test_baseline_repeat_cannot_hide_confirmed_allocation_or_startup_failure(self):
         before, candidate, after = report(), report(), report()
         candidate["Benchmarks"][0]["Memory"]["BytesAllocatedPerOperation"] += 1
-        after["Benchmarks"][0]["Memory"]["BytesAllocatedPerOperation"] += 64
+        after["Benchmarks"][0]["Memory"]["BytesAllocatedPerOperation"] += 0.25
         measurement(next(case for case in candidate["Benchmarks"] if case["Type"] == "StartupBenchmarks"), gate.STARTUP_LIMIT_NS)
         first = gate.load_reports(self.write("before", before))
         current = gate.load_reports(self.write("candidate", candidate))
@@ -157,6 +191,27 @@ class BenchmarkGateTests(unittest.TestCase):
         after = report()
         after["Benchmarks"][0]["Memory"]["BytesAllocatedPerOperation"] += 1
         self.assertIn("allocations increased", self.compare(report(), after)[0])
+
+    def test_verified_identical_inputs_report_allocation_variation_but_keep_other_gates(self):
+        before, candidate = report(), report()
+        candidate["Benchmarks"][0]["Memory"]["BytesAllocatedPerOperation"] += 64
+        first = gate.load_reports(self.write("before", before))
+        current = gate.load_reports(self.write("candidate", candidate))
+        failures, summary = gate.compare(first, current, baseline_after=first, identical_inputs=True)
+        self.assertEqual([], failures)
+        self.assertIn("INCONCLUSIVE: allocation variation with byte-identical comparison inputs", summary)
+        self.assertIn("216", summary)
+        measurement(candidate["Benchmarks"][0], 2000)
+        measurement(next(case for case in candidate["Benchmarks"] if case["Type"] == "StartupBenchmarks"), gate.STARTUP_LIMIT_NS)
+        current = gate.load_reports(self.write("candidate", candidate))
+        failures, _ = gate.compare(first, current, identical_inputs=True)
+        self.assertTrue(any("throughput loss" in failure for failure in failures))
+        self.assertTrue(any("not under 50 ms" in failure for failure in failures))
+
+    def test_identical_inputs_do_not_accept_mismatched_reports(self):
+        cases = gate.load_reports(self.write("before", report()))
+        with self.assertRaisesRegex(gate.GateError, "case sets differ"):
+            gate.compare(cases, {}, identical_inputs=True)
 
     def test_fractional_allocation_rounding_passes(self):
         after = report()
@@ -255,6 +310,104 @@ class BenchmarkGateTests(unittest.TestCase):
             self.assertEqual(0, gate.main(["self-test", str(before)]))
 
 
+class ComparisonInputTests(unittest.TestCase):
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.root = Path(self.directory.name)
+        self.baseline, self.candidate = self.root / "baseline", self.root / "candidate"
+        for checkout in (self.baseline, self.candidate):
+            checkout.mkdir()
+            subprocess.run(["git", "init", "--quiet", str(checkout)], check=True)
+            for name in gate.REQUIRED_INPUTS:
+                self.write(checkout, name, "same content")
+            subprocess.run(["git", "-C", str(checkout), "add", "."], check=True)
+
+    def write(self, checkout, name, content):
+        path = checkout / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+        return path
+
+    def test_only_documentation_and_detector_changes_preserve_identity(self):
+        for name in ("docs/design.md", "website/docs/contributing/performance.md",
+                     ".github/scripts/benchmark_gate.py", ".github/scripts/test_benchmark_gate.py",
+                     ".github/scripts/pin_benchmark_version.py",
+                     ".github/workflows/ci.yml", ".github/workflows/performance.yml"):
+            self.write(self.candidate, name, "changed")
+        self.assertEqual(gate.input_manifest(self.baseline), gate.input_manifest(self.candidate))
+
+    def test_source_generator_dependencies_sdk_harness_and_unknown_inputs_disable_identity(self):
+        for name in (*gate.REQUIRED_INPUTS, "src/Relayer/Changed.cs", "new-build-input.targets"):
+            with self.subTest(name=name):
+                path = self.candidate / name
+                original = path.read_bytes() if path.exists() else None
+                self.write(self.candidate, name, "changed")
+                self.assertNotEqual(gate.input_manifest(self.baseline), gate.input_manifest(self.candidate))
+                if original is None:
+                    path.unlink()
+                else:
+                    path.write_bytes(original)
+
+    def test_agent_workflow_aliases_do_not_enter_measured_builds(self):
+        for name in (".claude/skills/issue-pr-loop/SKILL.md",
+                     ".claude/skills/issue-pr-loop/references"):
+            self.write(self.candidate, name, "agent instruction alias")
+        self.assertEqual(gate.input_manifest(self.baseline), gate.input_manifest(self.candidate))
+
+    def symlink(self, name, target, *, directory=False):
+        path = self.candidate / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            path.symlink_to(target, target_is_directory=directory)
+        except OSError as error:
+            self.skipTest(f"Cannot create symlinks: {error}")
+        return path
+
+    def test_agent_workflow_file_and_directory_symlinks_are_excluded(self):
+        for checkout in (self.baseline, self.candidate):
+            self.write(checkout, ".agents/skills/issue-pr-loop/SKILL.md", "instructions")
+            self.write(checkout, ".agents/skills/issue-pr-loop/references/repository.md", "guidance")
+        self.symlink(".claude/skills/issue-pr-loop/SKILL.md",
+                     "../../../.agents/skills/issue-pr-loop/SKILL.md")
+        self.symlink(".claude/skills/issue-pr-loop/references",
+                     "../../../.agents/skills/issue-pr-loop/references", directory=True)
+        self.assertEqual(gate.input_manifest(self.baseline), gate.input_manifest(self.candidate))
+
+    def test_other_file_directory_and_broken_symlinks_fail_closed(self):
+        for target, directory in (("global.json", False), ("src", True), ("missing", False)):
+            with self.subTest(target=target):
+                path = self.symlink("unknown-link", target, directory=directory)
+                try:
+                    with self.assertRaisesRegex(gate.GateError, "Cannot verify symlink input"):
+                        gate.input_manifest(self.candidate)
+                finally:
+                    path.unlink()
+
+    def test_missing_inputs_or_non_checkout_root_fail_closed(self):
+        (self.candidate / "global.json").unlink()
+        with self.assertRaises(gate.GateError):
+            gate.input_manifest(self.candidate)
+        with self.assertRaises(gate.GateError):
+            gate.input_manifest(self.baseline / "src")
+
+    def test_cli_verifies_identity_and_retains_manifest(self):
+        before, candidate = report(), report()
+        candidate["Benchmarks"][0]["Memory"]["BytesAllocatedPerOperation"] += 1
+        first = self.write(self.root, "first/benchmarks-report-full.json", json.dumps(before)).parent
+        current = self.write(self.root, "current/benchmarks-report-full.json", json.dumps(candidate)).parent
+        manifest = self.root / "inputs.json"
+        arguments = ["compare", str(first), str(current), "--baseline-source", str(self.baseline),
+                     "--candidate-source", str(self.candidate), "--input-manifest", str(manifest)]
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(0, gate.main(arguments))
+            self.assertTrue(json.loads(manifest.read_text())["identical"])
+            self.write(self.candidate, "Directory.Build.props", "changed")
+            self.assertEqual(1, gate.main(arguments))
+            self.assertFalse(json.loads(manifest.read_text())["identical"])
+            self.assertEqual(1, gate.main(["compare", str(first), str(current), "--baseline-source", str(self.baseline)]))
+
+
 class BenchmarkVersionTests(unittest.TestCase):
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
@@ -284,6 +437,12 @@ class BenchmarkVersionTests(unittest.TestCase):
         project = self.candidate / pin_benchmark_version.PROJECT
         project.write_text(project.read_text().replace('Include="BenchmarkDotNet"', 'Include="BenchmarkDotNet" VersionOverride="0.16.0"'))
         self.assertEqual("0.16.0", pin_benchmark_version.pin_version(self.candidate, self.baseline))
+
+    def test_equal_versions_preserve_byte_identical_harness(self):
+        (self.baseline / "Directory.Packages.props").write_bytes((self.candidate / "Directory.Packages.props").read_bytes())
+        original = (self.baseline / pin_benchmark_version.PROJECT).read_bytes()
+        self.assertEqual("0.15.8", pin_benchmark_version.pin_version(self.candidate, self.baseline))
+        self.assertEqual(original, (self.baseline / pin_benchmark_version.PROJECT).read_bytes())
 
     def test_missing_or_unresolved_candidate_version_fails_without_baseline_change(self):
         original = (self.baseline / pin_benchmark_version.PROJECT).read_bytes()
