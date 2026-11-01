@@ -283,6 +283,8 @@ Relayer writes CloudEvents attributes using each transport's binary-mode binding
 - Consumers route by `ce_type`, so **several message types can share one topic or queue** (confluent#1183).
 - A raw mode (no envelope, just the native payload) exists for integrating with legacy producers. In raw mode you map the type yourself, for example from the topic name.
 
+The core header and envelope primitives, their native binding contracts, and raw-mode examples are documented in [Message envelopes and native headers](envelopes.md).
+
 ### 4.3 Serialization
 
 - The default is System.Text.Json with a source-generated `JsonSerializerContext`. The generator builds it from the declared message types, so serialization is AOT-safe.
