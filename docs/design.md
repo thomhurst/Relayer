@@ -352,6 +352,19 @@ exception
 ```
 
 - **Classification** is a predicate per exception type or a custom `IFailureClassifier`. Deserialization and contract failures are permanent by default, so they never block a partition or crash a consumer (Silverback #249, SlimMessageBus #438).
+
+Compose exception rules once and pass the classifier to `ConsumePipelineBuilder`:
+
+```csharp
+var classifier = new FailureClassifierBuilder()
+    .On<ArgumentException>(FailureAction.DeadLetter)
+    .On<TimeoutException>(FailureAction.DeadLetter,
+        static (_, context) => context.Attempt > 5)
+    .Build();
+```
+
+Rules match the declared exception type and its derived types, in registration order. The first matching rule with a true predicate wins. Unmatched failures use `DefaultFailureClassifier`, or the custom `IFailureClassifier` passed to `Build`. Explicit rules can override permanent defaults. Builders freeze after `Build`; the resulting classifiers can be shared across consumers. Predicates and custom fallbacks must support concurrent calls. Predicate failures propagate without producing a settlement decision. Classification does not retry, send, or settle a delivery; the consumer's failure delegate still owns durable failure handling.
+
 - **Error metadata** goes on the dead-lettered message: the original message ID, exception type, message and stack trace for **every** attempt (Rebus #1154), attempt count, first and last failure time, consumer name, and host.
 - **Redrive API:** `IDeadLetterManager` provides `List`, `Peek`, `Redrive(filter)`, and `Purge`. It is backed natively by the ASB DLQ, SQS redrive, RabbitMQ DLX queue, or Kafka DLT topic. It is also exposed as an optional minimal-API endpoint group and as CLI commands.
 - **Circuit breaker:** when the failure rate of a consumer crosses a threshold, Relayer **pauses the consumer natively** (Kafka `Pause`, ASB processor stop, RabbitMQ consumer cancel) instead of burning messages into the DLQ (SlimMessageBus #454). It then half-opens with a probe message.

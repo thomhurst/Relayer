@@ -244,6 +244,29 @@ public class ConsumePipelineTests
     }
 
     [Test]
+    public async Task Configured_exception_rules_flow_through_consume_failure_handling()
+    {
+        await using var provider = Provider();
+        var error = new InvalidOperationException("permanent handler failure");
+        provider.GetRequiredService<Control>().Invoke = _ => ValueTask.FromException(error);
+        FailureAction? observed = null;
+        var classifier = new FailureClassifierBuilder()
+            .On<InvalidOperationException>(FailureAction.DeadLetter,
+                static (exception, context) => exception.Message == "permanent handler failure" && context.Attempt == 5)
+            .Build();
+        var pipeline = new ConsumePipelineBuilder(provider.GetRequiredService<IServiceScopeFactory>(),
+                provider.GetRequiredService<MessageTypeRegistry>(), new Serializer(),
+                (_, _, action) => { observed = action; return default; }, classifier)
+            .Handler(Descriptor(provider)).Build();
+        using var context = pipeline.RentContext(Message() with { Attempt = 5 });
+
+        await pipeline.ProcessAsync(context);
+
+        await Assert.That(observed).IsEqualTo(FailureAction.DeadLetter);
+        await Assert.That(provider.GetRequiredService<Control>().Dependency!.Disposed).IsTrue();
+    }
+
+    [Test]
     public async Task Scope_disposal_failure_propagates_and_does_not_report_successful_failure_handling()
     {
         await using var provider = Provider();

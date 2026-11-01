@@ -46,6 +46,12 @@ var handlers = provider.GetRequiredService<HandlerRegistry>();
 var orderDescriptor = handlers.GetHandler<Order, OrderHandler>();
 var orderHandler = (OrderHandler)orderDescriptor.Resolve(scope.ServiceProvider);
 var context = new SmokeContext(scope.ServiceProvider);
+var classifier = new FailureClassifierBuilder()
+    .On<ArgumentException>(FailureAction.Discard, static (_, context) => context.Attempt == 1).Build();
+if (classifier.Classify(new ArgumentNullException("input"), context) != FailureAction.Discard ||
+    classifier.Classify(new MessageEnvelopeException("invalid"), context) != FailureAction.DeadLetter)
+    throw new InvalidOperationException("Typed exception rules failed under Native AOT.");
+Console.WriteLine("Typed exception rules and default classification passed under Native AOT.");
 await orderDescriptor.DispatchAsync(orderHandler, message, context, default);
 var countDescriptor = handlers.GetBatchHandler<Count, CountHandler>();
 var countHandler = (CountHandler)countDescriptor.Resolve(scope.ServiceProvider);
