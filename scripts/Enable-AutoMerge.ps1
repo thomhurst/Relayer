@@ -3,6 +3,7 @@
 #
 #   0. with -MarkReady, promotes the approved draft (`gh pr ready`), undoes the promotion if
 #      the head moved, and waits for the ready CI run to register
+#      (first verifies an active, non-bypassable CI Passed ruleset on the target branch)
 #   1. captures the head, then runs  Assert-PrGreen.ps1 -ForAutoMerge  (ready, no failed
 #      check, nothing pending outside the required CI workflow,
 #      finished verdicts from the non-required path-filtered workflows the PR triggers, a
@@ -33,6 +34,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'AutoMergeProtection.ps1')
 
 function Fail([string]$reason) {
     [Console]::Error.WriteLine("NOT ARMED #${Pr} -- $reason")
@@ -40,7 +42,17 @@ function Fail([string]$reason) {
 }
 
 $repoArgs = @()
-if ($Repo) { $repoArgs = @('--repo', $Repo) }
+if ($Repo) { $repoArgs = @($Repo) }
+$targetRepo = gh repo view @repoArgs --json nameWithOwner --jq '.nameWithOwner' 2>$null
+if ($LASTEXITCODE -ne 0 -or -not $targetRepo) { Fail 'could not resolve the target repository' }
+$targetRepo = $targetRepo.Trim()
+$repoArgs = @('--repo', $targetRepo)
+
+# Check before promotion so missing protection leaves the reviewed draft untouched.
+$target = gh pr view $Pr @repoArgs --json baseRefName 2>$null | ConvertFrom-Json
+if ($LASTEXITCODE -ne 0 -or -not $target.baseRefName) { Fail 'could not read the PR target branch' }
+try { Assert-AutoMergeProtection -Repo $targetRepo -Branch $target.baseRefName }
+catch { Fail $_.Exception.Message }
 
 if ($MarkReady) {
     $before = gh pr view $Pr @repoArgs --json isDraft,headRefOid 2>$null | ConvertFrom-Json
@@ -71,10 +83,18 @@ $head = gh pr view $Pr @repoArgs --json headRefOid --jq '.headRefOid' 2>$null
 if ($LASTEXITCODE -ne 0 -or -not $head) { Fail "could not read PR head (exit $LASTEXITCODE)" }
 $head = $head.Trim()
 
-$gateArgs = @('-Pr', $Pr, '-ForAutoMerge')
-if ($Repo) { $gateArgs += @('-Repo', $Repo) }
+$gateArgs = @('-Pr', $Pr, '-ForAutoMerge', '-Repo', $targetRepo)
 & pwsh -NoProfile -File (Join-Path $PSScriptRoot 'Assert-PrGreen.ps1') @gateArgs
 if ($LASTEXITCODE -ne 0) { Fail "auto-merge gate denied (see above)" }
+
+# The gate and ready-CI registration may take time. Verify protection again immediately
+# before invoking --auto, which otherwise acts as an immediate merge on an unprotected base.
+$currentTarget = gh pr view $Pr @repoArgs --json baseRefName 2>$null | ConvertFrom-Json
+if ($LASTEXITCODE -ne 0 -or $currentTarget.baseRefName -cne $target.baseRefName) {
+    Fail 'PR target changed during arming; retry after reviewing its new base'
+}
+try { Assert-AutoMergeProtection -Repo $targetRepo -Branch $target.baseRefName }
+catch { Fail $_.Exception.Message }
 
 gh pr merge $Pr @repoArgs --auto --squash --match-head-commit $head
 if ($LASTEXITCODE -ne 0) { Fail "gh pr merge --auto failed (exit $LASTEXITCODE)" }

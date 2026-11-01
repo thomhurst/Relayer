@@ -126,6 +126,7 @@ jobs:
           ./scripts/Test-AssertPrGreenReviewHeuristics.ps1
           ./scripts/Test-AssertPrGreenReviewThreads.ps1
           ./scripts/Test-AssertPrGreenChecks.ps1
+          ./scripts/Test-AutoMergeProtection.ps1
           ./scripts/Test-IssuePrLoop.ps1
 
   ci-passed:

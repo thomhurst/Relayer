@@ -8,6 +8,8 @@ Read [AGENTS.md](../../../../AGENTS.md) for validation, public contracts, and pe
 
 ## Draft review lifecycle
 
+Repository protection: the active `Main` repository ruleset targets `refs/heads/main`, requires `CI Passed` from GitHub Actions (app ID `15368`), and has no bypass actors, including repository administrators. Repository auto-merge must be enabled. `Enable-AutoMerge.ps1` verifies the effective target-branch rules and the enforcing ruleset before promotion and again before arming; missing protection, bypass permissions, unreadable rules, or a changed PR target fail closed. Classic branch protection alone does not satisfy this guard. See [GitHub's rules API](https://docs.github.com/en/rest/repos/rules) and `scripts/Test-AutoMergeProtection.ps1`.
+
 Draft policy: [AGENTS.md](../../../../AGENTS.md) applies the skill's draft review lifecycle to every agent-created PR, inside or outside the loop. Before creating or promoting a PR from an existing worktree, re-read `AGENTS.md` and this skill from the shared checkout; branch copies can predate the current policy.
 
 Required reviewers are Claude Code Review and Codex. Other review bots (CodeRabbit, Greptile) are not approvers, but their findings are review surfaces like any other.
