@@ -38,9 +38,10 @@ public class TelemetryTests
     }
 
     [Test]
-    [Arguments(false)]
-    [Arguments(true)]
-    public async Task Executable_failure_pipeline_records_delivery_and_settles_after_durability(bool recover)
+    [Arguments(false, false)]
+    [Arguments(true, false)]
+    [Arguments(false, true)]
+    public async Task Executable_failure_pipeline_records_delivery_and_settles_after_durability(bool recover, bool manuallySettled)
     {
         var logger = new Logger();
         using var instrumentation = new RelayerInstrumentation(new LoggerFactory(logger));
@@ -64,6 +65,7 @@ public class TelemetryTests
             {
                 if (!recover && context.Features.Get<NativeMessage<Incoming>>()?.Disposition.Kind != DispositionKind.DeadLetter)
                     throw new InvalidOperationException("Durable failure decision lost.");
+                if (manuallySettled) context.Features.Get<NativeMessage<Incoming>>()!.Disposition = Disposition.SettledByHandler;
                 entered.SetResult();
                 return new(finished.Task);
             }).Build(1);
@@ -78,7 +80,9 @@ public class TelemetryTests
             await Assert.That(capture.Values.Any(v => v.Name == "messaging.process.duration")).IsFalse();
         }
         finally { finished.TrySetResult(); }
-        await Assert.That((await pending).Kind).IsEqualTo(recover ? DispositionKind.Complete : DispositionKind.DeadLetter);
+        var expected = recover ? DispositionKind.Complete : DispositionKind.DeadLetter;
+        if (manuallySettled) expected = DispositionKind.SettledByHandler;
+        await Assert.That((await pending).Kind).IsEqualTo(expected);
         await Assert.That(attempts).IsEqualTo(2);
         await Assert.That(logger.Entries.Count).IsEqualTo(recover ? 1 : 2);
         await Assert.That(capture.Values.Single(v => v.Name == "messaging.process.duration").Tags["error.type"]).IsEqualTo("_OTHER");

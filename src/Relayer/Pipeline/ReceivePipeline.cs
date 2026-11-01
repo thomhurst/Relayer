@@ -41,7 +41,7 @@ public sealed class ReceivePipeline<TIncoming, TBinding>
             using var context = _consumer.RentContext(state, cancellationToken);
             context.Features.Set(state.Native);
             await _consumer.ProcessAsync(context).ConfigureAwait(false);
-            return context.FailureDisposition ?? state.Native.Disposition;
+            return state.Native.Disposition;
         }
         finally
         {
