@@ -211,6 +211,8 @@ public sealed class ReceivePipeline<TIncoming, TBinding>
         }
         internal override int Attempt => _attempt;
         internal override ReadOnlySequence<byte> Body => _body;
+        internal override string? TracePartitionId => TBinding.GetPartitionId(Native.Message);
+        internal override void EnrichActivity(System.Diagnostics.Activity activity) => TBinding.EnrichActivity(activity, Native.Message);
         public override bool TryGetValue(string name, out WireString value) => _headers.TryGetValue(name, out value);
 
         internal void Clear()

@@ -5,7 +5,7 @@ using Microsoft.Extensions.Options;
 
 namespace Relayer.Benchmarks;
 
-/// <summary>Isolates tracing primitive cost. SendTracingBenchmarks measures send integration; receive integration is tracked in #93.</summary>
+/// <summary>Isolates primitive cost; SendTracingBenchmarks and ConsumeTracingBenchmarks cover pipeline integration.</summary>
 [MemoryDiagnoser]
 public class TracingBenchmarks
 {

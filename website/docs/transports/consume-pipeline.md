@@ -16,7 +16,8 @@ Transport authors can compose and invoke the execution layer as follows:
 var pipeline = new ConsumePipelineBuilder(scopeFactory, messageTypes,
         serializer, failures.HandleAsync)
     .Handler(handlers.GetHandler<OrderPlaced, OrderPlacedHandler>())
-    .Use(telemetryMiddleware)
+    .Tracing(tracing, endpoint)
+    .Settle(SettleNativeMessageAsync)
     .Build(contextPoolCapacity: maxConcurrentDeliveries);
 
 // Once per native delivery, after decoding its envelope or explicit raw mapping:
@@ -30,7 +31,7 @@ using var context = pipeline.RentContext(new ConsumeMessage
 }, cancellationToken);
 context.Features.Set(nativeFeature);
 await pipeline.ProcessAsync(context).ConfigureAwait(false);
-// The transport's receive layer now performs its native settlement.
+// The configured callback has completed native settlement inside the process span.
 ```
 
 Each `Handler(descriptor)` consumes an already registered generated descriptor;
@@ -58,8 +59,11 @@ bodies as `DeadLetter`, and other errors as `Retry`. Applications can supply an
 it enters failure handling without deserializing or resolving a handler. The
 delegate must finish durable failure handling before returning successfully;
 it is the integration point for the failure policy and capability-aware receive
-layer. This execution layer does not implement retries, transport fallbacks or
-native settlement itself.
+layer. The delegate constructor does not implement retries or transport fallbacks;
+use the executable `FailurePipeline` constructor for those policies. The optional
+`Settle` callback invokes adapter-owned native settlement after durable work and
+scope disposal, inside the process span and duration. See [Tracing, metrics and logging](../guides/telemetry.md)
+for `Tracing`, settlement wrappers and manual settlement.
 
 Dispose each rental after awaiting processing, including error paths. Context
 disposal clears body storage, metadata, services, cancellation and native feature
@@ -71,7 +75,7 @@ processed once, by its owner, and cannot be disposed during processing.
 
 This is the execution layer below the generic receive SPI in design section 2.4.
 The SPI owns native binding, envelope decoding, native feature reuse, batch
-delivery and dispositions. Its integration is tracked in [#55](https://github.com/thomhurst/Relayer/issues/55). The existing
+delivery and dispositions through `ReceivePipeline<TIncoming, TBinding>`. See [Receive SPI](receive.md). The existing
 `MessageContext.Headers` contract is retained here for that coordinated migration;
 the pipeline does not enumerate or copy a transport's lazy header view.
 

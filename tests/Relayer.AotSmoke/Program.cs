@@ -131,6 +131,22 @@ if (orderHandler.Order != message || countHandler.Total != 7)
 Console.WriteLine("Consumer-only single and batch dispatch passed under Native AOT.");
 buffer.Clear();
 serializer.Serialize(message, buffer);
+var receiveEndpoint = new MessagingEndpoint { System = "relayer.inmemory", Destination = "orders" };
+var nativeSettlement = new MessageOperationTracing(tracing, receiveEndpoint, MessagingOperation.Settle, "complete")
+    .WrapSettlement(static context =>
+    {
+        if (context.Features.Get<NativeMessage<SmokeIncoming>>() is null || Activity.Current?.OperationName != "complete orders")
+            throw new InvalidOperationException("Traced settlement lost its native feature or span.");
+        return default;
+    });
+var receiveSpans = new List<Activity>();
+using var receiveListener = new ActivityListener
+{
+    ShouldListenTo = source => ReferenceEquals(source, tracing.Source),
+    Sample = static (ref ActivityCreationOptions<ActivityContext> _) => ActivitySamplingResult.AllDataAndRecorded,
+    ActivityStopped = activity => receiveSpans.Add(activity),
+};
+ActivitySource.AddActivityListener(receiveListener);
 var consumer = new ConsumePipelineBuilder(provider.GetRequiredService<IServiceScopeFactory>(),
         provider.GetRequiredService<MessageTypeRegistry>(), serializer,
         static (_, error, _) => ValueTask.FromException(error))
@@ -139,16 +155,19 @@ var consumer = new ConsumePipelineBuilder(provider.GetRequiredService<IServiceSc
     {
         System = "relayer.inmemory", Destination = "orders",
     }))
-    .Settle(static context =>
-    {
-        if (context.Features.Get<NativeMessage<SmokeIncoming>>() is null)
-            throw new InvalidOperationException("Settlement lost its native feature.");
-        return default;
-    }).Build(1);
+    .Tracing(tracing, receiveEndpoint)
+    .Settle(nativeSettlement).Build(1);
 var receive = new ReceivePipeline<SmokeIncoming, SmokeBinding>(consumer, new HeaderNames(), 1);
 var disposition = await receive.ProcessAsync(new(new ReadOnlySequence<byte>(buffer.WrittenMemory)));
 if (disposition.Kind != DispositionKind.Complete)
     throw new InvalidOperationException("Native receive SPI failed under Native AOT.");
+if (receiveSpans.Count != 2 || receiveSpans[0].ParentSpanId != receiveSpans[1].SpanId ||
+    receiveSpans[1].GetTagItem("messaging.destination.partition.id") is not "0" ||
+    receiveSpans[1].GetTagItem("messaging.message.id") is not "smoke-native" ||
+    receiveSpans[1].GetTagItem("messaging.kafka.offset") is not 42L || receiveSpans[1].Links.Count() != 1)
+    throw new InvalidOperationException("Delivery and settlement tracing failed under Native AOT.");
+receiveListener.Dispose();
+Console.WriteLine("Delivery spans, settlement wrappers and native attributes passed under Native AOT.");
 Console.WriteLine("Native receive binding, lazy headers and pooled native feature passed under Native AOT.");
 var failurePolicy = new FailurePipeline(provider, "smoke", "orders", "aot-consumer",
     new FailureOptions { RetryDelays = new[] { TimeSpan.Zero } });
@@ -266,12 +285,15 @@ internal readonly struct SmokeBinding : IMessageBinding<SmokeIncoming>
 {
     public static ReadOnlySequence<byte> GetBody(SmokeIncoming message) => message.Body;
     public static int? GetDeliveryCount(SmokeIncoming message) => null;
+    public static string? GetPartitionId(SmokeIncoming message) => "0";
+    public static void EnrichActivity(Activity activity, SmokeIncoming message) => activity.SetTag("messaging.kafka.offset", 42L);
     public static bool TryGetHeader(SmokeIncoming message, string name, out WireString value)
     {
         value = name switch
         {
             "ce_type" => new WireString(Type),
             "ce_id" => new WireString("smoke-native"),
+            "traceparent" => new WireString("00-0123456789abcdef0123456789abcdef-0123456789abcdef-01"),
             _ => default,
         };
         return !value.IsEmpty;

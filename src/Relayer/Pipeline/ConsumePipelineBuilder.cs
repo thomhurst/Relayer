@@ -18,6 +18,7 @@ public sealed class ConsumePipelineBuilder
     private bool _built;
     private EndpointTelemetry? _telemetry;
     private ConsumeDelegate? _settlement;
+    private ConsumeTracing? _tracing;
 
     /// <summary>Builds a homogeneous batch consumer using its existing size, wait and concurrency declaration.</summary>
     /// <remarks>Batch handlers coordinate their own per-message work. Single-message middleware, telemetry, and settlement callbacks cannot be combined with batch composition.</remarks>
@@ -113,6 +114,17 @@ public sealed class ConsumePipelineBuilder
         return this;
     }
 
+    /// <summary>Surrounds each delivery, including native settlement, with a process span.</summary>
+    /// <remarks>Compose once per endpoint. No receive span is emitted. Native settlement callbacks wrap each actual call with WrapSettlement.</remarks>
+    public ConsumePipelineBuilder Tracing(MessageTracing tracing, MessagingEndpoint endpoint)
+    {
+        EnsureMutable();
+        ArgumentNullException.ThrowIfNull(tracing);
+        ArgumentNullException.ThrowIfNull(endpoint);
+        _tracing = new(tracing, endpoint);
+        return this;
+    }
+
     /// <summary>Runs native settlement after durable handling and async scope disposal, inside processing duration.</summary>
     /// <remarks>
     /// Transports read their native feature and disposition from the context. Honor SettledByHandler without settling twice.
@@ -137,7 +149,7 @@ public sealed class ConsumePipelineBuilder
         }
         _built = true;
         return new ConsumePipeline(_scopes, _dispatch.ToFrozenDictionary(), _middleware, _failure, _classifier,
-            contextPoolCapacity, _failures, _telemetry, _settlement);
+            contextPoolCapacity, _failures, _telemetry, _settlement, _tracing);
     }
 
     private void EnsureMutable()
