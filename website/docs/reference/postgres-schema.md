@@ -111,4 +111,5 @@ Schedules and expired claims exactly at `@now` are included. Future schedules, l
 rows in the dead table are excluded. The real PostgreSQL tests seed these cases, then verify the health
 integration at counts 9, 10, 19 and 20 with thresholds 10 and 20. This fixture validates the schema and predicate;
 the [PostgreSQL store](postgres-store.md) implements this predicate in its backlog and claim queries.
-Dispatch workers remain planned.
+[Unordered direct dispatch](direct-dispatch.md) uses these claims after EF commits; recovery polling and
+ordered lane dispatch remain planned.

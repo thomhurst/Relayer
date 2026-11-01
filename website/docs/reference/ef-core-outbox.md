@@ -8,9 +8,10 @@ It buffers serialized sends, copies borrowed memory before each send completes, 
 PostgreSQL `INSERT` immediately before commit. The insert uses the same connection and transaction as
 the business data. No `SaveChanges` override or outbox entity mapping is required.
 
-This persists rows only. Register the [PostgreSQL durable store](postgres-store.md) separately for reads,
-claims and backlog health queries. A built-in dispatcher, inbox, lane leases, cleanup and outbox tracing
-remain planned. No broker send occurs when an outbox transaction commits.
+Enlistment alone persists rows. Enable [unordered direct dispatch](direct-dispatch.md) to send due messages
+in the background after commit. Otherwise register the [PostgreSQL durable store](postgres-store.md)
+separately for reads, claims and backlog health queries. Recovery polling, inbox, lane leases, cleanup
+and outbox tracing remain planned.
 There are no published NuGet packages yet; use project references from a repository checkout.
 
 ## Registration
@@ -49,7 +50,8 @@ binds immutable defaults through the Options pattern. `IOptionsSnapshot<EntityFr
 keeps a scope's settings stable; configuration changes apply to newly created scopes. Invalid identifiers,
 nonpositive lane counts and malformed numeric values fail validation. A per-context options argument
 overrides those defaults. Always match the deployed schema and prefix. Drain the outbox before changing lanes.
-`LeaseDuration` and `MaxDispatchAttempts` belong to the planned dispatcher and do not affect enlistment.
+`LeaseDuration` and `MaxDispatchAttempts` belong to planned lease and poison-row integrations and do not
+affect enlistment. Direct dispatch uses its own `PostgreSqlDirectDispatchOptions.ClaimDuration`.
 
 ## Save without an explicit transaction
 

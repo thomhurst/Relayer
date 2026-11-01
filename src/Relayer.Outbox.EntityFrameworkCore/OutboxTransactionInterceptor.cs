@@ -46,10 +46,10 @@ internal sealed class OutboxTransactionInterceptor(EntityFrameworkCoreOutbox out
         return result;
     }
 
-    public override void TransactionCommitted(DbTransaction transaction, TransactionEndEventData eventData) => outbox.Ended(transaction);
+    public override void TransactionCommitted(DbTransaction transaction, TransactionEndEventData eventData) => outbox.Committed(transaction);
     public override Task TransactionCommittedAsync(DbTransaction transaction, TransactionEndEventData eventData, CancellationToken cancellationToken = default)
     {
-        outbox.Ended(transaction);
+        outbox.Committed(transaction);
         return Task.CompletedTask;
     }
 

@@ -202,6 +202,103 @@ public class PostgreSqlOutboxStoreTests
         await Assert.ThrowsAsync<NpgsqlException>(async () => await store.GetPendingCountAsync(now, default));
     }
 
+    [Test]
+    public async Task Batch_claims_match_input_positions_and_exclude_ineligible_or_competing_rows()
+    {
+        await using var fixture = new PostgreSqlFixture();
+        await fixture.StartAsync();
+        await using var source = NpgsqlDataSource.Create(fixture.ConnectionString);
+        var options = new PostgreSqlOutboxOptions { Schema = "Claim\"Schema", TablePrefix = "test_" };
+        await CreateSchema(source, options);
+        var store = new PostgreSqlOutboxStore(source, options);
+        var now = Microseconds(DateTimeOffset.UtcNow);
+        var kinds = new[] { "due", "future", "live", "expired", "parked", "missing", "ordered", "due" };
+        var claims = new OutboxClaim[kinds.Length];
+        var claimed = Enumerable.Repeat(true, kinds.Length).ToArray();
+        for (var i = 0; i < kinds.Length; i++)
+        {
+            claims[i] = new(Guid.CreateVersion7(), Guid.NewGuid());
+            if (kinds[i] == "missing") continue;
+            await Insert(source, options, claims[i].MessageId, now,
+                lane: kinds[i] == "ordered" ? 1 : null,
+                deliverAt: kinds[i] == "future" ? now.AddHours(1) : now,
+                status: kinds[i] == "parked" ? "parked" : "pending",
+                expires: kinds[i] == "live" ? now.AddHours(1) : kinds[i] == "expired" ? now : null);
+        }
+        await store.ClaimBatchAsync(claims, claimed, now, now.AddMinutes(1), default);
+        var expected = new[] { true, false, false, true, false, false, false, true };
+        for (var i = 0; i < claims.Length; i++)
+        {
+            await Assert.That(claimed[i]).IsEqualTo(expected[i]);
+            if (!claimed[i]) continue;
+            await Assert.That(await store.CompleteAsync(new(claims[i].MessageId, Guid.NewGuid()), now, default)).IsFalse();
+            await Assert.That(await store.RenewClaimAsync(claims[i], now, now.AddMinutes(1), default)).IsTrue();
+        }
+        var competitor = new PostgreSqlOutboxStore(source, options);
+        var competingClaims = claims.Select(claim => new OutboxClaim(claim.MessageId, Guid.NewGuid())).ToArray();
+        var competingResults = new bool[claims.Length];
+        await competitor.ClaimBatchAsync(competingClaims, competingResults, now, now.AddMinutes(2), default);
+        await Assert.That(competingResults.Any(result => result)).IsFalse();
+        await competitor.ClaimBatchAsync(competingClaims, competingResults, now.AddMinutes(1), now.AddMinutes(2), default);
+        for (var i = 0; i < claims.Length; i++)
+            await Assert.That(competingResults[i]).IsEqualTo(expected[i]);
+        await Assert.That(await store.CompleteBatchAsync(claims, now.AddMinutes(1), default)).IsEqualTo(0L);
+        await Assert.That(await competitor.CompleteBatchAsync(competingClaims, now.AddMinutes(1), default)).IsEqualTo(3L);
+        await store.ClaimBatchAsync(claims, claimed, now, now.AddMinutes(1), default);
+        await Assert.That(claimed.Any(result => result)).IsFalse();
+        await store.ClaimBatchAsync(ReadOnlyMemory<OutboxClaim>.Empty, Memory<bool>.Empty, now, now.AddMinutes(1), default);
+        await Assert.ThrowsAsync<ArgumentException>(async () =>
+            await store.ClaimBatchAsync(claims, Memory<bool>.Empty, now, now.AddMinutes(1), default));
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(async () =>
+            await store.ClaimBatchAsync(claims, claimed, now, now, default));
+        await Assert.ThrowsAsync<OperationCanceledException>(async () =>
+            await store.ClaimBatchAsync(claims, claimed, now, now.AddMinutes(1), new CancellationToken(true)));
+    }
+
+    [Test]
+    public async Task Batch_completion_fences_each_row_and_deletes_only_live_matching_claims_in_one_statement()
+    {
+        await using var fixture = new PostgreSqlFixture();
+        await fixture.StartAsync();
+        await using var source = NpgsqlDataSource.Create(fixture.ConnectionString);
+        var options = new PostgreSqlOutboxOptions { Schema = "Batch\"Schema", TablePrefix = "test_" };
+        await CreateSchema(source, options);
+        var table = "\"Batch\"\"Schema\".\"test_outbox\"";
+        var store = new PostgreSqlOutboxStore(source, options);
+        var now = Microseconds(DateTimeOffset.UtcNow);
+        var first = new OutboxClaim(Guid.CreateVersion7(), Guid.NewGuid());
+        var second = new OutboxClaim(Guid.CreateVersion7(), Guid.NewGuid());
+        var expired = new OutboxClaim(Guid.CreateVersion7(), Guid.NewGuid());
+        var replaced = new OutboxClaim(Guid.CreateVersion7(), Guid.NewGuid());
+        await Insert(source, options, first.MessageId, now);
+        await Insert(source, options, second.MessageId, now);
+        await Insert(source, options, expired.MessageId, now);
+        await Insert(source, options, replaced.MessageId, now);
+        await store.TryClaimAsync(first, now, now.AddMinutes(1), default);
+        await store.TryClaimAsync(second, now, now.AddMinutes(1), default);
+        await store.TryClaimAsync(expired, now, now.AddSeconds(1), default);
+        await store.TryClaimAsync(new(replaced.MessageId, Guid.NewGuid()), now, now.AddMinutes(1), default);
+        await using (var command = source.CreateCommand($"""
+            CREATE TABLE delete_log (id integer);
+            CREATE FUNCTION log_delete() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN INSERT INTO delete_log VALUES (1); RETURN NULL; END; $$;
+            CREATE TRIGGER delete_count AFTER DELETE ON {table} FOR EACH STATEMENT EXECUTE FUNCTION log_delete();
+            """)) await command.ExecuteNonQueryAsync();
+        OutboxClaim[] claims = [first, second, expired, replaced, new(Guid.CreateVersion7(), Guid.NewGuid()), first];
+        await Assert.That(await store.CompleteBatchAsync(claims, now.AddSeconds(1), default)).IsEqualTo(2L);
+        await using (var command = source.CreateCommand($"SELECT count(*) FROM {table}"))
+            await Assert.That((long)(await command.ExecuteScalarAsync())!).IsEqualTo(2L);
+        await using (var command = source.CreateCommand("SELECT count(*) FROM delete_log"))
+            await Assert.That((long)(await command.ExecuteScalarAsync())!).IsEqualTo(1L);
+        await Assert.That(await store.CompleteBatchAsync(claims, now.AddSeconds(1), default)).IsEqualTo(0L);
+        await Assert.That(await store.CompleteBatchAsync(ReadOnlyMemory<OutboxClaim>.Empty, now, default)).IsEqualTo(0L);
+        await Assert.ThrowsAsync<ArgumentException>(async () =>
+            await store.CompleteBatchAsync(new OutboxClaim[] { new(Guid.Empty, Guid.NewGuid()) }, now, default));
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+        await Assert.ThrowsAsync<OperationCanceledException>(async () =>
+            await store.CompleteBatchAsync(claims, now, cancellation.Token));
+    }
+
     internal static async Task CreateSchema(NpgsqlDataSource source, PostgreSqlOutboxOptions? options = null)
     {
         await using var command = source.CreateCommand(PostgreSqlOutboxSchema.CreateScript(options));

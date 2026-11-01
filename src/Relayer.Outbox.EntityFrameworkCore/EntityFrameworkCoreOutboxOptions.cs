@@ -12,6 +12,9 @@ public sealed class EntityFrameworkCoreOutboxOptions
     /// <summary>Number of lanes for ordered dispatch. Changing it requires draining the outbox first.</summary>
     public int Lanes { get; init; } = 32;
 
+    /// <summary>Named PostgreSQL direct dispatcher notified after commit. Null persists rows without dispatching.</summary>
+    public string? DispatchStoreName { get; init; }
+
     /// <summary>How long a lane or job lease lasts without a heartbeat.</summary>
     public TimeSpan LeaseDuration { get; init; } = TimeSpan.FromSeconds(30);
 

@@ -292,8 +292,9 @@ const status = [
   ['PostgreSQL durable reads and fenced claims', 'Implemented store operations', true],
   ['EF Core transaction enlistment for PostgreSQL', 'Implemented enqueue path', true],
   ['PostgreSQL ADO.NET and Dapper transactions', 'Implemented enqueue path', true],
+  ['Unordered PostgreSQL direct dispatch after EF commit', 'Implemented direct path', true],
   ['Native broker health adapters', 'Planned', false],
-  ['Outbox dispatch, leases, cleanup and inbox', 'Planned', false],
+  ['Outbox recovery, ordered dispatch, leases, cleanup and inbox', 'Planned', false],
   ['Send and delivery tracing, settlement, metrics and logs', 'Implemented', true],
   ['Native receive and outbox telemetry', 'Planned', false],
 ];
