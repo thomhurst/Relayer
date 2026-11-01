@@ -139,7 +139,9 @@ public class CapabilityValidationTests
         await using var provider = Create(transport, additional: broker =>
         {
             broker.Options.Validate(_ => false, "credentials required");
+#pragma warning disable RLY004 // Deliberately omit the handler to exercise aggregate startup validation.
             broker.Consume("orders", consumer => consumer.Concurrency(0));
+#pragma warning restore RLY004
         }, receiver: receiver);
         var failure = await Start(provider);
         await Assert.That(failure).IsNotNull();
@@ -186,7 +188,9 @@ public class CapabilityValidationTests
             BuilderTests.ConsumerOptions>("events", broker =>
         {
             broker.Options.Validate(_ => false, "credentials required");
+#pragma warning disable RLY004 // Deliberately omit the handler to preserve declaration errors when adapter creation fails.
             broker.Consume("orders", consumer => consumer.Concurrency(0));
+#pragma warning restore RLY004
         }));
         await using var provider = services.BuildServiceProvider();
 

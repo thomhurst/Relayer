@@ -277,6 +277,7 @@ public class ReceivePipelineTests
         return new(consumer, new HeaderNames(), 1);
     }
 
+    [Message("payload")]
     public sealed class Payload;
     public sealed class Control
     {
