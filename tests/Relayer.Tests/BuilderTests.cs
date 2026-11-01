@@ -1,3 +1,4 @@
+#pragma warning disable RLY004 // These fixtures intentionally declare empty consumers to test configuration validation.
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;

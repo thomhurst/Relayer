@@ -2,6 +2,7 @@
   <Folder Name="/src/">
     <Project Path="src/Relayer/Relayer.csproj" />
     <Project Path="src/Relayer.SourceGenerators/Relayer.SourceGenerators.csproj" />
+    <Project Path="src/Relayer.CodeFixes/Relayer.CodeFixes.csproj" />
     <Project Path="src/Relayer.Kafka/Relayer.Kafka.csproj" />
     <Project Path="src/Relayer.AzureServiceBus/Relayer.AzureServiceBus.csproj" />
     <Project Path="src/Relayer.AmazonSqs/Relayer.AmazonSqs.csproj" />

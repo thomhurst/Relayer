@@ -5,9 +5,11 @@
   <ItemGroup>
     <PackageReference Include="TUnit" />
     <PackageReference Include="Microsoft.CodeAnalysis.CSharp" />
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp.Workspaces" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="../../src/Relayer.SourceGenerators/Relayer.SourceGenerators.csproj" />
+    <ProjectReference Include="../../src/Relayer.CodeFixes/Relayer.CodeFixes.csproj" />
     <ProjectReference Include="../../src/Relayer/Relayer.csproj" />
   </ItemGroup>
   <ItemGroup>

@@ -258,6 +258,8 @@ public sealed class AuditHandler : IBatchHandler<AuditEvent>
 - For people who want convenience, the source generator emits an explicit, readable `AddHandlersFromThisAssembly()` that lists every handler it found at compile time. This is "scanning" done by the compiler — it is visible, debuggable, and AOT-safe.
 - Analyzers report problems at compile time: a handler that is registered nowhere, a message type with no stable name, a consumer with no handler, or a feature the transport does not support (for example, ordering on a non-FIFO SQS queue).
 
+The [configuration diagnostics reference](analyzers.md) documents `RLY001`–`RLY004`, their limits, suppression and the `[Message]` code fix. Transport capability validation remains a startup check when configuration values are not statically known.
+
 Register handlers inside `AddRelayer`. Both forms use the same generated descriptors; explicit registration adds only the requested handler:
 
 ```csharp

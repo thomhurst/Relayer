@@ -1,3 +1,4 @@
+#pragma warning disable RLY001 // Low-level pipeline fixtures use primitive messages with explicit serializer metadata.
 using System.Buffers;
 using Microsoft.Extensions.DependencyInjection;
 using Relayer.Serialization;
