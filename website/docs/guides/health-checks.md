@@ -30,8 +30,9 @@ The core package has no health-check dependency. Health polls add no work to the
 
 ## Explicit adapters
 
-Native broker connectivity adapters and database stores are not supplied yet. This package supplies an outbox
-health adapter for `IOutboxStore`; applications or future database integrations supply the store itself.
+Native broker connectivity adapters are not supplied yet. This package supplies an outbox
+health adapter for `IOutboxStore`; use the [PostgreSQL read/claim store](../reference/postgres-store.md)
+or an application-supplied store.
 Registering a transport does not establish native connectivity. Applications or future native
 integrations register their adapters explicitly as keyed services. Without these adapters, configured transports,
 consumers and stores report unhealthy. Built-in adapter work is tracked with the

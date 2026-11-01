@@ -488,9 +488,9 @@ The implemented [durable store contract](../website/docs/reference/outbox-stores
 enlistment from dispatch reads and mutations. Reads fill caller-owned bounded buffers. Eligible rows are pending,
 not parked or dead, due at the query instant and without a live claim. Health uses the same predicate across
 all lanes. Claims use a unique token and an expiry; renew, completion and failure updates require the matching
-live token, so a stale dispatcher cannot mutate a reclaimed row. PostgreSQL schema creation is implemented.
-Database stores and dispatch workers remain planned; the schema and contract do not implement lane ownership
-or durable sending.
+live token, so a stale dispatcher cannot mutate a reclaimed row. PostgreSQL schema creation and the
+[PostgreSQL read/claim store](../website/docs/reference/postgres-store.md) are implemented. Transactional
+enqueue and dispatch workers remain planned; store registration does not implement lane ownership or durable sending.
 
 ### 6.4 Dispatching
 

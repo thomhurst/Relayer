@@ -44,7 +44,7 @@ var sql = PostgreSqlOutboxSchema.CreateScript(new PostgreSqlOutboxOptions
 The defaults are schema `public` and prefix `relayer_`. An empty prefix is allowed. Schema, table and index
 names are quoted as PostgreSQL identifiers, including embedded quotes, punctuation and Unicode. Each generated
 identifier must fit PostgreSQL's 63 UTF-8 byte limit; invalid names fail before SQL is returned. All deployment
-and future provider registrations must use the same schema and prefix.
+and [store registrations](postgres-store.md) must use the same schema and prefix.
 
 ## Tables and constraints
 
@@ -58,7 +58,7 @@ and future provider registrations must use the same schema and prefix.
 
 Lane numbers use PostgreSQL `integer` to match the nonnegative `int` contract. Attempts cannot be negative.
 Message IDs and claim tokens cannot be empty UUIDs. A claim token and its expiry must both be null or both be
-present. The future store must still enforce conditional, live-token updates; columns and constraints alone
+present. The [PostgreSQL store](postgres-store.md) enforces conditional, live-token updates; columns and constraints alone
 do not implement [fencing](outbox-stores.md#claims-and-outcomes).
 
 The outbox has a partial `(lane, id)` index for `status = 'pending'` and a partial `deliver_at` index for non-null
@@ -108,4 +108,5 @@ WHERE status = 'pending'
 Schedules and expired claims exactly at `@now` are included. Future schedules, live claims, parked rows and
 rows in the dead table are excluded. The real PostgreSQL tests seed these cases, then verify the health
 integration at counts 9, 10, 19 and 20 with thresholds 10 and 20. This fixture validates the schema and predicate;
-it does not provide an `IOutboxStore` implementation or dispatcher.
+the [PostgreSQL store](postgres-store.md) implements this predicate in its backlog and claim queries.
+Dispatch workers remain planned.

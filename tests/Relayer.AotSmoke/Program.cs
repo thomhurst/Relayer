@@ -12,8 +12,48 @@ using Microsoft.Extensions.Logging.Abstractions;
 using Relayer;
 using Relayer.HealthChecks;
 using Relayer.InMemory;
+using Relayer.Outbox.PostgreSql;
 using Relayer.Serialization;
 using Relayer.Transports;
+
+var postgresConnectionString = Environment.GetEnvironmentVariable("RELAYER_AOT_POSTGRES_CONNECTION");
+await using (var dataSource = new Npgsql.NpgsqlSlimDataSourceBuilder(postgresConnectionString ?? "Host=127.0.0.1;Port=1;Timeout=1").Build())
+{
+    var stores = new ServiceCollection().AddRelayerPostgreSqlOutboxStore("postgres-smoke", dataSource);
+    await using var storeProvider = stores.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
+    await using var storeScope = storeProvider.CreateAsyncScope();
+    var store = storeScope.ServiceProvider.GetRequiredKeyedService<IOutboxStore>("postgres-smoke");
+    if (await store.ReadPendingAsync(new(null, DateTimeOffset.UtcNow), Memory<OutboxRecord>.Empty, default) != 0)
+        throw new InvalidOperationException("Empty PostgreSQL reads failed under Native AOT.");
+    try
+    {
+        await store.GetPendingCountAsync(DateTimeOffset.UtcNow, new CancellationToken(true));
+        throw new InvalidOperationException("PostgreSQL cancellation failed under Native AOT.");
+    }
+    catch (OperationCanceledException) { }
+    if (postgresConnectionString is not null)
+    {
+        await using (var schemaCommand = dataSource.CreateCommand(PostgreSqlOutboxSchema.CreateScript()))
+            await schemaCommand.ExecuteNonQueryAsync();
+        await using (var seedCommand = dataSource.CreateCommand("""
+            INSERT INTO relayer_outbox (id, transport, destination, message_type, headers, body, created_at, deliver_at)
+            VALUES ('01900000-0000-7000-8000-000000000001', 'smoke', 'orders', 'order.v1',
+                '\x0100000001000000040000007479706502000000c3a9', '\x0102', now(), now())
+            """))
+            await seedCommand.ExecuteNonQueryAsync();
+        var rows = new OutboxRecord[1];
+        var now = DateTimeOffset.UtcNow.AddSeconds(1);
+        if (await store.ReadPendingAsync(new(null, now), rows, default) != 1 || rows[0].Message.Headers.Span[0].Value.ToString() != "é")
+            throw new InvalidOperationException("PostgreSQL row reads failed under Native AOT.");
+        var claim = new OutboxClaim(rows[0].Id, Guid.NewGuid());
+        if (await store.GetPendingCountAsync(now, default) != 1 ||
+            !await store.TryClaimAsync(claim, now, now.AddMinutes(1), default) ||
+            !await store.CompleteAsync(claim, now, default) || await store.GetPendingCountAsync(now, default) != 0)
+            throw new InvalidOperationException("PostgreSQL claims failed under Native AOT.");
+        Console.WriteLine("Real PostgreSQL reads, headers, claims and outcomes passed under Native AOT.");
+    }
+}
+Console.WriteLine("PostgreSQL keyed stores and cancellation passed under Native AOT.");
 
 var transport = new SmokeTransport();
 var services = new ServiceCollection();
