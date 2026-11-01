@@ -298,3 +298,6 @@ public readonly record struct JsonPadding98(int Value);
 
 [Message("bench.json-extra-99")]
 public readonly record struct JsonPadding99(int Value);
+
+[Message("bench.json-order")]
+public sealed record JsonOrder(int Id, string Customer, decimal Total);

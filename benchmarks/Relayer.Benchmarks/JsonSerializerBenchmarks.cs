@@ -8,9 +8,6 @@ using Relayer.Serialization;
 
 namespace Relayer.Benchmarks;
 
-[Message("bench.json-order")]
-public sealed record JsonOrder(int Id, string Customer, decimal Total);
-
 /// <summary>Compare Relayer with STJ using the same generated metadata and reusable buffers.</summary>
 [MemoryDiagnoser]
 [GroupBenchmarksBy(BenchmarkLogicalGroupRule.ByCategory)]

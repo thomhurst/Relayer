@@ -729,7 +729,7 @@ Techniques:
 - `IBufferWriter<byte>` / `ReadOnlySequence<byte>` serialization with pooled buffers.
 - Source-generated dispatch per message type: no `Type` lookups, no `MethodInfo.Invoke`, no `dynamic`.
 - Outbox writes are batched per transaction (one insert of N rows). Dispatch uses native batch send APIs.
-- Benchmarks (BenchmarkDotNet) run in CI, and a regression beyond a threshold fails the build.
+- Benchmarks (BenchmarkDotNet) run in CI on every push to `main` and on pull requests that opt in; a regression beyond a threshold fails that advisory run.
 
 The [performance regression gate](https://relayer.tomlonghurst.dev/docs/contributing/performance)
 documents the pinned-main comparison, thresholds, allocation attribution and

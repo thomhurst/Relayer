@@ -252,6 +252,7 @@ Superseded by [D24](#d24-capabilities-are-valued-and-declared-per-endpoint).
   - zero allocations per message from Relayer's own pipeline in steady state;
   - pipeline build under 50 ms for 100 handlers.
 - BenchmarkDotNet suites run in CI, and a regression fails the build.
+- Amended 2026-11: the regression gate is an advisory workflow, not part of the required `CI Passed` check. It runs on every push to `main`, on demand, and on pull requests labelled `performance` or that change the gate. Running three full benchmark passes on every PR was slow and failed for reasons unrelated to the change (harness builds against `main`, allocation noise), which blocked merges without catching regressions.
 
 ## D19. Dependency policy
 
