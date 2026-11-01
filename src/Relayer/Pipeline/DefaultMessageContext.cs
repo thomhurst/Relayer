@@ -34,6 +34,10 @@ public sealed class DefaultMessageContext : MessageContext, IDisposable
     internal int Redeliveries { get; private set; }
     internal FailureHistory? FailureHistory { get; set; }
     internal Disposition? FailureDisposition { get; set; }
+    internal void ApplyFailureDisposition()
+    {
+        if (FailureDisposition is { } disposition) _receive?.SetDisposition(disposition);
+    }
     internal AttemptSendBuffer SendBuffer { get; } = new();
     internal void InitializeAttempts()
     {

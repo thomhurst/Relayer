@@ -5,12 +5,86 @@ using System.Diagnostics;
 using System.Diagnostics.Metrics;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using Relayer.Transports;
 using Relayer.Serialization;
 
 namespace Relayer.Tests;
 
 public class TelemetryTests
 {
+    [Test]
+    [Arguments("enabled")]
+    [Arguments("scope")]
+    [Arguments("log")]
+    [Arguments("dispose")]
+    public async Task Throwing_logger_does_not_skip_durable_failure_handling(string stage)
+    {
+        var logger = new Logger { ThrowAt = stage };
+        using var instrumentation = new RelayerInstrumentation(new LoggerFactory(logger));
+        await using var provider = Provider();
+        provider.GetRequiredService<Control>().Handle = static _ => throw new InvalidOperationException("handler");
+        var failures = 0;
+        var settlements = 0;
+        var pipeline = Builder(provider, (_, error, _) =>
+        {
+            if (error.Message != "handler") throw new InvalidOperationException("Original failure lost.");
+            failures++;
+            return default;
+        }).Telemetry(instrumentation.CreateEndpoint(Options())).Settle(_ => { settlements++; return default; }).Build(1);
+        using var context = pipeline.RentContext(Message());
+        await pipeline.ProcessAsync(context);
+        await Assert.That(failures).IsEqualTo(1);
+        await Assert.That(settlements).IsEqualTo(1);
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Executable_failure_pipeline_records_delivery_and_settles_after_durability(bool recover)
+    {
+        var logger = new Logger();
+        using var instrumentation = new RelayerInstrumentation(new LoggerFactory(logger));
+        using var capture = new Capture(instrumentation);
+        await using var provider = Provider(services => { services.AddSingleton<ITransport, Transport>(); services.AddSingleton<IMessageSerializer, Serializer>(); });
+        var attempts = 0;
+        provider.GetRequiredService<Control>().Handle = _ =>
+        {
+            attempts++;
+            if (!recover || attempts == 1) throw new InvalidOperationException("handler");
+            return default;
+        };
+        var failures = new FailurePipeline(provider, "test", "orders", "billing",
+            new() { RetryDelays = new[] { TimeSpan.Zero }, Jitter = 0 });
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var finished = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var consumer = new ConsumePipelineBuilder(provider.GetRequiredService<IServiceScopeFactory>(),
+                provider.GetRequiredService<MessageTypeRegistry>(), new Serializer(), failures)
+            .Handler(provider.GetRequiredService<HandlerRegistry>().GetHandler<int, Handler>())
+            .Telemetry(instrumentation.CreateEndpoint(Options())).Settle(context =>
+            {
+                if (!recover && context.Features.Get<NativeMessage<Incoming>>()?.Disposition.Kind != DispositionKind.DeadLetter)
+                    throw new InvalidOperationException("Durable failure decision lost.");
+                entered.SetResult();
+                return new(finished.Task);
+            }).Build(1);
+        var receive = new ReceivePipeline<Incoming, Binding>(consumer, new HeaderNames("cloudEvents:"), 1);
+        var pending = receive.ProcessAsync(new Incoming()).AsTask();
+        // Do not hang the regression run when settlement is bypassed.
+        await Task.WhenAny(entered.Task, pending);
+        try
+        {
+            await Assert.That(entered.Task.IsCompleted).IsTrue();
+            await Assert.That(capture.Values.Count(v => v.Name == "messaging.client.consumed.messages")).IsEqualTo(1);
+            await Assert.That(capture.Values.Any(v => v.Name == "messaging.process.duration")).IsFalse();
+        }
+        finally { finished.TrySetResult(); }
+        await Assert.That((await pending).Kind).IsEqualTo(recover ? DispositionKind.Complete : DispositionKind.DeadLetter);
+        await Assert.That(attempts).IsEqualTo(2);
+        await Assert.That(logger.Entries.Count).IsEqualTo(recover ? 1 : 2);
+        await Assert.That(capture.Values.Single(v => v.Name == "messaging.process.duration").Tags["error.type"]).IsEqualTo("_OTHER");
+        await Assert.That(capture.Values.Count(v => v.Name == "relayer.critical_time")).IsEqualTo(1);
+    }
+
     [Test]
     public async Task Instruments_have_pinned_schema_units_types_and_bucket_advice()
     {
@@ -588,19 +662,42 @@ public class TelemetryTests
     private sealed record Entry(Exception? Exception, Dictionary<string, object?> Scope, Dictionary<string, object?> State);
     private sealed class Logger : ILogger
     {
+        internal string? ThrowAt { get; init; }
         internal int ScopesStarted { get; private set; }
         internal IReadOnlyList<KeyValuePair<string, object?>>? CurrentScope { get; private set; }
         internal List<Entry> Entries { get; } = [];
-        public bool IsEnabled(LogLevel logLevel) => true;
+        public bool IsEnabled(LogLevel logLevel) => ThrowAt == "enabled" ? throw new ApplicationException("logger") : true;
         public IDisposable? BeginScope<TState>(TState state) where TState : notnull
         {
+            if (ThrowAt == "scope") throw new ApplicationException("logger");
             ScopesStarted++;
             CurrentScope = (IReadOnlyList<KeyValuePair<string, object?>>)(object)state;
             return new Scope(this);
         }
-        public void Log<TState>(LogLevel level, EventId id, TState state, Exception? error, Func<TState, Exception?, string> formatter) =>
+        public void Log<TState>(LogLevel level, EventId id, TState state, Exception? error, Func<TState, Exception?, string> formatter)
+        {
+            if (ThrowAt == "log") throw new ApplicationException("logger");
             Entries.Add(new(error, CurrentScope!.ToDictionary(), ((IEnumerable<KeyValuePair<string, object?>>)(object)state!).ToDictionary()));
-        private sealed class Scope(Logger owner) : IDisposable { public void Dispose() => owner.CurrentScope = null; }
+        }
+        private sealed class Scope(Logger owner) : IDisposable
+        {
+            public void Dispose()
+            {
+                owner.CurrentScope = null;
+                if (owner.ThrowAt == "dispose") throw new ApplicationException("logger");
+            }
+        }
+    }
+    private sealed class Transport : ITransport
+    {
+        public string Name => "test";
+        public TransportCapabilities GetCapabilities(string endpoint) => new() { DeadLetter = true };
+        public ValueTask SendAsync(OutgoingMessage message, CancellationToken cancellationToken) => throw new NotSupportedException();
+        public ValueTask SendBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken) => throw new NotSupportedException();
+        public ValueTask<TopologyReport> ApplyTopologyAsync(TopologyMode mode, CancellationToken cancellationToken) => throw new NotSupportedException();
+        public Task StartAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+        public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+        public ValueTask DisposeAsync() => default;
     }
     private sealed class ExternalScopeProvider : ILoggerProvider, ISupportExternalScope, ILogger
     {

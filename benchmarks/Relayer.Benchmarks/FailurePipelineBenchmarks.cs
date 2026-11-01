@@ -15,6 +15,7 @@ public class FailurePipelineBenchmarks
     private IServiceScopeFactory _scopes = null!;
     private ConsumePipeline _consumer = null!;
     private ConsumePipeline _failures = null!;
+    private ConsumePipeline _instrumentedFailures = null!;
     private HandlerDescriptor<Payload> _descriptor = null!;
     private readonly DirectContext _direct = new();
     private readonly Serializer _serializer = new();
@@ -44,6 +45,12 @@ public class FailurePipelineBenchmarks
                 static (_, error, _) => ValueTask.FromException(error)).Handler(_descriptor).Build(1);
         _failures = new ConsumePipelineBuilder(_scopes, _provider.GetRequiredService<MessageTypeRegistry>(), _serializer,
                 policy).Handler(_descriptor).Build(1);
+        var telemetry = _provider.GetRequiredService<RelayerInstrumentation>().CreateEndpoint(new()
+        {
+            System = "relayer.inmemory", Destination = "source",
+        });
+        _instrumentedFailures = new ConsumePipelineBuilder(_scopes, _provider.GetRequiredService<MessageTypeRegistry>(), _serializer,
+                policy).Handler(_descriptor).Telemetry(telemetry).Build(1);
         _message = new() { MessageId = "benchmark", MessageType = new("benchmark.failure", 1), Body = default };
     }
 
@@ -72,6 +79,13 @@ public class FailurePipelineBenchmarks
     {
         using var context = _failures.RentContext(_message);
         await _failures.ProcessAsync(context).ConfigureAwait(false);
+    }
+
+    [Benchmark]
+    public async ValueTask ExecutableFailurePipelineWithTelemetry()
+    {
+        using var context = _instrumentedFailures.RentContext(_message);
+        await _instrumentedFailures.ProcessAsync(context).ConfigureAwait(false);
     }
 
     [GlobalCleanup]

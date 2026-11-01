@@ -95,6 +95,8 @@ public sealed class ReceivePipeline<TIncoming, TBinding>
         private ReadOnlySequence<byte> _body;
         internal NativeMessage<TIncoming> Native { get; } = new();
 
+        internal override void SetDisposition(Disposition disposition) => Native.Disposition = disposition;
+
         internal void Initialize(TIncoming message)
         {
             Native.Message = message;
