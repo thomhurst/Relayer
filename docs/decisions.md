@@ -526,7 +526,9 @@ the corresponding message buffer.
 
 **Decision.** The scoped PostgreSQL enlistment begins a native transaction on a caller-owned open connection,
 or opens and owns one connection from an application-owned data source. Its DbTransaction wrapper exposes a
-borrowed DbConnection view whose commands unwrap that exact transaction for Npgsql. Business commands and the
+borrowed DbConnection view whose commands unwrap that exact transaction for Npgsql. DbCommand.Connection
+returns the underlying NpgsqlConnection so Dapper retains PostgreSQL-specific array parameter handling.
+Business commands and the
 one outbox batch share the native transaction. Writers reuse the EF integration's validation, owned storage,
 lossless header codec, lane hashing and fixed-parameter batch SQL. Options are init-only and explicitly bound
 through the Options pattern. Savepoints, nested transactions and concurrent scope use are unsupported.

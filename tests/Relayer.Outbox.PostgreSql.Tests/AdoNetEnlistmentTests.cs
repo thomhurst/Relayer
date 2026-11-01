@@ -18,6 +18,35 @@ public class AdoNetEnlistmentTests
     [Test]
     [Arguments(false)]
     [Arguments(true)]
+    public async Task Dapper_preserves_postgresql_array_parameters_in_business_commands(bool synchronous)
+    {
+        await using var database = new Database();
+        await database.Start();
+        await using var provider = database.Services();
+        await using var scope = provider.CreateAsyncScope();
+        var outbox = scope.ServiceProvider.GetRequiredService<PostgreSqlOutbox>();
+        await using var transaction = await outbox.BeginTransactionAsync(database.Source);
+        await transaction.Connection!.ExecuteAsync("INSERT INTO business VALUES (1), (2)", transaction: transaction);
+        const string sql = "SELECT count(*)::integer FROM business WHERE id = ANY(@Ids)";
+        var parameters = new { Ids = new[] { 1, 2 } };
+        var count = synchronous
+            ? transaction.Connection!.ExecuteScalar<int>(sql, parameters, transaction)
+            : await transaction.Connection!.ExecuteScalarAsync<int>(sql, parameters, transaction);
+        await Assert.That(count).IsEqualTo(2);
+        var empty = new { Ids = Array.Empty<int>() };
+        var emptyCount = synchronous
+            ? transaction.Connection!.ExecuteScalar<int>(sql, empty, transaction)
+            : await transaction.Connection!.ExecuteScalarAsync<int>(sql, empty, transaction);
+        await Assert.That(emptyCount).IsEqualTo(0);
+        await outbox.EnlistAsync(Record(), default);
+        await transaction.CommitAsync();
+        await Assert.That(await database.Count()).IsEqualTo(1L);
+        await Assert.That(await database.Scalar("SELECT count(*) FROM business")).IsEqualTo(2L);
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
     public async Task Dapper_business_commands_and_outbox_rows_commit_atomically_in_one_batch(bool synchronous)
     {
         await using var database = new Database();
@@ -368,7 +397,9 @@ public class AdoNetEnlistmentTests
         await using var command = view.CreateCommand();
         command.CommandText = "SELECT 42";
         await Assert.That(() => command.Transaction = other).Throws<InvalidOperationException>();
-        await Assert.That(() => command.Connection = native).Throws<InvalidOperationException>();
+        await Assert.That(command.Connection).IsSameReferenceAs(native);
+        command.Connection = native;
+        await Assert.That(() => command.Connection = other.Connection).Throws<InvalidOperationException>();
         await Assert.That(() => view.Close()).Throws<InvalidOperationException>();
         await Assert.That(async () => await command.ExecuteReaderAsync(CommandBehavior.CloseConnection)).Throws<NotSupportedException>();
         await Assert.That(() => command.ExecuteReader(CommandBehavior.CloseConnection)).Throws<NotSupportedException>();

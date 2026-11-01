@@ -60,8 +60,11 @@ The result is a `DbTransaction` subclass. **Use `transaction.Connection` for bus
 `NpgsqlCommand.Transaction` accepts only a native `NpgsqlTransaction`; assigning this wrapper to a command
 created from the original `NpgsqlConnection` fails. The returned connection view creates commands that unwrap
 the transaction for Npgsql. It supports ordinary ADO.NET commands and Dapper's synchronous and asynchronous
-commands, scalar results and readers. Dapper is an application dependency, not a Relayer package dependency.
-The view does not expose Npgsql-specific command, connection or transaction APIs.
+commands, scalar results and readers, including PostgreSQL array parameters such as `WHERE id = ANY(@Ids)`.
+Dapper is an application dependency, not a Relayer package dependency. `DbCommand.Connection` returns the
+underlying `NpgsqlConnection` so Dapper retains native provider detection. This does not change command
+creation: use `transaction.Connection` to create commands that can accept the wrapper transaction. Keep
+connection and transaction lifecycle operations on the outbox wrapper even when inspecting a command's native connection.
 
 You can also let the transaction own its opened connection:
 

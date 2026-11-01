@@ -57,10 +57,11 @@ internal sealed class PostgreSqlOutboxConnection(PostgreSqlOutboxTransaction tra
         public override UpdateRowSource UpdatedRowSource { get => _native.UpdatedRowSource; set => _native.UpdatedRowSource = value; }
         protected override DbConnection? DbConnection
         {
-            get => _connection;
+            // Dapper detects PostgreSQL array support from command.Connection's native runtime type.
+            get => _native.Connection;
             set
             {
-                if (!ReferenceEquals(value, _connection)) throw LifecycleError();
+                if (!ReferenceEquals(value, _connection) && !ReferenceEquals(value, _native.Connection)) throw LifecycleError();
             }
         }
         protected override DbTransaction? DbTransaction
