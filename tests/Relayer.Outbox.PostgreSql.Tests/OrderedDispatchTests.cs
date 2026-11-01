@@ -529,6 +529,49 @@ public class OrderedDispatchTests
         }
     }
 
+    [Test]
+    public async Task Destination_churn_revalidates_evicted_ordering_before_send_and_keeps_durable_failure()
+    {
+        await using var fixture = new PostgreSqlFixture();
+        await fixture.StartAsync();
+        await using var source = NpgsqlDataSource.Create(fixture.ConnectionString);
+        await PostgreSqlOutboxStoreTests.CreateSchema(source);
+        var count = OrderedDispatchCapabilityCache.Capacity + 1;
+        for (var i = 1; i <= count; i++) await Insert(source, Id(i), 0);
+        await using (var change = source.CreateCommand("UPDATE relayer_outbox SET destination = id::text"))
+            await change.ExecuteNonQueryAsync();
+        var transport = new RecordingTransport();
+        using var worker = new PostgreSqlOrderedDispatcher(source,
+            new PostgreSqlOrderedDispatchOptions { Lanes = 1, BatchSize = count, LeaseDuration = TimeSpan.FromMinutes(1) },
+            [transport], NullLogger<PostgreSqlOrderedDispatcher>.Instance, new BudgetClock());
+        await Assert.That(await worker.DispatchLaneAsync(0, default)).IsEqualTo(count);
+        await Assert.That(transport.Ids.SequenceEqual(Enumerable.Range(1, count).Select(Id))).IsTrue();
+        transport.Ordered = false;
+        await Insert(source, Id(count + 1), 0);
+        await Insert(source, Id(count + 2), 0);
+        await using (var change = source.CreateCommand("UPDATE relayer_outbox SET destination = @destination"))
+        {
+            change.Parameters.AddWithValue("destination", Id(1).ToString());
+            await change.ExecuteNonQueryAsync();
+        }
+        await Assert.That(await worker.DispatchLaneAsync(0, default)).IsEqualTo(0);
+        await Assert.That(transport.Ids.Count).IsEqualTo(count);
+        await using (var command = source.CreateCommand("SELECT attempts, last_error, claim_token FROM relayer_outbox ORDER BY id"))
+        await using (var reader = await command.ExecuteReaderAsync())
+        {
+            await Assert.That(await reader.ReadAsync()).IsTrue();
+            await Assert.That(reader.GetInt32(0)).IsEqualTo(1);
+            await Assert.That(reader.GetString(1).Contains("does not support native ordering by key", StringComparison.Ordinal)).IsTrue();
+            await Assert.That(reader.IsDBNull(2)).IsTrue();
+            await Assert.That(await reader.ReadAsync()).IsTrue();
+            await Assert.That(reader.GetInt32(0)).IsEqualTo(0);
+            await Assert.That(await reader.ReadAsync()).IsFalse();
+        }
+        transport.Ordered = true;
+        await Assert.That(await worker.DispatchLaneAsync(0, default)).IsEqualTo(2);
+        await Assert.That(transport.Ids.SequenceEqual(Enumerable.Range(1, count + 2).Select(Id))).IsTrue();
+    }
+
     private sealed class ScanClock : TimeProvider
     {
         private long _ticks;
@@ -609,7 +652,7 @@ public class OrderedDispatchTests
         internal byte[]? LastBody { get; private set; }
         internal string? LastKey { get; private set; }
         internal DateTimeOffset? LastDeliverAt { get; private set; }
-        internal bool Ordered { get; init; } = true;
+        internal bool Ordered { get; set; } = true;
         public TransportCapabilities GetCapabilities(string endpoint) => new() { OrderedByKey = Ordered && endpoint != "unsupported" };
         public ValueTask<TopologyReport> ApplyTopologyAsync(TopologyMode mode, CancellationToken cancellationToken) => new(new TopologyReport([]));
         public async ValueTask SendAsync(OutgoingMessage message, CancellationToken cancellationToken)
