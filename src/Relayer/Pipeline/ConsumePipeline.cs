@@ -160,7 +160,9 @@ public sealed class ConsumePipeline
         }
         catch (Exception error)
         {
-            if (!ReferenceEquals(failure, error)) LogFailure(telemetry, error);
+            if (!ReferenceEquals(failure, error) &&
+                (error is not OperationCanceledException || !context.CancellationToken.IsCancellationRequested))
+                LogFailure(telemetry, error);
             failure = error;
             throw;
         }

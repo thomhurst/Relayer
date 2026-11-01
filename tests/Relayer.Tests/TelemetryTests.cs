@@ -202,20 +202,62 @@ public class TelemetryTests
     }
 
     [Test]
-    public async Task Cancellation_is_counted_and_never_settled()
+    [Arguments("before")]
+    [Arguments("handler")]
+    [Arguments("settlement")]
+    public async Task Delivery_cancellation_is_counted_without_error_logging(string stage)
     {
+        var logger = new Logger();
+        using var instrumentation = new RelayerInstrumentation(new LoggerFactory(logger));
         await using var provider = Provider();
-        var instrumentation = provider.GetRequiredService<RelayerInstrumentation>();
         using var capture = new Capture(instrumentation);
-        var settlements = 0;
-        var pipeline = Builder(provider).Telemetry(instrumentation.CreateEndpoint(Options()))
-            .Settle(_ => { settlements++; return default; }).Build();
         using var cancellation = new CancellationTokenSource();
-        cancellation.Cancel();
+        provider.GetRequiredService<Control>().Handle = context =>
+        {
+            if (stage == "handler")
+            {
+                cancellation.Cancel();
+                context.CancellationToken.ThrowIfCancellationRequested();
+            }
+            return default;
+        };
+        var settlements = 0;
+        var failures = 0;
+        var pipeline = Builder(provider, (_, _, _) => { failures++; return default; })
+            .Telemetry(instrumentation.CreateEndpoint(Options()))
+            .Settle(context =>
+            {
+                settlements++;
+                cancellation.Cancel();
+                context.CancellationToken.ThrowIfCancellationRequested();
+                return default;
+            }).Build();
+        if (stage == "before") cancellation.Cancel();
         using var context = pipeline.RentContext(Message(), cancellation.Token);
         await Assert.That(async () => await pipeline.ProcessAsync(context)).Throws<OperationCanceledException>();
-        await Assert.That(settlements).IsEqualTo(0);
+        await Assert.That(settlements).IsEqualTo(stage == "settlement" ? 1 : 0);
+        await Assert.That(failures).IsEqualTo(0);
+        await Assert.That(logger.Entries.Count).IsEqualTo(0);
+        await Assert.That(logger.CurrentScope).IsNull();
         await Assert.That(capture.Values.Count(v => v.Name == "messaging.client.consumed.messages")).IsEqualTo(1);
+        await Assert.That(capture.Values.Single(v => v.Name == "messaging.process.duration").Tags["error.type"]).IsEqualTo("_OTHER");
+    }
+
+    [Test]
+    public async Task Cancellation_without_delivery_cancellation_is_logged_and_classified()
+    {
+        var logger = new Logger();
+        using var instrumentation = new RelayerInstrumentation(new LoggerFactory(logger));
+        await using var provider = Provider();
+        var error = new OperationCanceledException("Handler's independent operation was canceled.");
+        provider.GetRequiredService<Control>().Handle = _ => ValueTask.FromException(error);
+        var failures = 0;
+        var pipeline = Builder(provider, (_, _, _) => { failures++; return default; })
+            .Telemetry(instrumentation.CreateEndpoint(Options())).Build();
+        using var context = pipeline.RentContext(Message());
+        await pipeline.ProcessAsync(context);
+        await Assert.That(failures).IsEqualTo(1);
+        await Assert.That(logger.Entries.Single().Exception).IsSameReferenceAs(error);
     }
 
     [Test]
