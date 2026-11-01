@@ -486,3 +486,31 @@ Lane columns use PostgreSQL integer, matching the durable contract's nonnegative
 The EF integration currently carries the PostgreSQL dependency; future database providers need their own explicit
 migration operations. This establishes schema deployment without claiming that database stores, durable sending,
 dispatch workers or inbox behavior are implemented.
+
+## D31. EF Core buffers sends for an explicitly owned context and flushes at commit
+
+**Context.** An implicit SaveChanges transaction does not exist when a handler sends its messages.
+Several DbContexts can coexist in one DI scope. EF transaction interceptors observe EF's transaction
+wrapper; they cannot observe a direct call to a provider's underlying DbTransaction.Commit.
+Header prefixes and raw envelope mode also make native headers unsuitable as the only enqueue metadata.
+
+**Decision.** Scoped EF interceptors share an enlistment coordinator. A context selection owns sends
+before an implicit save; one active explicit EF transaction is selected automatically, and ambiguous
+transactions require explicit selection. The send seam passes an OutboxRecord containing original identity,
+stable wire type and creation time. Enlistment copies borrowed storage, then flushes one batched insert
+before the EF commit. An implicit save with buffered rows owns a transaction even with no business commands.
+Contexts joining the same native transaction share one insert and identical schema/prefix/lane settings.
+Buffered rows belong to the native transaction even after a joined context or borrowed EF wrapper is
+disposed. Detached participants are excluded from automatic send selection and cannot start another
+unit until their pending transaction ends. Retrying EF execution strategies require an explicit
+transaction around the complete unit, with a fresh scoped context on each attempt; implicit saves
+with buffered rows reject retrying strategies with an actionable error before opening a transaction.
+PostgreSQL is implemented first. Its versioned header codec retains all name/value pairs; deterministic
+FNV-1a lane hashing uses UTF-8 ordering keys. Tenant metadata is preserved when explicitly supplied.
+
+**Consequences.** No SaveChanges override, entity mapping, header scanning, or process-wide mutable
+state is required. Native transaction rollback/disposal abandons buffered sends. Failed explicit units and savepoint rollback
+invalidate commit until the whole transaction is rolled back; callers retry complete units with fresh contexts.
+Commit goes through IDbContextTransaction, including UseTransaction wrappers. Direct provider commits,
+ambient TransactionScope, pooled contexts and concurrent use of a scope are outside this integration.
+Schema deployment, dispatch, inbox, leases and health polling remain separate concerns.

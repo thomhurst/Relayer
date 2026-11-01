@@ -4,8 +4,8 @@ namespace Relayer;
 /// <remarks>
 /// Body, header entries, header value memory, ordering-key memory, and native options are borrowed. The caller must keep them alive
 /// and unchanged until the transport's send completes, including faulted or cancelled completion. A transport
-/// must not retain them after completion. An outbox must copy body, headers, and ordering key into durable storage before
-/// enlistment completes. Headers include the original CloudEvents attributes and creation context; dispatch
+/// must not retain them after completion. An outbox must take an owned copy of body, headers, and ordering key before
+/// enlistment completes and persist it before transaction commit. Headers include the original CloudEvents attributes and creation context; dispatch
 /// must preserve them rather than generating another identity or capturing the dispatcher's trace context.
 /// </remarks>
 public readonly struct OutgoingMessage

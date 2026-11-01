@@ -10,6 +10,7 @@
   </ItemGroup>
 
   <ItemGroup>
+    <InternalsVisibleTo Include="Relayer.Outbox.EntityFrameworkCore" />
     <InternalsVisibleTo Include="Relayer.Outbox.PostgreSql.Tests" />
     <InternalsVisibleTo Include="Relayer.Benchmarks" />
     <ProjectReference Include="..\Relayer\Relayer.csproj" />

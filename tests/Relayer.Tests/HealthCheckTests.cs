@@ -408,6 +408,6 @@ public class HealthCheckTests
     private sealed class UnusedOutbox : IOutboxEnlistment
     {
         public bool IsActive => throw new InvalidOperationException("Health must not resolve an enlistment.");
-        public ValueTask EnlistAsync(string transportName, OutgoingMessage message, CancellationToken cancellationToken) => throw new NotImplementedException();
+        public ValueTask EnlistAsync(OutboxRecord record, CancellationToken cancellationToken) => throw new NotImplementedException();
     }
 }

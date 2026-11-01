@@ -207,6 +207,33 @@ public class SenderTests
     }
 
     [Test]
+    [Arguments(MessageEnvelopeMode.CloudEvents)]
+    [Arguments(MessageEnvelopeMode.Raw)]
+    public async Task Outbox_receives_original_metadata_independently_of_native_headers(MessageEnvelopeMode mode)
+    {
+        var services = Services(new RecordingTransport("events"));
+        services.AddScoped<IOutboxEnlistment, TestOutbox>();
+        services.AddRelayer(builder =>
+        {
+            builder.AddMessageTypesFromThisAssembly();
+            builder.DeclareRoute<OrderPlaced>("events", "orders", options: new()
+            { EnvelopeMode = mode, HeaderNames = new("cloudEvents:") });
+        });
+        using var provider = services.BuildServiceProvider();
+        using var scope = provider.CreateScope();
+        var outbox = (TestOutbox)scope.ServiceProvider.GetRequiredService<IOutboxEnlistment>();
+        outbox.IsActive = true;
+        var before = DateTimeOffset.UtcNow;
+        await scope.ServiceProvider.GetRequiredService<ISender>().SendAsync(new OrderPlaced(Guid.NewGuid()));
+        await Assert.That(outbox.Id.Version).IsEqualTo(7);
+        await Assert.That(outbox.MessageType).IsEqualTo("tests.order-placed;v=2");
+        await Assert.That(outbox.CreatedAt >= before && outbox.CreatedAt <= DateTimeOffset.UtcNow).IsTrue();
+        if (mode == MessageEnvelopeMode.CloudEvents)
+            await Assert.That(outbox.Headers["cloudEvents:id"]).IsEqualTo(outbox.Id.ToString("D"));
+        else await Assert.That(outbox.Headers.ContainsKey("cloudEvents:id")).IsFalse();
+    }
+
+    [Test]
     public async Task Active_scoped_outbox_enlists_automatically_and_explicit_direct_send_bypasses_it()
     {
         var transport = new RecordingTransport("events");
@@ -865,6 +892,9 @@ public class SenderTests
 
     private sealed class TestOutbox : IOutboxEnlistment
     {
+        public Guid Id { get; private set; }
+        public string? MessageType { get; private set; }
+        public DateTimeOffset CreatedAt { get; private set; }
         public bool IsActive { get; set; }
         public CancelAfterSuccessCompletion? Completion { get; set; }
         public int Count { get; private set; }
@@ -874,10 +904,14 @@ public class SenderTests
         public string? OrderingKey { get; private set; }
         public DateTimeOffset? DeliverAt { get; private set; }
         public Dictionary<string, string> Headers { get; } = [];
-        public ValueTask EnlistAsync(string transportName, OutgoingMessage message, CancellationToken cancellationToken)
+        public ValueTask EnlistAsync(OutboxRecord record, CancellationToken cancellationToken)
         {
+            Id = record.Id;
+            MessageType = record.MessageType;
+            CreatedAt = record.CreatedAt;
+            var message = record.Message;
             Count++;
-            TransportName = transportName;
+            TransportName = record.TransportName;
             Destination = message.Destination;
             Body = Encoding.UTF8.GetString(message.Body.Span);
             OrderingKey = message.OrderingKey?.ToString();

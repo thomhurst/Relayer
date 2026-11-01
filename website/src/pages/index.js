@@ -288,8 +288,9 @@ const status = [
   ['Durable outbox contracts and keyed health adapter', 'Implemented core seam', true],
   ['PostgreSQL schema scripts, CLI and EF migration path', 'Implemented schema tooling', true],
   ['PostgreSQL durable reads and fenced claims', 'Implemented store operations', true],
+  ['EF Core transaction enlistment for PostgreSQL', 'Implemented enqueue path', true],
   ['Native broker health adapters', 'Planned', false],
-  ['EF Core and PostgreSQL outbox and inbox', 'Planned', false],
+  ['Outbox dispatch, leases, cleanup and inbox', 'Planned', false],
   ['Send and delivery tracing, settlement, metrics and logs', 'Implemented', true],
   ['Native broker and outbox telemetry', 'Planned', false],
 ];

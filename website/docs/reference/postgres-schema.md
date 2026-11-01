@@ -5,8 +5,10 @@ description: "Create the shared outbox, dead outbox, inbox and lease tables with
 
 Relayer implements PostgreSQL schema creation in `Relayer.Outbox.PostgreSql`, plus an EF Core migration
 extension in `Relayer.Outbox.EntityFrameworkCore`. Schema creation does **not** enable durable sending,
-transaction enlistment, dispatch, lease acquisition, poison-row handling or inbox deduplication. Those
-integrations remain [planned](../roadmap.md). SQL Server and MySQL scripts are not implemented.
+transaction enlistment, dispatch, lease acquisition, poison-row handling or inbox deduplication.
+Register [EF Core transaction enlistment](ef-core-outbox.md) separately to persist outgoing rows.
+Dispatch, lease acquisition, poison-row handling and inbox deduplication remain [planned](../roadmap.md).
+SQL Server and MySQL scripts are not implemented.
 
 ## Print SQL
 
