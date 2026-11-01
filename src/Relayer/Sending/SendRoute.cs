@@ -19,6 +19,8 @@ internal sealed class SendRoute<TMessage>
     private readonly SendDelegate _pipeline;
     private readonly TransportCapabilities _capabilities;
     private readonly MessageEnvelope _envelope;
+    private readonly SendTracing? _tracing;
+    private readonly string _wireType;
     private readonly PoolSegment _operations = new();
 
     internal SendRoute(ITransport transport, string destination, MessageType messageType, SendRouteOptions options,
@@ -34,6 +36,8 @@ internal sealed class SendRoute<TMessage>
         _pipeline = pipeline;
         _capabilities = capabilities;
         _envelope = new(messageType, options.Source, options.HeaderNames, options.EnvelopeMode);
+        _tracing = (transport as ITransportSendTracing)?.GetSendTracing(destination);
+        _wireType = messageType.ToString();
     }
 
     internal ValueTask SendAsync(TMessage message, Action<SendOptions>? configure,
@@ -96,6 +100,8 @@ internal sealed class SendRoute<TMessage>
         private AttemptSendBuffer? _buffer;
         private MessageEnvelopeMetadata _metadata;
         private string? _messageId;
+        private Activity? _activity;
+        private bool _tracingStarted;
         private readonly ArrayBufferWriter<byte> _body = new(256);
         private readonly ArrayBufferWriter<byte> _key = new(64);
         private readonly SendHeaders _headers = new();
@@ -120,6 +126,7 @@ internal sealed class SendRoute<TMessage>
             _buffer = buffer;
             _callerToken = callerToken;
             _metadata = MessageEnvelopeMetadata.Create(Activity.Current?.Context ?? default);
+            var previousActivity = Activity.Current;
             Exception? error = null;
             try
             {
@@ -140,7 +147,9 @@ internal sealed class SendRoute<TMessage>
             catch (Exception exception)
             {
                 error = Translate(exception);
+                _route._tracing?.Fail(_activity, error);
             }
+            finally { Activity.Current = previousActivity; }
             Reset();
             _route.Return(this);
             if (error is OperationCanceledException)
@@ -154,7 +163,11 @@ internal sealed class SendRoute<TMessage>
         {
             Exception? error = null;
             try { _pending.GetResult(); }
-            catch (Exception exception) { error = Translate(exception); }
+            catch (Exception exception)
+            {
+                error = Translate(exception);
+                _route._tracing?.Fail(_activity, error);
+            }
             Reset();
             // Cleanup precedes completion: an inline caller continuation may immediately rent this operation again.
             if (error is null) _completion.SetResult(true);
@@ -180,6 +193,19 @@ internal sealed class SendRoute<TMessage>
         public ValueTask DispatchAsync()
         {
             CancellationToken.ThrowIfCancellationRequested();
+            if (!_tracingStarted && _outbox is null && _route._tracing is { } tracing)
+            {
+                var external = default(ActivityContext);
+                if (_route._options.EnvelopeMode == MessageEnvelopeMode.Raw &&
+                    Options.Headers.TryGetValue(_route._options.HeaderNames.TraceParent, out var parent))
+                {
+                    Options.Headers.TryGetValue(_route._options.HeaderNames.TraceState, out var state);
+                    ActivityContext.TryParse(parent, state, true, out external);
+                }
+                _activity = tracing.Start(external, _buffer is not null);
+                _metadata = _metadata with { CreationContext = external != default ? external : _activity?.Context ?? _metadata.CreationContext };
+                _tracingStarted = true;
+            }
             if (Options.OrderingKey is not null && !_route._capabilities.OrderedByKey)
             {
                 throw new InvalidOperationException($"Send route '{_route._messageType}' on transport '{_route._transport.Name}' to endpoint '{_route._destination}' specifies an OrderingKey, but the endpoint does not support OrderedByKey. Configure an endpoint with native ordering or remove the OrderingKey override.");
@@ -212,6 +238,16 @@ internal sealed class SendRoute<TMessage>
 
             var outgoing = new OutgoingMessage(_route._destination, _body.WrittenMemory, _headers.Written,
                 Options.OrderingKey is { } key ? new WireString(key) : _route._orderingKey?.Select(_message, _key), Options.DeliverAt, Options);
+            if (_activity is { IsAllDataRequested: true } activity)
+            {
+                activity.SetTag("messaging.message.id", MessageId);
+                activity.SetTag("cloudevents.event_type", _route._wireType);
+                activity.SetTag("cloudevents.event_source", _route._options.Source);
+                if (_route._tracing!.IncludeBodySize) activity.SetTag("messaging.message.body.size", _body.WrittenCount);
+                if (Options.Headers.TryGetValue(_route._options.HeaderNames.CorrelationId, out var correlation))
+                    activity.SetTag("messaging.message.conversation_id", correlation);
+            }
+            if (_buffer is null && _outbox is null && _route._tracing is not null) outgoing = outgoing.WithTracingStarted();
             CancellationToken.ThrowIfCancellationRequested();
             if (_outbox is null && _buffer is not null)
             {
@@ -232,6 +268,11 @@ internal sealed class SendRoute<TMessage>
 
         internal void Reset()
         {
+            var current = Activity.Current;
+            _activity?.Dispose();
+            if (!ReferenceEquals(current, _activity)) Activity.Current = current;
+            _activity = null;
+            _tracingStarted = false;
             // Dispose waits for a caller cancellation callback before its source can be reused.
             _registration.Dispose();
             _registration = default;
@@ -258,13 +299,20 @@ internal sealed class SendRoute<TMessage>
 
 /// <summary>Reusable storage for the transport-neutral envelope. Values remain valid through send completion.</summary>
 /// <remarks>Header value buffers grow on demand and are retained per pooled operation for subsequent sends.</remarks>
-internal sealed class SendHeaders : IMessageHeaderWriter<SendHeaders>
+internal sealed class SendHeaders : IMessageHeaderWriter<SendHeaders>, IMessageHeaderReader<SendHeaders>
 {
     private KeyValuePair<string, WireString>[] _entries = new KeyValuePair<string, WireString>[8];
     private byte[]?[] _values = new byte[8][];
     private int _count;
 
     internal ReadOnlyMemory<KeyValuePair<string, WireString>> Written => _entries.AsMemory(0, _count);
+
+    public static bool TryGetHeader(SendHeaders message, string name, out WireString value)
+    {
+        var index = message.Find(name);
+        value = index >= 0 ? message._entries[index].Value : default;
+        return index >= 0;
+    }
 
     internal void Add(string name, WireString value)
     {

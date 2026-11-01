@@ -5,7 +5,7 @@ using Microsoft.Extensions.Options;
 
 namespace Relayer.Benchmarks;
 
-/// <summary>Isolates tracing primitive cost. End-to-end send/receive integration is tracked in #92 and #93.</summary>
+/// <summary>Isolates tracing primitive cost. SendTracingBenchmarks measures send integration; receive integration is tracked in #93.</summary>
 [MemoryDiagnoser]
 public class TracingBenchmarks
 {

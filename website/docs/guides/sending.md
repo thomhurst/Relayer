@@ -56,3 +56,26 @@ Every send has a finite timeout, covering middleware, serialization, and transpo
 Outbox integrations register a scoped `IOutboxEnlistment`. When `IsActive` is true, `SendAsync` enlists the serialized message instead of sending it. Enlistment must copy borrowed body and headers into the active transaction before completing. Native callbacks cannot be persisted and fail before enlistment. `SendNowAsync` bypasses the outbox; `SendViaOutboxAsync` requires an active transaction. These explicit methods support the same configuration and cancellation arguments as `SendAsync`.
 
 The pipeline pools contexts, serialization buffers, envelope storage, and timeout sources. After warmup, the default direct path allocates no managed memory with no tracing listener. Caller code, middleware, serializer implementations and native clients can add their own allocations.
+
+## Send tracing
+
+`AddRelayer` registers one provider-owned `ActivitySource` named `Relayer`. Enable that source in your tracing exporter (for example, OpenTelemetry's `AddSource("Relayer")`). The in-memory adapter integrates it automatically; custom adapters use the [send tracing seam](../transports/authoring.md#send-tracing).
+
+A direct `SendAsync` or `SendNowAsync` creates a `send {destination}` producer span when middleware dispatches the message, before serialization. Its context is written into the message's W3C `traceparent` and `tracestate` headers before the native adapter copies the envelope. The span remains open until middleware and the native send finish, including asynchronous completion. Raw messages with an existing valid creation context use a client span linked to that context and preserve their headers. Core-made copies retain the original identity and creation context.
+
+The native `ITransport.SendBatchAsync` entry point creates one `create {destination}` producer span per new message, followed by a client `send {destination}` span linked to those contexts. Existing contexts are preserved and linked without another create span. Batch spans carry `messaging.batch.message_count` and omit individual message IDs. The scoped sender still accepts one message per call; native batching does not imply atomic delivery.
+
+Disable per-message batch spans, or opt into serialized body sizes, through the Options pattern before building the provider:
+
+```csharp
+services.AddSingleton<Microsoft.Extensions.Options.IOptions<TracingOptions>>(
+    Microsoft.Extensions.Options.Options.Create(new TracingOptions
+    {
+        CreateSpansForBatches = false,
+        IncludeBodySize = true,
+    }));
+```
+
+Without per-message create spans, a batch with no existing contexts has one producer span whose context is shared by its messages. Existing contexts remain unchanged; a batch that links existing contexts uses a client span. These options also bind from configuration through `AddOptions<TracingOptions>().Bind(...)`.
+
+Failed send spans have status `Error` and `error.type = "_OTHER"`. The exception is logged with trace and span IDs, without an exception span event. `IActivityEnricher` extensions run only for recorded spans. With no listener, send tracing adds no steady-state allocations. Outbox enqueue/dispatch tracing and automatic consume/settlement tracing remain planned.

@@ -283,8 +283,8 @@ const status = [
   ['Health checks with application-provided adapters', 'Implemented', true],
   ['Built-in health adapters', 'Planned', false],
   ['EF Core and PostgreSQL outbox and inbox', 'Planned', false],
-  ['Core tracing, consume metrics and failure logs', 'Implemented', true],
-  ['Native transport and outbox telemetry', 'Planned', false],
+  ['Core tracing, direct sends, consume metrics and logs', 'Implemented', true],
+  ['Automatic consume, settlement and outbox tracing', 'Planned', false],
 ];
 
 function Status() {
