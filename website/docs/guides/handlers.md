@@ -23,7 +23,7 @@ public sealed class OrderPlacedHandler(AppDbContext db, ISender sender) : IHandl
 
 ## Batch handlers
 
-A batch handler receives several messages at once. Each message can succeed or fail independently, and only the failed ones enter the failure pipeline:
+A batch handler receives several messages at once. Each message can succeed or fail independently. Without buffered direct sends, only failed items enter the failure pipeline:
 
 ```csharp
 public sealed class AuditHandler(AuditStore store) : IBatchHandler<AuditEvent>
@@ -40,13 +40,16 @@ Return `BatchResult.Success` when every message succeeded.
 
 Configure the existing consumer declaration with `.Batch(maxSize, maxWait)`.
 The core composes generated batch dispatch in one fresh scope per batch attempt.
-Only failed items are retried; an exception from the handler fails every item in
+Normally only failed items are retried; an exception from the handler fails every item in
 that invocation. Success waits for asynchronous scope disposal and durable work
 before the adapter receives settlement decisions.
 
 Direct sends from the scoped `ISender` are buffered until the entire attempt
-succeeds. A partial failure with buffered sends fails the receive call because
-those sends cannot be attributed to individual items. Use explicit per-message
+succeeds. A partial failure with buffered sends discards those sends and fails
+every item in the attempt because sends cannot be attributed to individual items.
+The normal retry, redelivery and dead-letter policy handles every item, including
+otherwise successful items, so poison messages cannot stall the batch indefinitely.
+Use explicit per-message
 durable outbox transactions when partial success also produces messages. Do not
 retain the borrowed batch or its item contexts after handler completion.
 

@@ -15,6 +15,7 @@ internal sealed class BatchExecution
     private readonly ActivitySource? _source;
     private readonly string _spanName;
     private readonly string _destination;
+    private readonly KeyValuePair<string, object?>[] _batchCountTags;
     private readonly State?[] _states;
     internal int Size { get; }
 
@@ -32,8 +33,10 @@ internal sealed class BatchExecution
         Size = consumer.BatchSize;
         _destination = consumer.Source;
         _spanName = "process " + consumer.Source;
+        _batchCountTags = new KeyValuePair<string, object?>[Size];
+        for (var i = 0; i < Size; i++) _batchCountTags[i] = new("messaging.batch.message_count", i + 1);
         _states = new State[consumer.Concurrency];
-        for (var i = 0; i < _states.Length; i++) _states[i] = new State(Size);
+        for (var i = 0; i < _states.Length; i++) _states[i] = new State(Size, _destination);
     }
 
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
@@ -98,7 +101,12 @@ internal sealed class BatchExecution
                 for (var i = 0; i < count; i++) if (state.Errors[i] is not null) failed++;
                 if (failed == 0) await buffer.FlushAsync(cancellationToken).ConfigureAwait(false);
                 else if (failed < count && !buffer.IsEmpty)
-                    throw new InvalidOperationException("A partially failed batch has buffered sends that cannot be attributed to individual messages. Use per-message durable outbox transactions or return success only after all batch work is durable.");
+                {
+                    // One scoped sender cannot attribute output to individual items. Fail the
+                    // whole attempt so discarded sends never accompany successful settlement.
+                    var error = new InvalidOperationException("A partially failed batch has buffered sends that cannot be attributed to individual messages. The whole attempt failed; use per-message durable outbox transactions for independent success.");
+                    for (var i = 0; i < count; i++) state.Errors[i] ??= error;
+                }
                 buffer.Clear();
                 var pending = 0;
                 for (var i = 0; i < count; i++)
@@ -140,7 +148,7 @@ internal sealed class BatchExecution
             }
             Array.Clear(state.Active);
             Array.Clear(state.Errors);
-            Array.Clear(state.Links);
+            state.Links.Clear();
             for (var i = 0; i < _states.Length; i++)
                 if (Interlocked.CompareExchange(ref _states[i], state, null) is null) break;
         }
@@ -168,7 +176,6 @@ internal sealed class BatchExecution
     private Activity? StartActivity(ReadOnlyMemory<DefaultMessageContext> contexts, State state)
     {
         if (_source is null || !_source.HasListeners()) return null;
-        var count = 0;
         for (var i = 0; i < contexts.Length; i++)
         {
             var headers = contexts.Span[i].Headers;
@@ -176,29 +183,31 @@ internal sealed class BatchExecution
             {
                 var traceState = headers.TryGetValue("tracestate", out var value) ? value.ToString() : null;
                 if (ActivityContext.TryParse(parent.ToString(), traceState, true, out var creation))
-                    state.Links[count++] = new(creation);
+                    state.Links.Add(new(creation));
             }
         }
-        var tags = new ActivityTagsCollection
-        {
-            { "messaging.operation.type", "process" }, { "messaging.operation.name", "process" },
-            { "messaging.destination.name", _destination }, { "messaging.batch.message_count", contexts.Length }
-        };
+        state.Tags[^1] = _batchCountTags[contexts.Length - 1];
+        // ActivitySource consumes these reusable sampling inputs synchronously.
         return _source.StartActivity(_spanName, ActivityKind.Consumer, Activity.Current?.Context ?? default,
-            tags, new ArraySegment<ActivityLink>(state.Links, 0, count));
+            state.Tags, state.Links);
     }
 
     private State Rent()
     {
         for (var i = 0; i < _states.Length; i++)
             if (Interlocked.Exchange(ref _states[i], null) is { } state) return state;
-        return new State(Size);
+        return new State(Size, _destination);
     }
 
-    private sealed class State(int size)
+    private sealed class State(int size, string destination)
     {
         internal readonly DefaultMessageContext[] Active = new DefaultMessageContext[size];
         internal readonly Exception?[] Errors = new Exception[size];
-        internal readonly ActivityLink[] Links = new ActivityLink[size];
+        internal readonly List<ActivityLink> Links = new(size);
+        internal readonly KeyValuePair<string, object?>[] Tags =
+        [
+            new("messaging.operation.type", "process"), new("messaging.operation.name", "process"),
+            new("messaging.destination.name", destination), default
+        ];
     }
 }

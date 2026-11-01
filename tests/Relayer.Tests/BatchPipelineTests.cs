@@ -201,10 +201,16 @@ public class BatchPipelineTests
         await using var provider = Provider();
         using var source = new ActivitySource("Relayer");
         Activity? observed = null;
+        var sampledCount = 0;
         using var listener = new ActivityListener
         {
             ShouldListenTo = candidate => ReferenceEquals(candidate, source),
-            Sample = (ref ActivityCreationOptions<ActivityContext> _) => ActivitySamplingResult.AllDataAndRecorded,
+            Sample = (ref ActivityCreationOptions<ActivityContext> options) =>
+            {
+                foreach (var tag in options.Tags!)
+                    if (tag.Key == "messaging.batch.message_count") sampledCount = (int)tag.Value!;
+                return ActivitySamplingResult.AllDataAndRecorded;
+            },
             ActivityStopped = activity => observed = activity
         };
         ActivitySource.AddActivityListener(listener);
@@ -212,7 +218,8 @@ public class BatchPipelineTests
         var expectedActivity = Activity.Current;
         var expectedParent = expectedActivity?.Context ?? default;
         var input = Input(3);
-        await Pipeline(provider, source: source).ProcessBatchAsync(input, new Disposition[3]);
+        var pipeline = Pipeline(provider, source: source);
+        await pipeline.ProcessBatchAsync(input, new Disposition[3]);
         await Assert.That(observed!.DisplayName).IsEqualTo("process source");
         await Assert.That(observed.Kind).IsEqualTo(ActivityKind.Consumer);
         await Assert.That(observed.ParentSpanId).IsEqualTo(expectedParent.SpanId);
@@ -220,7 +227,12 @@ public class BatchPipelineTests
         await Assert.That(observed.GetTagItem("messaging.operation.type") as string).IsEqualTo("process");
         await Assert.That(observed.Links.Count()).IsEqualTo(3);
         await Assert.That(observed.Links.All(link => link.Context.IsRemote)).IsTrue();
+        await Assert.That(sampledCount).IsEqualTo(3);
         await Assert.That(Activity.Current).IsSameReferenceAs(expectedActivity);
+        await pipeline.ProcessBatchAsync(input.AsMemory(0, 1), new Disposition[1]);
+        await Assert.That(sampledCount).IsEqualTo(1);
+        await Assert.That((int)observed!.GetTagItem("messaging.batch.message_count")!).IsEqualTo(1);
+        await Assert.That(observed.Links.Count()).IsEqualTo(1);
     }
 
     [Test]
@@ -250,15 +262,35 @@ public class BatchPipelineTests
         await Pipeline(provider).ProcessBatchAsync(Input(3), new Disposition[3]);
         await Assert.That(transport.Sends).IsEqualTo(1);
         await Assert.That(control.Disposed).IsEqualTo(1);
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Partial_failure_with_buffered_sends_retries_whole_attempt_and_reaches_bounded_settlement(bool poison)
+    {
+        await using var provider = Provider();
+        var control = provider.GetRequiredService<Control>();
+        var transport = provider.GetRequiredService<Transport>();
+        var calls = 0;
+        var attempts = new List<string>();
         control.Invoke = async (batch, _) =>
         {
-            await batch.Items[0].Context.Services.GetRequiredService<ISender>().SendNowAsync(new Payload());
-            return BatchResult.PartialFailure(new Dictionary<int, Exception> { [1] = new Exception("partial") });
+            calls++;
+            attempts.Add(string.Join(",", batch.Items.Select(item => item.Context.MessageId + ":" + item.Context.Attempt)));
+            for (var i = 0; i < batch.Count; i++)
+                await batch.Items[i].Context.Services.GetRequiredService<ISender>().SendNowAsync(new Payload());
+            return poison || calls == 1
+                ? BatchResult.PartialFailure(new Dictionary<int, Exception> { [1] = new Exception("partial") })
+                : BatchResult.Success;
         };
+        var failures = new FailurePipeline(provider, "test", "source", "batch", new() { RetryDelays = new[] { TimeSpan.Zero }, Jitter = 0 });
         var output = Sentinels(3);
-        await Assert.That(async () => await Pipeline(provider).ProcessBatchAsync(Input(3), output)).Throws<InvalidOperationException>();
-        await Assert.That(transport.Sends).IsEqualTo(1);
-        await Assert.That(output.All(item => item.Kind == DispositionKind.SettledByHandler)).IsTrue();
+        await Pipeline(provider, failures: failures).ProcessBatchAsync(Input(3), output);
+        await Assert.That(string.Join(";", attempts)).IsEqualTo("0:1,1:1,2:1;0:2,1:2,2:2");
+        await Assert.That(output.All(item => item.Kind == (poison ? DispositionKind.DeadLetter : DispositionKind.Complete))).IsTrue();
+        await Assert.That(transport.Sends).IsEqualTo(poison ? 0 : 3);
+        await Assert.That(control.Disposed).IsEqualTo(2);
     }
 
     [Test]

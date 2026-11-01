@@ -144,8 +144,10 @@ delegate remains available to transport integrations that own durable failure ha
 
 Successful results wait for asynchronous scope disposal and buffered sends. Failed
 attempts discard their buffered direct sends. A partially failed attempt with buffered
-sends fails the entire receive call: one scoped sender cannot attribute those sends
-to individual messages. Use explicit per-message durable outbox transactions when
+sends discards those sends and routes every item through the normal retry,
+redelivery and dead-letter policy: one scoped sender cannot attribute those sends
+to individual messages. Otherwise successful items can retry or dead-letter too;
+no item settles successfully with its outgoing messages discarded. Use explicit per-message durable outbox transactions when
 partial success also produces messages (D28). Failure handling and disposal errors
 propagate without publishing any batch dispositions.
 

@@ -1,4 +1,5 @@
 using System.Buffers;
+using System.Diagnostics;
 using BenchmarkDotNet.Attributes;
 using Microsoft.Extensions.DependencyInjection;
 using Relayer.Serialization;
@@ -19,9 +20,17 @@ public class BatchConsumePipelineBenchmarks
     private Batch<Payload> _directBatch = null!;
     private ConsumeMessage _message;
     private DefaultMessageContext[] _contexts = null!;
+    private ActivitySource _source = null!;
+    private ActivityListener _listener = null!;
+    private Activity _ambient = null!;
+    private ActivityLink[] _links = null!;
+    private KeyValuePair<string, object?>[] _tags = null!;
 
     [Params(1, 10, 100)]
     public int BatchSize { get; set; }
+
+    [Params(false, true)]
+    public bool DropTracing { get; set; }
 
     [GlobalSetup]
     public void Setup()
@@ -39,9 +48,24 @@ public class BatchConsumePipelineBenchmarks
         _scopes = _provider.GetRequiredService<IServiceScopeFactory>();
         _descriptor = _provider.GetRequiredService<HandlerRegistry>().GetBatchHandler<Payload, Handler>();
         var definition = _provider.GetRequiredService<RelayerConfiguration>().Transports[0].Consumers[0];
+        _source = new ActivitySource("Relayer");
+        _listener = new ActivityListener
+        {
+            ShouldListenTo = source => DropTracing && ReferenceEquals(source, _source),
+            Sample = static (ref ActivityCreationOptions<ActivityContext> _) => ActivitySamplingResult.None
+        };
+        ActivitySource.AddActivityListener(_listener);
+        _ambient = new Activity("request").Start();
+        _links = new ActivityLink[BatchSize];
+        _tags =
+        [
+            new("messaging.operation.type", "process"), new("messaging.operation.name", "process"),
+            new("messaging.destination.name", "source"), new("messaging.batch.message_count", BatchSize)
+        ];
         _pipeline = new ConsumePipelineBuilder(_scopes, _provider.GetRequiredService<MessageTypeRegistry>(), _serializer,
-            static (_, error, _) => ValueTask.FromException(error)).BuildBatch(_descriptor, definition);
-        _message = new() { MessageId = "benchmark", MessageType = new("benchmark.batch", 1), Body = ReadOnlySequence<byte>.Empty };
+            static (_, error, _) => ValueTask.FromException(error)).BuildBatch(_descriptor, definition, _source);
+        _message = new() { MessageId = "benchmark", MessageType = new("benchmark.batch", 1), Body = ReadOnlySequence<byte>.Empty,
+            Headers = DropTracing ? new TraceHeaders() : null };
         _contexts = new DefaultMessageContext[BatchSize];
         var items = new BatchItem<Payload>[BatchSize];
         for (var i = 0; i < items.Length; i++) items[i] = new(_serializer.Deserialize<Payload>(_message.Body), _directContext);
@@ -51,6 +75,7 @@ public class BatchConsumePipelineBenchmarks
     [Benchmark(Baseline = true)]
     public async ValueTask DirectScopedBatch()
     {
+        using var activity = StartDirectActivity();
         var scope = new AsyncServiceScope(_scopes.CreateScope());
         try
         {
@@ -60,6 +85,17 @@ public class BatchConsumePipelineBenchmarks
             await _descriptor.DispatchAsync(_descriptor.Resolve(scope.ServiceProvider), _directBatch, default).ConfigureAwait(false);
         }
         finally { await scope.DisposeAsync().ConfigureAwait(false); }
+    }
+
+    private Activity? StartDirectActivity()
+    {
+        if (!DropTracing) return null;
+        for (var i = 0; i < BatchSize; i++)
+        {
+            ActivityContext.TryParse(TraceHeaders.Parent, null, true, out var context);
+            _links[i] = new(context);
+        }
+        return _source.StartActivity("process source", ActivityKind.Consumer, Activity.Current?.Context ?? default, _tags, _links);
     }
 
     [Benchmark]
@@ -74,7 +110,13 @@ public class BatchConsumePipelineBenchmarks
     }
 
     [GlobalCleanup]
-    public void Cleanup() => _provider.Dispose();
+    public void Cleanup()
+    {
+        _ambient.Dispose();
+        _listener.Dispose();
+        _source.Dispose();
+        _provider.Dispose();
+    }
     public sealed class Options;
     [Message("benchmark.batch")]
     public sealed class Payload { public int Value => 42; }
@@ -95,6 +137,15 @@ public class BatchConsumePipelineBenchmarks
         public string ContentType => "benchmark/cached";
         public TMessage Deserialize<TMessage>(ReadOnlySequence<byte> source) => (TMessage)(object)_payload;
         public void Serialize<TMessage>(TMessage message, IBufferWriter<byte> destination) => throw new NotSupportedException();
+    }
+    private sealed class TraceHeaders : MessageHeaders
+    {
+        internal const string Parent = "00-11111111111111111111111111111111-2222222222222222-01";
+        public override bool TryGetValue(string name, out WireString value)
+        {
+            value = name == "traceparent" ? new(Parent) : default;
+            return !value.IsEmpty;
+        }
     }
     private sealed class DirectContext : MessageContext
     {
