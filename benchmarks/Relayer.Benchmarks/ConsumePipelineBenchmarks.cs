@@ -7,7 +7,11 @@ using Relayer.Serialization;
 namespace Relayer.Benchmarks;
 
 /// <summary>Full consume composition versus identical fresh-scope DI, deserialization and typed dispatch.</summary>
-/// <remarks>Both include DI allocations. The serializer returns a cached reference to isolate pipeline allocations.</remarks>
+/// <remarks>
+/// ScopeOnly and ScopeAndHandlerResolution attribute DI costs before dispatch. DirectScopedDispatch and
+/// ComposedConsumer include those costs; their delta measures composition, not compliance with the raw-client budget.
+/// The serializer returns a cached reference so serialization does not obscure allocations.
+/// </remarks>
 [MemoryDiagnoser]
 public class ConsumePipelineBenchmarks
 {
@@ -40,6 +44,27 @@ public class ConsumePipelineBenchmarks
         {
             MessageId = "benchmark", MessageType = new("benchmark.payload", 1), Body = ReadOnlySequence<byte>.Empty,
         };
+    }
+
+    [Benchmark]
+    public ValueTask ScopeOnly()
+    {
+        var scope = new AsyncServiceScope(_scopes.CreateScope());
+        return scope.DisposeAsync();
+    }
+
+    [Benchmark]
+    public async ValueTask<IHandlerMarker> ScopeAndHandlerResolution()
+    {
+        var scope = new AsyncServiceScope(_scopes.CreateScope());
+        try
+        {
+            return _descriptor.Resolve(scope.ServiceProvider);
+        }
+        finally
+        {
+            await scope.DisposeAsync().ConfigureAwait(false);
+        }
     }
 
     [Benchmark(Baseline = true)]
