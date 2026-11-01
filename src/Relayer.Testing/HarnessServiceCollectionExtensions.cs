@@ -41,8 +41,8 @@ internal sealed class HarnessTransport : ITransport, ITransportSendTracing, ITra
     private readonly ITransport _inner;
     private readonly RelayerHarness _harness;
     private readonly bool _ownsTransport;
-    private readonly Dictionary<string, HeaderNames> _names = new(StringComparer.Ordinal);
-    private readonly HeaderNames _defaultNames = new();
+    private readonly Dictionary<string, List<HeaderNames>> _names = new(StringComparer.Ordinal);
+    private readonly List<HeaderNames> _defaultNames = [new()];
 
     internal HarnessTransport(ITransport inner, RelayerHarness harness, RelayerConfiguration configuration, bool ownsTransport)
     {
@@ -52,7 +52,12 @@ internal sealed class HarnessTransport : ITransport, ITransportSendTracing, ITra
         foreach (var transport in configuration.Transports)
             if (transport.Name == inner.Name)
                 foreach (var route in transport.Routes)
-                    _names[route.Destination] = ((ISendRouteDefinition)route).SendOptions.HeaderNames;
+                {
+                    if (!_names.TryGetValue(route.Destination, out var names))
+                        _names.Add(route.Destination, names = []);
+                    var routeNames = ((ISendRouteDefinition)route).SendOptions.HeaderNames;
+                    if (!names.Any(existing => existing.Id == routeNames.Id)) names.Add(routeNames);
+                }
     }
 
     public string Name => _inner.Name;
@@ -112,13 +117,25 @@ internal sealed class HarnessTransport : ITransport, ITransportSendTracing, ITra
 
     private HarnessMessage Snapshot(OutgoingMessage message)
     {
-        var names = _names.GetValueOrDefault(message.Destination, _defaultNames);
+        var candidates = _names.GetValueOrDefault(message.Destination, _defaultNames);
         string? id = null;
         string? type = null;
-        foreach (var header in message.Headers.Span)
+        foreach (var names in candidates)
         {
-            if (header.Key == names.Id) id = header.Value.ToString();
-            if (header.Key == names.Type) type = header.Value.ToString();
+            string? candidateId = null;
+            string? candidateType = null;
+            foreach (var header in message.Headers.Span)
+            {
+                if (header.Key == names.Id) candidateId = header.Value.ToString();
+                if (header.Key == names.Type) candidateType = header.Value.ToString();
+            }
+            // Keep each binding's ID and type together, preferring a complete envelope.
+            if ((id is null && type is null) || (candidateId is not null && candidateType is not null))
+            {
+                id = candidateId;
+                type = candidateType;
+            }
+            if (candidateId is not null && candidateType is not null) break;
         }
         return _harness.Correlate(id, type, message.Body.ToArray(), transportName: Name, destination: message.Destination);
     }

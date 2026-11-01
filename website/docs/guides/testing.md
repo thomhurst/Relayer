@@ -56,6 +56,8 @@ The collections return snapshots safe to enumerate while other work runs:
 
 Publish/subscribe observation uses the same `ISender.SendAsync` API. A send routed to an in-memory log appears once in `Sent` and once per consumer group in `Consumed`. The harness does not change routing, settlement, ordering or native batching. If a native batch fails after partial delivery, `Dispatched` does not claim that the batch succeeded; `Failed` records the failed batch operation for each input.
 
+Consume failures remain observable when native settlement already logged the exception; logging configuration does not change `Failed`. A traced settlement failure is recorded once per consume boundary. Dispatch observation reads each route's configured envelope header names, including routes that share a destination with different bindings.
+
 Receive and dispatch bodies are copied before native storage can be reused. `HarnessMessage.Read<T>(serializer)` deserializes those copies with your configured serializer. Logical sends retain the original message object in `Message`; do not mutate that object during assertions. Wire IDs and types can be null for malformed or raw native messages. Transport and destination names on receive observations are correlated with sends in the same provider; unsolicited external deliveries may not have those names.
 
 ## Deterministic idle and reset

@@ -1,6 +1,7 @@
 using System.Buffers;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 using Relayer.InMemory;
 using Relayer.Serialization;
 using Relayer.Testing;
@@ -105,6 +106,91 @@ public class HarnessTests
         await fixture.Idle();
         await Assert.That(fixture.Harness.DeadLettered.Count).IsEqualTo(1);
         await Assert.That(fixture.Harness.DeadLettered[0].Error.Reason).IsEqualTo("manual");
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Manual_native_settlement_failure_is_observed_once_with_or_without_logging(bool loggingEnabled)
+    {
+        var logger = new FailureLogger();
+        await using var fixture = await Fixture.Start(new() { Handle = (_, context) =>
+        {
+            context.Features.GetRequired<NativeMessage<InMemoryDelivery>>().Message.Redeliver(TimeSpan.FromSeconds(1));
+            return default;
+        } }, logging: loggingEnabled ? logger : null, maxRedeliveryDelay: TimeSpan.Zero);
+        await fixture.Send(new Probe(1));
+        await fixture.Idle();
+        await Assert.That(fixture.Harness.Failed.Count).IsEqualTo(1);
+        var failure = fixture.Harness.Failed[0];
+        await Assert.That(failure.Operation).IsEqualTo(HarnessOperation.Consume);
+        await Assert.That(failure.Error.Message).Contains("MaxRedeliveryDelay");
+        await Assert.That(failure.Message.MessageId).IsEqualTo(fixture.Harness.Sent[0].MessageId);
+        await Assert.That(logger.Errors.Count).IsEqualTo(loggingEnabled ? 1 : 0);
+        if (loggingEnabled) await Assert.That(logger.Errors.Single()).IsSameReferenceAs(failure.Error);
+    }
+
+    [Test]
+    public async Task Traced_settlement_failure_is_not_observed_twice()
+    {
+        var error = new InvalidOperationException("settlement");
+        await using var fixture = await Fixture.Create();
+        var provider = fixture.Provider;
+        var endpoint = new MessagingEndpoint { System = "test", Destination = "probes" };
+        var tracing = provider.GetRequiredService<MessageTracing>();
+        var settlement = new MessageOperationTracing(tracing, endpoint, MessagingOperation.Settle, "complete");
+        var pipeline = new ConsumePipelineBuilder(provider.GetRequiredService<IServiceScopeFactory>(),
+            provider.GetRequiredService<MessageTypeRegistry>(), fixture.Serializer, static (_, _, _) => default)
+            .Handler(provider.GetRequiredService<HandlerRegistry>().Descriptors.Single(item => item.HandlerType == typeof(ProbeHandler)))
+            .Tracing(tracing, endpoint)
+            .Settle(settlement.WrapSettlement(_ => ValueTask.FromException(error))).Build(1);
+        var body = new ArrayBufferWriter<byte>();
+        fixture.Serializer.Serialize(new Probe(1), body);
+        using var context = pipeline.RentContext(new ConsumeMessage
+        {
+            MessageId = "one", MessageType = new("harness.probe", 1), Body = new(body.WrittenMemory),
+        });
+        await Assert.That(async () => await pipeline.ProcessAsync(context)).Throws<InvalidOperationException>();
+        await fixture.Idle();
+        await Assert.That(fixture.Harness.Failed.Count).IsEqualTo(1);
+        await Assert.That(fixture.Harness.Failed[0].Error).IsSameReferenceAs(error);
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Shared_destination_preserves_each_routes_envelope_identity(bool outboxBatch)
+    {
+        var services = new ServiceCollection();
+        var outbox = new TestOutbox();
+        if (outboxBatch) services.AddScoped<IOutboxEnlistment>(_ => outbox);
+        services.AddRelayer(builder =>
+        {
+            builder.AddMessageTypesFromThisAssembly();
+            builder.InMemory("shared", transport =>
+            {
+                transport.Send<Probe>("probes");
+                transport.Send<OtherProbe>("probes", route => route.SendOptions = new() { HeaderNames = new("custom_") });
+            });
+        });
+        services.AddRelayerHarness();
+        await using var provider = services.BuildServiceProvider();
+        using var scope = provider.CreateScope();
+        var sender = scope.ServiceProvider.GetRequiredService<ISender>();
+        await sender.SendAsync(new Probe(1));
+        var first = outbox.Message;
+        await sender.SendAsync(new OtherProbe(2));
+        if (outboxBatch)
+            await provider.GetServices<ITransport>().Single().SendBatchAsync(new[] { first, outbox.Message }, default);
+        var harness = provider.GetRequiredService<RelayerHarness>();
+        await Assert.That(harness.Dispatched.Count).IsEqualTo(2);
+        for (var i = 0; i < 2; i++)
+        {
+            await Assert.That(harness.Dispatched[i].MessageId).IsEqualTo(harness.Sent[i].MessageId);
+            await Assert.That(harness.Dispatched[i].WireType).IsEqualTo(harness.Sent[i].WireType);
+        }
+        await Assert.That(harness.Dispatched[0].Read<Probe>(provider.GetRequiredService<IMessageSerializer>()).Value).IsEqualTo(1);
+        await Assert.That(harness.Dispatched[1].Read<OtherProbe>(provider.GetRequiredService<IMessageSerializer>()).Value).IsEqualTo(2);
     }
 
     [Test]
@@ -365,10 +451,11 @@ public class HarnessTests
         private bool _started;
 
         internal static Task<Fixture> Create(ProbeControl? control = null, bool log = false,
-            TestOutbox? outbox = null, TimeProvider? clock = null)
+            TestOutbox? outbox = null, TimeProvider? clock = null, ILoggerFactory? logging = null, TimeSpan? maxRedeliveryDelay = null)
         {
             var services = new ServiceCollection();
             services.AddSingleton(control ?? new ProbeControl());
+            if (logging is not null) services.AddSingleton(logging);
             if (outbox is not null) services.AddScoped<IOutboxEnlistment>(_ => outbox);
             services.AddRelayer(builder =>
             {
@@ -381,7 +468,7 @@ public class HarnessTests
                         options.Endpoints["probes"] = new() { Capabilities = new()
                         {
                             ConsumptionModel = log ? ConsumptionModel.Log : ConsumptionModel.Queue,
-                            DeadLetter = true, MaxDeliveryDelay = TimeSpan.MaxValue, MaxRedeliveryDelay = TimeSpan.MaxValue,
+                            DeadLetter = true, MaxDeliveryDelay = TimeSpan.MaxValue, MaxRedeliveryDelay = maxRedeliveryDelay ?? TimeSpan.MaxValue,
                             MaxBatchSize = 100,
                         } };
                     });
@@ -402,9 +489,9 @@ public class HarnessTests
         }
 
         internal static async Task<Fixture> Start(ProbeControl? control = null, bool log = false,
-            TestOutbox? outbox = null, TimeProvider? clock = null)
+            TestOutbox? outbox = null, TimeProvider? clock = null, ILoggerFactory? logging = null, TimeSpan? maxRedeliveryDelay = null)
         {
-            var fixture = await Create(control, log, outbox, clock);
+            var fixture = await Create(control, log, outbox, clock, logging, maxRedeliveryDelay);
             await fixture.StartServices();
             return fixture;
         }
@@ -431,6 +518,20 @@ public class HarnessTests
                 foreach (var service in provider.GetServices<IHostedService>().Reverse()) await service.StopAsync(default);
             await provider.DisposeAsync();
         }
+    }
+
+    private sealed class FailureLogger : ILoggerFactory, ILogger
+    {
+        internal System.Collections.Concurrent.ConcurrentQueue<Exception> Errors { get; } = new();
+        public ILogger CreateLogger(string categoryName) => this;
+        public void AddProvider(ILoggerProvider provider) => throw new NotSupportedException();
+        public bool IsEnabled(LogLevel level) => level >= LogLevel.Error;
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+        public void Log<TState>(LogLevel level, EventId id, TState state, Exception? error, Func<TState, Exception?, string> formatter)
+        {
+            if (error is not null && IsEnabled(level)) Errors.Enqueue(error);
+        }
+        public void Dispose() { }
     }
 
     private sealed class ClockOptions(TimeProvider clock) : Microsoft.Extensions.Options.IOptionsMonitor<InMemoryTransportOptions>

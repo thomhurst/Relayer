@@ -370,12 +370,13 @@ public sealed class ConsumePipeline
 
     internal void LogFailure(DefaultMessageContext context, Exception error)
     {
-        if (ReferenceEquals(context.LoggedSettlementError, error) || context.TryConsumeNativeSettlementError(error))
+        if (ReferenceEquals(context.LoggedSettlementError, error))
         {
             context.LoggedSettlementError = null;
             return;
         }
         Observer?.Failed(context, error);
+        if (context.TryConsumeNativeSettlementError(error)) return;
         try
         {
             if (_logger?.IsEnabled(LogLevel.Error) != true) return;
