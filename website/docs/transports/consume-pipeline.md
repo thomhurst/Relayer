@@ -160,7 +160,9 @@ Pass the application's shared `Relayer` ActivitySource to `BuildBatch` to trace 
 `process {source}` CONSUMER span for the batch, including retries. It links each valid
 creation context and uses only the ambient span as parent. It includes
 `messaging.batch.message_count`. The caller owns the source; no process-wide source
-or second source owner is created. This is the batch execution seam for #13's shared
+or second source owner is created. UTF-8 traceparent headers are parsed without allocating
+an intermediate header string; UTF-8 tracestate decoding can still allocate.
+This is the batch execution seam for #13's shared
 tracing integration. Native settlement and its tracing remain the adapter's work.
 Do not retain the borrowed `Batch.Items`, message contexts, or native features after
 handler completion. Pools retain bounded reusable storage sized by the declaration's

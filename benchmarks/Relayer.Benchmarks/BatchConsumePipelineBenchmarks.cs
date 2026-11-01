@@ -1,5 +1,6 @@
 using System.Buffers;
 using System.Diagnostics;
+using System.Text;
 using BenchmarkDotNet.Attributes;
 using Microsoft.Extensions.DependencyInjection;
 using Relayer.Serialization;
@@ -25,12 +26,13 @@ public class BatchConsumePipelineBenchmarks
     private Activity _ambient = null!;
     private ActivityLink[] _links = null!;
     private KeyValuePair<string, object?>[] _tags = null!;
+    private readonly HeaderNames _headerNames = new();
 
     [Params(1, 10, 100)]
     public int BatchSize { get; set; }
 
-    [Params(false, true)]
-    public bool DropTracing { get; set; }
+    [Params(TracingMode.None, TracingMode.Text, TracingMode.Utf8)]
+    public TracingMode Tracing { get; set; }
 
     [GlobalSetup]
     public void Setup()
@@ -51,7 +53,7 @@ public class BatchConsumePipelineBenchmarks
         _source = new ActivitySource("Relayer");
         _listener = new ActivityListener
         {
-            ShouldListenTo = source => DropTracing && ReferenceEquals(source, _source),
+            ShouldListenTo = source => Tracing != TracingMode.None && ReferenceEquals(source, _source),
             Sample = static (ref ActivityCreationOptions<ActivityContext> _) => ActivitySamplingResult.None
         };
         ActivitySource.AddActivityListener(_listener);
@@ -65,7 +67,7 @@ public class BatchConsumePipelineBenchmarks
         _pipeline = new ConsumePipelineBuilder(_scopes, _provider.GetRequiredService<MessageTypeRegistry>(), _serializer,
             static (_, error, _) => ValueTask.FromException(error)).BuildBatch(_descriptor, definition, _source);
         _message = new() { MessageId = "benchmark", MessageType = new("benchmark.batch", 1), Body = ReadOnlySequence<byte>.Empty,
-            Headers = DropTracing ? new TraceHeaders() : null };
+            Headers = Tracing != TracingMode.None ? new TraceHeaders(Tracing == TracingMode.Utf8) : null };
         _contexts = new DefaultMessageContext[BatchSize];
         var items = new BatchItem<Payload>[BatchSize];
         for (var i = 0; i < items.Length; i++) items[i] = new(_serializer.Deserialize<Payload>(_message.Body), _directContext);
@@ -89,10 +91,10 @@ public class BatchConsumePipelineBenchmarks
 
     private Activity? StartDirectActivity()
     {
-        if (!DropTracing) return null;
+        if (Tracing == TracingMode.None) return null;
         for (var i = 0; i < BatchSize; i++)
         {
-            ActivityContext.TryParse(TraceHeaders.Parent, null, true, out var context);
+            var context = MessageCreationContext.Read<MessageHeaders, CreationHeaderReader>(_message.Headers!, _headerNames);
             _links[i] = new(context);
         }
         return _source.StartActivity("process source", ActivityKind.Consumer, Activity.Current?.Context ?? default, _tags, _links);
@@ -138,12 +140,21 @@ public class BatchConsumePipelineBenchmarks
         public TMessage Deserialize<TMessage>(ReadOnlySequence<byte> source) => (TMessage)(object)_payload;
         public void Serialize<TMessage>(TMessage message, IBufferWriter<byte> destination) => throw new NotSupportedException();
     }
-    private sealed class TraceHeaders : MessageHeaders
+    public enum TracingMode { None, Text, Utf8 }
+
+    private readonly struct CreationHeaderReader : IMessageHeaderReader<MessageHeaders>
+    {
+        public static bool TryGetHeader(MessageHeaders message, string name, out WireString value) =>
+            message.TryGetValue(name, out value);
+    }
+
+    private sealed class TraceHeaders(bool utf8) : MessageHeaders
     {
         internal const string Parent = "00-11111111111111111111111111111111-2222222222222222-01";
+        private readonly WireString _parent = utf8 ? new(Encoding.UTF8.GetBytes(Parent)) : new(Parent);
         public override bool TryGetValue(string name, out WireString value)
         {
-            value = name == "traceparent" ? new(Parent) : default;
+            value = name == "traceparent" ? _parent : default;
             return !value.IsEmpty;
         }
     }

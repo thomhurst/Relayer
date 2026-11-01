@@ -15,6 +15,7 @@ internal sealed class BatchExecution
     private readonly ActivitySource? _source;
     private readonly string _spanName;
     private readonly string _destination;
+    private readonly HeaderNames _headerNames = new();
     private readonly KeyValuePair<string, object?>[] _batchCountTags;
     private readonly State?[] _states;
     internal int Size { get; }
@@ -186,13 +187,8 @@ internal sealed class BatchExecution
         if (_source is null || !_source.HasListeners()) return null;
         for (var i = 0; i < contexts.Length; i++)
         {
-            var headers = contexts.Span[i].Headers;
-            if (headers.TryGetValue("traceparent", out var parent))
-            {
-                var traceState = headers.TryGetValue("tracestate", out var value) ? value.ToString() : null;
-                if (ActivityContext.TryParse(parent.ToString(), traceState, true, out var creation))
-                    state.Links.Add(new(creation));
-            }
+            var creation = MessageCreationContext.Read<MessageHeaders, CreationHeaderReader>(contexts.Span[i].Headers, _headerNames);
+            if (creation != default) state.Links.Add(new(creation));
         }
         state.Tags[^1] = _batchCountTags[contexts.Length - 1];
         // ActivitySource consumes these reusable sampling inputs synchronously.
@@ -205,6 +201,12 @@ internal sealed class BatchExecution
         for (var i = 0; i < _states.Length; i++)
             if (Interlocked.Exchange(ref _states[i], null) is { } state) return state;
         return new State(Size, _destination);
+    }
+
+    private readonly struct CreationHeaderReader : IMessageHeaderReader<MessageHeaders>
+    {
+        public static bool TryGetHeader(MessageHeaders message, string name, out WireString value) =>
+            message.TryGetValue(name, out value);
     }
 
     private sealed class State(int size, string destination)

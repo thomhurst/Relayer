@@ -261,9 +261,11 @@ public class BatchPipelineTests
     }
 
     [Test]
-    [Arguments(false)]
-    [Arguments(true)]
-    public async Task Batch_span_links_every_creation_context_and_uses_only_ambient_parent(bool ambient)
+    [Arguments(false, false)]
+    [Arguments(false, true)]
+    [Arguments(true, false)]
+    [Arguments(true, true)]
+    public async Task Batch_span_links_every_creation_context_and_uses_only_ambient_parent(bool ambient, bool utf8)
     {
         await using var provider = Provider();
         using var source = new ActivitySource("Relayer");
@@ -285,6 +287,9 @@ public class BatchPipelineTests
         var expectedActivity = Activity.Current;
         var expectedParent = expectedActivity?.Context ?? default;
         var input = Input(3);
+        if (utf8)
+            for (var i = 0; i < input.Length; i++)
+                input[i] = input[i] with { TraceParent = new("00-11111111111111111111111111111111-2222222222222222-01"u8.ToArray()) };
         var pipeline = Pipeline(provider, source: source);
         await pipeline.ProcessBatchAsync(input, new Disposition[3]);
         await Assert.That(observed!.DisplayName).IsEqualTo("process source");
@@ -294,6 +299,8 @@ public class BatchPipelineTests
         await Assert.That(observed.GetTagItem("messaging.operation.type") as string).IsEqualTo("process");
         await Assert.That(observed.Links.Count()).IsEqualTo(3);
         await Assert.That(observed.Links.All(link => link.Context.IsRemote)).IsTrue();
+        await Assert.That(observed.Links.All(link => link.Context.TraceId.ToString() == "11111111111111111111111111111111" &&
+            link.Context.SpanId.ToString() == "2222222222222222" && link.Context.TraceFlags == ActivityTraceFlags.Recorded)).IsTrue();
         await Assert.That(sampledCount).IsEqualTo(3);
         await Assert.That(Activity.Current).IsSameReferenceAs(expectedActivity);
         await pipeline.ProcessBatchAsync(input.AsMemory(0, 1), new Disposition[1]);
@@ -570,6 +577,7 @@ public class BatchPipelineTests
     }
     internal sealed record Incoming(string Id)
     {
+        public WireString TraceParent { get; init; } = new("00-11111111111111111111111111111111-2222222222222222-01");
         public string Type { get; init; } = "batch.payload;v=1";
         public byte Value { get; init; } = 1;
     }
@@ -579,7 +587,7 @@ public class BatchPipelineTests
         public static int? GetDeliveryCount(Incoming message) => 1;
         public static bool TryGetHeader(Incoming message, string name, out WireString value)
         {
-            value = name switch { "ce_id" => new(message.Id), "ce_type" => new(message.Type), "traceparent" => new("00-11111111111111111111111111111111-2222222222222222-01"), _ => default };
+            value = name switch { "ce_id" => new(message.Id), "ce_type" => new(message.Type), "traceparent" => message.TraceParent, _ => default };
             return !value.IsEmpty;
         }
     }

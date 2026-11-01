@@ -1,5 +1,6 @@
 using System.Buffers;
 using System.Diagnostics;
+using System.Text;
 using Microsoft.Extensions.DependencyInjection;
 using Relayer.Serialization;
 
@@ -8,11 +9,13 @@ namespace Relayer.Tests;
 public class BatchTracingTests
 {
     [Test]
-    [Arguments(1, false)]
-    [Arguments(1, true)]
-    [Arguments(10, false)]
-    [Arguments(10, true)]
-    public async Task Dropped_batch_spans_add_no_allocations_beyond_scope_and_framework_context_parsing(int size, bool links)
+    [Arguments(1, false, false)]
+    [Arguments(1, true, false)]
+    [Arguments(1, true, true)]
+    [Arguments(10, false, false)]
+    [Arguments(10, true, false)]
+    [Arguments(10, true, true)]
+    public async Task Dropped_batch_spans_add_no_allocations_beyond_scope_and_framework_context_parsing(int size, bool links, bool utf8)
     {
         var services = new ServiceCollection();
         services.AddSingleton<IMessageSerializer, Serializer>();
@@ -41,7 +44,7 @@ public class BatchTracingTests
         var message = new ConsumeMessage
         {
             MessageId = "allocation", MessageType = new("batch.tracing", 1), Body = ReadOnlySequence<byte>.Empty,
-            Headers = links ? new TraceHeaders() : null
+            Headers = links ? new TraceHeaders(utf8) : null
         };
         var contexts = new DefaultMessageContext[size];
         for (var iteration = 0; iteration < 1000; iteration++)
@@ -87,12 +90,13 @@ public class BatchTracingTests
         public TMessage Deserialize<TMessage>(ReadOnlySequence<byte> source) => (TMessage)(object)_payload;
         public void Serialize<TMessage>(TMessage message, IBufferWriter<byte> destination) => throw new NotSupportedException();
     }
-    private sealed class TraceHeaders : MessageHeaders
+    private sealed class TraceHeaders(bool utf8) : MessageHeaders
     {
         internal const string Parent = "00-11111111111111111111111111111111-2222222222222222-01";
+        private readonly WireString _parent = utf8 ? new(Encoding.UTF8.GetBytes(Parent)) : new(Parent);
         public override bool TryGetValue(string name, out WireString value)
         {
-            value = name == "traceparent" ? new(Parent) : default;
+            value = name == "traceparent" ? _parent : default;
             return !value.IsEmpty;
         }
     }
