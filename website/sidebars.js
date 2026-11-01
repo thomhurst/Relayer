@@ -41,7 +41,7 @@ const sidebars = {
     {
       type: 'category',
       label: 'Reference',
-      items: ['reference/diagnostics', 'reference/outbox-stores', 'reference/postgres-schema', 'reference/postgres-store', 'reference/ef-core-outbox'],
+      items: ['reference/diagnostics', 'reference/outbox-stores', 'reference/postgres-schema', 'reference/postgres-store', 'reference/postgres-outbox', 'reference/ef-core-outbox'],
     },
     'roadmap',
     'contributing/documentation',

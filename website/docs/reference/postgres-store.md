@@ -5,8 +5,8 @@ description: "Register PostgreSQL outbox reads, atomic claims, fenced outcomes a
 
 `Relayer.Outbox.PostgreSql` implements `IOutboxStore` over the [shared PostgreSQL schema](postgres-schema.md).
 It supplies durable reads, atomic claims, renewal, completion, failure persistence and eligible backlog counts.
-[EF Core transaction enlistment](ef-core-outbox.md) supplies atomic enqueue. ADO.NET/Dapper transaction
-entry points, dispatch workers, ordered lane leases and inbox deduplication remain planned.
+[EF Core transaction enlistment](ef-core-outbox.md) and [ADO.NET/Dapper transactions](postgres-outbox.md)
+supply atomic enqueue. Dispatch workers, ordered lane leases and inbox deduplication remain planned.
 
 ## Registration
 
@@ -61,6 +61,6 @@ It starts with little-endian 32-bit version `1` and a header count. Each entry c
 and a length-prefixed value. Values retain their bytes, including empty or malformed UTF-8 values. Duplicate names
 and ordering survive storage. Corrupt lengths, unsupported versions and trailing bytes fail explicitly.
 
-Do not populate this column with JSON or empty bytes. EF Core writes compatible rows through its registered
-interceptors. ADO.NET/Dapper transaction entry points remain planned in [#118](https://github.com/thomhurst/Relayer/issues/118).
+Do not populate this column with JSON or empty bytes. EF Core interceptors and PostgreSQL outbox transactions
+write compatible rows through the shared codec and batch writer.
 The store does not generate identities, serialize messages, or rewrite envelopes during reads.

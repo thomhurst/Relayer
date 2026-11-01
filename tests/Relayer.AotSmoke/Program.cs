@@ -26,12 +26,20 @@ if (ServiceBusBinding.GetBody(serviceBusArgs).First.Span[0] != 42 ||
     throw new InvalidOperationException("Service Bus binding failed under Native AOT.");
 
 var postgresConnectionString = Environment.GetEnvironmentVariable("RELAYER_AOT_POSTGRES_CONNECTION");
-await using (var dataSource = new Npgsql.NpgsqlSlimDataSourceBuilder(postgresConnectionString ?? "Host=127.0.0.1;Port=1;Timeout=1").Build())
+await using (var dataSource = new Npgsql.NpgsqlSlimDataSourceBuilder(postgresConnectionString ?? "Host=127.0.0.1;Port=1;Timeout=1").EnableArrays().Build())
 {
     var stores = new ServiceCollection().AddRelayerPostgreSqlOutboxStore("postgres-smoke", dataSource);
+    stores.AddRelayerPostgreSqlOutbox(new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
+    {
+        ["TablePrefix"] = "relayer_", ["Lanes"] = "8"
+    }).Build());
     await using var storeProvider = stores.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
     await using var storeScope = storeProvider.CreateAsyncScope();
     var store = storeScope.ServiceProvider.GetRequiredKeyedService<IOutboxStore>("postgres-smoke");
+    var postgresOutbox = storeScope.ServiceProvider.GetRequiredService<PostgreSqlOutbox>();
+    if (postgresOutbox.IsActive || !ReferenceEquals(postgresOutbox, storeScope.ServiceProvider.GetRequiredService<IOutboxEnlistment>()) ||
+        storeScope.ServiceProvider.GetRequiredService<Microsoft.Extensions.Options.IOptionsSnapshot<PostgreSqlOutboxOptions>>().Value.Lanes != 8)
+        throw new InvalidOperationException("PostgreSQL outbox registration failed under Native AOT.");
     if (await store.ReadPendingAsync(new(null, DateTimeOffset.UtcNow), Memory<OutboxRecord>.Empty, default) != 0)
         throw new InvalidOperationException("Empty PostgreSQL reads failed under Native AOT.");
     try
@@ -60,6 +68,20 @@ await using (var dataSource = new Npgsql.NpgsqlSlimDataSourceBuilder(postgresCon
             !await store.CompleteAsync(claim, now, default) || await store.GetPendingCountAsync(now, default) != 0)
             throw new InvalidOperationException("PostgreSQL claims failed under Native AOT.");
         Console.WriteLine("Real PostgreSQL reads, headers, claims and outcomes passed under Native AOT.");
+        await using (var transaction = await postgresOutbox.BeginTransactionAsync(dataSource))
+        {
+            await using var command = transaction.Connection!.CreateCommand();
+            command.Transaction = transaction;
+            command.CommandText = "SELECT 1";
+            if ((int)(await command.ExecuteScalarAsync())! != 1)
+                throw new InvalidOperationException("PostgreSQL business command failed under Native AOT.");
+            await postgresOutbox.EnlistAsync(new(Guid.CreateVersion7(), "smoke", "order.v1",
+                new OutgoingMessage("orders", new byte[] { 1, 2 }, default, new WireString("key")), DateTimeOffset.UtcNow), default);
+            await transaction.CommitAsync();
+        }
+        if (await store.GetPendingCountAsync(DateTimeOffset.UtcNow, default) != 1)
+            throw new InvalidOperationException("PostgreSQL batched enqueue failed under Native AOT.");
+        Console.WriteLine("Real PostgreSQL transaction wrapper and batched enqueue passed under Native AOT.");
     }
 }
 Console.WriteLine("PostgreSQL keyed stores and cancellation passed under Native AOT.");

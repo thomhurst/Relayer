@@ -41,6 +41,8 @@ To change a decision, add a new entry that supersedes it rather than editing his
 | [D28](#d28-a-batch-attempt-owns-one-scope-and-one-direct-send-buffer) | A batch attempt owns one scope and one direct-send buffer | Accepted |
 | [D29](#d29-durable-dispatch-claims-use-expiring-fencing-tokens) | Durable dispatch claims use expiring fencing tokens | Accepted |
 | [D30](#d30-share-postgresql-schema-sql-with-application-owned-ef-migrations) | Share PostgreSQL schema SQL with application-owned EF migrations | Accepted |
+| [D31](#d31-ef-core-buffers-sends-for-an-explicitly-owned-context-and-flushes-at-commit) | EF Core buffers sends for an explicitly owned context and flushes at commit | Accepted |
+| [D32](#d32-postgresql-outbox-transactions-own-commit-and-expose-a-compatible-command-connection) | PostgreSQL outbox transactions own commit and expose a compatible command connection | Accepted |
 
 ---
 
@@ -514,3 +516,28 @@ invalidate commit until the whole transaction is rolled back; callers retry comp
 Commit goes through IDbContextTransaction, including UseTransaction wrappers. Direct provider commits,
 ambient TransactionScope, pooled contexts and concurrent use of a scope are outside this integration.
 Schema deployment, dispatch, inbox, leases and health polling remain separate concerns.
+
+## D32. PostgreSQL outbox transactions own commit and expose a compatible command connection
+
+**Context.** A DbTransaction subclass can flush buffered messages before native commit, but NpgsqlCommand's
+transaction setter accepts only NpgsqlTransaction. Passing a wrapper directly to Dapper on the original
+connection therefore fails. Savepoint rollback also cannot safely discard business changes without rewinding
+the corresponding message buffer.
+
+**Decision.** The scoped PostgreSQL enlistment begins a native transaction on a caller-owned open connection,
+or opens and owns one connection from an application-owned data source. Its DbTransaction wrapper exposes a
+borrowed DbConnection view whose commands unwrap that exact transaction for Npgsql. DbCommand.Connection
+returns the underlying NpgsqlConnection so Dapper retains PostgreSQL-specific array parameter handling.
+Business commands and the
+one outbox batch share the native transaction. Writers reuse the EF integration's validation, owned storage,
+lossless header codec, lane hashing and fixed-parameter batch SQL. Options are init-only and explicitly bound
+through the Options pattern. Savepoints, nested transactions and concurrent scope use are unsupported.
+
+**Consequences.** Dapper callers use transaction.Connection, never the original NpgsqlConnection with the
+wrapper transaction. Native configuration and isolation levels pass through unchanged. Native callbacks cannot
+be persisted. Commit failure or cancellation ends the unit and releases its buffer; disposal rolls back any
+uncommitted native work. A lost commit acknowledgement remains an unknown outcome requiring application
+idempotency. Caller-owned connections remain open, while opened data-source connections are disposed without
+disposing the data source. Database outbox durability does not imply native broker transaction enlistment or
+implement dispatch. Direct native lifecycle calls and SQL transaction-control commands bypass the wrapper
+and are outside this contract.

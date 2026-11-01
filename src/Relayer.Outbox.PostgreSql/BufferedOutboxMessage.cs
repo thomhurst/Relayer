@@ -18,6 +18,17 @@ internal sealed class BufferedOutboxMessage
     internal ReadOnlyMemory<byte> Headers { get; private set; }
     internal ReadOnlyMemory<byte>? OrderingKey { get; private set; }
 
+    internal static void Validate(OutboxRecord record)
+    {
+        record.Message.ValidateForOutbox();
+        if (record.Id == Guid.Empty || record.Id.Version != 7 || string.IsNullOrWhiteSpace(record.MessageType))
+            throw new InvalidOperationException("Outbox sends require the original UUIDv7 identity and stable MessageType. Use ISender or supply the original OutboxRecord metadata.");
+        if (record.Attempts != 0 || record.LastError is not null || record.Lane is not null)
+            throw new ArgumentException("New outbox sends cannot specify dispatch attempts, errors or lanes. Lanes are computed from the ordering key.", nameof(record));
+        ArgumentException.ThrowIfNullOrWhiteSpace(record.TransportName);
+        ArgumentException.ThrowIfNullOrWhiteSpace(record.Message.Destination);
+    }
+
     internal void Copy(OutboxRecord record, int lanes)
     {
         var message = record.Message;
