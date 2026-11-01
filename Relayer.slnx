@@ -14,6 +14,7 @@
     <Project Path="src/Relayer.Outbox.PostgreSql/Relayer.Outbox.PostgreSql.csproj" />
   </Folder>
   <Folder Name="/tests/">
+    <Project Path="tests/Relayer.Testing.Tests/Relayer.Testing.Tests.csproj" />
     <Project Path="tests/Relayer.AotSmoke/Relayer.AotSmoke.csproj" />
     <Project Path="tests/Relayer.Tests/Relayer.Tests.csproj" />
     <Project Path="tests/Relayer.Conformance.Tests/Relayer.Conformance.Tests.csproj" />

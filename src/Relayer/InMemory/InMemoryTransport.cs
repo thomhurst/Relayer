@@ -50,6 +50,11 @@ public sealed class InMemoryTransport : ITransport, ITransportSendTracing
 
     /// <inheritdoc />
     public string Name { get; }
+
+    internal void Observe(IRelayerObserver? observer)
+    {
+        foreach (var endpoint in _endpoints.Values) endpoint.Observer = observer;
+    }
     /// <summary>Completes when all native loops stop; faults on unexpected processing or settlement failures.</summary>
     public Task Completion { get; private set; } = Task.CompletedTask;
     /// <inheritdoc />

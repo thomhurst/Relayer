@@ -101,5 +101,8 @@ internal sealed class SendPipeline
 
 internal interface ISendOperation
 {
+    string TransportName { get; }
+    string Destination { get; }
+    bool UsesOutbox { get; }
     ValueTask DispatchAsync();
 }

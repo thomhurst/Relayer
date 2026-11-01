@@ -11,6 +11,7 @@
     <PackageReference Include="Microsoft.Extensions.DependencyInjection" />
     <PackageReference Include="Microsoft.Extensions.Configuration" />
     <ProjectReference Include="../../src/Relayer/Relayer.csproj" />
+    <ProjectReference Include="../../src/Relayer.Testing/Relayer.Testing.csproj" />
     <ProjectReference Include="../../src/Relayer.HealthChecks/Relayer.HealthChecks.csproj" />
     <ProjectReference Include="../../src/Relayer.Outbox.PostgreSql/Relayer.Outbox.PostgreSql.csproj" />
     <ProjectReference Include="../../src/Relayer.SourceGenerators/Relayer.SourceGenerators.csproj"

@@ -22,8 +22,14 @@ public sealed class ConsumePipeline
     /// <summary>Processes one batch, with one scope per batch attempt and only failed items retried.</summary>
     /// <remarks>Optional native settlement callbacks run after all durable work. Keep context memory unchanged until completion. Only use settlement decisions after the entire call succeeds.</remarks>
     public ValueTask ProcessBatchAsync(ReadOnlyMemory<DefaultMessageContext> contexts, CancellationToken cancellationToken = default)
+        => Observer is { } observer ? observer.ProcessBatchAsync(this, contexts, cancellationToken)
+            : ProcessBatchCoreAsync(contexts, cancellationToken);
+
+    internal ValueTask ProcessBatchCoreAsync(ReadOnlyMemory<DefaultMessageContext> contexts, CancellationToken cancellationToken)
         => (BatchExecution ?? throw new InvalidOperationException("Build a batch consumer before using batch dispatch."))
             .ProcessAsync(this, contexts, cancellationToken);
+    internal IRelayerObserver? Observer { get; }
+    private readonly ConsumeDelegate _process;
     private readonly IServiceScopeFactory _scopes;
     private readonly FrozenDictionary<MessageType, ConsumeDelegate> _dispatch;
     private readonly ConsumeFailureDelegate _failure;
@@ -44,12 +50,15 @@ public sealed class ConsumePipeline
         int capacity, FailurePipeline? failures, EndpointTelemetry? telemetry, ConsumeDelegate? settlement, ConsumeTracing? tracing)
     {
         _scopes = scopes;
+        using (var scope = scopes.CreateScope()) Observer = scope.ServiceProvider.GetService<IRelayerObserver>();
         _failures = failures;
         _dispatch = dispatch;
         _failure = failure;
         _classifier = classifier;
         _telemetry = telemetry;
-        _settlement = settlement;
+        _settlement = settlement is not null && Observer is { } observer ? observer.WrapSettlement(settlement) : settlement;
+        _process = failures is null ? context => ProcessCoreAsync((DefaultMessageContext)context)
+            : context => ProcessWithFailuresAsync((DefaultMessageContext)context);
         _tracing = tracing;
         _logger = telemetry?.Logger ?? tracing?.Logger;
         _contexts = new DefaultMessageContext[capacity];
@@ -150,6 +159,7 @@ public sealed class ConsumePipeline
         if (IsBatch) throw new InvalidOperationException("Use ProcessBatchAsync for a batch consumer.");
         ArgumentNullException.ThrowIfNull(context);
         context.BeginProcessing(this);
+        if (Observer is { } observer) return observer.ProcessAsync(context, _process);
         return _failures is null ? ProcessCoreAsync(context) : ProcessWithFailuresAsync(context);
     }
 
@@ -360,11 +370,13 @@ public sealed class ConsumePipeline
 
     internal void LogFailure(DefaultMessageContext context, Exception error)
     {
-        if (ReferenceEquals(context.LoggedSettlementError, error) || context.TryConsumeNativeSettlementError(error))
+        if (ReferenceEquals(context.LoggedSettlementError, error))
         {
             context.LoggedSettlementError = null;
             return;
         }
+        Observer?.Failed(context, error);
+        if (context.TryConsumeNativeSettlementError(error)) return;
         try
         {
             if (_logger?.IsEnabled(LogLevel.Error) != true) return;

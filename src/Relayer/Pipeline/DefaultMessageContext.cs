@@ -43,6 +43,7 @@ public sealed class DefaultMessageContext : MessageContext, IDisposable
     internal int Redeliveries { get; private set; }
     internal FailureHistory? FailureHistory { get; set; }
     internal Disposition? FailureDisposition { get; set; }
+    internal Disposition ObservedDisposition => _receive?.Disposition ?? FailureDisposition ?? Disposition.Complete;
     internal void ApplyFailureDisposition()
     {
         if (FailureDisposition is { } disposition) _receive?.SetDisposition(disposition);

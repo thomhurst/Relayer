@@ -20,6 +20,7 @@ const sidebars = {
         'guides/topology',
         'guides/telemetry',
         'guides/health-checks',
+        'guides/testing',
       ],
     },
     {

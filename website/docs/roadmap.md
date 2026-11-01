@@ -22,6 +22,7 @@ Relayer is in early development. Track progress in [GitHub issues](https://githu
 - Declared topology with validate and provision modes, and JSON export.
 - The [in-memory transport](transports/in-memory.md), with native queue and partitioned log semantics.
 - The packaged [transport conformance suite](transports/conformance.md), passing in-memory queue and log modes, with capability skips and native fixture hooks for third-party adapters.
+- The [test harness and standalone handler context](guides/testing.md), with logical send and native dispatch observations, deterministic in-memory idle detection, reset and provider isolation.
 - Core tracing primitives, single and batch delivery spans, native settlement wrappers, consume metrics and generated failure logs. Native broker adapters and outbox instrumentation remain planned.
 - The optional [health integration](guides/health-checks.md), with connectivity, consumer liveness and backlog checks. The outbox adapter accepts application-provided durable stores; native broker adapters remain planned.
 
