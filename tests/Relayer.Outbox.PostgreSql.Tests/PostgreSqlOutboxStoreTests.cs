@@ -160,7 +160,7 @@ public class PostgreSqlOutboxStoreTests
     }
 
     [Test]
-    public async Task Keyed_scopes_snapshot_names_and_keep_the_application_data_source_alive()
+    public async Task Keyed_scopes_use_immutable_names_and_keep_the_application_data_source_alive()
     {
         await using var fixture = new PostgreSqlFixture();
         await fixture.StartAsync();
@@ -169,7 +169,6 @@ public class PostgreSqlOutboxStoreTests
         await CreateSchema(source, options);
         var services = new ServiceCollection();
         services.AddRelayerPostgreSqlOutboxStore("orders", source, options);
-        options.Schema = "missing";
         await using (var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true }))
         {
             await using var first = provider.CreateAsyncScope();

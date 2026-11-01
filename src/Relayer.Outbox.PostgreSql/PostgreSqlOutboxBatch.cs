@@ -8,6 +8,14 @@ namespace Relayer.Outbox.PostgreSql;
 // Column storage is reused across commits. Parameter count is fixed, including large transactions.
 internal sealed class PostgreSqlOutboxBatch : IDisposable
 {
+    internal static string CreateInsertSql(string table) => $"""
+        INSERT INTO {table}
+            (id, lane, ordering_key, transport, destination, message_type, headers, body, created_at, deliver_at, tenant_id)
+        SELECT id, lane, convert_from(key, 'UTF8'), transport, destination, type, headers, body, created, delivery, tenant
+        FROM unnest(@ids, @lanes, @keys, @transports, @destinations, @types, @headers, @bodies, @created, @delivery, @tenants)
+            AS rows(id, lane, key, transport, destination, type, headers, body, created, delivery, tenant)
+        """;
+
     private readonly List<Guid> _ids = [];
     private readonly List<int?> _lanes = [];
     private readonly List<ReadOnlyMemory<byte>?> _keys = [];
