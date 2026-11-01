@@ -24,6 +24,8 @@ To compare two revisions, create separate worktrees for the candidate and a
 pinned `origin/main` commit. Copy the candidate's `benchmarks/` directory and
 `global.json` into the baseline worktree, replacing its benchmark harness, then
 run the command above in each checkout with separate absolute artifact paths.
+To match CI's sampling plan, run the baseline once before the candidate and once
+after it, using a third artifact directory for the baseline repeat.
 Before running the baseline, pin its benchmark driver to the candidate version:
 
 ```powershell
@@ -40,6 +42,7 @@ Compare the directories containing the full JSON reports:
 
 ```powershell
 python .github/scripts/benchmark_gate.py compare C:/benchmark-results/baseline C:/benchmark-results/candidate
+python .github/scripts/benchmark_gate.py compare C:/benchmark-results/baseline C:/benchmark-results/candidate --baseline-after C:/benchmark-results/baseline-after
 python .github/scripts/benchmark_gate.py self-test C:/benchmark-results/baseline
 ```
 
@@ -81,24 +84,35 @@ total as pipeline-only allocation evidence.
 The `Performance regression gate` job feeds the required `CI Passed` check.
 Draft PRs skip CI; the job runs after draft review, when the PR becomes ready.
 PRs use their pinned target commit as baseline; pushes to `main` use its previous
-head. Manual runs use the current `main` snapshot. Both executions use the
-candidate harness and SDK on one runner, sequentially, with no downloaded timing
-baseline from another machine.
+head. Manual runs use the current `main` snapshot. All executions use the
+candidate harness and SDK on one runner, in a fixed **baseline, candidate,
+baseline** sequence, with separate artifact directories. The second baseline
+always runs, regardless of the first measurements. This exposes drift between
+executions without retrying failed comparisons until they pass. No timing
+baseline is downloaded from another machine.
 
 The gate fails when any case:
 
 - loses more than **5% throughput** relative to the baseline with separated
   BenchmarkDotNet confidence bounds. Since reports contain time per operation,
   the candidate's lower time bound must exceed `baseline upper bound / 0.95`
-  before the gate declares a regression. A mean beyond the threshold with
-  overlapping bounds is reported as inconclusive, not a proven regression;
+  for **both** baseline executions before the gate declares a regression.
+  A mean beyond the threshold against either baseline without that confirmation
+  is reported as inconclusive, not a proven regression. The summary shows both
+  baseline intervals; its throughput percentage uses the first baseline.
+  Separate process runs can still vary; bracketing does not prove unchanged
+  performance or eliminate all runner noise;
 - increases allocations by more than **0.5 B/op**, a sub-byte allowance for
-  amortization and rounding, not an extra allocation budget;
+  amortization and rounding, not an extra allocation budget. The candidate must
+  satisfy this limit against **each** baseline, so a noisier repeat cannot hide
+  an allocation increase;
 - takes **50 ms or more** to compose 100 handlers.
 
-Missing, duplicated, invalid, failed or mismatched benchmark cases fail closed.
+Missing, duplicated, invalid, failed or mismatched benchmark cases fail closed,
+including an incomplete or missing requested baseline repeat. Local comparisons
+without `--baseline-after` retain the single-baseline rule.
 The CI detector self-test shows that unchanged measurements pass and injected
-regressions fail. The comparison prints mean timings as throughput changes and both
+regressions fail. The comparison prints mean timings as throughput changes and
 allocation totals in the job summary. The job uploads raw reports, logs,
 comparison commits and harness hashes for investigation. Inspect BenchmarkDotNet
 error and variation columns when timings are noisy; do not rerun until a noisy

@@ -97,37 +97,50 @@ def load_reports(directory):
     return cases
 
 
-def compare(baseline, candidate, *, enforce_startup_budget=True):
+def compare(baseline, candidate, *, baseline_after=None, enforce_startup_budget=True):
     if baseline.keys() != candidate.keys():
         missing = sorted(baseline.keys() - candidate.keys())
         added = sorted(candidate.keys() - baseline.keys())
         raise GateError(f"Benchmark case sets differ. Missing: {missing}; added: {added}")
+    if baseline_after is not None and baseline_after.keys() != baseline.keys():
+        raise GateError("Repeated baseline case sets differ")
     failures = []
     lines = [
-        "| Benchmark | Throughput change | Baseline mean CI (ns) | Candidate mean CI (ns) | Baseline B/op | Candidate B/op | Result |",
-        "| --- | ---: | ---: | ---: | ---: | ---: | --- |",
+        "| Benchmark | Throughput change vs first baseline | First baseline mean CI (ns) | Repeated baseline mean CI (ns) | Candidate mean CI (ns) | First / repeated baseline B/op | Candidate B/op | Result |",
+        "| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |",
     ]
     for identity in sorted(baseline):
         before, after = baseline[identity], candidate[identity]
+        repeated = before if baseline_after is None else baseline_after[identity]
         if (before.type_name, before.method) != (after.type_name, after.method):
             raise GateError(f"{identity}: benchmark metadata differs")
+        if (before.type_name, before.method) != (repeated.type_name, repeated.method):
+            raise GateError(f"{identity}: repeated baseline metadata differs")
         throughput = before.mean_ns / after.mean_ns - 1
+        # A fixed baseline-candidate-baseline sequence exposes drift between processes.
+        # Throughput must regress against both references; allocations must satisfy both.
+        upper = max(before.upper_ns, repeated.upper_ns)
+        allocated = min(before.allocated_bytes, repeated.allocated_bytes)
+        throughput_failure = max(0, after.lower_ns) > upper / (1 - MAX_THROUGHPUT_LOSS)
         reasons = []
-        if max(0, after.lower_ns) > before.upper_ns / (1 - MAX_THROUGHPUT_LOSS):
+        if throughput_failure:
             reasons.append("throughput loss exceeds 5%")
-        if after.allocated_bytes > before.allocated_bytes + ALLOCATION_TOLERANCE_BYTES:
+        if after.allocated_bytes > allocated + ALLOCATION_TOLERANCE_BYTES:
             reasons.append("allocations increased by more than 0.5 B/op")
         if enforce_startup_budget and (after.type_name, after.method) == ("StartupBenchmarks", "Build100Handlers") and after.mean_ns >= STARTUP_LIMIT_NS:
             reasons.append("100-handler startup is not under 50 ms")
-        inconclusive = after.mean_ns > before.mean_ns / (1 - MAX_THROUGHPUT_LOSS) and not any("throughput loss" in reason for reason in reasons)
-        statuses = reasons + (["INCONCLUSIVE: observed throughput loss exceeds 5%; confidence bounds overlap threshold"] if inconclusive else [])
+        inconclusive = after.mean_ns > min(before.mean_ns, repeated.mean_ns) / (1 - MAX_THROUGHPUT_LOSS) and not throughput_failure
+        statuses = reasons + (["INCONCLUSIVE: observed throughput loss exceeds 5%; confidence bounds or baseline drift prevent confirmation"] if inconclusive else [])
         status = "; ".join(statuses) if statuses else "PASS"
-        lines.append(f"| {identity} | {throughput:+.2%} | [{before.lower_ns:g}, {before.upper_ns:g}] | [{after.lower_ns:g}, {after.upper_ns:g}] | {before.allocated_bytes:g} | {after.allocated_bytes:g} | {status} |")
+        repeat_interval = "not measured" if baseline_after is None else f"[{repeated.lower_ns:g}, {repeated.upper_ns:g}]"
+        repeat_allocated = "not measured" if baseline_after is None else f"{repeated.allocated_bytes:g}"
+        lines.append(f"| {identity} | {throughput:+.2%} | [{before.lower_ns:g}, {before.upper_ns:g}] | {repeat_interval} | [{after.lower_ns:g}, {after.upper_ns:g}] | {before.allocated_bytes:g} / {repeat_allocated} | {after.allocated_bytes:g} | {status} |")
         failures.extend(f"{identity}: {reason}" for reason in reasons)
     lines.extend([
         "",
         "This gate measures regressions against main, not proof of the raw-client 5% budget.",
-        "Throughput fails only when the candidate lower confidence bound exceeds the baseline upper bound / 0.95. Overlapping bounds with an observed loss are inconclusive, not proof of unchanged performance.",
+        "Throughput fails only when the candidate lower confidence bound exceeds each baseline upper bound / 0.95. Overlapping bounds or drift with an observed loss are inconclusive, not proof of unchanged performance.",
+        "Allocations must stay within 0.5 B/op of both baselines; the candidate startup budget remains under 50 ms.",
         "Total receive allocations include fresh DI scopes. Equal scoped baselines establish only zero incremental composition allocations.",
         "D18 still requires zero pipeline allocations, excluding serializer/native-client allocations; existing positive totals remain visible above.",
     ])
@@ -136,7 +149,7 @@ def compare(baseline, candidate, *, enforce_startup_budget=True):
 
 def self_test(cases):
     # The baseline can exceed the startup budget that the real candidate must meet.
-    failures, _ = compare(cases, cases, enforce_startup_budget=False)
+    failures, _ = compare(cases, cases, baseline_after=cases, enforce_startup_budget=False)
     if failures:
         raise GateError("Detector self-test rejected identical measurements: " + "; ".join(failures))
     identity = next(iter(cases))
@@ -146,12 +159,12 @@ def self_test(cases):
     shift = measurement.upper_ns / (1 - MAX_THROUGHPUT_LOSS) * 2 - measurement.lower_ns
     slow[identity] = replace(measurement, mean_ns=measurement.mean_ns + shift,
                              lower_ns=measurement.lower_ns + shift, upper_ns=measurement.upper_ns + shift)
-    failures, _ = compare(cases, slow, enforce_startup_budget=False)
+    failures, _ = compare(cases, slow, baseline_after=cases, enforce_startup_budget=False)
     if not any("throughput loss" in failure for failure in failures):
         raise GateError("Detector self-test failed to reject injected throughput regression")
     allocated = dict(cases)
     allocated[identity] = replace(cases[identity], allocated_bytes=cases[identity].allocated_bytes + 64)
-    failures, _ = compare(cases, allocated, enforce_startup_budget=False)
+    failures, _ = compare(cases, allocated, baseline_after=cases, enforce_startup_budget=False)
     if not any("allocations increased" in failure for failure in failures):
         raise GateError("Detector self-test failed to reject injected allocation regression")
     print("PASS: identical measurements; REJECTED: injected throughput loss with separated confidence bounds and +64 B/op allocation regression")
@@ -163,6 +176,7 @@ def main(argv=None):
     compare_parser = commands.add_parser("compare")
     compare_parser.add_argument("baseline")
     compare_parser.add_argument("candidate")
+    compare_parser.add_argument("--baseline-after", type=Path, help="Fixed baseline repeat measured after the candidate")
     compare_parser.add_argument("--summary", type=Path)
     test_parser = commands.add_parser("self-test")
     test_parser.add_argument("baseline")
@@ -172,7 +186,8 @@ def main(argv=None):
         if args.command == "self-test":
             self_test(baseline)
             return 0
-        failures, summary = compare(baseline, load_reports(args.candidate))
+        baseline_after = None if args.baseline_after is None else load_reports(args.baseline_after)
+        failures, summary = compare(baseline, load_reports(args.candidate), baseline_after=baseline_after)
         print(summary)
         if args.summary:
             args.summary.write_text(summary + "\n", encoding="utf-8")

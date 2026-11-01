@@ -73,6 +73,71 @@ class BenchmarkGateTests(unittest.TestCase):
         measurement(after["Benchmarks"][0], 4500, 4400, 4600)
         self.assertIn("throughput loss exceeds 5%", self.compare(before, after)[0])
 
+    def test_baseline_drift_is_inconclusive_but_sustained_regression_fails(self):
+        before, candidate, after = report(), report(), report()
+        measurement(candidate["Benchmarks"][0], 1100, 1090, 1110)
+        measurement(after["Benchmarks"][0], 1080, 1070, 1090)
+        first = gate.load_reports(self.write("before", before))
+        current = gate.load_reports(self.write("candidate", candidate))
+        last = gate.load_reports(self.write("after", after))
+        failures, summary = gate.compare(first, current, baseline_after=last)
+        self.assertEqual([], failures)
+        self.assertIn("INCONCLUSIVE", summary)
+        self.assertIn("[1070, 1090]", summary)
+        failures, _ = gate.compare(last, current, baseline_after=first)
+        self.assertEqual([], failures)
+        failures, _ = gate.compare(first, current, baseline_after=first)
+        self.assertTrue(any("throughput loss" in failure for failure in failures))
+
+    def test_baseline_repeat_cannot_hide_allocation_or_startup_failure(self):
+        before, candidate, after = report(), report(), report()
+        candidate["Benchmarks"][0]["Memory"]["BytesAllocatedPerOperation"] += 1
+        after["Benchmarks"][0]["Memory"]["BytesAllocatedPerOperation"] += 64
+        measurement(next(case for case in candidate["Benchmarks"] if case["Type"] == "StartupBenchmarks"), gate.STARTUP_LIMIT_NS)
+        first = gate.load_reports(self.write("before", before))
+        current = gate.load_reports(self.write("candidate", candidate))
+        last = gate.load_reports(self.write("after", after))
+        for initial, repeat in ((first, last), (last, first)):
+            failures, _ = gate.compare(initial, current, baseline_after=repeat)
+            self.assertTrue(any("allocations increased" in failure for failure in failures))
+            self.assertTrue(any("not under 50 ms" in failure for failure in failures))
+
+    def test_repeated_baseline_keeps_exact_five_percent_threshold(self):
+        first = gate.load_reports(self.write("before", report()))
+        last = report()
+        measurement(last["Benchmarks"][0], 1200)
+        repeated = gate.load_reports(self.write("repeat", last))
+        candidate = report()
+        for excess, should_fail in ((0, False), (1, True)):
+            measurement(candidate["Benchmarks"][0], 1200 / 0.95 + excess)
+            current = gate.load_reports(self.write("candidate", candidate))
+            failures, summary = gate.compare(first, current, baseline_after=repeated)
+            self.assertEqual(should_fail, any("throughput loss" in failure for failure in failures))
+            if not should_fail:
+                self.assertIn("INCONCLUSIVE", summary)
+
+    def test_baseline_repeat_must_have_matching_cases_and_metadata(self):
+        cases = gate.load_reports(self.write("before", report()))
+        repeat = dict(cases)
+        identity = next(iter(repeat))
+        repeat.pop(identity)
+        with self.assertRaisesRegex(gate.GateError, "case sets differ"):
+            gate.compare(cases, cases, baseline_after=repeat)
+        repeat = dict(cases)
+        repeat[identity] = gate.replace(repeat[identity], method="OtherMethod")
+        with self.assertRaisesRegex(gate.GateError, "metadata differs"):
+            gate.compare(cases, cases, baseline_after=repeat)
+
+    def test_cli_requires_requested_baseline_repeat_and_keeps_regressions_blocking(self):
+        before = self.write("before", report())
+        candidate = report()
+        measurement(candidate["Benchmarks"][0], 2000)
+        current = self.write("candidate", candidate)
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(0, gate.main(["compare", str(before), str(before), "--baseline-after", str(before)]))
+            self.assertEqual(1, gate.main(["compare", str(before), str(current), "--baseline-after", str(before)]))
+            self.assertEqual(1, gate.main(["compare", str(before), str(before), "--baseline-after", str(self.root / "missing")]))
+
     def test_finite_negative_lower_bound_is_accepted(self):
         data = report()
         measurement(data["Benchmarks"][0], 1000, -500, 2500)

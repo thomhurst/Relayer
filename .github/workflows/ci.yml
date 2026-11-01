@@ -236,10 +236,21 @@ jobs:
           --artifacts "$GITHUB_WORKSPACE/performance-results/candidate"
           > "$GITHUB_WORKSPACE/performance-candidate.log" 2>&1
 
-      - name: Compare throughput, allocations and startup
+      # Always bracket the candidate, even when the first comparison would pass.
+      # This is a fixed sampling plan, not a retry of a failed measurement.
+      - name: Benchmark main snapshot after candidate
+        working-directory: baseline
+        run: >-
+          dotnet run -c Release --project benchmarks/Relayer.Benchmarks --
+          --filter '*' --anyCategories RegressionGate --exporters fulljson
+          --artifacts "$GITHUB_WORKSPACE/performance-results/baseline-after"
+          > "$GITHUB_WORKSPACE/performance-baseline-after.log" 2>&1
+
+      - name: Compare bracketed throughput, allocations and startup
         run: >-
           python3 candidate/.github/scripts/benchmark_gate.py compare
           performance-results/baseline performance-results/candidate
+          --baseline-after performance-results/baseline-after
           --summary performance-summary.md
 
       - name: Publish comparison summary
