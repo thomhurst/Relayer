@@ -33,6 +33,9 @@ REQUIRED_METHODS = {
 # detector control both executions. Keep every other file, including unknown
 # root inputs, tests, scripts, generators, dependencies and the overlaid harness.
 NON_BUILD_FILES = {
+    # Agent instruction aliases are symlinks on Linux, placeholders on Windows.
+    ".claude/skills/issue-pr-loop/SKILL.md",
+    ".claude/skills/issue-pr-loop/references",
     ".github/scripts/benchmark_gate.py",
     ".github/scripts/test_benchmark_gate.py",
     ".github/scripts/pin_benchmark_version.py",

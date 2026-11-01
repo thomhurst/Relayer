@@ -349,6 +349,41 @@ class ComparisonInputTests(unittest.TestCase):
                 else:
                     path.write_bytes(original)
 
+    def test_agent_workflow_aliases_do_not_enter_measured_builds(self):
+        for name in (".claude/skills/issue-pr-loop/SKILL.md",
+                     ".claude/skills/issue-pr-loop/references"):
+            self.write(self.candidate, name, "agent instruction alias")
+        self.assertEqual(gate.input_manifest(self.baseline), gate.input_manifest(self.candidate))
+
+    def symlink(self, name, target, *, directory=False):
+        path = self.candidate / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            path.symlink_to(target, target_is_directory=directory)
+        except OSError as error:
+            self.skipTest(f"Cannot create symlinks: {error}")
+        return path
+
+    def test_agent_workflow_file_and_directory_symlinks_are_excluded(self):
+        for checkout in (self.baseline, self.candidate):
+            self.write(checkout, ".agents/skills/issue-pr-loop/SKILL.md", "instructions")
+            self.write(checkout, ".agents/skills/issue-pr-loop/references/repository.md", "guidance")
+        self.symlink(".claude/skills/issue-pr-loop/SKILL.md",
+                     "../../../.agents/skills/issue-pr-loop/SKILL.md")
+        self.symlink(".claude/skills/issue-pr-loop/references",
+                     "../../../.agents/skills/issue-pr-loop/references", directory=True)
+        self.assertEqual(gate.input_manifest(self.baseline), gate.input_manifest(self.candidate))
+
+    def test_other_file_directory_and_broken_symlinks_fail_closed(self):
+        for target, directory in (("global.json", False), ("src", True), ("missing", False)):
+            with self.subTest(target=target):
+                path = self.symlink("unknown-link", target, directory=directory)
+                try:
+                    with self.assertRaisesRegex(gate.GateError, "Cannot verify symlink input"):
+                        gate.input_manifest(self.candidate)
+                finally:
+                    path.unlink()
+
     def test_missing_inputs_or_non_checkout_root_fail_closed(self):
         (self.candidate / "global.json").unlink()
         with self.assertRaises(gate.GateError):
