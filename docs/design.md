@@ -721,6 +721,12 @@ Techniques:
 - Outbox writes are batched per transaction (one insert of N rows). Dispatch uses native batch send APIs.
 - Benchmarks (BenchmarkDotNet) run in CI, and a regression beyond a threshold fails the build.
 
+The [performance regression gate](https://relayer.tomlonghurst.dev/docs/contributing/performance)
+documents the pinned-main comparison, thresholds, allocation attribution and
+raw-client benchmark pattern. The in-memory gate does not establish real-broker
+overhead compliance. Fresh receive DI scope costs remain in the reported totals;
+zero incremental composition allocations do not establish zero total pipeline allocations.
+
 ---
 
 ## 13. Package layout
