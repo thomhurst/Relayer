@@ -221,7 +221,7 @@ Names are case-sensitive and unique across all transport kinds. Several transpor
 
 `AddRelayer` captures `RelayerConfiguration`; declarations freeze when their callbacks finish. Its first hosted service checks all declarations and all named option validators before later transport hosted services start, and reports their errors together in `OptionsValidationException.Failures`. Handler types are registered explicitly as scoped services, preserving existing registrations. Message names must be registered explicitly or through the generated `AddMessageTypesFromThisAssembly` method.
 
-This API declares configuration. Receive dispatch (#4), sender execution (#5), native adapters, failure policies, inbox/outbox integration and capability/topology validation execute in their own roadmap work; they consume these declarations. See [configuration.md](configuration.md) for the transport-author contract and validation boundaries.
+This API declares configuration. Startup validates runtime adapters' endpoint capability values and rejects ordering keys on destinations without native ordering support. Receive dispatch (#4), sender execution (#5), native adapters, failure policies, inbox/outbox integration and topology validation consume these declarations in their own roadmap work. Feature-specific capability and fallback selection ships with the corresponding execution path. See [configuration.md](configuration.md) for the transport-author contract and validation boundaries.
 
 ### 3.2 Handlers
 
