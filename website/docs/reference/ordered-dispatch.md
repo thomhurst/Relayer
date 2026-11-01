@@ -4,7 +4,8 @@ description: "Dispatch ordered outbox rows with lane leases, heartbeats and fair
 ---
 
 `Relayer.Outbox.PostgreSql` supplies a hosted dispatcher for ordered rows written by
-[EF Core outbox enlistment](ef-core-outbox.md). Unordered direct dispatch, recovery polling for unordered rows,
+[EF Core outbox enlistment](ef-core-outbox.md) or [ADO.NET/Dapper transactions](postgres-outbox.md).
+Unordered direct dispatch, recovery polling for unordered rows,
 poison-row movement, cleanup, inbox deduplication and outbox tracing remain separate planned work.
 
 ## Register
@@ -62,7 +63,9 @@ index. This worker does not itself move poison rows or expose redrive management
 Messages are sent sequentially through the registered native `ITransport`, preserving original bodies,
 headers, identities and ordering keys. Due delivery timestamps are consumed by the database rather than
 scheduled again in the broker. Successful rows are deleted with their claim tokens; failures persist attempts
-and the native error and stop the batch. Database or completion uncertainty rolls back the batch, retaining
+and the dispatch error and stop the batch. Preparation failures, including missing adapters, missing ordering keys
+and unsupported native ordering, use the same durable failure path. Completed rows before the failure commit,
+so a bad row does not repeatedly replay a successful prefix. Database or completion uncertainty rolls back the batch, retaining
 rows for retry. Unordered rows are untouched.
 
 ## Failure boundaries

@@ -491,6 +491,7 @@ all lanes. Claims use a unique token and an expiry; renew, completion and failur
 live token, so a stale dispatcher cannot mutate a reclaimed row. PostgreSQL schema creation and the
 [PostgreSQL read/claim store](../website/docs/reference/postgres-store.md),
 [EF Core transactional enqueue](../website/docs/reference/ef-core-outbox.md),
+[ADO.NET/Dapper transactions](../website/docs/reference/postgres-outbox.md),
 [unordered direct dispatch](../website/docs/reference/direct-dispatch.md) and
 [ordered lane dispatch](../website/docs/reference/ordered-dispatch.md) are implemented. Recovery polling
 and cleanup remain planned; registering the read/claim store alone does not start dispatch.

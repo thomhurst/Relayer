@@ -109,12 +109,15 @@ internal sealed partial class PostgreSqlOrderedDispatcher : BackgroundService
                 var row = _rows[index];
                 var claim = new OutboxClaim(row.Id, Guid.NewGuid());
                 if (!await _lane.ClaimAsync(connection, transaction, claim, cancellationToken).ConfigureAwait(false)) break;
-                var prepared = Prepare(row, _transports, _capabilities);
-                try { await prepared.Transport.SendAsync(prepared.Message, cancellationToken).ConfigureAwait(false); }
+                try
+                {
+                    var prepared = Prepare(row, _transports, _capabilities);
+                    await prepared.Transport.SendAsync(prepared.Message, cancellationToken).ConfigureAwait(false);
+                }
                 catch (Exception error) when (!cancellationToken.IsCancellationRequested)
                 {
                     if (!await _lane.FailAsync(connection, transaction, claim, error.Message, cancellationToken).ConfigureAwait(false))
-                        throw new InvalidOperationException("Ordered outbox claim expired while recording a native send failure.", error);
+                        throw new InvalidOperationException("Ordered outbox claim expired while recording a dispatch failure.", error);
                     DispatchFailed(_logger, error);
                     break;
                 }

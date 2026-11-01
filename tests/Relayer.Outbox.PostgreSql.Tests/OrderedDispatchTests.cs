@@ -125,6 +125,55 @@ public class OrderedDispatchTests
     }
 
     [Test]
+    [Arguments("unknown_transport")]
+    [Arguments("missing_key")]
+    [Arguments("unsupported_endpoint")]
+    public async Task Preparation_failure_commits_successful_prefix_and_stops_before_later_rows(string kind)
+    {
+        await using var fixture = new PostgreSqlFixture();
+        await fixture.StartAsync();
+        await using var source = NpgsqlDataSource.Create(fixture.ConnectionString);
+        await PostgreSqlOutboxStoreTests.CreateSchema(source);
+        for (var index = 1; index <= 3; index++) await Insert(source, Id(index), 0);
+        var change = kind switch
+        {
+            "unknown_transport" => "transport = 'missing'",
+            "missing_key" => "ordering_key = NULL",
+            _ => "destination = 'unsupported'"
+        };
+        await using (var command = source.CreateCommand($"UPDATE relayer_outbox SET {change} WHERE id = @id"))
+        {
+            command.Parameters.AddWithValue("id", Id(2));
+            await command.ExecuteNonQueryAsync();
+        }
+        var transport = new RecordingTransport();
+        using var worker = Worker(source, transport);
+        await Assert.That(await worker.DispatchLaneAsync(0, default)).IsEqualTo(1);
+        await Assert.That(await worker.DispatchLaneAsync(0, default)).IsEqualTo(0);
+        await Assert.That(transport.Ids.SequenceEqual([Id(1)])).IsTrue();
+        await using (var command = source.CreateCommand("SELECT id, attempts, last_error, claim_token, claim_expires_at FROM relayer_outbox ORDER BY id"))
+        await using (var reader = await command.ExecuteReaderAsync())
+        {
+            await Assert.That(await reader.ReadAsync()).IsTrue();
+            await Assert.That(reader.GetGuid(0)).IsEqualTo(Id(2));
+            await Assert.That(reader.GetInt32(1)).IsEqualTo(2);
+            await Assert.That(reader.GetString(2).Length > 0).IsTrue();
+            await Assert.That(reader.IsDBNull(3) && reader.IsDBNull(4)).IsTrue();
+            await Assert.That(await reader.ReadAsync()).IsTrue();
+            await Assert.That(reader.GetGuid(0)).IsEqualTo(Id(3));
+            await Assert.That(reader.GetInt32(1)).IsEqualTo(0);
+            await Assert.That(await reader.ReadAsync()).IsFalse();
+        }
+        await using (var command = source.CreateCommand("UPDATE relayer_outbox SET transport = 'events', destination = 'orders', ordering_key = 'customer-é' WHERE id = @id"))
+        {
+            command.Parameters.AddWithValue("id", Id(2));
+            await command.ExecuteNonQueryAsync();
+        }
+        await Assert.That(await worker.DispatchLaneAsync(0, default)).IsEqualTo(2);
+        await Assert.That(transport.Ids.SequenceEqual([Id(1), Id(2), Id(3)])).IsTrue();
+    }
+
+    [Test]
     [Arguments("future")]
     [Arguments("claimed")]
     [Arguments("parked")]
@@ -233,7 +282,7 @@ public class OrderedDispatchTests
         await Insert(source, Id(4), 1);
         var unsupported = new RecordingTransport { Ordered = false };
         using var invalid = Worker(source, unsupported, 2);
-        await Assert.ThrowsAsync<InvalidOperationException>(async () => await invalid.DispatchLaneAsync(1, default));
+        await Assert.That(await invalid.DispatchLaneAsync(1, default)).IsEqualTo(0);
         await Assert.That(unsupported.Ids.Count).IsEqualTo(0);
     }
 
@@ -387,7 +436,7 @@ public class OrderedDispatchTests
         internal string? LastKey { get; private set; }
         internal DateTimeOffset? LastDeliverAt { get; private set; }
         internal bool Ordered { get; init; } = true;
-        public TransportCapabilities GetCapabilities(string endpoint) => new() { OrderedByKey = Ordered };
+        public TransportCapabilities GetCapabilities(string endpoint) => new() { OrderedByKey = Ordered && endpoint != "unsupported" };
         public ValueTask<TopologyReport> ApplyTopologyAsync(TopologyMode mode, CancellationToken cancellationToken) => new(new TopologyReport([]));
         public async ValueTask SendAsync(OutgoingMessage message, CancellationToken cancellationToken)
         {
