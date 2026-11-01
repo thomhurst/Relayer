@@ -133,7 +133,7 @@ internal sealed class SendRoute<TMessage>
                     _pending.UnsafeOnCompleted(_continuation);
                     return new ValueTask(this, version);
                 }
-                Finish();
+                _pending.GetResult();
             }
             catch (Exception exception)
             {
@@ -151,18 +151,12 @@ internal sealed class SendRoute<TMessage>
         private void Complete()
         {
             Exception? error = null;
-            try { Finish(); }
+            try { _pending.GetResult(); }
             catch (Exception exception) { error = Translate(exception); }
             Reset();
             // Cleanup precedes completion: an inline caller continuation may immediately rent this operation again.
             if (error is null) _completion.SetResult(true);
             else _completion.SetException(error);
-        }
-
-        private void Finish()
-        {
-            _pending.GetResult();
-            CancellationToken.ThrowIfCancellationRequested();
         }
 
         private Exception Translate(Exception exception) =>

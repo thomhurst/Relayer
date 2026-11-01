@@ -154,6 +154,44 @@ public class SenderTests
     }
 
     [Test]
+    [Arguments(false, false)]
+    [Arguments(false, true)]
+    [Arguments(true, false)]
+    [Arguments(true, true)]
+    public async Task Cancellation_after_successful_completion_preserves_success(bool throughOutbox, bool completeSynchronously)
+    {
+        using var cancellation = new CancellationTokenSource();
+        var completion = new CancelAfterSuccessCompletion(cancellation, completeSynchronously);
+        var transport = new RecordingTransport("events") { Completion = completion };
+        var outbox = new TestOutbox { IsActive = throughOutbox, Completion = completion };
+        var services = Services(transport);
+        services.AddScoped<IOutboxEnlistment>(_ => outbox);
+        services.AddRelayer(builder =>
+        {
+            builder.AddMessageTypesFromThisAssembly();
+            builder.DeclareRoute<OrderPlaced>("events", "orders");
+        });
+        using var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
+        using var scope = provider.CreateScope();
+        var sender = scope.ServiceProvider.GetRequiredService<ISender>();
+
+        var send = sender.SendAsync(new OrderPlaced(Guid.NewGuid()), cancellation.Token);
+        await Assert.That(send.IsCompleted).IsEqualTo(completeSynchronously);
+        if (!completeSynchronously) completion.Complete();
+        await send;
+
+        await Assert.That(cancellation.IsCancellationRequested).IsTrue();
+        await Assert.That(transport.Count).IsEqualTo(throughOutbox ? 0 : 1);
+        await Assert.That(outbox.Count).IsEqualTo(throughOutbox ? 1 : 0);
+
+        transport.Completion = null;
+        outbox.Completion = null;
+        await sender.SendAsync(new OrderPlaced(Guid.NewGuid()));
+        await Assert.That(transport.Count).IsEqualTo(throughOutbox ? 0 : 2);
+        await Assert.That(outbox.Count).IsEqualTo(throughOutbox ? 2 : 0);
+    }
+
+    [Test]
     public async Task Already_cancelled_send_never_enters_the_transport()
     {
         var transport = new RecordingTransport("events");
@@ -702,6 +740,30 @@ public class SenderTests
         }
     }
 
+    private sealed class CancelAfterSuccessCompletion : IValueTaskSource
+    {
+        private readonly CancellationTokenSource _cancellation;
+        private ManualResetValueTaskSourceCore<bool> _source;
+
+        public CancelAfterSuccessCompletion(CancellationTokenSource cancellation, bool completeSynchronously)
+        {
+            _cancellation = cancellation;
+            if (completeSynchronously) Complete();
+        }
+
+        public ValueTask Task => new(this, _source.Version);
+        public void Complete() => _source.SetResult(true);
+        public void GetResult(short token)
+        {
+            _source.GetResult(token);
+            // Deterministically cancel after native success, before the sender resumes observing it.
+            _cancellation.Cancel();
+        }
+        public ValueTaskSourceStatus GetStatus(short token) => _source.GetStatus(token);
+        public void OnCompleted(Action<object?> continuation, object? state, short token, ValueTaskSourceOnCompletedFlags flags) =>
+            _source.OnCompleted(continuation, state, token, flags);
+    }
+
     private sealed class RecordingTransport(string name) : ITransport
     {
         public string Name => name;
@@ -722,6 +784,7 @@ public class SenderTests
         public int Count { get; private set; }
         public bool WaitForCancellation { get; set; }
         public bool FailOnce { get; set; }
+        public CancelAfterSuccessCompletion? Completion { get; set; }
         public string? FailedMessageId { get; private set; }
         public CancellationToken ObservedToken { get; private set; }
         public TaskCompletionSource Entered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -747,7 +810,7 @@ public class SenderTests
                 FailedMessageId = Headers["ce_id"];
                 throw new InvalidOperationException("retryable send failure");
             }
-            return ValueTask.CompletedTask;
+            return Completion?.Task ?? ValueTask.CompletedTask;
         }
         public ValueTask SendBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken) => throw new NotSupportedException();
         public Task StartAsync(CancellationToken cancellationToken) => Task.CompletedTask;
@@ -787,6 +850,7 @@ public class SenderTests
     private sealed class TestOutbox : IOutboxEnlistment
     {
         public bool IsActive { get; set; }
+        public CancelAfterSuccessCompletion? Completion { get; set; }
         public int Count { get; private set; }
         public string? TransportName { get; private set; }
         public string? Destination { get; private set; }
@@ -804,7 +868,7 @@ public class SenderTests
             DeliverAt = message.DeliverAt;
             Headers.Clear();
             foreach (var header in message.Headers.Span) Headers.Add(header.Key, header.Value.ToString());
-            return ValueTask.CompletedTask;
+            return Completion?.Task ?? ValueTask.CompletedTask;
         }
     }
 }
