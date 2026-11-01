@@ -6,6 +6,8 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <None Update="servicebus-config.json" CopyToOutputDirectory="PreserveNewest" />
+    <PackageReference Include="Testcontainers.ServiceBus" />
     <PackageReference Include="TUnit" />
     <PackageReference Include="Microsoft.Extensions.Hosting" />
     <PackageReference Include="Microsoft.Extensions.DependencyInjection" />

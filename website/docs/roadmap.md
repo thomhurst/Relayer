@@ -17,6 +17,7 @@ Relayer is in early development. Track progress in [GitHub issues](https://githu
 - [PostgreSQL schema scripts and database CLI](reference/postgres-schema.md), including an application-owned EF Core migration path.
 - [EF Core transaction enlistment for PostgreSQL](reference/ef-core-outbox.md): implicit saves, explicit transactions, atomic rollback, multiple contexts and one batched insert per transaction. Dispatch and inbox remain planned.
 - The consume pipeline and the native receive SPI.
+- [Service Bus receive primitives](transports/service-bus-receive.md): the native callback binding and manual settlement view. The complete Service Bus transport remains planned.
 - Generated batch handler execution, durable partial-failure decisions, and validated native/client-side receive executors for transport authors.
 - Typed failure classification, in-process retries, delayed redelivery and dead-letter copies with error history.
 - Manual settlement requests through `ISettlementFeature`, with exception precedence and durable capability fallbacks.
