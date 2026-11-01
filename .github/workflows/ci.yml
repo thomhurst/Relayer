@@ -207,7 +207,7 @@ jobs:
         run: |
           rsync -a --delete candidate/benchmarks/ baseline/benchmarks/
           cp candidate/global.json baseline/global.json
-          python3 candidate/.github/scripts/pin_benchmark_version.py candidate baseline | tee -a performance-commits.txt
+          python3 candidate/.github/scripts/pin_benchmark_version.py candidate baseline >> performance-commits.txt
           candidate_sdk="$(cd candidate && dotnet --version)"
           baseline_sdk="$(cd baseline && dotnet --version)"
           test "$candidate_sdk" = "$baseline_sdk"
