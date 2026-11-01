@@ -554,12 +554,14 @@ and must target the same database as the DbContext. Only a successful EF commit 
 message buffers into the worker's bounded channel. The scope receives cleared replacement buffers.
 No per-message task or scoped DbContext travels with the queued commit.
 
-The worker filters ordered and future-due rows, conditionally claims each eligible row with a fresh token,
-groups by transport/destination, renews claims before sending and respects the endpoint's native batch
-count. Native sends retain the stored envelope and native partial-delivery semantics. Successful groups
+The worker filters ordered and future-due rows and groups by transport/destination within the endpoint's
+native batch count. One conditional UPDATE claims the group's eligible rows with fresh tokens and a shared
+expiry. The worker sends only acquired rows, skipping the group if its deadline passed before the database
+response. Native sends retain the stored envelope and native partial-delivery semantics. Successful groups
 send immediately once the stored delivery time is due, without requiring native scheduling support, and
-use one batch DELETE with a matching live token per row. Failure recording releases live claims and
-increments attempts; database errors can leave claims until expiry. There is no in-call heartbeat.
+use one batch DELETE with a matching live token per row. Native send failures release live claims and
+increment attempts. Completion errors after a successful send leave claims until expiry without consuming
+send attempts, and incomplete deletions log a warning about duplicate delivery. There is no in-call heartbeat.
 
 **Consequences.** Commit returns independently of broker latency. Normal competing instances cannot
 claim the same row, while expired in-flight sends and partial native failures retain D29's at-least-once

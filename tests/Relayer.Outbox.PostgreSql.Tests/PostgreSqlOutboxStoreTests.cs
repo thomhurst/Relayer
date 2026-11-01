@@ -203,6 +203,59 @@ public class PostgreSqlOutboxStoreTests
     }
 
     [Test]
+    public async Task Batch_claims_match_input_positions_and_exclude_ineligible_or_competing_rows()
+    {
+        await using var fixture = new PostgreSqlFixture();
+        await fixture.StartAsync();
+        await using var source = NpgsqlDataSource.Create(fixture.ConnectionString);
+        var options = new PostgreSqlOutboxOptions { Schema = "Claim\"Schema", TablePrefix = "test_" };
+        await CreateSchema(source, options);
+        var store = new PostgreSqlOutboxStore(source, options);
+        var now = Microseconds(DateTimeOffset.UtcNow);
+        var kinds = new[] { "due", "future", "live", "expired", "parked", "missing", "ordered", "due" };
+        var claims = new OutboxClaim[kinds.Length];
+        var claimed = Enumerable.Repeat(true, kinds.Length).ToArray();
+        for (var i = 0; i < kinds.Length; i++)
+        {
+            claims[i] = new(Guid.CreateVersion7(), Guid.NewGuid());
+            if (kinds[i] == "missing") continue;
+            await Insert(source, options, claims[i].MessageId, now,
+                lane: kinds[i] == "ordered" ? 1 : null,
+                deliverAt: kinds[i] == "future" ? now.AddHours(1) : now,
+                status: kinds[i] == "parked" ? "parked" : "pending",
+                expires: kinds[i] == "live" ? now.AddHours(1) : kinds[i] == "expired" ? now : null);
+        }
+        await store.ClaimBatchAsync(claims, claimed, now, now.AddMinutes(1), default);
+        var expected = new[] { true, false, false, true, false, false, false, true };
+        for (var i = 0; i < claims.Length; i++)
+        {
+            await Assert.That(claimed[i]).IsEqualTo(expected[i]);
+            if (!claimed[i]) continue;
+            await Assert.That(await store.CompleteAsync(new(claims[i].MessageId, Guid.NewGuid()), now, default)).IsFalse();
+            await Assert.That(await store.RenewClaimAsync(claims[i], now, now.AddMinutes(1), default)).IsTrue();
+        }
+        var competitor = new PostgreSqlOutboxStore(source, options);
+        var competingClaims = claims.Select(claim => new OutboxClaim(claim.MessageId, Guid.NewGuid())).ToArray();
+        var competingResults = new bool[claims.Length];
+        await competitor.ClaimBatchAsync(competingClaims, competingResults, now, now.AddMinutes(2), default);
+        await Assert.That(competingResults.Any(result => result)).IsFalse();
+        await competitor.ClaimBatchAsync(competingClaims, competingResults, now.AddMinutes(1), now.AddMinutes(2), default);
+        for (var i = 0; i < claims.Length; i++)
+            await Assert.That(competingResults[i]).IsEqualTo(expected[i]);
+        await Assert.That(await store.CompleteBatchAsync(claims, now.AddMinutes(1), default)).IsEqualTo(0L);
+        await Assert.That(await competitor.CompleteBatchAsync(competingClaims, now.AddMinutes(1), default)).IsEqualTo(3L);
+        await store.ClaimBatchAsync(claims, claimed, now, now.AddMinutes(1), default);
+        await Assert.That(claimed.Any(result => result)).IsFalse();
+        await store.ClaimBatchAsync(ReadOnlyMemory<OutboxClaim>.Empty, Memory<bool>.Empty, now, now.AddMinutes(1), default);
+        await Assert.ThrowsAsync<ArgumentException>(async () =>
+            await store.ClaimBatchAsync(claims, Memory<bool>.Empty, now, now.AddMinutes(1), default));
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(async () =>
+            await store.ClaimBatchAsync(claims, claimed, now, now, default));
+        await Assert.ThrowsAsync<OperationCanceledException>(async () =>
+            await store.ClaimBatchAsync(claims, claimed, now, now.AddMinutes(1), new CancellationToken(true)));
+    }
+
+    [Test]
     public async Task Batch_completion_fences_each_row_and_deletes_only_live_matching_claims_in_one_statement()
     {
         await using var fixture = new PostgreSqlFixture();

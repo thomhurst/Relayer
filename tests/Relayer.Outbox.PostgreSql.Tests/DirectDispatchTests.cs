@@ -228,6 +228,7 @@ public class DirectDispatchTests
             await Assert.That(transport.Received.Count).IsEqualTo(7);
             await Assert.That(await database.Count()).IsEqualTo(0L);
             await Assert.That(await database.Scalar("SELECT count(*) FROM delete_log")).IsEqualTo(5L);
+            await Assert.That(await database.Scalar("SELECT count(*) FROM update_log")).IsEqualTo(5L);
         }
         finally { await Stop(worker); }
     }
@@ -285,6 +286,58 @@ public class DirectDispatchTests
             await Assert.That(await database.Scalar($"SELECT count(*) FROM {Database.Table} WHERE claim_token IS NOT NULL")).IsEqualTo(0L);
         }
         finally { await Stop(worker); }
+    }
+
+    [Test]
+    public async Task Completion_failure_keeps_delivered_rows_claimed_without_recording_send_failure()
+    {
+        await using var database = new Database();
+        await database.Start();
+        await using (var command = database.Source.CreateCommand($"""
+            CREATE FUNCTION fail_delete() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'completion unavailable'; END; $$;
+            CREATE TRIGGER fail_completion BEFORE DELETE ON {Database.Table} FOR EACH STATEMENT EXECUTE FUNCTION fail_delete();
+            """)) await command.ExecuteNonQueryAsync();
+        var transport = new Transport();
+        var log = new CaptureLogger();
+        await using var provider = database.Services(transport, logger: log);
+        var worker = provider.GetRequiredKeyedService<PostgreSqlDirectDispatcher>("store");
+        await worker.StartAsync(default);
+        try
+        {
+            await database.Commit(provider, Record(1));
+            await database.Commit(provider, Record(2));
+            await Stop(worker);
+            await Assert.That(transport.Received.Count).IsEqualTo(2);
+            await Assert.That(await database.Scalar($"SELECT count(*) FROM {Database.Table} WHERE attempts = 0 AND last_error IS NULL AND claim_token IS NOT NULL")).IsEqualTo(2L);
+            await Assert.That(log.Messages.Count(message => message.Contains("completion failed", StringComparison.Ordinal))).IsEqualTo(2);
+        }
+        finally { await Stop(worker); }
+    }
+
+    [Test]
+    public async Task Expired_completion_logs_duplicate_delivery_risk_without_incrementing_attempts()
+    {
+        await using var database = new Database();
+        await database.Start();
+        var transport = new Transport { Block = true };
+        var log = new CaptureLogger();
+        await using var provider = database.Services(transport, logger: log);
+        var worker = provider.GetRequiredKeyedService<PostgreSqlDirectDispatcher>("store");
+        await worker.StartAsync(default);
+        try
+        {
+            await database.Commit(provider, Record(1));
+            await transport.Entered.Task.WaitAsync(TimeSpan.FromSeconds(30));
+            // Force expiry while the native send is blocked, without depending on elapsed time.
+            await using (var command = database.Source.CreateCommand($"UPDATE {Database.Table} SET claim_expires_at = now() - interval '1 second'"))
+                await command.ExecuteNonQueryAsync();
+            transport.Release.TrySetResult();
+            await Stop(worker);
+            await Assert.That(transport.Received.Count).IsEqualTo(1);
+            await Assert.That(await database.Scalar($"SELECT count(*) FROM {Database.Table} WHERE attempts = 0 AND last_error IS NULL")).IsEqualTo(1L);
+            await Assert.That(log.Messages.Any(message => message.Contains("deleted 0 of 1 sent rows", StringComparison.Ordinal))).IsTrue();
+        }
+        finally { transport.Release.TrySetResult(); await Stop(worker); }
     }
 
     [Test]
@@ -381,6 +434,46 @@ public class DirectDispatchTests
     }
 
     [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Competing_claims_exclude_live_rows_without_misaligning_payloads(bool reverse)
+    {
+        await using var database = new Database();
+        await database.Start();
+        var blockedTransport = new Transport { Block = true };
+        var competingTransport = new Transport();
+        var options = new PostgreSqlOutboxOptions { Schema = Database.Schema, TablePrefix = "test_" };
+        using var first = new PostgreSqlDirectDispatcher(database.Source, options, new(), [blockedTransport], NullLogger<PostgreSqlDirectDispatcher>.Instance);
+        using var second = new PostgreSqlDirectDispatcher(database.Source, options, new(), [competingTransport], NullLogger<PostgreSqlDirectDispatcher>.Instance);
+        await using var provider = database.Services(blockedTransport, enableDispatch: false);
+        var held = Record(1);
+        var available = Record(2);
+        await database.Commit(provider, held);
+        await database.Commit(provider, available);
+        var firstRows = new List<BufferedOutboxMessage> { new() };
+        firstRows[0].Copy(held, 32);
+        var secondRows = new List<BufferedOutboxMessage> { new(), new() };
+        secondRows[0].Copy(reverse ? available : held, 32);
+        secondRows[1].Copy(reverse ? held : available, 32);
+        await first.StartAsync(default);
+        await second.StartAsync(default);
+        try
+        {
+            first.Committed(firstRows, firstRows.Count);
+            await blockedTransport.Entered.Task.WaitAsync(TimeSpan.FromSeconds(30));
+            second.Committed(secondRows, secondRows.Count);
+            await Stop(second);
+            await Assert.That(competingTransport.Received.Single().Body).IsEquivalentTo(new byte[] { 2 });
+            await Assert.That(await database.Count()).IsEqualTo(1L);
+            blockedTransport.Release.TrySetResult();
+            await Stop(first);
+            await Assert.That(blockedTransport.Received.Single().Body).IsEquivalentTo(new byte[] { 1 });
+            await Assert.That(await database.Count()).IsEqualTo(0L);
+        }
+        finally { blockedTransport.Release.TrySetResult(); await Stop(first); await Stop(second); }
+    }
+
+    [Test]
     public async Task Full_queue_keeps_commit_successful_and_logs_pending_recovery_work()
     {
         await using var database = new Database();
@@ -432,6 +525,9 @@ public class DirectDispatchTests
                 CREATE TABLE delete_log (id integer);
                 CREATE FUNCTION log_delete() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN INSERT INTO delete_log VALUES (1); RETURN NULL; END; $$;
                 CREATE TRIGGER delete_count AFTER DELETE ON {Table} FOR EACH STATEMENT EXECUTE FUNCTION log_delete();
+                CREATE TABLE update_log (id integer);
+                CREATE FUNCTION log_update() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN INSERT INTO update_log VALUES (1); RETURN NULL; END; $$;
+                CREATE TRIGGER update_count AFTER UPDATE ON {Table} FOR EACH STATEMENT EXECUTE FUNCTION log_update();
                 """);
             await command.ExecuteNonQueryAsync();
         }

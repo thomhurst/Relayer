@@ -502,8 +502,10 @@ There are two paths, each chosen per message based on whether its route is order
 2. **Ordered messages — lane leases.** Rows are hashed into N lanes (default 32). Instances lease lanes through `relayer_leases` with heartbeats and fair-share rebalancing as instances join and leave. A lane owner reads its lane in `id` order with a simple indexed range scan. There are no `SKIP LOCKED` scans across the whole table, and ordering per key is guaranteed.
 
 The implemented PostgreSQL direct path transfers reusable buffers after EF commit to an explicitly named
-hosted worker (D33). It claims due unordered rows, renews claims before the native call, respects native
-batch-count limits and deletes successful groups with one fenced statement. It does not poll, heartbeat
+hosted worker (D33). It claims each native group of due unordered rows with one conditional statement,
+excludes competing claims, respects native batch-count limits and deletes successful groups with one
+fenced statement. Completion errors after a successful send leave claims held without incrementing
+send attempts; incomplete deletions warn about duplicate delivery. It does not poll, heartbeat
 during native sends or retry failed commits. Queue overflow and shutdown leave durable work pending with
 an error log; the recovery and ordered paths below remain planned.
 

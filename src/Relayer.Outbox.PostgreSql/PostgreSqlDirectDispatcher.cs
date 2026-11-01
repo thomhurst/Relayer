@@ -18,6 +18,7 @@ internal sealed class PostgreSqlDirectDispatcher : BackgroundService
     private readonly Dictionary<(string Transport, string Destination), TransportCapabilities> _capabilities = [];
     private readonly OutgoingMessage[] _messages;
     private readonly OutboxClaim[] _claims;
+    private readonly bool[] _claimed;
     private readonly string _schema;
     private readonly string _prefix;
 
@@ -40,6 +41,7 @@ internal sealed class PostgreSqlDirectDispatcher : BackgroundService
         _pool = new OutboxDispatchBatch?[options.QueueCapacity + 1];
         _messages = new OutgoingMessage[options.BatchSize];
         _claims = new OutboxClaim[options.BatchSize];
+        _claimed = new bool[options.BatchSize];
     }
 
     internal void ValidateStore(string? schema, string prefix)
@@ -124,52 +126,71 @@ internal sealed class PostgreSqlDirectDispatcher : BackgroundService
                     var row = batch.Rows[offset];
                     if (row.Transport != first.Transport || row.Destination != first.Destination) break;
                     offset++;
-                    var claim = new OutboxClaim(row.Id, Guid.NewGuid());
-                    var now = DateTimeOffset.UtcNow;
-                    if (!await _store.TryClaimAsync(claim, now, now + _options.ClaimDuration, cancellationToken).ConfigureAwait(false)) continue;
-                    _claims[count] = claim;
+                    _claims[count] = new(row.Id, Guid.NewGuid());
                     _messages[count++] = row.ToMessage();
                 }
-                // Claiming a large batch can take time. Do not send rows whose ownership expired meanwhile.
-                var live = 0;
-                for (var i = 0; i < count; i++)
+                var now = DateTimeOffset.UtcNow;
+                var expires = now + _options.ClaimDuration;
+                await _store.ClaimBatchAsync(_claims.AsMemory(0, count), _claimed.AsMemory(0, count), now, expires, cancellationToken).ConfigureAwait(false);
+                var live = CompactClaims(_messages.AsSpan(0, count), _claims.AsSpan(0, count), _claimed.AsSpan(0, count));
+                if (live == 0) continue;
+                // A slow database response can consume the lease. Never start a send with known expired ownership.
+                if (expires <= DateTimeOffset.UtcNow)
                 {
-                    var now = DateTimeOffset.UtcNow;
-                    if (!await _store.RenewClaimAsync(_claims[i], now, now + _options.ClaimDuration, cancellationToken).ConfigureAwait(false)) continue;
-                    _claims[live] = _claims[i];
-                    _messages[live++] = _messages[i];
+                    DirectDispatchLog.ClaimExpired(_logger, live);
+                    continue;
                 }
-                // Remove stale slots even if the send or completion fails.
-                Array.Clear(_messages, live, count - live);
-                Array.Clear(_claims, live, count - live);
-                count = live;
-                if (count == 0) continue;
-                if (transport is null)
-                    throw new InvalidOperationException($"Outbox row references unregistered transport '{first.Transport}'. Register its named ITransport.");
-                if (count == 1) await transport.SendAsync(_messages[0], cancellationToken).ConfigureAwait(false);
-                else await transport.SendBatchAsync(_messages.AsMemory(0, count), cancellationToken).ConfigureAwait(false);
-                await _store.CompleteBatchAsync(_claims.AsMemory(0, count), DateTimeOffset.UtcNow, cancellationToken).ConfigureAwait(false);
+                try
+                {
+                    if (transport is null)
+                        throw new InvalidOperationException($"Outbox row references unregistered transport '{first.Transport}'. Register its named ITransport.");
+                    if (live == 1) await transport.SendAsync(_messages[0], cancellationToken).ConfigureAwait(false);
+                    else await transport.SendBatchAsync(_messages.AsMemory(0, live), cancellationToken).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
+                catch (Exception error)
+                {
+                    DirectDispatchLog.Failed(_logger, error);
+                    for (var i = 0; i < live; i++)
+                    {
+                        try
+                        {
+                            await _store.RecordFailureAsync(_claims[i], error.Message, DateTimeOffset.UtcNow, cancellationToken).ConfigureAwait(false);
+                        }
+                        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
+                        catch (Exception failure) { DirectDispatchLog.Failed(_logger, failure); }
+                    }
+                    continue;
+                }
+                // Once the broker succeeds, database errors must not consume send attempts or release claims.
+                try
+                {
+                    var completed = await _store.CompleteBatchAsync(_claims.AsMemory(0, live), DateTimeOffset.UtcNow, cancellationToken).ConfigureAwait(false);
+                    if (completed != live) DirectDispatchLog.Incomplete(_logger, completed, live);
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
+                catch (Exception error) { DirectDispatchLog.CompletionFailed(_logger, error); }
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
-            catch (Exception error)
-            {
-                DirectDispatchLog.Failed(_logger, error);
-                for (var i = 0; i < count; i++)
-                {
-                    try
-                    {
-                        await _store.RecordFailureAsync(_claims[i], error.Message, DateTimeOffset.UtcNow, cancellationToken).ConfigureAwait(false);
-                    }
-                    catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
-                    catch (Exception failure) { DirectDispatchLog.Failed(_logger, failure); }
-                }
-            }
+            catch (Exception error) { DirectDispatchLog.Failed(_logger, error); }
             finally
             {
                 Array.Clear(_messages, 0, count);
                 Array.Clear(_claims, 0, count);
             }
         }
+    }
+
+    internal static int CompactClaims(Span<OutgoingMessage> messages, Span<OutboxClaim> claims, ReadOnlySpan<bool> claimed)
+    {
+        var live = 0;
+        for (var i = 0; i < claimed.Length; i++)
+        {
+            if (!claimed[i]) continue;
+            claims[live] = claims[i];
+            messages[live++] = messages[i];
+        }
+        return live;
     }
 
     private void Return(OutboxDispatchBatch batch)
@@ -187,4 +208,13 @@ internal static partial class DirectDispatchLog
 
     [LoggerMessage(2, LogLevel.Error, "Direct outbox dispatch failed. Durable rows remain available for recovery after claim expiry or failure recording.")]
     internal static partial void Failed(ILogger logger, Exception exception);
+
+    [LoggerMessage(3, LogLevel.Error, "Direct outbox completion failed after a successful send. Claims remain held until expiry; recovery may duplicate delivery. Send attempts are unchanged.")]
+    internal static partial void CompletionFailed(ILogger logger, Exception exception);
+
+    [LoggerMessage(4, LogLevel.Warning, "Direct outbox completion deleted {Completed} of {Sent} sent rows. Claims expired or changed; recovery may duplicate delivery. Increase ClaimDuration if native send latency exceeds the lease.")]
+    internal static partial void Incomplete(ILogger logger, long completed, int sent);
+
+    [LoggerMessage(5, LogLevel.Warning, "Direct outbox claims expired before sending {Count} rows. Rows remain pending for recovery. Increase ClaimDuration if database latency exceeds the lease.")]
+    internal static partial void ClaimExpired(ILogger logger, int count);
 }

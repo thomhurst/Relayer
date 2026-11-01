@@ -40,8 +40,8 @@ services.AddDbContext<OrdersDbContext>((provider, options) =>
 Direct-dispatch registration also registers the named scoped `IOutboxStore`; do not register that store
 again. The host starts and stops the worker. Resolving services without starting their hosted services
 does not dispatch messages. Dispose the data source only after the host has stopped.
-If you use `NpgsqlSlimDataSourceBuilder`, call `EnableArrays()` before `Build()`; fenced batch deletion
-uses native UUID array parameters. The regular `NpgsqlDataSource` builder enables these mappings by default.
+If you use `NpgsqlSlimDataSourceBuilder`, call `EnableArrays()` before `Build()`; fenced batch claim and deletion
+operations use native UUID array parameters. The regular `NpgsqlDataSource` builder enables these mappings by default.
 
 Set `DispatchStoreName` on each participating context. Names are case-sensitive. A missing dispatcher
 or mismatched schema/prefix fails when the DbContext options are built. Omitting the name keeps
@@ -60,9 +60,10 @@ Both synchronous and asynchronous saves and explicit EF transaction commits noti
 after successful commit. The worker takes ownership of reusable serialized buffers before the caller
 can reuse or dispose its scope. It never uses the committing DbContext in the background.
 
-For each row, a conditional database update acquires a fresh fenced claim. Competing instances cannot
-normally dispatch the same row. Before sending a group, the worker renews its claims and excludes any
-row whose ownership has already expired. It preserves the stored message ID, body, native headers and
+For each native group, one conditional database update acquires fresh fenced claims for eligible rows.
+Competing instances cannot normally dispatch the same row. The worker excludes rows claimed by another
+instance, and skips sending if the group's shared claim deadline has already passed when the database
+responds. It preserves the stored message ID, body, native headers and
 creation context; it does not serialize the application message again or generate a new envelope.
 Once a stored delivery time is due, the native send requests immediate delivery. This also works with
 transports such as Kafka that have no native scheduling support.
@@ -80,8 +81,12 @@ Delivery remains at-least-once. A crash after a broker send, a partial native ba
 that outlives `ClaimDuration` can deliver a message again. The direct worker does not heartbeat during
 a broker call. Choose a claim duration longer than expected native send and database latency.
 
-A failed send records attempts and its error and releases each live claim. A database failure can
-leave the claim held until expiry. Neither failure rolls back business data that already committed.
+A failed send records attempts and its error and releases each live claim. Native exception messages
+are stored in `last_error`; restrict database access as these messages can contain endpoint details.
+A completion failure after a successful send logs a distinct error and leaves claims held until expiry,
+without changing attempts or `last_error`. If completion deletes fewer rows than were sent, a warning
+reports both counts and the duplicate-delivery risk. Increase `ClaimDuration` if native send or database
+latency exceeds the lease. Neither failure rolls back business data that already committed.
 The worker logs failures and continues with subsequent commits; it does not retry the failed commit
 in a busy loop.
 
