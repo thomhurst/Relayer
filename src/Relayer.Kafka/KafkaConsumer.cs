@@ -66,18 +66,30 @@ internal sealed class KafkaConsumer : IAsyncDisposable
             _partitions.Add(partition.Partition, partitionId = partition.Partition.ToString(CultureInfo.InvariantCulture));
         var count = 0;
         var complete = true;
-        foreach (var record in batch)
+        var records = batch.GetEnumerator();
+        if (!records.MoveNext()) return 0;
+        var rewind = new TopicPartitionOffset(partition.Topic, partition.Partition, records.Current.Offset);
+        do
         {
             if (version != _ownership.Version || !_native.Assignment.Contains(partition))
             { complete = false; break; }
+            var record = records.Current;
             var disposition = await _receive(new(record, partitionId), cancellationToken).ConfigureAwait(false);
             if (disposition.Kind is not (DispositionKind.Complete or DispositionKind.SettledByHandler))
                 throw new InvalidOperationException("Kafka receive must complete durable failure handling before returning Complete. Kafka has no native redelivery or dead-letter settlement.");
             count++;
         }
+        while (records.MoveNext());
         // A rebalance invalidates the entire borrowed batch. Never acknowledge its old
         // offsets under a new ownership epoch, even when the same partition was reassigned.
-        if (!complete || count == 0 || version != _ownership.Version || !batch.TryGetNextOffset(out var checkpoint)) return 0;
+        if (!complete || version != _ownership.Version)
+        {
+            // A retained partition keeps its native fetch position. Replay the whole
+            // uncommitted window before a later batch can acknowledge beyond it.
+            if (_native.Assignment.Contains(partition)) _native.Seek(rewind);
+            return 0;
+        }
+        if (!batch.TryGetNextOffset(out var checkpoint)) return 0;
         _offset[0] = checkpoint;
         await CommitAsync(_offset, count, cancellationToken).ConfigureAwait(false);
         return count;

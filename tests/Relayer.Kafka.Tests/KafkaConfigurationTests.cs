@@ -7,6 +7,28 @@ namespace Relayer.Kafka.Tests;
 public class KafkaConfigurationTests
 {
     [Test]
+    public async Task Durable_redelivery_fails_before_native_clients_even_with_a_scheduler()
+    {
+        var services = new ServiceCollection();
+        services.AddSingleton<IFailureScheduler, UnexpectedScheduler>();
+        services.AddRelayer(builder => builder.Kafka("events", kafka => kafka.Consume("orders", consumer =>
+        {
+            consumer.Options.Group = "orders";
+            consumer.Options.Failure = new() { RedeliveryDelays = new[] { TimeSpan.FromSeconds(1) } };
+            consumer.Handler<KafkaReceiveHandler>();
+        })));
+        await using var provider = services.BuildServiceProvider();
+        await Assert.That(() => provider.GetServices<ITransport>().ToArray())
+            .Throws<NotSupportedException>().WithMessageContaining("RetryDelays");
+    }
+
+    private sealed class UnexpectedScheduler : IFailureScheduler
+    {
+        public ValueTask ScheduleAsync(string transportName, OutgoingMessage message, CancellationToken cancellationToken) =>
+            throw new InvalidOperationException("Startup must reject this policy before scheduling.");
+    }
+
+    [Test]
     public async Task Named_options_and_route_keys_remain_isolated()
     {
         var services = new ServiceCollection();

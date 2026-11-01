@@ -17,6 +17,68 @@ namespace Relayer.Kafka.Tests;
 public class KafkaReceiveTests
 {
     [Test]
+    [Arguments(1)]
+    [Arguments(3)]
+    public async Task Retained_partition_replays_invalidated_batch_before_committing(int invalidateAfter)
+    {
+        using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(2));
+        var token = timeout.Token;
+        using var tracing = new MessageTracing(Options.Create(new TracingOptions()), []);
+        await using var fixture = (KafkaFixture)await KafkaFixture.CreateAsync(tracing, token);
+        await fixture.Transport.StartAsync(token);
+        for (var i = 0; i < 3; i++) await fixture.Transport.SendAsync(Message(fixture.Destination, i), token);
+        var partition = new TopicPartition(fixture.Destination, 0);
+        var native = new ConsumerBuilder<byte[], byte[]>().WithBootstrapServers(fixture.Bootstrap)
+            .WithGroupId(fixture.Destination).WithAutoOffsetReset(AutoOffsetReset.Earliest)
+            .WithOffsetCommitMode(OffsetCommitMode.Manual).WithAutoOffsetStore(false).Build();
+        native.Assign(partition);
+        var ownership = new KafkaOwnership();
+        var handled = new List<long>();
+        await using var adapter = new KafkaConsumer(native, Receive, tracing,
+            new() { System = "kafka", Destination = fixture.Destination, ConsumerGroup = fixture.Destination }, ownership);
+        await native.InitializeAsync(token);
+        await using var batches = native.ConsumeBatchAsync(token).GetAsyncEnumerator(token);
+        await Assert.That(await batches.MoveNextAsync()).IsTrue();
+        await Assert.That(await adapter.ProcessBatchAsync(batches.Current, token)).IsEqualTo(0);
+        await Assert.That(handled.Count).IsEqualTo(invalidateAfter);
+        await Assert.That(native.GetPosition(partition)).IsEqualTo(0L);
+        var committed = await native.GetCommittedOffsetAsync(partition, token);
+        await Assert.That(committed is null or < 0).IsTrue();
+        handled.Clear();
+        var completed = 0;
+        while (completed < 3 && await batches.MoveNextAsync())
+            completed += await adapter.ProcessBatchAsync(batches.Current, token);
+        await Assert.That(handled.ToArray()).IsEquivalentTo(new long[] { 0, 1, 2 });
+        await Assert.That(await native.GetCommittedOffsetAsync(partition, token)).IsEqualTo(3L);
+
+        async ValueTask<Disposition> Receive(KafkaDelivery delivery, CancellationToken cancellationToken)
+        {
+            handled.Add(delivery.Result.Offset);
+            if (handled.Count == invalidateAfter && ownership.Version == 0)
+                await ownership.OnPartitionsAssignedAsync([partition], cancellationToken);
+            return Disposition.Complete;
+        }
+    }
+
+    [Test]
+    public async Task Partial_start_failure_disposes_consumers_already_started()
+    {
+        using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(2));
+        var token = timeout.Token;
+        using var tracing = new MessageTracing(Options.Create(new TracingOptions()), []);
+        await using var fixture = (KafkaFixture)await KafkaFixture.CreateAsync(tracing, token);
+        fixture.RegisterConsumer(static (_, _) => new(Disposition.Complete));
+        fixture.RegisterConsumer(static (_, _) => new(Disposition.Complete));
+        var transport = (KafkaProducerTransport)fixture.Transport;
+        // Simulate an unrestartable second consumer without relying on broker timing.
+        await transport.Consumers[1].StopAsync(new CancellationToken(canceled: true));
+        await Assert.That(async () => await transport.StartAsync(token)).Throws<InvalidOperationException>()
+            .WithMessageContaining("failed or aborted");
+        await Assert.That(transport.Consumers[0].Completion.IsCompleted).IsTrue();
+        await Assert.That(async () => await transport.StartAsync(token)).Throws<ObjectDisposedException>();
+    }
+
+    [Test]
     public async Task Core_retry_durable_dead_letter_and_native_commits_preserve_creation_context()
     {
         using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(2));
@@ -66,6 +128,10 @@ public class KafkaReceiveTests
         await fixture.Transport.SendAsync(Message(source, 3), token);
         await Assert.That(await control.Handled.Reader.ReadAsync(token)).IsEqualTo(3);
         await host.StopAsync(token);
+        var service = host.Services.GetServices<IHostedService>().OfType<KafkaHostedService>().Single();
+        await Assert.That(async () => await service.StartAsync(token)).Throws<InvalidOperationException>()
+            .WithMessageContaining("only start once");
+        await Assert.That(host.Services.GetRequiredKeyedService<KafkaProducerTransport>("events").Consumers.Count).IsEqualTo(1);
         await Assert.That(control.FirstAttempts).IsEqualTo(2);
         await Assert.That(control.LastFeature.ConsumeResult.Topic).IsNull();
         await Assert.That(await offsets.GetCommittedOffsetAsync(new(source, 0), token)).IsEqualTo(5L);

@@ -14,8 +14,11 @@ internal sealed class KafkaHostedService(IServiceProvider provider, string name)
 {
     private ITransport? _transport;
     private KafkaProducerTransport? _nativeTransport;
+    private bool _started;
     public override async Task StartAsync(CancellationToken cancellationToken)
     {
+        if (_started) throw new InvalidOperationException("Recreate the application host to restart Kafka consumers. This hosted service can only start once.");
+        _started = true;
         _transport = provider.GetServices<ITransport>().Single(transport => transport.Name == name);
         _nativeTransport = provider.GetRequiredKeyedService<KafkaProducerTransport>(name);
         var definition = provider.GetRequiredService<RelayerConfiguration>().Transports.Single(item => item.Name == name);
@@ -31,7 +34,7 @@ internal sealed class KafkaHostedService(IServiceProvider provider, string name)
                 RetryDelays = policy.RetryDelays, RedeliveryDelays = policy.RedeliveryDelays,
                 Jitter = policy.Jitter, CopyTimeout = policy.CopyTimeout,
                 DeadLetterEndpoint = policy.DeadLetterEndpoint ?? consumer.Source + ".dead-letter",
-            }, Copy, provider.GetService<IFailureScheduler>());
+            }, Copy);
             var pipeline = new ConsumePipelineBuilder(provider.GetRequiredService<IServiceScopeFactory>(),
                 provider.GetRequiredService<MessageTypeRegistry>(), provider.GetRequiredService<IMessageSerializer>(), failures,
                 provider.GetService<IFailureClassifier>());
