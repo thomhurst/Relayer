@@ -364,3 +364,26 @@ Refines [D15](#d15-opentelemetry-in-the-core).
 - Relayer-specific span and metric names (`outbox.dispatch`, `relayer.process.duration`): backends would not recognize them, and users would need custom dashboards.
 - Using the dispatch span's context as the outbox message's creation context: consumers would correlate with the dispatcher, not with the request that produced the message.
 - Always parenting process spans on the creation context: it breaks when processing runs inside another span, and batches cannot have several parents.
+
+## D26. Generate default JSON metadata with the official System.Text.Json generator
+
+Refines [D8](#d8-systemtextjson-source-generation-by-default).
+
+**Context.**
+- Relayer discovers `[Message]` types and generates their `JsonSerializerContext` declaration. Roslyn 4.14 runs ordinary generators against the same input compilation, so the SDK's System.Text.Json generator cannot consume that declaration ([Roslyn generator design](https://github.com/dotnet/roslyn/blob/main/docs/features/source-generators.md)). Emitting only `[JsonSerializable]` attributes leaves the context unimplemented.
+- JSON contracts depend on properties, constructors, attributes, base types and referenced member types, not just message names and versions. Caching solely by the discovered message set would retain stale metadata after a member edit.
+
+**Decision.**
+- Run the official System.Text.Json generator against an augmented compilation containing Relayer's context declaration. Forward only sources for that context; the SDK continues to generate user-declared contexts.
+- Keep the compilation dependency so member and reference changes invalidate JSON generation. Accept the compile-time work on edits rather than silently using stale contracts. Do not retain a mutable driver or compilation in process-wide state.
+- Pin the compile-time generator dependency centrally to the supported .NET 10 System.Text.Json version and ship it with its license and notices in the analyzer directory. It is not a runtime dependency. Validate SDK and packed-package consumers with reflection disabled and Native AOT when changing that version.
+- Forward generator diagnostics, removing a source location only when it refers to the temporary declaration that is not part of the caller's input compilation.
+
+**Consequences.**
+- Default registration remains one explicit call, and JSON behavior comes from System.Text.Json rather than a second implementation of its contract rules.
+- JSON generation currently reruns when the input compilation changes. A future optimization must preserve invalidation for the complete transitive JSON contract; filtering only message attributes is insufficient.
+
+**Alternatives rejected.**
+- Emit a context declaration for the SDK generator to finish: ordinary generators cannot see one another's output on the supported Roslyn baseline.
+- Generate JSON contracts ourselves: duplicates System.Text.Json's constructor, converter and member-access rules and risks behavioral divergence.
+- Require users to maintain a second list of all message types: adds ceremony to the default registration path and allows the lists to drift.

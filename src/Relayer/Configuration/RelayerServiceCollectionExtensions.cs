@@ -1,4 +1,7 @@
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Hosting;
+using Relayer.Serialization;
 
 namespace Relayer;
 
@@ -21,6 +24,13 @@ public static class RelayerServiceCollectionExtensions
         configure(builder);
         builder.MessageTypes.Freeze();
         builder.Handlers.Freeze();
+
+        services.TryAddSingleton<IMessageSerializer>(static provider =>
+        {
+            var contexts = provider.GetServices<JsonSerializerRegistration>().Select(registration => registration.Context).ToArray();
+            return new JsonMessageSerializer(provider.GetRequiredService<MessageTypeRegistry>().CreateJsonTypes(contexts));
+        });
+        services.TryAddEnumerable(ServiceDescriptor.Singleton<IHostedService, MessageSerializerStartupValidator>());
 
         services.AddSingleton(builder.MessageTypes);
         services.AddSingleton(builder.Handlers);

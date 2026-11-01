@@ -1,5 +1,8 @@
 using System.Collections.Frozen;
 using System.Diagnostics.CodeAnalysis;
+using System.Text.Json.Serialization;
+using System.Text.Json.Serialization.Metadata;
+using Relayer.Serialization;
 
 namespace Relayer;
 
@@ -11,6 +14,7 @@ public sealed class MessageTypeRegistry
 {
     private readonly Dictionary<Type, MessageType> _byType = [];
     private readonly Dictionary<MessageType, Type> _byName = [];
+    private readonly List<Func<JsonSerializerContext[], JsonMessageType>> _jsonTypes = [];
     private FrozenDictionary<Type, MessageType>? _frozenByType;
     private FrozenDictionary<MessageType, Type>? _frozenByName;
 
@@ -41,6 +45,10 @@ public sealed class MessageTypeRegistry
             throw new InvalidOperationException($"'{identity}' is already registered to {existingType}.");
         }
 
+        if (!_byType.ContainsKey(typeof(TMessage)))
+        {
+            _jsonTypes.Add(static contexts => ResolveJsonType<TMessage>(contexts));
+        }
         _byType[typeof(TMessage)] = identity;
         _byName[identity] = typeof(TMessage);
         return this;
@@ -51,6 +59,29 @@ public sealed class MessageTypeRegistry
     {
         _frozenByName ??= _byName.ToFrozenDictionary();
         _frozenByType ??= _byType.ToFrozenDictionary();
+    }
+
+    internal JsonMessageType[] CreateJsonTypes(JsonSerializerContext[] contexts)
+    {
+        var types = new JsonMessageType[_jsonTypes.Count];
+        for (var i = 0; i < types.Length; i++)
+        {
+            types[i] = _jsonTypes[i](contexts);
+        }
+        return types;
+    }
+
+    private static JsonMessageType ResolveJsonType<TMessage>(JsonSerializerContext[] contexts)
+    {
+        for (var i = contexts.Length - 1; i >= 0; i--)
+        {
+            if (contexts[i].GetTypeInfo(typeof(TMessage)) is JsonTypeInfo<TMessage> typeInfo)
+            {
+                typeInfo.MakeReadOnly();
+                return new JsonMessageType(JsonMessageType<TMessage>.Key, typeInfo);
+            }
+        }
+        throw new InvalidOperationException($"No source-generated JSON metadata exists for '{typeof(TMessage)}'. Call AddMessageTypesFromThisAssembly or UseJsonSerializer with a context covering that message type, or register an IMessageSerializer.");
     }
 
     /// <summary>Gets the identity of <paramref name="type"/>, if registered.</summary>

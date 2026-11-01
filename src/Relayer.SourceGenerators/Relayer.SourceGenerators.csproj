@@ -13,6 +13,18 @@
   <ItemGroup>
     <PackageReference Include="Microsoft.CodeAnalysis.CSharp" PrivateAssets="all" />
     <PackageReference Include="Microsoft.CodeAnalysis.Analyzers" PrivateAssets="all" />
+    <!-- Compile-time dependency only: run the official generator on our context declaration. -->
+    <PackageReference Include="System.Text.Json" PrivateAssets="all" ExcludeAssets="all" GeneratePathProperty="true" />
+    <Reference Include="System.Text.Json.SourceGeneration">
+      <HintPath>$(PkgSystem_Text_Json)/analyzers/dotnet/roslyn4.4/cs/System.Text.Json.SourceGeneration.dll</HintPath>
+      <Private>true</Private>
+    </Reference>
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Update="System.Text.Json.SourceGeneration.LICENSE.txt" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="$(PkgSystem_Text_Json)/THIRD-PARTY-NOTICES.TXT"
+          Link="System.Text.Json.SourceGeneration.NOTICES.txt" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
   <ItemGroup>
