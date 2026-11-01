@@ -287,6 +287,8 @@ Superseded by [D24](#d24-capabilities-are-valued-and-declared-per-endpoint).
 **Consequences.**
 - No native binaries, and AOT works end to end on Kafka.
 - Relayer.Kafka's release cadence follows Dekaf's.
+- Consumer handler retries and durable dead-letter copies use the core failure pipeline. Dekaf's hosted retry/dead-letter helpers own dispatch and settlement, so they would bypass the portable classifier and durable-copy contract. The serial consumer foundation instead reuses native fetch batches, next-offset checkpoints, producer acknowledgments and explicit commits. Parallel scheduling and drain-on-revoke remain planned under D13 and D23.
+- Until Kafka failure copies have a persistable representation for tombstones and null-valued headers, durable redelivery policies fail at startup even when a durable scheduler is registered. The Kafka consumer does not expose that scheduler to manual settlement either. In-process retries and acknowledged dead-letter copies remain available. This explicit limitation avoids accepting a policy that fails only after receiving native metadata.
 - Users who need Confluent.Kafka specifically could be served later by a separate `Relayer.Kafka.Confluent` package. That is not planned.
 
 **Alternatives rejected.**

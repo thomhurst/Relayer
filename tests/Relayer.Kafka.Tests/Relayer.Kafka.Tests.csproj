@@ -5,5 +5,9 @@
     <PackageReference Include="Testcontainers.Kafka" />
     <PackageReference Include="Microsoft.Extensions.Hosting" />
   </ItemGroup>
-  <ItemGroup><ProjectReference Include="../../src/Relayer.Kafka/Relayer.Kafka.csproj" /></ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../src/Relayer.Kafka/Relayer.Kafka.csproj" />
+    <ProjectReference Include="../../src/Relayer.Testing/Relayer.Testing.csproj" />
+    <ProjectReference Include="../../src/Relayer.SourceGenerators/Relayer.SourceGenerators.csproj" ReferenceOutputAssembly="false" OutputItemType="Analyzer" />
+  </ItemGroup>
 </Project>

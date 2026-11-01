@@ -7,6 +7,28 @@ namespace Relayer.Kafka.Tests;
 public class KafkaConfigurationTests
 {
     [Test]
+    public async Task Durable_redelivery_fails_before_native_clients_even_with_a_scheduler()
+    {
+        var services = new ServiceCollection();
+        services.AddSingleton<IFailureScheduler, UnexpectedScheduler>();
+        services.AddRelayer(builder => builder.Kafka("events", kafka => kafka.Consume("orders", consumer =>
+        {
+            consumer.Options.Group = "orders";
+            consumer.Options.Failure = new() { RedeliveryDelays = new[] { TimeSpan.FromSeconds(1) } };
+            consumer.Handler<KafkaReceiveHandler>();
+        })));
+        await using var provider = services.BuildServiceProvider();
+        await Assert.That(() => provider.GetServices<ITransport>().ToArray())
+            .Throws<NotSupportedException>().WithMessageContaining("RetryDelays");
+    }
+
+    private sealed class UnexpectedScheduler : IFailureScheduler
+    {
+        public ValueTask ScheduleAsync(string transportName, OutgoingMessage message, CancellationToken cancellationToken) =>
+            throw new InvalidOperationException("Startup must reject this policy before scheduling.");
+    }
+
+    [Test]
     public async Task Named_options_and_route_keys_remain_isolated()
     {
         var services = new ServiceCollection();
@@ -35,12 +57,27 @@ public class KafkaConfigurationTests
     }
 
     [Test]
-    public async Task Unimplemented_consumers_fail_before_building_a_native_client()
+    public async Task Missing_group_fails_before_building_a_native_client()
     {
         var services = new ServiceCollection();
-        services.AddRelayer(builder => builder.Kafka("events", kafka => kafka.Consume("orders", _ => { })));
+        services.AddRelayer(builder => builder.Kafka("events", kafka => kafka.Consume("orders", consumer => consumer.Handler<KafkaReceiveHandler>())));
         await using var provider = services.BuildServiceProvider();
         await Assert.That(() => provider.GetServices<ITransport>().ToArray())
-            .Throws<NotSupportedException>().WithMessageContaining("consumer execution is not implemented");
+            .Throws<InvalidOperationException>().WithMessageContaining("Options.Group");
+    }
+
+    [Test]
+    public async Task Parallel_consumers_fail_with_an_actionable_message()
+    {
+        var services = new ServiceCollection();
+        services.AddRelayer(builder => builder.Kafka("events", kafka => kafka.Consume("orders", consumer =>
+        {
+            consumer.Options.Group = "orders";
+            consumer.Concurrency(2);
+            consumer.Handler<KafkaReceiveHandler>();
+        })));
+        await using var provider = services.BuildServiceProvider();
+        await Assert.That(() => provider.GetServices<ITransport>().ToArray())
+            .Throws<NotSupportedException>().WithMessageContaining("Parallel partition scheduling");
     }
 }

@@ -27,9 +27,11 @@ internal sealed class KafkaKeySerializer : ISerializer<WireString?>
 // Each operation owns its native objects and encoding storage until every native send completes.
 internal sealed class KafkaSendState
 {
+    internal const string TombstoneHeader = "relayer.internal.kafka.tombstone";
     private readonly Headers _headers = new(16);
     private byte[] _utf8 = [];
     internal WireString? Key { get; private set; }
+    internal bool Tombstone { get; set; }
     internal Headers Headers => _headers;
 
     internal void Prepare(OutgoingMessage outgoing)
@@ -44,6 +46,13 @@ internal sealed class KafkaSendState
         foreach (var header in outgoing.Headers.Span)
             _headers.Add(new Header(header.Key, Encode(header.Value, ref position)));
         outgoing.ApplyNative(_headers);
+        // The core's serialized copy seam carries transport-specific null-body state through
+        // its existing native callback. The marker never reaches the broker.
+        if (outgoing.Body.IsEmpty && _headers.GetFirst(TombstoneHeader) is not null)
+        {
+            Tombstone = true;
+            _headers.Remove(TombstoneHeader);
+        }
     }
 
     private ReadOnlyMemory<byte> Encode(WireString value, ref int position)
@@ -59,18 +68,20 @@ internal sealed class KafkaSendState
     {
         _headers.Clear();
         Key = null;
+        Tombstone = false;
     }
 }
 
 // Use Dekaf's native record-header serializer hook so its componentwise single/batch
 // overloads need no immutable ProducerMessage allocation. Native tracing starts first;
 // serialization then restores original creation headers, retaining other native additions.
-internal sealed class KafkaValueSerializer : ISerializer<(ReadOnlyMemory<byte> Body, Headers Headers)>, IRecordHeaderSerializer
+internal sealed class KafkaValueSerializer : ISerializer<(ReadOnlyMemory<byte> Body, Headers Headers)?>, IRecordHeaderSerializer
 {
     public bool ProducesRecordHeaders => true;
-    public void Serialize<TWriter>((ReadOnlyMemory<byte> Body, Headers Headers) value, ref TWriter destination,
+    public void Serialize<TWriter>((ReadOnlyMemory<byte> Body, Headers Headers)? record, ref TWriter destination,
         SerializationContext context) where TWriter : IBufferWriter<byte>, allows ref struct
     {
+        var value = record.GetValueOrDefault();
         var headers = context.Headers ?? throw new InvalidOperationException("Dekaf did not provide record header storage.");
         if (value.Headers.GetFirst("traceparent") is not null)
         {

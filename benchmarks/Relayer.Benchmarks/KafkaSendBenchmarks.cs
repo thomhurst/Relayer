@@ -33,7 +33,7 @@ public class KafkaSendBenchmarks
         _admin = new AdminClientBuilder().WithBootstrapServers(bootstrap).Build();
         await _admin.CreateTopicsAsync([new() { Name = _topic, NumPartitions = 3, ReplicationFactor = 1 }]);
         _raw = await new ProducerBuilder<byte[], byte[]>().WithBootstrapServers(bootstrap).BuildAsync();
-        var producer = await new ProducerBuilder<WireString?, (ReadOnlyMemory<byte> Body, Headers Headers)>()
+        var producer = await new ProducerBuilder<WireString?, (ReadOnlyMemory<byte> Body, Headers Headers)?>()
             .WithBootstrapServers(bootstrap).WithKeySerializer(new KafkaKeySerializer())
             .WithValueSerializer(new KafkaValueSerializer()).BuildAsync();
         _transport = new("benchmarks", producer, [_topic]);
