@@ -1,8 +1,11 @@
+using System.Runtime.InteropServices;
+
 namespace Relayer.Outbox.PostgreSql;
 
 // Ownership moves from the committing scope to the worker. Swap reusable buffers, never borrow a DbContext.
 internal sealed class OutboxDispatchBatch
 {
+    private static readonly Comparison<BufferedOutboxMessage> Comparison = Compare;
     internal List<BufferedOutboxMessage> Rows { get; } = [];
     internal int Count { get; private set; }
 
@@ -18,7 +21,7 @@ internal sealed class OutboxDispatchBatch
         }
     }
 
-    internal void Sort() => Rows.Sort(0, Count, RowComparer.Instance);
+    internal void Sort() => CollectionsMarshal.AsSpan(Rows)[..Count].Sort(Comparison);
 
     internal void Clear()
     {
@@ -26,13 +29,9 @@ internal sealed class OutboxDispatchBatch
         Count = 0;
     }
 
-    private sealed class RowComparer : IComparer<BufferedOutboxMessage>
+    private static int Compare(BufferedOutboxMessage x, BufferedOutboxMessage y)
     {
-        internal static readonly RowComparer Instance = new();
-        public int Compare(BufferedOutboxMessage? x, BufferedOutboxMessage? y)
-        {
-            var transport = StringComparer.Ordinal.Compare(x!.Transport, y!.Transport);
-            return transport != 0 ? transport : StringComparer.Ordinal.Compare(x.Destination, y.Destination);
-        }
+        var transport = StringComparer.Ordinal.Compare(x.Transport, y.Transport);
+        return transport != 0 ? transport : StringComparer.Ordinal.Compare(x.Destination, y.Destination);
     }
 }
