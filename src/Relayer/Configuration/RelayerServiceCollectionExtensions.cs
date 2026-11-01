@@ -35,6 +35,9 @@ public static class RelayerServiceCollectionExtensions
         services.AddSingleton(builder.MessageTypes);
         services.AddSingleton(builder.Handlers);
         services.AddSingleton<IRelayerBuilder>(builder);
+        services.AddSingleton(new RelayerConfiguration(builder.TopologyMode, builder.Transports.ToArray()));
+        // Register validation before transport packages add their hosted receive services.
+        services.Insert(0, ServiceDescriptor.Singleton<IHostedService, RelayerConfigurationValidator>());
 
         return services;
     }

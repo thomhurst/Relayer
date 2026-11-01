@@ -110,28 +110,9 @@ public sealed class HandlerGenerator : IIncrementalGenerator
         builder.AppendLine("        return builder;");
         builder.AppendLine("    }");
         builder.AppendLine();
-        builder.AppendLine("    public static global::Relayer.IRelayerBuilder Handler<THandler>(this global::Relayer.IRelayerBuilder builder)");
-        builder.AppendLine("        where THandler : class, global::Relayer.IHandlerMarker");
-        builder.AppendLine("    {");
-        builder.AppendLine("        global::System.ArgumentNullException.ThrowIfNull(builder);");
-        foreach (var handler in contracts.Select(static m => m.Handler).Distinct())
-        {
-            builder.Append("        if (typeof(THandler) == typeof(").Append(handler).AppendLine("))");
-            builder.AppendLine("        {");
-            builder.Append("            global::Microsoft.Extensions.DependencyInjection.Extensions.ServiceCollectionDescriptorExtensions.TryAddScoped<")
-                .Append(handler).AppendLine(">(builder.Services);");
-            for (var i = 0; i < contracts.Length; i++)
-            {
-                if (contracts[i].Handler == handler)
-                {
-                    builder.Append("            builder.Handlers.Add(new Dispatcher").Append(i).AppendLine("());");
-                }
-            }
-            builder.AppendLine("            return builder;");
-            builder.AppendLine("        }");
-        }
-        builder.AppendLine("        throw new global::System.InvalidOperationException($\"No generated descriptor for handler '{typeof(THandler)}'. Use a concrete, closed, assembly-accessible IHandler<T> or IBatchHandler<T> in Handler<THandler>().\");");
-        builder.AppendLine("    }");
+        EmitRegistration(builder, contracts, isConsumer: false);
+        builder.AppendLine();
+        EmitRegistration(builder, contracts, isConsumer: true);
 
         for (var i = 0; i < contracts.Length; i++)
         {
@@ -166,6 +147,35 @@ public sealed class HandlerGenerator : IIncrementalGenerator
         }
         builder.AppendLine("}");
         context.AddSource("RelayerGeneratedHandlers.g.cs", SourceText.From(builder.ToString(), Encoding.UTF8));
+    }
+
+    private static void EmitRegistration(StringBuilder builder, DispatchModel[] contracts, bool isConsumer)
+    {
+        var builderType = isConsumer ? "IConsumerBuilder" : "IRelayerBuilder";
+        builder.Append("    public static global::Relayer.").Append(builderType)
+            .Append(" Handler<THandler>(this global::Relayer.").Append(builderType).AppendLine(" builder)");
+        builder.AppendLine("        where THandler : class, global::Relayer.IHandlerMarker");
+        builder.AppendLine("    {");
+        builder.AppendLine("        global::System.ArgumentNullException.ThrowIfNull(builder);");
+        foreach (var handler in contracts.Select(static m => m.Handler).Distinct())
+        {
+            builder.Append("        if (typeof(THandler) == typeof(").Append(handler).AppendLine("))");
+            builder.AppendLine("        {");
+            for (var i = 0; i < contracts.Length; i++)
+            {
+                if (contracts[i].Handler == handler)
+                {
+                    builder.Append(isConsumer ? "            builder.AddHandler(new Dispatcher" : "            builder.Handlers.Add(new Dispatcher")
+                        .Append(i).AppendLine("());");
+                }
+            }
+            builder.Append("            global::Microsoft.Extensions.DependencyInjection.Extensions.ServiceCollectionDescriptorExtensions.TryAddScoped<")
+                .Append(handler).AppendLine(">(builder.Services);");
+            builder.AppendLine("            return builder;");
+            builder.AppendLine("        }");
+        }
+        builder.AppendLine("        throw new global::System.InvalidOperationException($\"No generated descriptor for handler '{typeof(THandler)}'. Use a concrete, closed, assembly-accessible IHandler<T> or IBatchHandler<T> in Handler<THandler>().\");");
+        builder.AppendLine("    }");
     }
 
     private sealed record DispatchModel(string Handler, string Message, bool IsBatch, bool IsLocal, bool IsAccessible);

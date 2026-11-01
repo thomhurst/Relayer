@@ -177,8 +177,11 @@ public class JsonSerializerTests
         using var provider = new ServiceCollection()
             .AddRelayer(builder => builder.MessageTypes.Add<JsonValue>("manual"))
             .BuildServiceProvider();
-        var validator = provider.GetServices<IHostedService>().Single();
-        await Assert.That(() => validator.StartAsync(CancellationToken.None))
+        await Assert.That(async () =>
+            {
+                foreach (var service in provider.GetServices<IHostedService>())
+                    await service.StartAsync(CancellationToken.None);
+            })
             .Throws<InvalidOperationException>().WithMessageContaining("UseJsonSerializer");
     }
 
@@ -186,11 +189,13 @@ public class JsonSerializerTests
     public async Task Default_serializer_is_validated_at_host_startup()
     {
         using var provider = CreateProvider();
-        var validator = provider.GetServices<IHostedService>().Single();
-        await validator.StartAsync(CancellationToken.None);
+        var hostedServices = provider.GetServices<IHostedService>().ToArray();
+        foreach (var service in hostedServices)
+            await service.StartAsync(CancellationToken.None);
         var serializer = provider.GetRequiredService<IMessageSerializer>();
         await Assert.That(serializer.ContentType).IsEqualTo("application/json");
-        await validator.StopAsync(CancellationToken.None);
+        foreach (var service in hostedServices.Reverse())
+            await service.StopAsync(CancellationToken.None);
     }
 
     [Test]

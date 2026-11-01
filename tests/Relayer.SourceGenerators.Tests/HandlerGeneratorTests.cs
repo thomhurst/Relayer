@@ -175,7 +175,9 @@ public class HandlerGeneratorTests
     }
 
     [Test]
-    public async Task Referenced_handler_can_be_registered_explicitly_without_assembly_discovery()
+    [Arguments("IRelayerBuilder")]
+    [Arguments("IConsumerBuilder")]
+    public async Task Referenced_handler_can_be_registered_explicitly_without_assembly_discovery(string builderType)
     {
         var external = CreateCompilation(Handlers).WithAssemblyName("External");
         using var stream = new MemoryStream();
@@ -187,7 +189,7 @@ public class HandlerGeneratorTests
             {
                 public static void Add(IRelayerBuilder builder) => builder.Handler<Example.Handler>();
             }
-            """).AddReferences(MetadataReference.CreateFromImage(stream.ToArray()));
+            """.Replace("IRelayerBuilder", builderType)).AddReferences(MetadataReference.CreateFromImage(stream.ToArray()));
         var driver = Run(compilation, out _);
         var generated = Generated(driver);
         await Assert.That(generated).Contains("TryAddScoped<global::Example.Handler>");

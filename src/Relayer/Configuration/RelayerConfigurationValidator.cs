@@ -1,0 +1,45 @@
+using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Options;
+
+namespace Relayer;
+
+/// <summary>Reports all invalid Relayer declarations together before consumers start.</summary>
+internal sealed class RelayerConfigurationValidator(RelayerConfiguration configuration, MessageTypeRegistry messages,
+    IServiceProvider services) : IHostedService
+{
+    public Task StartAsync(CancellationToken cancellationToken)
+    {
+        var failures = new List<string>();
+        if (!Enum.IsDefined(configuration.TopologyMode)) failures.Add("TopologyMode is not a defined value.");
+        var names = new HashSet<string>(StringComparer.Ordinal);
+        var routes = new HashSet<Type>();
+        foreach (var transport in configuration.Transports)
+        {
+            if (string.IsNullOrWhiteSpace(transport.Name)) failures.Add("A transport name must not be blank.");
+            else if (!names.Add(transport.Name)) failures.Add($"Transport '{transport.Name}' is declared more than once.");
+            transport.ValidateOptions(services, failures);
+            foreach (var route in transport.Routes)
+            {
+                var location = $"Route for '{route.MessageType}' on transport '{transport.Name}'";
+                if (string.IsNullOrWhiteSpace(route.Destination)) failures.Add($"{location}: destination must not be blank.");
+                if (!routes.Add(route.MessageType)) failures.Add($"{location}: a message type can have only one route.");
+                if (!messages.TryGetMessageType(route.MessageType, out _))
+                    failures.Add($"{location}: register a stable message identity before startup.");
+            }
+            foreach (var consumer in transport.Consumers)
+            {
+                var location = $"Consumer '{consumer.Source}' on transport '{transport.Name}'";
+                if (string.IsNullOrWhiteSpace(consumer.Source)) failures.Add($"{location}: source must not be blank.");
+                if (consumer.Handlers.Count == 0) failures.Add($"{location}: declare at least one handler.");
+                if (consumer.Concurrency < 1) failures.Add($"{location}: concurrency must be at least 1.");
+                if (consumer.BatchSize < 1) failures.Add($"{location}: batch size must be at least 1.");
+                if (consumer.BatchWait <= TimeSpan.Zero) failures.Add($"{location}: batch wait must be positive.");
+            }
+        }
+        if (failures.Count != 0)
+            throw new OptionsValidationException(Options.DefaultName, typeof(RelayerConfiguration), failures);
+        return Task.CompletedTask;
+    }
+
+    public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+}

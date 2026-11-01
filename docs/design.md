@@ -177,47 +177,43 @@ Every transport proves the SPI contract by passing the transport conformance sui
 
 ### 3.1 Configuration
 
+The core configuration surface is available now. Transport packages supply the three option types and wrap `AddTransport` in extensions such as `AddKafka` or `AddAzureServiceBus`; those native adapters are separate roadmap work. The following call site uses the real core API:
+
 ```csharp
-var builder = WebApplication.CreateBuilder(args);
+var services = new ServiceCollection();
 
-builder.Services.AddDbContext<AppDbContext>(...);
-
-builder.Services.AddRelayer(relayer =>
+services.AddRelayer(relayer =>
 {
-    relayer.AddKafka("events", kafka =>
+    relayer.AddMessageTypesFromThisAssembly();
+    relayer.AddTransport<BrokerOptions, RouteOptions, ConsumerOptions>("events", broker =>
     {
-        kafka.BootstrapServers(builder.Configuration["Kafka:Servers"]);
-        kafka.ConfigureProducer(p => p.WithAcks(Acks.All));                     // Dekaf's own builder
+        broker.Options.Bind(configuration.GetSection("Events"))
+            .Validate(o => !string.IsNullOrWhiteSpace(o.Server), "Server is required.");
 
-        kafka.Produce<OrderPlaced>("orders.placed", p => p.OrderingKey(m => m.OrderId));
-
-        kafka.Consume("orders.placed", c => c
-            .Group("billing")
-            .Handler<OrderPlacedHandler>()
-            .Concurrency(perPartition: 8, orderBy: OrderBy.Key));     // key-ordered parallelism
+        broker.Send<OrderPlaced>("orders.placed", route => route.OrderingKey(m => m.OrderId));
+        broker.Consume("orders.placed", consumer =>
+        {
+            consumer.Options.Group = "billing";
+            consumer.Handler<OrderPlacedHandler>().Concurrency(8)
+                .Batch(maxSize: 10, maxWait: TimeSpan.FromMilliseconds(20));
+        });
     });
-
-    relayer.AddAzureServiceBus("commands", asb =>
-    {
-        asb.Client(sp => sp.GetRequiredService<ServiceBusClient>()); // reuse your own client
-        asb.Send<ChargeCard>("billing-charge-card");
-        asb.Consume("billing-charge-card", c => c.Handler<ChargeCardHandler>());
-    });
-
-    relayer.Outbox(o => o.UseEntityFrameworkCore<AppDbContext>());
-    relayer.Inbox(i => i.UseEntityFrameworkCore<AppDbContext>());
-
-    relayer.Failures(f => f
-        .Retry(immediate: 2)
-        .Redeliver(TimeSpan.FromSeconds(10), TimeSpan.FromMinutes(1), TimeSpan.FromMinutes(10))
-        .WithJitter()
-        .On<ValidationException>(FailureAction.DeadLetter));
-
-    relayer.Topology(TopologyMode.Validate);
+    relayer.TopologyMode = TopologyMode.Validate;
 });
+
+// Example option types; an adapter supplies its actual native option types.
+public sealed class BrokerOptions { public string Server { get; set; } = ""; }
+public sealed class RouteOptions { }
+public sealed class ConsumerOptions { public string Group { get; set; } = ""; }
 ```
 
-Configuration also binds from `IConfiguration` and uses the Options pattern (`IOptionsMonitor<KafkaTransportOptions>` and so on), so the same settings can live in `appsettings.json`.
+`Send<T>` declares a destination; publishing versus sending is native routing, not a parallel API (§3.4). An ordering selector derives the native partition key, session ID, or message group ID. `string` and `IUtf8SpanFormattable` values such as `Guid` remain typed. The pipeline resolves the selector once at construction and calls it directly; it must never use `DynamicInvoke` or format scalars through `object`.
+
+Names are case-sensitive and unique across all transport kinds. Several transports can use the same option type with independent named configuration. Read them through `IOptionsMonitor<BrokerOptions>.Get("events")`; binding uses the normal Options change-token mechanism. For Native AOT, enable `EnableConfigurationBindingGenerator` in the application project so concrete `OptionsBuilder<T>.Bind` calls use generated binding.
+
+`AddRelayer` captures `RelayerConfiguration`; declarations freeze when their callbacks finish. Its first hosted service checks all declarations and all named option validators before later transport hosted services start, and reports their errors together in `OptionsValidationException.Failures`. Handler types are registered explicitly as scoped services, preserving existing registrations. Message names must be registered explicitly or through the generated `AddMessageTypesFromThisAssembly` method.
+
+This API declares configuration. Receive dispatch (#4), sender execution (#5), native adapters, failure policies, inbox/outbox integration and capability/topology validation execute in their own roadmap work; they consume these declarations. See [configuration.md](configuration.md) for the transport-author contract and validation boundaries.
 
 ### 3.2 Handlers
 
