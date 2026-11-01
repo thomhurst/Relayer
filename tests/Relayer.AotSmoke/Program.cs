@@ -1,4 +1,5 @@
 using System.Buffers;
+using System.Diagnostics;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Microsoft.Extensions.DependencyInjection;
@@ -12,6 +13,7 @@ var services = new ServiceCollection();
 services.AddSingleton<ITransport>(transport);
 await using var provider = services.AddRelayer(builder =>
 {
+    builder.Telemetry();
     builder.AddMessageTypesFromThisAssembly(new JsonSerializerOptions
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase
@@ -40,6 +42,24 @@ using (var topologyJson = new MemoryStream())
         throw new InvalidOperationException("Topology export failed under Native AOT.");
 }
 Console.WriteLine("Topology startup and JSON export passed with reflection disabled.");
+var tracing = provider.GetRequiredService<MessageTracing>();
+using (var listener = new ActivityListener
+{
+    ShouldListenTo = source => ReferenceEquals(source, tracing.Source),
+    Sample = static (ref ActivityCreationOptions<ActivityContext> _) => ActivitySamplingResult.AllDataAndRecorded,
+})
+{
+    ActivitySource.AddActivityListener(listener);
+    var operation = new MessageOperationTracing(tracing,
+        new() { System = "relayer.inmemory", Destination = "orders" }, MessagingOperation.Send);
+    using var activity = operation.Start(new() { MessageId = "smoke", EventType = "smoke.order;v=1" });
+    MessageOperationTracing.Fail(activity, "smoke_error");
+    if (activity is not { Kind: ActivityKind.Producer, Status: ActivityStatusCode.Error } ||
+        activity.GetTagItem("messaging.system") is not "relayer.inmemory" ||
+        tracing.Source.TelemetrySchemaUrl != RelayerTelemetry.SchemaUrl)
+        throw new InvalidOperationException("Tracing primitives failed under Native AOT.");
+}
+Console.WriteLine("Tracing primitives passed with reflection disabled.");
 var serializer = provider.GetRequiredService<IMessageSerializer>();
 var buffer = new ArrayBufferWriter<byte>();
 var message = new Order(42, new Customer("Ada"), [1, 2], OrderState.Placed);
