@@ -16,9 +16,10 @@ internal sealed partial class PostgreSqlOrderedDispatcher : BackgroundService
     private readonly OutboxRecord[] _rows;
     private readonly Dictionary<(ITransport Transport, string Destination), TransportCapabilities> _capabilities = [];
     private readonly ILogger<PostgreSqlOrderedDispatcher> _logger;
+    private readonly TimeProvider _timeProvider;
 
     internal PostgreSqlOrderedDispatcher(NpgsqlDataSource source, PostgreSqlOrderedDispatchOptions options,
-        IEnumerable<ITransport> transports, ILogger<PostgreSqlOrderedDispatcher> logger)
+        IEnumerable<ITransport> transports, ILogger<PostgreSqlOrderedDispatcher> logger, TimeProvider? timeProvider = null)
     {
         _source = source;
         _options = options;
@@ -27,6 +28,7 @@ internal sealed partial class PostgreSqlOrderedDispatcher : BackgroundService
         _lane = new(source, store, options.LeaseDuration);
         _rows = new OutboxRecord[options.BatchSize];
         _logger = logger;
+        _timeProvider = timeProvider ?? TimeProvider.System;
         foreach (var transport in transports)
             if (!_transports.TryAdd(transport.Name, transport))
                 throw new InvalidOperationException($"Transport '{transport.Name}' is registered more than once.");
@@ -84,6 +86,9 @@ internal sealed partial class PostgreSqlOrderedDispatcher : BackgroundService
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder<>))]
     internal async ValueTask<int> DispatchLaneAsync(int lane, CancellationToken cancellationToken)
     {
+        var started = _timeProvider.GetTimestamp();
+        // Reserve half the hard deadline for the final admitted send and its database commit.
+        var admissionBudget = _options.LeaseDuration / 4;
         await using var connection = await _source.OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
         await using var transaction = await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
         if (!await _coordinator.AcquireAsync(connection, transaction, lane, cancellationToken).ConfigureAwait(false)) return 0;
@@ -95,6 +100,7 @@ internal sealed partial class PostgreSqlOrderedDispatcher : BackgroundService
             for (var index = 0; index < count; index++)
             {
                 cancellationToken.ThrowIfCancellationRequested();
+                if (_timeProvider.GetElapsedTime(started) >= admissionBudget) break;
                 var row = _rows[index];
                 var claim = new OutboxClaim(row.Id, Guid.NewGuid());
                 if (!await _lane.ClaimAsync(connection, transaction, claim, cancellationToken).ConfigureAwait(false)) break;

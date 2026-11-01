@@ -266,6 +266,40 @@ public class OrderedDispatchTests
         await Assert.That(reader.GetInt64(1)).IsEqualTo(1);
     }
 
+    [Test]
+    public async Task Slow_healthy_batches_commit_prefix_and_eventually_drain()
+    {
+        await using var fixture = new PostgreSqlFixture();
+        await fixture.StartAsync();
+        await using var source = NpgsqlDataSource.Create(fixture.ConnectionString);
+        await PostgreSqlOutboxStoreTests.CreateSchema(source);
+        for (var number = 1; number <= 20; number++) await Insert(source, Id(number), 0);
+        var clock = new BudgetClock();
+        var transport = new RecordingTransport((_, _) =>
+        {
+            clock.Advance(TimeSpan.FromSeconds(1));
+            return ValueTask.CompletedTask;
+        });
+        using var worker = new PostgreSqlOrderedDispatcher(source, new(), [transport],
+            NullLogger<PostgreSqlOrderedDispatcher>.Instance, clock);
+        await Assert.That(await worker.DispatchLaneAsync(0, default)).IsEqualTo(8);
+        await using (var count = source.CreateCommand("SELECT count(*) FROM relayer_outbox"))
+            await Assert.That((long)(await count.ExecuteScalarAsync())!).IsEqualTo(12);
+        await Assert.That(await worker.DispatchLaneAsync(0, default)).IsEqualTo(8);
+        await Assert.That(await worker.DispatchLaneAsync(0, default)).IsEqualTo(4);
+        await Assert.That(transport.Ids.SequenceEqual(Enumerable.Range(1, 20).Select(Id))).IsTrue();
+        await using var final = source.CreateCommand("SELECT count(*) FROM relayer_outbox");
+        await Assert.That((long)(await final.ExecuteScalarAsync())!).IsEqualTo(0);
+    }
+
+    private sealed class BudgetClock : TimeProvider
+    {
+        private long _ticks;
+        public override long TimestampFrequency => TimeSpan.TicksPerSecond;
+        public override long GetTimestamp() => Interlocked.Read(ref _ticks);
+        internal void Advance(TimeSpan duration) => Interlocked.Add(ref _ticks, duration.Ticks);
+    }
+
     private static PostgreSqlOrderedDispatcher Worker(NpgsqlDataSource source, RecordingTransport transport, int lanes = 1) =>
         new(source, new PostgreSqlOrderedDispatchOptions { Lanes = lanes }, [transport], NullLogger<PostgreSqlOrderedDispatcher>.Instance);
 

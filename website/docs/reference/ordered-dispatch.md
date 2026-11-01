@@ -52,7 +52,7 @@ A worker scans its assigned lanes and sends one bounded batch per lane per cycle
 an instance-specific owner token. Its database row stays locked in a transaction until native sends and
 fenced row outcomes finish. A competing owner cannot take over while that transaction remains connected,
 even after lease expiry. The worker sets a deadline of half the lease duration for acquiring, reading,
-sending and committing each batch. It awaits cancellation completion before freeing borrowed payloads.
+sending and committing each batch. It stops admitting rows after one quarter of the lease duration, reserving the remaining deadline for the final admitted send and commit. Slow healthy batches therefore commit a confirmed prefix instead of repeatedly replaying it. A single send must still fit the configured hard deadline. It awaits cancellation completion before freeing borrowed payloads.
 
 Reads follow the partial `(lane, id)` pending index, in PostgreSQL UUID order. Scheduling and existing claims
 never cause the worker to skip a head row. A future or live-claimed head temporarily stalls its lane.
