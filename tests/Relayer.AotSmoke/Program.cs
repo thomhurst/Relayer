@@ -7,21 +7,26 @@ using Relayer;
 using Relayer.Serialization;
 using Relayer.Transports;
 
-await using var provider = new ServiceCollection().AddSingleton<ITransport, SmokeTransport>().AddRelayer(builder =>
+var transport = new SmokeTransport();
+var services = new ServiceCollection();
+services.AddSingleton<ITransport>(transport);
+await using var provider = services.AddRelayer(builder =>
 {
     builder.AddMessageTypesFromThisAssembly(new JsonSerializerOptions
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase
     });
-    builder.AddTransport<SmokeOptions, SmokeOptions, SmokeOptions>("smoke", transport =>
+    builder.AddTransport<SmokeOptions, SmokeOptions, SmokeOptions>("smoke", broker =>
     {
-        transport.Send<Order>("orders", route => route.OrderingKey(order => order.Id));
-        transport.Consume("orders", consumer => consumer.Handler<OrderHandler>().Handler<CountHandler>());
+        broker.Send<Order>("orders", route => route.OrderingKey(static order => order.Id));
+        broker.Send<Count>("counts");
+        broker.Consume("orders", consumer => consumer.Handler<OrderHandler>().Handler<CountHandler>());
     });
-}).BuildServiceProvider();
+    builder.UseSendMiddleware<SmokeMiddleware>();
+}).BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
 foreach (var service in provider.GetServices<IHostedService>())
     await service.StartAsync(CancellationToken.None);
-if (provider.GetRequiredService<ITransport>() is not SmokeTransport { CapabilityLookups: 1 })
+if (provider.GetRequiredService<ITransport>() is not SmokeTransport { CapabilityLookups: 4 })
     throw new InvalidOperationException("Endpoint capability validation failed under Native AOT.");
 Console.WriteLine("Endpoint capability validation passed under Native AOT.");
 var serializer = provider.GetRequiredService<IMessageSerializer>();
@@ -59,6 +64,16 @@ var disposition = await receive.ProcessAsync(new(new ReadOnlySequence<byte>(buff
 if (disposition.Kind != DispositionKind.Complete)
     throw new InvalidOperationException("Native receive SPI failed under Native AOT.");
 Console.WriteLine("Native receive binding, lazy headers and pooled native feature passed under Native AOT.");
+var sender = scope.ServiceProvider.GetRequiredService<ISender>();
+await sender.SendAsync(message, options => options.ConfigureNative<SmokeNative>(static native => native.Value = 7));
+if (transport.Destination != "orders" || transport.OrderingKey != "42" || transport.NativeValue != 7)
+    throw new InvalidOperationException("Send routing or native configuration failed under Native AOT.");
+await sender.SendAsync(new Count(7));
+if (transport.Destination != "counts" || transport.NativeValue != 0)
+    throw new InvalidOperationException("Value type sending failed under Native AOT.");
+if (transport.CapabilityLookups != 4)
+    throw new InvalidOperationException("Endpoint capabilities were resolved on the per-message path.");
+Console.WriteLine("Send routing, middleware and native configuration passed with reflection disabled.");
 
 [Message("smoke.order")]
 public sealed record Order(int Id, Customer Customer, int[] Items, OrderState State);
@@ -68,22 +83,6 @@ public enum OrderState { Placed, Cancelled }
 [Message("smoke.count")]
 public readonly record struct Count(int Value);
 public sealed class SmokeOptions;
-internal sealed class SmokeTransport : ITransport
-{
-    public string Name => "smoke";
-    public int CapabilityLookups { get; private set; }
-    public TransportCapabilities GetCapabilities(string endpoint)
-    {
-        if (endpoint != "orders") throw new ArgumentException("Unknown smoke endpoint.", nameof(endpoint));
-        CapabilityLookups++;
-        return new() { OrderedByKey = true };
-    }
-    public ValueTask SendAsync(OutgoingMessage message, CancellationToken cancellationToken) => throw new NotSupportedException();
-    public ValueTask SendBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken) => throw new NotSupportedException();
-    public Task StartAsync(CancellationToken cancellationToken) => throw new NotSupportedException();
-    public Task StopAsync(CancellationToken cancellationToken) => throw new NotSupportedException();
-    public ValueTask DisposeAsync() => default;
-}
 public sealed class OrderHandler : IHandler<Order>
 {
     public Order? Order { get; private set; }
@@ -132,4 +131,47 @@ internal sealed class SmokeContext(IServiceProvider services) : MessageContext
     public override IServiceProvider Services { get; } = services;
     public override MessageFeatures Features { get; } = new();
     public override CancellationToken CancellationToken => default;
+}
+
+internal sealed class SmokeNative { public int Value { get; set; } }
+
+internal sealed class SmokeMiddleware : ISendMiddleware
+{
+    public ValueTask InvokeAsync(SendContext context, SendDelegate next)
+    {
+        context.Options.Headers["smoke"] = "middleware";
+        return next(context);
+    }
+}
+
+internal sealed class SmokeTransport : ITransport
+{
+    public string Name => "smoke";
+    public int CapabilityLookups { get; private set; }
+    public TransportCapabilities GetCapabilities(string endpoint)
+    {
+        if (endpoint is not ("orders" or "counts")) throw new ArgumentException("Unknown smoke endpoint.", nameof(endpoint));
+        CapabilityLookups++;
+        return new() { OrderedByKey = true };
+    }
+    public string? Destination { get; private set; }
+    public string? OrderingKey { get; private set; }
+    public int NativeValue { get; private set; }
+    public ValueTask SendAsync(OutgoingMessage message, CancellationToken cancellationToken)
+    {
+        var native = new SmokeNative();
+        message.ApplyNative(native);
+        NativeValue = native.Value;
+        Destination = message.Destination;
+        OrderingKey = message.OrderingKey?.ToString();
+        var middlewareRan = false;
+        foreach (var header in message.Headers.Span)
+            if (header.Key == "smoke" && header.Value.ToString() == "middleware") middlewareRan = true;
+        if (!middlewareRan) throw new InvalidOperationException("Send middleware did not run.");
+        return ValueTask.CompletedTask;
+    }
+    public ValueTask SendBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken) => throw new NotSupportedException();
+    public Task StartAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+    public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+    public ValueTask DisposeAsync() => ValueTask.CompletedTask;
 }

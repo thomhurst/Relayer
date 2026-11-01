@@ -149,7 +149,7 @@ ValueTask SendAsync(OutgoingMessage message, CancellationToken cancellationToken
 ValueTask SendBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken);
 ```
 
-The transport builds its native message, applies `options.ApplyNative<TNative>(native)`, and sends. Native configurators are delegates and cannot be stored in the outbox, so a send that has them and is enlisted in the outbox fails immediately with an explanation instead of dropping them.
+The transport builds its native message, applies `options.ApplyNative<TNative>(native)`, and sends. Native configurators are delegates and cannot be stored in the outbox, so a send that has them and is enlisted in the outbox fails immediately with an explanation instead of dropping them. The resolved ordering key is a nullable `WireString`: string selectors keep their text, and scalar selectors format into pooled UTF-8 memory. The transport and outbox follow the same borrowed-memory lifetime for that key as for body and headers.
 
 **4. Capabilities and topology.** `GetCapabilities(endpoint)` returns a `TransportCapabilities` record for one endpoint (D24). `ApplyTopologyAsync(mode, ct)` validates or provisions the endpoints the transport's builder declared and returns a report the core uses for the startup diff and for topology export.
 
@@ -277,6 +277,8 @@ The core's `HandlerRegistry` freezes after configuration. Pipeline composition s
 `ISender` is scoped. When an outbox is configured and a transaction is active in the current scope, sends are enlisted automatically. Otherwise they go straight to the transport. To be explicit, use `sender.SendNowAsync` (bypass the outbox) or `sender.SendViaOutboxAsync` (require the outbox; throws when there is no transaction).
 
 Publish versus send is a routing concern, not a separate API. Whether a destination fans out depends on what the endpoint is natively (a topic or exchange versus a queue).
+
+The core route registration seam, middleware lifetime, timeout contract, and scoped outbox integration are documented in [Sending messages](sending.md).
 
 ---
 

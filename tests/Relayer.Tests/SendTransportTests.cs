@@ -57,12 +57,12 @@ public class SendTransportTests
             new("traceparent", new WireString("00-0123456789abcdef0123456789abcdef-0123456789abcdef-01"))
         ];
         var deliverAt = DateTimeOffset.UtcNow.AddMinutes(5);
-        var outgoing = new OutgoingMessage("orders", body, headers, "customer-1", deliverAt);
+        var outgoing = new OutgoingMessage("orders", body, headers, new WireString("customer-1"), deliverAt);
 
         await Assert.That(outgoing.Destination).IsEqualTo("orders");
         await Assert.That(outgoing.Body.Equals(body.AsMemory())).IsTrue();
         await Assert.That(outgoing.Headers.Equals(headers.AsMemory())).IsTrue();
-        await Assert.That(outgoing.OrderingKey).IsEqualTo("customer-1");
+        await Assert.That(outgoing.OrderingKey?.Text).IsEqualTo("customer-1");
         await Assert.That(outgoing.DeliverAt).IsEqualTo(deliverAt);
         await Assert.That(outgoing.Headers.Span[0].Value.Text).IsEqualTo(headers[0].Value.Text);
         outgoing.ValidateForOutbox();

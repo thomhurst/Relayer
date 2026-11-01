@@ -31,6 +31,8 @@ public static class RelayerServiceCollectionExtensions
             return new JsonMessageSerializer(provider.GetRequiredService<MessageTypeRegistry>().CreateJsonTypes(contexts));
         });
         services.TryAddEnumerable(ServiceDescriptor.Singleton<IHostedService, MessageSerializerStartupValidator>());
+        services.TryAddSingleton<SendPipeline>();
+        services.TryAddScoped<ISender, Sender>();
 
         services.AddSingleton(builder.MessageTypes);
         services.AddSingleton(builder.Handlers);

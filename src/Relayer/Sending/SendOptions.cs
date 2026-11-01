@@ -17,6 +17,14 @@ public sealed class SendOptions
     /// <summary>Whether this send contains native callbacks, which cannot be persisted in an outbox.</summary>
     public bool HasNativeConfigurators => _nativeConfigurators is { Count: > 0 };
 
+    internal void Reset()
+    {
+        Headers.Clear();
+        DeliverAt = null;
+        OrderingKey = null;
+        _nativeConfigurators?.Clear();
+    }
+
     /// <summary>
     /// Customises the native outgoing message just before it is handed to the client.
     /// The send fails if a callback cannot accept the route's native outgoing type,
