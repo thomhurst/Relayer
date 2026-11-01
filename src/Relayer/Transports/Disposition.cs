@@ -39,15 +39,19 @@ public readonly struct DeadLetterInfo
 /// <remarks>The failure pipeline must resolve capabilities and finish durable fallbacks before selecting this decision.</remarks>
 public readonly struct Disposition
 {
-    private Disposition(DispositionKind kind, TimeSpan delay = default, DeadLetterInfo deadLetter = default)
+    private Disposition(DispositionKind kind, TimeSpan delay = default, DeadLetterInfo deadLetter = default, ReadOnlyMemory<KeyValuePair<string, WireString>> headers = default)
     {
         Kind = kind;
         Delay = delay;
         DeadLetter = deadLetter;
+        Headers = headers;
     }
 
     /// <summary>The native operation to perform.</summary>
     public DispositionKind Kind { get; }
+    /// <summary>Failure metadata to persist with native redelivery before releasing the delivery.</summary>
+    /// <remarks>Adapters must preserve these headers through native redelivery, including when its delay is zero.</remarks>
+    public ReadOnlyMemory<KeyValuePair<string, WireString>> Headers { get; }
     /// <summary>The native redelivery delay, used only for Redeliver.</summary>
     public TimeSpan Delay { get; }
     /// <summary>The error metadata, used only for DeadLetter.</summary>
@@ -58,10 +62,10 @@ public readonly struct Disposition
     public static Disposition SettledByHandler => new(DispositionKind.SettledByHandler);
 
     /// <summary>Request native redelivery. Capability resolution belongs to the failure pipeline.</summary>
-    public static Disposition Redeliver(TimeSpan delay)
+    public static Disposition Redeliver(TimeSpan delay, ReadOnlyMemory<KeyValuePair<string, WireString>> headers = default)
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(delay, TimeSpan.Zero);
-        return new(DispositionKind.Redeliver, delay);
+        return new(DispositionKind.Redeliver, delay, headers: headers);
     }
 
     /// <summary>Request native dead-lettering with validated error metadata.</summary>

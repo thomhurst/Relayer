@@ -56,6 +56,15 @@ public readonly struct OutgoingMessage
         _options?.ApplyNative(nativeMessage);
     }
 
+    internal OutgoingMessage Forward(string destination, ReadOnlyMemory<KeyValuePair<string, WireString>> headers,
+        DateTimeOffset? deliverAt) => new(destination, Body, headers, OrderingKey, deliverAt, _options);
+
+    internal void CopyNativeOptionsTo(SendOptions target)
+    {
+        target.Reset();
+        _options?.CopyNativeTo(target);
+    }
+
     /// <summary>Rejects non-persistable native callbacks. Call before enlisting this message in an outbox.</summary>
     /// <exception cref="InvalidOperationException">Native callbacks cannot be persisted.</exception>
     public void ValidateForOutbox()

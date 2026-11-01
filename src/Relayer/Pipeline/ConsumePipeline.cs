@@ -16,14 +16,16 @@ public sealed class ConsumePipeline
     private readonly FrozenDictionary<MessageType, ConsumeDelegate> _dispatch;
     private readonly ConsumeFailureDelegate _failure;
     private readonly IFailureClassifier _classifier;
+    private readonly FailurePipeline? _failures;
     private readonly ConsumeDelegate _pipeline;
     private readonly DefaultMessageContext?[] _contexts;
     private readonly WireIdentity[] _wireIdentities;
 
     internal ConsumePipeline(IServiceScopeFactory scopes, FrozenDictionary<MessageType, ConsumeDelegate> dispatch,
-        IReadOnlyList<IConsumeMiddleware> middleware, ConsumeFailureDelegate failure, IFailureClassifier classifier, int capacity)
+        IReadOnlyList<IConsumeMiddleware> middleware, ConsumeFailureDelegate failure, IFailureClassifier classifier, int capacity, FailurePipeline? failures)
     {
         _scopes = scopes;
+        _failures = failures;
         _dispatch = dispatch;
         _failure = failure;
         _classifier = classifier;
@@ -102,7 +104,7 @@ public sealed class ConsumePipeline
     {
         ArgumentNullException.ThrowIfNull(context);
         context.BeginProcessing(this);
-        return ProcessCoreAsync(context);
+        return _failures is null ? ProcessCoreAsync(context) : ProcessWithFailuresAsync(context);
     }
 
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
@@ -136,6 +138,88 @@ public sealed class ConsumePipeline
         }
         finally
         {
+            context.EndProcessing();
+        }
+    }
+
+    [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
+    private async ValueTask ProcessWithFailuresAsync(DefaultMessageContext context)
+    {
+        try
+        {
+            var retry = 0;
+            var initialize = true;
+            while (true)
+            {
+                context.CancellationToken.ThrowIfCancellationRequested();
+                Exception? failure = null;
+                var action = FailureAction.Retry;
+                var scope = new AsyncServiceScope(_scopes.CreateScope());
+                Sender? sender = null;
+                try
+                {
+                    context.SetServices(scope.ServiceProvider);
+                    try
+                    {
+                        if (initialize)
+                        {
+                            initialize = false;
+                            context.InitializeAttempts();
+                        }
+                        // This is the same scoped sender injected into handlers and their dependencies.
+                        var service = scope.ServiceProvider.GetService<ISender>();
+                        if (service is not null && service is not Sender)
+                            throw new InvalidOperationException("The failure pipeline requires Relayer's scoped ISender to buffer failed-attempt sends.");
+                        sender = (Sender?)service;
+                        if (sender is not null) sender.AttemptBuffer = context.SendBuffer;
+                        if (!_dispatch.TryGetValue(context.MessageType, out var dispatch))
+                            throw new UnknownMessageTypeException(context.MessageType);
+                        context.Dispatch = dispatch;
+                        await _pipeline(context).ConfigureAwait(false);
+                    }
+                    catch (OperationCanceledException) when (context.CancellationToken.IsCancellationRequested) { throw; }
+                    catch (Exception error)
+                    {
+                        failure = error;
+                        action = _classifier.Classify(error, context);
+                        _failures!.Record(context, error);
+                    }
+                }
+                finally
+                {
+                    try
+                    {
+                        await scope.DisposeAsync().ConfigureAwait(false);
+                    }
+                    finally
+                    {
+                        // Disposers can send too. Keep the buffer and sender reserved until all disposal ends,
+                        // including when a disposer throws before DI reaches the sender's own Dispose.
+                        sender?.EndAttempt();
+                    }
+                }
+                context.CancellationToken.ThrowIfCancellationRequested();
+                if (failure is null)
+                {
+                    // Dispose the successful scope before allowing sends to escape. A flush failure propagates:
+                    // some sends may have succeeded, so do not retry the handler or return a settlement decision.
+                    await context.SendBuffer.FlushAsync(context.CancellationToken).ConfigureAwait(false);
+                    return;
+                }
+                context.SendBuffer.Clear();
+                if (action == FailureAction.Retry && _failures!.CanRetry(retry))
+                {
+                    await _failures.WaitRetryAsync(retry++, context.CancellationToken).ConfigureAwait(false);
+                    context.NextAttempt();
+                    continue;
+                }
+                await _failures!.HandleAsync(context, failure, action).ConfigureAwait(false);
+                return;
+            }
+        }
+        finally
+        {
+            context.SendBuffer.Clear();
             context.EndProcessing();
         }
     }

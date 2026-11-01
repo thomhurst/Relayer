@@ -12,6 +12,7 @@ public sealed class ConsumePipelineBuilder
     private readonly IMessageSerializer _serializer;
     private readonly ConsumeFailureDelegate _failure;
     private readonly IFailureClassifier _classifier;
+    private readonly FailurePipeline? _failures;
     private readonly Dictionary<MessageType, ConsumeDelegate> _dispatch = [];
     private readonly List<IConsumeMiddleware> _middleware = [];
     private bool _built;
@@ -30,6 +31,15 @@ public sealed class ConsumePipelineBuilder
         _serializer = serializer;
         _failure = failure;
         _classifier = classifier ?? new DefaultFailureClassifier();
+    }
+
+    /// <summary>Creates a consumer with executable, startup-validated retry and durable failure handling.</summary>
+    public ConsumePipelineBuilder(IServiceScopeFactory scopes, MessageTypeRegistry messages,
+        IMessageSerializer serializer, FailurePipeline failures, IFailureClassifier? classifier = null)
+        : this(scopes, messages, serializer, static (_, error, _) => ValueTask.FromException(error), classifier)
+    {
+        ArgumentNullException.ThrowIfNull(failures);
+        _failures = failures;
     }
 
     /// <summary>Selects a generated single-message dispatcher and its registered wire identity at startup.</summary>
@@ -72,7 +82,7 @@ public sealed class ConsumePipelineBuilder
             throw new InvalidOperationException("Register at least one generated handler before building a consumer.");
         }
         _built = true;
-        return new ConsumePipeline(_scopes, _dispatch.ToFrozenDictionary(), _middleware, _failure, _classifier, contextPoolCapacity);
+        return new ConsumePipeline(_scopes, _dispatch.ToFrozenDictionary(), _middleware, _failure, _classifier, contextPoolCapacity, _failures);
     }
 
     private void EnsureMutable()

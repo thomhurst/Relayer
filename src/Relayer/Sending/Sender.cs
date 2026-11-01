@@ -2,8 +2,13 @@ namespace Relayer;
 
 internal enum SendMode { Automatic, Direct, Outbox }
 
-internal sealed class Sender(SendPipeline pipeline, IOutboxEnlistment? outbox = null) : ISender
+internal class Sender(SendPipeline pipeline, IOutboxEnlistment? outbox = null) : ISender
 {
+    internal IOutboxEnlistment? Outbox { get; set; } = outbox;
+    internal AttemptSendBuffer? AttemptBuffer { get; set; }
+
+    internal virtual void EndAttempt() => AttemptBuffer = null;
+
     public ValueTask SendAsync<TMessage>(TMessage message, CancellationToken cancellationToken = default) =>
         Send(message, null, SendMode.Automatic, cancellationToken);
 
@@ -29,11 +34,11 @@ internal sealed class Sender(SendPipeline pipeline, IOutboxEnlistment? outbox = 
         {
             return ValueTask.FromCanceled(cancellationToken);
         }
-        var enlistment = mode != SendMode.Direct && outbox is { IsActive: true } ? outbox : null;
+        var enlistment = mode != SendMode.Direct && Outbox is { IsActive: true } ? Outbox : null;
         if (mode == SendMode.Outbox && enlistment is null)
         {
             throw new InvalidOperationException("SendViaOutboxAsync requires an outbox with an active transaction in this scope.");
         }
-        return pipeline.GetRoute<TMessage>().SendAsync(message, configure, enlistment, cancellationToken);
+        return pipeline.GetRoute<TMessage>().SendAsync(message, configure, enlistment, cancellationToken, AttemptBuffer);
     }
 }

@@ -54,7 +54,7 @@ internal sealed class EndpointCapabilityValidator
         foreach (var consumer in definition.Consumers) GetCapabilities(transport, consumer.Source);
     }
 
-    private TransportCapabilities? GetCapabilities(ITransport transport, string endpoint)
+    internal TransportCapabilities? GetCapabilities(ITransport transport, string endpoint)
     {
         if (string.IsNullOrWhiteSpace(endpoint)) return null; // Declaration validation reports blank endpoints.
         var key = (transport.Name, endpoint);

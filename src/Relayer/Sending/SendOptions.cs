@@ -17,6 +17,13 @@ public sealed class SendOptions
     /// <summary>Whether this send contains native callbacks, which cannot be persisted in an outbox.</summary>
     public bool HasNativeConfigurators => _nativeConfigurators is { Count: > 0 };
 
+    internal void CopyNativeTo(SendOptions target)
+    {
+        if (_nativeConfigurators is not { Count: > 0 }) return;
+        target._nativeConfigurators ??= [];
+        target._nativeConfigurators.AddRange(_nativeConfigurators);
+    }
+
     internal void Reset()
     {
         Headers.Clear();
