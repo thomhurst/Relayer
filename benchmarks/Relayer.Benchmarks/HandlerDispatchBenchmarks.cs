@@ -56,7 +56,7 @@ public class HandlerDispatchBenchmarks
     {
         public override string MessageId => "benchmark";
         public override MessageType MessageType => new("benchmark", 1);
-        public override IReadOnlyDictionary<string, string> Headers { get; } = new Dictionary<string, string>();
+        public override MessageHeaders Headers => MessageHeaders.Empty;
         public override int Attempt => 1;
         public override IServiceProvider Services { get; } = services;
         public override MessageFeatures Features { get; } = new();

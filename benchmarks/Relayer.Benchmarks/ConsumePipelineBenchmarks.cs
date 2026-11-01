@@ -45,11 +45,17 @@ public class ConsumePipelineBenchmarks
     public async ValueTask DirectScopedDispatch()
     {
         var scope = new AsyncServiceScope(_scopes.CreateScope());
-        await using var lifetime = scope.ConfigureAwait(false);
-        _directContext.Provider = scope.ServiceProvider;
-        var message = _serializer.Deserialize<Payload>(_message.Body);
-        var handler = _descriptor.Resolve(scope.ServiceProvider);
-        await _descriptor.DispatchAsync(handler, message, _directContext, default).ConfigureAwait(false);
+        try
+        {
+            _directContext.Provider = scope.ServiceProvider;
+            var message = _serializer.Deserialize<Payload>(_message.Body);
+            var handler = _descriptor.Resolve(scope.ServiceProvider);
+            await _descriptor.DispatchAsync(handler, message, _directContext, default).ConfigureAwait(false);
+        }
+        finally
+        {
+            await scope.DisposeAsync().ConfigureAwait(false);
+        }
     }
 
     [Benchmark]
@@ -95,7 +101,7 @@ public class ConsumePipelineBenchmarks
         public IServiceProvider Provider { get; set; } = null!;
         public override string MessageId => "benchmark";
         public override MessageType MessageType => new("benchmark.payload", 1);
-        public override IReadOnlyDictionary<string, string> Headers => System.Collections.ObjectModel.ReadOnlyDictionary<string, string>.Empty;
+        public override MessageHeaders Headers => MessageHeaders.Empty;
         public override int Attempt => 1;
         public override IServiceProvider Services => Provider;
         public override MessageFeatures Features { get; } = new();

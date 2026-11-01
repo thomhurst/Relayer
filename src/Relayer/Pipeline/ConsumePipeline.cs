@@ -1,5 +1,7 @@
 using System.Collections.Frozen;
 using System.Runtime.CompilerServices;
+using System.Text;
+using System.Globalization;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace Relayer;
@@ -16,6 +18,7 @@ public sealed class ConsumePipeline
     private readonly IFailureClassifier _classifier;
     private readonly ConsumeDelegate _pipeline;
     private readonly DefaultMessageContext?[] _contexts;
+    private readonly WireIdentity[] _wireIdentities;
 
     internal ConsumePipeline(IServiceScopeFactory scopes, FrozenDictionary<MessageType, ConsumeDelegate> dispatch,
         IReadOnlyList<IConsumeMiddleware> middleware, ConsumeFailureDelegate failure, IFailureClassifier classifier, int capacity)
@@ -25,6 +28,13 @@ public sealed class ConsumePipeline
         _failure = failure;
         _classifier = classifier;
         _contexts = new DefaultMessageContext[capacity];
+        _wireIdentities = new WireIdentity[dispatch.Count];
+        var identityIndex = 0;
+        foreach (var identity in dispatch.Keys)
+        {
+            var text = identity.ToString();
+            _wireIdentities[identityIndex++] = new(identity, text, Encoding.UTF8.GetBytes(text));
+        }
         for (var i = 0; i < capacity; i++)
         {
             _contexts[i] = new DefaultMessageContext(this);
@@ -43,18 +53,48 @@ public sealed class ConsumePipeline
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(message.MessageId);
         ArgumentOutOfRangeException.ThrowIfLessThan(message.Attempt, 1);
+        var context = RentContext();
+        context.Initialize(message, cancellationToken);
+        return context;
+    }
+
+    private DefaultMessageContext RentContext()
+    {
         for (var i = 0; i < _contexts.Length; i++)
         {
             if (Interlocked.Exchange(ref _contexts[i], null) is { } context)
             {
-                context.Initialize(message, cancellationToken);
                 return context;
             }
         }
-        var overflow = new DefaultMessageContext(this);
-        overflow.Initialize(message, cancellationToken);
-        return overflow;
+        return new DefaultMessageContext(this);
     }
+
+    internal DefaultMessageContext RentContext(ReceiveMessageState message, CancellationToken cancellationToken)
+    {
+        var context = RentContext();
+        context.Initialize(message, cancellationToken);
+        return context;
+    }
+
+    internal MessageType ResolveWireIdentity(WireString wire)
+    {
+        foreach (var identity in _wireIdentities)
+        {
+            if (wire.Text is { } text ? text == identity.Text : wire.Utf8.Span.SequenceEqual(identity.Utf8))
+                return identity.Identity;
+        }
+
+        // Unknown identities are an error path. Preserve them for the consume failure classifier.
+        var unknown = wire.ToString();
+        var separator = unknown.LastIndexOf(";v=", StringComparison.Ordinal);
+        if (separator <= 0 || !int.TryParse(unknown.AsSpan(separator + 3), NumberStyles.None,
+                CultureInfo.InvariantCulture, out var version) || version < 1)
+            throw new MessageEnvelopeException("The incoming message type must contain a stable name and positive version, for example 'orders;v=1'.");
+        return new(unknown[..separator], version);
+    }
+
+    private readonly record struct WireIdentity(MessageType Identity, string Text, byte[] Utf8);
 
     /// <summary>Processes one delivery in a fresh async DI scope. Does not settle the native message.</summary>
     /// <remarks>Cancellation propagates. Failure-pipeline and scope-disposal errors propagate, preventing successful settlement.</remarks>
@@ -72,23 +112,26 @@ public sealed class ConsumePipeline
         {
             context.CancellationToken.ThrowIfCancellationRequested();
             var scope = new AsyncServiceScope(_scopes.CreateScope());
-            await using var scopeLifetime = scope.ConfigureAwait(false);
-            context.SetServices(scope.ServiceProvider);
-            if (!_dispatch.TryGetValue(context.MessageType, out var dispatch))
-            {
-                var error = new UnknownMessageTypeException(context.MessageType);
-                await _failure(context, error, _classifier.Classify(error, context)).ConfigureAwait(false);
-                return;
-            }
-            context.Dispatch = dispatch;
             try
             {
-                await _pipeline(context).ConfigureAwait(false);
+                context.SetServices(scope.ServiceProvider);
+                try
+                {
+                    if (!_dispatch.TryGetValue(context.MessageType, out var dispatch))
+                        throw new UnknownMessageTypeException(context.MessageType);
+                    context.Dispatch = dispatch;
+                    await _pipeline(context).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (context.CancellationToken.IsCancellationRequested) { throw; }
+                catch (Exception error)
+                {
+                    await _failure(context, error, _classifier.Classify(error, context)).ConfigureAwait(false);
+                }
             }
-            catch (OperationCanceledException) when (context.CancellationToken.IsCancellationRequested) { throw; }
-            catch (Exception error)
+            finally
             {
-                await _failure(context, error, _classifier.Classify(error, context)).ConfigureAwait(false);
+                // Calling the struct directly avoids boxing it through IAsyncDisposable.ConfigureAwait.
+                await scope.DisposeAsync().ConfigureAwait(false);
             }
         }
         finally

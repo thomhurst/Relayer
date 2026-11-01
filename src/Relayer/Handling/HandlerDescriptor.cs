@@ -43,7 +43,7 @@ public abstract class HandlerDescriptor<TMessage>(Type handlerType)
             TMessage message;
             try
             {
-                message = serializer.Deserialize<TMessage>(incoming.Message.Body);
+                message = serializer.Deserialize<TMessage>(incoming.Body);
             }
             catch (OperationCanceledException) when (context.CancellationToken.IsCancellationRequested) { throw; }
             catch (Exception error)

@@ -1,5 +1,8 @@
 namespace Relayer;
 
+/// <summary>The incoming native message is missing or contains invalid required envelope metadata.</summary>
+public sealed class MessageEnvelopeException(string message) : Exception(message);
+
 /// <summary>The consumer has no generated handler for an incoming wire identity.</summary>
 public sealed class UnknownMessageTypeException(MessageType messageType)
     : Exception($"No handler is configured for message type '{messageType}'. Register its stable identity and generated handler on this consumer.")
@@ -21,6 +24,6 @@ public sealed class DefaultFailureClassifier : IFailureClassifier
 {
     /// <inheritdoc />
     public FailureAction Classify(Exception exception, MessageContext context)
-        => exception is UnknownMessageTypeException or MessageDeserializationException
+        => exception is UnknownMessageTypeException or MessageDeserializationException or MessageEnvelopeException
             ? FailureAction.DeadLetter : FailureAction.Retry;
 }

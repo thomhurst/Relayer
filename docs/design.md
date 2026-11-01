@@ -140,6 +140,8 @@ The core never returns a disposition the endpoint's capabilities do not declare.
 
 The pipeline puts the native message in the feature collection as `NativeMessage<TIncoming>`, which is pooled with the context. A transport's `context.ServiceBus()` extension wraps it in a struct view, so native access costs no allocation and no per-transport feature class.
 
+The implemented receive seam adapts a composed `ConsumePipeline` with `new ReceivePipeline<TIncoming,TBinding>(consumer, headerNames, contextPoolCapacity)`. See [native receive SPI](receive-spi.md) for binding, settlement, pooling, and batch lifetime contracts. Failure-policy and capability fallback composition remain separate from this seam.
+
 **3. Sending.** The core hands the transport a transport-neutral `OutgoingMessage`: destination, body bytes, named headers, ordering key, `DeliverAt`, and the native configurators from `SendOptions`. Its fields are exactly an outbox row (§6.3), so direct sends, outbox dispatch, scheduled re-sends and dead-letter copies all use the same two methods:
 
 ```csharp
