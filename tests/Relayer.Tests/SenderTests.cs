@@ -410,6 +410,44 @@ public class SenderTests
     }
 
     [Test]
+    [Arguments("orders.standard", "string")]
+    [Arguments("orders.standard", "scalar")]
+    [Arguments("orders.standard", "none")]
+    [Arguments("orders.fifo", "string")]
+    [Arguments("orders.fifo", "scalar")]
+    [Arguments("orders.fifo", "none")]
+    public async Task Startup_validates_ordering_against_the_destination_capabilities(string destination, string key)
+    {
+        var transport = new RecordingTransport("events") { UnorderedEndpoint = "orders.standard" };
+        using var provider = CreateProvider(builder => builder.DeclareRoute<OrderPlaced>("events", destination, route =>
+        {
+            if (key == "string") route.OrderingKey(static _ => "customer");
+            if (key == "scalar") route.OrderingKey(static message => message.OrderId);
+        }), transport);
+        Func<Task> start = async () =>
+        {
+            foreach (var service in provider.GetServices<IHostedService>()) await service.StartAsync(default);
+        };
+
+        if (destination == "orders.standard" && key != "none")
+        {
+            await Assert.That(start).Throws<OptionsValidationException>()
+                .WithMessageContaining("Send route 'tests.order-placed;v=2' on transport 'events' to endpoint 'orders.standard' declares an OrderingKey, but the endpoint does not support OrderedByKey. Configure an endpoint with native ordering or remove the OrderingKey declaration.");
+            await Assert.That(transport.Count).IsEqualTo(0);
+        }
+        else
+        {
+            await start();
+            using var scope = provider.CreateScope();
+            var sender = scope.ServiceProvider.GetRequiredService<ISender>();
+            await sender.SendAsync(new OrderPlaced(Guid.NewGuid()));
+            await sender.SendAsync(new OrderPlaced(Guid.NewGuid()));
+        }
+
+        await Assert.That(transport.CapabilityEndpoints).IsEquivalentTo(new[] { destination });
+    }
+
+    [Test]
     public async Task Raw_mode_preserves_custom_headers_and_writes_no_envelope()
     {
         var transport = new RecordingTransport("events");
@@ -501,7 +539,7 @@ public class SenderTests
     private sealed class SinkTransport : ITransport
     {
         public string Name => "sink";
-        public TransportCapabilities GetCapabilities(string endpoint) => new();
+        public TransportCapabilities GetCapabilities(string endpoint) => new() { OrderedByKey = true };
         public ValueTask SendAsync(OutgoingMessage message, CancellationToken cancellationToken) => ValueTask.CompletedTask;
         public ValueTask SendBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken) => throw new NotSupportedException();
         public Task StartAsync(CancellationToken cancellationToken) => Task.CompletedTask;
@@ -547,7 +585,13 @@ public class SenderTests
     private sealed class RecordingTransport(string name) : ITransport
     {
         public string Name => name;
-        public TransportCapabilities GetCapabilities(string endpoint) => new() { MaxDeliveryDelay = TimeSpan.MaxValue, OrderedByKey = true };
+        public string? UnorderedEndpoint { get; init; }
+        public List<string> CapabilityEndpoints { get; } = [];
+        public TransportCapabilities GetCapabilities(string endpoint)
+        {
+            CapabilityEndpoints.Add(endpoint);
+            return new() { MaxDeliveryDelay = TimeSpan.MaxValue, OrderedByKey = endpoint != UnorderedEndpoint };
+        }
         public string? Destination { get; private set; }
         public string? Body { get; private set; }
         public string? OrderingKey { get; private set; }

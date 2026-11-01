@@ -68,7 +68,7 @@ public class SendPipelineBenchmarks
     private sealed class SinkTransport : ITransport
     {
         public string Name => "sink";
-        public TransportCapabilities GetCapabilities(string endpoint) => new();
+        public TransportCapabilities GetCapabilities(string endpoint) => new() { OrderedByKey = true };
         public int Bytes { get; private set; }
         public ValueTask SendAsync(OutgoingMessage message, CancellationToken cancellationToken)
         {

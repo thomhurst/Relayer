@@ -43,6 +43,11 @@ internal sealed class SendRouteRegistration<TMessage>(string transportName, stri
         }
         var failures = new List<string>();
         options.Validate($"Send route '{messageType}'", failures);
+        var capabilities = transport.GetCapabilities(destination);
+        if (orderingKey is not null && !capabilities.OrderedByKey)
+        {
+            failures.Add($"Send route '{messageType}' on transport '{transportName}' to endpoint '{destination}' declares an OrderingKey, but the endpoint does not support OrderedByKey. Configure an endpoint with native ordering or remove the OrderingKey declaration.");
+        }
         if (failures.Count != 0) throw new OptionsValidationException(Options.DefaultName, typeof(SendRouteOptions), failures);
         return new SendRoute<TMessage>(transport, destination, messageType, options, orderingKey, serializer, pipeline);
     }
