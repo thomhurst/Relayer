@@ -158,10 +158,41 @@ public sealed class MessageOperationTracing
 
     private sealed class Settlement(MessageOperationTracing operation, ConsumeDelegate settlement)
     {
-        [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
-        internal async ValueTask InvokeAsync(MessageContext context)
+        internal ValueTask InvokeAsync(MessageContext context)
         {
             ArgumentNullException.ThrowIfNull(context);
+            if (operation._tracing.Source.HasListeners()) return InvokeTracedAsync(context);
+            try
+            {
+                var pending = settlement(context);
+                if (!pending.IsCompletedSuccessfully) return AwaitUntracedAsync(context, pending);
+                // Consume a completed ValueTask without creating an async state machine.
+                pending.GetAwaiter().GetResult();
+                return default;
+            }
+            catch (OperationCanceledException) when (context.CancellationToken.IsCancellationRequested) { throw; }
+            catch (Exception error)
+            {
+                (context as DefaultMessageContext)?.LogSettlementFailure(error);
+                throw;
+            }
+        }
+
+        [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
+        private static async ValueTask AwaitUntracedAsync(MessageContext context, ValueTask pending)
+        {
+            try { await pending.ConfigureAwait(false); }
+            catch (OperationCanceledException) when (context.CancellationToken.IsCancellationRequested) { throw; }
+            catch (Exception error)
+            {
+                (context as DefaultMessageContext)?.LogSettlementFailure(error);
+                throw;
+            }
+        }
+
+        [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
+        private async ValueTask InvokeTracedAsync(MessageContext context)
+        {
             var native = context as DefaultMessageContext;
             using var activity = native is not null
                 ? ConsumeTracing.Start(operation._tracing, operation, native, linkCreation: false)

@@ -464,20 +464,7 @@ public class ConsumeTracingTests
     [Arguments(3)]
     public async Task Hosted_in_memory_transport_traces_send_process_and_core_or_manual_settlement(int mode)
     {
-        var services = new ServiceCollection();
-        services.AddSingleton<Control>();
-        services.AddSingleton<Handler>();
-        services.AddSingleton<IMessageSerializer, Serializer>();
-        services.AddRelayer(r =>
-        {
-            r.MessageTypes.Add<int>("number");
-            r.InMemory("local", transport =>
-            {
-                transport.Send<int>("orders");
-                transport.Consume("orders", consumer => consumer.Handler<Handler>());
-            });
-        });
-        await using var provider = services.BuildServiceProvider();
+        await using var provider = HostedProvider();
         provider.GetRequiredService<Control>().Handle = context =>
         {
             if (mode == 2) throw new ApplicationException("poison");
@@ -525,6 +512,106 @@ public class ConsumeTracingTests
         await Assert.That(process.Status).IsEqualTo(mode == 2 ? ActivityStatusCode.Error : ActivityStatusCode.Unset);
         await Assert.That(process.GetTagItem("messaging.destination.partition.id")).IsEqualTo("0");
         await Assert.That(stopped.Count).IsEqualTo(3);
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Native_settlement_failure_logs_once_per_delivery_even_when_caught(bool caught)
+    {
+        var logger = new Logger();
+        await using var provider = HostedProvider(new LoggerFactory(logger));
+        provider.GetRequiredService<Control>().Handle = context =>
+        {
+            try { context.Features.GetRequired<NativeMessage<InMemoryDelivery>>().Message.Redeliver(TimeSpan.MaxValue); }
+            catch (InvalidOperationException) when (caught) { }
+            return default;
+        };
+        var stopped = new ConcurrentQueue<Activity>();
+        var processed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var count = 0;
+        var tracing = provider.GetRequiredService<MessageTracing>();
+        using var listener = new ActivityListener
+        {
+            ShouldListenTo = source => ReferenceEquals(source, tracing.Source),
+            Sample = static (ref ActivityCreationOptions<ActivityContext> _) => ActivitySamplingResult.AllDataAndRecorded,
+            ActivityStopped = activity =>
+            {
+                stopped.Enqueue(activity);
+                if (activity.OperationName == "process orders" && Interlocked.Increment(ref count) == 2) processed.TrySetResult();
+            },
+        };
+        ActivitySource.AddActivityListener(listener);
+        var hosted = provider.GetServices<IHostedService>().ToArray();
+        try
+        {
+            foreach (var service in hosted) await service.StartAsync(default);
+            await using var scope = provider.CreateAsyncScope();
+            var sender = scope.ServiceProvider.GetRequiredService<ISender>();
+            await sender.SendAsync(1);
+            await sender.SendAsync(1);
+            await processed.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        }
+        finally
+        {
+            for (var i = hosted.Length - 1; i >= 0; i--) await hosted[i].StopAsync(default);
+        }
+        await Assert.That(logger.Entries.Count).IsEqualTo(2);
+        var errors = stopped.Where(a => a.OperationName == "redeliver orders" && a.Status == ActivityStatusCode.Error).ToArray();
+        await Assert.That(logger.Entries.Select(e => e.SpanId!)).IsEquivalentTo(errors.Select(a => a.SpanId.ToString()));
+        await Assert.That(stopped.Where(a => a.OperationName == "process orders").All(a =>
+            a.Status == (caught ? ActivityStatusCode.Unset : ActivityStatusCode.Error))).IsTrue();
+    }
+
+    private static ServiceProvider HostedProvider(ILoggerFactory? loggerFactory = null)
+    {
+        var services = new ServiceCollection();
+        services.AddSingleton<Control>();
+        services.AddSingleton<Handler>();
+        services.AddSingleton<IMessageSerializer, Serializer>();
+        if (loggerFactory is not null) services.AddSingleton(loggerFactory);
+        services.AddRelayer(r =>
+        {
+            r.MessageTypes.Add<int>("number");
+            r.InMemory("local", transport =>
+            {
+                transport.Options.Configure(options => options.Endpoints["orders"] = new()
+                {
+                    Capabilities = new() { DeadLetter = true, MaxRedeliveryDelay = TimeSpan.FromMinutes(1), MaxBatchSize = 100 },
+                });
+                transport.Send<int>("orders");
+                transport.Consume("orders", consumer => consumer.Handler<Handler>());
+            });
+        });
+        return services.BuildServiceProvider();
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task No_listener_settlement_preserves_async_completion_logging_and_ambient_context(bool fail)
+    {
+        var logger = new Logger();
+        using var capture = new Capture(sampling: null, logger: logger);
+        await using var provider = Provider();
+        using var ambient = new Activity("request").Start();
+        var finished = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var complete = new MessageOperationTracing(capture.Tracing, Endpoint, MessagingOperation.Settle, "complete")
+            .WrapSettlement(_ => new(finished.Task));
+        var pipeline = Builder(provider).Tracing(capture.Tracing, Endpoint).Settle(complete).Build(1);
+        using var context = pipeline.RentContext(Message());
+        var pending = pipeline.ProcessAsync(context).AsTask();
+        await Assert.That(pending.IsCompleted).IsFalse();
+        await Assert.That(Activity.Current).IsSameReferenceAs(ambient);
+        if (fail)
+        {
+            finished.SetException(new ApplicationException("native"));
+            await Assert.That(async () => await pending).Throws<ApplicationException>();
+        }
+        else { finished.SetResult(); await pending; }
+        await Assert.That(Activity.Current).IsSameReferenceAs(ambient);
+        await Assert.That(capture.Stopped).IsEmpty();
+        await Assert.That(logger.Entries.Count).IsEqualTo(fail ? 1 : 0);
     }
 
     [Test]

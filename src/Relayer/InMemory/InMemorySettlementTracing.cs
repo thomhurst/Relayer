@@ -42,17 +42,18 @@ internal sealed class InMemorySettlementTracing
         return activity;
     }
 
-    internal void Fail(Activity? activity, Exception error, InMemoryMessage? message)
+    internal bool Fail(Activity? activity, Exception error, InMemoryMessage? message)
     {
         MessageOperationTracing.Fail(activity, "_OTHER");
         try
         {
             var logger = _tracing.Logger;
-            if (!logger.IsEnabled(LogLevel.Error)) return;
+            if (!logger.IsEnabled(LogLevel.Error)) return false;
             using var scope = logger.BeginScope(new ConsumeLogScope(Header(message, "ce_id"), Header(message, "ce_type"), Header(message, "ce_correlationid")));
             ConsumeLog.Failed(logger, error, activity?.TraceId.ToString(), activity?.SpanId.ToString());
+            return true;
         }
-        catch (Exception) { /* Logging cannot replace a native settlement error. */ }
+        catch (Exception) { return false; } // Logging cannot replace a native settlement error.
     }
 
     private static string? Header(InMemoryMessage? message, string name)

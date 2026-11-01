@@ -360,7 +360,7 @@ public sealed class ConsumePipeline
 
     internal void LogFailure(DefaultMessageContext context, Exception error)
     {
-        if (ReferenceEquals(context.LoggedSettlementError, error))
+        if (ReferenceEquals(context.LoggedSettlementError, error) || context.TryConsumeNativeSettlementError(error))
         {
             context.LoggedSettlementError = null;
             return;

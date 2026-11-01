@@ -283,6 +283,7 @@ internal sealed class InMemoryReceiver(InMemoryEndpoint endpoint, InMemoryReadSt
     private InMemoryMessage? _pending;
     private bool _manual;
     private Disposition _settlement;
+    private Exception? _loggedSettlementError;
     private long _committed = -1;
     private TimeSpan _retryDelay;
     internal string? Group { get; } = group;
@@ -303,9 +304,16 @@ internal sealed class InMemoryReceiver(InMemoryEndpoint endpoint, InMemoryReadSt
         }
         catch (Exception error)
         {
-            endpoint.SettlementTracing?.Fail(activity, error, _pending);
+            if (endpoint.SettlementTracing?.Fail(activity, error, _pending) == true) _loggedSettlementError = error;
             throw;
         }
+    }
+
+    internal bool TryConsumeLoggedSettlementError(Exception error)
+    {
+        if (!ReferenceEquals(_loggedSettlementError, error)) return false;
+        _loggedSettlementError = null;
+        return true;
     }
 
     internal async Task RunAsync(CancellationToken stop, CancellationToken abort)
@@ -333,6 +341,7 @@ internal sealed class InMemoryReceiver(InMemoryEndpoint endpoint, InMemoryReadSt
                 Disposition disposition;
                 try { disposition = await receive(delivery, abort).ConfigureAwait(false); }
                 catch { Attempt++; throw; }
+                finally { _loggedSettlementError = null; }
                 if (disposition.Kind == DispositionKind.SettledByHandler)
                 {
                     if (!_manual) throw new InvalidOperationException("SettledByHandler requires successful native settlement through InMemoryDelivery.");
@@ -364,7 +373,7 @@ internal sealed class InMemoryReceiver(InMemoryEndpoint endpoint, InMemoryReadSt
         catch (OperationCanceledException) when (stop.IsCancellationRequested || abort.IsCancellationRequested) { }
     }
 
-    internal void Clear() => _pending = null;
+    internal void Clear() { _pending = null; _loggedSettlementError = null; }
 }
 
 // One cancellation registration per loop, rather than one allocating channel read per message.
