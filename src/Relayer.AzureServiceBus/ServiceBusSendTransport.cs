@@ -105,8 +105,22 @@ internal sealed class ServiceBusSendTransport : ITransport, ITransportSendTracin
         if (messages.IsEmpty) return SendBatchCoreAsync(messages, cancellationToken);
         var destination = messages.Span[0].Destination;
         for (var i = 1; i < messages.Length; i++)
-            if (messages.Span[i].Destination != destination) return SendBatchCoreAsync(messages, cancellationToken);
+            if (messages.Span[i].Destination != destination) return SendMixedBatchAsync(messages, cancellationToken);
         return GetEndpoint(destination).Tracing is { } tracing ? tracing.SendBatchAsync(messages, cancellationToken) : SendBatchCoreAsync(messages, cancellationToken);
+    }
+
+    [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
+    private async ValueTask SendMixedBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken)
+    {
+        for (var i = 0; i < messages.Length; i++) Validate(messages.Span[i], cancellationToken);
+        var start = 0;
+        while (start < messages.Length)
+        {
+            var end = start + 1;
+            while (end < messages.Length && messages.Span[end].Destination == messages.Span[start].Destination) end++;
+            await SendBatchAsync(messages.Slice(start, end - start), cancellationToken).ConfigureAwait(false);
+            start = end;
+        }
     }
 
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]

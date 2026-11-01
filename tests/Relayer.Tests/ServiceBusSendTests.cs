@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using Azure;
 using Azure.Core.Amqp;
 using Azure.Messaging.ServiceBus;
@@ -125,6 +126,34 @@ public class ServiceBusSendTests
         await Assert.That(orders.Sent.Select(message => message.Body.ToMemory().Span[0]).SequenceEqual(new byte[] { 1, 2, 3, 4 })).IsTrue();
         await Assert.That(events.Sent.Single().Body.ToMemory().Span[0]).IsEqualTo((byte)5);
         await Assert.That(calls).IsEqualTo(5);
+    }
+
+    [Test]
+    public async Task Mixed_destination_batches_trace_each_native_group_and_preserve_creation_context()
+    {
+        var services = new ServiceCollection();
+        services.AddRelayer(_ => { });
+        await using var provider = services.BuildServiceProvider();
+        var tracing = provider.GetRequiredService<MessageTracing>();
+        var spans = new List<Activity>();
+        using var listener = new ActivityListener
+        {
+            ShouldListenTo = source => ReferenceEquals(source, tracing.Source),
+            Sample = (ref ActivityCreationOptions<ActivityContext> _) => ActivitySamplingResult.AllDataAndRecorded,
+            ActivityStopped = spans.Add,
+        };
+        ActivitySource.AddActivityListener(listener);
+        var client = new NativeClient();
+        await using var transport = new ServiceBusSendTransport("bus", client, false, Options(client),
+            ["orders", "events"], TopologyMode.None, tracing: tracing);
+        const string parent = "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01";
+        KeyValuePair<string, WireString>[] headers = [new("cloudEvents:id", new("original")), new("traceparent", new(parent))];
+        await transport.SendBatchAsync(new[] { new OutgoingMessage("orders", new byte[] { 1 }, headers),
+            new OutgoingMessage("events", new byte[] { 2 }, headers) }, default);
+        await Assert.That(spans.Count).IsEqualTo(2);
+        await Assert.That(spans.Select(span => span.DisplayName).SequenceEqual(new[] { "send orders", "send events" })).IsTrue();
+        await Assert.That(spans.All(span => Equals(span.GetTagItem("messaging.system"), "servicebus"))).IsTrue();
+        await Assert.That(client.Senders.All(sender => Equals(sender.Sent.Single().ApplicationProperties["traceparent"], parent))).IsTrue();
     }
 
     [Test]
