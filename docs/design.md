@@ -640,6 +640,8 @@ Relayer-specific instruments, for which the conventions define nothing:
 
 - Logging uses `LoggerMessage` source generation and scopes that carry the message ID, type, and correlation ID around generated failure logs. Successful deliveries open no logging scope, preserving zero incremental allocations with Error logging enabled. Failure scopes hold read-only identity snapshots that providers can retain after processing.
 - Health checks: transport connectivity, consumer liveness (each consumer has made progress or is idle), and outbox backlog thresholds.
+  The optional `Relayer.HealthChecks` package registers all three with `services.AddRelayerHealthChecks()`.
+  [Health integration](https://relayer.tomlonghurst.dev/docs/guides/health-checks) documents explicit native adapters, unavailable state and validated thresholds.
 
 ---
 
@@ -716,6 +718,7 @@ Techniques:
 | `Relayer.Serialization.*` | Protobuf, Avro, MessagePack | The respective library |
 | `Relayer.Testing` / `.Testing.Containers` | Harness and fixtures | `Testcontainers` |
 | `Relayer.Aspire` | Aspire integration (resources and health) | `Aspire.Hosting` |
+| `Relayer.HealthChecks` | Connectivity, consumer liveness and outbox backlog health integration | `Microsoft.Extensions.Diagnostics.HealthChecks` |
 | Later | `Relayer.Nats`, `Relayer.GooglePubSub`, `Relayer.Pulsar`, `Relayer.RabbitMQ.Streams`, `Relayer.Sagas` | — |
 
 Transports target the latest major version of their native client. Updating clients is part of the release cadence (Rebus #1204, Rebus.RabbitMq #137, CAP #1573).

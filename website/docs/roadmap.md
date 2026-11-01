@@ -15,6 +15,8 @@ Relayer is in early development. Track progress in [GitHub issues](https://githu
 - Typed failure classification, in-process retries, delayed redelivery and dead-letter copies with error history.
 - Declared topology with validate and provision modes, and JSON export.
 - The [in-memory transport](transports/in-memory.md), with native queue and partitioned log semantics.
+- Core tracing, consume metrics and generated failure logs; native transport and outbox instrumentation remains planned.
+- The optional [health integration](guides/health-checks.md), with connectivity, consumer liveness and backlog checks. Native adapters remain planned; applications supply keyed providers today.
 
 ## Phases
 
