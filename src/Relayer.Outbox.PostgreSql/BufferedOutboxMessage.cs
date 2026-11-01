@@ -6,6 +6,7 @@ namespace Relayer.Outbox.PostgreSql;
 internal sealed class BufferedOutboxMessage
 {
     private readonly ArrayBufferWriter<byte> _buffer = new();
+    private KeyValuePair<string, WireString>[] _decodedHeaders = [];
     internal string Transport { get; private set; } = "";
     internal string Destination { get; private set; } = "";
     internal string MessageType { get; private set; } = "";
@@ -48,7 +49,7 @@ internal sealed class BufferedOutboxMessage
         // Take slices only after growth has finished: ArrayBufferWriter can replace its backing array.
         Body = _buffer.WrittenMemory[..bodyLength];
         Headers = _buffer.WrittenMemory[bodyLength..headerEnd];
-        OrderingKey = message.OrderingKey is null ? null : _buffer.WrittenMemory[headerEnd..];
+        OrderingKey = message.OrderingKey is null ? (ReadOnlyMemory<byte>?)null : _buffer.WrittenMemory[headerEnd..];
         Lane = null;
         if (OrderingKey is { } orderingKey)
         {
@@ -69,6 +70,10 @@ internal sealed class BufferedOutboxMessage
         else _buffer.Write(value.Utf8.Span);
     }
 
+    internal OutgoingMessage ToMessage() => new(Destination, Body,
+        OutboxHeaderCodec.Read(Headers, ref _decodedHeaders),
+        OrderingKey is { } key ? new WireString(key) : null);
+
     internal void Clear()
     {
         Transport = Destination = MessageType = "";
@@ -79,6 +84,9 @@ internal sealed class BufferedOutboxMessage
         Lane = null;
         Body = Headers = default;
         OrderingKey = null;
+        // Retain decoded names for the codec's next use, but release all borrowed payload slices.
+        for (var i = 0; i < _decodedHeaders.Length; i++)
+            _decodedHeaders[i] = new(_decodedHeaders[i].Key, default);
         _buffer.Clear();
     }
 }

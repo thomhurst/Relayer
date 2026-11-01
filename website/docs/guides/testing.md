@@ -79,7 +79,7 @@ finally
 await harness.WaitForIdleAsync(deadline.Token);
 ```
 
-Keep the lease from before the producer or outbox commit until dispatch finishes or the transaction rolls back. The native dispatch must use the registered `ITransport` services for observation. Transactional outbox integrations and dispatch workers remain [planned](../roadmap.md); the current enlistment and native dispatch seams are both observable. The harness does not provide an outbox implementation.
+Keep the lease from before the producer or outbox commit until dispatch finishes or the transaction rolls back. The native dispatch must use the registered `ITransport` services for observation. [EF Core enlistment](../reference/ef-core-outbox.md) and [unordered PostgreSQL direct dispatch](../reference/direct-dispatch.md) are available separately; recovery polling and ordered dispatch remain [planned](../roadmap.md). The harness does not provide an outbox implementation or automatically track a direct dispatch queue as outstanding work.
 
 Cancelling an idle wait cancels only that caller's wait. It does not stop processing or other waiters. Use a test deadline so poison messages configured for indefinite redelivery cannot hang a test.
 

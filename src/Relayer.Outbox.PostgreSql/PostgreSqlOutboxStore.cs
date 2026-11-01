@@ -15,10 +15,14 @@ public sealed class PostgreSqlOutboxStore : IOutboxStore
     private readonly string _claim;
     private readonly string _renew;
     private readonly string _complete;
+    private readonly string _completeBatch;
     private readonly string _fail;
     private readonly string _count;
     private readonly ScalarOperation<bool> _mutation = new(static value => value is true);
     private readonly ScalarOperation<long?> _pendingCount = new(static value => (long?)value);
+    private readonly ScalarOperation<long> _completedCount = new(static value => (long)value!);
+    private readonly List<Guid> _completionIds = [];
+    private readonly List<Guid> _completionTokens = [];
     private readonly List<HeaderSlot> _headers = [];
 
     /// <summary>Uses an application-owned data source and snapshots the schema/table prefix.</summary>
@@ -36,6 +40,7 @@ public sealed class PostgreSqlOutboxStore : IOutboxStore
         _claim = $"UPDATE {table} SET claim_token = @token, claim_expires_at = @expires WHERE id = @id AND {eligible} RETURNING true";
         _renew = $"UPDATE {table} SET claim_expires_at = GREATEST(claim_expires_at, @expires) WHERE {fenced} RETURNING true";
         _complete = $"DELETE FROM {table} WHERE {fenced} RETURNING true";
+        _completeBatch = $"WITH deleted AS (DELETE FROM {table} AS row USING unnest(@ids, @tokens) AS claims(id, token) WHERE row.id = claims.id AND row.claim_token = claims.token AND row.claim_expires_at > @now RETURNING row.id) SELECT count(*) FROM deleted";
         _fail = $"UPDATE {table} SET attempts = attempts + 1, last_error = @error, claim_token = NULL, claim_expires_at = NULL WHERE {fenced} RETURNING true";
         _count = $"SELECT count(*) FROM {table} WHERE {eligible}";
     }
@@ -94,6 +99,28 @@ public sealed class PostgreSqlOutboxStore : IOutboxStore
     {
         Validate(claim);
         return _mutation.Start(CreateMutation(_complete, claim, now), cancellationToken);
+    }
+
+    /// <summary>Deletes sent rows in one statement, fencing each row by its matching, live claim.</summary>
+    /// <remarks>Returns the number deleted. Expired, absent and stale claims do not delete rows.</remarks>
+    public ValueTask<long> CompleteBatchAsync(ReadOnlyMemory<OutboxClaim> claims, DateTimeOffset now,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        if (claims.IsEmpty) return new(0L);
+        foreach (var claim in claims.Span) Validate(claim);
+        _completionIds.Clear();
+        _completionTokens.Clear();
+        foreach (var claim in claims.Span)
+        {
+            _completionIds.Add(claim.MessageId);
+            _completionTokens.Add(claim.Token);
+        }
+        var command = _dataSource.CreateCommand(_completeBatch);
+        Add(command, "ids", NpgsqlDbType.Array | NpgsqlDbType.Uuid, _completionIds);
+        Add(command, "tokens", NpgsqlDbType.Array | NpgsqlDbType.Uuid, _completionTokens);
+        Add(command, "now", NpgsqlDbType.TimestampTz, now.ToUniversalTime());
+        return _completedCount.Start(command, cancellationToken);
     }
 
     /// <inheritdoc />

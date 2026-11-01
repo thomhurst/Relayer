@@ -5,6 +5,7 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Options;
+using Relayer.Outbox.PostgreSql;
 
 namespace Relayer.Outbox.EntityFrameworkCore;
 
@@ -55,7 +56,9 @@ public static class EntityFrameworkCoreOutboxExtensions
                     throw new InvalidOperationException("AddRelayerOutbox is already configured on these DbContext options.");
         options ??= services.GetRequiredService<IOptionsSnapshot<EntityFrameworkCoreOutboxOptions>>().Value;
         var outbox = services.GetRequiredService<EntityFrameworkCoreOutbox>();
-        var configuration = new OutboxConfiguration(options);
+        var dispatcher = options.DispatchStoreName is { } name
+            ? services.GetRequiredKeyedService<PostgreSqlDirectDispatcher>(name) : null;
+        var configuration = new OutboxConfiguration(options, dispatcher);
         builder.AddInterceptors(new OutboxSaveChangesInterceptor(outbox, configuration),
             new OutboxTransactionInterceptor(outbox, configuration));
         return builder;
@@ -98,6 +101,7 @@ public static class EntityFrameworkCoreOutboxExtensions
                 Schema = configuration[nameof(defaults.Schema)],
                 TablePrefix = configuration[nameof(defaults.TablePrefix)] ?? defaults.TablePrefix,
                 Lanes = Read(nameof(defaults.Lanes), defaults.Lanes),
+                DispatchStoreName = configuration[nameof(defaults.DispatchStoreName)],
                 LeaseDuration = Read(nameof(defaults.LeaseDuration), defaults.LeaseDuration),
                 MaxDispatchAttempts = Read(nameof(defaults.MaxDispatchAttempts), defaults.MaxDispatchAttempts)
             };

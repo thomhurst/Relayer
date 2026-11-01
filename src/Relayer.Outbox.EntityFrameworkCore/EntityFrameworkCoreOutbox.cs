@@ -82,6 +82,16 @@ internal sealed class EntityFrameworkCoreOutbox : IOutboxEnlistment, IDisposable
             if (ReferenceEquals(state.Transaction, transaction)) state.Clear();
     }
 
+    internal void Committed(DbTransaction transaction)
+    {
+        foreach (var state in _contexts)
+        {
+            if (!ReferenceEquals(state.Transaction, transaction)) continue;
+            try { state.Configuration.Dispatcher?.Committed(state.Rows, state.Count); }
+            finally { state.Clear(); }
+        }
+    }
+
     internal void Invalidate(DbTransaction transaction)
     {
         foreach (var state in _contexts)

@@ -33,7 +33,21 @@ await using (var dataSource = new Npgsql.NpgsqlSlimDataSourceBuilder(postgresCon
     {
         ["TablePrefix"] = "relayer_", ["Lanes"] = "8"
     }).Build());
+    stores.AddSingleton(typeof(ILogger<>), typeof(NullLogger<>));
+    stores.AddRelayerPostgreSqlDirectDispatch("direct-smoke", dataSource,
+        new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
+        {
+            ["QueueCapacity"] = "2", ["BatchSize"] = "2", ["ClaimDuration"] = "00:00:30"
+        }).Build());
     await using var storeProvider = stores.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
+    var dispatchOptions = storeProvider.GetRequiredService<Microsoft.Extensions.Options.IOptionsMonitor<PostgreSqlDirectDispatchOptions>>().Get("direct-smoke");
+    if (dispatchOptions.QueueCapacity != 2 || dispatchOptions.BatchSize != 2 || dispatchOptions.ClaimDuration != TimeSpan.FromSeconds(30))
+        throw new InvalidOperationException("Direct dispatch immutable options failed under Native AOT.");
+    foreach (var worker in storeProvider.GetServices<IHostedService>())
+    {
+        await worker.StartAsync(default);
+        await worker.StopAsync(default);
+    }
     await using var storeScope = storeProvider.CreateAsyncScope();
     var store = storeScope.ServiceProvider.GetRequiredKeyedService<IOutboxStore>("postgres-smoke");
     var postgresOutbox = storeScope.ServiceProvider.GetRequiredService<PostgreSqlOutbox>();
@@ -65,7 +79,8 @@ await using (var dataSource = new Npgsql.NpgsqlSlimDataSourceBuilder(postgresCon
         var claim = new OutboxClaim(rows[0].Id, Guid.NewGuid());
         if (await store.GetPendingCountAsync(now, default) != 1 ||
             !await store.TryClaimAsync(claim, now, now.AddMinutes(1), default) ||
-            !await store.CompleteAsync(claim, now, default) || await store.GetPendingCountAsync(now, default) != 0)
+            await ((PostgreSqlOutboxStore)store).CompleteBatchAsync(new OutboxClaim[] { claim }, now, default) != 1 ||
+            await store.GetPendingCountAsync(now, default) != 0)
             throw new InvalidOperationException("PostgreSQL claims failed under Native AOT.");
         Console.WriteLine("Real PostgreSQL reads, headers, claims and outcomes passed under Native AOT.");
         await using (var transaction = await postgresOutbox.BeginTransactionAsync(dataSource))

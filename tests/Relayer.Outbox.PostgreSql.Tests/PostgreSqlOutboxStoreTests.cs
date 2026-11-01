@@ -202,6 +202,50 @@ public class PostgreSqlOutboxStoreTests
         await Assert.ThrowsAsync<NpgsqlException>(async () => await store.GetPendingCountAsync(now, default));
     }
 
+    [Test]
+    public async Task Batch_completion_fences_each_row_and_deletes_only_live_matching_claims_in_one_statement()
+    {
+        await using var fixture = new PostgreSqlFixture();
+        await fixture.StartAsync();
+        await using var source = NpgsqlDataSource.Create(fixture.ConnectionString);
+        var options = new PostgreSqlOutboxOptions { Schema = "Batch\"Schema", TablePrefix = "test_" };
+        await CreateSchema(source, options);
+        var table = "\"Batch\"\"Schema\".\"test_outbox\"";
+        var store = new PostgreSqlOutboxStore(source, options);
+        var now = Microseconds(DateTimeOffset.UtcNow);
+        var first = new OutboxClaim(Guid.CreateVersion7(), Guid.NewGuid());
+        var second = new OutboxClaim(Guid.CreateVersion7(), Guid.NewGuid());
+        var expired = new OutboxClaim(Guid.CreateVersion7(), Guid.NewGuid());
+        var replaced = new OutboxClaim(Guid.CreateVersion7(), Guid.NewGuid());
+        await Insert(source, options, first.MessageId, now);
+        await Insert(source, options, second.MessageId, now);
+        await Insert(source, options, expired.MessageId, now);
+        await Insert(source, options, replaced.MessageId, now);
+        await store.TryClaimAsync(first, now, now.AddMinutes(1), default);
+        await store.TryClaimAsync(second, now, now.AddMinutes(1), default);
+        await store.TryClaimAsync(expired, now, now.AddSeconds(1), default);
+        await store.TryClaimAsync(new(replaced.MessageId, Guid.NewGuid()), now, now.AddMinutes(1), default);
+        await using (var command = source.CreateCommand($"""
+            CREATE TABLE delete_log (id integer);
+            CREATE FUNCTION log_delete() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN INSERT INTO delete_log VALUES (1); RETURN NULL; END; $$;
+            CREATE TRIGGER delete_count AFTER DELETE ON {table} FOR EACH STATEMENT EXECUTE FUNCTION log_delete();
+            """)) await command.ExecuteNonQueryAsync();
+        OutboxClaim[] claims = [first, second, expired, replaced, new(Guid.CreateVersion7(), Guid.NewGuid()), first];
+        await Assert.That(await store.CompleteBatchAsync(claims, now.AddSeconds(1), default)).IsEqualTo(2L);
+        await using (var command = source.CreateCommand($"SELECT count(*) FROM {table}"))
+            await Assert.That((long)(await command.ExecuteScalarAsync())!).IsEqualTo(2L);
+        await using (var command = source.CreateCommand("SELECT count(*) FROM delete_log"))
+            await Assert.That((long)(await command.ExecuteScalarAsync())!).IsEqualTo(1L);
+        await Assert.That(await store.CompleteBatchAsync(claims, now.AddSeconds(1), default)).IsEqualTo(0L);
+        await Assert.That(await store.CompleteBatchAsync(ReadOnlyMemory<OutboxClaim>.Empty, now, default)).IsEqualTo(0L);
+        await Assert.ThrowsAsync<ArgumentException>(async () =>
+            await store.CompleteBatchAsync(new OutboxClaim[] { new(Guid.Empty, Guid.NewGuid()) }, now, default));
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+        await Assert.ThrowsAsync<OperationCanceledException>(async () =>
+            await store.CompleteBatchAsync(claims, now, cancellation.Token));
+    }
+
     internal static async Task CreateSchema(NpgsqlDataSource source, PostgreSqlOutboxOptions? options = null)
     {
         await using var command = source.CreateCommand(PostgreSqlOutboxSchema.CreateScript(options));

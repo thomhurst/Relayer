@@ -43,6 +43,7 @@ To change a decision, add a new entry that supersedes it rather than editing his
 | [D30](#d30-share-postgresql-schema-sql-with-application-owned-ef-migrations) | Share PostgreSQL schema SQL with application-owned EF migrations | Accepted |
 | [D31](#d31-ef-core-buffers-sends-for-an-explicitly-owned-context-and-flushes-at-commit) | EF Core buffers sends for an explicitly owned context and flushes at commit | Accepted |
 | [D32](#d32-postgresql-outbox-transactions-own-commit-and-expose-a-compatible-command-connection) | PostgreSQL outbox transactions own commit and expose a compatible command connection | Accepted |
+| [D33](#d33-commit-triggered-dispatch-transfers-owned-buffers-to-a-named-worker) | Commit-triggered dispatch transfers owned buffers to a named worker | Accepted |
 
 ---
 
@@ -541,3 +542,29 @@ idempotency. Caller-owned connections remain open, while opened data-source conn
 disposing the data source. Database outbox durability does not imply native broker transaction enlistment or
 implement dispatch. Direct native lifecycle calls and SQL transaction-control commands bypass the wrapper
 and are outside this contract.
+## D33. Commit-triggered dispatch transfers owned buffers to a named worker
+
+**Context.** Direct dispatch must start without a polling interval and must outlive the committing
+scope. Waiting for a broker in a commit callback would add network latency to business transactions.
+Reusing scoped buffers in the background would corrupt messages when the next unit of work starts.
+
+**Decision.** PostgreSQL direct dispatch is an explicitly named hosted service. EF context options
+select the dispatcher and validate matching schema/prefix settings. Its data source is application-owned
+and must target the same database as the DbContext. Only a successful EF commit transfers owned, reusable
+message buffers into the worker's bounded channel. The scope receives cleared replacement buffers.
+No per-message task or scoped DbContext travels with the queued commit.
+
+The worker filters ordered and future-due rows, conditionally claims each eligible row with a fresh token,
+groups by transport/destination, renews claims before sending and respects the endpoint's native batch
+count. Native sends retain the stored envelope and native partial-delivery semantics. Successful groups
+send immediately once the stored delivery time is due, without requiring native scheduling support, and
+use one batch DELETE with a matching live token per row. Failure recording releases live claims and
+increments attempts; database errors can leave claims until expiry. There is no in-call heartbeat.
+
+**Consequences.** Commit returns independently of broker latency. Normal competing instances cannot
+claim the same row, while expired in-flight sends and partial native failures retain D29's at-least-once
+boundary. Queue saturation or a stopped worker logs an error and leaves durable rows pending instead of
+failing a business transaction that already committed. Shutdown drains queued commits until its deadline.
+Recovery polling, ordered lane dispatch and poison-row processing remain separate work; direct dispatch
+alone does not recover rows left by overflow, failure or process death. Buffer handoff, sorting and
+projection have dedicated allocation benchmarks; native client and database allocations remain excluded.
