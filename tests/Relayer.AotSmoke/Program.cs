@@ -348,6 +348,7 @@ public sealed class InMemorySmokeHandler(Channel<int> received) : IHandler<Count
     {
         if (context.Features.GetRequired<NativeMessage<InMemoryDelivery>>().Message.Message.Body.IsEmpty)
             throw new InvalidOperationException("In-memory native binding was lost.");
+        context.Features.GetRequired<ISettlementFeature>().Complete();
         received.Writer.TryWrite(message.Value);
         return default;
     }

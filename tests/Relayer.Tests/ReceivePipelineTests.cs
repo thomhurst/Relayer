@@ -257,6 +257,39 @@ public class ReceivePipelineTests
         await Assert.That(() => Disposition.DeadLettered(default)).Throws<ArgumentException>();
     }
 
+    [Test]
+    [Arguments(DispositionKind.Complete, false)]
+    [Arguments(DispositionKind.Redeliver, false)]
+    [Arguments(DispositionKind.DeadLetter, false)]
+    [Arguments(DispositionKind.Complete, true)]
+    [Arguments(DispositionKind.Redeliver, true)]
+    [Arguments(DispositionKind.DeadLetter, true)]
+    public async Task Explicit_failure_delegate_honors_requests_and_exception_precedence(DispositionKind kind, bool fail)
+    {
+        using var provider = Provider();
+        provider.GetRequiredService<Control>().Invoke = context =>
+        {
+            var settlement = context.Features.GetRequired<ISettlementFeature>();
+            switch (kind)
+            {
+                case DispositionKind.Complete: settlement.Complete(); break;
+                case DispositionKind.Redeliver: settlement.Retry(TimeSpan.Zero); break;
+                case DispositionKind.DeadLetter: settlement.DeadLetter("manual"); break;
+            }
+            if (fail) throw new InvalidOperationException("handler failed");
+            return default;
+        };
+        var pipeline = Pipeline(provider, static (context, _, _) =>
+        {
+            context.Features.GetRequired<NativeMessage<Incoming>>().Disposition = Disposition.DeadLettered(new("failure"));
+            return default;
+        });
+        var result = await pipeline.ProcessAsync(new());
+        await Assert.That(result.Kind).IsEqualTo(fail ? DispositionKind.DeadLetter : kind);
+        if (result.Kind == DispositionKind.DeadLetter)
+            await Assert.That(result.DeadLetter.Reason).IsEqualTo(fail ? "failure" : "manual");
+    }
+
     private static ServiceProvider Provider()
     {
         var services = new ServiceCollection();

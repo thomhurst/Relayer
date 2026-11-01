@@ -162,6 +162,10 @@ To change a decision, add a new entry that supersedes it rather than editing his
 **Decision.**
 - Settlement is automatic by default.
 - `ISettlementFeature` allows `DeadLetter(reason)`, `Retry(delay)`, and `Complete()` to be requested from a handler.
+- Requests are deferred until handling, middleware and async scope disposal succeed. `Complete` also waits for buffered sends. A handler or middleware exception cancels the request and follows the normal failure policy; cancellation, disposal errors, flush errors and fallback errors propagate without settlement.
+- One request is allowed per attempt; another request throws. Immediate retries and pooled deliveries start with no request.
+- `Retry(delay)` requests a new delivery with the exact delay, without jitter or the exception policy's in-process retries. It uses native redelivery, scheduled copy, then durable scheduler in capability order. Unsupported runtime delays fail at the request call. `Retry` and `DeadLetter` discard buffered direct sends; applications remain responsible for transactional rollback and native side effects.
+- Manual outcomes preserve prior exception history without creating a fictitious exception. A dead-letter copy carries the reason in `FailureHeaders.DeadLetterReason` (`relayer.dead_letter.reason`).
 - Native extras, such as ASB `Defer`, are reached through the transport feature.
 
 ## D12. Outbox dispatch: direct for unordered, lane leases for ordered

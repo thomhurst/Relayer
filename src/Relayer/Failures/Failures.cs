@@ -20,13 +20,18 @@ public interface IFailureClassifier
     FailureAction Classify(Exception exception, MessageContext context);
 }
 
-/// <summary>Lets a handler settle a message manually (docs/decisions.md D11).</summary>
+/// <summary>Requests a settlement outcome after successful handling (docs/decisions.md D11).</summary>
+/// <remarks>
+/// Get from MessageContext.Features. One request is allowed per attempt. A handler or middleware exception
+/// overrides the request; cancellation, scope disposal and durable-write failures prevent settlement.
+/// Do not retain this pooled feature beyond processing. Native settlement is deferred until durable work succeeds.
+/// </remarks>
 public interface ISettlementFeature
 {
-    /// <summary>Completes the message.</summary>
+    /// <summary>Requests completion after successful handling and durable sends.</summary>
     void Complete();
 
-    /// <summary>Requests redelivery after <paramref name="delay"/>.</summary>
+    /// <summary>Requests redelivery after the exact non-negative <paramref name="delay"/>, without in-process retries or jitter.</summary>
     void Retry(TimeSpan delay);
 
     /// <summary>Dead-letters the message with a reason.</summary>

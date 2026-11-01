@@ -281,6 +281,52 @@ public class InMemoryTransportTests
     }
 
     [Test]
+    [Arguments(0)]
+    [Arguments(1)]
+    [Arguments(2)]
+    public async Task Hosted_manual_settlement_uses_native_queue_operations(int action)
+    {
+        var received = Channel.CreateUnbounded<int>();
+        var services = new ServiceCollection();
+        services.AddSingleton(received);
+        services.AddRelayer(builder =>
+        {
+            builder.AddMessageTypesFromThisAssembly();
+            builder.InMemory("local", transport =>
+            {
+                transport.Send<InMemoryOrder>("orders");
+                transport.Consume("orders", consumer => consumer.Handler<ManualSettlementOrderHandler>());
+            });
+        });
+        await using var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
+        var hosted = provider.GetServices<IHostedService>().ToArray();
+        foreach (var lifecycle in hosted.OfType<IHostedLifecycleService>()) await lifecycle.StartingAsync(default);
+        foreach (var service in hosted) await service.StartAsync(default);
+        try
+        {
+            using var scope = provider.CreateScope();
+            var sender = scope.ServiceProvider.GetRequiredService<ISender>();
+            await sender.SendAsync(new InMemoryOrder(action));
+            await Assert.That(await Next(received)).IsEqualTo(action * 10 + 1);
+            if (action == 1) await Assert.That(await Next(received)).IsEqualTo(12);
+            // This barrier delivery runs only after the first delivery's native settlement.
+            await sender.SendAsync(new InMemoryOrder(3));
+            await Assert.That(await Next(received)).IsEqualTo(31);
+            var native = (InMemoryTransport)provider.GetRequiredService<ITransport>();
+            if (action == 2)
+            {
+                var dead = await native.DeadLetters("orders").ReadAsync().AsTask().WaitAsync(Limit);
+                await Assert.That(dead.Error.Reason).IsEqualTo("manual order");
+            }
+            else await Assert.That(native.DeadLetters("orders").TryRead(out _)).IsFalse();
+        }
+        finally
+        {
+            foreach (var service in hosted.Reverse()) await service.StopAsync(default);
+        }
+    }
+
+    [Test]
     public async Task Hosted_round_trip_uses_generated_handler_and_dead_letters_poison_messages()
     {
         var received = Channel.CreateUnbounded<int>();
@@ -763,6 +809,19 @@ public sealed class InMemoryOrderHandler(Channel<int> received) : IHandler<InMem
     {
         if (message.Id < 0) throw new InvalidOperationException("poison order");
         received.Writer.TryWrite(message.Id);
+        return default;
+    }
+}
+
+public sealed class ManualSettlementOrderHandler(Channel<int> received) : IHandler<InMemoryOrder>
+{
+    public ValueTask HandleAsync(InMemoryOrder message, MessageContext context, CancellationToken cancellationToken)
+    {
+        var settlement = context.Features.GetRequired<ISettlementFeature>();
+        if (message.Id == 1 && context.Attempt == 1) settlement.Retry(TimeSpan.Zero);
+        else if (message.Id == 2) settlement.DeadLetter("manual order");
+        else settlement.Complete();
+        received.Writer.TryWrite(message.Id * 10 + context.Attempt);
         return default;
     }
 }

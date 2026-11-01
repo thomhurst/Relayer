@@ -417,6 +417,11 @@ Fallback exceptions, timeouts, cancellation, scope-disposal errors and flush fai
 settlement decision. The native adapter must retain or release the delivery using its own failure semantics.
 Copies remain at-least-once: a crash between the copy and completion can duplicate it (D24).
 
+Manual settlement requests follow D11: the pooled `ISettlementFeature` queues an outcome for a successful
+attempt, while exceptions override it. The same durable fallback executors resolve manual retry and
+dead-letter requests. See [Failure handling](https://relayer.tomlonghurst.dev/docs/guides/failure-handling#manual-settlement)
+for the call site, precedence and buffered-send contract.
+
 
 - **Error metadata** goes on the dead-lettered message: the original message ID, exception type, message and stack trace for **every** attempt (Rebus #1154), attempt count, first and last failure time, consumer name, and host.
 - **Redrive API:** `IDeadLetterManager` provides `List`, `Peek`, `Redrive(filter)`, and `Purge`. It is backed natively by the ASB DLQ, SQS redrive, RabbitMQ DLX queue, or Kafka DLT topic. It is also exposed as an optional minimal-API endpoint group and as CLI commands.

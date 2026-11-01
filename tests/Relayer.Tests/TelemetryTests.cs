@@ -137,6 +137,40 @@ public class TelemetryTests
     }
 
     [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Manual_dead_letter_retains_prior_failure_but_completion_clears_it(bool complete)
+    {
+        using var instrumentation = new RelayerInstrumentation();
+        using var capture = new Capture(instrumentation);
+        await using var provider = Provider(services =>
+        {
+            services.AddSingleton<ITransport, Transport>();
+            services.AddSingleton<IMessageSerializer, Serializer>();
+        });
+        var attempts = 0;
+        provider.GetRequiredService<Control>().Handle = context =>
+        {
+            if (++attempts == 1) throw new InvalidOperationException("first attempt");
+            var settlement = context.Features.GetRequired<ISettlementFeature>();
+            if (complete) settlement.Complete();
+            else settlement.DeadLetter("unrecovered");
+            return default;
+        };
+        var failures = new FailurePipeline(provider, "test", "orders", "billing",
+            new() { RetryDelays = new[] { TimeSpan.Zero } });
+        var consumer = new ConsumePipelineBuilder(provider.GetRequiredService<IServiceScopeFactory>(),
+                provider.GetRequiredService<MessageTypeRegistry>(), new Serializer(), failures)
+            .Handler(provider.GetRequiredService<HandlerRegistry>().GetHandler<int, Handler>())
+            .Telemetry(instrumentation.CreateEndpoint(Options())).Build(1);
+        var receive = new ReceivePipeline<Incoming, Binding>(consumer, new HeaderNames("cloudEvents:"), 1);
+        await Assert.That((await receive.ProcessAsync(new Incoming())).Kind)
+            .IsEqualTo(complete ? DispositionKind.Complete : DispositionKind.DeadLetter);
+        var duration = capture.Values.Single(v => v.Name == "messaging.process.duration");
+        await Assert.That(duration.Tags.ContainsKey("error.type")).IsEqualTo(!complete);
+    }
+
+    [Test]
     public async Task Instruments_have_pinned_schema_units_types_and_bucket_advice()
     {
         using var instrumentation = new RelayerInstrumentation();

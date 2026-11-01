@@ -173,6 +173,7 @@ public sealed class ConsumePipeline
                 catch (OperationCanceledException) when (context.CancellationToken.IsCancellationRequested) { throw; }
                 catch (Exception error)
                 {
+                    context.Settlement.Clear();
                     failure = error;
                     LogFailure(telemetry, context, error);
                     await _failure(context, error, _classifier.Classify(error, context)).ConfigureAwait(false);
@@ -182,6 +183,12 @@ public sealed class ConsumePipeline
             {
                 // Calling the struct directly avoids boxing it through IAsyncDisposable.ConfigureAwait.
                 await scope.DisposeAsync().ConfigureAwait(false);
+            }
+            context.CancellationToken.ThrowIfCancellationRequested();
+            if (failure is null && context.Settlement.Request is { } request)
+            {
+                context.FailureDisposition = request;
+                context.ApplyFailureDisposition();
             }
             context.ClearServices();
             if (_settlement is { } settle) await settle(context).ConfigureAwait(false);
@@ -249,6 +256,7 @@ public sealed class ConsumePipeline
                     catch (OperationCanceledException) when (context.CancellationToken.IsCancellationRequested) { throw; }
                     catch (Exception error)
                     {
+                        context.Settlement.Clear();
                         failure = attemptFailure = error;
                         LogFailure(telemetry, context, error);
                         action = _classifier.Classify(error, context);
@@ -273,10 +281,25 @@ public sealed class ConsumePipeline
                 {
                     // Dispose the successful scope before allowing sends to escape. A flush failure propagates:
                     // some sends may have succeeded, so do not retry the handler or return a settlement decision.
-                    await context.SendBuffer.FlushAsync(context.CancellationToken).ConfigureAwait(false);
-                    failure = null;
+                    if (context.Settlement.Request is { } request && request.Kind != DispositionKind.Complete)
+                    {
+                        context.SendBuffer.Clear();
+                        await _failures!.HandleSettlementAsync(context, request).ConfigureAwait(false);
+                        context.ApplyFailureDisposition();
+                    }
+                    else
+                    {
+                        await context.SendBuffer.FlushAsync(context.CancellationToken).ConfigureAwait(false);
+                        if (context.Settlement.Request is { } complete)
+                        {
+                            context.FailureDisposition = complete;
+                            context.ApplyFailureDisposition();
+                        }
+                        failure = null;
+                    }
                     break;
                 }
+                context.Settlement.Clear();
                 context.SendBuffer.Clear();
                 if (action == FailureAction.Retry && _failures!.CanRetry(retry))
                 {
@@ -312,6 +335,8 @@ public sealed class ConsumePipeline
             }
         }
     }
+
+    internal void ValidateSettlement(Disposition disposition) => _failures?.ValidateSettlement(disposition);
 
     private static void LogFailure(EndpointTelemetry? telemetry, DefaultMessageContext context, Exception error)
     {

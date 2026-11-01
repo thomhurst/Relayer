@@ -13,7 +13,15 @@ public sealed class DefaultMessageContext : MessageContext, IDisposable
     private int _state;
 
     internal int PoolSlot { get; }
-    internal DefaultMessageContext(ConsumePipeline owner, int poolSlot = -1) { _owner = owner; PoolSlot = poolSlot; }
+    internal DefaultMessageContext(ConsumePipeline owner, int poolSlot = -1)
+    {
+        _owner = owner;
+        PoolSlot = poolSlot;
+        Settlement = new(this, owner);
+    }
+
+    internal PendingSettlement Settlement { get; }
+    internal bool CanRequestSettlement => Volatile.Read(ref _state) == 2 && _services is not null;
 
     /// <inheritdoc />
     public override string MessageId => _receive?.MessageId ?? _message.MessageId;
@@ -82,6 +90,7 @@ public sealed class DefaultMessageContext : MessageContext, IDisposable
         {
             throw new InvalidOperationException("The context must be rented from this pipeline and cannot be processed concurrently or after disposal.");
         }
+        Features.Set<ISettlementFeature>(Settlement);
     }
 
     internal void SetServices(IServiceProvider services) => _services = services;
@@ -102,6 +111,7 @@ public sealed class DefaultMessageContext : MessageContext, IDisposable
         {
             throw new InvalidOperationException("Await message processing before disposing its context.");
         }
+        Settlement.Clear();
         _message = default;
         _attempt = 0;
         Redeliveries = 0;
