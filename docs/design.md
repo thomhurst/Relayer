@@ -254,6 +254,18 @@ public sealed class AuditHandler : IBatchHandler<AuditEvent>
 - For people who want convenience, the source generator emits an explicit, readable `AddHandlersFromThisAssembly()` that lists every handler it found at compile time. This is "scanning" done by the compiler — it is visible, debuggable, and AOT-safe.
 - Analyzers report problems at compile time: a handler that is registered nowhere, a message type with no stable name, a consumer with no handler, or a feature the transport does not support (for example, ordering on a non-FIFO SQS queue).
 
+Register handlers inside `AddRelayer`. Both forms use the same generated descriptors; explicit registration adds only the requested handler:
+
+```csharp
+services.AddRelayer(relayer => relayer.Handler<OrderPlacedHandler>());
+// Or register every concrete, assembly-accessible handler declared in this assembly:
+services.AddRelayer(relayer => relayer.AddHandlersFromThisAssembly());
+```
+
+Discovery includes inherited contracts, explicit interface implementations, and handlers with multiple message or batch contracts. Open generic, abstract, private nested, and file-local classes are excluded. Message types must be accessible to the generated code; `RLYH001` reports inaccessible contracts. Explicit `Handler<ClosedHandler<OrderPlaced>>()` also supports closed generic handlers and handlers in referenced assemblies. Repeated registration is idempotent. Handlers default to scoped DI registration, preserving an existing registration.
+
+The core's `HandlerRegistry` freezes after configuration. Pipeline composition selects a `HandlerDescriptor<TMessage>` or `BatchHandlerDescriptor<TMessage>` once. For each message scope, its generated `Resolve` method uses typed DI resolution; `DispatchAsync` then calls the handler through its exact interface and returns its `ValueTask` unchanged. Dispatch does no type lookup, delegate creation, or allocation. Registry metadata uses CLR types only during configuration, never as wire identities.
+
 ### 3.4 Sending from anywhere
 
 `ISender` is scoped. When an outbox is configured and a transaction is active in the current scope, sends are enlisted automatically. Otherwise they go straight to the transport. To be explicit, use `sender.SendNowAsync` (bypass the outbox) or `sender.SendViaOutboxAsync` (require the outbox; throws when there is no transaction).

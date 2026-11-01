@@ -20,8 +20,10 @@ public static class RelayerServiceCollectionExtensions
         var builder = new RelayerBuilder(services);
         configure(builder);
         builder.MessageTypes.Freeze();
+        builder.Handlers.Freeze();
 
         services.AddSingleton(builder.MessageTypes);
+        services.AddSingleton(builder.Handlers);
         services.AddSingleton<IRelayerBuilder>(builder);
 
         return services;

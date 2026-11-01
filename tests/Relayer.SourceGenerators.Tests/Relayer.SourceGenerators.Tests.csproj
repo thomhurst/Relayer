@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="TUnit" />
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../src/Relayer.SourceGenerators/Relayer.SourceGenerators.csproj" />
+    <ProjectReference Include="../../src/Relayer/Relayer.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="Snapshots/*.verified.txt" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+</Project>
