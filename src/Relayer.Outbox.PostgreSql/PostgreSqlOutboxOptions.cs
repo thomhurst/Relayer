@@ -3,7 +3,7 @@ namespace Relayer.Outbox.PostgreSql;
 /// <summary>Options for the PostgreSql outbox and inbox (docs/design.md section 6).</summary>
 public sealed class PostgreSqlOutboxOptions
 {
-    /// <summary>The database schema for Relayer tables. <see langword="null"/> uses the default schema.</summary>
+    /// <summary>The database schema for Relayer tables. <see langword="null"/> uses public.</summary>
     public string? Schema { get; set; }
 
     /// <summary>Prefix for table and index names, so several endpoints can share a schema.</summary>

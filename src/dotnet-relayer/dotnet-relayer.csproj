@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <PackAsTool>true</PackAsTool>
+    <IsPackable>true</IsPackable>
+    <ToolCommandName>dotnet-relayer</ToolCommandName>
+    <Description>Relayer database schema scripts.</Description>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../Relayer.Outbox.PostgreSql/Relayer.Outbox.PostgreSql.csproj" />
+    <InternalsVisibleTo Include="Relayer.Outbox.PostgreSql.Tests" />
+    <None Include="../../README.md" Pack="true" PackagePath="/" />
+  </ItemGroup>
+</Project>

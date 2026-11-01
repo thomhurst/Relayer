@@ -40,6 +40,7 @@ To change a decision, add a new entry that supersedes it rather than editing his
 | [D27](#d27-configuration-declarations-are-independent-of-pipeline-execution) | Configuration declarations are independent of pipeline execution | Accepted |
 | [D28](#d28-a-batch-attempt-owns-one-scope-and-one-direct-send-buffer) | A batch attempt owns one scope and one direct-send buffer | Accepted |
 | [D29](#d29-durable-dispatch-claims-use-expiring-fencing-tokens) | Durable dispatch claims use expiring fencing tokens | Accepted |
+| [D30](#d30-share-postgresql-schema-sql-with-application-owned-ef-migrations) | Share PostgreSQL schema SQL with application-owned EF migrations | Accepted |
 
 ---
 
@@ -466,3 +467,21 @@ The durable store contract needs explicit recovery and ownership rules before da
 cannot undo a broker send; crash recovery and sends that outlive their claims can still duplicate delivery.
 This preserves the at-least-once contract. Ordered routes additionally require lane ownership; row claims alone
 do not guarantee ordering. Schema scripts must persist claim tokens and expiry alongside pending/parked state.
+
+## D30. Share PostgreSQL schema SQL with application-owned EF migrations
+
+**Context.** Schema tooling must be usable before transaction enlistment and dispatch ship. Relayer does not
+own an application's DbContext or migration history. Separate EF entity definitions and SQL creation scripts
+would introduce two sources of truth for the same durable schema.
+
+**Decision.** The PostgreSQL package embeds one idempotent initial creation script. The CLI prints it and the
+EF Core package references the PostgreSQL package to expose it as a SQL migration operation in an application-owned
+Npgsql migration. These tables stay outside the application model snapshot. No interception or automatic runtime
+migration is registered. Schema evolution uses explicit SQL migration operations; initial creation never silently
+upgrades existing definitions. Rollback is application-owned because dropping an outbox destroys durable work.
+Lane columns use PostgreSQL integer, matching the durable contract's nonnegative Int32 lane range.
+
+**Consequences.** The CLI, direct deployment and EF migrations create the same columns, constraints and indexes.
+The EF integration currently carries the PostgreSQL dependency; future database providers need their own explicit
+migration operations. This establishes schema deployment without claiming that database stores, durable sending,
+dispatch workers or inbox behavior are implemented.

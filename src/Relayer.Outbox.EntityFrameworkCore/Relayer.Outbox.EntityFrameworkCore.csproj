@@ -10,6 +10,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\Relayer\Relayer.csproj" />
+    <ProjectReference Include="..\Relayer.Outbox.PostgreSql\Relayer.Outbox.PostgreSql.csproj" />
   </ItemGroup>
 
 </Project>

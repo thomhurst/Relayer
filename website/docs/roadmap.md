@@ -13,6 +13,7 @@ Relayer is in early development. Track progress in [GitHub issues](https://githu
 - The scoped send pipeline, send middleware and outbox enlistment hooks.
 - Provider-owned tracing primitives and direct single/batch send tracing, integrated with the in-memory adapter. Automatic consume/settlement and outbox tracing remain planned.
 - The [durable outbox store contract](reference/outbox-stores.md), with bounded reads, fenced claims and an optional keyed health adapter. Database implementations and dispatch workers remain planned.
+- [PostgreSQL schema scripts and database CLI](reference/postgres-schema.md), including an application-owned EF Core migration path. Durable sending and dispatch remain planned.
 - The consume pipeline and the native receive SPI.
 - Generated batch handler execution, durable partial-failure decisions, and validated native/client-side receive executors for transport authors.
 - Typed failure classification, in-process retries, delayed redelivery and dead-letter copies with error history.
