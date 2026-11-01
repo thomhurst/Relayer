@@ -78,11 +78,17 @@ Native configuration is passed straight through and never re-modelled: Dekaf's `
 
 ### 2.3 Capabilities
 
-Each transport declares the capabilities of each endpoint (decision D24). A feature that needs one either uses the native mechanism or a documented fallback, and when there is neither, startup fails with a clear error (no silent degradation). The core runs every fallback, so transports contain native code only (§2.4):
+Each transport declares the capabilities of each endpoint (decision D24). A feature that needs one either uses the native mechanism or a documented fallback, and when there is neither, startup fails with a clear error (no silent degradation). The core runs every fallback, so transports contain native code only (§2.4).
+
+`TransportCapabilities` is a sealed record with init-only values. A new record declares queue consumption, no optional features or native delays, and a maximum batch count of one. `MaxRedeliveryDelay = TimeSpan.Zero` declares immediate redelivery; `null` declares none. `MaxMessageBytes = null` means the endpoint limit has not been declared, not that messages are unlimited. Native envelope and batch byte limits still apply.
+
+Transport stubs declare only conservative known values; native adapters must resolve configuration-dependent limits and features at startup. In particular, a Service Bus endpoint name does not establish session support, and a RabbitMQ queue name does not establish delayed-message plugin support. SQS declarations distinguish standard and FIFO queues: [FIFO queues do not support per-message delivery timers](https://docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSDeveloperGuide/sqs-message-timers.html).
+
+The native mechanisms and core fallbacks are:
 
 | Feature | Native when available | Fallback |
 |---|---|---|
-| Delayed delivery / scheduling | ASB `ScheduledEnqueueTime`, SQS `DelaySeconds` (≤ 15 min), RabbitMQ delayed-message plugin | Outbox `deliver_at` |
+| Delayed delivery / scheduling | ASB `ScheduledEnqueueTime`, SQS per-message `DelaySeconds` on standard queues (≤ 15 min; unavailable on FIFO queues), RabbitMQ delayed-message plugin | Outbox `deliver_at` |
 | Delayed redelivery of a received message | SQS visibility timeout (≤ 12 h); immediate only: ASB abandon, RabbitMQ requeue | Scheduled re-send of a copy, else outbox `deliver_at` |
 | Dead-letter with error metadata | ASB DLQ (`DeadLetterMessageAsync` with properties) | Send a copy to the dead-letter endpoint (Kafka DLT topic, SQS DLQ queue), then complete |
 | Ordering | Kafka partition key, ASB sessions, SQS FIFO message group | None — must be declared unordered |

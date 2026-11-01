@@ -5,10 +5,22 @@ namespace Relayer.Kafka;
 /// <summary>Describes the Kafka transport.</summary>
 public static class KafkaTransport
 {
-    /// <summary>
-    /// The native capabilities of this transport (docs/decisions.md D14).
-    /// Kafka has no native delay or dead-letter queue; Relayer uses the outbox and a dead-letter topic.
-    /// </summary>
-    public const TransportCapabilities Capabilities =
-        TransportCapabilities.OrderedByKey | TransportCapabilities.Batching | TransportCapabilities.Transactions | TransportCapabilities.PauseResume | TransportCapabilities.Replay;
+    private static readonly TransportCapabilities Defaults = new()
+    {
+        OrderedByKey = true,
+        PauseResume = true,
+        Replay = true,
+        ConsumptionModel = ConsumptionModel.Log,
+    };
+
+    /// <summary>Returns conservative endpoint capabilities for the transport stub (docs/decisions.md D24).</summary>
+    /// <remarks>
+    /// Kafka has no native delay or dead-letter operation. The native adapter must resolve configured transactions,
+    /// batch counts, and message size limits before advertising them.
+    /// </remarks>
+    public static TransportCapabilities GetCapabilities(string endpoint)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(endpoint);
+        return Defaults;
+    }
 }

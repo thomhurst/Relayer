@@ -1,30 +1,43 @@
 namespace Relayer.Transports;
 
-/// <summary>Native capabilities a transport declares. Validated against configuration at startup (docs/decisions.md D14).</summary>
-[Flags]
-public enum TransportCapabilities
+/// <summary>
+/// The native capabilities of one endpoint (docs/decisions.md D24).
+/// Transports resolve these values at startup; the core uses them to select native operations or fallbacks.
+/// </summary>
+public sealed record TransportCapabilities
 {
-    /// <summary>No optional capabilities.</summary>
-    None = 0,
+    /// <summary>The maximum native delay for an individual send; null means no native scheduled send.</summary>
+    public TimeSpan? MaxDeliveryDelay { get; init; }
 
-    /// <summary>The broker can delay delivery natively.</summary>
-    DelayedDelivery = 1 << 0,
+    /// <summary>
+    /// The maximum native delay when redelivering a received message; zero means immediate redelivery only,
+    /// and null means no native redelivery.
+    /// </summary>
+    public TimeSpan? MaxRedeliveryDelay { get; init; }
 
-    /// <summary>The broker has a native dead-letter mechanism.</summary>
-    DeadLetter = 1 << 1,
+    /// <summary>Whether a specific message can be dead-lettered on demand with Relayer's error metadata.</summary>
+    public bool DeadLetter { get; init; }
 
-    /// <summary>The broker can preserve order per key (partition key, session, message group).</summary>
-    OrderedByKey = 1 << 2,
+    /// <summary>Whether the endpoint preserves native order per key, session, or message group.</summary>
+    public bool OrderedByKey { get; init; }
 
-    /// <summary>The client supports native batch send or receive.</summary>
-    Batching = 1 << 3,
+    /// <summary>The maximum native batch message count; 1 declares no native batching.</summary>
+    /// <remarks>Native byte limits still apply independently of this count.</remarks>
+    public int MaxBatchSize { get; init; } = 1;
 
-    /// <summary>The broker supports native transactions.</summary>
-    Transactions = 1 << 4,
+    /// <summary>Whether native transactions are available on this endpoint.</summary>
+    public bool Transactions { get; init; }
 
-    /// <summary>Consumers can be paused and resumed natively.</summary>
-    PauseResume = 1 << 5,
+    /// <summary>Whether native consumption can be paused and resumed.</summary>
+    public bool PauseResume { get; init; }
 
-    /// <summary>The broker can replay from a position (offset or timestamp).</summary>
-    Replay = 1 << 6,
+    /// <summary>Whether consumption can replay from a native position or timestamp.</summary>
+    public bool Replay { get; init; }
+
+    /// <summary>The native message size limit in bytes; null means the limit has not been declared.</summary>
+    /// <remarks>Null does not mean unlimited. Native envelope overhead and batch byte limits still apply.</remarks>
+    public long? MaxMessageBytes { get; init; }
+
+    /// <summary>Whether consumption settles individual queue messages or advances through a log.</summary>
+    public ConsumptionModel ConsumptionModel { get; init; } = ConsumptionModel.Queue;
 }
