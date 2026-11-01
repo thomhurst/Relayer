@@ -40,7 +40,9 @@ public class CapabilityValidationTests
     }
 
     [Test]
-    public async Task Each_endpoint_is_resolved_once_for_routes_and_consumers()
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Each_endpoint_is_resolved_once_for_routes_and_consumers(bool composeSenderFirst)
     {
         var transport = new TestTransport("events", endpoint => new() { OrderedByKey = endpoint == "orders" });
         await using var provider = Create(transport, route => route.OrderingKey(message => message.OrderId), broker =>
@@ -49,6 +51,12 @@ public class CapabilityValidationTests
             broker.Consume("orders", consumer => consumer.Handler<BuilderTests.OrderHandler>());
             broker.Consume("unordered", consumer => consumer.Handler<BuilderTests.OrderHandler>());
         });
+
+        if (composeSenderFirst)
+        {
+            using var scope = provider.CreateScope();
+            _ = scope.ServiceProvider.GetRequiredService<ISender>();
+        }
 
         await Assert.That(await Start(provider)).IsNull();
         await Assert.That(transport.Lookups["orders"]).IsEqualTo(1);

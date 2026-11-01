@@ -27,6 +27,7 @@ internal sealed class RelayerConfigurationValidator(RelayerConfiguration configu
                 if (!routes.Add(route.MessageType)) failures.Add($"{location}: a message type can have only one route.");
                 if (!messages.TryGetMessageType(route.MessageType, out _))
                     failures.Add($"{location}: register a stable message identity before startup.");
+                if (route is ISendRouteDefinition send) send.SendOptions.Validate(location, failures);
             }
             foreach (var consumer in transport.Consumers)
             {
@@ -40,7 +41,7 @@ internal sealed class RelayerConfigurationValidator(RelayerConfiguration configu
         }
         try
         {
-            var capabilities = new EndpointCapabilityValidator(services.GetServices<ITransport>(), failures);
+            var capabilities = new EndpointCapabilityValidator(services.GetServices<ITransport>(), failures, services.GetRequiredService<EndpointCapabilityCache>());
             foreach (var transport in configuration.Transports) capabilities.Validate(transport);
         }
         catch (OptionsValidationException error)

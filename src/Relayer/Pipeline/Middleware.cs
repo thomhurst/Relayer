@@ -20,7 +20,7 @@ public interface ISendMiddleware
     ValueTask InvokeAsync(SendContext context, SendDelegate next);
 }
 
-/// <summary>Context for an outgoing message.</summary>
+/// <summary>Context for an outgoing message. Borrowed only until the middleware invocation completes.</summary>
 public abstract class SendContext
 {
     /// <summary>The outgoing message.</summary>
