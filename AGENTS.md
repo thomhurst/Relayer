@@ -40,7 +40,7 @@ Rules for code on the per-message path (pipeline, middleware, dispatch, serializ
 - Public APIs expose interfaces and options; implementations are internal or sealed. Use init-only options and fluent builders following existing code. Options also bind from `IConfiguration` through the Options pattern.
 - Messages are identified on the wire by their stable `[Message("name", Version = n)]` name, never the CLR type name, with CloudEvents attributes in native headers (D7).
 - All awaits in `src/` use `ConfigureAwait(false)`; tests do not require it. Do not block on tasks with `.Result` or `.Wait()`.
-- Telemetry uses one `ActivitySource` and one `Meter`, both named `Relayer`, following the OpenTelemetry messaging semantic conventions (D15). Logging uses `LoggerMessage` source generation.
+- Telemetry uses one `ActivitySource` and one `Meter`, both named `Relayer`, following the OpenTelemetry messaging semantic conventions (D15, D25): only convention-defined operation types, span names, attributes and metrics, with Relayer additions under the `relayer.` prefix ([design §8](docs/design.md#8-observability)). Logging uses `LoggerMessage` source generation.
 - No mutable process-wide statics, so test suites run in parallel in one process (D17).
 
 ## Build and test

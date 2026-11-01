@@ -350,7 +350,7 @@ relayer_outbox
   transport      text
   destination    text
   message_type   text
-  headers        bytes           (includes traceparent captured at enqueue)
+  headers        bytes           (includes the creation context captured at enqueue, §8.2)
   body           bytes
   created_at     timestamptz
   deliver_at     timestamptz     nullable (scheduling fallback)
@@ -420,21 +420,117 @@ The transport wraps **[Dekaf](https://github.com/thomhurst/Dekaf)**, a pure C# K
 
 ## 8. Observability
 
-- One `ActivitySource` named `Relayer` and one `Meter` named `Relayer`, following the OpenTelemetry **messaging semantic conventions** (`messaging.system`, `messaging.destination.name`, `messaging.operation.type`, `messaging.message.id`, `messaging.consumer.group.name`, …).
-- W3C `traceparent`/`tracestate` are propagated in native headers on every transport. The outbox captures trace context **when the message is enqueued**, so the dispatch span links back to the originating request even if dispatch happens minutes later on another instance.
-- Spans: `send`, `outbox.enqueue`, `outbox.dispatch`, `receive`, `process`, and `settle`. Batch processing uses span links, one per message.
-- Metrics:
-  - `relayer.process.duration`, measured **after** settlement (NSB #3565).
-  - `relayer.critical_time` (now minus sent time).
-  - `relayer.send.duration`
-  - `relayer.retries`
-  - `relayer.dead_lettered`
-  - `relayer.outbox.pending`
-  - `relayer.outbox.dispatch_lag`
-  - `relayer.inbox.duplicates`
-  - `relayer.consumer.lag` (Kafka)
-  - `relayer.circuit.state`
-- Enrichers (`IActivityEnricher`) let you add tags or change span names without forking (MassTransit #4383).
+Relayer's traces and metrics follow the [OpenTelemetry messaging semantic conventions](https://opentelemetry.io/docs/specs/semconv/messaging/) (decisions D15 and D25). Backends, dashboards and samplers that understand those conventions work with Relayer without custom mapping.
+
+### 8.1 Sources and conventions version
+
+- One `ActivitySource` named `Relayer` and one `Meter` named `Relayer`. Both carry the telemetry schema URL of the semantic conventions version that Relayer implements. That version is pinned in one place in the code, and a release that changes it says so in its notes.
+- The messaging conventions are still in Development status upstream. Relayer has no older telemetry shape to preserve, so it emits only the current conventions. When the messaging conventions become stable, Relayer migrates through the standard `OTEL_SEMCONV_STABILITY_OPT_IN` values (`messaging` and `messaging/dup`).
+- A failed operation sets `error.type` and the span status `Error`. The exception itself is logged (§8.6) with the trace and span IDs, not recorded as a span event.
+
+### 8.2 Spans
+
+Span names are `{messaging.operation.name} {destination}`, for example `send orders.placed`, `process orders.placed` or `complete billing-charge-card`. `{destination}` is the endpoint's declared topic, queue or exchange, which is low-cardinality because topology is declared (§9). Temporary or anonymous destinations, such as reply queues, are left out of the name unless a template is available. Span names and the endpoint's constant tags are computed once per endpoint at startup.
+
+| Operation | Span name | Kind | `messaging.operation.type` | Parent | Links |
+|---|---|---|---|---|---|
+| Direct send of one message | `send {d}` | `PRODUCER` | `send` | Ambient | None |
+| Direct batch send | `create {d}` per message, then `send {d}` | `PRODUCER`, then `CLIENT` | `create`, then `send` | Ambient | The send span links to each create span |
+| Outbox enqueue | `create {d}` | `PRODUCER` | `create` | Ambient (for example the HTTP request) | None |
+| Outbox dispatch | `send {d}` | `CLIENT` | `send` | The dispatcher's ambient span, usually none | Each dispatched message's creation context |
+| Handler for one message | `process {d}` | `CONSUMER` | `process` | See below | The message's creation context |
+| Batch handler | `process {d}` | `CONSUMER` | `process` | Ambient | One link per message's creation context |
+| Settlement | The native operation name, for example `complete {d}`, `ack {d}` or `commit {d}` | `CLIENT` | `settle` | The process span; ambient for an amortized Kafka commit | None |
+
+**Creation context.** Every message carries exactly one creation context, written as W3C `traceparent` and `tracestate` in native headers (§4.2).
+
+- The creation context is the `create` span's context when there is one, and otherwise the producer `send` span's context.
+- With the outbox, the `create` span runs at enqueue, inside the caller's transaction and trace. Its context is stored in the row's headers (§6.3). Dispatch, possibly minutes later on another instance, does not change it: the dispatch `send` span only links to it. A consumer therefore correlates with the request that enqueued the message, not with the dispatcher.
+- Sends that the core makes on a message's behalf (a scheduled re-send for delayed redelivery, or a dead-letter copy, D24) keep the original creation context. Their `send` span is a `CLIENT` span under the process span, with a link to that context.
+- A message that already has a creation context, for example from a non-Relayer producer or in raw mode, is not modified.
+- A transport adapter makes sure that the native client's own instrumentation does not overwrite the creation context that Relayer wrote. The conformance suite checks this.
+
+**Process span parent.** A process span always links to the creation context of each message it handles. For a single message, its parent is chosen as follows:
+
+- If a span is already current when the transport hands the message to the pipeline, for example the native client's own consumer span, the process span is its child. This is the conventions' default.
+- Otherwise, the creation context is the parent, so the producer and the consumer appear in one trace. The conventions allow this for single messages. `relayer.Telemetry(t => t.CreationContextAsParent(false))` makes each process span a new root instead.
+- A batch process span never uses a creation context as its parent, because a span can have only one parent.
+
+**No receive spans.** To application code, Relayer is push-based: messages reach handlers, not a pull call that the user makes. Relayer therefore does not create `receive` spans for its internal polling, and it creates no span for a prefetched message until the pipeline starts processing it. When the user enables the native client's instrumentation (Dekaf, the Azure SDK or the AWS SDK), that client's receive and transport spans appear in the trace. Relayer does not duplicate them, and it does not depend on them.
+
+**Deliveries and retries.** There is one process span per delivery. A native redelivery is a new delivery and gets a new process span, with the delivery count where the system defines an attribute for it. Immediate in-process retries from the failure pipeline stay inside the same process span and are counted by `relayer.retries`.
+
+**Settlement.** Each native settlement operation gets one settle span, whether the core or the handler (D11) triggers it. The settle span is a child of the process span, so the process span and `messaging.process.duration` include settlement (NSB #3565). Kafka commits are amortized over many messages (D13): there is one `commit {topic}` span per commit call, outside any process span, with `messaging.batch.message_count` and no per-message links. Dead-lettering is a native settle span (`dead_letter {d}`) where the endpoint supports it, and otherwise a `send` span to the dead-letter endpoint followed by the settle span that completes the original.
+
+**Native client spans.** When enabled, spans from the native client nest under Relayer's spans as transport-level detail. Relayer's spans are the messaging spans of record. Each transport's documentation names the native sources to enable.
+
+### 8.3 Attributes
+
+The attributes that samplers need are set when the span starts: `messaging.system`, `messaging.operation.name`, `messaging.operation.type`, `messaging.destination.name`, `messaging.destination.template`, `messaging.destination.partition.id`, `server.address` and `server.port`.
+
+| Attribute | Set on | Value |
+|---|---|---|
+| `messaging.system` | All spans and metrics | `kafka`, `servicebus`, `aws_sqs`, `aws.sns` or `rabbitmq`; `relayer.inmemory` for the in-memory transport |
+| `messaging.operation.name` | All spans and metrics | `send`, `create`, `process`, or the system's settlement name |
+| `messaging.operation.type` | All spans | `create`, `send`, `process` or `settle` |
+| `messaging.destination.name` | All spans | The endpoint's destination, in the system's format |
+| `messaging.destination.template` | All spans | When the destination comes from a template |
+| `messaging.destination.temporary`, `messaging.destination.anonymous` | All spans | Only when true |
+| `messaging.destination.partition.id` | Single-message spans | Partition, when the system has one |
+| `messaging.consumer.group.name` | Consumer spans | Kafka consumer group |
+| `messaging.destination.subscription.name` | Consumer spans | Azure Service Bus subscription |
+| `messaging.message.id` | Single-message spans | `ce_id` |
+| `messaging.message.conversation_id` | Single-message spans | The correlation ID |
+| `messaging.batch.message_count` | Batch spans only | Number of messages; never set on single-message spans |
+| `messaging.client.id` | All spans | The native client's ID, when it has one |
+| `messaging.message.body.size` | Single-message spans, opt-in | Serialized body size |
+| `server.address`, `server.port` | All spans and metrics | Broker endpoint, when known |
+| `error.type` | Failed spans and metrics only | The exception's full type name, a native error code, or `_OTHER` |
+| `cloudevents.event_type` | Single-message spans | The stable message name (`ce_type`) |
+| `cloudevents.event_source` | Single-message spans | `ce_source` |
+
+Each transport adapter adds the attributes and destination format that its system's semantic conventions page defines:
+
+- **Kafka:** `messaging.kafka.message.key` (not set when the key is null), `messaging.kafka.offset`, `messaging.kafka.message.tombstone` (only when true) and `messaging.kafka.cluster.id`. Settlement is `commit`.
+- **Azure Service Bus:** `messaging.servicebus.message.delivery_count` (when greater than 0), `messaging.servicebus.message.enqueued_time`, and `messaging.servicebus.disposition_status` on settle spans. Operation names are `send` or `schedule`, `process`, and `complete`, `abandon`, `defer` or `dead_letter`.
+- **RabbitMQ:** the destination is `{exchange}:{routing key}` on send spans and `{exchange}:{routing key}:{queue}` on process spans. Also `messaging.rabbitmq.destination.routing_key` (when not empty) and `messaging.rabbitmq.message.delivery_tag`. Settlement is `ack` or `nack`.
+- **Amazon SQS and SNS:** `aws.sqs.queue.url` and `aws.request_id`. SQS settlement is `delete`.
+
+Attributes that only Relayer defines use the `relayer.` prefix and never the `messaging.` prefix. Enrichers (`IActivityEnricher`) can add tags or rename spans without forking (MassTransit #4383). They run only when the span is recorded.
+
+### 8.4 Metrics
+
+Instruments from the semantic conventions, with the conventions' recommended histogram buckets given as instrument advice:
+
+| Instrument | Type | Unit | Measures |
+|---|---|---|---|
+| `messaging.client.operation.duration` | Histogram | `s` | Each send, create and settle operation. Equals the span's duration. |
+| `messaging.process.duration` | Histogram | `s` | Each process operation, including settlement. |
+| `messaging.client.sent.messages` | Counter | `{message}` | Messages that Relayer attempted to send to the broker. An outbox enqueue is not counted; its dispatch is. |
+| `messaging.client.consumed.messages` | Counter | `{message}` | Messages delivered to the pipeline, counted once per delivery. |
+
+These instruments carry `messaging.system` and `messaging.operation.name`, plus `messaging.destination.name`, `messaging.consumer.group.name`, `messaging.destination.subscription.name`, `server.address`, `server.port` and `error.type` where they apply. Metrics never carry high-cardinality values such as message IDs or keys.
+
+Relayer-specific instruments, for which the conventions define nothing:
+
+- `relayer.critical_time` (histogram, `s`): processing end minus `ce_time`.
+- `relayer.retries` (counter, `{retry}`)
+- `relayer.dead_lettered` (counter, `{message}`)
+- `relayer.outbox.pending` (up-down counter, `{message}`)
+- `relayer.outbox.dispatch_lag` (histogram, `s`): dispatch time minus enqueue time.
+- `relayer.inbox.duplicates` (counter, `{message}`)
+- `relayer.consumer.lag` (gauge, `{message}`, Kafka): taken from Dekaf where Dekaf already exposes it.
+- `relayer.circuit.state` (gauge)
+
+### 8.5 Cost
+
+- With no listener on the `Relayer` source, starting a span returns `null` after one `HasListeners` check, and no tags are computed. With no listener on an instrument, recording is a no-op. The zero-allocation budget (§12) is measured in this state.
+- When tracing is on, `System.Diagnostics` allocates the activity and its tags. Constant tags come from the endpoint's precomputed set. Per-message values that need formatting, such as a non-string Kafka key, are formatted only when the span is recorded. The benchmark suite measures this cost separately.
+- Metric tags use `TagList` with the endpoint's precomputed values, so recording does not allocate.
+- Batch sends create one `create` span per message. `relayer.Telemetry(t => t.CreateSpansForBatches(false))` turns them off, as the conventions recommend offering; the batch `send` span then becomes the `PRODUCER` span and its context is the creation context of every message in the batch.
+
+### 8.6 Logging and health
+
 - Logging uses `LoggerMessage` source generation (zero allocations when disabled) and scopes that carry the message ID, type, and correlation ID.
 - Health checks: transport connectivity, consumer liveness (each consumer has made progress or is idle), and outbox backlog thresholds.
 
@@ -484,7 +580,7 @@ The transport wraps **[Dekaf](https://github.com/thomhurst/Dekaf)**, a pure C# K
 Goals, measured against the raw native client in the same benchmark:
 
 - **≤ 5% throughput overhead** on the receive path and the direct send path, with no outbox, using the default JSON serializer.
-- **Zero allocations** from Relayer's own pipeline per message in steady state. Allocations by the serializer and the native client are excluded.
+- **Zero allocations** from Relayer's own pipeline per message in steady state. Allocations by the serializer and the native client are excluded. The budget is measured with no telemetry listener attached; the cost with tracing on is measured separately (§8.5).
 - **Startup:** < 50 ms to build the pipeline for 100 handlers. Startup works under Native AOT.
 
 Techniques:
