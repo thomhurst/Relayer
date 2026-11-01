@@ -637,7 +637,7 @@ Relayer-specific instruments, for which the conventions define nothing:
 
 ### 8.6 Logging and health
 
-- Logging uses `LoggerMessage` source generation (zero allocations when disabled) and scopes that carry the message ID, type, and correlation ID.
+- Logging uses `LoggerMessage` source generation and scopes that carry the message ID, type, and correlation ID around generated failure logs. Successful deliveries open no logging scope, preserving zero incremental allocations with Error logging enabled. Failure scopes hold read-only identity snapshots that providers can retain after processing.
 - Health checks: transport connectivity, consumer liveness (each consumer has made progress or is idle), and outbox backlog thresholds.
 
 ---

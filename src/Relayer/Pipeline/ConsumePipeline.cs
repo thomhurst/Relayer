@@ -130,15 +130,9 @@ public sealed class ConsumePipeline
         var telemetry = _telemetry;
         var start = telemetry is { DurationEnabled: true } ? Stopwatch.GetTimestamp() : 0;
         Exception? failure = null;
-        IDisposable? logScope = null;
         try
         {
             telemetry?.RecordConsumed();
-            if (telemetry?.Logger.IsEnabled(LogLevel.Error) == true)
-            {
-                context.LogScope.Initialize(context);
-                logScope = telemetry.Logger.BeginScope(context.LogScope);
-            }
             context.CancellationToken.ThrowIfCancellationRequested();
             var scope = new AsyncServiceScope(_scopes.CreateScope());
             try
@@ -155,7 +149,7 @@ public sealed class ConsumePipeline
                 catch (Exception error)
                 {
                     failure = error;
-                    LogFailure(telemetry, error);
+                    LogFailure(telemetry, context, error);
                     await _failure(context, error, _classifier.Classify(error, context)).ConfigureAwait(false);
                 }
             }
@@ -170,7 +164,7 @@ public sealed class ConsumePipeline
         catch (OperationCanceledException) when (context.CancellationToken.IsCancellationRequested) { throw; }
         catch (Exception error)
         {
-            if (!ReferenceEquals(failure, error)) LogFailure(telemetry, error);
+            if (!ReferenceEquals(failure, error)) LogFailure(telemetry, context, error);
             failure = error;
             throw;
         }
@@ -183,12 +177,7 @@ public sealed class ConsumePipeline
             }
             finally
             {
-                try { logScope?.Dispose(); }
-                finally
-                {
-                    context.LogScope.Clear();
-                    context.EndProcessing();
-                }
+                context.EndProcessing();
             }
         }
     }
@@ -275,9 +264,10 @@ public sealed class ConsumePipeline
         }
     }
 
-    private static void LogFailure(EndpointTelemetry? telemetry, Exception error)
+    private static void LogFailure(EndpointTelemetry? telemetry, DefaultMessageContext context, Exception error)
     {
         if (telemetry?.Logger.IsEnabled(LogLevel.Error) != true) return;
+        using var scope = telemetry.Logger.BeginScope(ConsumeLog.CreateScope(context));
         var activity = Activity.Current;
         ConsumeLog.Failed(telemetry.Logger, error, activity?.TraceId.ToString(), activity?.SpanId.ToString());
     }

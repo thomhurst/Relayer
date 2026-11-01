@@ -32,7 +32,9 @@ public class TelemetryBenchmarks
     {
         var services = new ServiceCollection();
         services.AddSingleton<Handler>();
-        services.AddSingleton<ILoggerFactory>(new LoggerFactory(ErrorLoggingEnabled));
+        services.AddLogging(logging => logging
+            .SetMinimumLevel(ErrorLoggingEnabled ? LogLevel.Error : LogLevel.None)
+            .AddProvider(new ScopeProvider()));
         services.AddRelayer(r => { r.MessageTypes.Add<Payload>("benchmark.payload"); r.Handler<Handler>(); });
         _provider = services.BuildServiceProvider();
         var instrumentation = _provider.GetRequiredService<RelayerInstrumentation>();
@@ -92,14 +94,14 @@ public class TelemetryBenchmarks
         _provider.Dispose();
     }
 
-    // No provider allocation or output: isolate pipeline scope work while Error logging is enabled.
-    private sealed class LoggerFactory(bool enabled) : ILoggerFactory, ILogger
+    // LoggerFactory supplies real external scopes; output is disabled to isolate pipeline overhead.
+    private sealed class ScopeProvider : ILoggerProvider, ISupportExternalScope, ILogger
     {
         public ILogger CreateLogger(string categoryName) => this;
-        public bool IsEnabled(LogLevel level) => enabled && level >= LogLevel.Error;
-        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+        public bool IsEnabled(LogLevel level) => level >= LogLevel.Error;
+        public void SetScopeProvider(IExternalScopeProvider scopeProvider) { }
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => throw new NotSupportedException();
         public void Log<TState>(LogLevel level, EventId id, TState state, Exception? error, Func<TState, Exception?, string> formatter) { }
-        public void AddProvider(ILoggerProvider provider) => throw new NotSupportedException();
         public void Dispose() { }
     }
     private sealed class Incoming

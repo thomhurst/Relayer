@@ -42,7 +42,6 @@ public sealed class DefaultMessageContext : MessageContext, IDisposable
     }
     internal void NextAttempt() => _attempt = checked(Attempt + 1);
     internal ConsumeDelegate Dispatch { get; set; } = null!;
-    internal ConsumeLogScope LogScope { get; } = new();
     internal HeaderNames EnvelopeNames => _receive?.EnvelopeNames ?? _owner.EnvelopeNames;
 
     // Read raw native fields so malformed envelopes remain loggable without parsing required fields.

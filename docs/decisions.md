@@ -211,6 +211,7 @@ Superseded by [D24](#d24-capabilities-are-valued-and-declared-per-endpoint).
 - W3C trace context is propagated in native headers.
 - The outbox captures trace context at enqueue time.
 - Processing duration is measured after settlement.
+- Generated failure logs open an identity scope only around the log call. `LoggerFactory` allocates when it pushes an external scope, so successful deliveries must not open a Relayer scope. Failure scopes contain read-only snapshots rather than pooled context references, allowing providers to retain them for asynchronous export.
 - Enrichers are supported.
 
 ## D16. Topology is declared; default mode is Validate

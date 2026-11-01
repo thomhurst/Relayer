@@ -170,7 +170,7 @@ public class TelemetryTests
     }
 
     [Test]
-    public async Task Typed_log_scopes_reuse_registered_wire_type_and_clear_cached_values()
+    public async Task Typed_log_scopes_reuse_registered_wire_type_and_snapshot_each_failure()
     {
         var logger = new Logger();
         using var instrumentation = new RelayerInstrumentation(new LoggerFactory(logger));
@@ -231,7 +231,7 @@ public class TelemetryTests
     }
 
     [Test]
-    public async Task Disabled_listeners_and_logging_do_not_read_optional_headers_and_context_reuse_clears_scope()
+    public async Task Disabled_listeners_and_logging_do_not_read_optional_headers()
     {
         await using var provider = Provider();
         var instrumentation = provider.GetRequiredService<RelayerInstrumentation>();
@@ -240,7 +240,6 @@ public class TelemetryTests
         {
             using var context = pipeline.RentContext(Message() with { Headers = new UnreadHeaders() });
             await pipeline.ProcessAsync(context);
-            await Assert.That(context.LogScope[0].Value).IsNull();
         }
     }
 
@@ -255,10 +254,10 @@ public class TelemetryTests
         {
             using var context = pipeline.RentContext(Message() with { Headers = new UnreadHeaders() });
             await pipeline.ProcessAsync(context);
-            await Assert.That(context.LogScope[0].Value).IsNull();
         }
         await Assert.That(logger.Entries.Count).IsEqualTo(0);
         await Assert.That(logger.CurrentScope).IsNull();
+        await Assert.That(logger.ScopesStarted).IsEqualTo(0);
     }
 
     [Test]
@@ -274,6 +273,87 @@ public class TelemetryTests
         await receive.ProcessAsync(message);
         await Assert.That(message.OptionalReads).IsEqualTo(0);
         await Assert.That(logger.Entries.Count).IsEqualTo(0);
+        await Assert.That(logger.ScopesStarted).IsEqualTo(0);
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Successful_delivery_adds_no_scope_to_real_logger_factory(bool native)
+    {
+        var logs = new ExternalScopeProvider();
+        using var factory = Microsoft.Extensions.Logging.LoggerFactory.Create(logging => logging.AddProvider(logs));
+        using var instrumentation = new RelayerInstrumentation(factory);
+        await using var provider = Provider();
+        var observed = new List<object>();
+        provider.GetRequiredService<Control>().Handle = _ =>
+        {
+            logs.Scopes.ForEachScope(static (scope, scopes) => scopes.Add(scope!), observed);
+            return default;
+        };
+        var pipeline = Builder(provider).Telemetry(instrumentation.CreateEndpoint(Options())).Build(1);
+        using var parent = factory.CreateLogger("application").BeginScope("application scope");
+        if (native)
+            await new ReceivePipeline<Incoming, Binding>(pipeline, new HeaderNames("cloudEvents:"), 1)
+                .ProcessAsync(new Incoming { Utf8 = true });
+        else
+        {
+            using var context = pipeline.RentContext(Message() with { Headers = new UnreadHeaders() });
+            await pipeline.ProcessAsync(context);
+        }
+        await Assert.That(observed.Count).IsEqualTo(1);
+        await Assert.That(observed[0]).IsEqualTo("application scope");
+    }
+
+    [Test]
+    [Arguments("handler")]
+    [Arguments("failure")]
+    [Arguments("disposal")]
+    [Arguments("settlement")]
+    public async Task Generated_failure_scopes_survive_context_reuse_and_restore_application_scope(string stage)
+    {
+        var logs = new ExternalScopeProvider();
+        using var factory = Microsoft.Extensions.Logging.LoggerFactory.Create(logging => logging.AddProvider(logs));
+        using var instrumentation = new RelayerInstrumentation(factory);
+        await using var provider = Provider(services => services.AddScoped<DisposalFailure>());
+        var error = new ApplicationException(stage);
+        provider.GetRequiredService<Control>().Handle = context =>
+        {
+            if (stage == "disposal") context.Services.GetRequiredService<DisposalFailure>();
+            return stage is "handler" or "failure" ? ValueTask.FromException(error) : default;
+        };
+        var pipeline = Builder(provider, (_, _, _) => stage == "failure"
+                ? ValueTask.FromException(new InvalidOperationException("failure handling")) : default)
+            .Telemetry(instrumentation.CreateEndpoint(Options()))
+            .Settle(_ => stage == "settlement" ? ValueTask.FromException(error) : default).Build(1);
+        using var parent = factory.CreateLogger("application").BeginScope("application scope");
+        foreach (var id in new[] { "delivery", "next" })
+        {
+            using var context = pipeline.RentContext(Message() with
+            {
+                MessageId = id, Headers = id == "delivery" ? new Headers() : null,
+            });
+            if (stage == "handler") await pipeline.ProcessAsync(context);
+            else await Assert.That(async () => await pipeline.ProcessAsync(context)).Throws<Exception>();
+        }
+
+        // Read retained states only after both pooled deliveries have returned.
+        var entriesPerDelivery = stage == "failure" ? 2 : 1;
+        await Assert.That(logs.RetainedScopes.Count).IsEqualTo(2 * entriesPerDelivery);
+        for (var i = 0; i < logs.RetainedScopes.Count; i++)
+        {
+            var snapshot = logs.RetainedScopes[i].ToDictionary();
+            await Assert.That(snapshot["MessageId"]).IsEqualTo(i < entriesPerDelivery ? "delivery" : "next");
+            await Assert.That(snapshot["MessageType"]).IsEqualTo("number;v=1");
+            await Assert.That(snapshot["CorrelationId"]).IsEqualTo(i < entriesPerDelivery ? "conversation" : null);
+            await Assert.That(logs.RetainedScopes[i].ToString()).IsEqualTo(i < entriesPerDelivery
+                ? "MessageId=delivery MessageType=number;v=1 CorrelationId=conversation"
+                : "MessageId=next MessageType=number;v=1 CorrelationId=");
+        }
+        var remaining = new List<object>();
+        logs.Scopes.ForEachScope(static (scope, scopes) => scopes.Add(scope!), remaining);
+        await Assert.That(remaining.Count).IsEqualTo(1);
+        await Assert.That(remaining[0]).IsEqualTo("application scope");
     }
 
     [Test]
@@ -450,6 +530,10 @@ public class TelemetryTests
             return new(Finished.Task);
         }
     }
+    private sealed class DisposalFailure : IAsyncDisposable
+    {
+        public ValueTask DisposeAsync() => ValueTask.FromException(new InvalidOperationException("disposal"));
+    }
     private sealed class Incoming
     {
         public string? Type { get; init; } = "number;v=1";
@@ -504,17 +588,34 @@ public class TelemetryTests
     private sealed record Entry(Exception? Exception, Dictionary<string, object?> Scope, Dictionary<string, object?> State);
     private sealed class Logger : ILogger
     {
+        internal int ScopesStarted { get; private set; }
         internal IReadOnlyList<KeyValuePair<string, object?>>? CurrentScope { get; private set; }
         internal List<Entry> Entries { get; } = [];
         public bool IsEnabled(LogLevel logLevel) => true;
         public IDisposable? BeginScope<TState>(TState state) where TState : notnull
         {
+            ScopesStarted++;
             CurrentScope = (IReadOnlyList<KeyValuePair<string, object?>>)(object)state;
             return new Scope(this);
         }
         public void Log<TState>(LogLevel level, EventId id, TState state, Exception? error, Func<TState, Exception?, string> formatter) =>
             Entries.Add(new(error, CurrentScope!.ToDictionary(), ((IEnumerable<KeyValuePair<string, object?>>)(object)state!).ToDictionary()));
         private sealed class Scope(Logger owner) : IDisposable { public void Dispose() => owner.CurrentScope = null; }
+    }
+    private sealed class ExternalScopeProvider : ILoggerProvider, ISupportExternalScope, ILogger
+    {
+        internal IExternalScopeProvider Scopes { get; private set; } = null!;
+        internal List<IReadOnlyList<KeyValuePair<string, object?>>> RetainedScopes { get; } = [];
+        public void SetScopeProvider(IExternalScopeProvider scopeProvider) => Scopes = scopeProvider;
+        public ILogger CreateLogger(string categoryName) => this;
+        public bool IsEnabled(LogLevel level) => true;
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => throw new NotSupportedException();
+        public void Log<TState>(LogLevel level, EventId id, TState state, Exception? error, Func<TState, Exception?, string> formatter) =>
+            Scopes.ForEachScope(static (scope, retained) =>
+            {
+                if (scope is IReadOnlyList<KeyValuePair<string, object?>> identity) retained.Add(identity);
+            }, RetainedScopes);
+        public void Dispose() { }
     }
     private sealed class LoggerFactory(Logger logger) : ILoggerFactory
     {
