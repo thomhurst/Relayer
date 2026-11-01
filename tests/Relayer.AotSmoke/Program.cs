@@ -2,6 +2,7 @@ using System.Buffers;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 using Relayer;
 using Relayer.Serialization;
 
@@ -10,6 +11,8 @@ using var provider = new ServiceCollection().AddRelayer(builder =>
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase
     })).BuildServiceProvider();
+foreach (var service in provider.GetServices<IHostedService>())
+    await service.StartAsync(CancellationToken.None);
 var serializer = provider.GetRequiredService<IMessageSerializer>();
 var buffer = new ArrayBufferWriter<byte>();
 var message = new Order(42, new Customer("Ada"), [1, 2], OrderState.Placed);

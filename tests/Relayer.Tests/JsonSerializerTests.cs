@@ -1,9 +1,11 @@
 using System.Buffers;
 using System.Runtime.CompilerServices;
 using System.Text;
+using System.Text.Encodings.Web;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 using Relayer.Serialization;
 
 namespace Relayer.Tests;
@@ -126,14 +128,26 @@ public class JsonSerializerTests
     }
 
     [Test]
-    public async Task Custom_serializer_replaces_json_without_requiring_metadata()
+    [Arguments(0)]
+    [Arguments(1)]
+    [Arguments(2)]
+    public async Task Custom_serializer_replaces_json_without_requiring_metadata(int registrationOrder)
     {
         var serializer = new CustomSerializer();
-        using var provider = new ServiceCollection().AddRelayer(builder =>
+        var services = new ServiceCollection();
+        if (registrationOrder == 0)
+            services.AddSingleton<IMessageSerializer>(serializer);
+        services.AddRelayer(builder =>
         {
             builder.MessageTypes.Add<JsonValue>("manual");
-            builder.Services.AddSingleton<IMessageSerializer>(serializer);
-        }).BuildServiceProvider();
+            if (registrationOrder == 1)
+                builder.Services.AddSingleton<IMessageSerializer>(serializer);
+        });
+        if (registrationOrder == 2)
+            services.AddSingleton<IMessageSerializer>(serializer);
+        using var provider = services.BuildServiceProvider();
+        foreach (var service in provider.GetServices<IHostedService>())
+            await service.StartAsync(CancellationToken.None);
         await Assert.That(provider.GetRequiredService<IMessageSerializer>()).IsSameReferenceAs(serializer);
     }
 
@@ -158,10 +172,25 @@ public class JsonSerializerTests
     }
 
     [Test]
-    public async Task Missing_metadata_fails_during_registration()
+    public async Task Missing_metadata_fails_at_host_startup()
     {
-        await Assert.That(() => new ServiceCollection().AddRelayer(builder => builder.MessageTypes.Add<JsonValue>("manual")))
+        using var provider = new ServiceCollection()
+            .AddRelayer(builder => builder.MessageTypes.Add<JsonValue>("manual"))
+            .BuildServiceProvider();
+        var validator = provider.GetServices<IHostedService>().Single();
+        await Assert.That(() => validator.StartAsync(CancellationToken.None))
             .Throws<InvalidOperationException>().WithMessageContaining("UseJsonSerializer");
+    }
+
+    [Test]
+    public async Task Default_serializer_is_validated_at_host_startup()
+    {
+        using var provider = CreateProvider();
+        var validator = provider.GetServices<IHostedService>().Single();
+        await validator.StartAsync(CancellationToken.None);
+        var serializer = provider.GetRequiredService<IMessageSerializer>();
+        await Assert.That(serializer.ContentType).IsEqualTo("application/json");
+        await validator.StopAsync(CancellationToken.None);
     }
 
     [Test]
@@ -193,6 +222,31 @@ public class JsonSerializerTests
         var buffer = new ArrayBufferWriter<byte>();
         serializer.Serialize(new JsonValue(42), buffer);
         await Assert.That(Encoding.UTF8.GetString(buffer.WrittenSpan)).Contains("    \"Count\": 42");
+    }
+
+    [Test]
+    public async Task Pooled_writer_preserves_custom_encoder_and_indentation_on_reuse()
+    {
+        using var provider = CreateProvider(new JsonSerializerOptions
+        {
+            Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
+            WriteIndented = true,
+            IndentCharacter = '\t',
+            IndentSize = 2,
+            NewLine = "\n"
+        });
+        var serializer = provider.GetRequiredService<IMessageSerializer>();
+        var message = new JsonOrder("<Ada>", 1, []);
+        var buffer = new ArrayBufferWriter<byte>();
+        for (var i = 0; i < 2; i++)
+        {
+            buffer.Clear();
+            serializer.Serialize(message, buffer);
+            var json = Encoding.UTF8.GetString(buffer.WrittenSpan);
+            await Assert.That(json).Contains("\n\t\t\"CustomerName\": \"<Ada>\"");
+            var result = serializer.Deserialize<JsonOrder>(new ReadOnlySequence<byte>(buffer.WrittenMemory));
+            await Assert.That(result.CustomerName).IsEqualTo(message.CustomerName);
+        }
     }
 
     [Test]
