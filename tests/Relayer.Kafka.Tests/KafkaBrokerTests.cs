@@ -19,7 +19,14 @@ public class KafkaBrokerTests
     [Test]
     public async Task Named_sender_and_ordered_batches_round_trip_with_native_tracing_and_reusable_state()
     {
-        await using var broker = new KafkaBuilder("apache/kafka:4.0.2").WithVendor(KafkaVendor.ApacheSoftwareFoundation).Build();
+        var brokerBuilder = new KafkaBuilder("apache/kafka:4.0.2").WithVendor(KafkaVendor.ApacheSoftwareFoundation);
+        if (OperatingSystem.IsLinux())
+        {
+            // Avoid Linux's default outbound ephemeral range (32768-60999). Docker can exhaust
+            // its ten bind attempts on occupied ephemeral ports: moby/moby#54079.
+            brokerBuilder = brokerBuilder.WithPortBinding("20000-29999", "9092").WithPortBinding("20000-29999", "9093");
+        }
+        await using var broker = brokerBuilder.Build();
         await broker.StartAsync();
         using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(2));
         var token = timeout.Token;
