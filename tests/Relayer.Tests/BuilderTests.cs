@@ -160,6 +160,9 @@ public class BuilderTests
             .Throws<InvalidOperationException>();
         await Assert.That(() => transport!.Send<OrderCancelled>("late")).Throws<InvalidOperationException>();
         await Assert.That(() => consumer!.Concurrency(10)).Throws<InvalidOperationException>();
+        var serviceCount = root!.Services.Count;
+        await Assert.That(() => consumer!.Handler<OrderHandler>()).Throws<InvalidOperationException>();
+        await Assert.That(root.Services.Count).IsEqualTo(serviceCount);
         await Assert.That(() => route!.OrderingKey(_ => "late")).Throws<InvalidOperationException>();
         await Assert.That(() => root!.TopologyMode = TopologyMode.None).Throws<InvalidOperationException>();
     }

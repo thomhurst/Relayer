@@ -397,6 +397,8 @@ Refines [D8](#d8-systemtextjson-source-generation-by-default).
 **Decision.**
 - The core owns named, typed transport, route and consumer declarations, available before execution pipelines. Native transport packages wrap `AddTransport<TTransportOptions, TRouteOptions, TConsumerOptions>` in their own simple registration extensions.
 - The single route declaration is `Send<T>` for any native destination. Sending versus publishing remains native routing, as in §3.4.
+- Each message type has one route across all transports. Cross-broker fan-out is outside the default routing contract.
+- Consumer `Handler<THandler>()` registration is source-generated, just like root handler registration. It adds every single-message and batch descriptor to the shared registry before freezing it, and records the handler on that consumer. The untyped `IConsumerBuilder` keeps generated registration independent of native option types; the callback's typed builder retains access to native `Options`.
 - Transport option configuration uses named `OptionsBuilder<T>` and `IOptionsMonitor<T>`. Applications use generated binding for Native AOT rather than a generic reflection-based binder inside the core.
 - A core hosted validator reports declaration and named-option errors together before later native transport hosted services start. Pipeline, native capability and topology checks remain responsible for their own execution-specific contracts.
 

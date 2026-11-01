@@ -5,6 +5,38 @@ namespace Relayer.Tests;
 public class HandlerDispatchTests
 {
     [Test]
+    public async Task Consumer_only_registration_supports_single_batch_and_closed_generic_dispatch()
+    {
+        var services = new ServiceCollection();
+        services.AddScoped<ScopedDependency>();
+        services.AddRelayer(r => r.AddTransport<BuilderTests.BrokerOptions, BuilderTests.RouteOptions, BuilderTests.ConsumerOptions>(
+            "events", b => b.Consume("orders", c => c.Handler<SingleHandler>().Handler<MultipleHandler>()
+                .Handler<GenericHandler<int>>().Handler<SingleHandler>().Concurrency(2))));
+        await using var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
+        using var scope = provider.CreateScope();
+        var registry = provider.GetRequiredService<HandlerRegistry>();
+        var single = registry.GetHandler<int, SingleHandler>();
+        var handler = (SingleHandler)single.Resolve(scope.ServiceProvider);
+        var context = new TestContext(scope.ServiceProvider);
+        await single.DispatchAsync(handler, 42, context, default);
+        var batch = registry.GetBatchHandler<int, MultipleHandler>();
+        var batchHandler = (MultipleHandler)batch.Resolve(scope.ServiceProvider);
+        var messages = new Batch<int>([new(1, context), new(2, context)]);
+        await registry.GetHandler<string, MultipleHandler>().DispatchAsync(batchHandler, "hello", context, default);
+        var result = await batch.DispatchAsync(batchHandler, messages, default);
+
+        await Assert.That(registry.Descriptors.Count).IsEqualTo(5);
+        await Assert.That(handler.Message).IsEqualTo(42);
+        await Assert.That(handler.Dependency).IsSameReferenceAs(scope.ServiceProvider.GetRequiredService<ScopedDependency>());
+        await Assert.That(batchHandler.Text).IsEqualTo("hello");
+        await Assert.That(result).IsSameReferenceAs(batchHandler.Result);
+        var generic = registry.GetHandler<int, GenericHandler<int>>();
+        await generic.DispatchAsync(generic.Resolve(scope.ServiceProvider), 7, context, default);
+        await Assert.That(provider.GetRequiredService<RelayerConfiguration>().Transports[0].Consumers[0].Handlers.Count)
+            .IsEqualTo(3);
+    }
+
+    [Test]
     public async Task Explicit_registration_selects_only_requested_handlers_and_is_idempotent()
     {
         var services = new ServiceCollection();
@@ -119,6 +151,10 @@ public class HandlerDispatchTests
     public async Task Unsupported_handler_registration_fails_during_configuration()
     {
         await Assert.That(() => new ServiceCollection().AddRelayer(r => r.Handler<MarkerOnly>()))
+            .Throws<InvalidOperationException>().WithMessageContaining("No generated descriptor");
+        await Assert.That(() => new ServiceCollection().AddRelayer(r =>
+            r.AddTransport<BuilderTests.BrokerOptions, BuilderTests.RouteOptions, BuilderTests.ConsumerOptions>("events", b =>
+                b.Consume("orders", c => c.Handler<MarkerOnly>()))))
             .Throws<InvalidOperationException>().WithMessageContaining("No generated descriptor");
     }
 

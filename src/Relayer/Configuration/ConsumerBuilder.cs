@@ -1,13 +1,12 @@
-using System.Diagnostics.CodeAnalysis;
 using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.DependencyInjection.Extensions;
 
 namespace Relayer;
 
 /// <summary>Configures a consumer without replacing its native transport options.</summary>
-public sealed class ConsumerBuilder<TConsumerOptions> where TConsumerOptions : class, new()
+public sealed class ConsumerBuilder<TConsumerOptions> : IConsumerBuilder where TConsumerOptions : class, new()
 {
     private readonly IServiceCollection _services;
+    private readonly HandlerRegistry _registry;
     private readonly string _source;
     private readonly List<Type> _handlers = [];
     private int _concurrency = 1;
@@ -15,27 +14,28 @@ public sealed class ConsumerBuilder<TConsumerOptions> where TConsumerOptions : c
     private TimeSpan _batchWait = TimeSpan.FromMilliseconds(100);
     private bool _built;
 
-    internal ConsumerBuilder(IServiceCollection services, string source)
+    internal ConsumerBuilder(IServiceCollection services, HandlerRegistry registry, string source)
     {
         _services = services;
+        _registry = registry;
         _source = source;
     }
 
     /// <summary>The transport's native consumer options.</summary>
     public TConsumerOptions Options { get; } = new();
 
-    /// <summary>Registers a handler explicitly. Generated dispatch resolves its message contracts at startup.</summary>
-    public ConsumerBuilder<TConsumerOptions> Handler<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors)] THandler>()
-        where THandler : class, IHandlerMarker
+    IServiceCollection IConsumerBuilder.Services => _services;
+
+    void IConsumerBuilder.AddHandler(HandlerDescriptor descriptor)
     {
         EnsureMutable();
-        if (!_handlers.Contains(typeof(THandler)))
-        {
-            _handlers.Add(typeof(THandler));
-            _services.TryAddScoped<THandler>();
-        }
-        return this;
+        _registry.Add(descriptor);
+        if (!_handlers.Contains(descriptor.HandlerType)) _handlers.Add(descriptor.HandlerType);
     }
+
+    IConsumerBuilder IConsumerBuilder.Concurrency(int maximum) => Concurrency(maximum);
+
+    IConsumerBuilder IConsumerBuilder.Batch(int maxSize, TimeSpan maxWait) => Batch(maxSize, maxWait);
 
     /// <summary>Sets the maximum number of concurrent handler invocations.</summary>
     public ConsumerBuilder<TConsumerOptions> Concurrency(int maximum)

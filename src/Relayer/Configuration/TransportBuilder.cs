@@ -10,13 +10,15 @@ public sealed class TransportBuilder<TTransportOptions, TRouteOptions, TConsumer
     where TConsumerOptions : class, new()
 {
     private readonly IServiceCollection _services;
+    private readonly HandlerRegistry _handlers;
     private readonly List<IRouteDefinition> _routes = [];
     private readonly List<IConsumerDefinition> _consumers = [];
     private bool _built;
 
-    internal TransportBuilder(IServiceCollection services, string name)
+    internal TransportBuilder(IServiceCollection services, HandlerRegistry handlers, string name)
     {
         _services = services;
+        _handlers = handlers;
         Name = name;
         Options = services.AddOptions<TTransportOptions>(name);
     }
@@ -46,7 +48,7 @@ public sealed class TransportBuilder<TTransportOptions, TRouteOptions, TConsumer
         EnsureMutable();
         ArgumentNullException.ThrowIfNull(source);
         ArgumentNullException.ThrowIfNull(configure);
-        var consumer = new ConsumerBuilder<TConsumerOptions>(_services, source);
+        var consumer = new ConsumerBuilder<TConsumerOptions>(_services, _handlers, source);
         configure(consumer);
         _consumers.Add(consumer.Build());
         return this;

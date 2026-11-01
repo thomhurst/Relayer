@@ -56,7 +56,7 @@ internal sealed class RelayerBuilder(IServiceCollection services) : IRelayerBuil
         ArgumentNullException.ThrowIfNull(configure);
         EnsureMutable();
 
-        var transport = new TransportBuilder<TTransportOptions, TRouteOptions, TConsumerOptions>(Services, name);
+        var transport = new TransportBuilder<TTransportOptions, TRouteOptions, TConsumerOptions>(Services, Handlers, name);
         configure(transport);
         Transports.Add(transport.Build());
         return this;
