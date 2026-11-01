@@ -11,6 +11,7 @@
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/Relayer.Tests/Relayer.Tests.csproj" />
+    <Project Path="tests/Relayer.SourceGenerators.Tests/Relayer.SourceGenerators.Tests.csproj" />
   </Folder>
   <Folder Name="/benchmarks/">
     <Project Path="benchmarks/Relayer.Benchmarks/Relayer.Benchmarks.csproj" />
