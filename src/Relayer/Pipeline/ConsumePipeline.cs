@@ -104,6 +104,15 @@ public sealed class ConsumePipeline
         return new(unknown[..separator], version);
     }
 
+    internal string GetWireIdentityText(MessageType messageType)
+    {
+        foreach (var identity in _wireIdentities)
+        {
+            if (identity.Identity == messageType) return identity.Text;
+        }
+        return messageType.ToString();
+    }
+
     private readonly record struct WireIdentity(MessageType Identity, string Text, byte[] Utf8);
 
     /// <summary>Processes one delivery in a fresh async DI scope, then invokes the configured native settlement callback.</summary>

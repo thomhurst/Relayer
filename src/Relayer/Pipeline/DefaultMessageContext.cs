@@ -45,17 +45,17 @@ public sealed class DefaultMessageContext : MessageContext, IDisposable
     internal ConsumeLogScope LogScope { get; } = new();
     internal HeaderNames EnvelopeNames => _receive?.EnvelopeNames ?? _owner.EnvelopeNames;
 
-    internal void GetLogIdentity(out string? id, out string? type)
+    // Read raw native fields so malformed envelopes remain loggable without parsing required fields.
+    internal string? GetLogMessageId()
     {
-        if (_receive is null)
-        {
-            id = _message.MessageId;
-            type = _message.MessageType.ToString();
-            return;
-        }
-        // Logging must also work for malformed envelopes without trying to parse their required fields.
-        id = _receive.TryGetValue(EnvelopeNames.Id, out var rawId) ? rawId.ToString() : null;
-        type = _receive.TryGetValue(EnvelopeNames.Type, out var rawType) ? rawType.ToString() : null;
+        if (_receive is null) return _message.MessageId;
+        return _receive.TryGetValue(EnvelopeNames.Id, out var id) ? id.ToString() : null;
+    }
+
+    internal string? GetLogMessageType()
+    {
+        if (_receive is null) return _owner.GetWireIdentityText(_message.MessageType);
+        return _receive.TryGetValue(EnvelopeNames.Type, out var type) ? type.ToString() : null;
     }
 
     internal void Initialize(in ConsumeMessage message, CancellationToken cancellationToken)

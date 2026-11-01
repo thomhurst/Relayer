@@ -41,6 +41,6 @@ Generated error logs use category `Relayer.ConsumePipeline` and event ID 1. When
 NativeHeaderWriter.SetHeader(nativeMessage, names.CorrelationId, correlationId);
 ```
 
-Scope state belongs to the pooled delivery context. Logging providers must snapshot scope values synchronously during logging before queuing an entry for asynchronous export.
+Scope values are read and cached lazily when a logging provider accesses them. Successful deliveries do not format identities or read optional correlation headers merely because Error logging is enabled. Typed deliveries reuse the precomputed wire type string; native malformed fields remain available without envelope parsing. Providers that eagerly snapshot scopes can still incur decoding costs. Scope state belongs to the pooled delivery context. Logging providers must snapshot scope values synchronously during logging before queuing an entry for asynchronous export.
 
 Health integration is tracked separately in #85; tracing in #13. See [design §8](design.md#8-observability) for their contracts.

@@ -163,6 +163,27 @@ public class TelemetryTests
         var receive = new ReceivePipeline<Incoming, Binding>(pipeline, new HeaderNames(prefix), 1);
         await receive.ProcessAsync(new Incoming { Prefix = prefix, CorrelationId = "conversation", Utf8 = utf8 });
         await receive.ProcessAsync(new Incoming { Prefix = prefix, Utf8 = utf8 });
+        await Assert.That(logger.Entries[0].Scope["MessageId"]).IsEqualTo("native");
+        await Assert.That(logger.Entries[0].Scope["MessageType"]).IsEqualTo("number;v=1");
+        await Assert.That(logger.Entries[0].Scope["CorrelationId"]).IsEqualTo("conversation");
+        await Assert.That(logger.Entries[1].Scope["CorrelationId"]).IsNull();
+    }
+
+    [Test]
+    public async Task Typed_log_scopes_reuse_registered_wire_type_and_clear_cached_values()
+    {
+        var logger = new Logger();
+        using var instrumentation = new RelayerInstrumentation(new LoggerFactory(logger));
+        await using var provider = Provider();
+        provider.GetRequiredService<Control>().Handle = _ => ValueTask.FromException(new Exception("handler"));
+        var pipeline = Builder(provider).Telemetry(instrumentation.CreateEndpoint(Options())).Build(1);
+        using (var context = pipeline.RentContext(Message() with { Headers = new Headers() }))
+            await pipeline.ProcessAsync(context);
+        using (var context = pipeline.RentContext(Message() with { MessageId = "next" }))
+            await pipeline.ProcessAsync(context);
+        await Assert.That(logger.Entries[0].Scope["MessageType"]).IsSameReferenceAs(logger.Entries[1].Scope["MessageType"]);
+        await Assert.That(logger.Entries[0].Scope["MessageId"]).IsEqualTo("delivery");
+        await Assert.That(logger.Entries[1].Scope["MessageId"]).IsEqualTo("next");
         await Assert.That(logger.Entries[0].Scope["CorrelationId"]).IsEqualTo("conversation");
         await Assert.That(logger.Entries[1].Scope["CorrelationId"]).IsNull();
     }
@@ -224,6 +245,38 @@ public class TelemetryTests
     }
 
     [Test]
+    public async Task Error_logging_leaves_scope_values_unread_until_a_log_is_emitted()
+    {
+        var logger = new Logger();
+        using var instrumentation = new RelayerInstrumentation(new LoggerFactory(logger));
+        await using var provider = Provider();
+        var pipeline = Builder(provider).Telemetry(instrumentation.CreateEndpoint(Options())).Build(1);
+        for (var i = 0; i < 2; i++)
+        {
+            using var context = pipeline.RentContext(Message() with { Headers = new UnreadHeaders() });
+            await pipeline.ProcessAsync(context);
+            await Assert.That(context.LogScope[0].Value).IsNull();
+        }
+        await Assert.That(logger.Entries.Count).IsEqualTo(0);
+        await Assert.That(logger.CurrentScope).IsNull();
+    }
+
+    [Test]
+    public async Task Error_logging_leaves_native_optional_headers_unread_on_success()
+    {
+        var logger = new Logger();
+        using var instrumentation = new RelayerInstrumentation(new LoggerFactory(logger));
+        await using var provider = Provider();
+        var pipeline = Builder(provider).Telemetry(instrumentation.CreateEndpoint(Options())).Build(1);
+        var receive = new ReceivePipeline<Incoming, Binding>(pipeline, new HeaderNames("cloudEvents:"), 1);
+        var message = new Incoming { Utf8 = true, CorrelationId = "conversation" };
+        await receive.ProcessAsync(message);
+        await receive.ProcessAsync(message);
+        await Assert.That(message.OptionalReads).IsEqualTo(0);
+        await Assert.That(logger.Entries.Count).IsEqualTo(0);
+    }
+
+    [Test]
     public async Task Malformed_envelopes_still_log_and_count_delivery_without_logging_bypassing_failure_handling()
     {
         var logger = new Logger();
@@ -237,6 +290,8 @@ public class TelemetryTests
         await receive.ProcessAsync(new Incoming { Type = null });
         await Assert.That(failures).IsEqualTo(1);
         await Assert.That(logger.Entries.Single().Exception is MessageEnvelopeException).IsTrue();
+        await Assert.That(logger.Entries.Single().Scope["MessageId"]).IsEqualTo("native");
+        await Assert.That(logger.Entries.Single().Scope["MessageType"]).IsNull();
         await Assert.That(capture.Values.Count(v => v.Name == "messaging.client.consumed.messages")).IsEqualTo(1);
     }
 
@@ -401,6 +456,7 @@ public class TelemetryTests
         public string Prefix { get; init; } = "cloudEvents:";
         public string? CorrelationId { get; init; }
         public bool Utf8 { get; init; }
+        public int OptionalReads { get; set; }
         public string Time { get; } = DateTimeOffset.UtcNow.AddMinutes(-1).ToString("O");
     }
     private readonly struct Binding : IMessageBinding<Incoming>
@@ -412,8 +468,8 @@ public class TelemetryTests
             string? text = null;
             if (name == message.Prefix + "type") text = message.Type;
             else if (name == message.Prefix + "id") text = "native";
-            else if (name == message.Prefix + "time") text = message.Time;
-            else if (name == message.Prefix + "correlationid") text = message.CorrelationId;
+            else if (name == message.Prefix + "time") { message.OptionalReads++; text = message.Time; }
+            else if (name == message.Prefix + "correlationid") { message.OptionalReads++; text = message.CorrelationId; }
             value = default;
             if (text is not null)
                 value = message.Utf8 ? new(System.Text.Encoding.UTF8.GetBytes(text)) : new(text);
