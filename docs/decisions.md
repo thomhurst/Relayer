@@ -597,6 +597,8 @@ Ordering describes ascending visible UUIDs, not concurrent writers' commit order
 fails while a native request is in flight, that request can arrive late: neither cancellation nor the lease can
 retract it. Native ordering semantics and the at-least-once contract remain unchanged. Strict fencing of native
 requests requires broker support and is not emulated. Idempotent consumers remain necessary.
+Poison-row handling, retry limits and key-scoped parking remain tracked by
+[#34](https://github.com/thomhurst/Relayer/issues/34).
 
 **Alternatives rejected.** Lease expiry without a transaction guard permits concurrent connected senders.
 Stealing live ownership for faster rebalancing violates safe drain. Claim-only scans can skip a live or

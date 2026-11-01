@@ -98,9 +98,9 @@ the failed group in a busy loop.
 worker is stopped, an error states how many committed rows remain pending. Shutdown completes the
 queue and drains it within the host's shutdown deadline; cancellation leaves unfinished work durable.
 
-**Recovery polling, retry scheduling, ordered lane dispatch, poison-row handling and cleanup remain
-planned.** Rows skipped because of a future `DeliverAt` or an ordering key remain in the database.
+[Ordered lane dispatch](ordered-dispatch.md) handles rows with ordering keys separately.
+**Recovery polling, retry scheduling, poison-row handling and cleanup remain planned.**
+Rows skipped because of a future `DeliverAt` or an ordering key remain in the database for the appropriate dispatcher.
 Rows left by failure, overflow, cancellation or process death also need recovery dispatch. This worker
 handles immediate commit-triggered sends only; it is not a complete autonomous recovery system.
-See [#32](https://github.com/thomhurst/Relayer/issues/32) and
-[#33](https://github.com/thomhurst/Relayer/issues/33) for remaining dispatch work.
+See [#33](https://github.com/thomhurst/Relayer/issues/33) for recovery dispatch work.
