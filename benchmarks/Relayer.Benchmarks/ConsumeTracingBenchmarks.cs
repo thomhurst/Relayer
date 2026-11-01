@@ -34,6 +34,7 @@ public class ConsumeTracingBenchmarks
         var services = new ServiceCollection();
         services.AddSingleton<Handler>();
         services.AddSingleton<BatchHandler>();
+        services.AddSingleton<IMessageSerializer, Serializer>();
         services.AddRelayer(r =>
         {
             r.MessageTypes.Add<Payload>("benchmark.payload");
