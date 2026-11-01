@@ -21,11 +21,14 @@ internal sealed class PostgreSqlDirectDispatcher : BackgroundService
     private readonly bool[] _claimed;
     private readonly string _schema;
     private readonly string _prefix;
+    private readonly List<BufferedOutboxMessage> _recoveryRows = [];
+    private readonly OutboxDispatchBatch _recoveryBatch = new();
 
     internal PostgreSqlDirectDispatcher(Npgsql.NpgsqlDataSource dataSource, PostgreSqlOutboxOptions storeOptions,
-        PostgreSqlDirectDispatchOptions options, IEnumerable<ITransport> transports, ILogger<PostgreSqlDirectDispatcher> logger)
+        PostgreSqlDirectDispatchOptions options, IEnumerable<ITransport> transports, ILogger<PostgreSqlDirectDispatcher> logger,
+        PostgreSqlOutboxStore? store = null)
     {
-        _store = new(dataSource, storeOptions);
+        _store = store ?? new(dataSource, storeOptions);
         _schema = storeOptions.Schema ?? "public";
         _prefix = storeOptions.TablePrefix;
         _options = options;
@@ -182,6 +185,26 @@ internal sealed class PostgreSqlDirectDispatcher : BackgroundService
                 Array.Clear(_claims, 0, count);
             }
         }
+    }
+
+    // Recovery owns a separate dispatcher instance, so these buffers never overlap the commit queue.
+    [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
+    internal async ValueTask DispatchRecoveredAsync(ReadOnlyMemory<OutboxRecord> rows, CancellationToken cancellationToken)
+    {
+        var batch = PrepareRecovered(rows.Span);
+        try { await DispatchAsync(batch, cancellationToken).ConfigureAwait(false); }
+        finally { batch.Clear(); }
+    }
+
+    internal OutboxDispatchBatch PrepareRecovered(ReadOnlySpan<OutboxRecord> rows)
+    {
+        for (var i = 0; i < rows.Length; i++)
+        {
+            if (_recoveryRows.Count == i) _recoveryRows.Add(new());
+            _recoveryRows[i].Copy(rows[i], 1);
+        }
+        _recoveryBatch.Take(_recoveryRows, rows.Length, DateTimeOffset.UtcNow);
+        return _recoveryBatch;
     }
 
     internal static int CompactClaims(Span<OutgoingMessage> messages, Span<OutboxClaim> claims, ReadOnlySpan<bool> claimed)

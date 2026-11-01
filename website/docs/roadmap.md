@@ -19,7 +19,7 @@ Relayer is in early development. Track progress in [GitHub issues](https://githu
 - [Ordered PostgreSQL dispatch and lane leases](reference/ordered-dispatch.md).
 - [EF Core consumer inbox](reference/ef-core-inbox.md): PostgreSQL deduplication, concurrent redelivery, atomic business/inbox/outbox commits and duplicate metrics. Automatic for the selected outbox context, opt-in for inbox-only consumers.
 - [PostgreSQL ADO.NET and Dapper transactions](reference/postgres-outbox.md): scoped enlistment, owned message copies and one atomic batched insert on commit.
-- [Unordered PostgreSQL direct dispatch](reference/direct-dispatch.md): background sends immediately after EF commit, fenced claims, native transport batches and fenced batch deletion. Recovery polling, poison-row handling and cleanup remain planned.
+- [Unordered PostgreSQL direct dispatch](reference/direct-dispatch.md): background sends immediately after EF commit, fenced claims, native transport batches and fenced batch deletion. Register [leased recovery and cleanup](reference/postgres-maintenance.md) for unordered crash recovery and bounded dead/inbox retention. Poison-row handling remains planned.
 - The consume pipeline and the native receive SPI.
 - Explicit [message upcaster chains](guides/messages.md#versioning-and-unknown-types), composed at startup for single-message and batch handlers.
 - [Service Bus native sending and topology](transports/service-bus.md): named registration, owned/caller-owned clients, queues/topics, byte-limited native batches, scheduling, native callbacks, explicit session verification and non-destructive provisioning. [Receive primitives](transports/service-bus-receive.md) are available separately; hosted receiver composition remains planned.

@@ -8,7 +8,8 @@ extension in `Relayer.Outbox.EntityFrameworkCore`. Schema creation does **not** 
 transaction enlistment, dispatch, lease acquisition, poison-row handling or inbox deduplication by itself.
 Register [EF Core transaction enlistment](ef-core-outbox.md) separately to persist outgoing rows.
 [Ordered dispatch and lease acquisition](ordered-dispatch.md) and [unordered direct dispatch](direct-dispatch.md)
-are implemented separately. Recovery polling and poison-row handling remain [planned](../roadmap.md).
+are implemented separately. [Leased recovery and cleanup](postgres-maintenance.md) are also available.
+Poison-row handling remains [planned](../roadmap.md).
 [EF Core consumer inbox](ef-core-inbox.md) implements deduplication using the inbox table.
 SQL Server and MySQL scripts are not implemented.
 
@@ -114,4 +115,4 @@ rows in the dead table are excluded. The real PostgreSQL tests seed these cases,
 integration at counts 9, 10, 19 and 20 with thresholds 10 and 20. This fixture validates the schema and predicate;
 the [PostgreSQL store](postgres-store.md) implements this predicate in its backlog and claim queries.
 [Unordered direct dispatch](direct-dispatch.md) uses these claims after EF commits;
-[ordered lane dispatch](ordered-dispatch.md) uses separate lane leases. Recovery polling remains planned.
+[ordered lane dispatch](ordered-dispatch.md) uses separate lane leases. [Leased recovery and cleanup](postgres-maintenance.md) provide unordered recovery and bounded retention.

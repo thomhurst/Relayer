@@ -148,6 +148,22 @@ await using (var orderedSource = new Npgsql.NpgsqlSlimDataSourceBuilder(postgres
 }
 Console.WriteLine("Ordered PostgreSQL dispatch registration and immutable options passed under Native AOT.");
 
+await using (var maintenanceSource = new Npgsql.NpgsqlSlimDataSourceBuilder("Host=127.0.0.1;Port=1;Timeout=1").EnableArrays().Build())
+{
+    var maintenanceServices = new ServiceCollection().AddLogging();
+    maintenanceServices.AddRelayerPostgreSqlMaintenance("maintenance-smoke", maintenanceSource,
+        new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
+        {
+            ["BatchSize"] = "3", ["DeadRetention"] = "infinite", ["InboxRetention"] = "365.00:00:00"
+        }).Build());
+    await using var maintenanceProvider = maintenanceServices.BuildServiceProvider();
+    var settings = maintenanceProvider.GetRequiredService<Microsoft.Extensions.Options.IOptionsMonitor<PostgreSqlMaintenanceOptions>>().Get("maintenance-smoke");
+    if (settings.BatchSize != 3 || settings.DeadRetention is not null || settings.InboxRetention != TimeSpan.FromDays(365))
+        throw new InvalidOperationException("Maintenance immutable options failed under Native AOT.");
+    _ = maintenanceProvider.GetRequiredService<IHostedService>();
+}
+Console.WriteLine("PostgreSQL maintenance registration and immutable configuration passed under Native AOT.");
+
 Console.WriteLine("PostgreSQL keyed stores and cancellation passed under Native AOT.");
 // This validates scoped registration and immutable configuration, without claiming an EF compiled-model round trip.
 var outboxServices = new ServiceCollection();

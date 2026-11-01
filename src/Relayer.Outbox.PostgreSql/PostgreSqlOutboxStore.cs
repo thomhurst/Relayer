@@ -12,6 +12,8 @@ namespace Relayer.Outbox.PostgreSql;
 public sealed class PostgreSqlOutboxStore : IOutboxStore
 {
     private readonly NpgsqlDataSource _dataSource;
+    private NpgsqlConnection? _dispatchConnection;
+    private NpgsqlTransaction? _dispatchTransaction;
     private readonly string _read;
     private readonly string _claim;
     private readonly string _claimBatch;
@@ -55,7 +57,7 @@ public sealed class PostgreSqlOutboxStore : IOutboxStore
         if (request.Lane < 0) throw new ArgumentOutOfRangeException(nameof(request), "Lane must not be negative.");
         cancellationToken.ThrowIfCancellationRequested();
         if (destination.IsEmpty) return 0;
-        using var command = _dataSource.CreateCommand(_read);
+        using var command = CreateCommand(_read);
         Add(command, "now", NpgsqlDbType.TimestampTz, request.Now.ToUniversalTime());
         Add(command, "lane", NpgsqlDbType.Integer, request.Lane);
         Add(command, "after", NpgsqlDbType.Uuid, request.AfterId);
@@ -149,7 +151,7 @@ public sealed class PostgreSqlOutboxStore : IOutboxStore
             _batchIds.Add(claim.MessageId);
             _batchTokens.Add(claim.Token);
         }
-        var command = _dataSource.CreateCommand(sql);
+        var command = CreateCommand(sql);
         Add(command, "ids", NpgsqlDbType.Array | NpgsqlDbType.Uuid, _batchIds);
         Add(command, "tokens", NpgsqlDbType.Array | NpgsqlDbType.Uuid, _batchTokens);
         Add(command, "now", NpgsqlDbType.TimestampTz, now.ToUniversalTime());
@@ -170,14 +172,25 @@ public sealed class PostgreSqlOutboxStore : IOutboxStore
     /// <inheritdoc />
     public ValueTask<long?> GetPendingCountAsync(DateTimeOffset now, CancellationToken cancellationToken)
     {
-        var command = _dataSource.CreateCommand(_count);
+        var command = CreateCommand(_count);
         Add(command, "now", NpgsqlDbType.TimestampTz, now.ToUniversalTime());
         return _pendingCount.Start(command, cancellationToken);
     }
 
+    // Only the maintenance-owned store uses this scope. Public stores retain independent auto-committed claims.
+    internal void UseDispatchTransaction(NpgsqlConnection? connection, NpgsqlTransaction? transaction)
+    {
+        _dispatchConnection = connection;
+        _dispatchTransaction = transaction;
+    }
+
+    private NpgsqlCommand CreateCommand(string sql) => _dispatchConnection is { } connection
+        ? new NpgsqlCommand(sql, connection, _dispatchTransaction)
+        : _dataSource.CreateCommand(sql);
+
     private NpgsqlCommand CreateMutation(string sql, OutboxClaim claim, DateTimeOffset now)
     {
-        var command = _dataSource.CreateCommand(sql);
+        var command = CreateCommand(sql);
         Add(command, "id", NpgsqlDbType.Uuid, claim.MessageId);
         Add(command, "token", NpgsqlDbType.Uuid, claim.Token);
         Add(command, "now", NpgsqlDbType.TimestampTz, now.ToUniversalTime());
