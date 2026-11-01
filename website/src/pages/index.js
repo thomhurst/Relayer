@@ -279,8 +279,11 @@ const status = [
   ['Declared topology and JSON export', 'Implemented', true],
   ['In-memory transport for tests and samples', 'Implemented', true],
   ['Kafka, Service Bus, SQS/SNS and RabbitMQ transports', 'In progress', false],
+  ['Health checks with application-provided adapters', 'Implemented', true],
+  ['Built-in health adapters', 'Planned', false],
   ['EF Core and PostgreSQL outbox and inbox', 'Planned', false],
-  ['OpenTelemetry spans and metrics', 'Planned', false],
+  ['Core tracing, consume metrics and failure logs', 'Implemented', true],
+  ['Native transport and outbox telemetry', 'Planned', false],
 ];
 
 function Status() {

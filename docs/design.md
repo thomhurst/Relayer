@@ -641,7 +641,7 @@ Relayer-specific instruments, for which the conventions define nothing:
 - Logging uses `LoggerMessage` source generation and scopes that carry the message ID, type, and correlation ID around generated failure logs. Successful deliveries open no logging scope, preserving zero incremental allocations with Error logging enabled. Failure scopes hold read-only identity snapshots that providers can retain after processing.
 - Health checks: transport connectivity, consumer liveness (each consumer has made progress or is idle), and outbox backlog thresholds.
   The optional `Relayer.HealthChecks` package registers all three with `services.AddRelayerHealthChecks()`.
-  [Health integration](health-checks.md) documents explicit native adapters, unavailable state and validated thresholds.
+  [Health integration](https://relayer.tomlonghurst.dev/docs/guides/health-checks) documents explicit native adapters, unavailable state and validated thresholds.
 
 ---
 

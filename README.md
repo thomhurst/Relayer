@@ -17,7 +17,7 @@ Relayer never changes how the underlying technology sends, receives, orders, or 
 - [relayer.tomlonghurst.dev](https://relayer.tomlonghurst.dev/) — guides, concepts and reference (source in [`website/`](website/))
 - [Design](docs/design.md) — how Relayer works
 - [Decision record](docs/decisions.md) — why it works that way
-- [Health checks](docs/health-checks.md) — registration, adapter contracts and thresholds
+- [Health checks](https://relayer.tomlonghurst.dev/docs/guides/health-checks) — registration, adapter contracts and thresholds
 
 ## Building
 

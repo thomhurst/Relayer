@@ -1,4 +1,7 @@
-# Health checks
+---
+title: Health checks
+description: "Readiness checks for transport connectivity, consumer liveness and outbox backlogs, with explicit adapter registration."
+---
 
 Reference `Relayer.HealthChecks` and register its three checks in the application:
 
@@ -29,7 +32,13 @@ The core package has no health-check dependency. Health polls add no work to the
 
 Native broker connectivity and outbox health adapters are not supplied yet. This package defines the adapter
 seams; it does not claim that registering a transport makes its native client healthy. Applications or future native
-integrations register their adapters explicitly as keyed services:
+integrations register their adapters explicitly as keyed services. Without these adapters, configured transports,
+consumers and stores report unhealthy. Built-in adapter work is tracked with the
+[Kafka](https://github.com/thomhurst/Relayer/issues/21),
+[Service Bus](https://github.com/thomhurst/Relayer/issues/24),
+[SQS/SNS](https://github.com/thomhurst/Relayer/issues/39),
+[RabbitMQ](https://github.com/thomhurst/Relayer/issues/40) and
+[outbox foundation](https://github.com/thomhurst/Relayer/issues/28) implementations:
 
 ```csharp
 // Adapter types implement the contracts below and use the application's existing clients/state.

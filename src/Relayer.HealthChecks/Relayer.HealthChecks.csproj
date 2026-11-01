@@ -6,6 +6,6 @@
   <ItemGroup>
     <PackageReference Include="Microsoft.Extensions.Diagnostics.HealthChecks" />
     <ProjectReference Include="../Relayer/Relayer.csproj" />
-    <None Include="../../docs/health-checks.md" Pack="true" PackagePath="/" />
+    <None Include="../../website/docs/guides/health-checks.md" Pack="true" PackagePath="/" />
   </ItemGroup>
 </Project>
