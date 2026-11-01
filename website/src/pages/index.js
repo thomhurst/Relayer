@@ -278,6 +278,7 @@ const status = [
   ['Batch dispatch and receive executor composition', 'Implemented core seam', true],
   ['Send pipeline and middleware', 'Implemented', true],
   ['Consume pipeline and receive SPI', 'Implemented', true],
+  ['Message upcaster chains for single and batch handlers', 'Implemented', true],
   ['Failure classification, retries and dead-letter copies', 'Implemented', true],
   ['Manual settlement requests with exception precedence', 'Implemented', true],
   ['Declared topology and JSON export', 'Implemented', true],
