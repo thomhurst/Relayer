@@ -37,7 +37,7 @@ const sidebars = {
     {
       type: 'category',
       label: 'Reference',
-      items: ['reference/diagnostics', 'reference/outbox-stores', 'reference/postgres-schema'],
+        items: ['reference/diagnostics', 'reference/outbox-stores', 'reference/postgres-schema', 'reference/postgres-store'],
     },
     'roadmap',
     'contributing/documentation',

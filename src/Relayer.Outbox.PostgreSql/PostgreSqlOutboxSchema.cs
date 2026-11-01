@@ -36,7 +36,7 @@ public static class PostgreSqlOutboxSchema
         return result.ToString();
     }
 
-    private static string QuoteIdentifier(string identifier)
+    internal static string QuoteIdentifier(string identifier)
     {
         if (identifier.Length == 0 || identifier.Contains('\0') || Encoding.UTF8.GetByteCount(identifier) > 63)
             throw new ArgumentException("PostgreSQL identifiers must be nonempty, contain no NUL, and fit in 63 UTF-8 bytes.", nameof(identifier));

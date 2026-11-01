@@ -5,8 +5,9 @@ description: "Durable row reads, fenced claims, memory ownership and optional he
 
 The core package defines `IOutboxStore`, `OutboxRecord`, `OutboxReadRequest` and `OutboxClaim` for database
 integration authors. These contracts, the optional health adapter and [PostgreSQL schema scripts](postgres-schema.md)
-are implemented. Database providers, transaction enlistment implementations, dispatch workers, lane leases and inbox deduplication
-remain planned in [the outbox work](https://github.com/thomhurst/Relayer/issues/28).
+are implemented, together with [PostgreSQL durable reads and fenced claims](postgres-store.md).
+Transaction enlistment implementations, dispatch workers, lane leases and inbox deduplication
+remain planned in [the outbox work](../roadmap.md).
 
 ## Register a named store
 
