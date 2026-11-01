@@ -183,6 +183,7 @@ public sealed class SendTracing
                     var added = new State();
                     state = Interlocked.CompareExchange(ref segment.Items[i], added, null) ?? added;
                 }
+                if (Volatile.Read(ref state.InUse) != 0) continue;
                 if (Interlocked.CompareExchange(ref state.InUse, 1, 0) != 0) continue;
                 state.Ensure(count);
                 return state;
