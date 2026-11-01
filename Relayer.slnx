@@ -1,6 +1,7 @@
 <Solution>
   <Folder Name="/src/">
     <Project Path="src/Relayer/Relayer.csproj" />
+    <Project Path="src/Relayer.HealthChecks/Relayer.HealthChecks.csproj" />
     <Project Path="src/Relayer.SourceGenerators/Relayer.SourceGenerators.csproj" />
     <Project Path="src/Relayer.CodeFixes/Relayer.CodeFixes.csproj" />
     <Project Path="src/Relayer.Kafka/Relayer.Kafka.csproj" />

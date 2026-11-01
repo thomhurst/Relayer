@@ -15,6 +15,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\Relayer\Relayer.csproj" />
+    <ProjectReference Include="..\..\src\Relayer.HealthChecks\Relayer.HealthChecks.csproj" />
     <ProjectReference Include="..\..\src\Relayer.Kafka\Relayer.Kafka.csproj" />
     <ProjectReference Include="..\..\src\Relayer.AzureServiceBus\Relayer.AzureServiceBus.csproj" />
     <ProjectReference Include="..\..\src\Relayer.AmazonSqs\Relayer.AmazonSqs.csproj" />

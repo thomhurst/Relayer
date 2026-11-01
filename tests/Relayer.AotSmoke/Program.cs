@@ -3,9 +3,14 @@ using System.Diagnostics;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Threading.Channels;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Diagnostics.HealthChecks;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using Relayer;
+using Relayer.HealthChecks;
 using Relayer.InMemory;
 using Relayer.Serialization;
 using Relayer.Transports;
@@ -13,6 +18,17 @@ using Relayer.Transports;
 var transport = new SmokeTransport();
 var services = new ServiceCollection();
 services.AddSingleton<ITransport>(transport);
+services.AddSingleton(typeof(ILogger<>), typeof(NullLogger<>));
+services.AddRelayerHealthChecks(new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
+{
+    ["ConsumerStallTimeout"] = "00:00:30",
+    ["OutboxDegradedThreshold"] = "5",
+    ["OutboxUnhealthyThreshold"] = "10",
+    ["OutboxNames:0"] = "smoke-store"
+}).Build());
+services.AddKeyedSingleton<ITransportHealthProbe, SmokeHealthProvider>("smoke");
+services.AddKeyedSingleton<IConsumerHealthProvider, SmokeHealthProvider>("smoke");
+services.AddKeyedSingleton<IOutboxHealthProvider, SmokeHealthProvider>("smoke-store");
 await using var provider = services.AddRelayer(builder =>
 {
     builder.Telemetry();
@@ -35,6 +51,13 @@ foreach (var service in provider.GetServices<IHostedService>())
 if (provider.GetRequiredService<ITransport>() is not SmokeTransport { CapabilityLookups: 2 })
     throw new InvalidOperationException("Endpoint capability validation failed under Native AOT.");
 Console.WriteLine("Endpoint capability validation passed under Native AOT.");
+var health = await provider.GetRequiredService<HealthCheckService>().CheckHealthAsync();
+if (health.Status != HealthStatus.Degraded || health.Entries.Count != 3 ||
+    health.Entries["relayer.transport"].Status != HealthStatus.Healthy ||
+    health.Entries["relayer.consumer"].Status != HealthStatus.Healthy ||
+    health.Entries["relayer.outbox"].Status != HealthStatus.Degraded)
+    throw new InvalidOperationException("Health checks or immutable configuration binding failed under Native AOT.");
+Console.WriteLine("Health checks and immutable configuration binding passed under Native AOT.");
 using (var topologyJson = new MemoryStream())
 {
     provider.GetRequiredService<ITopology>().ExportJson(topologyJson);
@@ -290,4 +313,12 @@ public sealed class InMemorySmokeHandler(Channel<int> received) : IHandler<Count
         received.Writer.TryWrite(message.Value);
         return default;
     }
+}
+
+public sealed class SmokeHealthProvider : ITransportHealthProbe, IConsumerHealthProvider, IOutboxHealthProvider
+{
+    public ValueTask<HealthCheckResult> CheckAsync(CancellationToken cancellationToken) => ValueTask.FromResult(HealthCheckResult.Healthy());
+    public ValueTask<ConsumerHealthState?> GetStateAsync(IConsumerDefinition consumer, CancellationToken cancellationToken) =>
+        ValueTask.FromResult<ConsumerHealthState?>(new(true, DateTimeOffset.MinValue));
+    public ValueTask<long?> GetPendingCountAsync(CancellationToken cancellationToken) => ValueTask.FromResult<long?>(5);
 }
