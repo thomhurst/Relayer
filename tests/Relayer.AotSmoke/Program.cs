@@ -26,7 +26,7 @@ await using var provider = services.AddRelayer(builder =>
 }).BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
 foreach (var service in provider.GetServices<IHostedService>())
     await service.StartAsync(CancellationToken.None);
-if (provider.GetRequiredService<ITransport>() is not SmokeTransport { CapabilityLookups: 4 })
+if (provider.GetRequiredService<ITransport>() is not SmokeTransport { CapabilityLookups: 2 })
     throw new InvalidOperationException("Endpoint capability validation failed under Native AOT.");
 Console.WriteLine("Endpoint capability validation passed under Native AOT.");
 var serializer = provider.GetRequiredService<IMessageSerializer>();
@@ -71,7 +71,7 @@ if (transport.Destination != "orders" || transport.OrderingKey != "42" || transp
 await sender.SendAsync(new Count(7));
 if (transport.Destination != "counts" || transport.NativeValue != 0)
     throw new InvalidOperationException("Value type sending failed under Native AOT.");
-if (transport.CapabilityLookups != 4)
+if (transport.CapabilityLookups != 2)
     throw new InvalidOperationException("Endpoint capabilities were resolved on the per-message path.");
 Console.WriteLine("Send routing, middleware and native configuration passed with reflection disabled.");
 

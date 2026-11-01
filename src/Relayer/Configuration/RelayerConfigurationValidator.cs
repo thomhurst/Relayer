@@ -41,7 +41,7 @@ internal sealed class RelayerConfigurationValidator(RelayerConfiguration configu
         }
         try
         {
-            var capabilities = new EndpointCapabilityValidator(services.GetServices<ITransport>(), failures);
+            var capabilities = new EndpointCapabilityValidator(services.GetServices<ITransport>(), failures, services.GetRequiredService<EndpointCapabilityCache>());
             foreach (var transport in configuration.Transports) capabilities.Validate(transport);
         }
         catch (OptionsValidationException error)

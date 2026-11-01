@@ -403,10 +403,7 @@ public class SenderTests
         {
             foreach (var service in provider.GetServices<IHostedService>()) await service.StartAsync(default);
         };
-        if (error is not ("unknown" or "duplicate-transport"))
-            await Assert.That(start).Throws<OptionsValidationException>();
-        else
-            await Assert.That(start).Throws<InvalidOperationException>();
+        await Assert.That(start).Throws<OptionsValidationException>();
     }
 
     [Test]
@@ -432,7 +429,7 @@ public class SenderTests
         if (destination == "orders.standard" && key != "none")
         {
             await Assert.That(start).Throws<OptionsValidationException>()
-                .WithMessageContaining("Send route 'tests.order-placed;v=2' on transport 'events' to endpoint 'orders.standard' declares an OrderingKey, but the endpoint does not support OrderedByKey. Configure an endpoint with native ordering or remove the OrderingKey declaration.");
+                .WithMessageContaining("Route for 'Relayer.Tests.OrderPlaced' to 'orders.standard' on transport 'events': OrderedByKey is unavailable. Use an endpoint with native ordering support or remove the ordering key; ordering has no fallback.");
             await Assert.That(transport.Count).IsEqualTo(0);
         }
         else

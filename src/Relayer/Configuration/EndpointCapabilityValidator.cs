@@ -8,11 +8,13 @@ internal sealed class EndpointCapabilityValidator
     private readonly Dictionary<string, ITransport?> _transports = new(StringComparer.Ordinal);
     private readonly Dictionary<(string Transport, string Endpoint), TransportCapabilities?> _endpoints = [];
     private readonly List<string> _failures;
+    private readonly EndpointCapabilityCache _cache;
     private readonly bool _hasRuntimeTransports;
 
-    internal EndpointCapabilityValidator(IEnumerable<ITransport> transports, List<string> failures)
+    internal EndpointCapabilityValidator(IEnumerable<ITransport> transports, List<string> failures, EndpointCapabilityCache cache)
     {
         _failures = failures;
+        _cache = cache;
         foreach (var transport in transports)
         {
             _hasRuntimeTransports = true;
@@ -62,7 +64,7 @@ internal sealed class EndpointCapabilityValidator
         TransportCapabilities? capabilities = null;
         try
         {
-            capabilities = transport.GetCapabilities(endpoint);
+            capabilities = _cache.GetCapabilities(transport, endpoint);
             if (capabilities is null)
                 _failures.Add($"{location}: GetCapabilities must return a TransportCapabilities declaration.");
             else if (!ValidateValues(capabilities, location))

@@ -15,7 +15,7 @@ internal abstract class SendRouteRegistration
 {
     internal abstract object Key { get; }
     internal abstract object Build(MessageTypeRegistry types, Dictionary<string, ITransport> transports,
-        IMessageSerializer serializer, SendDelegate pipeline);
+        IMessageSerializer serializer, SendDelegate pipeline, EndpointCapabilityCache capabilitiesCache);
 }
 
 internal interface ISendRouteDefinition
@@ -31,7 +31,7 @@ internal sealed class SendRouteRegistration<TMessage>(string transportName, stri
     internal override object Key => SendRouteKey<TMessage>.Value;
 
     internal override object Build(MessageTypeRegistry types, Dictionary<string, ITransport> transports,
-        IMessageSerializer serializer, SendDelegate pipeline)
+        IMessageSerializer serializer, SendDelegate pipeline, EndpointCapabilityCache capabilitiesCache)
     {
         if (!types.TryGetMessageType(typeof(TMessage), out var messageType))
         {
@@ -43,7 +43,7 @@ internal sealed class SendRouteRegistration<TMessage>(string transportName, stri
         }
         var failures = new List<string>();
         options.Validate($"Send route '{messageType}'", failures);
-        var capabilities = transport.GetCapabilities(destination);
+        var capabilities = capabilitiesCache.GetCapabilities(transport, destination);
         if (orderingKey is not null && !capabilities.OrderedByKey)
         {
             failures.Add($"Send route '{messageType}' on transport '{transportName}' to endpoint '{destination}' declares an OrderingKey, but the endpoint does not support OrderedByKey. Configure an endpoint with native ordering or remove the OrderingKey declaration.");
@@ -58,7 +58,7 @@ internal sealed class SendPipeline
     private readonly FrozenDictionary<object, object> _routes;
 
     public SendPipeline(MessageTypeRegistry types, RelayerConfiguration configuration,
-        IEnumerable<ITransport> transports, IEnumerable<ISendMiddleware> middleware, IMessageSerializer serializer)
+        IEnumerable<ITransport> transports, IEnumerable<ISendMiddleware> middleware, IMessageSerializer serializer, EndpointCapabilityCache capabilitiesCache)
     {
         var namedTransports = new Dictionary<string, ITransport>(StringComparer.Ordinal);
         foreach (var transport in transports)
@@ -84,7 +84,7 @@ internal sealed class SendPipeline
             foreach (var definition in transport.Routes)
             {
                 var registration = ((ISendRouteDefinition)definition).CreateSendRegistration(transport.Name);
-                if (!routes.TryAdd(registration.Key, registration.Build(types, namedTransports, serializer, pipeline)))
+                if (!routes.TryAdd(registration.Key, registration.Build(types, namedTransports, serializer, pipeline, capabilitiesCache)))
                 {
                     throw new InvalidOperationException("A message has more than one send route. Configure one destination per message type.");
                 }
