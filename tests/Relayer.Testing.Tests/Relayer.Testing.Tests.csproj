@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="TUnit" />
+    <ProjectReference Include="../../src/Relayer.Testing/Relayer.Testing.csproj" />
+    <ProjectReference Include="../../src/Relayer.SourceGenerators/Relayer.SourceGenerators.csproj"
+                      ReferenceOutputAssembly="false" OutputItemType="Analyzer" />
+    <Compile Include="../Relayer.Tests/InMemoryTestClock.cs" Link="InMemoryTestClock.cs" />
+  </ItemGroup>
+</Project>

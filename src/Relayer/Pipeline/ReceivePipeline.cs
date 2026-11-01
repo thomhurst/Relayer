@@ -178,6 +178,7 @@ public sealed class ReceivePipeline<TIncoming, TBinding>
         internal NativeMessage<TIncoming> Native { get; } = new();
 
         internal override void SetDisposition(Disposition disposition) => Native.Disposition = disposition;
+        internal override Disposition Disposition => Native.Disposition;
 
         internal void Initialize(TIncoming message)
         {

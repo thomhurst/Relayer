@@ -691,12 +691,13 @@ Relayer-specific instruments, for which the conventions define nothing:
 
 - **In-memory transport** with configurable capabilities. It can pretend to be Kafka-like (partitions) or queue-like, so tests exercise the same semantics.
 - **`RelayerHarness`:**
-  - Records sent, published, consumed, failed, and dead-lettered messages.
+  - Records sent (including sends routed to publish/subscribe destinations), dispatched, consumed, failed, and dead-lettered messages through the single send API.
   - Observes messages at both the logical send and the outbox dispatch, so outbox-enabled code is fully visible (MassTransit #4874).
   - `await harness.WaitForIdleAsync()` waits deterministically until in-flight work reaches zero. There are no sleeps and no race conditions (MassTransit #4835).
   - `harness.Reset()` clears state between tests (MassTransit #4908).
   - Multiple buses and transports are supported (MassTransit #4718).
 - **Unit testing handlers:** handlers are POCOs. `TestMessageContext` builds a context with arbitrary features, including fake native features.
+- The implemented harness, its idle boundary and standalone contexts are documented in [Testing](https://relayer.tomlonghurst.dev/docs/guides/testing).
 - `ISender` and the batch APIs are interfaces with no static state, so they are easy to mock (MassTransit #3119).
 - No process-wide statics: the full test suite runs in parallel within one process (Wolverine #3521).
 - Testcontainers-based fixtures for every transport, published in `Relayer.Testing.Containers`.

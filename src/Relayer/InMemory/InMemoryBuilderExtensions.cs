@@ -30,8 +30,10 @@ public static class InMemoryBuilderExtensions
                     throw new InvalidOperationException($"In-memory transport '{name}': endpoint '{pair.Key}' has options but no route or consumer declaration.");
                 endpoints[pair.Key] = pair.Value;
             }
-            return new InMemoryTransport(name, endpoints, options.TimeProvider, provider.GetRequiredService<MessageTracing>(),
+            var transport = new InMemoryTransport(name, endpoints, options.TimeProvider, provider.GetRequiredService<MessageTracing>(),
                 provider.GetService<ILoggerFactory>());
+            transport.Observe(provider.GetService<IRelayerObserver>());
+            return transport;
         });
         builder.Services.AddSingleton<IHostedService>(provider => new InMemoryHostedService(provider, name));
         return builder;
@@ -44,7 +46,9 @@ internal sealed class InMemoryHostedService(IServiceProvider provider, string na
 
     public override async Task StartAsync(CancellationToken cancellationToken)
     {
-        _transport = (InMemoryTransport)provider.GetServices<ITransport>().Single(transport => transport.Name == name);
+        var registered = provider.GetServices<ITransport>().Single(transport => transport.Name == name);
+        while (registered is ITransportWrapper wrapper) registered = wrapper.InnerTransport;
+        _transport = (InMemoryTransport)registered;
         var configuration = provider.GetRequiredService<RelayerConfiguration>().Transports.Single(transport => transport.Name == name);
         var handlers = provider.GetRequiredService<HandlerRegistry>();
         foreach (var declaration in configuration.Consumers)

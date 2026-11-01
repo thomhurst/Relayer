@@ -106,9 +106,11 @@ internal sealed class InMemoryEndpoint
     }
 
     internal ValueTask<byte> ReserveAsync(CancellationToken cancellationToken) => _sendSlots.Reader.ReadAsync(cancellationToken);
+    internal IRelayerObserver? Observer { get; set; }
 
     internal InMemoryMessage Rent()
     {
+        Observer?.WorkStarted();
         for (var i = 0; i < _pool.Length; i++)
             if (Interlocked.Exchange(ref _pool[i], null) is { } message) { message.References = 1; return message; }
         return new() { References = 1 };
@@ -121,6 +123,7 @@ internal sealed class InMemoryEndpoint
         for (var i = 0; i < _pool.Length; i++)
             if (Interlocked.CompareExchange(ref _pool[i], message, null) is null) break;
         _sendSlots.Writer.TryWrite(0);
+        Observer?.WorkCompleted();
     }
 
     internal void ValidateSend(InMemoryMessage message)
@@ -363,7 +366,10 @@ internal sealed class InMemoryReceiver(InMemoryEndpoint endpoint, InMemoryReadSt
                     continue;
                 }
                 if (disposition.Kind == DispositionKind.DeadLetter)
+                {
                     endpoint.DeadLetters.Writer.TryWrite(new(delivery, disposition.DeadLetter));
+                    endpoint.Observer?.DeadLettered(delivery, disposition.DeadLetter);
+                }
                 Interlocked.Exchange(ref _committed, _pending.Position);
                 endpoint.Release(_pending);
                 _pending = null;

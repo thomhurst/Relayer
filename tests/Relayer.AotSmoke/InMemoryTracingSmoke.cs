@@ -6,6 +6,7 @@ using Microsoft.Extensions.Hosting;
 using Relayer;
 using Relayer.InMemory;
 using Relayer.Serialization;
+using Relayer.Testing;
 using Relayer.Transports;
 
 internal static class InMemoryTracingSmoke
@@ -26,7 +27,9 @@ internal static class InMemoryTracingSmoke
                 local.Consume("counts", consumer => consumer.Handler<InMemorySmokeHandler>());
             });
         });
+        services.AddRelayerHarness();
         await using var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
+        var harness = provider.GetRequiredService<RelayerHarness>();
         var tracing = provider.GetRequiredService<MessageTracing>();
         using var listener = new ActivityListener
         {
@@ -97,7 +100,17 @@ internal static class InMemoryTracingSmoke
                 CheckSpan(send, "send");
                 CheckSpan(process, "process");
                 CheckSpan(settle, "settle");
+                await harness.WaitForIdleAsync(deadline.Token);
+                if (harness.Sent.Count != (existingContext ? 0 : 1) || harness.Dispatched.Count != 1 ||
+                    harness.Consumed.Count != 1 ||
+                    harness.Consumed[0].Read<Count>(provider.GetRequiredService<IMessageSerializer>()).Value != value)
+                    throw new InvalidOperationException("Harness observations failed under Native AOT.");
+                harness.Reset();
             }
+            var testContext = new TestMessageContext(new("smoke.count", 1), scope.ServiceProvider);
+            testContext.Features.Set(new SmokeNative { Value = 17 });
+            if (harness.Sent.Count != 0 || testContext.Features.GetRequired<SmokeNative>().Value != 17)
+                throw new InvalidOperationException("Harness reset or standalone context failed under Native AOT.");
         }
         finally
         {
@@ -107,6 +120,7 @@ internal static class InMemoryTracingSmoke
         if (stopped.Reader.TryRead(out _))
             throw new InvalidOperationException("In-memory tracing emitted unexpected spans under Native AOT.");
         Console.WriteLine("In-memory generated-handler round trips, send/process/settlement spans and creation-context propagation passed under Native AOT.");
+        Console.WriteLine("Harness observations, reset and standalone context passed under Native AOT.");
     }
 
     private static void CheckSpan(Activity span, string operation)

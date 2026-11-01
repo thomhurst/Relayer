@@ -282,6 +282,7 @@ const status = [
   ['Declared topology and JSON export', 'Implemented', true],
   ['In-memory transport for tests and samples', 'Implemented', true],
   ['Packaged transport conformance suite', 'Implemented', true],
+  ['Test harness and standalone handler context', 'Implemented', true],
   ['Kafka, Service Bus, SQS/SNS and RabbitMQ transports', 'In progress', false],
   ['Health checks with application-provided adapters', 'Implemented', true],
   ['Durable outbox contracts and keyed health adapter', 'Implemented core seam', true],

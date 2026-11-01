@@ -1,6 +1,6 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
-    <Description>Reusable, test-framework-independent transport conformance scenarios for Relayer adapters.</Description>
+    <Description>Host-local message harness, handler test contexts and reusable transport conformance scenarios for Relayer.</Description>
     <PackageReadmeFile>README.md</PackageReadmeFile>
   </PropertyGroup>
   <ItemGroup>

@@ -114,6 +114,9 @@ internal sealed class SendRoute<TMessage>
 
         internal CancellationTokenSource Timeout { get; private set; } = new();
         public override object Message => _message!;
+        public string TransportName => _route._transport.Name;
+        public string Destination => _route._destination;
+        public bool UsesOutbox => _outbox is not null;
         public override MessageType MessageType => _route._messageType;
         public override string MessageId => _messageId ??= _metadata.MessageId.ToString("D");
         public override SendOptions Options { get; } = new();
