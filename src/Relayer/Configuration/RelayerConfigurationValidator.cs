@@ -1,5 +1,7 @@
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Options;
+using Relayer.Transports;
 
 namespace Relayer;
 
@@ -35,6 +37,16 @@ internal sealed class RelayerConfigurationValidator(RelayerConfiguration configu
                 if (consumer.BatchSize < 1) failures.Add($"{location}: batch size must be at least 1.");
                 if (consumer.BatchWait <= TimeSpan.Zero) failures.Add($"{location}: batch wait must be positive.");
             }
+        }
+        try
+        {
+            var capabilities = new EndpointCapabilityValidator(services.GetServices<ITransport>(), failures);
+            foreach (var transport in configuration.Transports) capabilities.Validate(transport);
+        }
+        catch (OptionsValidationException error)
+        {
+            // Native adapter factories can consume named options. Preserve declaration errors if their construction fails.
+            failures.Add($"ITransport adapter construction: {error.Message}");
         }
         if (failures.Count != 0)
             throw new OptionsValidationException(Options.DefaultName, typeof(RelayerConfiguration), failures);

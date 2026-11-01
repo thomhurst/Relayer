@@ -46,6 +46,8 @@ public interface IRouteDefinition
     public Type MessageType { get; }
     /// <summary>The native destination name.</summary>
     public string Destination { get; }
+    /// <summary>Whether this route requires native ordering by key, session, or message group.</summary>
+    public bool HasOrderingKey { get; }
 }
 
 /// <summary>A route with unchanged transport-specific options and a typed native ordering selector.</summary>
