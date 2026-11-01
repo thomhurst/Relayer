@@ -283,6 +283,7 @@ const status = [
   ['Kafka, Service Bus, SQS/SNS and RabbitMQ transports', 'In progress', false],
   ['Health checks with application-provided adapters', 'Implemented', true],
   ['Durable outbox contracts and keyed health adapter', 'Implemented core seam', true],
+  ['PostgreSQL schema scripts, CLI and EF migration path', 'Implemented schema tooling', true],
   ['Native broker health adapters', 'Planned', false],
   ['EF Core and PostgreSQL outbox and inbox', 'Planned', false],
   ['Core tracing, direct sends, consume metrics and logs', 'Implemented', true],

@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="TUnit" />
+    <PackageReference Include="Microsoft.Extensions.Hosting" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../src/Relayer.Outbox.PostgreSql/Relayer.Outbox.PostgreSql.csproj" />
+    <ProjectReference Include="../../src/Relayer.Outbox.EntityFrameworkCore/Relayer.Outbox.EntityFrameworkCore.csproj" />
+    <ProjectReference Include="../../src/Relayer.HealthChecks/Relayer.HealthChecks.csproj" />
+    <ProjectReference Include="../../src/dotnet-relayer/dotnet-relayer.csproj" />
+  </ItemGroup>
+</Project>

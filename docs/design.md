@@ -454,7 +454,7 @@ The outbox is the area where every existing library has had correctness bugs, so
 ```
 relayer_outbox
   id             uuid (v7)       primary key
-  lane           smallint        hash(ordering_key) % lanes, or null when unordered
+  lane           integer         hash(ordering_key) % lanes, or null when unordered
   ordering_key   text            nullable
   transport      text
   destination    text
@@ -479,14 +479,18 @@ relayer_leases
   expires_at     timestamptz
 ```
 
-Migrations ship as EF Core migrations and as plain SQL scripts for each database (`dotnet relayer db script --provider postgres`). Indexes are created by default (CAP #1599). Tables can be prefixed and given a schema (NSB.Persistence.Sql #2093).
+PostgreSQL ships one embedded SQL creation script, exposed by the database CLI and an application-owned
+EF Core migration operation (D30). Other database scripts remain planned. Indexes are created by default
+(CAP #1599). Tables can be prefixed and given a schema (NSB.Persistence.Sql #2093). See
+[schema deployment and migration usage](../website/docs/reference/postgres-schema.md).
 
 The implemented [durable store contract](../website/docs/reference/outbox-stores.md) separates transaction
 enlistment from dispatch reads and mutations. Reads fill caller-owned bounded buffers. Eligible rows are pending,
 not parked or dead, due at the query instant and without a live claim. Health uses the same predicate across
 all lanes. Claims use a unique token and an expiry; renew, completion and failure updates require the matching
-live token, so a stale dispatcher cannot mutate a reclaimed row. Database stores, scripts and dispatch workers
-remain planned; the contract alone does not implement lane ownership or durable sending.
+live token, so a stale dispatcher cannot mutate a reclaimed row. PostgreSQL schema creation is implemented.
+Database stores and dispatch workers remain planned; the schema and contract do not implement lane ownership
+or durable sending.
 
 ### 6.4 Dispatching
 
