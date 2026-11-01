@@ -137,14 +137,14 @@ public static class PostgreSqlOutboxServiceCollectionExtensions
         {
             Schema = configuration[nameof(defaults.Schema)],
             TablePrefix = configuration[nameof(defaults.TablePrefix)] ?? defaults.TablePrefix,
-            Lanes = Read(configuration, nameof(defaults.Lanes), defaults.Lanes),
-            LeaseDuration = Read(configuration, nameof(defaults.LeaseDuration), defaults.LeaseDuration),
-            PollInterval = Read(configuration, nameof(defaults.PollInterval), defaults.PollInterval),
-            BatchSize = Read(configuration, nameof(defaults.BatchSize), defaults.BatchSize)
+            Lanes = ReadOrdered(configuration, nameof(defaults.Lanes), defaults.Lanes),
+            LeaseDuration = ReadOrdered(configuration, nameof(defaults.LeaseDuration), defaults.LeaseDuration),
+            PollInterval = ReadOrdered(configuration, nameof(defaults.PollInterval), defaults.PollInterval),
+            BatchSize = ReadOrdered(configuration, nameof(defaults.BatchSize), defaults.BatchSize)
         });
     }
 
-    private static T Read<T>(IConfiguration configuration, string key, T fallback) where T : IParsable<T>
+    private static T ReadOrdered<T>(IConfiguration configuration, string key, T fallback) where T : IParsable<T>
     {
         var value = configuration[key];
         if (value is null) return fallback;
