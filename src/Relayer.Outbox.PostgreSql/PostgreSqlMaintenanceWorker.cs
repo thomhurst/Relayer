@@ -142,7 +142,7 @@ internal sealed partial class PostgreSqlMaintenanceWorker : BackgroundService
             // A fixed boundary forces wrapping even while newer rows arrive, revisiting failed or newly eligible rows.
             if (count == 0) _through = null;
             _store.UseDispatchTransaction(connection, transaction);
-            await _dispatcher.DispatchRecoveredAsync(_rows.AsMemory(0, count), cancellationToken).ConfigureAwait(false);
+            await _dispatcher.DispatchRecoveredAsync(_rows.AsMemory(0, count), cancellationToken, propagateDatabaseFailures: true).ConfigureAwait(false);
             return count;
         }
         finally

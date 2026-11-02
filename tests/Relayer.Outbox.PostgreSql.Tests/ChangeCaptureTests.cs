@@ -171,6 +171,91 @@ public class ChangeCaptureTests
     };
 
     [Test]
+    [Arguments("claim")]
+    [Arguments("completion")]
+    [Arguments("failure")]
+    public async Task Database_failure_propagates_without_checkpoint_and_restart_recovers(string phase)
+    {
+        await using var fixture = new PostgreSqlFixture();
+        await fixture.StartAsync(logicalReplication: true);
+        await using var source = NpgsqlDataSource.Create(fixture.ConnectionString);
+        await PostgreSqlOutboxStoreTests.CreateSchema(source);
+        await Provision(source, fixture.ConnectionString);
+        var operation = phase == "completion" ? "DELETE" : "UPDATE";
+        var condition = phase == "failure" ? "WHEN (NEW.attempts > OLD.attempts)" : "";
+        await Sql(source, $"""
+            CREATE FUNCTION fail_dispatch() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'dispatch database failure'; END; $$;
+            CREATE TRIGGER fail_dispatch BEFORE {operation} ON relayer_outbox FOR EACH ROW {condition} EXECUTE FUNCTION fail_dispatch();
+            """);
+        var transport = phase == "failure"
+            ? new RecordingTransport((_, _) => throw new InvalidOperationException("Broker unavailable"))
+            : new RecordingTransport();
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        NpgsqlLogSequenceNumber position;
+        using (var first = Worker(source, fixture.ConnectionString, transport))
+        {
+            await first.StartAsync(timeout.Token);
+            try
+            {
+                await Streaming(source, timeout.Token);
+                position = await Insert(source, Id(1));
+                // Either the worker faults or it incorrectly acknowledges the failed transaction.
+                // Cancel the losing observer before disposing the data source.
+                using var observed = CancellationTokenSource.CreateLinkedTokenSource(timeout.Token);
+                var acknowledged = Acknowledged(source, position, observed.Token);
+                await Task.WhenAny(first.ExecuteTask!, acknowledged).WaitAsync(timeout.Token);
+                await observed.CancelAsync();
+                try { await acknowledged; }
+                catch (OperationCanceledException) when (observed.IsCancellationRequested) { }
+                await Assert.That(first.ExecuteTask!.IsFaulted).IsTrue();
+                await Assert.That(async () => await first.ExecuteTask!).Throws<PostgresException>();
+                await using var checkpoint = source.CreateCommand("SELECT confirmed_flush_lsn < @position FROM pg_replication_slots WHERE slot_name = 'orders'");
+                checkpoint.Parameters.AddWithValue("position", NpgsqlDbType.PgLsn, position);
+                await Assert.That(await checkpoint.ExecuteScalarAsync(timeout.Token) is true).IsTrue();
+                await Assert.That(await Count(source)).IsEqualTo(1L);
+            }
+            finally { await first.StopAsync(timeout.Token); }
+        }
+        await Sql(source, "DROP TRIGGER fail_dispatch ON relayer_outbox");
+        var replay = new RecordingTransport();
+        using var second = Worker(source, fixture.ConnectionString, replay);
+        await second.StartAsync(timeout.Token);
+        try
+        {
+            await Acknowledged(source, position, timeout.Token);
+            await Assert.That(await Count(source)).IsEqualTo(0L);
+            await Assert.That(replay.Ids.SequenceEqual([Id(1)])).IsTrue();
+        }
+        finally { await second.StopAsync(timeout.Token); }
+    }
+
+    [Test]
+    public async Task Non_transient_replication_failure_stops_host()
+    {
+        await using var fixture = new PostgreSqlFixture();
+        await fixture.StartAsync(logicalReplication: true);
+        await using var source = NpgsqlDataSource.Create(fixture.ConnectionString);
+        await PostgreSqlOutboxStoreTests.CreateSchema(source);
+        await Provision(source, fixture.ConnectionString);
+        var invalid = new NpgsqlConnectionStringBuilder(fixture.ConnectionString) { Password = "invalid" };
+        var builder = Host.CreateApplicationBuilder();
+        builder.Services.AddRelayerPostgreSqlChangeCapture("orders", source, () => new(invalid.ConnectionString), Options());
+        using var host = builder.Build();
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        var stopped = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var registration = host.Services.GetRequiredService<IHostApplicationLifetime>().ApplicationStopping.Register(() => stopped.TrySetResult());
+        await host.StartAsync(timeout.Token);
+        try
+        {
+            await stopped.Task.WaitAsync(timeout.Token);
+            var worker = (PostgreSqlChangeCaptureWorker)host.Services.GetServices<IHostedService>().Single();
+            var failure = await Assert.That(async () => await worker.ExecuteTask!).Throws<PostgresException>();
+            await Assert.That(failure!.SqlState).IsEqualTo(PostgresErrorCodes.InvalidPassword);
+        }
+        finally { await host.StopAsync(timeout.Token); }
+    }
+
+    [Test]
     public async Task Transient_native_disconnect_reconnects_to_persistent_slot_and_captures_new_commits()
     {
         await using var fixture = new PostgreSqlFixture();
