@@ -296,6 +296,32 @@ the source overlay, extract `source.zip`, remove benchmark C# files outside
 benchmark baseline. A failed build can leave an incomplete directory; verify
 the corresponding execution log before claiming a successful measurement.
 
+For a frozen-image control, locate the generated driver's DLL and benchmark ID
+in the original log's `Execute:` line. Verify the retained inventory, then run
+the DLL from its retained output directory with the recorded runtime. For example,
+if that log identifies benchmark ID `1` as the case being investigated:
+
+```powershell
+dotnet ./Relayer.Benchmarks-DefaultJob-1.dll --benchmarkId 1
+```
+
+Check the generated `.notcs` source to confirm the ID's method and parameters.
+The generated driver supports this direct execution without the original parent
+process's anonymous pipes. Its job settings are compiled into the driver;
+benchmark CLI options such as `--filter` or `--invocationCount` do not configure
+this executable. Keep the complete dependency directory unchanged and verify
+its hashes after the experiment. Capture stdout, stderr, exit status and runtime
+identity for every launch. The raw `WorkloadResult` and `// GC:` lines retain
+timings, operation counts and allocation counters; this direct execution does
+not produce the parent runner's full JSON report.
+
+Run the predeclared sequence with separate logs for every launch. An adaptive
+pilot can still choose different operation counts for frozen images. A further
+fixed-count control requires a separately configured driver or rebuilt benchmark;
+retain that control's inputs and binaries separately and identify it as a new
+experiment, not a replay of the original executable. Replaying on another host
+tests variation there; it does not reproduce the historical host's conditions.
+
 The artifact retention is **90 days**. Copy evidence to an independent archive
 before that deadline when an investigation must outlive it. Local PR evidence
 can be deleted when the PR closes, so it is not a permanent archive. Historical
