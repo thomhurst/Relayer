@@ -1,4 +1,5 @@
 using System.Runtime.CompilerServices;
+using System.Transactions;
 using MySqlConnector;
 
 namespace Relayer.Outbox.MySql;
@@ -6,6 +7,7 @@ namespace Relayer.Outbox.MySql;
 /// <summary>MySQL durable reads and atomic fenced mutations over the Relayer outbox table.</summary>
 /// <remarks>
 /// The caller owns the data source. Dispose this scoped store after use; operations must not overlap.
+/// Operations require native autocommit and reject ambient transactions before opening a connection.
 /// This does not enqueue messages, establish lane ownership or start dispatch and cleanup workers.
 /// </remarks>
 public sealed class MySqlOutboxStore : IOutboxStore, IDisposable
@@ -156,6 +158,8 @@ public sealed class MySqlOutboxStore : IOutboxStore, IDisposable
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         cancellationToken.ThrowIfCancellationRequested();
+        if (Transaction.Current is not null)
+            throw new InvalidOperationException("MySQL outbox store operations require autocommit. Call outside an ambient TransactionScope.");
     }
 
     private static void Validate(OutboxClaim claim, DateTimeOffset? now = null, DateTimeOffset? expiresAt = null)

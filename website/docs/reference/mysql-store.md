@@ -57,6 +57,11 @@ next operation on the same store. Finish using borrowed rows before another read
 errors and cancellation propagate; they never become a zero backlog. A cancelled mutation may
 already have committed.
 
+Store operations require native autocommit and reject an ambient `TransactionScope` before
+opening a connection, including reads and counts. MySqlConnector's default `AutoEnlist=true`
+would otherwise enlist the connection and defer durability until the caller's transaction commits.
+Call the store outside the ambient transaction; native connection settings remain unchanged.
+
 The `headers` column uses the same versioned binary codec as the PostgreSQL store: little-endian
 32-bit version `1` and count, followed by length-prefixed UTF-8 names and byte values. Empty values,
 duplicate names and arbitrary value bytes are preserved. Invalid versions, lengths or trailing bytes

@@ -1,3 +1,4 @@
+using System.Transactions;
 using Microsoft.Extensions.DependencyInjection;
 using MySqlConnector;
 
@@ -5,6 +6,57 @@ namespace Relayer.Outbox.MySql.Tests;
 
 public sealed class MySqlOutboxStoreTests
 {
+    [Test]
+    [Arguments(0)]
+    [Arguments(1)]
+    [Arguments(2)]
+    [Arguments(3)]
+    [Arguments(4)]
+    [Arguments(5)]
+    public async Task Ambient_transactions_are_rejected_before_opening_a_connection(int operation)
+    {
+        await using var source = new MySqlDataSource("Server=127.0.0.1;Port=1;Connection Timeout=1");
+        using var store = new MySqlOutboxStore(source);
+        using var transaction = new TransactionScope(TransactionScopeAsyncFlowOption.Enabled);
+        var now = DateTimeOffset.UtcNow;
+        var claim = new OutboxClaim(Guid.CreateVersion7(), Guid.NewGuid());
+        await Assert.ThrowsAsync<InvalidOperationException>(() => operation switch
+        {
+            0 => store.ReadPendingAsync(new(null, now), Memory<OutboxRecord>.Empty, default).AsTask(),
+            1 => store.GetPendingCountAsync(now, default).AsTask(),
+            2 => store.TryClaimAsync(claim, now, now.AddMinutes(1), default).AsTask(),
+            3 => store.RenewClaimAsync(claim, now, now.AddMinutes(1), default).AsTask(),
+            4 => store.CompleteAsync(claim, now, default).AsTask(),
+            _ => store.RecordFailureAsync(claim, "failed", now, default).AsTask()
+        });
+    }
+
+    [Test]
+    public async Task Rejected_ambient_mutations_leave_native_autocommit_claims_usable()
+    {
+        await using var database = new MySqlFixture();
+        await database.StartAsync();
+        using var store = new MySqlOutboxStore(database.Source);
+        var now = DateTimeOffset.UtcNow;
+        var claim = new OutboxClaim(Guid.CreateVersion7(), Guid.NewGuid());
+        await database.Insert(claim.MessageId, now);
+        await Assert.That(await store.TryClaimAsync(claim, now, now.AddMinutes(1), default)).IsTrue();
+        using (var transaction = new TransactionScope(TransactionScopeAsyncFlowOption.Enabled))
+        {
+            await Assert.ThrowsAsync<InvalidOperationException>(async () =>
+                await store.RenewClaimAsync(claim, now, now.AddMinutes(2), default));
+            await Assert.ThrowsAsync<InvalidOperationException>(async () =>
+                await store.CompleteAsync(claim, now, default));
+            await Assert.ThrowsAsync<InvalidOperationException>(async () =>
+                await store.RecordFailureAsync(claim, "failed", now, default));
+        }
+        // The ambient rollback did not undo the earlier autocommit claim or mutate its row.
+        await Assert.That(await store.GetPendingCountAsync(now, default)).IsEqualTo(0L);
+        await Assert.That(await store.RenewClaimAsync(claim, now, now.AddMinutes(2), default)).IsTrue();
+        await Assert.That(await store.CompleteAsync(claim, now, default)).IsTrue();
+        await Assert.That(await store.ReadPendingAsync(new(null, now.AddMinutes(3)), new OutboxRecord[1], default)).IsEqualTo(0);
+    }
+
     [Test]
     public async Task Rows_preserve_payload_and_headers_across_repeated_reads_and_report_database_errors()
     {
