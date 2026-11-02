@@ -38,11 +38,7 @@ internal sealed class KafkaRestartableBroker : IAsyncDisposable
     internal KafkaRestartableBroker()
     {
         var builder = new KafkaBuilder("apache/kafka:4.0.2").WithVendor(KafkaVendor.ApacheSoftwareFoundation)
-            // These tiny test topics do not need Kafka's default 1 GiB initial heap per fixture.
-            .WithEnvironment("KAFKA_HEAP_OPTS", "-Xms128m -Xmx256m")
-            // Concurrent, short-lived test JVMs need fast startup, not optimizing compiler workers
-            // sized for a dedicated broker. Apply this to the format JVM and every broker restart.
-            .WithEnvironment("KAFKA_OPTS", "-XX:ActiveProcessorCount=2 -XX:TieredStopAtLevel=1")
+            .ForSmallWorkload()
             .WithKRaft().WithWaitStrategy(Wait.ForUnixContainer())
             .WithEntrypoint("/bin/bash", "-c")
             .WithCommand(new OverwriteEnumerable<string>([Supervisor.ReplaceLineEndings("\n")]));

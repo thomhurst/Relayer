@@ -30,6 +30,14 @@ public class KafkaBrokerTests
         using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(2));
         var token = timeout.Token;
         await broker.StartAsync(token);
+        // Inspect the actual JVM, not just builder options: startup wrappers must preserve
+        // the same resource limits as the restartable fixtures running beside this test.
+        var launch = await broker.ExecAsync(["cat", "/proc/1/cmdline"], token);
+        await Assert.That(launch.ExitCode).IsEqualTo(0L);
+        await Assert.That(launch.Stdout).Contains("-Xms128m\0");
+        await Assert.That(launch.Stdout).Contains("-Xmx256m\0");
+        await Assert.That(launch.Stdout).Contains("-XX:ActiveProcessorCount=2\0");
+        await Assert.That(launch.Stdout).Contains("-XX:TieredStopAtLevel=1\0");
         var bootstrap = broker.GetBootstrapAddress();
         var topic = "relayer-" + Guid.NewGuid().ToString("N");
         var other = topic + "-other";
