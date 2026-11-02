@@ -1,4 +1,5 @@
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'AssertPrGreenChecks.ps1')
 . (Join-Path $PSScriptRoot 'AutoMergeProtection.ps1')
 
 function New-Rule {
@@ -43,7 +44,7 @@ $readApi = {
 Assert-AutoMergeProtection -Repo owner/repo -Branch release/next -ReadApi $readApi
 Assert-Denied { Assert-AutoMergeProtection -Repo owner/repo -Branch main -ReadApi { @() } } 'no rules'
 Assert-Denied { Assert-AutoMergeProtection -Repo owner/repo -Branch main -ReadApi { throw 'HTTP 403' } } 'API failure'
-foreach ($property in @('enforcement', 'target', 'source', 'current_user_can_bypass', 'id')) {
+foreach ($property in @('enforcement', 'target', 'source', 'id')) {
     $ruleset = New-Ruleset
     $ruleset.$property = 'wrong'
     Assert-Denied { Assert-AutoMergeProtection -Repo owner/repo -Branch release/next -ReadApi $readApi } $property
@@ -55,7 +56,9 @@ foreach ($actors in @(
 )) {
     $ruleset = New-Ruleset
     $ruleset.bypass_actors = $actors.value
-    Assert-Denied { Assert-AutoMergeProtection -Repo owner/repo -Branch release/next -ReadApi $readApi } 'missing bypass data or bypass actors'
+    $ruleset.current_user_can_bypass = 'always'
+    # The maintainer is a bypass actor; Test-ImmediateMergeSafe guards the early merge instead.
+    Assert-AutoMergeProtection -Repo owner/repo -Branch release/next -ReadApi $readApi
 }
 foreach ($surface in @('effective', 'detail')) {
     foreach ($property in @('context', 'integration_id')) {
@@ -67,6 +70,27 @@ foreach ($surface in @('effective', 'detail')) {
     }
 }
 
+function New-Check([string]$Name, [string]$Status, [string]$Conclusion, [string]$Started) {
+    [pscustomobject]@{ __typename = 'CheckRun'; workflowName = 'CI'; name = $Name; status = $Status; conclusion = $Conclusion; startedAt = $Started }
+}
+$passed = New-Check 'CI Passed' 'COMPLETED' 'SUCCESS' '2026-01-01T00:00:00Z'
+$pending = New-Check 'CI Passed' 'IN_PROGRESS' '' '2026-01-01T00:01:00Z'
+foreach ($case in @(
+    @{ state = 'BLOCKED'; checks = @(); safe = $true },
+    @{ state = 'CLEAN'; checks = @($passed); safe = $true },
+    @{ state = 'UNSTABLE'; checks = @($passed); safe = $true },
+    @{ state = 'CLEAN'; checks = @(); safe = $false },
+    @{ state = 'HAS_HOOKS'; checks = @($pending); safe = $false },
+    # A newer run on the same head replaces an earlier success.
+    @{ state = 'CLEAN'; checks = @($passed, $pending); safe = $false },
+    @{ state = 'CLEAN'; checks = @((New-Check 'CI Passed' 'COMPLETED' 'FAILURE' '')); safe = $false },
+    @{ state = 'CLEAN'; checks = @((New-Check 'CI Passed (incomplete)' 'COMPLETED' 'SUCCESS' '')); safe = $false }
+)) {
+    if ((Test-ImmediateMergeSafe -State $case.state -Checks $case.checks) -ne $case.safe) {
+        throw "Immediate merge case $($case.state) with $($case.checks.Count) check(s): expected safe=$($case.safe)"
+    }
+}
+
 # Run the real wrapper in a child process. Mock only gh and the unrelated review gate;
 # assert the mutation log so a denial cannot accidentally promote or merge a PR.
 $artifactsRoot = [IO.Path]::GetFullPath((Join-Path (Split-Path $PSScriptRoot -Parent) '.artifacts'))
@@ -75,6 +99,7 @@ New-Item -ItemType Directory -Path $testRoot -Force | Out-Null
 try {
     Copy-Item (Join-Path $PSScriptRoot 'Enable-AutoMerge.ps1') $testRoot
     Copy-Item (Join-Path $PSScriptRoot 'AutoMergeProtection.ps1') $testRoot
+    Copy-Item (Join-Path $PSScriptRoot 'AssertPrGreenChecks.ps1') $testRoot
     Copy-Item (Join-Path $PSScriptRoot 'GateScriptSource.ps1') $testRoot
     Set-Content (Join-Path $testRoot 'Assert-PrGreen.ps1') 'exit 0'
     $runner = @'
@@ -105,6 +130,11 @@ function gh {
         $branch = if ($Scenario -eq 'retargeted' -and $global:AutoMergeTestState.targetReads -eq 2) { 'other' } else { 'main' }
         return (@{ baseRefName = $branch } | ConvertTo-Json -Compress)
     }
+    if ($command -like 'pr view*mergeStateStatus*') {
+        # 'early': the caller can bypass, so GitHub reports CLEAN while CI Passed still runs.
+        if ($Scenario -eq 'early') { return '{"mergeStateStatus":"CLEAN","statusCheckRollup":[{"__typename":"CheckRun","workflowName":"CI","name":"CI Passed","status":"IN_PROGRESS","conclusion":""}]}' }
+        return '{"mergeStateStatus":"BLOCKED","statusCheckRollup":[]}'
+    }
     if ($command -like 'pr view*isDraft,headRefOid*') { return (@{ isDraft = $global:AutoMergeTestState.draft; headRefOid = 'abc' } | ConvertTo-Json -Compress) }
     if ($command -like 'pr view*statusCheckRollup*') { return '1' }
     if ($command -like 'pr view*headRefOid*') { return 'abc' }
@@ -121,7 +151,7 @@ exit $LASTEXITCODE
     Set-Content $runnerPath $runner
     foreach ($case in @(
         @{ scenario = 'missing' }, @{ scenario = 'api-failure' }, @{ scenario = 'malformed' },
-        @{ scenario = 'removed' }, @{ scenario = 'retargeted' }, @{ scenario = 'valid' },
+        @{ scenario = 'removed' }, @{ scenario = 'retargeted' }, @{ scenario = 'valid' }, @{ scenario = 'early' },
         @{ scenario = 'missing'; alreadyReady = $true }, @{ scenario = 'valid'; alreadyReady = $true }
     )) {
         $scenario = $case.scenario
@@ -133,6 +163,7 @@ exit $LASTEXITCODE
         $expected = switch ($scenario) {
             valid { 'ready,merge' }
             removed { 'ready' }
+            early { 'ready' }
             retargeted { 'ready' }
             default { '' }
         }

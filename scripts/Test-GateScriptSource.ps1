@@ -65,6 +65,11 @@ try {
     Assert-Equal "v2|$v2" (Get-Content -LiteralPath $report) 'stale checkout'
     Assert-Equal $v1 (git -C $checkout rev-parse refs/remotes/origin/main).Trim() 'verification must not move remote refs'
 
+    # A branch whose name ends in the base ref sorts first in ls-remote; it must not be used.
+    Invoke-Git -C $publisher push -q origin "$v1`:refs/heads/a/refs/heads/main"
+    Assert-Equal 7 (Invoke-Probe) 'tail-matching branch'
+    Assert-Equal "v2|$v2" (Get-Content -LiteralPath $report) 'only the exact base ref is used'
+
     $env:RELAYER_GATE_SCRIPTS_COMMIT = $v2
     Assert-Equal $null (Invoke-Probe) 'a pinned child runs in place'
     $env:RELAYER_GATE_SCRIPTS_COMMIT = $null

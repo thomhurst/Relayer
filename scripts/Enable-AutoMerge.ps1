@@ -5,12 +5,13 @@
 #   (GateScriptSource.ps1), so a stale shared checkout cannot apply outdated gate rules.
 #   0. with -MarkReady, promotes the approved draft (`gh pr ready`), undoes the promotion if
 #      the head moved, and waits for the ready CI run to register
-#      (first verifies an active, non-bypassable CI Passed ruleset on the target branch)
+#      (first verifies an active ruleset requiring CI Passed on the target branch)
 #   1. captures the head, then runs  Assert-PrGreen.ps1 -ForAutoMerge  (ready, no failed
 #      non-advisory check, nothing pending outside CI except advisory Performance,
 #      finished verdicts from the non-required path-filtered workflows the PR triggers, a
 #      Claude review of this head, no unresolved threads) and stops on any denial
-#   2. arms  gh pr merge --auto --squash --match-head-commit <head>
+#   2. arms  gh pr merge --auto --squash --match-head-commit <head>, refusing when GitHub would
+#      merge at once (the caller can bypass the ruleset) before CI Passed succeeded on the head
 #
 # GitHub then merges once the `Main` ruleset's required check (`CI Passed`) passes on that
 # head. Draft runs never report the required `CI Passed` name, so arming right after
@@ -36,6 +37,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'AssertPrGreenChecks.ps1')
 . (Join-Path $PSScriptRoot 'AutoMergeProtection.ps1')
 . (Join-Path $PSScriptRoot 'GateScriptSource.ps1')
 
@@ -105,6 +107,14 @@ if ($LASTEXITCODE -ne 0 -or $currentTarget.baseRefName -cne $target.baseRefName)
 }
 try { Assert-AutoMergeProtection -Repo $targetRepo -Branch $target.baseRefName }
 catch { Fail $_.Exception.Message }
+
+# The caller's credential may bypass the ruleset, so GitHub can treat the PR as mergeable now;
+# gh then merges immediately instead of arming. Refuse that unless CI Passed already succeeded.
+$state = gh pr view $Pr @repoArgs --json mergeStateStatus,statusCheckRollup 2>$null | ConvertFrom-Json
+if ($LASTEXITCODE -ne 0 -or -not $state) { Fail 'could not read the merge state before arming' }
+if (-not (Test-ImmediateMergeSafe -State $state.mergeStateStatus -Checks @($state.statusCheckRollup))) {
+    Fail "GitHub reports $($state.mergeStateStatus), so gh would merge now, but CI Passed has not succeeded on $head; re-run once it does"
+}
 
 gh pr merge $Pr @repoArgs --auto --squash --match-head-commit $head
 if ($LASTEXITCODE -ne 0) { Fail "gh pr merge --auto failed (exit $LASTEXITCODE)" }

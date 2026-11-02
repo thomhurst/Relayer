@@ -31,10 +31,17 @@ function Invoke-GateFromBase {
     $pathspec = if ($prefix) { $prefix } else { '.' }
 
     # Resolve and fetch by commit: no ref is written, so agents sharing the checkout cannot
-    # contend on a ref lock.
-    $remote = git -C $directory ls-remote --exit-code origin "refs/heads/$Branch" 2>$null
-    if ($LASTEXITCODE -ne 0 -or -not $remote) { throw "could not resolve origin/$Branch to verify the gate scripts" }
-    $commit = ([string]@($remote)[0] -split '\s+')[0]
+    # contend on a ref lock. ls-remote patterns also match ref tails (a branch named
+    # a/refs/heads/main), so accept only the exact ref.
+    $ref = "refs/heads/$Branch"
+    $remote = @(git -C $directory ls-remote origin $ref 2>$null)
+    if ($LASTEXITCODE -ne 0) { throw "could not resolve origin/$Branch to verify the gate scripts" }
+    $commits = @($remote | ForEach-Object {
+        $sha, $name = ([string]$_).Split("`t", 2)
+        if ($name -ceq $ref -and $sha -match '^[0-9a-f]{40}([0-9a-f]{24})?$') { $sha }
+    })
+    if ($commits.Count -ne 1) { throw "could not resolve origin/$Branch to verify the gate scripts" }
+    $commit = $commits[0]
     git -C $directory cat-file -e "$commit^{commit}" 2>$null
     if ($LASTEXITCODE -ne 0) {
         git -C $directory fetch --quiet --no-write-fetch-head origin $commit 2>$null
