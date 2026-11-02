@@ -20,6 +20,7 @@
     <Project Path="src/Relayer.RabbitMQ/Relayer.RabbitMQ.csproj" />
     <Project Path="src/Relayer.Nats/Relayer.Nats.csproj" />
     <Project Path="src/Relayer.Outbox.EntityFrameworkCore/Relayer.Outbox.EntityFrameworkCore.csproj" />
+    <Project Path="src/Relayer.Outbox.MySql/Relayer.Outbox.MySql.csproj" />
     <Project Path="src/Relayer.Outbox.PostgreSql/Relayer.Outbox.PostgreSql.csproj" />
   </Folder>
   <Folder Name="/tests/">
@@ -36,6 +37,7 @@
     <Project Path="tests/Relayer.Serialization.Avro.Tests/Relayer.Serialization.Avro.Tests.csproj" />
     <Project Path="tests/Relayer.Conformance.Tests/Relayer.Conformance.Tests.csproj" />
     <Project Path="tests/Relayer.Tracing.Tests/Relayer.Tracing.Tests.csproj" />
+    <Project Path="tests/Relayer.Outbox.MySql.Tests/Relayer.Outbox.MySql.Tests.csproj" />
     <Project Path="tests/Relayer.Outbox.PostgreSql.Tests/Relayer.Outbox.PostgreSql.Tests.csproj" />
     <Project Path="tests/Relayer.SourceGenerators.Tests/Relayer.SourceGenerators.Tests.csproj" />
   </Folder>

@@ -8,6 +8,8 @@
     <Compile Include="../Shared/OutboxOrderedDispatchContractTests.cs" Link="OutboxOrderedDispatchContractTests.cs" />
     <Compile Include="../Shared/OutboxMaintenanceContractTests.cs" Link="OutboxMaintenanceContractTests.cs" />
     <ProjectReference Include="../../src/Relayer.Sagas.EntityFrameworkCore/Relayer.Sagas.EntityFrameworkCore.csproj" />
+    <Using Include="Relayer.TestFixtures" />
+    <Compile Include="../Shared/DockerCommand.cs" Link="DockerCommand.cs" />
     <Compile Include="../Shared/OutboxStoreContractTests.cs" Link="OutboxStoreContractTests.cs" />
     <PackageReference Include="Dapper" />
     <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" />

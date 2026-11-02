@@ -21,6 +21,7 @@
     <ProjectReference Include="../../src/Relayer.Testing/Relayer.Testing.csproj" />
     <ProjectReference Include="../../src/Relayer.HealthChecks/Relayer.HealthChecks.csproj" />
     <ProjectReference Include="../../src/Relayer.Outbox.PostgreSql/Relayer.Outbox.PostgreSql.csproj" />
+    <ProjectReference Include="../../src/Relayer.Outbox.MySql/Relayer.Outbox.MySql.csproj" />
     <ProjectReference Include="../../src/Relayer.Outbox.EntityFrameworkCore/Relayer.Outbox.EntityFrameworkCore.csproj" />
     <ProjectReference Include="../../src/Relayer.SourceGenerators/Relayer.SourceGenerators.csproj"
                       ReferenceOutputAssembly="false" OutputItemType="Analyzer" />

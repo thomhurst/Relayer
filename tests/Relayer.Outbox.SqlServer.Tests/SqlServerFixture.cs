@@ -1,6 +1,6 @@
 using System.Diagnostics;
 using Microsoft.Data.SqlClient;
-using Relayer.Outbox.PostgreSql.Tests;
+using Relayer.TestFixtures;
 using TUnit.Core.Interfaces;
 
 namespace Relayer.Outbox.SqlServer.Tests;

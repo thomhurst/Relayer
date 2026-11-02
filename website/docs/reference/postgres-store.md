@@ -60,6 +60,8 @@ The store does not establish native broker delivery guarantees or ordered lane o
 ## Header storage
 
 The `headers` column contains the provider's versioned binary format, shared with its EF Core transactional writer.
+The codec is shared internally with the [MySQL store](mysql-store.md); corruption errors use provider-neutral
+outbox header messages. The binary format is unchanged.
 It starts with little-endian 32-bit version `1` and a header count. Each entry contains a length-prefixed UTF-8 name
 and a length-prefixed value. Values retain their bytes, including empty or malformed UTF-8 values. Duplicate names
 and ordering survive storage. Corrupt lengths, unsupported versions and trailing bytes fail explicitly.

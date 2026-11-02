@@ -36,6 +36,7 @@ PartitionCompletionSmoke.Run();
 PartitionSchedulerSmoke.Run();
 await KafkaSchemaSmoke.RunAsync();
 await NatsTopologySmoke.RunAsync();
+await MySqlStoreSmoke.RunAsync();
 ProtobufSmoke.Run();
 MessagePackSmoke.Run();
 using (var tenantProvider = new ServiceCollection().AddRelayerTenancy(1).BuildServiceProvider())

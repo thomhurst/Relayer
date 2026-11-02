@@ -159,7 +159,7 @@ public class TenantStoreSelectionTests
 
     private static async Task Deliver(ConsumePipeline pipeline, string id)
     {
-        using var context = pipeline.RentContext(new()
+        using var context = pipeline.RentContext(new ConsumeMessage
         {
             MessageType = new("tenant.store.probe", 1), MessageId = id,
             Body = new ReadOnlySequence<byte>(new byte[] { 1 })

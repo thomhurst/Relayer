@@ -122,11 +122,12 @@ jobs:
       - name: Test
         if: steps.solution.outputs.present == 'true'
         # Keep image acquisition outside Kafka's lifecycle deadline and
-        # PostgreSQL's bounded docker run commands.
+        # PostgreSQL/MySQL bounded docker run commands.
         run: |
           docker pull apache/kafka:4.0.2
           docker pull postgres:18-alpine
           docker pull mcr.microsoft.com/mssql/server:2022-CU14-ubuntu-22.04
+          docker pull mysql:8.4
           dotnet test --no-build -c Release
 
       - name: Pack and verify NuGet artifacts

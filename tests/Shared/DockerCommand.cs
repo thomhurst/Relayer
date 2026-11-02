@@ -1,6 +1,6 @@
 using System.Diagnostics;
 
-namespace Relayer.Outbox.PostgreSql.Tests;
+namespace Relayer.TestFixtures;
 
 internal sealed class DockerCommand
 {
