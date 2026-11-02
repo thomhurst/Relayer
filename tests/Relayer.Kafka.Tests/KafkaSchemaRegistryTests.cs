@@ -1,6 +1,7 @@
 using System.Buffers;
 using System.Buffers.Binary;
 using System.Net;
+using System.Net.Sockets;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -74,6 +75,60 @@ public class KafkaSchemaRegistryTests
     }
 
     [Test]
+    public async Task Registry_registration_does_not_reuse_a_lookup_connection_that_can_close_without_warning()
+    {
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var token = timeout.Token;
+        using var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        using var handler = CreateRegistryHandler();
+        using var client = new SchemaRegistryClient(new()
+        { Url = $"http://127.0.0.1:{((IPEndPoint)listener.LocalEndpoint).Port}" }, handler);
+        var server = ServeAsync();
+        var registration = client.GetOrRegisterSchemaAsync("orders-value", new() { SchemaType = SchemaType.Json, SchemaString = Schema }, token);
+        await Task.WhenAll(server, registration);
+        await Assert.That(await registration).IsEqualTo(7);
+
+        async Task ServeAsync()
+        {
+            using (var lookup = await listener.AcceptTcpClientAsync(token))
+            {
+                await ReplyAsync(lookup, "POST /subjects/orders-value HTTP/1.1", "404 Not Found", "{\"error_code\":40401,\"message\":\"Subject not found\"}");
+                // Keep the socket open until the client acts: this deterministically exposes reuse
+                // before Redpanda's unannounced FIN, without relying on scheduler timing or sleeps.
+                var read = await lookup.GetStream().ReadAsync(new byte[1], token);
+                await Assert.That(read).IsEqualTo(0);
+            }
+            using var register = await listener.AcceptTcpClientAsync(token);
+            await ReplyAsync(register, "POST /subjects/orders-value/versions HTTP/1.1", "200 OK", "{\"id\":7}");
+        }
+
+        async Task ReplyAsync(TcpClient connection, string expectedRequest, string status, string body)
+        {
+            var stream = connection.GetStream();
+            using var reader = new StreamReader(stream, Encoding.ASCII, leaveOpen: true);
+            await Assert.That(await reader.ReadLineAsync(token)).IsEqualTo(expectedRequest);
+            // Dekaf's JsonContent uses chunked HTTP/1.1 requests. Consume their framing without
+            // buffering or rewriting the request in the client handler under test.
+            var chunked = false;
+            while (await reader.ReadLineAsync(token) is { Length: > 0 } header)
+                chunked |= header.Equals("Transfer-Encoding: chunked", StringComparison.OrdinalIgnoreCase);
+            await Assert.That(chunked).IsTrue();
+            while (true)
+            {
+                var length = int.Parse((await reader.ReadLineAsync(token))!, System.Globalization.NumberStyles.HexNumber);
+                if (length == 0) break;
+                var buffer = new char[length];
+                await Assert.That(await reader.ReadBlockAsync(buffer, token)).IsEqualTo(length);
+                await Assert.That(await reader.ReadLineAsync(token)).IsEqualTo("");
+            }
+            await Assert.That(await reader.ReadLineAsync(token)).IsEqualTo("");
+            var response = Encoding.ASCII.GetBytes($"HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {body.Length}\r\n\r\n{body}");
+            await stream.WriteAsync(response, token);
+        }
+    }
+
+    [Test]
     [NotInParallel]
     public async Task Named_clusters_use_independent_registries_credentials_and_contracts()
     {
@@ -87,8 +142,8 @@ public class KafkaSchemaRegistryTests
         await Task.WhenAll(west.StartAsync(token), east.StartAsync(token), westRegistry.StartAsync(token), eastRegistry.StartAsync(token));
         await CreateTopic(west, token);
         await CreateTopic(east, token);
-        var westHttp = new CredentialCheck("west:secret", westRegistry);
-        var eastHttp = new CredentialCheck("east:other-secret", eastRegistry);
+        using var westHttp = new CredentialCheck("west:secret", westRegistry);
+        using var eastHttp = new CredentialCheck("east:other-secret", eastRegistry);
         using var westClient = new SchemaRegistryClient(new()
         { Url = westRegistry.GetSchemaRegistryAddress(), BasicAuthUserInfo = "west:secret" }, westHttp);
         using var eastClient = new SchemaRegistryClient(new()
@@ -231,9 +286,18 @@ public class KafkaSchemaRegistryTests
         }
     }
 
-    private sealed class CredentialCheck(string credentials, RedpandaContainer registry) : DelegatingHandler(new HttpClientHandler())
+    private static SocketsHttpHandler CreateRegistryHandler() => new()
+    {
+        // Redpanda v25.1.9 rejects unknown subjects before reading the lookup body, then
+        // closes without advertising it. Prevent a pooled registration POST racing that FIN.
+        // https://github.com/redpanda-data/redpanda/issues/31683
+        PooledConnectionLifetime = TimeSpan.Zero,
+    };
+
+    private sealed class CredentialCheck(string credentials, RedpandaContainer registry) : DelegatingHandler(CreateRegistryHandler())
     {
         public int Requests;
+        private string? _lastResponse;
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
             var expected = Convert.ToBase64String(Encoding.UTF8.GetBytes(credentials));
@@ -242,11 +306,14 @@ public class KafkaSchemaRegistryTests
             Interlocked.Increment(ref Requests);
             try
             {
-                return await base.SendAsync(request, cancellationToken);
+                var response = await base.SendAsync(request, cancellationToken);
+                _lastResponse = $"{request.Method} {request.RequestUri}: HTTP/{response.Version} {(int)response.StatusCode}; Content-Length={response.Content.Headers.ContentLength}, Transfer-Encoding={response.Headers.TransferEncoding}, Connection={response.Headers.Connection}";
+                return response;
             }
             catch (Exception error) when (error is HttpRequestException or OperationCanceledException)
             {
                 Console.Error.WriteLine($"Registry request failed: {request.Method} {request.RequestUri}; container {registry.Id}, state {registry.State}.");
+                Console.Error.WriteLine($"Request framing: HTTP/{request.Version}; Content-Length={request.Content?.Headers.ContentLength}, Transfer-Encoding={request.Headers.TransferEncoding}, Connection={request.Headers.Connection}. Previous response: {_lastResponse}");
                 try
                 {
                     // The test token may have expired. Bound diagnostics independently and retain the original failure.
