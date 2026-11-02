@@ -33,7 +33,7 @@ To change a decision, add a new entry that supersedes it rather than editing his
 | [D20](#d20-sagas-are-out-of-scope-for-v1) | Sagas are out of scope for v1 | Accepted |
 | [D21](#d21-repository-conventions) | Repository conventions | Accepted |
 | [D22](#d22-the-kafka-transport-wraps-dekaf) | The Kafka transport wraps Dekaf | Accepted |
-| [D23](#d23-a-generic-transport-spi-owned-by-the-core) | A generic transport SPI owned by the core | Accepted |
+| [D23](#d23-a-generic-transport-spi-owned-by-the-core) | A generic transport SPI owned by the core | Accepted; core-first log scheduling superseded by [D40](#d40-log-transports-reuse-native-processing-runtimes) |
 | [D24](#d24-capabilities-are-valued-and-declared-per-endpoint) | Capabilities are valued and declared per endpoint | Accepted |
 | [D25](#d25-telemetry-follows-the-opentelemetry-messaging-span-model) | Telemetry follows the OpenTelemetry messaging span model | Accepted |
 | [D26](#d26-generate-default-json-metadata-with-the-official-systemtextjson-generator) | Generate default JSON metadata with the official System.Text.Json generator | Accepted |
@@ -50,6 +50,7 @@ To change a decision, add a new entry that supersedes it rather than editing his
 | [D37](#d37-ordered-dispatch-bounds-validated-endpoint-retention) | Ordered dispatch bounds validated endpoint retention | Accepted |
 | [D38](#d38-postgresql-maintenance-leases-recover-unordered-rows-and-bound-retention) | PostgreSQL maintenance leases recover unordered rows and bound retention | Accepted |
 | [D39](#d39-named-transports-capture-startup-prepared-serializers) | Named transports capture startup-prepared serializers | Accepted |
+| [D40](#d40-log-transports-reuse-native-processing-runtimes) | Log transports reuse native processing runtimes | Accepted |
 
 ---
 
@@ -202,6 +203,8 @@ To change a decision, add a new entry that supersedes it rather than editing his
 
 ## D13. Kafka gets its own consumption model
 
+Implementation ownership is clarified by [D40](#d40-log-transports-reuse-native-processing-runtimes): the planned parallel path uses Dekaf's native runtime. The consumption requirements below remain in force.
+
 **Decision.**
 - Key-ordered parallelism within a partition.
 - Offsets are committed at the contiguous-completed watermark.
@@ -308,6 +311,8 @@ Superseded by [D24](#d24-capabilities-are-valued-and-declared-per-endpoint).
 - Confluent.Kafka: native dependency, AOT gap, and logging that bypasses `ILogger`.
 
 ## D23. A generic transport SPI owned by the core
+
+The core-first log scheduling rule below is superseded by [D40](#d40-log-transports-reuse-native-processing-runtimes). The remaining SPI decisions stay in force.
 
 **Context.**
 - D1 splits the work correctly: the core owns cross-cutting concerns and each transport owns native behaviour. But `ITransport` only declared a lifecycle. The core had no way to hand a message to a transport, a transport had no way to feed the consume pipeline, and the failure pipeline (D10) had no way to ask a transport to settle.
@@ -753,3 +758,22 @@ fetches or per-message discovery. Other schema versions require explicit wire ty
 errors fail startup. Registry IDs remain local to each serializer and never replace stable CloudEvents
 message identity. Dynamic discovery, registry rules/validation, latest-version selection, header/GUID
 identities, Avro and Protobuf schema registry adapters remain planned. No broker send, receive or settlement semantics change.
+
+## D40. Log transports reuse native processing runtimes
+
+Supersedes D23's core-first log scheduling rule and clarifies implementation ownership for D13, following #239. The rest of D23's generic SPI remains in force.
+
+**Context.** D23 put key ordering, completion watermarks, backpressure and ownership drain in the core to avoid rebuilding them for each log transport. Kafka is currently the only production log transport, and the pinned Dekaf 1.25.0 already provides these mechanisms in [`RunPartitionedAsync`](https://github.com/thomhurst/Dekaf/blob/v1.25.0/src/Dekaf/Consumer/PartitionedProcessing.cs) and its [key-ordered dispatcher](https://github.com/thomhurst/Dekaf/blob/v1.25.0/src/Dekaf/Consumer/KeyOrderedPartitionDispatcher.cs). Driving the core scheduler from Kafka, as proposed in #221, duplicates the native runtime and conflicts with D1 and D22.
+
+**Decision.**
+- Inspect the pinned native client's source before selecting a log processing model. Reuse its scheduling, completion tracking, backpressure and ownership drain. File missing native capabilities upstream and wrap what exists. A parallel implementation needs a recorded decision naming the native feature and why it cannot be used.
+- Kafka's planned parallel adapter wraps Dekaf's `RunPartitionedAsync` and maps configuration onto `PartitionedProcessingOptions`. Use native key ordering, per-partition handler/buffer limits, pause/resume, stop policy/timeout and commit policy/interval. Relayer retains its receive/failure pipeline, durable disposition before native completion, commit tracing and health integration. It does not use the core scheduler for Kafka.
+- `PartitionScheduler<TIncoming, TBinding, TPartition, TPosition>` remains a fallback only for log transports whose native client has no equivalent. Its existing single-owner, bounded-storage and ownership-fencing contracts remain unchanged; see the [transport-author contract](../website/docs/transports/partition-scheduler.md).
+- No production transport currently uses that fallback. Retain its public SPI and tests while the next log transport is designed, then inspect that client's runtime first. If no planned transport needs it, remove the public scheduler instead of maintaining unused public code. This decision makes no public API removal.
+
+**Consequences.** The current serial Kafka adapter remains the shipped path. #182 owns the native parallel adapter rework; this policy change does not complete it or permit #221's duplicated runtime to merge. Consumer-wide limits, oldest outstanding record health and runtime-aware replay must preserve their contracts; the native gaps and implementation status are recorded in [design §7](design.md#7-kafka-done-properly) and the [Kafka guide](../website/docs/transports/kafka.md). Missing native support is not permission to silently weaken those contracts or rebuild the runtime. D22's native reuse rule still applies; #240 separately tightens its exception wording.
+
+**Alternatives rejected.**
+- Require every log transport to use the core scheduler: duplicates clients that already own processing and adds a second ownership protocol.
+- Remove the scheduler immediately: preempts the next log transport's native-client assessment; #239 explicitly retains that decision for its design.
+- Keep the Kafka duplication until native gaps close: makes an unrecorded exception to D1/D22 and creates a second runtime to retire later.

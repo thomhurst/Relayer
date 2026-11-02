@@ -1,9 +1,17 @@
 ---
 title: Partition scheduler
-description: "Key-ordered scheduling, native backpressure and bounded drain for log transport authors."
+description: "Fallback key-ordered scheduling for log transports without a native processing runtime."
 ---
 
-`PartitionScheduler<TIncoming,TBinding,TPartition,TPosition>` runs an existing receive/failure pipeline with key ordering and bounded concurrency. It builds on [partition completion watermarks](partition-completion.md). This is a transport-author SPI; [Kafka consumer integration](kafka.md#register-a-consumer) remains planned in [#182](https://github.com/thomhurst/Relayer/issues/182). Kafka registration still requires `Concurrency(1)`.
+`PartitionScheduler<TIncoming,TBinding,TPartition,TPosition>` runs an existing receive/failure pipeline with key ordering and bounded concurrency. It builds on [partition completion watermarks](partition-completion.md). This is a fallback transport-author SPI for clients without an equivalent native processing runtime. No production transport currently uses it.
+
+## Choose the native runtime first
+
+Before using this scheduler, inspect the native client's source at the pinned version for ordering, completion tracking, backpressure and ownership drain. Wrap those features when they exist. File missing capabilities upstream; do not replace an existing native runtime to fill a gap without a recorded design decision explaining why its feature cannot be used.
+
+Kafka's planned parallel adapter wraps Dekaf's `RunPartitionedAsync`, which already owns key ordering, completion tracking, pause/resume and bounded drain. Kafka will not use this fallback scheduler. [Kafka parallel receive](kafka.md#register-a-consumer) remains planned in [#182](https://github.com/thomhurst/Relayer/issues/182); registration still requires `Concurrency(1)`.
+
+The fallback SPI and its tests remain available while the next log transport is designed. Check that client's runtime first. If no planned transport needs the fallback, remove the public scheduler instead of maintaining unused public code. This policy does not remove or change the existing SPI.
 
 ## Compose once, pump on the native owner
 
