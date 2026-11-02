@@ -224,36 +224,46 @@ public class AdoNetEnlistmentTests
     {
         await using var database = new Database();
         await database.Start();
+        // An unrelated connection must stay usable while each owned connection closes.
+        await using var unrelated = await database.Source.OpenConnectionAsync();
         await using var provider = database.Services();
         DbTransaction abandoned;
+        int abandonedBackend;
         await using (var scope = provider.CreateAsyncScope())
         {
             var outbox = scope.ServiceProvider.GetRequiredService<PostgreSqlOutbox>();
             abandoned = await outbox.BeginTransactionAsync(database.Source);
+            abandonedBackend = await abandoned.Connection!.QuerySingleAsync<int>("SELECT pg_backend_pid()", transaction: abandoned);
             await abandoned.Connection!.ExecuteAsync("INSERT INTO business VALUES (1)", transaction: abandoned);
             await scope.ServiceProvider.GetRequiredService<IOutboxEnlistment>().EnlistAsync(Record(), default);
             await Assert.That(await database.Scalar("SELECT count(*) FROM pg_stat_activity WHERE datname=current_database() AND state='idle in transaction'"))
                 .IsEqualTo(1L);
         }
+        await database.WaitForBackendExit(abandonedBackend);
         await abandoned.DisposeAsync();
         await Assert.That(await database.Count()).IsEqualTo(0L);
         await Assert.That(await database.Scalar("SELECT count(*) FROM business")).IsEqualTo(0L);
         await Assert.That(await database.Scalar("SELECT count(*) FROM pg_stat_activity WHERE datname=current_database() AND state='idle in transaction'"))
             .IsEqualTo(0L);
-        await Assert.That(await database.Scalar("SELECT count(*) FROM pg_stat_activity WHERE datname=current_database() AND backend_type='client backend' AND pid<>pg_backend_pid()"))
-            .IsEqualTo(0L);
         await using (var nextScope = provider.CreateAsyncScope())
         {
             var outbox = nextScope.ServiceProvider.GetRequiredService<PostgreSqlOutbox>();
-            await using (var committed = await outbox.BeginTransactionAsync(database.Source)) await committed.CommitAsync();
-            await Assert.That(await database.Scalar("SELECT count(*) FROM pg_stat_activity WHERE datname=current_database() AND backend_type='client backend' AND pid<>pg_backend_pid()"))
-                .IsEqualTo(0L);
-            await using (var rolledBack = await outbox.BeginTransactionAsync(database.Source)) await rolledBack.RollbackAsync();
-            await Assert.That(await database.Scalar("SELECT count(*) FROM pg_stat_activity WHERE datname=current_database() AND backend_type='client backend' AND pid<>pg_backend_pid()"))
-                .IsEqualTo(0L);
+            await using (var committed = await outbox.BeginTransactionAsync(database.Source))
+            {
+                var backend = await committed.Connection!.QuerySingleAsync<int>("SELECT pg_backend_pid()", transaction: committed);
+                await committed.CommitAsync();
+                await database.WaitForBackendExit(backend);
+            }
+            await using (var rolledBack = await outbox.BeginTransactionAsync(database.Source))
+            {
+                var backend = await rolledBack.Connection!.QuerySingleAsync<int>("SELECT pg_backend_pid()", transaction: rolledBack);
+                await rolledBack.RollbackAsync();
+                await database.WaitForBackendExit(backend);
+            }
         }
         await using var usableSource = await database.Source.OpenConnectionAsync();
         await Assert.That(usableSource.State).IsEqualTo(ConnectionState.Open);
+        await Assert.That(await unrelated.ExecuteScalarAsync<int>("SELECT 42")).IsEqualTo(42);
     }
 
     [Test]
@@ -489,6 +499,17 @@ public class AdoNetEnlistmentTests
             return services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
         }
         internal Task<long> Count() => Scalar($"SELECT count(*) FROM {Table}");
+        internal async Task WaitForBackendExit(int backend)
+        {
+            // Client disposal sends Terminate without waiting for the server backend to exit.
+            // Observe this connection only, not short-lived connections used by other assertions.
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+            await using var observer = await Source.OpenConnectionAsync(timeout.Token);
+            await using var command = new NpgsqlCommand("SELECT count(*) FROM pg_stat_activity WHERE pid=$1", observer);
+            command.Parameters.AddWithValue(backend);
+            while ((long)(await command.ExecuteScalarAsync(timeout.Token))! != 0)
+                await Task.Delay(10, timeout.Token);
+        }
         internal async Task<long> Scalar(string sql)
         {
             await using var command = Source.CreateCommand(sql);
