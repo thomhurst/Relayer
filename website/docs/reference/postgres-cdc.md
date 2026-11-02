@@ -24,8 +24,12 @@ SELECT * FROM pg_create_logical_replication_slot('orders_cdc', 'pgoutput');
 Do not use temporary slots, row filters, or publications that include updates, deletes or truncates.
 INSERT-only capture avoids feeding dispatch's claim, failure and deletion writes back into dispatch.
 Relayer validates the slot and publication at host startup; it never creates, drops or resets a slot.
-Native errors are logged or propagated. Errors Npgsql classifies as transient retry after `ReconnectDelay`,
-including an occupied slot; restore invalidated slots through your database operations procedure.
+Errors Npgsql classifies as transient retry after `ReconnectDelay`, including an occupied slot.
+Other runtime errors, including permanent database, replication or configuration failures, fault the CDC
+worker. With the default `BackgroundServiceExceptionBehavior.StopHost`, the host logs the error and stops
+the application. If you configure `Ignore`, the faulted worker stays stopped; maintenance must remain
+available and operations must repair the cause and restart the host. Relayer does not silently retry
+permanent errors. Restore invalidated slots through your database operations procedure.
 
 ## Registration
 
@@ -103,6 +107,11 @@ acceptance followed by a crash before database commit can deliver the same ID an
 Monitor slot activity, `confirmed_flush_lsn`, retained WAL and disk capacity. A stopped reader retains WAL;
 server retention limits can invalidate a slot. Restore capture through your database operations procedure,
 keeping durable rows and maintenance available. Do not share this slot with Debezium.
+
+Dispatch runs inline on the replication read loop. A slow or unavailable broker delays reading later
+commits and advancing feedback, so retained WAL can grow during a send stall. Npgsql continues its native
+status timer, but that does not advance the applied/flushed position past unfinished dispatch. Size WAL
+retention for broker outages and monitor disk capacity.
 
 ## Debezium event router
 

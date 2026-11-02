@@ -1183,7 +1183,9 @@ handles retries, expired claims, due schedules and retention. Ordered rows remai
 **Consequences.** CDC avoids waiting for a polling interval for new commits without changing native sends,
 table layout, ordering or at-least-once recovery. A crash after broker acceptance can duplicate delivery.
 The application provisions and monitors WAL retention and must use the writer's database for both
-connections. Native transient failures reconnect; permanent configuration failures stop the worker.
+connections. Native transient failures reconnect; other runtime failures fault the worker and stop the
+host under its default BackgroundService exception policy. Dispatch runs inline, so broker stalls delay
+later capture and can grow retained WAL. Operations must monitor retention and repair permanent failures.
 SQL Server CDC remains planned. Debezium can use explicit column mappings and connector-specific binary
 header/payload handling, with a separate slot and one delivery owner; it does not inherit Relayer's lane,
 scheduling or settlement protocol. See the [CDC reference](../website/docs/reference/postgres-cdc.md).
