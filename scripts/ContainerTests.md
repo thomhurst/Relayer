@@ -8,6 +8,7 @@ sudo bash scripts/Prepare-ContainerTests.sh
 # Start Docker 28.5.1 or later after preparation. For an existing installation:
 sudo systemctl restart docker
 bash scripts/Test-ContainerPortAllocation.sh
+docker pull apache/kafka:4.0.2
 dotnet test -c Release
 ```
 
@@ -43,3 +44,11 @@ Preparation failures and container startup failures remain test failures. There
 is no automatic retry. Hosted failure logs do not identify their conflicting
 socket owners; an isolated reproduction establishes the allocator mechanism,
 not the destroyed runner's exact socket state.
+
+CI pulls the pinned Kafka image before starting the test process. On a cold
+runner, downloading and unpacking that image consumed 48 seconds of the Kafka
+lifecycle tests' two-minute deadline (#195). Image preparation fails the job if
+the pull fails; it does not retry. Keep this image tag aligned with the Kafka
+fixtures. Tests retain their deadlines, parallel execution, both restart cycles,
+and native protocol assertions. Ordinary local runs still let Testcontainers
+pull missing images; use the command above when validating lifecycle timing.

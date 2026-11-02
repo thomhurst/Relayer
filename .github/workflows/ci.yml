@@ -120,7 +120,11 @@ jobs:
 
       - name: Test
         if: steps.solution.outputs.present == 'true'
-        run: dotnet test --no-build -c Release
+        # Cold Kafka image acquisition consumed 48 seconds of the two-minute
+        # lifecycle deadline in #195. Prepare it before any test clock starts.
+        run: |
+          docker pull apache/kafka:4.0.2
+          dotnet test --no-build -c Release
 
       - name: Pack and verify NuGet artifacts
         run: |
