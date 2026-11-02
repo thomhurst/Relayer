@@ -90,3 +90,21 @@ Return null for an unavailable count and propagate query errors rather than retu
 The [health adapter](../guides/health-checks.md) forwards the query time and cancellation token without changing
 the result. Provider implementations must verify these predicates and threshold inputs against real database
 fixtures; the core adapter's unit tests do not establish database correctness.
+
+## Shared provider tests
+
+Repository integration tests share `tests/Shared/OutboxStoreContractTests.cs`. Link that source into a provider's
+TUnit test project, derive a concrete class from `OutboxStoreContractTests`, and add `[InheritsTests]` so TUnit
+discovers the inherited cases. Implement `CreateFixtureAsync` with a real database deployment; the PostgreSQL
+example is `tests/Relayer.Outbox.PostgreSql.Tests/SharedStoreContractTests.cs`.
+
+Each fixture supplies independent store instances against the same database, native row seeding and async
+cleanup. Keep database setup and seeding in the provider fixture. The inherited cases call only `IOutboxStore`
+and check bounded UUIDv7 scans, lane and schedule eligibility, backlog counts, competing claims, renewal,
+failure recording, exact-expiry recovery, stale-owner fencing, completion, invalid inputs and cancellation.
+Read, count and claim eligibility also run at one UTC instant expressed with a nonzero offset.
+
+These cases supplement provider-specific tests. Transaction commit/rollback, borrowed-memory ownership,
+inbox deduplication, ordered workers, crash recovery and retention need additional native integration tests.
+Passing the shared store cases alone does not establish those guarantees. The suite currently runs against
+PostgreSQL; MongoDB support remains planned.
