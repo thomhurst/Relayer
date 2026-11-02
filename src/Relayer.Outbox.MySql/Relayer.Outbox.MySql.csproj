@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <Description>MySQL durable outbox reads and fenced claims for Relayer.</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="MySqlConnector" />
+    <ProjectReference Include="../Relayer/Relayer.csproj" />
+    <InternalsVisibleTo Include="Relayer.Outbox.MySql.Tests" />
+    <InternalsVisibleTo Include="Relayer.Benchmarks" />
+  </ItemGroup>
+</Project>

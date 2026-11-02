@@ -33,6 +33,8 @@
 
   <ItemGroup>
     <InternalsVisibleTo Include="Relayer.Tests" />
+    <InternalsVisibleTo Include="Relayer.Outbox.MySql" />
+    <InternalsVisibleTo Include="Relayer.Outbox.MySql.Tests" />
     <InternalsVisibleTo Include="Relayer.Outbox.PostgreSql" />
     <InternalsVisibleTo Include="Relayer.Outbox.SqlServer" />
     <InternalsVisibleTo Include="Relayer.Testing" />

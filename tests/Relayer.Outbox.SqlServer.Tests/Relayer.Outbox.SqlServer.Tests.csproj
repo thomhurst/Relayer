@@ -4,7 +4,7 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="../Shared/OutboxStoreContractTests.cs" Link="OutboxStoreContractTests.cs" />
-    <Compile Include="../Relayer.Outbox.PostgreSql.Tests/DockerCommand.cs" Link="DockerCommand.cs" />
+    <Compile Include="../Shared/DockerCommand.cs" Link="DockerCommand.cs" />
     <PackageReference Include="TUnit" />
     <PackageReference Include="Microsoft.Extensions.DependencyInjection" />
     <ProjectReference Include="../../src/Relayer.Outbox.SqlServer/Relayer.Outbox.SqlServer.csproj" />
