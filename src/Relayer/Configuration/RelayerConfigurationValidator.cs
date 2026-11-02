@@ -40,6 +40,8 @@ internal sealed class RelayerConfigurationValidator(RelayerConfiguration configu
                 if (consumer.BatchWait <= TimeSpan.Zero) failures.Add($"{location}: batch wait must be positive.");
             }
         }
+        foreach (var registration in services.GetServices<IRequestRegistration>())
+            registration.Validate(configuration, messages, failures);
         try
         {
             var capabilities = new EndpointCapabilityValidator(services.GetServices<ITransport>(), failures, services.GetRequiredService<EndpointCapabilityCache>(), services.GetRequiredService<OutboxCapabilities>());

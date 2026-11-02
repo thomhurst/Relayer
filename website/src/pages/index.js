@@ -284,6 +284,7 @@ const status = [
   ['Message upcaster chains for single and batch handlers', 'Implemented', true],
   ['Failure classification, retries and dead-letter copies', 'Implemented', true],
   ['Manual settlement requests with exception precedence', 'Implemented', true],
+  ['Request/response with bounded state and mandatory timeouts', 'Implemented', true],
   ['Declared topology and JSON export', 'Implemented', true],
   ['In-memory transport for tests and samples', 'Implemented', true],
     ['Service Bus receive binding and manual settlement', 'Implemented', true],

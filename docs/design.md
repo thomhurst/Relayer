@@ -806,7 +806,7 @@ Transports target the latest major version of their native client. Updating clie
 ## 14. Beyond v1
 
 - **Sagas / process managers** (`Relayer.Sagas`): explicit state classes, optimistic concurrency (no hand-written lock providers), built on the inbox and outbox for idempotency, timeouts through the scheduler, and diagram export (Rebus #341, #1136, #1205; SlimMessageBus #384). Explicit diagram declarations and export are implemented; see the [diagram guide](https://relayer.tomlonghurst.dev/docs/guides/saga-diagrams). State-transition execution and durable saga timeouts remain planned; D20 is unchanged.
-- **Request/response** with a mandatory timeout and the reply address carried in CloudEvents extensions.
+- **Request/response** is implemented for explicit endpoints with mandatory timeouts, bounded process-local correlation, and `replyto`/`correlationid` CloudEvents extensions (D41). It reuses the send and consume pipelines; arbitrary reply destinations and temporary queues remain unsupported. See the [request/response guide](https://relayer.tomlonghurst.dev/docs/guides/request-response).
 - **Additional transports:** NATS JetStream, Google Pub/Sub, Pulsar, RabbitMQ Streams, and the Azure Service Bus emulator profile.
 - **AsyncAPI document generation** from the topology model.
 - **Outbox dispatch from CDC** (§6.4).

@@ -427,6 +427,7 @@ if (transport.OrderingKey != "42" || !transport.Tombstone)
 Console.WriteLine("Send routing, typed tombstones, middleware and native configuration passed with reflection disabled.");
 
 await InMemoryTracingSmoke.RunAsync();
+await RequestResponseSmoke.RunAsync();
 await UpcasterSmoke.RunAsync();
 
 [Message("smoke.order")]

@@ -16,6 +16,7 @@ const sidebars = {
         'guides/handlers',
         'guides/configuration',
         'guides/sending',
+        'guides/request-response',
         'guides/failure-handling',
         'guides/topology',
         'guides/saga-diagrams',

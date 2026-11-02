@@ -8,10 +8,13 @@ using Relayer.Transports;
 
 namespace Relayer;
 
+internal readonly record struct ReplyMetadata(WireString ReplyTo, WireString CorrelationId);
+
 internal sealed class SendRoute<TMessage>
 {
     private readonly ITransport _transport;
     private readonly string _destination;
+    private readonly byte[] _destinationUtf8;
     private readonly MessageType _messageType;
     private readonly SendRouteOptions _options;
     private readonly IOrderingKeySelector<TMessage>? _orderingKey;
@@ -24,6 +27,11 @@ internal sealed class SendRoute<TMessage>
     private readonly PoolSegment _operations = new();
     private readonly bool _isTombstone;
 
+    internal SendRouteOptions Options => _options;
+    internal bool MatchesDestination(WireString address) => address.Text is { } text
+        ? string.Equals(text, _destination, StringComparison.Ordinal)
+        : address.Utf8.Span.SequenceEqual(_destinationUtf8);
+
     internal SendRoute<Tombstone<TMessage>>? CreateTombstoneRoute() => _capabilities.Tombstones
         ? new(_transport, _destination, _messageType, _options, new TombstoneKeySelector<TMessage>(),
             _serializer, _pipeline, _capabilities, isTombstone: true) : null;
@@ -35,6 +43,7 @@ internal sealed class SendRoute<TMessage>
         _isTombstone = isTombstone;
         _transport = transport;
         _destination = destination;
+        _destinationUtf8 = Encoding.UTF8.GetBytes(destination);
         _messageType = messageType;
         _options = options;
         _orderingKey = orderingKey;
@@ -47,7 +56,7 @@ internal sealed class SendRoute<TMessage>
     }
 
     internal ValueTask SendAsync(TMessage message, Action<SendOptions>? configure,
-        IOutboxEnlistment? outbox, CancellationToken callerToken, AttemptSendBuffer? buffer) => Rent().Start(message, configure, outbox, callerToken, buffer);
+        IOutboxEnlistment? outbox, CancellationToken callerToken, AttemptSendBuffer? buffer, ReplyMetadata reply = default) => Rent().Start(message, configure, outbox, callerToken, buffer, reply);
 
     private Operation Rent()
     {
@@ -105,6 +114,7 @@ internal sealed class SendRoute<TMessage>
         private IOutboxEnlistment? _outbox;
         private AttemptSendBuffer? _buffer;
         private MessageEnvelopeMetadata _metadata;
+        private ReplyMetadata _reply;
         private string? _messageId;
         private Activity? _activity;
         private bool _tracingStarted;
@@ -128,8 +138,9 @@ internal sealed class SendRoute<TMessage>
         public override SendOptions Options { get; } = new();
         public override CancellationToken CancellationToken => Timeout.Token;
 
-        internal ValueTask Start(TMessage message, Action<SendOptions>? configure, IOutboxEnlistment? outbox, CancellationToken callerToken, AttemptSendBuffer? buffer)
+        internal ValueTask Start(TMessage message, Action<SendOptions>? configure, IOutboxEnlistment? outbox, CancellationToken callerToken, AttemptSendBuffer? buffer, ReplyMetadata reply)
         {
+            _reply = reply;
             _message = message;
             _outbox = outbox;
             _buffer = buffer;
@@ -257,6 +268,8 @@ internal sealed class SendRoute<TMessage>
                 }
                 _headers.Add(header.Key, new WireString(header.Value));
             }
+            if (!_reply.ReplyTo.IsEmpty) _headers.Add(_route._options.HeaderNames.ReplyTo, _reply.ReplyTo);
+            if (!_reply.CorrelationId.IsEmpty) _headers.Add(_route._options.HeaderNames.CorrelationId, _reply.CorrelationId);
 
             var outgoing = new OutgoingMessage(_route._destination, _body.WrittenMemory, _headers.Written,
                 Options.OrderingKey is { } key ? new WireString(key) : _route._orderingKey?.Select(_message, _key), Options.DeliverAt, Options, _route._isTombstone);
@@ -266,7 +279,9 @@ internal sealed class SendRoute<TMessage>
                 activity.SetTag("cloudevents.event_type", _route._wireType);
                 activity.SetTag("cloudevents.event_source", _route._options.Source);
                 if (_route._tracing!.IncludeBodySize) activity.SetTag("messaging.message.body.size", _body.WrittenCount);
-                if (Options.Headers.TryGetValue(_route._options.HeaderNames.CorrelationId, out var correlation))
+                if (!_reply.CorrelationId.IsEmpty)
+                    activity.SetTag("messaging.message.conversation_id", _reply.CorrelationId.ToString());
+                else if (Options.Headers.TryGetValue(_route._options.HeaderNames.CorrelationId, out var correlation))
                     activity.SetTag("messaging.message.conversation_id", correlation);
             }
             if (_buffer is null && _outbox is null && _route._tracing is not null) outgoing = outgoing.WithTracingStarted();
@@ -309,6 +324,7 @@ internal sealed class SendRoute<TMessage>
             _outbox = null;
             _buffer = null;
             _metadata = default;
+            _reply = default;
             _messageId = null;
             _pending = default;
             _callerToken = default;
