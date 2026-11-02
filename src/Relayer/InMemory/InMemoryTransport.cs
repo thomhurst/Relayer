@@ -108,6 +108,7 @@ public sealed class InMemoryTransport : ITransport, ITransportSendTracing
             native.Copy(message);
             message.ApplyNative(native);
             endpoint.ValidateSend(native);
+            GetSendTracing(message.Destination)?.RecordNativeSend();
             await endpoint.EnqueueAsync(native, cancellationToken).ConfigureAwait(false);
         }
         catch

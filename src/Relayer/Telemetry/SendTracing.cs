@@ -82,6 +82,11 @@ public sealed class SendTracing
 
     internal bool IncludeBodySize => _tracing.Options.IncludeBodySize;
 
+    /// <summary>Counts messages immediately before the adapter invokes a native send, including calls that fail.</summary>
+    /// <remarks>Call after validation and preparation, once per native call with its actual message count.
+    /// SendAsync and SendBatchAsync compose tracing only; they do not count native attempts.</remarks>
+    public void RecordNativeSend(long count = 1) => _telemetry?.RecordSent(count);
+
     internal void Fail(Activity? activity, Exception exception)
     {
         MessageOperationTracing.Fail(activity, "_OTHER");
@@ -91,7 +96,6 @@ public sealed class SendTracing
     /// <summary>Sends one serialized message, preserving existing creation headers byte for byte.</summary>
     public ValueTask SendAsync(OutgoingMessage message, CancellationToken cancellationToken = default)
     {
-        _telemetry?.RecordSent();
         return message.TracingStarted
             ? _sendNative(message, cancellationToken)
             : Start(message, default, false, cancellationToken);
@@ -156,7 +160,6 @@ public sealed class SendTracing
     public ValueTask SendBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken = default)
     {
         if (messages.IsEmpty) return _sendBatchNative(messages, cancellationToken);
-        _telemetry?.RecordSent(messages.Length);
         return Start(default, messages, true, cancellationToken);
     }
 

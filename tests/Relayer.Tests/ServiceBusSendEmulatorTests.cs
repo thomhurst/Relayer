@@ -1,7 +1,8 @@
+using System.Diagnostics.Metrics;
+using Microsoft.Extensions.Options;
 using Azure.Messaging.ServiceBus;
 using Azure.Messaging.ServiceBus.Administration;
 using DotNet.Testcontainers.Builders;
-using Microsoft.Extensions.Options;
 using Relayer.AzureServiceBus;
 using Testcontainers.MsSql;
 using Testcontainers.ServiceBus;
@@ -13,6 +14,19 @@ public class ServiceBusSendEmulatorTests
     [Test]
     public async Task Native_sends_batches_sessions_scheduling_and_topology_round_trip()
     {
+        using var instrumentation = new RelayerInstrumentation();
+        using var tracing = new MessageTracing(Options.Create(new TracingOptions()), [], instrumentation: instrumentation);
+        long sent = 0;
+        using var metrics = new MeterListener
+        {
+            InstrumentPublished = (instrument, listener) =>
+            {
+                if (ReferenceEquals(instrument.Meter.Scope, instrumentation) && instrument.Name == "messaging.client.sent.messages")
+                    listener.EnableMeasurementEvents(instrument);
+            },
+        };
+        metrics.SetMeasurementEventCallback<long>((_, count, _, _) => Interlocked.Add(ref sent, count));
+        metrics.Start();
         using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(5));
         var token = timeout.Token;
         await using var network = new NetworkBuilder().Build();
@@ -28,9 +42,7 @@ public class ServiceBusSendEmulatorTests
         await using var database = databaseBuilder.Build();
         await using var emulator = emulatorBuilder.WithMsSqlContainer(network, database, ServiceBusBuilder.DatabaseNetworkAlias).Build();
         await emulator.StartAsync(token);
-        using var instrumentation = new RelayerInstrumentation();
         using var capture = new SendDurationCapture(instrumentation);
-        using var tracing = new MessageTracing(Options.Create(new TracingOptions()), [], instrumentation: instrumentation);
         await using var client = new ServiceBusClient(emulator.GetConnectionString());
         var admin = new ServiceBusAdministrationClient(emulator.GetHttpConnectionString());
         var options = new AzureServiceBusTransportOptions { Client = client, AdministrationClient = admin };
@@ -57,6 +69,7 @@ public class ServiceBusSendEmulatorTests
             KeyValuePair<string, WireString>[] contentHeaders = [.. headers, new("content-type", new("application/x-protobuf"))];
             var native = new SendOptions().ServiceBus(message => { message.Subject = "native"; message.ContentType = "application/json"; });
             await transport.SendAsync(new("send-orders", new byte[] { 42 }, contentHeaders, options: native), token);
+            await Assert.That(sent).IsEqualTo(1);
             await using var orders = client.CreateReceiver("send-orders");
             var order = await orders.ReceiveMessageAsync(TimeSpan.FromSeconds(30), token)
                 ?? throw new InvalidOperationException("Queue send was not delivered.");
@@ -71,6 +84,7 @@ public class ServiceBusSendEmulatorTests
                 new OutgoingMessage("send-sessions", new byte[] { 1 }, orderingKey: new WireString("customer")),
                 new OutgoingMessage("send-sessions", new byte[] { 2 }, orderingKey: new WireString("customer")),
                 new OutgoingMessage("send-events", new byte[] { 3 }, contentHeaders) }, token);
+            await Assert.That(sent).IsEqualTo(4);
             await using var session = await client.AcceptSessionAsync("send-sessions", "customer", cancellationToken: token);
             for (byte expected = 1; expected <= 2; expected++)
             {
@@ -90,6 +104,7 @@ public class ServiceBusSendEmulatorTests
 
             var scheduledAt = DateTimeOffset.UtcNow.AddSeconds(2);
             await transport.SendAsync(new("send-orders", new byte[] { 99 }, deliverAt: scheduledAt), token);
+            await Assert.That(sent).IsEqualTo(5);
             var scheduled = await orders.ReceiveMessageAsync(TimeSpan.FromSeconds(30), token)
                 ?? throw new InvalidOperationException("Scheduled send was not delivered.");
             await Assert.That(scheduled.EnqueuedTime >= DateTimeOffset.FromUnixTimeMilliseconds(scheduledAt.ToUnixTimeMilliseconds())).IsTrue();

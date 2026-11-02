@@ -95,6 +95,7 @@ internal sealed class ServiceBusSendTransport : ITransport, ITransportSendTracin
         try
         {
             state.Prepare(outgoing);
+            endpoint.Tracing?.RecordNativeSend();
             var duration = endpoint.Tracing?.StartNativeSend() ?? default;
             var failed = true;
             try
@@ -177,6 +178,7 @@ internal sealed class ServiceBusSendTransport : ITransport, ITransportSendTracin
                         pending = null;
                         index++;
                     }
+                    endpoint.Tracing?.RecordNativeSend(admitted.Count);
                     var duration = endpoint.Tracing?.StartNativeSend() ?? default;
                     var failed = true;
                     try
