@@ -295,12 +295,12 @@ Superseded by [D24](#d24-capabilities-are-valued-and-declared-per-endpoint).
 **Decision.**
 - `Relayer.Kafka` wraps [Dekaf](https://github.com/thomhurst/Dekaf), a pure C# Kafka client with no native dependencies, Native AOT coverage, and zero-allocation hot paths.
 - Dekaf's `ProducerBuilder` and `ConsumerBuilder` are exposed to users unchanged, and its `ConsumeResult` is exposed through `IKafkaConsumeFeature`.
-- Where Dekaf already provides a feature (retry and dead-letter topics, transactions, OpenTelemetry instrumentation), the transport reuses it rather than re-implementing it, as long as it fits Relayer's uniform failure pipeline and telemetry.
+- Where Dekaf already provides a feature (retry and dead-letter topics, transactions, OpenTelemetry instrumentation, partitioned processing), the transport calls it rather than re-implementing it. A Dekaf feature that cannot be used, for example because it would bypass Relayer's uniform failure pipeline or telemetry, is recorded here with the reason, and the missing piece is filed as a Dekaf issue. Relayer does not build a parallel implementation without that record.
 
 **Consequences.**
 - No native binaries, and AOT works end to end on Kafka.
 - Relayer.Kafka's release cadence follows Dekaf's.
-- Consumer handler retries and durable dead-letter copies use the core failure pipeline. Dekaf's hosted retry/dead-letter helpers own dispatch and settlement, so they would bypass the portable classifier and durable-copy contract. The serial consumer foundation instead reuses native fetch batches, next-offset checkpoints, producer acknowledgments and explicit commits. Parallel scheduling and drain-on-revoke remain planned under D13 and D23.
+- Consumer handler retries and durable dead-letter copies use the core failure pipeline. Dekaf's hosted retry/dead-letter helpers own dispatch and settlement, so they would bypass the portable classifier and durable-copy contract. The serial consumer foundation instead reuses native fetch batches, next-offset checkpoints, producer acknowledgments and explicit commits. Parallel scheduling and drain-on-revoke are to build on Dekaf's `RunPartitionedAsync` rather than the core scheduler ([#239](https://github.com/thomhurst/Relayer/issues/239)).
 - Until Kafka failure copies have a persistable representation for tombstones and null-valued headers, durable redelivery policies fail at startup even when a durable scheduler is registered. The Kafka consumer does not expose that scheduler to manual settlement either. In-process retries and acknowledged dead-letter copies remain available. This explicit limitation avoids accepting a policy that fails only after receiving native metadata.
 - Users who need Confluent.Kafka specifically could be served later by a separate `Relayer.Kafka.Confluent` package. That is not planned.
 
