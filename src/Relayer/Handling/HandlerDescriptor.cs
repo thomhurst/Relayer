@@ -20,6 +20,8 @@ public abstract class HandlerDescriptor(Type handlerType, Type messageType, bool
     /// <summary>Resolves the handler from the message's DI scope before dispatch.</summary>
     public abstract IHandlerMarker Resolve(IServiceProvider services);
 
+    internal virtual bool IsTombstone => false;
+
     internal virtual ConsumeDelegate CreateConsumeDelegate(IMessageSerializer serializer)
         => throw new InvalidOperationException("A batch handler cannot be composed as a single-message consumer.");
 
@@ -39,7 +41,7 @@ public abstract class HandlerDescriptor<TMessage>(Type handlerType)
     public abstract ValueTask DispatchAsync(
         IHandlerMarker handler, TMessage message, MessageContext context, CancellationToken cancellationToken);
 
-    internal sealed override ConsumeDelegate CreateConsumeDelegate(IMessageSerializer serializer)
+    internal override ConsumeDelegate CreateConsumeDelegate(IMessageSerializer serializer)
         => new Dispatch(serializer, this).InvokeAsync;
 
     internal sealed override ConsumeDelegate CreateUpcastDelegate(UpcastReader reader)
@@ -87,4 +89,18 @@ public abstract class BatchHandlerDescriptor<TMessage>(Type handlerType)
     internal sealed override BatchDispatcher CreateBatchDispatcher(IMessageSerializer serializer, int size, int concurrency,
         Dictionary<MessageType, UpcastReader> readers)
         => new BatchDispatcher<TMessage>(this, serializer, size, concurrency, readers);
+}
+
+/// <summary>A generated dispatcher for a native null-value record, without body deserialization.</summary>
+public abstract class TombstoneHandlerDescriptor<T>(Type handlerType) : HandlerDescriptor<Tombstone<T>>(handlerType)
+{
+    internal sealed override bool IsTombstone => true;
+    internal sealed override ConsumeDelegate CreateConsumeDelegate(IMessageSerializer serializer) => InvokeAsync;
+
+    private ValueTask InvokeAsync(MessageContext context)
+    {
+        var incoming = (DefaultMessageContext)context;
+        var key = incoming.TombstoneKey ?? throw new MessageEnvelopeException("A typed tombstone requires a non-null native key.");
+        return DispatchAsync(Resolve(context.Services), Tombstone.For<T>(key), context, context.CancellationToken);
+    }
 }

@@ -226,7 +226,7 @@ await using var provider = services.AddRelayer(builder =>
     {
         broker.Send<Order>("orders", route => route.OrderingKey(static order => order.Id));
         broker.Send<Count>("counts");
-        broker.Consume("orders", consumer => consumer.Handler<OrderHandler>().Handler<CountHandler>());
+        broker.Consume("orders", consumer => consumer.Handler<OrderHandler>().Handler<CountHandler>().Handler<OrderTombstoneHandler>());
         broker.Consume("counts", consumer => consumer.Handler<CountHandler>().Batch(2, TimeSpan.FromMilliseconds(100)));
     });
     builder.UseSendMiddleware<SmokeMiddleware>();
@@ -314,6 +314,13 @@ await countDescriptor.DispatchAsync(countHandler, new Batch<Count>([new(new Coun
 if (orderHandler.Order != message || countHandler.Total != 7)
     throw new InvalidOperationException("Consumer-only generated dispatch failed under Native AOT.");
 Console.WriteLine("Consumer-only single and batch dispatch passed under Native AOT.");
+var tombstoneDescriptor = handlers.GetHandler<Tombstone<Order>, OrderTombstoneHandler>();
+var tombstoneConsumer = new ConsumePipelineBuilder(provider.GetRequiredService<IServiceScopeFactory>(),
+    provider.GetRequiredService<MessageTypeRegistry>(), serializer, static (_, error, _) => ValueTask.FromException(error))
+    .Handler(tombstoneDescriptor).Build(1);
+await new ReceivePipeline<SmokeIncoming, SmokeBinding>(tombstoneConsumer, new(), 1)
+    .ProcessAsync(new(default, Tombstone: true));
+Console.WriteLine("Typed tombstone receive passed under Native AOT.");
 buffer.Clear();
 serializer.Serialize(message, buffer);
 var receiveEndpoint = new MessagingEndpoint { System = "relayer.inmemory", Destination = "orders" };
@@ -405,7 +412,10 @@ if (transport.Destination != "counts" || transport.NativeValue != 0)
     throw new InvalidOperationException("Value type sending failed under Native AOT.");
 if (transport.CapabilityLookups != 2)
     throw new InvalidOperationException("Endpoint capabilities were resolved on the per-message path.");
-Console.WriteLine("Send routing, middleware and native configuration passed with reflection disabled.");
+await sender.SendAsync(Tombstone.For<Order>("42"));
+if (transport.OrderingKey != "42" || !transport.Tombstone)
+    throw new InvalidOperationException("Typed tombstone sending failed under Native AOT.");
+Console.WriteLine("Send routing, typed tombstones, middleware and native configuration passed with reflection disabled.");
 
 await InMemoryTracingSmoke.RunAsync();
 await UpcasterSmoke.RunAsync();
@@ -418,6 +428,15 @@ public enum OrderState { Placed, Cancelled }
 [Message("smoke.count")]
 public readonly record struct Count(int Value);
 public sealed class SmokeOptions;
+public sealed class OrderTombstoneHandler : IHandler<Tombstone<Order>>
+{
+    public ValueTask HandleAsync(Tombstone<Order> message, MessageContext context, CancellationToken token)
+    {
+        if (message.Key.ToString() != "42" || context.MessageType != new MessageType("smoke.order", 1))
+            throw new InvalidOperationException("Typed tombstone dispatch failed under Native AOT.");
+        return default;
+    }
+}
 public sealed class OrderHandler : IHandler<Order>
 {
     public Order? Order { get; private set; }
@@ -431,7 +450,7 @@ public sealed class OrderHandler : IHandler<Order>
         return default;
     }
 }
-internal readonly record struct SmokeIncoming(ReadOnlySequence<byte> Body);
+internal readonly record struct SmokeIncoming(ReadOnlySequence<byte> Body, bool Tombstone = false);
 internal readonly struct SmokeTraceHeaderReader : IMessageHeaderReader<Dictionary<string, WireString>>
 {
     public static bool TryGetHeader(Dictionary<string, WireString> message, string name, out WireString value) => message.TryGetValue(name, out value);
@@ -448,6 +467,8 @@ internal sealed class SmokeBatchHeaders : MessageHeaders
 internal readonly struct SmokeBinding : IMessageBinding<SmokeIncoming>
 {
     public static ReadOnlySequence<byte> GetBody(SmokeIncoming message) => message.Body;
+    public static bool IsTombstone(SmokeIncoming message) => message.Tombstone;
+    public static WireString? GetTombstoneKey(SmokeIncoming message) => new WireString("42");
     public static int? GetDeliveryCount(SmokeIncoming message) => null;
     public static string? GetPartitionId(SmokeIncoming message) => "0";
     public static void EnrichActivity(Activity activity, SmokeIncoming message) => activity.SetTag("messaging.kafka.offset", 42L);
@@ -503,18 +524,20 @@ internal sealed class SmokeTransport : ITransport
     {
         if (endpoint is not ("orders" or "counts")) throw new ArgumentException("Unknown smoke endpoint.", nameof(endpoint));
         CapabilityLookups++;
-        return new() { OrderedByKey = true, DeadLetter = true };
+        return new() { OrderedByKey = true, DeadLetter = true, Tombstones = true };
     }
     public ValueTask<TopologyReport> ApplyTopologyAsync(TopologyMode mode, CancellationToken cancellationToken)
         => ValueTask.FromResult(new TopologyReport([]));
     public string? Destination { get; private set; }
     public string? OrderingKey { get; private set; }
     public int NativeValue { get; private set; }
+    public bool Tombstone { get; private set; }
     public ValueTask SendAsync(OutgoingMessage message, CancellationToken cancellationToken)
     {
         var native = new SmokeNative();
         message.ApplyNative(native);
         NativeValue = native.Value;
+        Tombstone = message.IsTombstone;
         Destination = message.Destination;
         OrderingKey = message.OrderingKey?.ToString();
         var middlewareRan = false;

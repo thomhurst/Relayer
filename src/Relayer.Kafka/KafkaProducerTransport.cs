@@ -12,11 +12,13 @@ internal sealed class KafkaProducerTransport : ITransport, ITransportSendTracing
     private readonly IKafkaProducer<WireString?, (ReadOnlyMemory<byte> Body, Headers Headers)?> _producer;
     private readonly FrozenDictionary<string, SendTracing?> _endpoints;
     private readonly KafkaSendPool _operations = new();
+    private readonly FrozenDictionary<string, ITopicProducer<WireString?, (ReadOnlyMemory<byte> Body, Headers Headers)?>> _topics;
     private bool _disposed;
     internal List<KafkaConsumer> Consumers { get; } = [];
     private static readonly TransportCapabilities Capabilities = new()
     {
         OrderedByKey = true,
+        Tombstones = true,
         MaxBatchSize = int.MaxValue,
         ConsumptionModel = ConsumptionModel.Log,
     };
@@ -35,6 +37,7 @@ internal sealed class KafkaProducerTransport : ITransport, ITransportSendTracing
                 loggerFactory?.CreateLogger<KafkaProducerTransport>()));
         }
         _endpoints = endpoints.ToFrozenDictionary(StringComparer.Ordinal);
+        _topics = endpoints.Keys.ToFrozenDictionary(static topic => topic, topic => producer.ForTopic(topic), StringComparer.Ordinal);
     }
 
     public string Name { get; }
@@ -65,7 +68,7 @@ internal sealed class KafkaProducerTransport : ITransport, ITransportSendTracing
             operation.States[0].Prepare(message);
             var state = operation.States[0];
             if (state.Tombstone)
-                await _producer.ProduceAsync(new() { Topic = message.Destination, Key = state.Key, Value = null, Headers = state.Headers }, cancellationToken).ConfigureAwait(false);
+                await _topics[message.Destination].ProduceAsync(state.Key, null, state.Headers, cancellationToken).ConfigureAwait(false);
             else
                 await _producer.ProduceAsync(message.Destination, state.Key, (message.Body, state.Headers), cancellationToken).ConfigureAwait(false);
         }
@@ -91,16 +94,48 @@ internal sealed class KafkaProducerTransport : ITransport, ITransportSendTracing
         var operation = _operations.Rent(messages.Length);
         try
         {
+            var hasTombstone = false;
             for (var i = 0; i < messages.Length; i++)
             {
                 operation.States[i].Prepare(messages.Span[i]);
+                hasTombstone |= operation.States[i].Tombstone;
                 operation.Messages.Add((operation.States[i].Key, (messages.Span[i].Body, operation.States[i].Headers)));
             }
-            // Delegate batching, admission, ordering and partial failures to Dekaf. Its aggregate
-            // awaits every admitted operation before completion, including cancellation and errors.
-            await _producer.ProduceAllAsync(messages.Span[0].Destination, operation.Messages, cancellationToken).ConfigureAwait(false);
+            // The tuple batch overload cannot carry headers alongside a null value. Admit
+            // null-containing batches through native sends and drain every admitted operation
+            // before returning borrowed storage, including after cancellation or failure.
+            if (hasTombstone)
+                await SendNullBatchAsync(messages, operation, cancellationToken).ConfigureAwait(false);
+            else
+                await _producer.ProduceAllAsync(messages.Span[0].Destination, operation.Messages, cancellationToken).ConfigureAwait(false);
         }
         finally { _operations.Return(operation); }
+    }
+
+    [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
+    private async ValueTask SendNullBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, KafkaSendOperation operation, CancellationToken token)
+    {
+        operation.EnsurePending(messages.Length);
+        var count = 0;
+        System.Runtime.ExceptionServices.ExceptionDispatchInfo? failure = null;
+        try
+        {
+            for (; count < messages.Length; count++)
+            {
+                var message = messages.Span[count];
+                var state = operation.States[count];
+                operation.Pending[count] = state.Tombstone
+                    ? _topics[message.Destination].ProduceAsync(state.Key, null, state.Headers, token)
+                    : _producer.ProduceAsync(message.Destination, state.Key, (message.Body, state.Headers), token);
+            }
+        }
+        catch (Exception error) { failure = System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(error); }
+        for (var i = 0; i < count; i++)
+        {
+            try { await operation.Pending[i].ConfigureAwait(false); }
+            catch (Exception error) { failure ??= System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(error); }
+        }
+        failure?.Throw();
     }
 
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]

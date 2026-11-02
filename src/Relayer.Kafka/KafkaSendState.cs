@@ -46,13 +46,9 @@ internal sealed class KafkaSendState
         foreach (var header in outgoing.Headers.Span)
             _headers.Add(new Header(header.Key, Encode(header.Value, ref position)));
         outgoing.ApplyNative(_headers);
-        // The core's serialized copy seam carries transport-specific null-body state through
-        // its existing native callback. The marker never reaches the broker.
-        if (outgoing.Body.IsEmpty && _headers.GetFirst(TombstoneHeader) is not null)
-        {
-            Tombstone = true;
-            _headers.Remove(TombstoneHeader);
-        }
+        // Legacy private markers are never trusted, including ones supplied by native callbacks.
+        _headers.Remove(TombstoneHeader);
+        Tombstone = outgoing.IsTombstone;
     }
 
     private ReadOnlyMemory<byte> Encode(WireString value, ref int position)

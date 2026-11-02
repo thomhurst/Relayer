@@ -14,6 +14,8 @@ internal static class SendRouteKey<TMessage>
 internal abstract class SendRouteRegistration
 {
     internal abstract object Key { get; }
+    internal abstract object TombstoneKey { get; }
+    internal abstract object? BuildTombstone(object route);
     internal abstract object Build(MessageTypeRegistry types, Dictionary<string, ITransport> transports,
         IMessageSerializer serializer, SendDelegate pipeline, EndpointCapabilityCache capabilitiesCache, OutboxCapabilities outbox);
 }
@@ -29,6 +31,8 @@ internal sealed class SendRouteRegistration<TMessage>(string transportName, stri
     : SendRouteRegistration
 {
     internal override object Key => SendRouteKey<TMessage>.Value;
+    internal override object TombstoneKey => SendRouteKey<Tombstone<TMessage>>.Value;
+    internal override object? BuildTombstone(object route) => ((SendRoute<TMessage>)route).CreateTombstoneRoute();
 
     internal override object Build(MessageTypeRegistry types, Dictionary<string, ITransport> transports,
         IMessageSerializer serializer, SendDelegate pipeline, EndpointCapabilityCache capabilitiesCache, OutboxCapabilities outbox)
@@ -37,6 +41,8 @@ internal sealed class SendRouteRegistration<TMessage>(string transportName, stri
         {
             throw new InvalidOperationException($"Register the message identity for '{typeof(TMessage)}' before routing it.");
         }
+        if (types.TryGetClrType(messageType, out var originalType) && originalType != typeof(TMessage))
+            throw new InvalidOperationException($"Configure the send route for '{originalType}'. Typed tombstones automatically reuse the original message's route; do not declare Send<Tombstone<T>>.");
         if (!transports.TryGetValue(transportName, out var transport))
         {
             throw new InvalidOperationException($"Send route '{messageType}' references unknown transport '{transportName}'. Register a named ITransport service.");
@@ -86,7 +92,10 @@ internal sealed class SendPipeline
             foreach (var definition in transport.Routes)
             {
                 var registration = ((ISendRouteDefinition)definition).CreateSendRegistration(transport.Name);
-                if (!routes.TryAdd(registration.Key, registration.Build(types, namedTransports, serializer, pipeline, capabilitiesCache, outbox)))
+                var route = registration.Build(types, namedTransports, serializer, pipeline, capabilitiesCache, outbox);
+                if (registration.BuildTombstone(route) is { } tombstone && !routes.TryAdd(registration.TombstoneKey, tombstone))
+                    throw new InvalidOperationException("A tombstone has more than one send route. Route its original message type only.");
+                if (!routes.TryAdd(registration.Key, route))
                 {
                     throw new InvalidOperationException("A message has more than one send route. Configure one destination per message type.");
                 }

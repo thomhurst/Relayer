@@ -21,6 +21,9 @@ public sealed record TransportCapabilities
     /// <summary>Whether the endpoint preserves native order per key, session, or message group.</summary>
     public bool OrderedByKey { get; init; }
 
+    /// <summary>Whether this endpoint supports keyed native null-value records.</summary>
+    public bool Tombstones { get; init; }
+
     /// <summary>The maximum native batch message count; 1 declares no native batching.</summary>
     /// <remarks>Native byte limits still apply independently of this count.</remarks>
     public int MaxBatchSize { get; init; } = 1;

@@ -39,6 +39,8 @@ public sealed class DefaultMessageContext : MessageContext, IDisposable
     public override CancellationToken CancellationToken => _cancellation;
 
     internal System.Buffers.ReadOnlySequence<byte> Body => _receive is { } receive ? receive.Body : _message.Body;
+    internal bool IsTombstone => _receive?.IsTombstone ?? false;
+    internal WireString? TombstoneKey => _receive?.TombstoneKey;
     private int _attempt;
     internal int Redeliveries { get; private set; }
     internal FailureHistory? FailureHistory { get; set; }

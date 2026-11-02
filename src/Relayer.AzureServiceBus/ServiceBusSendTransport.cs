@@ -188,6 +188,7 @@ internal sealed class ServiceBusSendTransport : ITransport, ITransportSendTracin
     {
         ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
         cancellationToken.ThrowIfCancellationRequested();
+        if (message.IsTombstone) throw new NotSupportedException("Service Bus does not support native tombstones.");
         var endpoint = GetEndpoint(message.Destination);
         if (message.OrderingKey is not null && !endpoint.Capabilities.OrderedByKey)
             throw new InvalidOperationException($"Service Bus destination '{message.Destination}': session ordering is unresolved. Declare RequiresSession on the queue or every topic subscription and use Provision to verify it; Validate/None do not establish session requirements.");

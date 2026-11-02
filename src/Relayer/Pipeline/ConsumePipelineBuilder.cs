@@ -14,6 +14,7 @@ public sealed class ConsumePipelineBuilder
     private readonly IFailureClassifier _classifier;
     private readonly FailurePipeline? _failures;
     private readonly Dictionary<MessageType, ConsumeDelegate> _dispatch = [];
+    private readonly Dictionary<MessageType, ConsumeDelegate> _tombstones = [];
     private readonly List<HandlerDescriptor> _handlers = [];
     private readonly List<IConsumeMiddleware> _middleware = [];
     private bool _built;
@@ -33,7 +34,7 @@ public sealed class ConsumePipelineBuilder
             throw new InvalidOperationException("Batch consumers do not support single-message metrics. Record batch metrics around ProcessBatchAsync.");
         if (_tracing is not null && activitySource is not null)
             throw new InvalidOperationException("Use Tracing for the shared Relayer source, or supply an ActivitySource, but not both.");
-        if (_dispatch.Count != 0 || _middleware.Count != 0)
+        if (_dispatch.Count != 0 || _tombstones.Count != 0 || _middleware.Count != 0)
             throw new InvalidOperationException("Compose batch handlers separately from single-message handlers and middleware.");
         if (!_messages.IsFrozen || !_messages.TryGetMessageType(descriptor.MessageType, out var identity))
             throw new InvalidOperationException("Register and freeze the batch message's stable wire identity before composition.");
@@ -94,7 +95,8 @@ public sealed class ConsumePipelineBuilder
             throw new InvalidOperationException($"Register a stable wire identity for '{descriptor.MessageType}' before composing its consumer.");
         }
         var dispatch = descriptor.CreateConsumeDelegate(_serializer);
-        if (!_dispatch.TryAdd(identity, dispatch))
+        var table = descriptor.IsTombstone ? _tombstones : _dispatch;
+        if (!table.TryAdd(identity, dispatch))
         {
             throw new InvalidOperationException($"Consumer already handles '{identity}'. Use one handler to coordinate work for this message type.");
         }
@@ -163,7 +165,7 @@ public sealed class ConsumePipelineBuilder
     {
         EnsureMutable();
         ArgumentOutOfRangeException.ThrowIfLessThan(contextPoolCapacity, 1);
-        if (_dispatch.Count == 0)
+        if (_dispatch.Count == 0 && _tombstones.Count == 0)
         {
             throw new InvalidOperationException("Register at least one generated handler before building a consumer.");
         }
@@ -172,14 +174,34 @@ public sealed class ConsumePipelineBuilder
             if (scope.ServiceProvider.GetService<UpcasterRegistry>() is { } upcasters)
             {
                 foreach (var descriptor in _handlers)
+                {
+                    if (descriptor.IsTombstone) continue;
                     foreach (var pair in upcasters.Compose(descriptor.MessageType, _messages, _serializer))
                         if (!_dispatch.TryAdd(pair.Key, descriptor.CreateUpcastDelegate(pair.Value)))
                             throw new InvalidOperationException($"Consumer has ambiguous handlers for '{pair.Key}'. Select one handler reachable from each incoming version.");
+                }
             }
+        }
+        foreach (var identity in _dispatch.Keys.Union(_tombstones.Keys).ToArray())
+        {
+            _dispatch.TryGetValue(identity, out var value);
+            _tombstones.TryGetValue(identity, out var tombstone);
+            _dispatch[identity] = new NativeValueDispatch(value, tombstone).InvokeAsync;
         }
         _built = true;
         return new ConsumePipeline(_scopes, _dispatch.ToFrozenDictionary(), _middleware, _failure, _classifier,
             contextPoolCapacity, _failures, _telemetry, _settlement, _tracing);
+    }
+
+    private sealed class NativeValueDispatch(ConsumeDelegate? value, ConsumeDelegate? tombstone)
+    {
+        internal ValueTask InvokeAsync(MessageContext context)
+        {
+            var dispatch = ((DefaultMessageContext)context).IsTombstone ? tombstone : value;
+            if (dispatch is null) throw new MessageDeserializationException(context.MessageType,
+                new InvalidOperationException("No handler is registered for this native value kind. Register IHandler<Tombstone<T>> for null values and IHandler<T> for non-null values."));
+            return dispatch(context);
+        }
     }
 
     private void EnsureMutable()

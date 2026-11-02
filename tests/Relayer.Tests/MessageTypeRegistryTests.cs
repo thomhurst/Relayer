@@ -10,6 +10,8 @@ public class MessageTypeRegistryTests
 
         await Assert.That(registry.TryGetMessageType(typeof(Ping), out var identity)).IsTrue();
         await Assert.That(identity).IsEqualTo(new MessageType("tests.ping", 2));
+        await Assert.That(registry.TryGetMessageType(typeof(Tombstone<Ping>), out var tombstone)).IsTrue();
+        await Assert.That(tombstone).IsEqualTo(identity);
         await Assert.That(registry.TryGetClrType(identity, out var type)).IsTrue();
         await Assert.That(type).IsEqualTo(typeof(Ping));
     }

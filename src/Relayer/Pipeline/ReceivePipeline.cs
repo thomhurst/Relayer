@@ -216,6 +216,8 @@ public sealed class ReceivePipeline<TIncoming, TBinding>
         }
         internal override int Attempt => _attempt;
         internal override ReadOnlySequence<byte> Body => _body;
+        internal override bool IsTombstone => TBinding.IsTombstone(Native.Message);
+        internal override WireString? TombstoneKey => TBinding.GetTombstoneKey(Native.Message);
         internal override string? TracePartitionId => TBinding.GetPartitionId(Native.Message);
         internal override void EnrichActivity(System.Diagnostics.Activity activity) => TBinding.EnrichActivity(activity, Native.Message);
         internal override bool TryConsumeLoggedSettlementError(Exception error) => TBinding.TryConsumeLoggedSettlementError(Native.Message, error);

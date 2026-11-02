@@ -8,6 +8,12 @@ public interface IMessageBinding<TIncoming> : IMessageHeaderReader<TIncoming>
     /// <summary>The borrowed native body, valid until receive processing completes.</summary>
     static abstract ReadOnlySequence<byte> GetBody(TIncoming message);
 
+    /// <summary>Whether the native record has a null value. Never infer this from application headers.</summary>
+    static virtual bool IsTombstone(TIncoming message) => false;
+
+    /// <summary>The borrowed native key for a tombstone, or null when absent.</summary>
+    static virtual WireString? GetTombstoneKey(TIncoming message) => null;
+
     /// <summary>The delivery count starting at one, or null when the broker does not count deliveries.</summary>
     static abstract int? GetDeliveryCount(TIncoming message);
 

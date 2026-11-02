@@ -62,7 +62,10 @@ public sealed class HandlerGenerator : IIncrementalGenerator
                     contract.TypeArguments[0] is IDynamicTypeSymbol
                         ? "global::System.Object"
                         : contract.TypeArguments[0].ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat), isBatch, isLocal,
-                    CanReference(contract.TypeArguments[0], compilation)));
+                    CanReference(contract.TypeArguments[0], compilation),
+                    !isBatch && contract.TypeArguments[0] is INamedTypeSymbol message
+                        && SymbolEqualityComparer.Default.Equals(message.OriginalDefinition, compilation.GetTypeByMetadataName("Relayer.Tombstone`1"))
+                        ? message.TypeArguments[0].ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat) : null));
             }
         }
 
@@ -119,7 +122,8 @@ public sealed class HandlerGenerator : IIncrementalGenerator
             var model = contracts[i];
             builder.AppendLine();
             builder.Append("    private sealed class Dispatcher").Append(i).Append(" : global::Relayer.")
-                .Append(model.IsBatch ? "BatchHandlerDescriptor<" : "HandlerDescriptor<").Append(model.Message).AppendLine(">");
+                .Append(model.IsBatch ? "BatchHandlerDescriptor<" : model.TombstoneMessage is not null ? "TombstoneHandlerDescriptor<" : "HandlerDescriptor<")
+                .Append(model.TombstoneMessage ?? model.Message).AppendLine(">");
             builder.AppendLine("    {");
             builder.Append("        public Dispatcher").Append(i).Append("() : base(typeof(").Append(model.Handler).AppendLine(")) { }");
             builder.AppendLine("        public override global::Relayer.IHandlerMarker Resolve(global::System.IServiceProvider services)");
@@ -178,5 +182,5 @@ public sealed class HandlerGenerator : IIncrementalGenerator
         builder.AppendLine("    }");
     }
 
-    private sealed record DispatchModel(string Handler, string Message, bool IsBatch, bool IsLocal, bool IsAccessible);
+    private sealed record DispatchModel(string Handler, string Message, bool IsBatch, bool IsLocal, bool IsAccessible, string? TombstoneMessage);
 }

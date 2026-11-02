@@ -41,6 +41,18 @@ public class ConfigurationAnalyzerTests
     }
 
     [Test]
+    [Arguments(true, "")]
+    [Arguments(false, "RLY001")]
+    public async Task Tombstone_handlers_require_the_original_message_identity(bool identity, string expected)
+    {
+        var source = Imports + Handler.Replace("IHandler<Order>", "IHandler<Tombstone<Order>>")
+            .Replace("HandleAsync(Order message", "HandleAsync(Tombstone<Order> message") +
+            "static class Setup { public static void Add(IRelayerBuilder builder) => builder.Handler<H>(); }";
+        if (!identity) source = source.Replace("[Message(\"order\")] ", "");
+        await Verify(source, expected);
+    }
+
+    [Test]
     public async Task Route_only_is_analyzed_and_unrelated_Send_is_ignored()
     {
         await Verify(Imports + """

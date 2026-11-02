@@ -22,11 +22,17 @@ internal sealed class SendRoute<TMessage>
     private readonly SendTracing? _tracing;
     private readonly string _wireType;
     private readonly PoolSegment _operations = new();
+    private readonly bool _isTombstone;
+
+    internal SendRoute<Tombstone<TMessage>>? CreateTombstoneRoute() => _capabilities.Tombstones
+        ? new(_transport, _destination, _messageType, _options, new TombstoneKeySelector<TMessage>(),
+            _serializer, _pipeline, _capabilities, isTombstone: true) : null;
 
     internal SendRoute(ITransport transport, string destination, MessageType messageType, SendRouteOptions options,
         IOrderingKeySelector<TMessage>? orderingKey, IMessageSerializer serializer, SendDelegate pipeline,
-        TransportCapabilities capabilities)
+        TransportCapabilities capabilities, bool isTombstone = false)
     {
+        _isTombstone = isTombstone;
         _transport = transport;
         _destination = destination;
         _messageType = messageType;
@@ -229,6 +235,8 @@ internal sealed class SendRoute<TMessage>
                 if (!supported)
                     throw new InvalidOperationException($"Send route '{_route._messageType}' on transport '{_route._transport.Name}' to endpoint '{_route._destination}' cannot execute DeliverAt. Use sufficient native MaxDeliveryDelay for direct sends, or an active outbox transaction with a matching due-row dispatch worker.");
             }
+            if (_outbox is not null && _route._isTombstone)
+                throw new InvalidOperationException("Native tombstones cannot yet be persisted in the outbox. Use SendNowAsync outside the outbox path.");
             if (_outbox is not null && Options.HasNativeConfigurators)
             {
                 // Reject before serialization or any durable side effect.
@@ -238,9 +246,9 @@ internal sealed class SendRoute<TMessage>
             _body.Clear();
             _headers.Clear();
             _key.Clear();
-            _route._serializer.Serialize(_message, _body);
+            if (!_route._isTombstone) _route._serializer.Serialize(_message, _body);
             _route._envelope.Write<SendHeaders, SendHeaders>(_headers, _metadata);
-            _headers.Add("content-type", new WireString(_route._serializer.ContentType));
+            if (!_route._isTombstone) _headers.Add("content-type", new WireString(_route._serializer.ContentType));
             foreach (var header in Options.Headers)
             {
                 if (_route._options.EnvelopeMode == MessageEnvelopeMode.CloudEvents && IsEnvelopeHeader(header.Key))
@@ -251,7 +259,7 @@ internal sealed class SendRoute<TMessage>
             }
 
             var outgoing = new OutgoingMessage(_route._destination, _body.WrittenMemory, _headers.Written,
-                Options.OrderingKey is { } key ? new WireString(key) : _route._orderingKey?.Select(_message, _key), Options.DeliverAt, Options);
+                Options.OrderingKey is { } key ? new WireString(key) : _route._orderingKey?.Select(_message, _key), Options.DeliverAt, Options, _route._isTombstone);
             if (_activity is { IsAllDataRequested: true } activity)
             {
                 activity.SetTag("messaging.message.id", MessageId);
