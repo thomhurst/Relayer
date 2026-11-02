@@ -494,9 +494,9 @@ live token, so a stale dispatcher cannot mutate a reclaimed row. PostgreSQL sche
 [PostgreSQL read/claim store](../website/docs/reference/postgres-store.md),
 [EF Core transactional enqueue](../website/docs/reference/ef-core-outbox.md),
 [ADO.NET/Dapper transactions](../website/docs/reference/postgres-outbox.md),
-[unordered direct dispatch](../website/docs/reference/direct-dispatch.md) and
-[ordered lane dispatch](../website/docs/reference/ordered-dispatch.md) are implemented. Recovery polling
-and cleanup remain planned; registering the read/claim store alone does not start dispatch.
+[unordered direct dispatch](../website/docs/reference/direct-dispatch.md),
+[ordered lane dispatch](../website/docs/reference/ordered-dispatch.md) and
+[leased recovery and cleanup](../website/docs/reference/postgres-maintenance.md) are implemented; registering the read/claim store alone does not start dispatch.
 
 ### 6.4 Dispatching
 
@@ -511,13 +511,13 @@ excludes competing claims, respects native batch-count limits and deletes succes
 fenced statement. Completion errors after a successful send leave claims held without incrementing
 send attempts; incomplete deletions warn about duplicate delivery. It does not poll, heartbeat
 during native sends or retry failed commits. Queue overflow and shutdown leave durable work pending with
-an error log; recovery polling remains planned; ordered lane dispatch is implemented separately.
+an error log; explicitly registered leased recovery polls those rows; ordered lane dispatch is implemented separately.
 Each worker bounds successful endpoint capability retention to 256 entries using FIFO eviction (D35).
 Cache hits remain read-only; an evicted endpoint is resolved again before claiming its next group.
 
 A **sweeper** (also leased) picks up anything that was committed but not dispatched within a threshold, for example because the instance crashed. Postgres `LISTEN/NOTIFY` and SQL Server Service Broker can optionally replace the sweeper's poll.
 
-After dispatch, rows are deleted in batches. One leased **cleanup** job handles retention for both the outbox and the inbox (CAP #1811, Rebus.SqlServer #101).
+After dispatch, rows are deleted in batches. One leased **cleanup** job handles retention for the dead table and inbox; pending and parked outbox rows never expire by age (CAP #1811, Rebus.SqlServer #101). D38 records bounded PostgreSQL recovery, leadership and retention semantics.
 
 **Poison rows:** after a configurable number of attempts, the row is moved to `relayer_outbox_dead` and an alert metric is raised. For ordered routes, only later rows **with the same ordering key** are parked; the rest of the lane continues. Parked keys can be inspected and released through `IDeadLetterManager`.
 

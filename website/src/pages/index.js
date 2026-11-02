@@ -301,7 +301,7 @@ const status = [
   ['Kafka connectivity and receiver liveness health adapters', 'Implemented', true],
   ['Other native broker health adapters', 'Planned', false],
   ['Ordered PostgreSQL dispatch and lane leases', 'Implemented', true],
-  ['Outbox recovery and cleanup', 'Planned', false],
+  ['PostgreSQL outbox recovery and retention cleanup', 'Implemented', true],
   ['Send and delivery tracing, settlement, metrics and logs', 'Implemented', true],
   ['Native receive and outbox telemetry', 'Planned', false],
 ];

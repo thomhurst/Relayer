@@ -1,4 +1,6 @@
 using BenchmarkDotNet.Attributes;
+using Microsoft.Extensions.Logging.Abstractions;
+using Npgsql;
 using Relayer.Outbox.PostgreSql;
 
 namespace Relayer.Benchmarks;
@@ -14,6 +16,9 @@ public class OutboxDirectDispatchBenchmarks
     private OutgoingMessage[] _messages = [];
     private OutboxClaim[] _claims = [];
     private bool[] _claimed = [];
+    private NpgsqlDataSource _dataSource = null!;
+    private PostgreSqlDirectDispatcher _recovery = null!;
+    private OutboxRecord[] _records = [];
 
     [Params(1, 100)]
     public int MessageCount { get; set; }
@@ -30,6 +35,12 @@ public class OutboxDirectDispatchBenchmarks
                 new("traceparent", new WireString("00-0123456789abcdef0123456789abcdef-0123456789abcdef-01"))
             }), _now);
         for (var i = 0; i < MessageCount; i++) _source.Add(new());
+        _records = new OutboxRecord[MessageCount];
+        Array.Fill(_records, _record);
+        _dataSource = NpgsqlDataSource.Create("Host=unused");
+        _recovery = new(_dataSource, new(), new() { BatchSize = MessageCount, QueueCapacity = 1 }, [], NullLogger<PostgreSqlDirectDispatcher>.Instance);
+        RecoveryProjection();
+        RecoveryProjection();
         _messages = new OutgoingMessage[MessageCount];
         _claims = new OutboxClaim[MessageCount];
         _claimed = new bool[MessageCount];
@@ -39,6 +50,25 @@ public class OutboxDirectDispatchBenchmarks
             throw new InvalidOperationException("The benchmark must project every unordered message.");
         if (CommitHandoffAndPartialClaimProjection() != ((MessageCount + 1) / 2) * 256)
             throw new InvalidOperationException("The benchmark must project only acquired claims.");
+    }
+
+    [GlobalCleanup]
+    public void Cleanup()
+    {
+        _recovery.Dispose();
+        _dataSource.Dispose();
+    }
+
+    /// <summary>Recovery's reusable read-buffer copy, ownership handoff, grouping and native projection; no database I/O.</summary>
+    [Benchmark]
+    public int RecoveryProjection()
+    {
+        var batch = _recovery.PrepareRecovered(_records);
+        batch.Sort();
+        var bytes = 0;
+        for (var i = 0; i < batch.Count; i++) bytes += batch.Rows[i].ToMessage().Body.Length;
+        batch.Clear();
+        return bytes;
     }
 
     [Benchmark(Baseline = true)]

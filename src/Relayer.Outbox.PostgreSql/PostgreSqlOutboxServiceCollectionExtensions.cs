@@ -10,7 +10,7 @@ using Relayer.Transports;
 namespace Relayer.Outbox.PostgreSql;
 
 /// <summary>Registers explicitly named PostgreSQL durable read/claim stores.</summary>
-public static class PostgreSqlOutboxServiceCollectionExtensions
+public static partial class PostgreSqlOutboxServiceCollectionExtensions
 {
     /// <summary>Registers a named durable store and a hosted worker for unordered, commit-triggered sends.</summary>
     /// <remarks>

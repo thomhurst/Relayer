@@ -11,7 +11,7 @@ the business data. No `SaveChanges` override or outbox entity mapping is require
 Enlistment alone persists rows. Enable [unordered direct dispatch](direct-dispatch.md) to send due messages
 in the background after commit, or register [ordered dispatch and lane leases](ordered-dispatch.md) separately.
 Register the [PostgreSQL durable store](postgres-store.md) separately for reads, claims and backlog health queries.
-Recovery polling, cleanup and outbox tracing remain planned.
+[Leased recovery and cleanup](postgres-maintenance.md) are available separately. Outbox tracing remains planned.
 The [EF Core consumer boundary](ef-core-inbox.md) supplies transactional inbox deduplication and
 enables it automatically for its selected outbox context.
 There are no published NuGet packages yet; use project references from a repository checkout.

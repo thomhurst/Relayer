@@ -9,6 +9,7 @@
     <PackageReference Include="Microsoft.Extensions.Hosting" />
   </ItemGroup>
   <ItemGroup>
+    <ProjectReference Include="../Relayer.Outbox.CrashProbe/Relayer.Outbox.CrashProbe.csproj" />
     <ProjectReference Include="../../src/Relayer.Outbox.PostgreSql/Relayer.Outbox.PostgreSql.csproj" />
     <ProjectReference Include="../../src/Relayer.Outbox.EntityFrameworkCore/Relayer.Outbox.EntityFrameworkCore.csproj" />
     <ProjectReference Include="../../src/Relayer.HealthChecks/Relayer.HealthChecks.csproj" />

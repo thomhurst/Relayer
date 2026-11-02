@@ -9,7 +9,7 @@ are implemented, together with [PostgreSQL durable reads and fenced claims](post
 and [EF Core transaction enlistment for PostgreSQL](ef-core-outbox.md).
 [Unordered PostgreSQL direct dispatch](direct-dispatch.md) is available for EF commits.
 [Ordered PostgreSQL dispatch and lane leases](ordered-dispatch.md) are implemented separately.
-Recovery polling remains planned.
+[Leased recovery and cleanup](postgres-maintenance.md) are available separately.
 [Inbox deduplication](ef-core-inbox.md) is implemented
 through the EF Core consumer boundary, separately from the read/claim store contract.
 

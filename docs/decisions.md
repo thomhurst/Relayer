@@ -48,6 +48,7 @@ To change a decision, add a new entry that supersedes it rather than editing his
 | [D35](#d35-direct-dispatch-bounds-endpoint-capability-retention) | Direct dispatch bounds endpoint capability retention | Accepted |
 | [D36](#d36-an-explicit-ef-core-consumer-boundary-owns-the-inbox-transaction) | An explicit EF Core consumer boundary owns the inbox transaction | Accepted |
 | [D37](#d37-ordered-dispatch-bounds-validated-endpoint-retention) | Ordered dispatch bounds validated endpoint retention | Accepted |
+| [D38](#d38-postgresql-maintenance-leases-recover-unordered-rows-and-bound-retention) | PostgreSQL maintenance leases recover unordered rows and bound retention | Accepted |
 
 ---
 
@@ -667,7 +668,7 @@ and native settlement. The one-request rule rejects any later settlement request
 retry or dead-letter work after commit. Native acknowledgement loss
 therefore redelivers safely. Retrying EF strategies, pooled contexts, ambient transactions and batch
 consumers are rejected; Relayer retries with fresh scopes instead. Handlers must not end the owned
-transaction or perform native settlement. Inbox retention remains separate work.
+transaction or perform native settlement. Inbox retention is provided by PostgreSQL maintenance (D38).
 
 ## D37. Ordered dispatch bounds validated endpoint retention
 
@@ -694,3 +695,31 @@ the repository. This applies the bounded-retention requirement of #159 without a
 **Alternatives rejected.** Transport-only keys lose endpoint-specific ordering support. LRU writes on
 every hit. Clearing the whole cache discards unrelated entries together. Sharing the unordered cache's
 positive-batch-size validator would change the ordered sender's contract; its sends remain sequential.
+
+## D38. PostgreSQL maintenance leases recover unordered rows and bound retention
+
+**Context.** Commit-triggered direct dispatch can leave durable rows after queue overflow or process death.
+Ordered lanes already recover independently. Retention must not delete undelivered messages or run concurrent
+cleanup jobs on every replica.
+
+**Decision.** Register maintenance explicitly with immutable named settings. Use separate `sweeper` and `cleanup`
+rows in the existing lease table. Database-clock expiries govern idle leadership; hold the lease row's transaction
+lock throughout each connected pass, then renew from completion. Release owned leases on graceful shutdown.
+Read bounded unordered, due, unclaimed pending rows older than a configured `created_at` threshold. Traverse by
+ID up to a fixed high-water mark captured at traversal start, then wrap after an empty pass within that boundary.
+This revisits failed or newly eligible older rows even under continuous newer traffic, while failed rows do not
+starve later work. Reuse direct dispatch's native grouping,
+row fencing and batch deletion. Recovery claim/completion mutations share the leadership transaction, using
+one pooled connection per pass. A crash rolls these mutations back and permits replay; direct dispatch keeps
+its independent auto-committed claims. No pass holds one pool connection while waiting to borrow another.
+Ordered rows remain exclusively with their lane dispatcher.
+
+Delete sent outbox rows on completion, never pending or parked rows by age. Each cleanup pass deletes bounded
+batches of dead rows by `failed_at` and inbox records by `processed_at`; either retention can be disabled.
+Inbox retention defines a finite deduplication window and must cover the application's replay horizon.
+
+**Consequences.** Recovery remains at-least-once; crashes between native acceptance and completion replay the
+stored identity. A lease-row connection failure cannot retract an in-flight native request. Large backlogs drain
+across multiple bounded passes, and native calls can delay cleanup. Poison handling and retry backoff remain
+separate work. D36 defines the EF Core inbox boundary. No schema evolution or expiry of undelivered messages
+is required.
