@@ -297,6 +297,7 @@ const status = [
   ['Durable outbox contracts and keyed health adapter', 'Implemented core seam', true],
   ['PostgreSQL schema scripts, CLI and EF migration path', 'Implemented schema tooling', true],
   ['PostgreSQL durable reads and fenced claims', 'Implemented store operations', true],
+  ['MongoDB persistence and native transactions', 'Under development; upstream AOT gate', false],
   ['EF Core transaction enlistment for PostgreSQL', 'Implemented enqueue path', true],
   ['PostgreSQL ADO.NET and Dapper transactions', 'Implemented enqueue path', true],
   ['Unordered PostgreSQL direct dispatch after EF commit', 'Implemented direct path', true],
