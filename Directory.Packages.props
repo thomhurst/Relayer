@@ -41,7 +41,7 @@
     <PackageVersion Include="Microsoft.Extensions.Logging" Version="10.0.14" />
     <PackageVersion Include="Testcontainers.Kafka" Version="4.16.0" />
     <PackageVersion Include="Testcontainers.ServiceBus" Version="4.16.0" />
-    <PackageVersion Include="TUnit" Version="1.77.0" />
+    <PackageVersion Include="TUnit" Version="1.78.0" />
     <PackageVersion Include="BenchmarkDotNet" Version="0.15.8" />
   </ItemGroup>
 </Project>
