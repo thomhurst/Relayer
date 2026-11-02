@@ -9,6 +9,7 @@ internal sealed class InMemoryEndpoint
     private readonly InMemoryMessage?[] _pool;
     private readonly Channel<InMemoryMessage>[] _partitions;
     private readonly Channel<InMemoryMessage>[] _scheduled;
+    private readonly ScheduleWake[] _scheduleWake;
     private readonly PriorityQueue<InMemoryMessage, (DateTimeOffset Due, long Sequence)>[] _due;
     private readonly long[] _nextScheduledSequence;
     private readonly Channel<byte> _sendSlots;
@@ -49,11 +50,23 @@ internal sealed class InMemoryEndpoint
         if (sharedQueue) _queueReader = new(_partitions[0], _wakeup, shared: true);
         _fanOut = new FanOut[options.Partitions];
         for (var i = 0; i < _fanOut.Length; i++) _fanOut[i] = new(new(_partitions[i], _wakeup));
-        _scheduled = CreatePartitions(options.Partitions);
+        var slots = checked(_capacity * options.Partitions);
+        _scheduled = new Channel<InMemoryMessage>[options.Partitions];
+        _scheduleWake = new ScheduleWake[options.Partitions];
+        for (var i = 0; i < _scheduled.Length; i++)
+        {
+            // Global admission bounds all data, even when every send chooses this partition.
+            // Reserve one additional slot for a coalesced wake-up, including while stopped.
+            _scheduled[i] = Channel.CreateBounded<InMemoryMessage>(new BoundedChannelOptions(checked(slots + 1))
+            {
+                SingleReader = true,
+                AllowSynchronousContinuations = false,
+            });
+            _scheduleWake[i] = new(_scheduled[i].Writer, _wakeup);
+        }
         _due = new PriorityQueue<InMemoryMessage, (DateTimeOffset, long)>[options.Partitions];
         _nextScheduledSequence = new long[options.Partitions];
         for (var i = 0; i < _due.Length; i++) _due[i] = new();
-        var slots = checked(_capacity * options.Partitions);
         _sendSlots = Channel.CreateBounded<byte>(slots);
         for (var i = 0; i < slots; i++) _sendSlots.Writer.TryWrite(0);
     }
@@ -190,13 +203,23 @@ internal sealed class InMemoryEndpoint
     {
         var scheduled = _scheduled[partition];
         var due = _due[partition];
+        var wake = _scheduleWake[partition];
+        var timer = Clock.CreateTimer(static state => ((ScheduleWake)state!).Wake(), wake,
+            Timeout.InfiniteTimeSpan, Timeout.InfiniteTimeSpan);
+        await using var timerLifetime = timer.ConfigureAwait(false);
+        using var registration = stop.UnsafeRegister(static state => ((ScheduleWake)state!).Wake(), wake);
+        var timerArmed = false;
         try
         {
             while (!stop.IsCancellationRequested)
             {
                 // Admission credits bound all retained messages, including the heap and group queues.
                 while (scheduled.Reader.TryRead(out var incoming))
-                    due.Enqueue(incoming, (incoming.DeliverAt!.Value, _nextScheduledSequence[partition]++));
+                    if (incoming.IsWakeup) wake.Consumed();
+                    else
+                        due.Enqueue(incoming, (incoming.DeliverAt!.Value, _nextScheduledSequence[partition]++));
+                // Stop's wake-up may have been consumed by the drain above.
+                if (stop.IsCancellationRequested) break;
                 if (due.TryPeek(out var message, out var at))
                 {
                     var delay = at.Due - Clock.GetUtcNow();
@@ -206,15 +229,17 @@ internal sealed class InMemoryEndpoint
                         due.Dequeue();
                         continue;
                     }
-                    using var timeout = new CancellationTokenSource(delay > TimeSpan.FromDays(1) ? TimeSpan.FromDays(1) : delay, Clock);
-                    using var wait = CancellationTokenSource.CreateLinkedTokenSource(stop, timeout.Token);
-                    try
-                    {
-                        await scheduled.Reader.WaitToReadAsync(wait.Token).ConfigureAwait(false);
-                    }
-                    catch (OperationCanceledException) when (!stop.IsCancellationRequested) { }
+                    timer.Change(delay > TimeSpan.FromDays(1) ? TimeSpan.FromDays(1) : delay, Timeout.InfiniteTimeSpan);
+                    timerArmed = true;
                 }
-                else await scheduled.Reader.WaitToReadAsync(stop).ConfigureAwait(false);
+                else if (timerArmed)
+                {
+                    timer.Change(Timeout.InfiniteTimeSpan, Timeout.InfiniteTimeSpan);
+                    timerArmed = false;
+                }
+                // Non-cancellable channel waits reuse the channel's operation. Timer and stop share
+                // a sentinel wake-up, so neither needs a per-message cancellation registration.
+                await scheduled.Reader.WaitToReadAsync().ConfigureAwait(false);
             }
         }
         catch (OperationCanceledException) when (stop.IsCancellationRequested) { }
@@ -277,6 +302,17 @@ internal sealed class InMemoryEndpoint
         internal InMemoryMessage? Pending;
         internal int NextGroup;
         internal long NextPosition;
+    }
+
+    private sealed class ScheduleWake(ChannelWriter<InMemoryMessage> writer, InMemoryMessage wakeup)
+    {
+        private int _written;
+        internal void Consumed() => Interlocked.Exchange(ref _written, 0);
+        // Sentinels never own an admission credit. Preserve coalescing across stop/restart.
+        internal void Wake()
+        {
+            if (Interlocked.Exchange(ref _written, 1) == 0) writer.TryWrite(wakeup);
+        }
     }
 }
 

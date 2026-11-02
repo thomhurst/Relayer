@@ -10,7 +10,7 @@ namespace Relayer.Benchmarks;
 [MemoryDiagnoser]
 public class InMemorySchedulingBenchmarks
 {
-    private readonly DispatchClock _clock = new();
+    private DispatchClock _clock = new();
     private readonly Channel<int> _received = Channel.CreateBounded<int>(3);
     private readonly byte[] _body = [42];
     private readonly OutgoingMessage[] _batch = new OutgoingMessage[3];
@@ -19,7 +19,7 @@ public class InMemorySchedulingBenchmarks
     [Params(1, 4)]
     public int Partitions { get; set; }
 
-    [GlobalSetup]
+    [GlobalSetup(Targets = [nameof(DirectRoundTrip), nameof(ScheduledRoundTrip), nameof(EqualDueBatchRoundTrip)])]
     public async Task Setup()
     {
         _transport = new("native", new Dictionary<string, InMemoryEndpointOptions>
@@ -45,6 +45,25 @@ public class InMemorySchedulingBenchmarks
 
     [Benchmark]
     public ValueTask<int> ScheduledRoundTrip() => RoundTrip(true);
+
+    [GlobalSetup(Target = nameof(FutureDeadlineRoundTrip))]
+    public async Task SetupFutureDeadline()
+    {
+        _clock = new(manualDeadlines: true);
+        await Setup();
+    }
+
+    // Force the future-deadline path on every invocation, without a wall-clock delivery delay.
+    // The same manual timer/acknowledgement work runs against both baseline and changed builds.
+    [Benchmark]
+    [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder<>))]
+    public async ValueTask<int> FutureDeadlineRoundTrip()
+    {
+        await _transport.SendAsync(new("orders", _body, deliverAt: _clock.GetUtcNow().AddMinutes(1)), default);
+        var deadline = await _clock.NextDeadline();
+        _clock.Fire(deadline);
+        return await _received.Reader.ReadAsync();
+    }
 
     // One invocation is one ordered batch, including heap comparisons for equal due times.
     [Benchmark]
@@ -74,10 +93,44 @@ public class InMemorySchedulingBenchmarks
     [GlobalCleanup]
     public async Task Cleanup() => await _transport.DisposeAsync();
 
-    private sealed class DispatchClock : TimeProvider
+    private sealed class DispatchClock(bool manualDeadlines = false) : TimeProvider
     {
+        private readonly Channel<DispatchTimer> _armed = Channel.CreateBounded<DispatchTimer>(1);
         private long _ticks = new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero).Ticks;
         public override DateTimeOffset GetUtcNow() => new(Interlocked.Read(ref _ticks), TimeSpan.Zero);
         internal void Advance() => Interlocked.Increment(ref _ticks);
+
+        public override ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period)
+        {
+            if (!manualDeadlines) return base.CreateTimer(callback, state, dueTime, period);
+            var timer = new DispatchTimer(this, callback, state);
+            timer.Change(dueTime, period);
+            return timer;
+        }
+
+        internal ValueTask<DispatchTimer> NextDeadline() => _armed.Reader.ReadAsync();
+
+        internal void Fire(DispatchTimer timer)
+        {
+            Interlocked.Exchange(ref _ticks, timer.DueTicks);
+            timer.Fire();
+        }
+
+        internal sealed class DispatchTimer(DispatchClock clock, TimerCallback callback, object? state) : ITimer
+        {
+            internal long DueTicks;
+            public bool Change(TimeSpan dueTime, TimeSpan period)
+            {
+                if (dueTime != Timeout.InfiniteTimeSpan)
+                {
+                    DueTicks = clock.GetUtcNow().Ticks + dueTime.Ticks;
+                    if (!clock._armed.Writer.TryWrite(this)) throw new InvalidOperationException("Unconsumed benchmark deadline.");
+                }
+                return true;
+            }
+            internal void Fire() => callback(state);
+            public void Dispose() { }
+            public ValueTask DisposeAsync() => default;
+        }
     }
 }

@@ -403,6 +403,104 @@ public class InMemoryTransportTests
     }
 
     [Test]
+    [Arguments(1)]
+    [Arguments(4)]
+    public async Task Scheduling_reuses_one_timer_per_partition_across_idle_and_future_waits(int partitions)
+    {
+        var clock = new InMemoryTestClock();
+        await using var transport = Transport(new()
+        {
+            Capacity = 1,
+            Partitions = partitions,
+            Capabilities = new() { OrderedByKey = true, MaxDeliveryDelay = TimeSpan.FromHours(1) },
+        }, clock);
+        var values = Channel.CreateUnbounded<int>();
+        transport.RegisterConsumer("orders", (delivery, _) =>
+        {
+            values.Writer.TryWrite(Value(delivery));
+            return new(Disposition.Complete);
+        }, concurrency: partitions);
+        await transport.StartAsync(default);
+        for (var i = 0; i < partitions * 4; i++)
+        {
+            await Send(transport, i, at: clock.GetUtcNow().AddMinutes(1));
+            await clock.NextTimer();
+            await Assert.That(values.Reader.TryRead(out _)).IsFalse();
+            clock.Advance(TimeSpan.FromMinutes(1));
+            await Assert.That(await Next(values)).IsEqualTo(i);
+        }
+        await transport.StopAsync(default).WaitAsync(Limit);
+        await Assert.That(clock.TimersCreated).IsEqualTo(partitions);
+    }
+
+    [Test]
+    [Arguments(1)]
+    [Arguments(4)]
+    public async Task Scheduler_wakeup_does_not_take_admission_capacity_while_stopped(int partitions)
+    {
+        var clock = new InMemoryTestClock();
+        await using var transport = Transport(new()
+        {
+            Capacity = 1,
+            Partitions = partitions,
+            Capabilities = new() { OrderedByKey = true, MaxDeliveryDelay = TimeSpan.FromHours(1) },
+        }, clock);
+        var values = Channel.CreateUnbounded<int>();
+        transport.RegisterConsumer("orders", (delivery, _) =>
+        {
+            values.Writer.TryWrite(Value(delivery));
+            return new(Disposition.Complete);
+        }, concurrency: partitions);
+        for (var i = 0; i < 8; i++)
+        {
+            await transport.StartAsync(default);
+            await transport.StopAsync(default).WaitAsync(Limit);
+            // All admission credits remain available even if stop left a wake-up in the channel.
+            for (var j = 0; j < partitions; j++)
+                await Send(transport, j, "key", at: clock.GetUtcNow().AddMinutes(1)).AsTask().WaitAsync(Limit);
+            using var cancellation = new CancellationTokenSource();
+            var blocked = Send(transport, -1, "key", at: clock.GetUtcNow().AddMinutes(1), cancellationToken: cancellation.Token);
+            await Assert.That(blocked.IsCompleted).IsFalse();
+            cancellation.Cancel();
+            await Assert.That(async () => await blocked).Throws<OperationCanceledException>();
+            clock.Advance(TimeSpan.FromMinutes(1));
+            await transport.StartAsync(default);
+            var seen = new bool[partitions];
+            for (var j = 0; j < partitions; j++) seen[await Next(values)] = true;
+            await transport.StopAsync(default).WaitAsync(Limit);
+            await Assert.That(seen.All(static value => value)).IsTrue();
+            await Assert.That(values.Reader.TryRead(out _)).IsFalse();
+        }
+    }
+
+    [Test]
+    public async Task Scheduled_future_deadline_survives_stop_and_rearms_after_restart()
+    {
+        var clock = new InMemoryTestClock();
+        await using var transport = Transport(new()
+        {
+            Capacity = 1,
+            Capabilities = new() { MaxDeliveryDelay = TimeSpan.FromDays(3) },
+        }, clock);
+        var values = Channel.CreateUnbounded<int>();
+        transport.RegisterConsumer("orders", (delivery, _) => { values.Writer.TryWrite(Value(delivery)); return new(Disposition.Complete); });
+        await Send(transport, 1, at: clock.GetUtcNow().AddDays(2));
+        await transport.StartAsync(default);
+        await clock.NextTimer();
+        await transport.StopAsync(default).WaitAsync(Limit);
+        clock.Advance(TimeSpan.FromHours(12)); // The stopped run's timer must not control the next run.
+        await transport.StartAsync(default);
+        await clock.NextTimer();
+        clock.Advance(TimeSpan.FromDays(1)); // Deadlines longer than one day re-arm without delivering early.
+        await clock.NextTimer();
+        await Assert.That(values.Reader.TryRead(out _)).IsFalse();
+        clock.Advance(TimeSpan.FromHours(12));
+        await Assert.That(await Next(values)).IsEqualTo(1);
+        await transport.StopAsync(default).WaitAsync(Limit);
+        await Assert.That(clock.TimersCreated).IsEqualTo(2);
+    }
+
+    [Test]
     public async Task Unordered_queue_redelivery_does_not_stall_ready_messages_with_a_full_buffer()
     {
         var clock = new InMemoryTestClock();
