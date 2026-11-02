@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
+using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.Json.Serialization;
 using System.Threading.Channels;
@@ -24,8 +25,8 @@ public class KafkaReceiveTests
         var failure = new InvalidOperationException("receiver failed");
         try
         {
-            var read = control.ReadHandledAsync(Task.FromException(failure), cancellation.Token);
-            await Assert.That(read.IsCompleted).IsTrue();
+            var read = control.ReadHandledAsync(Task.FromException(failure), cancellation.Token)
+                .WaitAsync(TimeSpan.FromSeconds(10));
             await Assert.That(await Assert.ThrowsAsync<InvalidOperationException>(() => read)).IsSameReferenceAs(failure);
             control.Handled.Writer.TryWrite(42);
             var next = control.Handled.Reader.ReadAsync(cancellation.Token);
@@ -44,8 +45,8 @@ public class KafkaReceiveTests
         var control = new KafkaReceiveControl();
         try
         {
-            var read = control.ReadHandledAsync(Task.FromCanceled(receiver.Token), cancellation.Token);
-            await Assert.That(read.IsCompleted).IsTrue();
+            var read = control.ReadHandledAsync(Task.FromCanceled(receiver.Token), cancellation.Token)
+                .WaitAsync(TimeSpan.FromSeconds(10));
             var error = await Assert.ThrowsAsync<OperationCanceledException>(() => read);
             await Assert.That(error!.CancellationToken).IsEqualTo(receiver.Token);
             await Assert.That(cancellation.IsCancellationRequested).IsFalse();
@@ -68,14 +69,41 @@ public class KafkaReceiveTests
     }
 
     [Test]
+    [Arguments(TaskStatus.Faulted)]
+    [Arguments(TaskStatus.Canceled)]
+    [Arguments(TaskStatus.RanToCompletion)]
+    public async Task Handled_observation_observes_channel_fault_when_receiver_completes(TaskStatus receiverStatus)
+    {
+        var channelFailure = new InvalidOperationException("channel failed while receiver completed");
+        var unobserved = new ConcurrentQueue<Exception>();
+        void OnUnobserved(object? sender, UnobservedTaskExceptionEventArgs args)
+        {
+            foreach (var error in args.Exception.InnerExceptions)
+                if (error is ChannelClosedException && ReferenceEquals(error.InnerException, channelFailure))
+                    unobserved.Enqueue(error);
+        }
+
+        TaskScheduler.UnobservedTaskException += OnUnobserved;
+        try
+        {
+            await ExerciseFaultedHandledReadAsync(receiverStatus, channelFailure);
+            // Finalize unreachable task exception holders while the scoped observer is registered.
+            GC.Collect();
+            GC.WaitForPendingFinalizers();
+            await Assert.That(unobserved.IsEmpty).IsTrue();
+        }
+        finally { TaskScheduler.UnobservedTaskException -= OnUnobserved; }
+    }
+
+    [Test]
     public async Task Handled_observation_rejects_receiver_completion_before_a_message()
     {
         using var cancellation = new CancellationTokenSource();
         var control = new KafkaReceiveControl();
         try
         {
-            var read = control.ReadHandledAsync(Task.CompletedTask, cancellation.Token);
-            await Assert.That(read.IsCompleted).IsTrue();
+            var read = control.ReadHandledAsync(Task.CompletedTask, cancellation.Token)
+                .WaitAsync(TimeSpan.FromSeconds(10));
             await Assert.That(async () => await read).Throws<InvalidOperationException>()
                 .WithMessageContaining("stopped before handling the expected message");
         }
@@ -318,6 +346,37 @@ public class KafkaReceiveTests
         await Assert.That(timeout.IsCancellationRequested).IsFalse();
     }
 
+    // Keep completed read tasks out of the collecting test's stack, including in Release builds.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static async Task ExerciseFaultedHandledReadAsync(TaskStatus receiverStatus, Exception channelFailure)
+    {
+        var control = new KafkaReceiveControl();
+        control.Handled.Writer.TryComplete(channelFailure);
+        using var receiverCancellation = new CancellationTokenSource();
+        receiverCancellation.Cancel();
+        var receiverFailure = new InvalidOperationException("receiver failed");
+        var receiver = receiverStatus switch
+        {
+            TaskStatus.Faulted => Task.FromException(receiverFailure),
+            TaskStatus.Canceled => Task.FromCanceled(receiverCancellation.Token),
+            _ => Task.CompletedTask,
+        };
+        var read = control.ReadHandledAsync(receiver, CancellationToken.None);
+        if (receiverStatus == TaskStatus.Canceled)
+        {
+            var error = await Assert.ThrowsAsync<OperationCanceledException>(() => read);
+            await Assert.That(error!.CancellationToken).IsEqualTo(receiverCancellation.Token);
+        }
+        else
+        {
+            var error = await Assert.ThrowsAsync<InvalidOperationException>(() => read);
+            if (receiverStatus == TaskStatus.Faulted)
+                await Assert.That(error).IsSameReferenceAs(receiverFailure);
+            else
+                await Assert.That(error!.Message).Contains("stopped before handling the expected message");
+        }
+    }
+
     private const string Creation = "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01";
     private static OutgoingMessage Message(string topic, int number) => new(topic, Encoding.UTF8.GetBytes($"{{\"Number\":{number}}}"),
         new KeyValuePair<string, WireString>[] { new("ce_id", new("record-" + number)), new("ce_type", new("tests.kafka.receive;v=1")),
@@ -398,7 +457,15 @@ public sealed class KafkaReceiveControl
             cancellationToken.ThrowIfCancellationRequested();
             return await read;
         }
-        finally { readCancellation.Cancel(); }
+        finally
+        {
+            readCancellation.Cancel();
+            try { await read; }
+            catch (Exception error) when (error is OperationCanceledException or ChannelClosedException)
+            {
+                // Observe the losing read without replacing the receiver's exception or cancellation.
+            }
+        }
     }
 }
 public sealed class KafkaReceiveHandler(KafkaReceiveControl control) : IHandler<KafkaReceiveMessage>
