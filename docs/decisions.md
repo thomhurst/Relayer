@@ -32,7 +32,7 @@ To change a decision, add a new entry that supersedes it rather than editing his
 | [D19](#d19-dependency-policy) | Dependency policy | Accepted |
 | [D20](#d20-sagas-are-out-of-scope-for-v1) | Sagas are out of scope for v1 | Accepted |
 | [D21](#d21-repository-conventions) | Repository conventions | Accepted |
-| [D22](#d22-the-kafka-transport-wraps-dekaf) | The Kafka transport wraps Dekaf | Accepted |
+| [D22](#d22-the-kafka-transport-wraps-dekaf) | The Kafka transport wraps Dekaf | Accepted; native reuse rule generalized to every transport by [D42](#d42-every-transport-reuses-its-native-clients-features) |
 | [D23](#d23-a-generic-transport-spi-owned-by-the-core) | A generic transport SPI owned by the core | Accepted; core-first log scheduling superseded by [D40](#d40-log-transports-reuse-native-processing-runtimes) |
 | [D24](#d24-capabilities-are-valued-and-declared-per-endpoint) | Capabilities are valued and declared per endpoint | Accepted |
 | [D25](#d25-telemetry-follows-the-opentelemetry-messaging-span-model) | Telemetry follows the OpenTelemetry messaging span model | Accepted |
@@ -51,6 +51,8 @@ To change a decision, add a new entry that supersedes it rather than editing his
 | [D38](#d38-postgresql-maintenance-leases-recover-unordered-rows-and-bound-retention) | PostgreSQL maintenance leases recover unordered rows and bound retention | Accepted |
 | [D39](#d39-named-transports-capture-startup-prepared-serializers) | Named transports capture startup-prepared serializers | Accepted |
 | [D40](#d40-log-transports-reuse-native-processing-runtimes) | Log transports reuse native processing runtimes | Accepted |
+| [D41](#d41-requests-correlate-ordinary-messages-on-explicitly-declared-endpoints) | Requests correlate ordinary messages on explicitly declared endpoints | Accepted |
+| [D42](#d42-every-transport-reuses-its-native-clients-features) | Every transport reuses its native client's features | Accepted |
 
 ---
 
@@ -795,3 +797,24 @@ Supersedes D23's core-first log scheduling rule and clarifies implementation own
 Requests send immediately rather than waiting for a handler send buffer or outbox commit. Reject raw-envelope and outbox-required request routes. Responses use the ordinary scoped sender and its existing durability boundary. A response's configured route must match the incoming reply address. This keeps one route per message type and validates the native destination at startup, without accepting arbitrary destinations from received headers. Native reply properties, temporary queues, Direct Reply-To and multi-destination response routing remain reachable through native clients; this feature does not emulate them or claim their delivery guarantees.
 
 **Consequences.** Request endpoints must be exclusive to the requesting process, with a matching declared response route. State does not survive restart and competing requesters must not share a reply queue. Existing native consumer limits and implementation status still apply. A timeout cancels the native send cooperatively; it cannot retract accepted work. Ordinary direct sends and consumers retain their performance contracts; the additional send-path work is two empty-metadata checks, with no steady-state allocation. Benchmark coverage compares direct send with opt-in request orchestration; its completion, correlation string and deadline allocations are explicit costs of starting a request, not added to ordinary traffic.
+
+## D42. Every transport reuses its native client's features
+
+Generalizes D22's native reuse rule, which was written for Dekaf, to every transport. The rest of D22 remains in force, and D40 remains the specific application of this rule to log processing runtimes.
+
+**Context.** D1 says each transport wraps a native client and keeps native semantics unchanged, but the rule to search for and call a feature the client already ships, and to record why when it cannot be used, was only written down for Dekaf in D22. Azure.Messaging.ServiceBus, AWSSDK.SQS/AWSSDK.SimpleNotificationService and RabbitMQ.Client also ship capabilities that Relayer could otherwise rebuild, such as scheduled delivery, concurrency and prefetch, session and lock renewal, retry policies, dead-lettering and OpenTelemetry instrumentation. Without a general rule, those transports could grow parallel implementations that D22 would forbid for Kafka.
+
+**Decision.**
+- Before implementing a capability in any transport or in the core on a transport's behalf, inspect the native client at the version pinned in `Directory.Packages.props`: its source where available, not only its documentation. Also check Relayer's existing code.
+- Where the native client already provides the capability, the transport calls it rather than re-implementing it.
+- A native feature that cannot be used, for example because it would bypass Relayer's uniform failure pipeline, durable settlement or telemetry, is recorded in this file with the reason, and the missing piece is filed as an issue on that client's repository. Relayer wraps what exists.
+- Relayer does not build a parallel implementation without that record.
+
+**Consequences.**
+- Every transport follows the same reuse rule, so reviewers apply one standard across Kafka, Azure Service Bus, SQS/SNS and RabbitMQ.
+- Transport behaviour tracks native client improvements, and gaps are fixed upstream where possible instead of being hidden in Relayer.
+- Existing transport code that already duplicates a native feature without a record is a defect to fix or record, not a precedent.
+
+**Alternatives rejected.**
+- Keep the rule Kafka-specific: leaves the other transports free to duplicate their native clients, which contradicts D1.
+- Repeat the rule in each transport's decision: multiplies wording that drifts; one general rule with transport-specific records is easier to keep consistent.

@@ -10,7 +10,7 @@ It is **not** a new broker abstraction. It does not change how the underlying te
 
 ## 1. Principles
 
-1. **Wrap, don't replace.** Every transport uses a native .NET client for its technology: Dekaf for Kafka, and the official SDKs for Azure Service Bus, SQS/SNS, and RabbitMQ. Native settlement, ordering, partitioning, sessions, and dead-lettering are used as-is. Relayer never emulates a feature the broker already has.
+1. **Wrap, don't replace.** Every transport uses a native .NET client for its technology: Dekaf for Kafka, and the official SDKs for Azure Service Bus, SQS/SNS, and RabbitMQ. Native settlement, ordering, partitioning, sessions, and dead-lettering are used as-is. Relayer never emulates a feature the broker already has, and it calls a feature the native client already ships rather than re-implementing it (D42).
 2. **No lowest common denominator.** Portable features (retry, outbox, tracing) are uniform. Transport-specific features are exposed through typed, discoverable extensions rather than hidden behind a generic API.
 3. **Explicit over magic.** No assembly scanning. No runtime code generation. Every handler, route, and piece of topology is declared in code or produced by a source generator you can read.
 4. **Correct by default.** The safe behaviour is the default behaviour: at-least-once delivery, idempotent consumers via the inbox, poison messages go to a dead-letter queue (they never crash or stall a consumer), and settlement happens only after the work is durable.
@@ -168,7 +168,7 @@ public static ConsumerBuilder<KafkaConsumerOptions> Group(this ConsumerBuilder<K
 
 Handlers, inbox, failure policy and ordering keys are implemented once in the core and work the same on every transport. A Kafka-only setting such as `Group` exists only on Kafka's builder, so it cannot be applied to a queue by mistake. `OrderingKey` accepts a `string` or any `IUtf8SpanFormattable` value such as `Guid` or `long`; the latter is formatted into a pooled buffer, so a Kafka key costs no allocation.
 
-**Log-based transports.** Kafka, Event Hubs, Kinesis, Pulsar, RabbitMQ Streams and JetStream share ordering and durable-checkpoint requirements (§7), but their native clients may already implement scheduling, backpressure and ownership drain. Search the pinned client's source first and wrap those mechanisms (D1, D22, D23). Kafka's planned parallel receive path wraps Dekaf's `RunPartitionedAsync`; it does not use the core scheduler.
+**Log-based transports.** Kafka, Event Hubs, Kinesis, Pulsar, RabbitMQ Streams and JetStream share ordering and durable-checkpoint requirements (§7), but their native clients may already implement scheduling, backpressure and ownership drain. Search the pinned client's source first and wrap those mechanisms (D1, D40, D42). Kafka's planned parallel receive path wraps Dekaf's `RunPartitionedAsync`; it does not use the core scheduler.
 
 The core's `PartitionScheduler<TIncoming, TBinding, TPartition, TPosition>` is a fallback only for a log transport whose native client has no equivalent. A missing piece in an existing native runtime belongs upstream; it does not justify replacing that runtime. Record any exception and its native-feature gap in the decisions record before building a parallel implementation. When that fallback is justified, the transport feeds records in and implements three calls:
 
