@@ -20,7 +20,13 @@ public static class SqlServerOutboxRegistration
             !services.Any(static descriptor => descriptor.ServiceType == typeof(SqlServerOutbox)))
             throw new InvalidOperationException("A different IOutboxEnlistment is already registered. Configure one scoped outbox integration.");
         if (options is not null) SqlServerOutbox.ValidateOptions(options);
-        services.TryAddScoped<SqlServerOutbox>(provider => new(provider.GetRequiredService<IOptionsSnapshot<SqlServerOutboxOptions>>(), provider.GetService<RelayerInstrumentation>()));
+        services.TryAddScoped<SqlServerOutbox>(provider =>
+        {
+            var snapshot = provider.GetRequiredService<IOptionsSnapshot<SqlServerOutboxOptions>>();
+            var dispatcher = snapshot.Value.DispatchStoreName is { } name
+                ? provider.GetRequiredKeyedService<SqlServerDirectDispatcher>(name) : null;
+            return new(snapshot, provider.GetService<RelayerInstrumentation>(), dispatcher);
+        });
         services.TryAddScoped<IOutboxEnlistment>(static provider => provider.GetRequiredService<SqlServerOutbox>());
         services.TryAddSingleton<IValidateOptions<SqlServerOutboxOptions>, Validator>();
         services.AddOptions<SqlServerOutboxOptions>().ValidateOnStart();
@@ -65,6 +71,7 @@ public static class SqlServerOutboxRegistration
     {
         protected override SqlServerOutboxOptions CreateInstance(string name) => new()
         {
+            DispatchStoreName = configuration?[nameof(defaults.DispatchStoreName)] ?? defaults.DispatchStoreName,
             Schema = configuration?[nameof(defaults.Schema)] ?? defaults.Schema,
             TablePrefix = configuration?[nameof(defaults.TablePrefix)] ?? defaults.TablePrefix,
             Lanes = Read(nameof(defaults.Lanes), defaults.Lanes)

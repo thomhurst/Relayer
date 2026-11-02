@@ -1,12 +1,12 @@
 ---
 title: SQL Server durable store
-description: "SQL Server ADO.NET/Dapper transactions, explicit schema, bounded reads and fenced claims."
+description: "SQL Server ADO.NET/Dapper transactions, commit-triggered dispatch, bounded reads and fenced claims."
 ---
 
 `Relayer.Outbox.SqlServer` implements the [durable store contract](outbox-stores.md) using
 `Microsoft.Data.SqlClient` and SQL Server's native connection pooling. It supplies reads, atomic claims,
 renewal, completion, failure persistence, eligible backlog counts and scoped ADO.NET/Dapper transaction
-enlistment. **EF Core, inbox deduplication, dispatch workers, lane leases, poison-row movement and
+enlistment and opt-in commit-triggered unordered dispatch. **EF Core, inbox deduplication, ordered workers, lane leases, poison-row movement and
 maintenance remain planned for SQL Server.** PostgreSQL's worker registrations do not accept this provider.
 Registering a durable store alone does not make `ISender` transactional.
 
@@ -95,11 +95,61 @@ Keep the lane count identical across writers. Lanes use the UTF-8 ordering key's
 Use one unit at a time per scope. Ambient `TransactionScope`, nested transactions and savepoints are
 rejected. Do not complete native transactions, close native connections or issue SQL transaction-control
 commands behind the wrapper. Native per-send callbacks cannot be persisted. No custom retry, pool,
-scheduler or dispatch loop is installed. Future scheduled sender calls fail explicitly until a SQL Server
+scheduler is installed by transaction enlistment alone. Future scheduled sender calls fail explicitly until a SQL Server
 scheduling worker exists. Low-level `IOutboxEnlistment.EnlistAsync` can preserve a supplied `DeliverAt`
 for a future dispatcher. Cancellation is passed to SqlClient; some server-side bulk-copy waits can end
 only when the server responds or the native timeout expires ([SqlClient #4965](https://github.com/dotnet/SqlClient/issues/4965)). Cancellation before native commit still
 rolls back the complete unit.
+
+## Commit-triggered unordered dispatch
+
+Deploy the schema first. Select a named worker explicitly in the scoped outbox options:
+
+```csharp
+var options = new SqlServerOutboxOptions
+{
+    Schema = "messaging",
+    TablePrefix = "orders_",
+    DispatchStoreName = "orders"
+};
+services.AddRelayerSqlServerOutbox(options);
+services.AddRelayerSqlServerDirectDispatch("orders", connectionString, options,
+    new SqlServerDirectDispatchOptions
+    {
+        QueueCapacity = 256,
+        BatchSize = 100,
+        ClaimDuration = TimeSpan.FromSeconds(30)
+    });
+```
+
+Register the named `ITransport` services used by the stored routes and start the application's host.
+The registration adds a hosted worker and a keyed `IOutboxStore`. It does not create tables.
+Writer and dispatcher must use the same schema, prefix and database; mismatches fail before starting
+the writer transaction. The dispatcher connection string must specify `Initial Catalog` (or `Database`),
+with the database's exact spelling. Server aliases must match the writer's native `DataSource`.
+This validates caller-owned connections, including `ChangeDatabase`, without opening another pooled
+connection or relying on a login's default database. `DispatchStoreName` is optional: without it, transactions only persist messages.
+The configuration overload for transaction enlistment also binds `DispatchStoreName`.
+
+After a successful synchronous or asynchronous commit, due unordered buffers move to a bounded
+in-process queue. The committing scope can end or begin another transaction while the worker sends.
+No activity or scoped service travels with the queued buffers. Native endpoint capabilities and
+`BatchSize` bound each send; single messages use `SendAsync`, groups use `SendBatchAsync`.
+`SqlBatch` groups fenced claim and completion statements through the native client. Claims use fresh
+tokens, and completion deletes only rows still owned by that live token. An expired claim leaves the
+row available for later recovery, even if the broker accepted the message; delivery remains at least once.
+Native send failures increment attempts and release live claims. A completion failure after a successful
+send retains the claim without incrementing send attempts.
+
+**This worker does not poll or recover rows.** Ordered rows, future schedules, overflow and commits
+after shutdown remain durable. A full or stopped queue logs an error without making an already committed
+transaction fail. Shutdown drains queued work until the host's cancellation deadline. Applications must
+operate their own recovery process until [SQL Server recovery and maintenance](https://github.com/thomhurst/Relayer/issues/331)
+ships. Future scheduled `ISender` calls still fail explicitly: this worker cannot establish scheduling support.
+
+Commit notification is local to this process. It does not enable Service Broker or query notifications,
+create conversation queues or claim cross-process wakeup support. Application-owned native Service Broker
+configuration remains separate from this worker.
 
 ## Storage and UUID ordering
 
@@ -155,6 +205,8 @@ dotnet run -c Release --project benchmarks/Relayer.Benchmarks -- --filter '*SqlS
 
 `SqlServerOutboxBufferBenchmarks` attributes reusable copy/header/lane work at 256 and 4096 bytes without database I/O.
 `SqlServerOutboxCommitBenchmarks` compares native bulk-copy commits with buffered commits at 1 and 64 rows.
+`SqlServerOutboxDispatchBenchmarks` compares reusable envelope buffers with commit-to-worker ownership
+transfer and destination grouping at 1 and 64 rows, excluding database I/O and native allocations.
 Use the same connection variable and select either class with `--filter`. Each commit invocation deletes
 its previous batch in the same transaction to keep table size stable.
 

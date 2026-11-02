@@ -307,7 +307,7 @@ const status = [
   ['Durable outbox contracts and keyed health adapter', 'Implemented core seam', true],
   ['PostgreSQL schema scripts, CLI and EF migration path', 'Implemented schema tooling', true],
   ['PostgreSQL durable reads and fenced claims', 'Implemented store operations', true],
-  ['SQL Server outbox transactions and durable stores', 'ADO.NET/Dapper enlistment and fenced claims implemented; inbox and workers planned', true],
+  ['SQL Server outbox transactions and durable stores', 'ADO.NET/Dapper enlistment, fenced claims and unordered commit dispatch implemented; inbox, recovery and ordered workers planned', true],
   ['MySQL durable store and transactional enqueue', 'Implemented store operations and ADO.NET/Dapper; workers planned', true],
   ['EF Core transaction enlistment for PostgreSQL', 'Implemented enqueue path', true],
   ['PostgreSQL ADO.NET and Dapper transactions', 'Implemented enqueue path', true],

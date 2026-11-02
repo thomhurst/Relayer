@@ -15,6 +15,7 @@ public sealed class SqlServerOutbox : IOutboxEnlistment, IDisposable, IAsyncDisp
     private readonly string _table;
     private readonly int _lanes;
     private readonly RelayerInstrumentation? _instrumentation;
+    private readonly SqlServerDirectDispatcher? _dispatcher;
     private SqlServerOutboxTransaction? _transaction;
     private int _count;
     private bool _disposed;
@@ -23,9 +24,19 @@ public sealed class SqlServerOutbox : IOutboxEnlistment, IDisposable, IAsyncDisp
     [RequiresUnreferencedCode("SqlClient 7.1.1 runtime trimming is unsupported; see https://github.com/dotnet/SqlClient/issues/1947.")]
     [RequiresDynamicCode("SqlClient 7.1.1 runtime Native AOT is unsupported; see https://github.com/dotnet/SqlClient/issues/1947.")]
     public SqlServerOutbox(IOptionsSnapshot<SqlServerOutboxOptions> options, RelayerInstrumentation? instrumentation = null)
+        : this(options, instrumentation, null) { }
+
+    [RequiresUnreferencedCode("SqlClient 7.1.1 runtime trimming is unsupported; see https://github.com/dotnet/SqlClient/issues/1947.")]
+    [RequiresDynamicCode("SqlClient 7.1.1 runtime Native AOT is unsupported; see https://github.com/dotnet/SqlClient/issues/1947.")]
+    internal SqlServerOutbox(IOptionsSnapshot<SqlServerOutboxOptions> options, RelayerInstrumentation? instrumentation,
+        SqlServerDirectDispatcher? dispatcher)
     {
         ArgumentNullException.ThrowIfNull(options);
         ValidateOptions(options.Value);
+        if (options.Value.DispatchStoreName is not null && dispatcher is null)
+            throw new InvalidOperationException("Resolve a SQL Server outbox with DispatchStoreName through its registered service provider.");
+        _dispatcher = dispatcher;
+        dispatcher?.ValidateStore(options.Value.Schema, options.Value.TablePrefix);
         _lanes = options.Value.Lanes;
         _instrumentation = instrumentation;
         _table = SqlServerOutboxSchema.Table(options.Value);
@@ -42,6 +53,7 @@ public sealed class SqlServerOutbox : IOutboxEnlistment, IDisposable, IAsyncDisp
         ArgumentNullException.ThrowIfNull(connection);
         EnsureAvailable();
         RejectAmbientTransaction();
+        _dispatcher?.ValidateConnection(connection);
         var native = (SqlTransaction)await connection.BeginTransactionAsync(isolationLevel, cancellationToken).ConfigureAwait(false);
         return _transaction = new(this, native, null);
     }
@@ -57,6 +69,7 @@ public sealed class SqlServerOutbox : IOutboxEnlistment, IDisposable, IAsyncDisp
         try
         {
             await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+            _dispatcher?.ValidateConnection(connection);
             var native = (SqlTransaction)await connection.BeginTransactionAsync(isolationLevel, cancellationToken).ConfigureAwait(false);
             return _transaction = new(this, native, connection);
         }
@@ -94,7 +107,11 @@ public sealed class SqlServerOutbox : IOutboxEnlistment, IDisposable, IAsyncDisp
         return _batch;
     }
 
-    internal void Committed() => _instrumentation?.AddOutboxPending(_count);
+    internal void Committed()
+    {
+        _instrumentation?.AddOutboxPending(_count);
+        _dispatcher?.Committed(_rows, _count);
+    }
 
     internal void Ended(SqlServerOutboxTransaction transaction)
     {
@@ -113,6 +130,7 @@ public sealed class SqlServerOutbox : IOutboxEnlistment, IDisposable, IAsyncDisp
     internal static void ValidateOptions(SqlServerOutboxOptions options)
     {
         _ = SqlServerOutboxSchema.CreateScript(options);
+        if (options.DispatchStoreName is not null) ArgumentException.ThrowIfNullOrWhiteSpace(options.DispatchStoreName);
         if (options.Lanes <= 0) throw new ArgumentOutOfRangeException(nameof(options), "Lanes must be positive.");
     }
 

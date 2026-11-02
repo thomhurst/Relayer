@@ -20,6 +20,8 @@ public sealed class SqlServerOutboxStore : IOutboxStore
     private readonly string _complete;
     private readonly string _fail;
     private readonly string _count;
+    private readonly string _batchClaim;
+    private readonly string _batchComplete;
     private readonly byte[] _id = new byte[16];
     private readonly byte[] _token = new byte[16];
     // SqlParameter.Value accepts only object. Reuse exactly typed boxes at this native boundary;
@@ -29,6 +31,7 @@ public sealed class SqlServerOutboxStore : IOutboxStore
     private readonly object _lane = 0;
     private readonly object _limit = 0;
     private readonly List<RowBuffer> _rows = [];
+    private readonly List<ClaimBuffer> _batchClaims = [];
 
     /// <summary>Uses the native connection string unchanged and snapshots explicit schema identifiers.</summary>
     [RequiresUnreferencedCode("Microsoft.Data.SqlClient 7.1.1 retains reflection-based authentication, configuration and diagnostics. Trimming is unsupported; see https://github.com/dotnet/SqlClient/issues/1947.")]
@@ -47,6 +50,8 @@ public sealed class SqlServerOutboxStore : IOutboxStore
         _complete = $"DELETE FROM {table} OUTPUT CAST(1 AS bit) WHERE {fenced}";
         _fail = $"UPDATE {table} SET attempts = attempts + 1, last_error = @error, claim_token = NULL, claim_expires_at = NULL OUTPUT CAST(1 AS bit) WHERE {fenced}";
         _count = $"SELECT COUNT_BIG(*) FROM {table} WHERE {eligible}";
+        _batchClaim = _claim.Replace(" OUTPUT CAST(1 AS bit)", "", StringComparison.Ordinal) + "; SELECT CAST(@@ROWCOUNT AS bit)";
+        _batchComplete = _complete.Replace(" OUTPUT CAST(1 AS bit)", "", StringComparison.Ordinal) + "; SELECT CAST(@@ROWCOUNT AS bigint)";
     }
 
     /// <inheritdoc />
@@ -140,6 +145,80 @@ public sealed class SqlServerOutboxStore : IOutboxStore
         if (error is not null) Add(command, "@error", SqlDbType.NVarChar, error, -1);
         await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
         return await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) is true;
+    }
+
+    // Native RPC batches retain one independently fenced autocommit statement per row.
+    [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
+    internal async ValueTask ClaimBatchAsync(ReadOnlyMemory<OutboxClaim> claims, Memory<bool> claimed,
+        DateTimeOffset now, DateTimeOffset expiresAt, CancellationToken cancellationToken)
+    {
+        CheckOperation(cancellationToken);
+        if (claimed.Length < claims.Length) throw new ArgumentException("The claim result buffer is too small.", nameof(claimed));
+        if (expiresAt <= now) throw new ArgumentOutOfRangeException(nameof(expiresAt));
+        claimed.Span.Clear();
+        if (claims.IsEmpty) return;
+        using var connection = new SqlConnection(_connectionString);
+        await using var batch = new SqlBatch(connection);
+        PrepareBatch(batch, claims.Span, _batchClaim, now, expiresAt);
+        await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+        await using var reader = await batch.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        for (var i = 0; i < claims.Length; i++)
+        {
+            if (i != 0 && !await reader.NextResultAsync(cancellationToken).ConfigureAwait(false))
+                throw new InvalidDataException("SQL Server did not return every batched claim result.");
+            if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+                throw new InvalidDataException("SQL Server returned an empty batched claim result.");
+            claimed.Span[i] = reader.GetBoolean(0);
+        }
+    }
+
+    [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder<>))]
+    internal async ValueTask<long> CompleteBatchAsync(ReadOnlyMemory<OutboxClaim> claims, DateTimeOffset now,
+        CancellationToken cancellationToken)
+    {
+        CheckOperation(cancellationToken);
+        if (claims.IsEmpty) return 0;
+        using var connection = new SqlConnection(_connectionString);
+        await using var batch = new SqlBatch(connection);
+        PrepareBatch(batch, claims.Span, _batchComplete, now, null);
+        await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+        await using var reader = await batch.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        long completed = 0;
+        for (var i = 0; i < claims.Length; i++)
+        {
+            if (i != 0 && !await reader.NextResultAsync(cancellationToken).ConfigureAwait(false))
+                throw new InvalidDataException("SQL Server did not return every batched completion result.");
+            if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+                throw new InvalidDataException("SQL Server returned an empty batched completion result.");
+            completed += reader.GetInt64(0);
+        }
+        return completed;
+    }
+
+    private void PrepareBatch(SqlBatch batch, ReadOnlySpan<OutboxClaim> claims, string sql, DateTimeOffset now, DateTimeOffset? expiresAt)
+    {
+        Unsafe.Unbox<DateTimeOffset>(_now) = now.ToUniversalTime();
+        Unsafe.Unbox<DateTimeOffset>(_expires) = expiresAt.GetValueOrDefault().ToUniversalTime();
+        for (var i = 0; i < claims.Length; i++)
+        {
+            Validate(claims[i]);
+            if (_batchClaims.Count == i) _batchClaims.Add(new());
+            var slot = _batchClaims[i];
+            claims[i].MessageId.TryWriteBytes(slot.Id, bigEndian: true, out _);
+            claims[i].Token.TryWriteBytes(slot.Token, bigEndian: true, out _);
+            var command = new SqlBatchCommand(sql);
+            command.Parameters.Add(new SqlParameter("@id", SqlDbType.Binary, 16) { Value = slot.Id });
+            command.Parameters.Add(new SqlParameter("@token", SqlDbType.Binary, 16) { Value = slot.Token });
+            command.Parameters.Add(new SqlParameter("@now", SqlDbType.DateTimeOffset) { Value = _now });
+            if (expiresAt.HasValue) command.Parameters.Add(new SqlParameter("@expires", SqlDbType.DateTimeOffset) { Value = _expires });
+            batch.BatchCommands.Add(command);
+        }
+    }
+
+    private sealed class ClaimBuffer
+    {
+        internal readonly byte[] Id = new byte[16];
+        internal readonly byte[] Token = new byte[16];
     }
 
     /// <inheritdoc />
