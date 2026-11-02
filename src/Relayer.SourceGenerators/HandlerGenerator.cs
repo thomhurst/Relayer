@@ -51,6 +51,10 @@ public sealed class HandlerGenerator : IIncrementalGenerator
 
         var single = compilation.GetTypeByMetadataName("Relayer.IHandler`1");
         var batch = compilation.GetTypeByMetadataName("Relayer.IBatchHandler`1");
+        var saga = compilation.GetTypeByMetadataName("Relayer.Sagas.Saga`2");
+        INamedTypeSymbol? sagaBase = null;
+        for (var current = type.BaseType; current is not null; current = current.BaseType)
+            if (SymbolEqualityComparer.Default.Equals(current.OriginalDefinition, saga)) { sagaBase = current; break; }
         var result = ImmutableArray.CreateBuilder<DispatchModel>();
         foreach (var contract in type.AllInterfaces)
         {
@@ -65,7 +69,9 @@ public sealed class HandlerGenerator : IIncrementalGenerator
                     CanReference(contract.TypeArguments[0], compilation),
                     !isBatch && contract.TypeArguments[0] is INamedTypeSymbol message
                         && SymbolEqualityComparer.Default.Equals(message.OriginalDefinition, compilation.GetTypeByMetadataName("Relayer.Tombstone`1"))
-                        ? message.TypeArguments[0].ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat) : null));
+                        ? message.TypeArguments[0].ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat) : null,
+                    !isBatch && sagaBase is not null && SymbolEqualityComparer.Default.Equals(sagaBase.TypeArguments[1], contract.TypeArguments[0])
+                        ? sagaBase.TypeArguments[0].ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat) : null));
             }
         }
 
@@ -171,6 +177,9 @@ public sealed class HandlerGenerator : IIncrementalGenerator
                 {
                     builder.Append(isConsumer ? "            builder.AddHandler(new Dispatcher" : "            builder.Handlers.Add(new Dispatcher")
                         .Append(i).AppendLine("());");
+                    if (contracts[i].SagaState is { } state)
+                        builder.Append("            global::Microsoft.Extensions.DependencyInjection.Extensions.ServiceCollectionDescriptorExtensions.TryAddSingleton<global::Relayer.Sagas.SagaExecution<")
+                            .Append(state).Append(", ").Append(contracts[i].Message).AppendLine(">>(builder.Services);");
                 }
             }
             builder.Append("            global::Microsoft.Extensions.DependencyInjection.Extensions.ServiceCollectionDescriptorExtensions.TryAddScoped<")
@@ -182,5 +191,5 @@ public sealed class HandlerGenerator : IIncrementalGenerator
         builder.AppendLine("    }");
     }
 
-    private sealed record DispatchModel(string Handler, string Message, bool IsBatch, bool IsLocal, bool IsAccessible, string? TombstoneMessage);
+    private sealed record DispatchModel(string Handler, string Message, bool IsBatch, bool IsLocal, bool IsAccessible, string? TombstoneMessage, string? SagaState);
 }

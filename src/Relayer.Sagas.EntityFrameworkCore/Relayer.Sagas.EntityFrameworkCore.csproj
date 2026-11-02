@@ -1,0 +1,9 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <Description>Transactional PostgreSQL saga persistence on Relayer's EF Core inbox and outbox.</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../Relayer.Sagas/Relayer.Sagas.csproj" />
+    <ProjectReference Include="../Relayer.Outbox.EntityFrameworkCore/Relayer.Outbox.EntityFrameworkCore.csproj" />
+  </ItemGroup>
+</Project>
