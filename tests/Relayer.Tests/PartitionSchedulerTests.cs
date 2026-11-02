@@ -243,6 +243,33 @@ public class PartitionSchedulerTests
     }
 
     [Test]
+    public async Task Cooperative_retained_partition_keeps_dispatching_during_another_partitions_drain()
+    {
+        var fixture = new Fixture(concurrency: 1);
+        var revoked = fixture.Scheduler.Assign(1);
+        var retained = fixture.Scheduler.Assign(2);
+        var draining = new Delivery(1);
+        var continuing = new Delivery(2);
+        fixture.Enqueue(revoked, draining, "draining");
+        fixture.Enqueue(retained, continuing, "retained-first");
+        fixture.Scheduler.Pump();
+        fixture.Scheduler.Revoke(revoked, TimeSpan.FromSeconds(5));
+        continuing.Complete();
+        fixture.Scheduler.Pump();
+        var next = new Delivery(2);
+        fixture.Enqueue(retained, next, "retained-next");
+        fixture.Scheduler.Pump();
+        await Assert.That(next.Started).IsTrue();
+        await Assert.That(fixture.Scheduler.IsDraining).IsTrue();
+        await Assert.That(fixture.Source.Commits.Select(c => c.Position)).IsEquivalentTo(new[] { "retained-first" });
+        next.Complete();
+        draining.Complete();
+        fixture.Scheduler.Pump();
+        await Assert.That(fixture.Scheduler.IsDraining).IsFalse();
+        await Assert.That(fixture.Scheduler.BufferedCount).IsEqualTo(0);
+    }
+
+    [Test]
     public async Task Loss_fences_already_completed_but_unobserved_work_without_commit()
     {
         var fixture = new Fixture();
