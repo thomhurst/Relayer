@@ -17,6 +17,99 @@ namespace Relayer.Kafka.Tests;
 public class KafkaReceiveTests
 {
     [Test]
+    public async Task Handled_observation_preserves_receiver_failure_and_releases_the_pending_read()
+    {
+        using var cancellation = new CancellationTokenSource();
+        var control = new KafkaReceiveControl();
+        var failure = new InvalidOperationException("receiver failed");
+        try
+        {
+            var read = control.ReadHandledAsync(Task.FromException(failure), cancellation.Token);
+            await Assert.That(read.IsCompleted).IsTrue();
+            await Assert.That(await Assert.ThrowsAsync<InvalidOperationException>(() => read)).IsSameReferenceAs(failure);
+            control.Handled.Writer.TryWrite(42);
+            var next = control.Handled.Reader.ReadAsync(cancellation.Token);
+            await Assert.That(next.IsCompleted).IsTrue();
+            await Assert.That(await next).IsEqualTo(42);
+        }
+        finally { await cancellation.CancelAsync(); }
+    }
+
+    [Test]
+    public async Task Handled_observation_preserves_receiver_cancellation()
+    {
+        using var cancellation = new CancellationTokenSource();
+        using var receiver = new CancellationTokenSource();
+        await receiver.CancelAsync();
+        var control = new KafkaReceiveControl();
+        try
+        {
+            var read = control.ReadHandledAsync(Task.FromCanceled(receiver.Token), cancellation.Token);
+            await Assert.That(read.IsCompleted).IsTrue();
+            var error = await Assert.ThrowsAsync<OperationCanceledException>(() => read);
+            await Assert.That(error!.CancellationToken).IsEqualTo(receiver.Token);
+            await Assert.That(cancellation.IsCancellationRequested).IsFalse();
+        }
+        finally { await cancellation.CancelAsync(); }
+    }
+
+    [Test]
+    public async Task Handled_observation_preserves_failure_during_a_pending_read()
+    {
+        var control = new KafkaReceiveControl();
+        var receiver = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var failure = new InvalidOperationException("receiver failed during the read");
+        var read = control.ReadHandledAsync(receiver.Task, CancellationToken.None);
+        await Assert.That(read.IsCompleted).IsFalse();
+        receiver.SetException(failure);
+        // Give a broken observer a terminal channel too, so the regression cannot hang.
+        control.Handled.Writer.TryComplete(new InvalidOperationException("channel closed after receiver failure"));
+        await Assert.That(await Assert.ThrowsAsync<InvalidOperationException>(() => read)).IsSameReferenceAs(failure);
+    }
+
+    [Test]
+    public async Task Handled_observation_rejects_receiver_completion_before_a_message()
+    {
+        using var cancellation = new CancellationTokenSource();
+        var control = new KafkaReceiveControl();
+        try
+        {
+            var read = control.ReadHandledAsync(Task.CompletedTask, cancellation.Token);
+            await Assert.That(read.IsCompleted).IsTrue();
+            await Assert.That(async () => await read).Throws<InvalidOperationException>()
+                .WithMessageContaining("stopped before handling the expected message");
+        }
+        finally { await cancellation.CancelAsync(); }
+    }
+
+    [Test]
+    public async Task Handled_observation_returns_messages_while_receiver_is_running()
+    {
+        var control = new KafkaReceiveControl();
+        var receiver = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        control.Handled.Writer.TryWrite(42);
+        await Assert.That(await control.ReadHandledAsync(receiver.Task, CancellationToken.None)).IsEqualTo(42);
+        await Assert.That(receiver.Task.IsCompleted).IsFalse();
+    }
+
+    [Test]
+    public async Task Handled_observation_cancels_its_pending_read_with_the_caller()
+    {
+        using var cancellation = new CancellationTokenSource();
+        var control = new KafkaReceiveControl();
+        var receiver = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var read = control.ReadHandledAsync(receiver.Task, cancellation.Token);
+        await cancellation.CancelAsync();
+        var error = await Assert.ThrowsAsync<OperationCanceledException>(() => read);
+        await Assert.That(error!.CancellationToken).IsEqualTo(cancellation.Token);
+        await Assert.That(receiver.Task.IsCompleted).IsFalse();
+        control.Handled.Writer.TryWrite(42);
+        var next = control.Handled.Reader.ReadAsync();
+        await Assert.That(next.IsCompleted).IsTrue();
+        await Assert.That(await next).IsEqualTo(42);
+    }
+
+    [Test]
     [Arguments(1)]
     [Arguments(3)]
     public async Task Retained_partition_replays_invalidated_batch_before_committing(int invalidateAfter)
@@ -96,6 +189,7 @@ public class KafkaReceiveTests
         ActivitySource.AddActivityListener(listener);
         using var host = BuildHost(fixture, control);
         await host.StartAsync(token);
+        var transport = host.Services.GetRequiredKeyedService<KafkaProducerTransport>("events");
         await fixture.Transport.StartAsync(token);
         var source = fixture.Destination;
         await fixture.Transport.SendAsync(Message(source, 1), token);
@@ -106,7 +200,7 @@ public class KafkaReceiveTests
         var before = await offsets.GetCommittedOffsetAsync(new(source, 0), token);
         await Assert.That(before is null or < 0).IsTrue();
         control.Release.SetResult();
-        await Assert.That(await control.Handled.Reader.ReadAsync(token)).IsEqualTo(1);
+        await Assert.That(await control.ReadHandledAsync(transport.Consumers[0].Completion, token)).IsEqualTo(1);
         var poison = Message(source, 2);
         await fixture.Transport.SendAsync(new(source, poison.Body, poison.Headers, poison.OrderingKey,
             options: new SendOptions().ConfigureNative<Dekaf.Serialization.Headers>(static headers =>
@@ -126,12 +220,12 @@ public class KafkaReceiveTests
                 .Add(new Dekaf.Serialization.Header(KafkaSendState.TombstoneHeader, (byte[]?)null)),
         }, token);
         await fixture.Transport.SendAsync(Message(source, 3), token);
-        await Assert.That(await control.Handled.Reader.ReadAsync(token)).IsEqualTo(3);
+        await Assert.That(await control.ReadHandledAsync(transport.Consumers[0].Completion, token)).IsEqualTo(3);
         await host.StopAsync(token);
         var service = host.Services.GetServices<IHostedService>().OfType<KafkaHostedService>().Single();
         await Assert.That(async () => await service.StartAsync(token)).Throws<InvalidOperationException>()
             .WithMessageContaining("only start once");
-        await Assert.That(host.Services.GetRequiredKeyedService<KafkaProducerTransport>("events").Consumers.Count).IsEqualTo(1);
+        await Assert.That(transport.Consumers.Count).IsEqualTo(1);
         await Assert.That(control.FirstAttempts).IsEqualTo(2);
         await Assert.That(control.LastFeature.ConsumeResult.Topic).IsNull();
         await Assert.That(await offsets.GetCommittedOffsetAsync(new(source, 0), token)).IsEqualTo(5L);
@@ -180,12 +274,16 @@ public class KafkaReceiveTests
         var token = timeout.Token;
         using var tracing = new MessageTracing(Options.Create(new TracingOptions()), []);
         await using var fixture = (KafkaFixture)await KafkaFixture.CreateAsync(tracing, token);
-        using var host = BuildHost(fixture, new(), missingDeadLetter: true);
+        var control = new KafkaReceiveControl();
+        using var host = BuildHost(fixture, control, missingDeadLetter: true);
         await host.StartAsync(token);
         await fixture.Transport.StartAsync(token);
-        await fixture.Transport.SendAsync(Message(fixture.Destination, 2), token);
         var transport = host.Services.GetRequiredKeyedService<KafkaProducerTransport>("events");
-        await Assert.That(async () => await transport.Consumers[0].Completion.WaitAsync(token)).Throws<OperationCanceledException>();
+        var read = control.ReadHandledAsync(transport.Consumers[0].Completion, token);
+        await Assert.That(read.IsCompleted).IsFalse();
+        await fixture.Transport.SendAsync(Message(fixture.Destination, 2), token);
+        await Assert.That(async () => await read).Throws<OperationCanceledException>();
+        await Assert.That(timeout.IsCancellationRequested).IsFalse();
         await using var offsets = new ConsumerBuilder<byte[], byte[]>().WithBootstrapServers(fixture.Bootstrap)
             .WithGroupId(fixture.Destination).WithOffsetCommitMode(OffsetCommitMode.Manual).WithAutoOffsetStore(false).Build();
         await offsets.InitializeAsync(token);
@@ -203,11 +301,11 @@ public class KafkaReceiveTests
         var control = new KafkaReceiveControl();
         using var host = BuildHost(fixture, control, missingDeadLetter: true, healthySibling: true);
         await host.StartAsync(token);
+        var transport = host.Services.GetRequiredKeyedService<KafkaProducerTransport>("events");
         await fixture.Transport.StartAsync(token);
         await fixture.Transport.SendAsync(Message(fixture.Destination, 3), token);
-        await Assert.That(await control.Handled.Reader.ReadAsync(token)).IsEqualTo(3);
-        await Assert.That(await control.Handled.Reader.ReadAsync(token)).IsEqualTo(3);
-        var transport = host.Services.GetRequiredKeyedService<KafkaProducerTransport>("events");
+        await Assert.That(await control.ReadHandledAsync(transport.Consumers[0].Completion, token)).IsEqualTo(3);
+        await Assert.That(await control.ReadHandledAsync(transport.Consumers[0].Completion, token)).IsEqualTo(3);
         var service = host.Services.GetServices<IHostedService>().OfType<KafkaHostedService>().Single();
         await fixture.Transport.SendAsync(Message(fixture.Destination, 2), token);
         await Assert.That(async () => await transport.Consumers[0].Completion.WaitAsync(token)).Throws<OperationCanceledException>();
@@ -283,6 +381,24 @@ public sealed class KafkaReceiveControl
     internal Channel<int> Handled { get; } = Channel.CreateUnbounded<int>();
     internal int FirstAttempts;
     internal KafkaConsumeFeature LastFeature;
+
+    internal async Task<int> ReadHandledAsync(Task receiverCompletion, CancellationToken cancellationToken)
+    {
+        using var readCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        var read = Handled.Reader.ReadAsync(readCancellation.Token).AsTask();
+        try
+        {
+            await Task.WhenAny(read, receiverCompletion);
+            if (receiverCompletion.IsCompleted)
+            {
+                await receiverCompletion;
+                throw new InvalidOperationException("Kafka receiver stopped before handling the expected message.");
+            }
+            cancellationToken.ThrowIfCancellationRequested();
+            return await read;
+        }
+        finally { readCancellation.Cancel(); }
+    }
 }
 public sealed class KafkaReceiveHandler(KafkaReceiveControl control) : IHandler<KafkaReceiveMessage>
 {
