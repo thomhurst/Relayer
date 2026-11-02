@@ -10,14 +10,15 @@ Modern .NET messaging that **wraps** the native client for your broker (Kafka, A
 
 Relayer never changes how the underlying technology sends, receives, orders, or acknowledges messages. It is Native AOT friendly, reflection-free on the hot path, and MIT licensed.
 
-> **Status:** early design and scaffolding. Not ready for use.
+> **Status:** early development. Packages are not released yet. See the [roadmap](https://relayer.tomlonghurst.dev/docs/roadmap) for implemented features and planned work.
 
 ## Documentation
 
-- [relayer.tomlonghurst.dev](https://relayer.tomlonghurst.dev/) — guides, concepts and reference (source in [`website/`](website/))
-- [Design](docs/design.md) — how Relayer works
-- [Decision record](docs/decisions.md) — why it works that way
+- [relayer.tomlonghurst.dev](https://relayer.tomlonghurst.dev/) — guides, concepts and reference (source in [`website/`](https://github.com/thomhurst/Relayer/tree/main/website))
+- [Design](https://github.com/thomhurst/Relayer/blob/main/docs/design.md) — how Relayer works
+- [Decision record](https://github.com/thomhurst/Relayer/blob/main/docs/decisions.md) — why it works that way
 - [Health checks](https://relayer.tomlonghurst.dev/docs/guides/health-checks) — registration, adapter contracts and thresholds
+- [Packages and releases](https://relayer.tomlonghurst.dev/docs/contributing/releases) — local artifact checks and publishing setup
 
 ## Building
 

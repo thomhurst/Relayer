@@ -81,6 +81,8 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # MinVer needs version tags and their history.
 
       # This job owns its ephemeral runner. Prepare before starting the pinned
       # daemon so Docker reads the reserved range, including for Ryuk's port.
@@ -119,6 +121,11 @@ jobs:
       - name: Test
         if: steps.solution.outputs.present == 'true'
         run: dotnet test --no-build -c Release
+
+      - name: Pack and verify NuGet artifacts
+        run: |
+          dotnet pack --no-build -c Release -o .artifacts/packages
+          python3 .github/scripts/verify_packages.py .artifacts/packages --commit "$GITHUB_SHA"
 
       - name: Native AOT smoke test
         if: steps.solution.outputs.present == 'true'

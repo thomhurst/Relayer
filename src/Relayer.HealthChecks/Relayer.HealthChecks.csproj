@@ -1,11 +1,9 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <Description>Transport connectivity, consumer liveness and outbox backlog health checks for Relayer.</Description>
-    <PackageReadmeFile>health-checks.md</PackageReadmeFile>
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="Microsoft.Extensions.Diagnostics.HealthChecks" />
     <ProjectReference Include="../Relayer/Relayer.csproj" />
-    <None Include="../../website/docs/guides/health-checks.md" Pack="true" PackagePath="/" />
   </ItemGroup>
 </Project>
