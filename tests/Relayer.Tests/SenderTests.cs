@@ -12,6 +12,74 @@ namespace Relayer.Tests;
 public class SenderTests
 {
     [Test]
+    public async Task Native_transaction_requirement_uses_native_sending_and_rejects_outbox_substitution()
+    {
+        var transport = new RecordingTransport("events") { Transactions = true };
+        var services = Services(transport);
+        var outbox = new TestOutbox { IsActive = true };
+        services.AddScoped<IOutboxEnlistment>(_ => outbox);
+        services.AddRelayer(builder =>
+        {
+            builder.AddMessageTypesFromThisAssembly();
+            builder.DeclareRoute<OrderPlaced>("events", "orders", options: new() { TransactionRequirement = SendTransactionRequirement.Native });
+        });
+        using var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
+        using var scope = provider.CreateScope();
+        var sender = scope.ServiceProvider.GetRequiredService<ISender>();
+        await Assert.That(async () => await sender.SendAsync(new OrderPlaced(Guid.NewGuid())))
+            .Throws<InvalidOperationException>().WithMessageContaining("database outbox durability does not provide native broker transactions");
+        await sender.SendNowAsync(new OrderPlaced(Guid.NewGuid()), options => options.ConfigureNative<NativeOutgoing>(static native => native.Value = 42));
+        await Assert.That(transport.Count).IsEqualTo(1);
+        await Assert.That(transport.NativeValue).IsEqualTo(42);
+        await Assert.That(outbox.Count).IsEqualTo(0);
+    }
+
+    [Test]
+    [Arguments(false, false)]
+    [Arguments(true, false)]
+    [Arguments(false, true)]
+    [Arguments(true, true)]
+    public async Task Outbox_schedules_require_a_real_worker_even_when_native_scheduling_is_available(bool native, bool scheduler)
+    {
+        var transport = new RecordingTransport("events") { MaxDeliveryDelay = native ? TimeSpan.MaxValue : null };
+        var services = Services(transport);
+        var outbox = new TestOutbox { IsActive = true, SupportsScheduling = scheduler };
+        services.AddScoped<IOutboxEnlistment>(_ => outbox);
+        services.AddRelayer(builder =>
+        {
+            builder.AddMessageTypesFromThisAssembly();
+            builder.DeclareRoute<OrderPlaced>("events", "orders");
+        });
+        using var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
+        using var scope = provider.CreateScope();
+        var send = () => scope.ServiceProvider.GetRequiredService<ISender>().SendAsync(new OrderPlaced(Guid.NewGuid()),
+            options => options.DeliverAt = DateTimeOffset.UtcNow.AddMinutes(1)).AsTask();
+        if (scheduler) await send();
+        else await Assert.That(send).Throws<InvalidOperationException>().WithMessageContaining("matching due-row dispatch worker");
+        await Assert.That(outbox.Count).IsEqualTo(scheduler ? 1 : 0);
+        await Assert.That(transport.Count).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task Required_outbox_transaction_cannot_be_bypassed_by_direct_sending()
+    {
+        var services = Services(new RecordingTransport("events"));
+        services.AddScoped<IOutboxEnlistment>(_ => new TestOutbox { IsActive = false });
+        services.AddRelayer(builder =>
+        {
+            builder.AddMessageTypesFromThisAssembly();
+            builder.DeclareRoute<OrderPlaced>("events", "orders", options: new() { TransactionRequirement = SendTransactionRequirement.Outbox });
+        });
+        using var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
+        using var scope = provider.CreateScope();
+        var sender = scope.ServiceProvider.GetRequiredService<ISender>();
+        await Assert.That(async () => await sender.SendAsync(new OrderPlaced(Guid.NewGuid())))
+            .Throws<InvalidOperationException>().WithMessageContaining("active outbox transaction");
+        await Assert.That(async () => await sender.SendNowAsync(new OrderPlaced(Guid.NewGuid())))
+            .Throws<InvalidOperationException>().WithMessageContaining("active outbox transaction");
+    }
+
+    [Test]
     public async Task Routes_by_message_to_the_selected_named_transport_and_writes_the_envelope()
     {
         var first = new RecordingTransport("first");
@@ -580,7 +648,7 @@ public class SenderTests
         {
             if (!middleware) options.DeliverAt = deliverAt;
         })).Throws<InvalidOperationException>()
-            .WithMessageContaining("Send route 'tests.order-placed;v=2' on transport 'events' to endpoint 'orders' specifies a DeliverAt outside the endpoint's MaxDeliveryDelay. Use an endpoint with a sufficient native delay, shorten or remove DeliverAt, or send through an active outbox transaction.");
+            .WithMessageContaining("Send route 'tests.order-placed;v=2' on transport 'events' to endpoint 'orders' cannot execute DeliverAt. Use sufficient native MaxDeliveryDelay for direct sends, or an active outbox transaction with a matching due-row dispatch worker.");
         await Assert.That(transport.Count).IsEqualTo(0);
         await Assert.That(transport.CapabilityEndpoints).IsEquivalentTo(new[] { "orders" });
         if (!middleware)
@@ -810,11 +878,12 @@ public class SenderTests
         public string Name => name;
         public string? UnorderedEndpoint { get; init; }
         public TimeSpan? MaxDeliveryDelay { get; init; } = TimeSpan.MaxValue;
+        public bool Transactions { get; init; }
         public List<string> CapabilityEndpoints { get; } = [];
         public TransportCapabilities GetCapabilities(string endpoint)
         {
             CapabilityEndpoints.Add(endpoint);
-            return new() { MaxDeliveryDelay = MaxDeliveryDelay, OrderedByKey = endpoint != UnorderedEndpoint };
+            return new() { MaxDeliveryDelay = MaxDeliveryDelay, OrderedByKey = endpoint != UnorderedEndpoint, Transactions = Transactions };
         }
         public string? Destination { get; private set; }
         public string? Body { get; private set; }
@@ -892,6 +961,8 @@ public class SenderTests
 
     private sealed class TestOutbox : IOutboxEnlistment
     {
+        public bool SupportsScheduling { get; init; } = true;
+        public bool SupportsOrderedScheduling { get; init; } = true;
         public Guid Id { get; private set; }
         public string? MessageType { get; private set; }
         public DateTimeOffset CreatedAt { get; private set; }

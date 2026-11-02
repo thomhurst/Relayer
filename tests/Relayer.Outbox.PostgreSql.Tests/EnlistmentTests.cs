@@ -21,7 +21,8 @@ public class EnlistmentTests
     {
         await using var database = new Database();
         await database.Start();
-        await using var provider = database.Services();
+        await using var schedulerSource = NpgsqlDataSource.Create(database.ConnectionString);
+        await using var provider = database.Services(schedulerSource: schedulerSource);
         var scheduled = DateTimeOffset.UtcNow.AddDays(1);
         await using (var scope = provider.CreateAsyncScope())
         {
@@ -451,9 +452,12 @@ public class EnlistmentTests
             await using var command = new NpgsqlCommand(sql, connection);
             await command.ExecuteNonQueryAsync();
         }
-        internal ServiceProvider Services(bool retries = false)
+        internal ServiceProvider Services(bool retries = false, NpgsqlDataSource? schedulerSource = null)
         {
             var services = new ServiceCollection();
+            if (schedulerSource is not null)
+                services.AddRelayerPostgreSqlOrderedDispatch("schedule", schedulerSource,
+                    new PostgreSqlOrderedDispatchOptions { Schema = Options.Schema, TablePrefix = Options.TablePrefix, Lanes = Options.Lanes });
             services.AddSingleton<Transport>();
             services.AddSingleton<ITransport>(static sp => sp.GetRequiredService<Transport>());
             services.AddSingleton<IMessageSerializer, Serializer>();

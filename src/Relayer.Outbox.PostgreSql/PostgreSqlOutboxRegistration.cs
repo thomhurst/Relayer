@@ -17,7 +17,8 @@ public static class PostgreSqlOutboxRegistration
             !services.Any(static descriptor => descriptor.ServiceType == typeof(PostgreSqlOutbox)))
             throw new InvalidOperationException("A different IOutboxEnlistment is already registered. Configure one scoped outbox integration.");
         if (options is not null) PostgreSqlOutbox.ValidateOptions(options);
-        services.TryAddScoped<PostgreSqlOutbox>();
+        services.TryAddScoped<PostgreSqlOutbox>(provider => new(provider.GetRequiredService<IOptionsSnapshot<PostgreSqlOutboxOptions>>(),
+            provider.GetServices<PostgreSqlSchedulingRegistration>()));
         services.TryAddScoped<IOutboxEnlistment>(static provider => provider.GetRequiredService<PostgreSqlOutbox>());
         services.TryAddSingleton<IValidateOptions<PostgreSqlOutboxOptions>, Validator>();
         services.AddOptions<PostgreSqlOutboxOptions>().ValidateOnStart();

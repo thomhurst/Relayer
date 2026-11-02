@@ -124,6 +124,12 @@ public static partial class PostgreSqlOutboxServiceCollectionExtensions
             new(dataSource, provider.GetRequiredService<IOptionsMonitor<PostgreSqlOrderedDispatchOptions>>().Get(name),
                 provider.GetServices<ITransport>(), provider.GetRequiredService<ILogger<PostgreSqlOrderedDispatcher>>()));
         services.AddSingleton<IHostedService>(provider => provider.GetRequiredKeyedService<PostgreSqlOrderedDispatcher>(name));
+        services.AddSingleton<PostgreSqlSchedulingRegistration>(provider =>
+        {
+            var settings = provider.GetRequiredService<IOptionsMonitor<PostgreSqlOrderedDispatchOptions>>().Get(name);
+            _ = settings.Validate();
+            return new(settings.Schema, settings.TablePrefix, settings.Lanes);
+        });
         return services;
     }
 

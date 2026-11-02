@@ -35,7 +35,7 @@ start workers or take ownership of a data source.
 `PostgreSqlOutboxOptions` has init-only properties. For configuration binding and startup validation, pass an
 `IConfiguration` section to `services.AddRelayerPostgreSqlOutbox(configuration.GetSection("Outbox"))`.
 New scopes read updated configuration through `IOptionsSnapshot<PostgreSqlOutboxOptions>`.
-`LeaseDuration` and `MaxDispatchAttempts` are reserved for future workers; enqueue uses schema, prefix and lanes.
+`LeaseDuration` and `MaxDispatchAttempts` do not configure enqueue; enqueue uses schema, prefix and lanes. Configure dispatch and recovery through their separate worker options.
 To expose durable reads and backlog health, register the [keyed store](postgres-store.md) separately.
 
 ## ADO.NET and Dapper
@@ -96,7 +96,7 @@ connection. Both overloads accept an optional native `IsolationLevel` unchanged.
 - A lost connection or cancellation during native commit can leave the outcome unknown. Inspect durable business
   state using an application idempotency key before retrying; no client can undo an acknowledged server commit.
 - Native broker callbacks are rejected before persistence because delegates cannot survive storage.
-  Headers, ordering and scheduling remain available. This database transaction does not enlist a broker's
+  Headers and ordering remain available. Scheduled sends through `ISender` require a matching [maintenance worker](postgres-maintenance.md) for unordered rows or [ordered dispatcher](ordered-dispatch.md) for ordered rows; commit-only dispatch cannot deliver future rows. This database transaction does not enlist a broker's
   native transaction or change its delivery guarantees.
 
 Commit, rollback and disposal must go through the returned transaction. Do not close the original connection,

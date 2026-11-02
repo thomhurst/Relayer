@@ -19,7 +19,12 @@ public static class EntityFrameworkCoreOutboxExtensions
         if (services.Any(static descriptor => descriptor.ServiceType == typeof(IOutboxEnlistment)) &&
             !services.Any(static descriptor => descriptor.ServiceType == typeof(EntityFrameworkCoreOutbox)))
             throw new InvalidOperationException("A different IOutboxEnlistment is already registered. Configure one scoped outbox integration.");
-        services.TryAddScoped<EntityFrameworkCoreOutbox>();
+        services.TryAddSingleton<DefaultOutboxCapabilities>();
+        services.TryAddScoped<EntityFrameworkCoreOutbox>(static provider =>
+        {
+            var capabilities = provider.GetRequiredService<DefaultOutboxCapabilities>().Get();
+            return new(capabilities.Scheduling, capabilities.OrderedScheduling);
+        });
         services.TryAddScoped<IOutboxEnlistment>(static provider => provider.GetRequiredService<EntityFrameworkCoreOutbox>());
         services.TryAddSingleton<IValidateOptions<EntityFrameworkCoreOutboxOptions>, OutboxOptionsValidator>();
         services.AddOptions<EntityFrameworkCoreOutboxOptions>().ValidateOnStart();
@@ -58,7 +63,7 @@ public static class EntityFrameworkCoreOutboxExtensions
         var outbox = services.GetRequiredService<EntityFrameworkCoreOutbox>();
         var dispatcher = options.DispatchStoreName is { } name
             ? services.GetRequiredKeyedService<PostgreSqlDirectDispatcher>(name) : null;
-        var configuration = new OutboxConfiguration(options, dispatcher);
+        var configuration = new OutboxConfiguration(options, dispatcher, services.GetServices<PostgreSqlSchedulingRegistration>());
         builder.AddInterceptors(new OutboxSaveChangesInterceptor(outbox, configuration),
             new OutboxTransactionInterceptor(outbox, configuration));
         return builder;

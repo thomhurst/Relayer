@@ -10,10 +10,12 @@ internal sealed class EndpointCapabilityValidator
     private readonly List<string> _failures;
     private readonly EndpointCapabilityCache _cache;
     private readonly bool _hasRuntimeTransports;
+    private readonly OutboxCapabilities? _outbox;
 
-    internal EndpointCapabilityValidator(IEnumerable<ITransport> transports, List<string> failures, EndpointCapabilityCache cache)
+    internal EndpointCapabilityValidator(IEnumerable<ITransport> transports, List<string> failures, EndpointCapabilityCache cache, OutboxCapabilities? outbox = null)
     {
         _failures = failures;
+        _outbox = outbox;
         _cache = cache;
         foreach (var transport in transports)
         {
@@ -45,6 +47,9 @@ internal sealed class EndpointCapabilityValidator
         foreach (var route in definition.Routes)
         {
             var capabilities = GetCapabilities(transport, route.Destination);
+            if (capabilities is not null && route is ISendRouteDefinition send && _outbox is not null)
+                SendCapabilityValidator.Validate(send.SendOptions, capabilities, route.HasOrderingKey, _outbox,
+                    $"Route for '{route.MessageType}' to '{route.Destination}' on transport '{definition.Name}'", _failures);
             if (route.HasOrderingKey && capabilities is { OrderedByKey: false })
             {
                 _failures.Add($"Route for '{route.MessageType}' to '{route.Destination}' on transport '{definition.Name}': " +
