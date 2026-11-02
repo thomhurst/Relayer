@@ -1,5 +1,11 @@
 <Project Sdk="Microsoft.NET.Sdk">
-  <PropertyGroup><OutputType>Exe</OutputType></PropertyGroup>
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <!-- Background GC can charge unused allocation-context bytes to this thread's allocation counter
+         (dotnet/runtime#134724). Use blocking GC so strict allocation tests measure actual allocations.
+         This changes only the test host; broker and test concurrency remain enabled. -->
+    <ConcurrentGarbageCollection>false</ConcurrentGarbageCollection>
+  </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="TUnit" />
     <PackageReference Include="Testcontainers.Kafka" />
