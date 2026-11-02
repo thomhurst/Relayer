@@ -37,7 +37,7 @@
   },
   "overrides": {
     "@docusaurus/core": {
-      "tinypool": "2.1.2"
+      "tinypool": "2.2.0"
     },
     "copy-webpack-plugin": {
       "serialize-javascript": "7.1.4"
