@@ -43,7 +43,7 @@ internal sealed class KafkaHostedService(IServiceProvider provider, string name)
             { System = "kafka", Destination = consumer.Source, ConsumerGroup = consumer.Options.Group }));
             foreach (var handler in handlers.Descriptors)
                 if (consumer.Handlers.Contains(handler.HandlerType)) pipeline.Handler(handler);
-            var receive = new ReceivePipeline<KafkaDelivery, KafkaMessageBinding>(pipeline.Build(1), new(), 1);
+            var receive = new ReceivePipeline<KafkaDelivery, KafkaMessageBinding>(pipeline.Build(consumer.Concurrency), new(), consumer.Concurrency);
             var ownership = new KafkaOwnership();
             var native = new Dekaf.ConsumerBuilder<byte[], byte[]>().WithBootstrapServers(options.BootstrapServers.ToArray())
                 .WithLoggerFactory(provider.GetService<ILoggerFactory>() ?? NullLoggerFactory.Instance);
@@ -52,7 +52,7 @@ internal sealed class KafkaHostedService(IServiceProvider provider, string name)
             native.WithGroupId(consumer.Options.Group!).SubscribeTo(consumer.Source)
                 .WithOffsetCommitMode(OffsetCommitMode.Manual).WithAutoOffsetStore(false).AddRebalanceListener(ownership);
             _nativeTransport.Consumers.Add(new(native.Build(), receive.ProcessAsync, tracing, endpoint, ownership,
-                health?.Register(declaration)));
+                health?.Register(declaration), consumer.Options, consumer.Concurrency));
         }
         await _transport.StartAsync(cancellationToken).ConfigureAwait(false);
         await base.StartAsync(cancellationToken).ConfigureAwait(false);

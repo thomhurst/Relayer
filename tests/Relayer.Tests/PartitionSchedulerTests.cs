@@ -6,6 +6,50 @@ namespace Relayer.Tests;
 public class PartitionSchedulerTests
 {
     [Test]
+    public async Task Completion_notification_wakes_owner_without_pumping_on_handler_thread()
+    {
+        var source = new Source();
+        var delivery = new Delivery(1);
+        var notifications = 0;
+        var scheduler = new PartitionScheduler<Delivery, Binding, int, string>(source,
+            static (message, _) => new(message.Completion.Task), completionReady: () => Interlocked.Increment(ref notifications));
+        var assignment = scheduler.Assign(1);
+        scheduler.TryEnqueue(assignment, delivery, "next");
+        scheduler.Pump();
+        delivery.Complete();
+        await Assert.That(notifications).IsEqualTo(1);
+        await Assert.That(source.Commits.Count).IsEqualTo(0);
+        scheduler.Pump();
+        await Assert.That(source.Commits.Single().Position).IsEqualTo("next");
+        await Assert.That(scheduler.IsAssigned(assignment)).IsTrue();
+        scheduler.Lose(assignment);
+        await Assert.That(scheduler.IsAssigned(assignment)).IsFalse();
+    }
+
+    [Test]
+    public async Task Oldest_outstanding_delivery_is_not_hidden_by_idle_or_progressing_peers()
+    {
+        var clock = new InMemoryTestClock();
+        var fixture = new Fixture(clock: clock);
+        var stalled = fixture.Scheduler.Assign(1);
+        var peer = fixture.Scheduler.Assign(2);
+        var start = clock.GetUtcNow();
+        var blocked = new Delivery(1);
+        fixture.Enqueue(stalled, blocked, "blocked");
+        fixture.Scheduler.Pump();
+        clock.Advance(TimeSpan.FromHours(1));
+        var progress = new Delivery(2);
+        fixture.Enqueue(peer, progress, "peer");
+        fixture.Scheduler.Pump();
+        progress.Complete();
+        fixture.Scheduler.Pump();
+        await Assert.That(fixture.Scheduler.OldestOutstandingAt).IsEqualTo(start);
+        blocked.Complete();
+        fixture.Scheduler.Pump();
+        await Assert.That(fixture.Scheduler.OldestOutstandingAt).IsNull();
+    }
+
+    [Test]
     public async Task Equal_native_keys_stay_ordered_while_unrelated_keys_make_progress()
     {
         var fixture = new Fixture(capacity: 4, concurrency: 2);

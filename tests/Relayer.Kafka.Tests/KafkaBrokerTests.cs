@@ -86,6 +86,8 @@ public class KafkaBrokerTests
         await Assert.That(transport.Name).IsEqualTo("events");
         await Assert.That(log.Categories.Any(category => category.StartsWith("Dekaf", StringComparison.Ordinal))).IsTrue();
         await Assert.That(transport.GetCapabilities(topic).MaxBatchSize).IsEqualTo(int.MaxValue);
+        await Assert.That(transport.GetCapabilities(topic).PauseResume).IsTrue();
+        await Assert.That(transport.GetCapabilities(topic).Replay).IsTrue();
         await Assert.That(transport.GetCapabilities(topic).DeadLetter).IsFalse();
         await Assert.That(async () => await transport.ApplyTopologyAsync(TopologyMode.Validate, token))
             .Throws<NotSupportedException>().WithMessageContaining("TopologyMode.None");

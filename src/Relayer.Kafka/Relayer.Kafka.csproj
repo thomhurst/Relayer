@@ -14,6 +14,7 @@
 
   <ItemGroup>
     <InternalsVisibleTo Include="Relayer.Kafka.Tests" />
+    <InternalsVisibleTo Include="Relayer.AotSmoke" />
     <InternalsVisibleTo Include="Relayer.Benchmarks" />
     <InternalsVisibleTo Include="Relayer.Kafka.HealthChecks" />
   </ItemGroup>
