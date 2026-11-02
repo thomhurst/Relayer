@@ -156,8 +156,22 @@ tests, the common benchmark-version pinning script, the repository's agent guida
 aliases (`.claude/skills/issue-pr-loop/SKILL.md` and
 `.claude/skills/issue-pr-loop/references`) are excluded; those do not enter the
 measured builds. These aliases are symlinks on Linux and can be plain files on
-Windows. Other symlinks still fail verification. Every other tracked or unignored file is hashed,
-including unknown scripts. Different or unverified inventories retain the strict
+Windows. Other symlinks still fail verification.
+
+CI also passes `--verify-test-sources`. After the measurements, the detector builds
+the benchmark project and every transitive project in Release, then queries their
+final MSBuild items and imports. This includes source added by build targets.
+Only C# files under `tests/` that none of these projects consume are excluded from
+the inventory. Linked test source, resources and analyzer inputs remain hashed;
+test project files, configuration, other test assets and unknown files remain hashed
+as well. Both project graphs and their input paths are retained in
+`performance-inputs.json`. A failed build or incomplete query fails verification.
+Custom build tasks must declare their file inputs in MSBuild items; the query does
+not trace arbitrary file reads inside a task. Without this option, all test source
+remains conservatively hashed.
+
+Every other tracked or unignored file is hashed, including unknown scripts.
+Different or unverified inventories retain the strict
 5% throughput and 0.5 B/op rules. Startup and invalid-input checks remain active
 in both cases. Inconclusive rows keep their measured loss, intervals and totals;
 they do not establish unchanged performance or compliance with D18.
@@ -165,7 +179,7 @@ they do not establish unchanged performance or compliance with D18.
 To use this check locally, add all three options to the comparison command:
 
 ```powershell
-python .github/scripts/benchmark_gate.py compare C:/benchmark-results/baseline C:/benchmark-results/candidate --baseline-source C:/checkouts/baseline --candidate-source C:/checkouts/candidate --input-manifest C:/benchmark-results/performance-inputs.json
+python .github/scripts/benchmark_gate.py compare C:/benchmark-results/baseline C:/benchmark-results/candidate --baseline-source C:/checkouts/baseline --candidate-source C:/checkouts/candidate --input-manifest C:/benchmark-results/performance-inputs.json --verify-test-sources
 ```
 
 Use the separate checkouts that produced the reports, with their harness and SDK

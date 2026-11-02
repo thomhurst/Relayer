@@ -32,6 +32,7 @@ REQUIRED_METHODS = {
 # These files do not enter either measured build. The candidate CI driver and
 # detector control both executions. Keep every other file, including unknown
 # root inputs, tests, scripts, generators, dependencies and the overlaid harness.
+# Unbuilt test C# files have a separate, opt-in MSBuild verification below.
 NON_BUILD_FILES = {
     # Agent instruction aliases are symlinks on Linux, placeholders on Windows.
     ".claude/skills/issue-pr-loop/SKILL.md",
@@ -53,13 +54,58 @@ REQUIRED_INPUTS = {
     "src/Relayer.SourceGenerators/Relayer.SourceGenerators.csproj",
     "benchmarks/Relayer.Benchmarks/Relayer.Benchmarks.csproj",
 }
+BENCHMARK_PROJECT = "benchmarks/Relayer.Benchmarks/Relayer.Benchmarks.csproj"
+BUILD_ITEMS = ("Compile", "AdditionalFiles", "Analyzer", "EmbeddedResource", "Content", "None",
+               "ProjectReference", "ReferencePath", "EditorConfigFiles", "GlobalAnalyzerConfigFiles")
 
 
 class GateError(ValueError):
     """Missing or unusable input; never turn an incomplete run into a pass."""
 
 
-def input_manifest(checkout):
+def test_source_inputs(checkout):
+    """Retain test sources referenced by the Release build, including transitive projects.
+
+    Query after Build so target-added items are visible, not only evaluation-time globs.
+    Other test files remain conservatively hashed by input_manifest.
+    """
+    checkout = Path(checkout).resolve()
+    pending = [checkout / BENCHMARK_PROJECT]
+    projects = {}
+    inputs = set()
+    try:
+        while pending:
+            project = pending.pop().resolve()
+            name = project.relative_to(checkout).as_posix()
+            if name in projects:
+                continue
+            result = subprocess.run(
+                ["dotnet", "msbuild", str(project), "-target:Build", "-property:Configuration=Release",
+                 "-verbosity:quiet", "-nologo", "-getProperty:MSBuildAllProjects",
+                 "-getItem:" + ",".join(BUILD_ITEMS)],
+                cwd=project.parent, check=True, capture_output=True, text=True, encoding="utf-8", timeout=180)
+            data = json.loads(result.stdout)
+            items = data["Items"]
+            paths = set()
+            for kind in BUILD_ITEMS:
+                for item in items[kind]:
+                    path = Path(item["FullPath"]).resolve()
+                    if kind == "ProjectReference":
+                        pending.append(path)
+                    if path.is_relative_to(checkout):
+                        paths.add(path.relative_to(checkout).as_posix())
+            for imported in data["Properties"]["MSBuildAllProjects"].split(";"):
+                if imported and Path(imported).resolve().is_relative_to(checkout):
+                    paths.add(Path(imported).resolve().relative_to(checkout).as_posix())
+            projects[name] = sorted(paths)
+            inputs.update(paths)
+        return {"projects": projects, "test_sources": sorted(
+            name for name in inputs if name.startswith("tests/") and name.endswith(".cs"))}
+    except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as error:
+        raise GateError(f"Cannot verify benchmark test sources under {checkout}: {error}") from error
+
+
+def input_manifest(checkout, *, referenced_test_sources=None):
     """Hash actual checkout inputs after CI overlays the common harness and SDK."""
     checkout = Path(checkout).resolve()
     try:
@@ -69,9 +115,11 @@ def input_manifest(checkout):
 
         if Path(git("rev-parse", "--show-toplevel").strip()).resolve() != checkout:
             raise GateError(f"Not a checkout root: {checkout}")
-        paths = git("ls-files", "--cached", "--others", "--exclude-standard", "-z").split("\0")
+        paths = set(git("ls-files", "--cached", "--others", "--exclude-standard", "-z").split("\0"))
+        if referenced_test_sources is not None:
+            paths.update(referenced_test_sources)
         manifest = {}
-        for name in sorted(set(paths)):
+        for name in sorted(paths):
             if not name or name in NON_BUILD_FILES or name.startswith(("docs/", "website/")):
                 continue
             path = checkout / name
@@ -79,6 +127,11 @@ def input_manifest(checkout):
                 raise GateError(f"Cannot verify symlink input: {path}")
             if path.is_dir():
                 raise GateError(f"Cannot verify directory or submodule input: {path}")
+            if (referenced_test_sources is not None and name.startswith("tests/")
+                    and name.endswith(".cs") and name not in referenced_test_sources):
+                continue
+            if referenced_test_sources is not None and name in referenced_test_sources and not path.is_file():
+                raise GateError(f"Referenced test source missing: {path}")
             # The common harness overlay can delete a baseline's tracked file.
             if path.is_file():
                 manifest[name] = hashlib.sha256(path.read_bytes()).hexdigest()
@@ -256,6 +309,8 @@ def main(argv=None):
     compare_parser.add_argument("--baseline-source", type=Path)
     compare_parser.add_argument("--candidate-source", type=Path)
     compare_parser.add_argument("--input-manifest", type=Path, help="Retain SHA-256 inventories of both source checkouts")
+    compare_parser.add_argument("--verify-test-sources", action="store_true",
+                                help="Build and inspect the Release project graph before excluding unbuilt test C# files")
     test_parser = commands.add_parser("self-test")
     test_parser.add_argument("baseline")
     args = parser.parse_args(argv)
@@ -267,15 +322,25 @@ def main(argv=None):
         baseline_after = None if args.baseline_after is None else load_reports(args.baseline_after)
         identical_inputs = False
         source_arguments = (args.baseline_source, args.candidate_source, args.input_manifest)
+        if args.verify_test_sources and not all(source_arguments):
+            raise GateError("Test source verification requires both source checkouts and --input-manifest")
         if any(source_arguments):
             if not all(source_arguments):
                 raise GateError("Source verification requires --baseline-source, --candidate-source and --input-manifest together")
             if args.baseline_source.resolve() == args.candidate_source.resolve():
                 raise GateError("Source verification requires separate checkouts")
-            original, current = input_manifest(args.baseline_source), input_manifest(args.candidate_source)
-            identical_inputs = original == current
-            args.input_manifest.write_text(json.dumps({"baseline": original, "candidate": current,
-                                                       "identical": identical_inputs}, indent=2) + "\n", encoding="utf-8")
+            verification, manifest = {}, {}
+            for side, checkout in (("baseline", args.baseline_source), ("candidate", args.candidate_source)):
+                referenced = None
+                if args.verify_test_sources:
+                    verification[side] = test_source_inputs(checkout)
+                    referenced = verification[side]["test_sources"]
+                manifest[side] = input_manifest(checkout, referenced_test_sources=referenced)
+            identical_inputs = manifest["baseline"] == manifest["candidate"]
+            manifest["identical"] = identical_inputs
+            if verification:
+                manifest["test_source_verification"] = verification
+            args.input_manifest.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
         failures, summary = compare(baseline, load_reports(args.candidate), baseline_after=baseline_after,
                                     identical_inputs=identical_inputs)
         print(summary)
