@@ -1,9 +1,9 @@
 ---
 title: Azure Service Bus
-description: "Named native Service Bus senders, client ownership, sessions, scheduling and topology."
+description: "Named native Service Bus senders and processors, sessions, settlement, health and topology."
 ---
 
-`Relayer.AzureServiceBus` implements named queue/topic sending on `Azure.Messaging.ServiceBus`. [Receive primitives](service-bus-receive.md) are available separately. Hosted receiver composition, session processor bindings, health adapters and full transport conformance remain planned in [#130](https://github.com/thomhurst/Relayer/issues/130).
+`Relayer.AzureServiceBus` implements named queue/topic sending and native queue/subscription processors on `Azure.Messaging.ServiceBus`. Native session processors preserve Service Bus session ordering and state. [Receive primitives](service-bus-receive.md) remain available for applications that own their processor lifecycle.
 
 ## Register sending
 
@@ -32,13 +32,13 @@ await sender.SendAsync(new OrderPlaced(customerId));
 
 Messages need a stable `[Message]` identity and a source-generated JSON context. Start the host before sending. Service Bus routes default to the AMQP `cloudEvents:` header binding; creation context uses `traceparent` and `tracestate`. Named options support the [Options pattern](../guides/configuration.md). Set `ClientOptions` to the native `ServiceBusClientOptions`; Relayer passes it unchanged to the SDK. Relayer owns connection-string clients and disposes them with the provider. Alternatively, set `Client` to an existing `ServiceBusClient`, including a client constructed with `TokenCredential`. Relayer disposes its cached senders and leaves that client open. Configure exactly one of `ConnectionString` or `Client`; do not mutate captured native options after startup.
 
-Declare destinations with native `CreateQueueOptions` or `CreateTopicOptions` in `Queues` or `Topics`. Every send destination needs exactly one declaration. Native `CreateSubscriptionOptions` in `Subscriptions` declare subscriptions of a declared topic, independently of receiver composition. Consumer registrations currently fail with an actionable error rather than starting no receiver.
+Declare destinations with native `CreateQueueOptions` or `CreateTopicOptions` in `Queues` or `Topics`. Every send destination needs exactly one declaration. Native `CreateSubscriptionOptions` in `Subscriptions` declare subscriptions of a declared topic. Every consumer needs a matching native queue or topic/subscription declaration.
 
 For single and batch sends, the serializer's `content-type` header maps to native `ServiceBusMessage.ContentType`, as required by the CloudEvents AMQP binary binding. It is not copied to application properties. The serializer's media type takes precedence over a native callback's `ContentType`; when no `content-type` header is present, a callback may set the native property.
 
 ## Topology and permissions
 
-`Validate` is the default. It creates an empty native message batch to open each declared destination's authenticated send link, then disposes the batch and sender. No probe message is sent. It peeks declared subscriptions with a native receiver; peeking does not lock, consume or settle a message. Send destinations need Send rights; subscription checks need Listen rights. Validate never constructs or calls the administration client, even when one is supplied.
+`Validate` is the default. Send destinations use an empty native message batch to open an authenticated send link, then dispose the batch and sender. No probe message is sent. Receive-only queues and declared subscriptions use native peek operations, which do not lock, consume or settle a message. Receive-only topic consumers validate their subscriptions without opening a topic send link. Send destinations need Send rights; receive checks need Listen rights. Validate never constructs or calls the administration client, even when one is supplied.
 
 This verifies endpoint accessibility and existence. It cannot compare entity settings or distinguish a queue from a topic through a send link. [Service Bus requires Manage rights to read entity descriptions](https://learn.microsoft.com/en-us/azure/service-bus-messaging/service-bus-sas#rights-required-for-service-bus-operations). Native entity options specify what Provision should create and compare. Validate reports declared `RequiresSession = true` as unresolved and fails startup; it never infers session support from a name or silently grants ordering capabilities. Manage permission is never an automatic fallback.
 
@@ -46,7 +46,84 @@ Use `bus.TopologyMode = TopologyMode.Provision` explicitly to create missing ent
 
 Provision uses `AdministrationClient` when supplied. With an owned connection-string client it otherwise creates a native administration client using that connection string. With a caller-owned messaging client, supply an administration client explicitly; Relayer cannot extract credentials from the messaging client. The Service Bus emulator has a separate management endpoint: use its HTTP connection string for the administration client. Native administration clients are caller-owned and the SDK does not require disposal.
 
-`TopologyMode.None` skips all checks and writes. Native scheduling and batching remain available. Ordering capabilities stay unresolved in Validate and None, so portable `OrderingKey` requires Provision with verified session declarations. No transaction support, receive capabilities or namespace-dependent message-size limit is advertised by this send-only adapter.
+`TopologyMode.None` skips all checks and writes. Native scheduling and batching remain available. Portable send ordering capabilities stay unresolved in Validate and None, so portable `OrderingKey` requires Provision with verified session declarations. Consumers support native immediate abandon and dead-lettering. No transaction support or namespace-dependent message-size limit is advertised.
+
+## Register receiving
+
+Add a consumer to the same named transport declaration:
+
+```csharp
+bus.Consume("orders", consumer => consumer.Handler<OrderPlacedHandler>());
+```
+
+Relayer composes generated handlers, default JSON serialization, the core failure pipeline, process telemetry and native settlement before starting the processor. The default native `ServiceBusProcessorOptions` uses `PeekLock`, one concurrent callback and `AutoCompleteMessages = false`. Successful handling completes the message only after durable work and asynchronous scope disposal. Poison messages go to the native dead-letter queue without stopping healthy messages.
+
+Pass native options through `consumer.Options.ProcessorOptions`. Set `AutoCompleteMessages = false` on replacement options. `ReceiveAndDelete`, auto-complete, undeclared entities and batch handlers fail at startup. The portable concurrency declaration must match the native concurrency; Relayer never rewrites native options:
+
+```csharp
+bus.Consume("orders", consumer =>
+{
+    consumer.Options.ProcessorOptions = new ServiceBusProcessorOptions
+    {
+        AutoCompleteMessages = false,
+        MaxConcurrentCalls = 8,
+        PrefetchCount = 32,
+    };
+    consumer.Handler<OrderPlacedHandler>().Concurrency(8);
+});
+```
+
+For a topic subscription, consume the topic name and set `consumer.Options.Subscription` to the declared subscription name. Native processors own delivery, prefetch, lock renewal and reconnect. Shutdown stops new receives and drains callbacks through settlement; the host's shutdown cancellation token bounds the drain. A stopped processor can restart on the same host services.
+
+The SDK cancels its callback token as soon as processor shutdown starts. The composed pipeline uses `context.CancellationToken` for durable work and settlement; Relayer cancels it only when the host's drain deadline expires or the adapter is disposed. The original callback and its native token remain unchanged. Use the context token when draining application work.
+
+Configure the common `FailureOptions` through `consumer.Options.Failure`. In-process retry delays and immediate durable redelivery use the core policy and native abandon. Service Bus has no delayed abandon operation: positive `RedeliveryDelays` fail at startup rather than broadcasting a retry copy to every topic subscription. Delayed redelivery requires a separately designed durable executor; it is not implemented by this adapter.
+
+Inside a handler, `context.ServiceBus()` exposes the unchanged received message and native callback. `CompleteAsync`, `AbandonAsync`, `DeferAsync` and `DeadLetterAsync` call the SDK, use the context cancellation token and suppress automatic settlement only after success. Native defer retains the message for later retrieval by sequence number. Persist that sequence number before deferring. See [manual native settlement](service-bus-receive.md).
+
+## Session processors
+
+Declare `RequiresSession = true` on the native queue or subscription and supply `SessionProcessorOptions` to select `ServiceBusSessionProcessor`:
+
+```csharp
+bus.Consume("customer-orders", consumer =>
+{
+    consumer.Options.SessionProcessorOptions = new ServiceBusSessionProcessorOptions
+    {
+        AutoCompleteMessages = false,
+        MaxConcurrentSessions = 8,
+        MaxConcurrentCallsPerSession = 1,
+    };
+    consumer.Handler<OrderPlacedHandler>().Concurrency(8);
+});
+```
+
+The common concurrency must equal `MaxConcurrentSessions * MaxConcurrentCallsPerSession`. Use one callback per session when the handler depends on ordered completion. Relayer passes these native options unchanged and adds no ordering layer. `context.ServiceBus().SessionCallback` exposes the original `ProcessSessionMessageEventArgs`, including native session state and session lock operations. `Callback` is for non-session deliveries; using it on a session delivery fails with an actionable error. The common native settlement helpers work for both processor kinds.
+
+## Receive telemetry
+
+Each callback has a `process` span. Each actual completion, abandon, defer or dead-letter operation has a child settle span, including manual helper settlement. Spans use `messaging.system = servicebus`, subscription name, native delivery count, enqueued time and disposition status. The SDK's messaging `ActivitySource` is experimental and requires its own opt-in. Set
+`AZURE_EXPERIMENTAL_ENABLE_ACTIVITY_SOURCE=true` before process startup and subscribe to
+`Azure.Messaging.ServiceBus.*` to add native spans beneath the active Relayer settlement operation.
+Relayer does not mutate that process switch. See the [Azure SDK tracing sample](https://github.com/Azure/azure-sdk-for-net/blob/main/sdk/servicebus/Azure.Messaging.ServiceBus/samples/Sample19_DistributedTracing.md). Original `traceparent` and `tracestate` application properties remain creation context.
+
+## Health
+
+Install `Relayer.AzureServiceBus.HealthChecks` and register the exact, case-sensitive transport key before host startup:
+
+```csharp
+using Relayer.AzureServiceBus;
+using Relayer.HealthChecks;
+
+services.AddRelayerServiceBusHealthProviders("orders");
+services.AddRelayerHealthChecks();
+```
+
+The companion registers `ITransportHealthProbe` and `IConsumerHealthProvider` under that key. Connectivity uses native read-only operations and never sends or consumes a probe message. Consumer snapshots belong to each exact declaration. An idle consumer has no active callback; an active consumer reports its oldest active worker's progress time, so a busy worker cannot hide a stalled sibling. Stopped or unavailable receivers do not report a false healthy idle state. Configure the common health check stall threshold for your workload.
+
+The Testcontainers suite uses Service Bus emulator 2.0.0 with SQL Server. It covers queues, topic subscriptions, session ordering and manual settlement, native retry/dead-lettering, scheduled sends, creation context, drain/restart, read-only health and connection recovery. Immediate native redelivery passes; positive delayed redelivery is an explicit capability skip. Emulator results do not establish production throughput, Azure identity/RBAC behavior, transaction support or service tier quotas.
+
+Emulator entities created through the administration endpoint do not survive an emulator container restart. Recovery tests declare their owned endpoints in the emulator's startup configuration so the same client and processors reconnect to the same configured endpoint names. This test setup does not add topology persistence to the adapter or imply that a managed namespace loses entities on restart.
 
 ## Sessions, scheduling and native callbacks
 
@@ -84,3 +161,11 @@ The registered serializer's content type is already a string, so the normal `con
 `ServiceBusSendAllocationTests` limits warmed preparation allocations to the existing string conversions, with changing IDs/timestamps, stored creation context and alternating registered serializer content types. It also checks that reusing caller buffers after lease release cannot change native snapshots and that clearing a pooled message detaches the borrowed body. This regression ceiling records the current limitation; it does not waive the zero-allocation target tracked in [#295](https://github.com/thomhurst/Relayer/issues/295).
 
 `ServiceBusHeaderBenchmarks` isolates these conversions from SDK/network and serializer allocations. It writes the actual envelope with changing IDs and timestamps on every invocation, for both a single route and alternating routes, and compares direct native property assignment with the adapter. The raw baseline performs the same string conversions; matching that baseline does not waive Relayer's own allocation budget. The `DefaultJson` acknowledged comparison can measure the full pipeline's overhead, but adding a benchmark does not establish the 5% throughput budget: that requires measurements against the same native client and environment. Receive performance and full transport conformance remain planned.
+
+`ServiceBusReceiveBenchmarks` compares raw SDK processor callbacks with the composed Relayer receive pipeline, using the same source-generated default JSON and native completion. Each iteration seeds 128 messages outside the timed region, then measures processor start and handler progress for both cases. Both signal progress before native completion; iteration cleanup drains the final settlement and stops the processor outside timing. This excludes at most the last settlement from each measured workload. Both clients use the same three-second native try timeout. It uses `MemoryDiagnoser` and the same namespace environment variables as sending. Run `--filter "*ServiceBusReceiveBenchmarks*"`; use an isolated test namespace. Startup, the final settlement boundary and emulator latency limit its use as a steady-state comparison; these numbers do not establish the production budget.
+
+The receive adapter returns the SDK-required callback `Task` when its pooled `ValueTask` pipeline
+completes asynchronously. That callback allocation belongs to Relayer. Optional liveness tracking also
+reads the clock and reserves an active worker slot per callback. These boundaries, DI scopes, serializer
+allocations and native SDK allocations must be attributed separately before declaring the receive budget
+met. No allocation-budget exception is implied by the raw-client comparison.

@@ -18,6 +18,7 @@
     <ProjectReference Include="../../src/Relayer.AzureServiceBus/Relayer.AzureServiceBus.csproj" />
     <ProjectReference Include="../../src/Relayer.Nats/Relayer.Nats.csproj" />
     <ProjectReference Include="../../src/Relayer.Kafka.SchemaRegistry/Relayer.Kafka.SchemaRegistry.csproj" />
+    <ProjectReference Include="../../src/Relayer.AzureServiceBus.HealthChecks/Relayer.AzureServiceBus.HealthChecks.csproj" />
     <ProjectReference Include="../../src/Relayer.Testing/Relayer.Testing.csproj" />
     <ProjectReference Include="../../src/Relayer.HealthChecks/Relayer.HealthChecks.csproj" />
     <ProjectReference Include="../../src/Relayer.Outbox.PostgreSql/Relayer.Outbox.PostgreSql.csproj" />
