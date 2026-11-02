@@ -10,11 +10,26 @@ public interface ITopology
 
     /// <summary>Exports declarations as UTF-8 JSON, using stable message identities. Leaves the stream open.</summary>
     void ExportJson(Stream destination);
+
+    /// <summary>
+    /// Exports AsyncAPI 3.0.0 with JSON contract schemas from registered source-generated metadata.
+    /// Requires source-generated JSON metadata for every registered message, including messages using custom serializers.
+    /// Does not export protocol bindings or custom serializer formats. Leaves the stream open.
+    /// </summary>
+    /// <exception cref="InvalidOperationException">
+    /// A registered message lacks source-generated JSON metadata or a declared message lacks a stable identity.
+    /// Export fails before writing the document; registering an IMessageSerializer does not satisfy the metadata requirement.
+    /// </exception>
+    void ExportAsyncApi(Stream destination, AsyncApiOptions options);
 }
 
-internal sealed class Topology(RelayerConfiguration configuration, MessageTypeRegistry messages, HandlerRegistry handlers) : ITopology
+internal sealed class Topology(RelayerConfiguration configuration, MessageTypeRegistry messages, HandlerRegistry handlers,
+    IEnumerable<JsonSerializerRegistration> jsonContexts) : ITopology
 {
     public IReadOnlyList<TransportDefinition> Transports => configuration.Transports;
+
+    public void ExportAsyncApi(Stream destination, AsyncApiOptions options) =>
+        AsyncApiExporter.Export(destination, options, Transports, messages, handlers, jsonContexts);
 
     public void ExportJson(Stream destination)
     {
