@@ -15,6 +15,7 @@ public sealed class TransportBuilder<TTransportOptions, TRouteOptions, TConsumer
     private readonly List<IConsumerDefinition> _consumers = [];
     private bool _built;
     private TopologyMode? _topologyMode;
+    private SendRouteOptions _sendDefaults = new();
 
     internal TransportBuilder(IServiceCollection services, HandlerRegistry handlers, string name)
     {
@@ -37,6 +38,13 @@ public sealed class TransportBuilder<TTransportOptions, TRouteOptions, TConsumer
     /// <summary>Named Options pattern configuration, binding, validation and reload registration.</summary>
     public OptionsBuilder<TTransportOptions> Options { get; }
 
+    /// <summary>Default portable send settings for routes declared afterward. A route may replace them with SendOptions.</summary>
+    public SendRouteOptions SendDefaults
+    {
+        get => _sendDefaults;
+        set { EnsureMutable(); ArgumentNullException.ThrowIfNull(value); _sendDefaults = value; }
+    }
+
     /// <summary>Declares a message destination. Whether this sends or publishes is a native routing concern.</summary>
     public TransportBuilder<TTransportOptions, TRouteOptions, TConsumerOptions> Send<TMessage>(string destination,
         Action<RouteBuilder<TMessage, TRouteOptions>>? configure = null)
@@ -44,6 +52,7 @@ public sealed class TransportBuilder<TTransportOptions, TRouteOptions, TConsumer
         EnsureMutable();
         ArgumentNullException.ThrowIfNull(destination);
         var route = new RouteBuilder<TMessage, TRouteOptions>(destination);
+        route.SendOptions = _sendDefaults;
         configure?.Invoke(route);
         _routes.Add(route.Build());
         return this;

@@ -1,0 +1,105 @@
+using Azure.Messaging.ServiceBus;
+using Azure.Messaging.ServiceBus.Administration;
+using DotNet.Testcontainers.Builders;
+using Relayer.AzureServiceBus;
+using Testcontainers.MsSql;
+using Testcontainers.ServiceBus;
+
+namespace Relayer.Tests;
+
+public class ServiceBusSendEmulatorTests
+{
+    [Test]
+    public async Task Native_sends_batches_sessions_scheduling_and_topology_round_trip()
+    {
+        using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(5));
+        var token = timeout.Token;
+        await using var network = new NetworkBuilder().Build();
+        var databaseBuilder = new MsSqlBuilder("mcr.microsoft.com/mssql/server:2022-CU14-ubuntu-22.04")
+            .WithNetwork(network).WithNetworkAliases(ServiceBusBuilder.DatabaseNetworkAlias);
+        var emulatorBuilder = new ServiceBusBuilder("mcr.microsoft.com/azure-messaging/servicebus-emulator:2.0.0")
+            .WithAcceptLicenseAgreement(true).WithConfig(Path.Combine(AppContext.BaseDirectory, "servicebus-config.json"));
+        if (OperatingSystem.IsLinux())
+        {
+            databaseBuilder = databaseBuilder.WithPortBinding("20000-29999", "1433");
+            emulatorBuilder = emulatorBuilder.WithPortBinding("20000-29999", "5672").WithPortBinding("20000-29999", "5300");
+        }
+        await using var database = databaseBuilder.Build();
+        await using var emulator = emulatorBuilder.WithMsSqlContainer(network, database, ServiceBusBuilder.DatabaseNetworkAlias).Build();
+        await emulator.StartAsync(token);
+        await using var client = new ServiceBusClient(emulator.GetConnectionString());
+        var admin = new ServiceBusAdministrationClient(emulator.GetHttpConnectionString());
+        var options = new AzureServiceBusTransportOptions { Client = client, AdministrationClient = admin };
+        // Match the emulator's documented TTL/size quotas and its duplicate-window default.
+        options.Queues.Add(new("send-orders") { DefaultMessageTimeToLive = TimeSpan.FromHours(1), MaxSizeInMegabytes = 100, DuplicateDetectionHistoryTimeWindow = TimeSpan.FromMinutes(10) });
+        options.Queues.Add(new("send-sessions") { RequiresSession = true, DefaultMessageTimeToLive = TimeSpan.FromHours(1), MaxSizeInMegabytes = 100, DuplicateDetectionHistoryTimeWindow = TimeSpan.FromMinutes(10) });
+        options.Topics.Add(new("send-events") { DefaultMessageTimeToLive = TimeSpan.FromHours(1), MaxSizeInMegabytes = 100, DuplicateDetectionHistoryTimeWindow = TimeSpan.FromMinutes(10), SupportOrdering = true });
+        options.Subscriptions.Add(new("send-events", "audit") { DefaultMessageTimeToLive = TimeSpan.FromHours(1), AutoDeleteOnIdle = TimeSpan.FromHours(1) });
+        await using (var transport = new ServiceBusSendTransport("emulator", client, false, options,
+            ["send-orders", "send-sessions", "send-events"], TopologyMode.Provision, admin))
+        {
+            var provisioned = await transport.ApplyTopologyAsync(TopologyMode.Provision, token);
+            foreach (var difference in provisioned.Differences) Console.WriteLine(difference);
+            await Assert.That(string.Join(Environment.NewLine, provisioned.Differences)).IsEqualTo("");
+            var repeated = await transport.ApplyTopologyAsync(TopologyMode.Provision, token);
+            await Assert.That(repeated.Differences.Count).IsEqualTo(0);
+            // Validate checks live links without sending a message. Session declarations explicitly remain unresolved.
+            var validation = await transport.ApplyTopologyAsync(TopologyMode.Validate, token);
+            await Assert.That(validation.Differences.Count).IsEqualTo(1);
+            await Assert.That(validation.Differences[0]).Contains("send-sessions");
+
+            KeyValuePair<string, WireString>[] headers = [new("cloudEvents:id", new("original-id")),
+                new("cloudEvents:type", new("orders;v=1")), new("traceparent", new("00-0123456789abcdef0123456789abcdef-0123456789abcdef-01"))];
+            KeyValuePair<string, WireString>[] contentHeaders = [.. headers, new("content-type", new("application/x-protobuf"))];
+            var native = new SendOptions().ServiceBus(message => { message.Subject = "native"; message.ContentType = "application/json"; });
+            await transport.SendAsync(new("send-orders", new byte[] { 42 }, contentHeaders, options: native), token);
+            await using var orders = client.CreateReceiver("send-orders");
+            var order = await orders.ReceiveMessageAsync(TimeSpan.FromSeconds(30), token)
+                ?? throw new InvalidOperationException("Queue send was not delivered.");
+            await Assert.That(order.Body.ToMemory().Span[0]).IsEqualTo((byte)42);
+            await Assert.That(order.Subject).IsEqualTo("native");
+            await Assert.That(order.ContentType).IsEqualTo("application/x-protobuf");
+            await Assert.That(order.ApplicationProperties.ContainsKey("content-type")).IsFalse();
+            foreach (var header in headers) await Assert.That(order.ApplicationProperties[header.Key]).IsEqualTo(header.Value.ToString());
+            await orders.CompleteMessageAsync(order, token);
+
+            await transport.SendBatchAsync(new[] {
+                new OutgoingMessage("send-sessions", new byte[] { 1 }, orderingKey: new WireString("customer")),
+                new OutgoingMessage("send-sessions", new byte[] { 2 }, orderingKey: new WireString("customer")),
+                new OutgoingMessage("send-events", new byte[] { 3 }, contentHeaders) }, token);
+            await using var session = await client.AcceptSessionAsync("send-sessions", "customer", cancellationToken: token);
+            for (byte expected = 1; expected <= 2; expected++)
+            {
+                var message = await session.ReceiveMessageAsync(TimeSpan.FromSeconds(30), token)
+                    ?? throw new InvalidOperationException("Session batch was not delivered.");
+                await Assert.That(message.SessionId).IsEqualTo("customer");
+                await Assert.That(message.Body.ToMemory().Span[0]).IsEqualTo(expected);
+                await session.CompleteMessageAsync(message, token);
+            }
+            await using var audit = client.CreateReceiver("send-events", "audit");
+            var published = await audit.ReceiveMessageAsync(TimeSpan.FromSeconds(30), token)
+                ?? throw new InvalidOperationException("Topic send was not delivered to the subscription.");
+            await Assert.That(published.Body.ToMemory().Span[0]).IsEqualTo((byte)3);
+            await Assert.That(published.ContentType).IsEqualTo("application/x-protobuf");
+            await Assert.That(published.ApplicationProperties.ContainsKey("content-type")).IsFalse();
+            await audit.CompleteMessageAsync(published, token);
+
+            var scheduledAt = DateTimeOffset.UtcNow.AddSeconds(2);
+            await transport.SendAsync(new("send-orders", new byte[] { 99 }, deliverAt: scheduledAt), token);
+            var scheduled = await orders.ReceiveMessageAsync(TimeSpan.FromSeconds(30), token)
+                ?? throw new InvalidOperationException("Scheduled send was not delivered.");
+            await Assert.That(scheduled.EnqueuedTime >= DateTimeOffset.FromUnixTimeMilliseconds(scheduledAt.ToUnixTimeMilliseconds())).IsTrue();
+            await Assert.That(scheduled.Body.ToMemory().Span[0]).IsEqualTo((byte)99);
+            await orders.CompleteMessageAsync(scheduled, token);
+
+            // Existing properties are reported, never updated or replaced.
+            options.Queues[0].MaxDeliveryCount = 11;
+            var drift = await transport.ApplyTopologyAsync(TopologyMode.Provision, token);
+            await Assert.That(drift.Differences.Single()).Contains("MaxDeliveryCount expected '11', actual '10'");
+            await Assert.That((await admin.GetQueueAsync("send-orders", token)).Value.MaxDeliveryCount).IsEqualTo(10);
+        }
+        // Disposing the adapter closes its senders, while the caller-owned native client remains usable.
+        await using var senderAfterDisposal = client.CreateSender("send-orders");
+        await senderAfterDisposal.SendMessageAsync(new(new byte[] { 7 }), token);
+    }
+}
