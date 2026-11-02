@@ -298,6 +298,7 @@ const status = [
   ['Avro with generated codecs and startup-prepared schema registry', 'Implemented; Native AOT/trimming unsupported', true],
   ['Fallback partition watermarks, key scheduling, backpressure and bounded drain', 'Implemented core SPI; native runtime first', true],
   ['RabbitMQ native connection and topology', 'Implemented', true],
+  ['NATS JetStream native connection and topology', 'Implemented; message execution blocked upstream', true],
   ['Kafka parallel receive via Dekaf, Service Bus receiver composition, SQS/SNS and RabbitMQ send/receive adapters', 'In progress', false],
   ['Health checks with application-provided adapters', 'Implemented', true],
   ['Scoped tenant header propagation', 'Implemented; tenant stores and dispatch planned', true],

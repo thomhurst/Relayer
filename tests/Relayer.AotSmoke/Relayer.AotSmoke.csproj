@@ -16,6 +16,7 @@
     <ProjectReference Include="../../src/Relayer.Serialization.Protobuf/Relayer.Serialization.Protobuf.csproj" />
     <ProjectReference Include="../../src/Relayer.Serialization.MessagePack/Relayer.Serialization.MessagePack.csproj" />
     <ProjectReference Include="../../src/Relayer.AzureServiceBus/Relayer.AzureServiceBus.csproj" />
+    <ProjectReference Include="../../src/Relayer.Nats/Relayer.Nats.csproj" />
     <ProjectReference Include="../../src/Relayer.Kafka.SchemaRegistry/Relayer.Kafka.SchemaRegistry.csproj" />
     <ProjectReference Include="../../src/Relayer.Testing/Relayer.Testing.csproj" />
     <ProjectReference Include="../../src/Relayer.HealthChecks/Relayer.HealthChecks.csproj" />

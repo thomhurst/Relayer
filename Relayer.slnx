@@ -17,11 +17,13 @@
     <Project Path="src/dotnet-relayer/dotnet-relayer.csproj" />
     <Project Path="src/Relayer.AmazonSqs/Relayer.AmazonSqs.csproj" />
     <Project Path="src/Relayer.RabbitMQ/Relayer.RabbitMQ.csproj" />
+    <Project Path="src/Relayer.Nats/Relayer.Nats.csproj" />
     <Project Path="src/Relayer.Outbox.EntityFrameworkCore/Relayer.Outbox.EntityFrameworkCore.csproj" />
     <Project Path="src/Relayer.Outbox.PostgreSql/Relayer.Outbox.PostgreSql.csproj" />
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/Relayer.Sagas.Tests/Relayer.Sagas.Tests.csproj" />
+    <Project Path="tests/Relayer.Nats.Tests/Relayer.Nats.Tests.csproj" />
     <Project Path="tests/Relayer.Outbox.CrashProbe/Relayer.Outbox.CrashProbe.csproj" />
     <Project Path="tests/Relayer.Testing.Tests/Relayer.Testing.Tests.csproj" />
     <Project Path="tests/Relayer.AotSmoke/Relayer.AotSmoke.csproj" />
