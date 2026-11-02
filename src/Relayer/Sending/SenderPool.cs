@@ -13,20 +13,21 @@ internal sealed class SenderPool(SendPipeline pipeline)
             Interlocked.CompareExchange(ref _senders, new Segment(this, initialize: true), null);
     }
 
-    internal Sender Rent(IOutboxEnlistment? outbox)
+    internal Sender Rent(IOutboxEnlistment? outbox, TenantContext? tenant = null)
     {
         var first = Volatile.Read(ref _senders);
-        if (first is null) return new Sender(_pipeline, outbox);
+        if (first is null) return new Sender(_pipeline, outbox) { Tenant = tenant };
         for (var segment = first; segment is not null; segment = Volatile.Read(ref segment.Next))
         {
             for (var i = 0; i < segment.Items.Length; i++)
             {
                 if (Interlocked.Exchange(ref segment.Items[i], null) is not { } sender) continue;
                 sender.Outbox = outbox;
+                sender.Tenant = tenant;
                 return sender;
             }
         }
-        return new PooledSender(this, _pipeline) { Outbox = outbox };
+        return new PooledSender(this, _pipeline) { Outbox = outbox, Tenant = tenant };
     }
 
     private void Return(PooledSender sender)
@@ -67,6 +68,7 @@ internal sealed class SenderPool(SendPipeline pipeline)
             // The consume pipeline returns an attached sender after the entire scope finishes disposing.
             if (AttemptBuffer is not null) return;
             Outbox = null;
+            Tenant = null;
             owner.Return(this);
         }
     }

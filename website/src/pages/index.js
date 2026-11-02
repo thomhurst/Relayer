@@ -299,6 +299,7 @@ const status = [
   ['Fallback partition watermarks, key scheduling, backpressure and bounded drain', 'Implemented core SPI; native runtime first', true],
   ['Kafka parallel receive via Dekaf, Service Bus receiver composition, SQS/SNS and RabbitMQ transports', 'In progress', false],
   ['Health checks with application-provided adapters', 'Implemented', true],
+  ['Scoped tenant header propagation', 'Implemented; tenant stores and dispatch planned', true],
   ['Durable outbox contracts and keyed health adapter', 'Implemented core seam', true],
   ['PostgreSQL schema scripts, CLI and EF migration path', 'Implemented schema tooling', true],
   ['PostgreSQL durable reads and fenced claims', 'Implemented store operations', true],

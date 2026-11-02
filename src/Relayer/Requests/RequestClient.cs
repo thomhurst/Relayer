@@ -1,6 +1,6 @@
 namespace Relayer;
 
-internal sealed class RequestClient<TRequest, TResponse>(SendPipeline pipeline, RequestReplies<TRequest, TResponse> replies)
+internal sealed class RequestClient<TRequest, TResponse>(SendPipeline pipeline, RequestReplies<TRequest, TResponse> replies, TenantContext? tenant = null)
     : IRequestClient<TRequest, TResponse>
 {
     private readonly SendRoute<TRequest> _route = pipeline.GetRoute<TRequest>();
@@ -22,7 +22,7 @@ internal sealed class RequestClient<TRequest, TResponse>(SendPipeline pipeline, 
             {
                 // Do not wait on a handler's send buffer or an uncommitted outbox transaction.
                 await _route.SendAsync(request, null, null, cancellation.Token, null,
-                    new(new(replies.Address), new(pending.Correlation))).ConfigureAwait(false);
+                    new(new(replies.Address), new(pending.Correlation)), tenant?.Id ?? default).ConfigureAwait(false);
                 cancellation.Token.ThrowIfCancellationRequested();
                 return await pending.Completion.Task.WaitAsync(cancellation.Token).ConfigureAwait(false);
             }

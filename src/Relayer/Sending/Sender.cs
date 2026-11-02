@@ -5,13 +5,14 @@ internal enum SendMode { Automatic, Direct, Outbox }
 internal class Sender(SendPipeline pipeline, IOutboxEnlistment? outbox = null) : ISender
 {
     internal IOutboxEnlistment? Outbox { get; set; } = outbox;
+    internal TenantContext? Tenant { get; set; }
     internal AttemptSendBuffer? AttemptBuffer { get; set; }
 
     internal virtual void EndAttempt() => AttemptBuffer = null;
 
     internal ValueTask ReplyAsync<TMessage>(TMessage message, WireString correlationId, CancellationToken cancellationToken) =>
         pipeline.GetRoute<TMessage>().SendAsync(message, null, Outbox is { IsActive: true } ? Outbox : null,
-            cancellationToken, AttemptBuffer, new(default, correlationId));
+            cancellationToken, AttemptBuffer, new(default, correlationId), Tenant?.Id ?? default);
 
     public ValueTask SendAsync<TMessage>(TMessage message, CancellationToken cancellationToken = default) =>
         Send(message, null, SendMode.Automatic, cancellationToken);
@@ -43,6 +44,6 @@ internal class Sender(SendPipeline pipeline, IOutboxEnlistment? outbox = null) :
         {
             throw new InvalidOperationException("SendViaOutboxAsync requires an outbox with an active transaction in this scope.");
         }
-        return pipeline.GetRoute<TMessage>().SendAsync(message, configure, enlistment, cancellationToken, AttemptBuffer);
+        return pipeline.GetRoute<TMessage>().SendAsync(message, configure, enlistment, cancellationToken, AttemptBuffer, tenant: Tenant?.Id ?? default);
     }
 }

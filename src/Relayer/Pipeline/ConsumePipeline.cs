@@ -29,6 +29,7 @@ public sealed partial class ConsumePipeline
         => (BatchExecution ?? throw new InvalidOperationException("Build a batch consumer before using batch dispatch."))
             .ProcessAsync(this, contexts, cancellationToken);
     internal IRelayerObserver? Observer { get; }
+    internal bool RestoresTenant { get; }
     private readonly ConsumeDelegate _process;
     private readonly IServiceScopeFactory _scopes;
     private readonly FrozenDictionary<MessageType, ConsumeDelegate> _dispatch;
@@ -50,7 +51,11 @@ public sealed partial class ConsumePipeline
         int capacity, FailurePipeline? failures, EndpointTelemetry? telemetry, ConsumeDelegate? settlement, ConsumeTracing? tracing)
     {
         _scopes = scopes;
-        using (var scope = scopes.CreateScope()) Observer = scope.ServiceProvider.GetService<IRelayerObserver>();
+        using (var scope = scopes.CreateScope())
+        {
+            Observer = scope.ServiceProvider.GetService<IRelayerObserver>();
+            RestoresTenant = scope.ServiceProvider.GetService<TenantContextPool>() is not null;
+        }
         _failures = failures;
         _dispatch = dispatch;
         _failure = failure;

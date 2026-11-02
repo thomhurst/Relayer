@@ -24,10 +24,14 @@ public class SendPipelineBenchmarks
     [Params(false, true)]
     public bool Middleware { get; set; }
 
+    [Params(false, true)]
+    public bool Tenancy { get; set; }
+
     [GlobalSetup]
     public void Setup()
     {
         var services = new ServiceCollection();
+        if (Tenancy) services.AddRelayerTenancy();
         services.AddSingleton<ITransport>(_transport);
         services.AddRelayer(builder =>
         {
@@ -38,6 +42,7 @@ public class SendPipelineBenchmarks
         });
         _provider = services.BuildServiceProvider();
         _scope = _provider.CreateScope();
+        if (Tenancy) _scope.ServiceProvider.GetRequiredService<TenantContext>().Id = new("tenant-1"u8.ToArray());
         _sender = _scope.ServiceProvider.GetRequiredService<ISender>();
         _serializer = _provider.GetRequiredService<IMessageSerializer>();
     }

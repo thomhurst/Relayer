@@ -42,6 +42,8 @@ public sealed class ConsumePipelineBuilder
         ArgumentOutOfRangeException.ThrowIfLessThan(consumer.Concurrency, 1);
         if (consumer.BatchWait <= TimeSpan.Zero) throw new ArgumentOutOfRangeException(nameof(consumer));
         using var compositionScope = _scopes.CreateScope();
+        if (compositionScope.ServiceProvider.GetService<TenantContextPool>() is not null)
+            throw new InvalidOperationException("Tenant propagation requires single-message consumers. Batch consumers share one DI scope; use individual delivery scopes.");
         var readers = compositionScope.ServiceProvider.GetService<UpcasterRegistry>()?.Compose(descriptor.MessageType, _messages, _serializer) ?? [];
         var batch = descriptor.CreateBatchDispatcher(_serializer, consumer.BatchSize, consumer.Concurrency, readers);
         compositionScope.ServiceProvider.GetService<SenderPool>()?.Enable();
