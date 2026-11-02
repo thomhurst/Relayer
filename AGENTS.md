@@ -7,7 +7,8 @@ Relayer is a .NET messaging library that wraps the native client for each broker
 The goal is code that is simple, intuitive and easy to write, without giving up power or performance ([design §1](docs/design.md#1-principles)).
 
 - Write the user's call site first, in the style of [design §3](docs/design.md#3-developer-experience), then implement it. The common case takes a few lines and is correct by default: at-least-once delivery, poison messages dead-lettered rather than crashing or stalling a consumer, and settlement only after the work is durable.
-- Wrap, don't replace (D1). Use native send, receive, settlement, ordering, partitioning, sessions and dead-lettering as-is. Never emulate a feature the broker already has, and reuse features the native client already ships where they fit (D22).
+- Wrap, don't replace (D1). Use native send, receive, settlement, ordering, partitioning, sessions and dead-lettering as-is. Never emulate a feature the broker already has, and reuse features the native client already ships (D22).
+- Search before you build. Before implementing a capability (scheduling, concurrency, backpressure, rebalance handling, commits, retries, dead-lettering, telemetry), look for it in the native client at the version in `Directory.Packages.props` (for Dekaf, its repository source, not only its README), and in Relayer's existing code. If it exists, call it. If it falls short, file an issue on the client with the missing piece and wrap what exists; do not build a parallel implementation. Building one anyway needs a recorded decision in `docs/decisions.md` naming the native feature and why it cannot be used. Issue text that says "implement" or names a Relayer component does not override this; flag the conflict on the issue instead.
 - Keep power reachable without cluttering the common path. Portable concerns are uniform across transports; transport-specific features are typed, discoverable extensions such as `context.Kafka()` or `o.ServiceBus(...)`, never a lowest-common-denominator option.
 - Pass native configuration through unchanged (Dekaf's builders, `ServiceBusClientOptions`, `ConnectionFactory`, `AmazonSQSConfig`); never re-model it. Expose native objects through the feature collection (D6).
 - One obvious way to do each thing. Do not add parallel APIs for the same job; for example, publish versus send is a routing concern, not a separate API ([design §3.4](docs/design.md#34-sending-from-anywhere)).
@@ -57,7 +58,7 @@ dotnet run -c Release --project benchmarks/Relayer.Benchmarks
 - Tests use TUnit. Filter with `--treenode-filter "/*/*/ClassName/TestName"` (`/<Assembly>/<Namespace>/<Class>/<Test>` segments; wildcards and `(A|B)` alternation work within a segment). With MTP, pass test options directly, without an extra `--` or VSTest's `--filter`.
 - Features require unit tests; transport behavior changes require tests against the real broker or its emulator where one exists, and every transport must pass the transport conformance suite ([design §15](docs/design.md#15-roadmap)).
 - Investigate intermittent test failures instead of rerunning CI to obtain green. Use deterministic synchronization for timing-dependent tests.
-- Review final changes for reuse, quality, and efficiency before opening a PR (`/simplify` when available). Preserve the performance requirements above.
+- Review final changes for reuse, quality, and efficiency before opening a PR (`/simplify` when available). Preserve the performance requirements above. The PR description lists the native and existing Relayer features the change builds on, and any it duplicates with the decision that allows it. Reviewers treat an unexplained re-implementation of a native feature as blocking.
 
 ## Documentation
 

@@ -243,6 +243,8 @@ Relationship writes require numeric REST issue `.id`, not issue numbers or `gh i
 
 ## Implement and ship
 
+Before writing code, do the native-first search in AGENTS.md ("Search before you build") and record what you found in the PR description. If the issue asks for something the native client already provides, comment on the issue and build on the native feature instead.
+
 Follow local validation, resource limits, target frameworks, generated-code boundaries, and performance requirements. Use TDD for bugs/behavior changes where feasible; explain exceptions. Run focused and relevant broader checks, including docs/frontend checks when affected. Update `website/docs` in the same PR for any user-facing change, as AGENTS.md's Documentation section requires. Document unavailable validation; never silently raise guard limits or claim unrun tests passed.
 
 Review the full diff for correctness, reuse, and efficiency (`/simplify` when available, otherwise equivalent review). Preserve performance/contracts and batch related fixes into one push. Use CI for environment-specific validation with limitations documented; avoid arbitrary local debugging retry counts.
