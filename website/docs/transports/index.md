@@ -11,7 +11,7 @@ A transport is an adapter over one native client. Each transport package depends
 | `Relayer.Kafka` | [Apache Kafka](kafka.md) | [Dekaf](https://dekaf.tomlonghurst.dev/), a pure C# Kafka client | Producers and serial consumers implemented; parallel partition scheduling planned |
 | `Relayer.AzureServiceBus` | Azure Service Bus | `Azure.Messaging.ServiceBus` | [Native sending and topology](service-bus.md), [receive primitives](service-bus-receive.md) implemented; receiver composition in development |
 | `Relayer.AmazonSqs` | Amazon SQS and SNS | `AWSSDK.SQS` and `AWSSDK.SimpleNotificationService` | In development |
-| `Relayer.RabbitMQ` | RabbitMQ | `RabbitMQ.Client` | [Native connection and topology](rabbitmq.md) implemented; send, receive and health adapters planned |
+| `Relayer.RabbitMQ` | RabbitMQ | `RabbitMQ.Client` | [Native topology, confirmed sends and optional delays](rabbitmq.md) implemented; receive and health adapters planned |
 
 Every transport, including third-party ones, must pass the transport conformance suite: send, receive, settle, retry, dead-letter, delay, ordering, trace propagation and reconnect.
 

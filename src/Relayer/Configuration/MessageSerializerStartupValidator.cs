@@ -4,7 +4,7 @@ using Relayer.Serialization;
 
 namespace Relayer;
 
-internal sealed class MessageSerializerStartupValidator(IServiceProvider services) : IHostedLifecycleService
+internal sealed class MessageSerializerStartupValidator(IServiceProvider services, RelayerConfigurationValidator validator) : IHostedLifecycleService
 {
     private bool _initialized;
 
@@ -13,6 +13,14 @@ internal sealed class MessageSerializerStartupValidator(IServiceProvider service
     public async Task StartAsync(CancellationToken cancellationToken)
     {
         if (_initialized) return;
+        // StartingAsync callbacks may run concurrently. Do not cache conservative capabilities while native evidence is pending.
+        try { await validator.InitializeCapabilitiesAsync(cancellationToken).ConfigureAwait(false); }
+        catch (Exception)
+        {
+            // TopologyStartupService owns reporting this shared failure. Reporting it twice changes a concurrent
+            // startup's OptionsValidationException into an AggregateException and hides the actionable diagnostic.
+            return;
+        }
         var transports = services.GetRequiredService<RelayerConfiguration>().Transports;
         var serializers = new HashSet<IMessageSerializer>(ReferenceEqualityComparer.Instance);
         if (transports.Count == 0) serializers.Add(services.GetRequiredService<IMessageSerializer>());

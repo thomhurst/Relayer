@@ -11,6 +11,7 @@ internal sealed class TopologyStartupService(RelayerConfiguration configuration,
     public async Task StartingAsync(CancellationToken cancellationToken)
     {
         // Keep validation and topology in one phase so concurrent startup cannot bypass either failure.
+        await validator.InitializeCapabilitiesAsync(cancellationToken).ConfigureAwait(false);
         validator.Validate();
         var adapters = services.GetServices<ITransport>().ToDictionary(transport => transport.Name, StringComparer.Ordinal);
         var failures = new List<string>();
