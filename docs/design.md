@@ -314,7 +314,7 @@ The core header and envelope primitives, their native binding contracts, and raw
 ### 4.3 Serialization
 
 - The default is System.Text.Json with a source-generated `JsonSerializerContext`. The generator builds it from the declared message types, so serialization is AOT-safe.
-- Serialization is pluggable (`IMessageSerializer`): Protobuf, Avro (with schema registry), and MessagePack ship as optional packages.
+- Serialization is pluggable (`IMessageSerializer`): the optional Protobuf package uses explicitly registered generated parsers. Avro (with schema registry) and MessagePack packages remain planned. See [serialization](../website/docs/guides/messages.md#protobuf) for registration and wire format.
 - Serialization writes to `IBufferWriter<byte>` and reads from `ReadOnlySequence<byte>` where the native client allows it.
 
 `AddMessageTypesFromThisAssembly()` registers the declared messages and their generated JSON context together. Pass `JsonSerializerOptions` to that method to customize JSON, or add a context with `UseJsonSerializer(MyJsonContext.Default)`. When contexts overlap, the last registered context supplies the metadata for that type. A custom context can also cover explicitly registered message types from a contracts assembly. Missing metadata fails when the default serializer is first resolved, including at host startup through Relayer's hosted validator; there is no reflection fallback.

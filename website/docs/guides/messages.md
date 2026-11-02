@@ -50,6 +50,29 @@ Use `transport.UseSerializer(provider => ...)` inside a named transport declarat
 
 Custom serializers can implement `IMessageSerializerInitializer`. The host awaits `InitializeAsync(CancellationToken)` during its startup lifecycle, before any hosted receiver starts, including concurrent service startup. A shared instance is initialized once. Preparation failures stop startup. Preparation does not add work to the per-message path. See [Kafka schema registries](../transports/kafka.md#independent-schema-registries) for a concrete registration.
 
+## Protobuf
+
+Reference `Relayer.Serialization.Protobuf` to use generated Google.Protobuf contracts. Generate C# from your `.proto` files with a matching `protoc` toolchain (3.13 or newer), then register each generated parser and its stable Relayer message identity explicitly:
+
+```csharp
+using Relayer.Serialization;
+using Relayer.Serialization.Protobuf;
+
+// OrderPlaced is generated from your .proto contract and exposes OrderPlaced.Parser.
+services.AddSingleton<IMessageSerializer>(new ProtobufMessageSerializer(types =>
+    types.Add(OrderPlaced.Parser)));
+services.AddRelayer(relayer =>
+    relayer.MessageTypes.Add<OrderPlaced>("orders.placed"));
+```
+
+For a named transport, return a `ProtobufMessageSerializer` from `transport.UseSerializer(_ => ...)` instead. Register every contract that transport sends or receives. Missing parsers throw an actionable `InvalidOperationException` when used; duplicate parsers fail during construction. Parser registration does not register a Relayer wire identity.
+
+The serializer captures an immutable parser registry during construction and is safe to share across concurrent sends and receives. It writes directly to `IBufferWriter<byte>` and parses segmented `ReadOnlySequence<byte>` input. The content type is `application/protobuf`. Bodies contain native binary Protobuf, without a length prefix or schema registry envelope. CloudEvents headers still carry the stable Relayer message identity.
+
+Empty Protobuf bodies represent default messages. Unknown fields follow the supplied parser's settings; for example, pass `OrderPlaced.Parser.WithDiscardUnknownFields(true)` to discard them. Malformed input throws the native `InvalidProtocolBufferException` and enters Relayer's normal deserialization failure policy.
+
+Only generated contracts implementing `IMessage<T>` and `IBufferMessage` are supported. There is no reflection fallback, runtime model generation, JSON conversion, or descriptor-based dispatch. Native AOT and trimming smoke coverage verifies generated buffer serialization and parsing; applications must also validate their own generated contracts and any custom parser factories. Protobuf JSON and reflection-based descriptor operations are outside this integration. Avro and MessagePack packages remain planned.
+
 ## Versioning and unknown types
 
 The version is part of the type name. Register `IUpcaster<TFrom, TTo>` instances explicitly to convert older payloads before the selected handler runs:

@@ -159,7 +159,7 @@ function Hero() {
 
 const split = {
   relayer: [
-    ['Serialization', 'System.Text.Json source generation by default, so Native AOT works.'],
+    ['Serialization', 'System.Text.Json source generation by default; optional Protobuf with explicit generated parsers and Native AOT coverage.'],
     ['Message identity', 'Stable names like orders.placed;v=1 on the wire, never CLR type names.'],
     ['Message versioning', 'Explicit upcaster chains upgrade older contracts before single-message and batch handlers.'],
     ['Failure handling', 'Classification, immediate retries, delayed redelivery, dead-letter copies with full history.'],

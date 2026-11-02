@@ -15,6 +15,7 @@ a matching `.snupkg` containing portable PDBs. Debuggers can retrieve the source
 The packages are `Relayer`, `Relayer.Testing`, `Relayer.HealthChecks`, `Relayer.Kafka`,
 `Relayer.Kafka.HealthChecks`, `Relayer.AzureServiceBus`, `Relayer.AmazonSqs`, `Relayer.RabbitMQ`,
 `Relayer.Outbox.PostgreSql`, `Relayer.Outbox.EntityFrameworkCore` and the `dotnet-relayer` tool.
+`Relayer.Kafka.SchemaRegistry` and `Relayer.Serialization.Protobuf` are optional integration packages.
 The source generator and code fixes ship inside `Relayer`; they are not separate packages.
 
 ## Versions and local verification
