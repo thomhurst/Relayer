@@ -35,6 +35,7 @@ const sidebars = {
         'transports/kafka',
         'transports/service-bus',
         'transports/service-bus-receive',
+        'transports/rabbitmq',
         'transports/authoring',
         'transports/conformance',
         'transports/receive',
