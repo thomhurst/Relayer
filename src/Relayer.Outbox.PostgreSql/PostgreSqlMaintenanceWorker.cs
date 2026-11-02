@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -82,6 +83,22 @@ internal sealed partial class PostgreSqlMaintenanceWorker : BackgroundService
     internal ValueTask<int> SweepAsync(CancellationToken cancellationToken) => RunAsync("sweeper", false, cancellationToken);
     internal ValueTask<int> CleanupAsync(CancellationToken cancellationToken) => RunAsync("cleanup", true, cancellationToken);
 
+    // The native replication slot serializes CDC readers. Fenced row claims still arbitrate with
+    // direct dispatch and the recovery leader; CDC must not wait for the sweeper's idle lease.
+    [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
+    internal async ValueTask DispatchCommittedAsync(CancellationToken cancellationToken)
+    {
+        _after = null;
+        _through = null;
+        do
+        {
+            await using var connection = await _source.OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+            await using var transaction = await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
+            await DispatchAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
+            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        } while (_through is not null);
+    }
+
     private async ValueTask<int> RunAsync(string name, bool cleanup, CancellationToken cancellationToken)
     {
         await using var connection = await _source.OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
@@ -125,7 +142,7 @@ internal sealed partial class PostgreSqlMaintenanceWorker : BackgroundService
             // A fixed boundary forces wrapping even while newer rows arrive, revisiting failed or newly eligible rows.
             if (count == 0) _through = null;
             _store.UseDispatchTransaction(connection, transaction);
-            await _dispatcher.DispatchRecoveredAsync(_rows.AsMemory(0, count), cancellationToken).ConfigureAwait(false);
+            await _dispatcher.DispatchRecoveredAsync(_rows.AsMemory(0, count), cancellationToken, propagateDatabaseFailures: true).ConfigureAwait(false);
             return count;
         }
         finally
