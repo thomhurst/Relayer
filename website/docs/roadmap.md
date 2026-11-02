@@ -7,6 +7,8 @@ Relayer is in early development. Track progress in [GitHub issues](https://githu
 
 ## Implemented
 
+- [PostgreSQL CDC dispatch](reference/postgres-cdc.md): native logical replication wakes unordered recovery; persistent slots and startup catch-up retain at-least-once delivery. Maintenance handles retries and schedules. SQL Server CDC remains planned.
+
 - [Scoped tenant header propagation](guides/multi-tenancy.md) for sends, requests, replies and single-message consumers. Tenant store resolution and bounded tenant dispatch remain planned.
 - [Explicit saga process diagrams](guides/saga-diagrams.md), with immutable declarations and deterministic Mermaid export, independent of typed runtime transitions.
 - [NuGet packaging and tag-triggered releases](contributing/releases.md), with shared metadata, git-derived versions, SourceLink, portable symbols and OIDC publishing. This infrastructure does not mean packages have been released.

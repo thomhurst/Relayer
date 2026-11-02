@@ -221,6 +221,21 @@ await using (var maintenanceSource = new Npgsql.NpgsqlSlimDataSourceBuilder("Hos
 }
 Console.WriteLine("PostgreSQL maintenance registration and immutable configuration passed under Native AOT.");
 
+await using (var cdcSource = new Npgsql.NpgsqlSlimDataSourceBuilder("Host=127.0.0.1;Port=1;Timeout=1").EnableArrays().Build())
+{
+    var cdcServices = new ServiceCollection().AddLogging();
+    cdcServices.AddRelayerPostgreSqlChangeCapture("cdc-smoke", cdcSource,
+        static () => new Npgsql.Replication.LogicalReplicationConnection("Host=127.0.0.1;Port=1;Timeout=1"),
+        new Npgsql.Replication.PgOutput.PgOutputReplicationSlot("cdc_smoke"),
+        new Npgsql.Replication.PgOutput.PgOutputReplicationOptions("cdc_smoke", Npgsql.Replication.PgOutput.PgOutputProtocolVersion.V1),
+        new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?> { ["BatchSize"] = "7" }).Build());
+    await using var cdcProvider = cdcServices.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
+    var settings = cdcProvider.GetRequiredService<Microsoft.Extensions.Options.IOptionsMonitor<PostgreSqlChangeCaptureOptions>>().Get("cdc-smoke");
+    if (settings.BatchSize != 7) throw new InvalidOperationException("CDC immutable configuration failed under Native AOT.");
+    _ = cdcProvider.GetRequiredService<IHostedService>();
+}
+Console.WriteLine("PostgreSQL CDC registration and immutable configuration passed under Native AOT.");
+
 Console.WriteLine("PostgreSQL keyed stores and cancellation passed under Native AOT.");
 // This validates scoped registration and immutable configuration, without claiming an EF compiled-model round trip.
 var outboxServices = new ServiceCollection();

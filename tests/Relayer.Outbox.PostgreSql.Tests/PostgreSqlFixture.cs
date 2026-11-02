@@ -19,14 +19,15 @@ internal sealed class PostgreSqlFixture : IAsyncDisposable
         _reportCleanupFailure = reportCleanupFailure;
     }
 
-    public async Task StartAsync()
+    public async Task StartAsync(bool logicalReplication = false)
     {
         // The daemon can create the container even if the CLI never returns its ID.
         _startupAttempted = true;
         try
         {
             await _docker(["run", "--detach", "--rm", "--name", _name, "--publish", "127.0.0.1::5432",
-                "--env", "POSTGRES_PASSWORD=relayer-test", "postgres:18-alpine"]);
+                "--env", "POSTGRES_PASSWORD=relayer-test", "postgres:18-alpine",
+                .. logicalReplication ? new[] { "-c", "wal_level=logical" } : []]);
             var port = (await _docker(["port", _name, "5432/tcp"])).Trim().Split(':')[^1];
             // This container has neither TLS nor Kerberos. Native encryption fallback can
             // reconnect after authentication fails and replace the original failure.

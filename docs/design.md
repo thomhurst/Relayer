@@ -531,7 +531,7 @@ After dispatch, rows are deleted in batches. One leased **cleanup** job handles 
 
 **Poison rows:** after a configurable number of attempts, the row is moved to `relayer_outbox_dead` and an alert metric is raised. For ordered routes, only later rows **with the same ordering key** are parked; the rest of the lane continues. Parked keys can be inspected and released through `IDeadLetterManager`.
 
-**Change data capture** (phase 3): an optional dispatcher reads Postgres logical replication or SQL Server CDC instead of polling. The table layout is compatible with Debezium's outbox event router, so teams can use Debezium instead.
+**Change data capture:** the optional [PostgreSQL dispatcher](../website/docs/reference/postgres-cdc.md) uses native Npgsql logical replication to wake bounded unordered recovery on committed inserts, instead of waiting for a poll. A persistent slot retains WAL, startup catch-up covers pre-slot rows, and feedback follows durable dispatch transactions. Maintenance recovers failures, expired claims and future schedules; ordered dispatch retains its lane leases. SQL Server CDC remains planned. The unchanged table layout supports Debezium's event router with explicit column mappings and connector-specific header/payload handling, rather than its default schema. D49 records these boundaries.
 
 ### 6.5 Inbox
 
@@ -812,7 +812,7 @@ Transports target the latest major version of their native client. Updating clie
 - **Sagas / process managers** (`Relayer.Sagas`): explicit state classes, optimistic concurrency (no hand-written lock providers), built on the inbox and outbox for idempotency, timeouts through the scheduler, and diagram export (Rebus #341, #1136, #1205; SlimMessageBus #384). [Diagram declarations and export](https://relayer.tomlonghurst.dev/docs/guides/saga-diagrams) and [transactional state transitions](https://relayer.tomlonghurst.dev/docs/guides/sagas) are implemented. The optional `Relayer.Sagas.EntityFrameworkCore` integration uses the existing PostgreSQL EF Core consumer boundary, native `xmin` concurrency and generated handler dispatch. These are post-v1 extensions under D20. [Durable process timeouts](https://relayer.tomlonghurst.dev/docs/guides/saga-timeouts) compose typed handlers, explicit wait correlation and existing transactional scheduled sends with the PostgreSQL due-row dispatcher.
 - **Request/response** is implemented for explicit endpoints with mandatory timeouts, bounded process-local correlation, and `replyto`/`correlationid` CloudEvents extensions (D41). It reuses the send and consume pipelines; arbitrary reply destinations and temporary queues remain unsupported. See the [request/response guide](https://relayer.tomlonghurst.dev/docs/guides/request-response).
 - **Additional transports:** NATS JetStream connection/topology management is implemented, while message execution waits for a native byte-backed header API ([status](../website/docs/transports/nats.md)). Pulsar remains planned pending native UTF-8 property and Native AOT prerequisites ([status](../website/docs/transports/pulsar.md)). Google Pub/Sub, RabbitMQ Streams, and the Azure Service Bus emulator profile remain planned.
-- **Outbox dispatch from CDC** (§6.4).
+- **Outbox dispatch from CDC** (§6.4): PostgreSQL unordered capture is implemented; SQL Server remains planned.
 
 ---
 
