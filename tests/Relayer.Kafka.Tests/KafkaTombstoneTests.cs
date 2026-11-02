@@ -1,4 +1,5 @@
 using System.Buffers;
+using System.Diagnostics;
 using System.Text;
 using System.Threading.Channels;
 using Dekaf;
@@ -81,6 +82,18 @@ public class KafkaTombstoneTests
         using var tracing = new MessageTracing(Options.Create(new TracingOptions()), []);
         await using var fixture = (KafkaFixture)await KafkaFixture.CreateAsync(tracing, token);
         var control = new TombstoneControl { Pause = true };
+        var firstCommit = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var listener = new ActivityListener
+        {
+            ShouldListenTo = source => source.Name == "Relayer",
+            Sample = (ref ActivityCreationOptions<ActivityContext> _) => ActivitySamplingResult.AllDataAndRecorded,
+            ActivityStopped = activity =>
+            {
+                if (activity.DisplayName == "commit " + fixture.Destination && activity.Status != ActivityStatusCode.Error)
+                    firstCommit.TrySetResult();
+            },
+        };
+        ActivitySource.AddActivityListener(listener);
         var hostBuilder = Host.CreateApplicationBuilder();
         hostBuilder.Logging.ClearProviders();
         hostBuilder.Services.AddSingleton(control);
@@ -108,6 +121,8 @@ public class KafkaTombstoneTests
         using var scope = host.Services.CreateScope();
         var sender = scope.ServiceProvider.GetRequiredService<ISender>();
         await sender.SendAsync(new TombstoneOrder(42), token);
+        // Put the value in a committed batch before the tombstone can be delivered.
+        await firstCommit.Task.WaitAsync(token);
         await sender.SendAsync(Tombstone.For<TombstoneOrder>("customer-1"), token);
         await control.Entered.Task.WaitAsync(token);
         await using var reader = new ConsumerBuilder<byte[], byte[]>().WithBootstrapServers(fixture.Bootstrap)
@@ -115,13 +130,16 @@ public class KafkaTombstoneTests
         reader.Assign(new TopicPartition(fixture.Destination, 0));
         await reader.InitializeAsync(token);
         var committed = await reader.GetCommittedOffsetAsync(new(fixture.Destination, 0), token);
-        await Assert.That(committed is null or < 2).IsTrue();
+        await Assert.That(committed).IsEqualTo(1L);
         control.Release.SetResult();
         await Assert.That(await control.Handled.Reader.ReadAsync(token)).IsEqualTo("value:42");
         await Assert.That(await control.Handled.Reader.ReadAsync(token)).IsEqualTo("deleted:customer-1");
         // Stop drains the native commit before inspecting the durable offset.
         await host.StopAsync(token);
-        await Assert.That(await reader.GetCommittedOffsetAsync(new(fixture.Destination, 0), token)).IsEqualTo(2L);
+        // The singular lookup above caches offset 1. Fetch the broker's current value.
+        var partition = new TopicPartition(fixture.Destination, 0);
+        var committedOffsets = await reader.GetCommittedOffsetsAsync([partition], token);
+        await Assert.That(committedOffsets[partition].Offset).IsEqualTo(2L);
         reader.Seek(new TopicPartitionOffset(fixture.Destination, 0, 1));
         var record = (await reader.ConsumeOneAsync(TimeSpan.FromSeconds(30), token))!.Value;
         await Assert.That(record.Value).IsNull();
