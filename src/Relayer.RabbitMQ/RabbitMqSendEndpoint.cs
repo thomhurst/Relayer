@@ -47,7 +47,7 @@ internal sealed class RabbitMqSendEndpoint
             await channel.ExchangeDeclareAsync(declaration.Name, "x-delayed-message", declaration.Durable ?? true,
                 declaration.AutoDelete ?? false, declaration.Arguments, cancellationToken: token).ConfigureAwait(false);
             DelayedExchange = declaration.Name;
-            Capabilities = Capabilities with { MaxDeliveryDelay = TimeSpan.FromMilliseconds(uint.MaxValue - 1L) };
+            Capabilities = Capabilities with { MaxDeliveryDelay = TimeSpan.FromMilliseconds((long)uint.MaxValue) };
         }
         catch (OperationInterruptedException error) when (error.ShutdownReason is { ReplyCode: 406 or 503 } reason &&
             reason.ReplyText.Contains("unknown exchange type", StringComparison.OrdinalIgnoreCase))
@@ -61,7 +61,7 @@ internal sealed class RabbitMqSendEndpoint
         if (deliverAt is null) return 0;
         var milliseconds = Math.Ceiling((deliverAt.Value - DateTimeOffset.UtcNow).TotalMilliseconds);
         if (milliseconds <= 0) return 0;
-        if (DelayedExchange is null || milliseconds > uint.MaxValue - 1L)
+        if (DelayedExchange is null || milliseconds > uint.MaxValue)
             throw new NotSupportedException("RabbitMQ native delayed delivery is unavailable or exceeds the plugin limit. Use an active outbox transaction and a due-row dispatcher.");
         return (long)milliseconds;
     }
