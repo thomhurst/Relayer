@@ -1,5 +1,6 @@
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
+using Relayer.Serialization;
 
 namespace Relayer;
 
@@ -16,6 +17,7 @@ public sealed class TransportBuilder<TTransportOptions, TRouteOptions, TConsumer
     private bool _built;
     private TopologyMode? _topologyMode;
     private SendRouteOptions _sendDefaults = new();
+    private bool _hasSerializer;
 
     internal TransportBuilder(IServiceCollection services, HandlerRegistry handlers, string name)
     {
@@ -74,6 +76,15 @@ public sealed class TransportBuilder<TTransportOptions, TRouteOptions, TConsumer
     private void EnsureMutable()
     {
         if (_built) throw new InvalidOperationException("The transport declaration is frozen.");
+    }
+
+    internal void RegisterSerializer(Func<IServiceProvider, IMessageSerializer> factory)
+    {
+        EnsureMutable();
+        if (_hasSerializer) throw new InvalidOperationException($"Transport '{Name}' already has a serializer. Call UseSerializer once.");
+        _hasSerializer = true;
+        _services.AddKeyedSingleton<IMessageSerializer>(Name, (provider, _) => factory(provider)
+            ?? throw new InvalidOperationException($"Transport '{Name}': the serializer factory returned null."));
     }
 
     internal TransportDefinition Build()

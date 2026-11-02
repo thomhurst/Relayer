@@ -66,7 +66,7 @@ internal sealed class SendPipeline
     private readonly FrozenDictionary<object, object> _routes;
 
     public SendPipeline(MessageTypeRegistry types, RelayerConfiguration configuration,
-        IEnumerable<ITransport> transports, IEnumerable<ISendMiddleware> middleware, IMessageSerializer serializer, EndpointCapabilityCache capabilitiesCache, OutboxCapabilities outbox)
+        IEnumerable<ITransport> transports, IEnumerable<ISendMiddleware> middleware, IServiceProvider services, EndpointCapabilityCache capabilitiesCache, OutboxCapabilities outbox)
     {
         var namedTransports = new Dictionary<string, ITransport>(StringComparer.Ordinal);
         foreach (var transport in transports)
@@ -89,6 +89,8 @@ internal sealed class SendPipeline
         var routes = new Dictionary<object, object>(ReferenceEqualityComparer.Instance);
         foreach (var transport in configuration.Transports)
         {
+            if (transport.Routes.Count == 0) continue;
+            var serializer = services.GetMessageSerializer(transport.Name);
             foreach (var definition in transport.Routes)
             {
                 var registration = ((ISendRouteDefinition)definition).CreateSendRegistration(transport.Name);

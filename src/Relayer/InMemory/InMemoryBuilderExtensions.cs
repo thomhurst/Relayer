@@ -2,7 +2,6 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
-using Relayer.Serialization;
 using Relayer.Transports;
 
 namespace Relayer.InMemory;
@@ -70,7 +69,7 @@ internal sealed class InMemoryHostedService(IServiceProvider provider, string na
                 };
             }
             var pipeline = new ConsumePipelineBuilder(provider.GetRequiredService<IServiceScopeFactory>(),
-                provider.GetRequiredService<MessageTypeRegistry>(), provider.GetRequiredService<IMessageSerializer>(),
+                provider.GetRequiredService<MessageTypeRegistry>(), provider.GetMessageSerializer(name),
                 failure, provider.GetService<IFailureClassifier>());
             pipeline.Tracing(provider.GetRequiredService<MessageTracing>(), new()
             {

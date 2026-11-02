@@ -77,6 +77,75 @@ Consumer failures reach the application's background-service supervision immedia
 
 Relayer discards the legacy `relayer.internal.kafka.tombstone` header, including values added by native callbacks. Null-value state comes only from the native record or the explicit serialized send flag; a header cannot turn an empty value into a tombstone.
 
+## Independent schema registries
+
+Reference `Relayer.Kafka.SchemaRegistry` to use Confluent-compatible JSON Schema Registry framing. Each named transport explicitly selects its own `KafkaJsonSchemaSerializer` and native Dekaf registry client. Broker security remains in `ConfigureProducer` and `ConfigureConsumer`; registry URL, credentials, TLS, proxies and HTTP configuration stay in Dekaf's `SchemaRegistryConfig` and `SchemaRegistryClient`.
+
+```csharp
+using Dekaf.SchemaRegistry;
+using Microsoft.Extensions.DependencyInjection;
+using Relayer;
+using Relayer.Kafka;
+
+// DI owns these clients. Read URLs and credentials from application configuration.
+services.AddKeyedSingleton<ISchemaRegistryClient>("west", (_, _) =>
+    new SchemaRegistryClient(new SchemaRegistryConfig
+    {
+        Url = westRegistryUrl,
+        BasicAuthUserInfo = westRegistryCredentials,
+    }));
+services.AddKeyedSingleton<ISchemaRegistryClient>("east", (_, _) =>
+    new SchemaRegistryClient(new SchemaRegistryConfig
+    {
+        Url = eastRegistryUrl,
+        BasicAuthUserInfo = eastRegistryCredentials,
+    }));
+
+services.AddRelayer(relayer =>
+{
+    relayer.AddMessageTypesFromThisAssembly();
+    relayer.Kafka("west", kafka =>
+    {
+        kafka.TopologyMode = TopologyMode.None;
+        kafka.Options.Configure(options => options.BootstrapServers.Add(westBootstrap));
+        kafka.UseSerializer(provider => new KafkaJsonSchemaSerializer(
+                provider.GetRequiredKeyedService<ISchemaRegistryClient>("west"))
+            .Add("orders", orderJsonSchema, ContractsJson.Default.OrderPlaced));
+        kafka.Send<OrderPlaced>("orders");
+        kafka.Consume("orders", consumer =>
+        {
+            consumer.Options.Group = "billing";
+            consumer.Handler<OrderPlacedHandler>();
+        });
+    });
+    relayer.Kafka("east", kafka =>
+    {
+        kafka.TopologyMode = TopologyMode.None;
+        kafka.Options.Configure(options => options.BootstrapServers.Add(eastBootstrap));
+        kafka.UseSerializer(provider => new KafkaJsonSchemaSerializer(
+                provider.GetRequiredKeyedService<ISchemaRegistryClient>("east"))
+            .Add("invoices", invoiceJsonSchema, ContractsJson.Default.InvoiceCreated,
+                new JsonSchemaSerializerConfig { AutoRegisterSchemas = false }));
+        kafka.Send<InvoiceCreated>("invoices");
+        kafka.Consume("invoices", consumer =>
+        {
+            consumer.Options.Group = "accounting";
+            consumer.Handler<InvoiceCreatedHandler>();
+        });
+    });
+});
+```
+
+`orderJsonSchema` and `invoiceJsonSchema` are explicit JSON Schema strings. `ContractsJson` is an application-owned source-generated `JsonSerializerContext` covering both contracts. Declare stable `[Message]` names as usual. A message has one send route; use different message types for different routes. The same CLR contract may be consumed on multiple clusters with independent schema registrations.
+
+The host resolves each writer schema asynchronously before starting receivers. Dekaf handles native subject selection, registration or lookup and the five-byte prefix (magic byte zero plus big-endian schema ID). Pass `JsonSchemaSerializerConfig` unchanged to select native fixed-schema settings, including custom synchronous subject naming, normalization or a fixed schema ID. Match the `Add` topic to the route or consumer topic; one contract declaration per CLR type is supported within a serializer. Different types on a shared topic can use native record-name subjects. Registration and lookup failures stop host startup. The serializer owns its native writer serializers; it does not dispose the supplied registry client.
+
+This package supports JSON payloads with prefix schema IDs and source-generated metadata. It writes `content-type: application/vnd.relayer.kafka.json-schema`; stable CloudEvents identity remains in `ce_type` and is independent of registry IDs. Sends, retries and durable failure copies retain the selected wire body. Default JSON and application-supplied serializers remain available per transport through `UseSerializer`.
+
+Receive accepts only the writer schema ID prepared for that declared message type on that transport. Unknown IDs, another format, truncated prefixes, null JSON and trailing JSON values enter the permanent deserialization failure policy. Declare older wire versions with their own source-generated metadata and explicit schemas, then register [upcasters](../guides/messages.md#versioning-and-unknown-types). Schema discovery during processing, automatic schema evolution, registry validation/rule execution, latest-version selection, header/GUID identities, Avro, Protobuf and MessagePack adapters remain planned. Unsupported dynamic settings fail during configuration. The caller supplies schemas matching the declared JSON metadata; registration does not validate each payload against JSON Schema.
+
+No registry HTTP call occurs during message processing. The reader checks the prepared ID and reads the `ReadOnlySequence<byte>` directly with generated metadata, including segmented bodies. This avoids Dekaf's synchronous schema-fetch fallback on a deserializer cache miss. Do not share one serializer instance across independent registry clients.
+
 ## Seek and replay
 
 Resolve the control service with the exact transport name after starting the host. Select the declared consumer group, topic and partition explicitly:
