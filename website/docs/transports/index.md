@@ -8,7 +8,7 @@ A transport is an adapter over one native client. Each transport package depends
 | Package | Broker | Native client | Status |
 |---|---|---|---|
 | `Relayer` | [In-memory](in-memory.md), for tests and samples | Built in | Implemented |
-| `Relayer.Kafka` | [Apache Kafka](kafka.md) | [Dekaf](https://dekaf.tomlonghurst.dev/), a pure C# Kafka client | Producer implemented; consumers planned |
+| `Relayer.Kafka` | [Apache Kafka](kafka.md) | [Dekaf](https://dekaf.tomlonghurst.dev/), a pure C# Kafka client | Producers and serial consumers implemented; parallel partition scheduling planned |
 | `Relayer.AzureServiceBus` | Azure Service Bus | `Azure.Messaging.ServiceBus` | [Native sending and topology](service-bus.md), [receive primitives](service-bus-receive.md) implemented; receiver composition in development |
 | `Relayer.AmazonSqs` | Amazon SQS and SNS | `AWSSDK.SQS` and `AWSSDK.SimpleNotificationService` | In development |
 | `Relayer.RabbitMQ` | RabbitMQ | `RabbitMQ.Client` | In development |
@@ -17,7 +17,9 @@ Every transport, including third-party ones, must pass the transport conformance
 
 ## Why Kafka uses Dekaf
 
-[Dekaf](https://github.com/thomhurst/Dekaf) has no native dependencies, supports Native AOT and is built for zero-allocation hot paths, which matches Relayer's own goals. Where Dekaf already ships a feature, such as retry topics or OpenTelemetry instrumentation, the Kafka transport reuses it instead of re-implementing it.
+[Dekaf](https://github.com/thomhurst/Dekaf) has no native dependencies, supports Native AOT and is built for zero-allocation hot paths, which matches Relayer's own goals.
+
+Relayer reuses Dekaf's native producer retries, receive batches, checkpoints and offset commits. Consumer handler retries and durable dead-letter copies use Relayer's core failure pipeline. Dekaf's hosted retry-topic and dead-letter helpers remain disabled because they own dispatch and offset settlement, which would bypass that pipeline. See the [Kafka guide](kafka.md) for failure handling and telemetry details.
 
 ## Building a transport
 
