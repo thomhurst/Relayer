@@ -2,12 +2,9 @@ using Dekaf;
 using Dekaf.Admin;
 using Dekaf.Consumer;
 using Dekaf.Serialization;
-using System.Net;
-using System.Net.Sockets;
 using Microsoft.Extensions.Logging;
 using Relayer.Testing;
 using Relayer.Transports;
-using Testcontainers.Kafka;
 
 namespace Relayer.Kafka.Tests;
 
@@ -28,7 +25,7 @@ public class KafkaConformanceTests
 
 internal sealed class KafkaFixture : ITransportConformanceFixture<KafkaDelivery>
 {
-    private readonly KafkaContainer _broker;
+    internal KafkaTestBroker Broker { get; }
     private readonly KafkaProducerTransport _transport;
     private readonly MessageTracing _tracing;
     private readonly ILoggerFactory _logs = LoggerFactory.Create(builder => builder
@@ -37,16 +34,16 @@ internal sealed class KafkaFixture : ITransportConformanceFixture<KafkaDelivery>
             options.SingleLine = true;
             options.TimestampFormat = "HH:mm:ss.fff ";
         }));
-    internal string Bootstrap => _broker.GetBootstrapAddress();
+    internal string Bootstrap => Broker.Bootstrap;
     public string Destination { get; } = "relayer-" + Guid.NewGuid().ToString("N");
     public ITransport Transport => _transport;
     public string MessagingSystem => "kafka";
     public string SettlementOperation => "commit";
     public HeaderNames HeaderNames { get; } = new();
 
-    private KafkaFixture(KafkaContainer broker, MessageTracing tracing)
+    private KafkaFixture(KafkaTestBroker broker, MessageTracing tracing)
     {
-        _broker = broker;
+        Broker = broker;
         _tracing = tracing;
         var producer = new ProducerBuilder<WireString?, (ReadOnlyMemory<byte> Body, Headers Headers)?>()
             .WithBootstrapServers(Bootstrap).WithLoggerFactory(_logs)
@@ -56,13 +53,7 @@ internal sealed class KafkaFixture : ITransportConformanceFixture<KafkaDelivery>
 
     internal static async ValueTask<ITransportConformanceFixture<KafkaDelivery>> CreateAsync(MessageTracing tracing, CancellationToken token)
     {
-        // Docker's random port bindings change across Stop/Start. Pin the advertised client
-        // port so reconnect tests restore the same broker address used by existing clients.
-        var clientPort = ReserveClientPort();
-        var builder = new KafkaBuilder("apache/kafka:4.0.2").WithVendor(KafkaVendor.ApacheSoftwareFoundation)
-            .WithPortBinding(clientPort, 9092);
-        if (OperatingSystem.IsLinux()) builder = builder.WithPortBinding("20000-29999", "9093");
-        var broker = builder.AfterStartupCopy().Build();
+        var broker = new KafkaTestBroker();
         KafkaFixture? fixture = null;
         try
         {
@@ -79,24 +70,6 @@ internal sealed class KafkaFixture : ITransportConformanceFixture<KafkaDelivery>
             else await fixture.DisposeAsync();
             throw;
         }
-    }
-
-    private static int ReserveClientPort()
-    {
-        var start = OperatingSystem.IsLinux() ? Random.Shared.Next(20000, 30000) : 0;
-        for (var attempt = 0; attempt < 10000; attempt++)
-        {
-            var candidate = start == 0 ? 0 : 20000 + (start - 20000 + attempt) % 10000;
-            var listener = new TcpListener(IPAddress.Loopback, candidate);
-            try
-            {
-                listener.Start();
-                return ((IPEndPoint)listener.LocalEndpoint).Port;
-            }
-            catch (SocketException error) when (OperatingSystem.IsLinux() && error.SocketErrorCode == SocketError.AddressAlreadyInUse) { }
-            finally { listener.Stop(); }
-        }
-        throw new InvalidOperationException("No available Kafka test port in 20000-29999.");
     }
 
     public void RegisterConsumer(Func<KafkaDelivery, CancellationToken, ValueTask<Disposition>> receive)
@@ -117,11 +90,11 @@ internal sealed class KafkaFixture : ITransportConformanceFixture<KafkaDelivery>
         return default;
     }
     public ValueTask<ConformanceDeadLetter> ReadDeadLetterAsync(CancellationToken cancellationToken) => throw new NotSupportedException();
-    public Task DisconnectAsync(CancellationToken cancellationToken) => _broker.StopAsync(cancellationToken);
+    public Task DisconnectAsync(CancellationToken cancellationToken) => Broker.StopAsync(cancellationToken);
     public async Task ReconnectAsync(CancellationToken cancellationToken)
     {
-        await _broker.StartAsync(cancellationToken);
-        // Container startup can finish before Kafka accepts protocol requests after a restart.
+        await Broker.RestartAsync(cancellationToken);
+        // Process startup can finish before Kafka accepts protocol requests after a restart.
         // Synchronize with live native discovery, without changing the conformance deadline.
         await using var admin = new AdminClientBuilder().WithBootstrapServers(Bootstrap).WithLoggerFactory(_logs).Build();
         await admin.DescribeClusterAsync(new DescribeClusterOptions(), cancellationToken);
@@ -131,7 +104,7 @@ internal sealed class KafkaFixture : ITransportConformanceFixture<KafkaDelivery>
         try { await _transport.DisposeAsync(); }
         finally
         {
-            try { await _broker.DisposeAsync(); }
+            try { await Broker.DisposeAsync(); }
             finally { _logs.Dispose(); }
         }
     }
