@@ -46,6 +46,7 @@ public static class KafkaBuilderExtensions
                 provider.GetRequiredService<MessageTracing>(), loggerFactory);
         });
         builder.Services.AddSingleton<ITransport>(provider => provider.GetRequiredKeyedService<KafkaProducerTransport>(name));
+        builder.Services.AddKeyedSingleton<IKafkaConsumerControl>(name, (provider, _) => new KafkaConsumerControl(provider, name));
         builder.Services.AddSingleton<IHostedService>(provider => new KafkaHostedService(provider, name));
         return builder;
     }
