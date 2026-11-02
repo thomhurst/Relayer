@@ -340,6 +340,7 @@ public class ServiceBusSendTests
         internal int Disposals;
         internal int BatchCapacity = 2;
         internal Exception? BatchFailure;
+        public override string FullyQualifiedNamespace => "test.servicebus.windows.net";
         public override ServiceBusSender CreateSender(string queueOrTopicName)
         {
             var sender = new NativeSender(queueOrTopicName) { Capacity = BatchCapacity, BatchFailure = BatchFailure };

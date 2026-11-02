@@ -666,7 +666,7 @@ Instruments from the semantic conventions, with the conventions' recommended his
 
 | Instrument | Type | Unit | Measures |
 |---|---|---|---|
-| `messaging.client.operation.duration` | Histogram | `s` | Each send, create and settle operation. Equals the span's duration. |
+| `messaging.client.operation.duration` | Histogram | `s` | Each native send, create and settle operation, through native completion. A logical batch span can cover several native sends. |
 | `messaging.process.duration` | Histogram | `s` | Each process operation, including settlement. |
 | `messaging.client.sent.messages` | Counter | `{message}` | Messages that Relayer attempted to send to the broker. An outbox enqueue is not counted; its dispatch is. |
 | `messaging.client.consumed.messages` | Counter | `{message}` | Messages delivered to the pipeline, counted once per delivery. |

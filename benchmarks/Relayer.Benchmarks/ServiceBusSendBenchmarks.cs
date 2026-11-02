@@ -1,6 +1,8 @@
 using System.Buffers;
 using System.Data.Common;
 using System.Diagnostics;
+using System.Diagnostics.Metrics;
+using Microsoft.Extensions.Options;
 using Azure.Messaging.ServiceBus;
 using Azure.Messaging.ServiceBus.Administration;
 using BenchmarkDotNet.Attributes;
@@ -34,9 +36,31 @@ public class ServiceBusSendBenchmarks
     private readonly ServiceBusJsonOrder _order = new(42, "customer-1");
     private readonly MessageEnvelope _envelope = new(new("benchmarks.servicebus-json", 1), "/", new("cloudEvents:"));
 
+    private RelayerInstrumentation _instrumentation = null!;
+    private MessageTracing _tracing = null!;
+    private MeterListener? _metrics;
+
+    [Params(false, true)]
+    public bool Metrics { get; set; }
+
     [GlobalSetup]
     public async Task Setup()
     {
+        _instrumentation = new();
+        _tracing = new(Options.Create(new TracingOptions()), [], instrumentation: _instrumentation);
+        if (Metrics)
+        {
+            _metrics = new()
+            {
+                InstrumentPublished = (instrument, listener) =>
+                {
+                    if (ReferenceEquals(instrument.Meter.Scope, _instrumentation)) listener.EnableMeasurementEvents(instrument);
+                },
+            };
+            _metrics.SetMeasurementEventCallback<long>(static (_, _, _, _) => { });
+            _metrics.SetMeasurementEventCallback<double>(static (_, _, _, _) => { });
+            _metrics.Start();
+        }
         var connection = Environment.GetEnvironmentVariable("RELAYER_SERVICEBUS_CONNECTION_STRING")
             ?? throw new InvalidOperationException("Set RELAYER_SERVICEBUS_CONNECTION_STRING to a test Service Bus namespace.");
         var administration = Environment.GetEnvironmentVariable("RELAYER_SERVICEBUS_ADMIN_CONNECTION_STRING") ?? connection;
@@ -57,7 +81,7 @@ public class ServiceBusSendBenchmarks
         _raw = _client.CreateSender(_queue);
         var options = new AzureServiceBusTransportOptions { Client = _client };
         options.Queues.Add(new(_queue));
-        _transport = new("benchmark", _client, false, options, [_queue], TopologyMode.None);
+        _transport = new("benchmark", _client, false, options, [_queue], TopologyMode.None, tracing: _tracing);
         _body = "{\"orderId\":42,\"customer\":\"customer-1\"}"u8.ToArray();
         _headers = [new("cloudEvents:type", new("benchmarks.order;v=1")), new("cloudEvents:source", new("/benchmarks")),
             new("cloudEvents:specversion", new("1.0")), new("cloudEvents:id", new("019a3c1b-97c0-7000-8000-000000000001"u8.ToArray())),
@@ -136,6 +160,9 @@ public class ServiceBusSendBenchmarks
         if (_raw is not null) await _raw.DisposeAsync();
         if (_client is not null) await _client.DisposeAsync();
         if (_admin is not null && _queue is not null) await _admin.DeleteQueueAsync(_queue);
+        _metrics?.Dispose();
+        _tracing?.Dispose();
+        _instrumentation?.Dispose();
     }
 
     private sealed class NativeHeaders : IMessageHeaderWriter<ServiceBusMessage>

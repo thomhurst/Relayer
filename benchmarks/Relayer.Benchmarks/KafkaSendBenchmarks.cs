@@ -1,3 +1,5 @@
+using System.Diagnostics.Metrics;
+using Microsoft.Extensions.Options;
 using System.Text;
 using BenchmarkDotNet.Attributes;
 using BenchmarkDotNet.Configs;
@@ -27,9 +29,31 @@ public class KafkaSendBenchmarks
     [Params(false, true)]
     public bool Tombstone { get; set; }
 
+    private RelayerInstrumentation _instrumentation = null!;
+    private MessageTracing _tracing = null!;
+    private MeterListener? _metrics;
+
+    [Params(false, true)]
+    public bool Metrics { get; set; }
+
     [GlobalSetup]
     public async Task Setup()
     {
+        _instrumentation = new();
+        _tracing = new(Options.Create(new TracingOptions()), [], instrumentation: _instrumentation);
+        if (Metrics)
+        {
+            _metrics = new()
+            {
+                InstrumentPublished = (instrument, listener) =>
+                {
+                    if (ReferenceEquals(instrument.Meter.Scope, _instrumentation)) listener.EnableMeasurementEvents(instrument);
+                },
+            };
+            _metrics.SetMeasurementEventCallback<long>(static (_, _, _, _) => { });
+            _metrics.SetMeasurementEventCallback<double>(static (_, _, _, _) => { });
+            _metrics.Start();
+        }
         var bootstrap = Environment.GetEnvironmentVariable("RELAYER_KAFKA_BOOTSTRAP_SERVERS")
             ?? throw new InvalidOperationException("Set RELAYER_KAFKA_BOOTSTRAP_SERVERS to a test Kafka broker.");
         _topic = "relayer-benchmark-" + Guid.NewGuid().ToString("N");
@@ -39,7 +63,7 @@ public class KafkaSendBenchmarks
         var producer = await new ProducerBuilder<WireString?, (ReadOnlyMemory<byte> Body, Headers Headers)?>()
             .WithBootstrapServers(bootstrap).WithKeySerializer(new KafkaKeySerializer())
             .WithValueSerializer(new KafkaValueSerializer()).BuildAsync();
-        _transport = new("benchmarks", producer, [_topic]);
+        _transport = new("benchmarks", producer, [_topic], _tracing);
         var body = Encoding.UTF8.GetBytes("{\"orderId\":42,\"customer\":\"customer-1\"}");
         var key = "customer-1"u8.ToArray();
         KeyValuePair<string, WireString>[] headers = [new("ce_type", new("benchmarks.order;v=1")),
@@ -76,5 +100,8 @@ public class KafkaSendBenchmarks
             try { if (_topic is not null) await _admin.DeleteTopicsAsync([_topic]); }
             finally { await _admin.DisposeAsync(); }
         }
+        _metrics?.Dispose();
+        _tracing?.Dispose();
+        _instrumentation?.Dispose();
     }
 }

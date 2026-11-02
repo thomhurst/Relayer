@@ -67,10 +67,17 @@ internal sealed class KafkaProducerTransport : ITransport, ITransportSendTracing
         {
             operation.States[0].Prepare(message);
             var state = operation.States[0];
-            if (state.Tombstone)
-                await _topics[message.Destination].ProduceAsync(state.Key, null, state.Headers, cancellationToken).ConfigureAwait(false);
-            else
-                await _producer.ProduceAsync(message.Destination, state.Key, (message.Body, state.Headers), cancellationToken).ConfigureAwait(false);
+            var duration = Endpoint(message.Destination)?.StartNativeSend() ?? default;
+            var failed = true;
+            try
+            {
+                if (state.Tombstone)
+                    await _topics[message.Destination].ProduceAsync(state.Key, null, state.Headers, cancellationToken).ConfigureAwait(false);
+                else
+                    await _producer.ProduceAsync(message.Destination, state.Key, (message.Body, state.Headers), cancellationToken).ConfigureAwait(false);
+                failed = false;
+            }
+            finally { duration.Complete(failed); }
         }
         finally { _operations.Return(operation); }
     }
@@ -107,7 +114,16 @@ internal sealed class KafkaProducerTransport : ITransport, ITransportSendTracing
             if (hasTombstone)
                 await SendNullBatchAsync(messages, operation, cancellationToken).ConfigureAwait(false);
             else
-                await _producer.ProduceAllAsync(messages.Span[0].Destination, operation.Messages, cancellationToken).ConfigureAwait(false);
+            {
+                var duration = Endpoint(messages.Span[0].Destination)?.StartNativeSend() ?? default;
+                var failed = true;
+                try
+                {
+                    await _producer.ProduceAllAsync(messages.Span[0].Destination, operation.Messages, cancellationToken).ConfigureAwait(false);
+                    failed = false;
+                }
+                finally { duration.Complete(failed); }
+            }
         }
         finally { _operations.Return(operation); }
     }
@@ -124,9 +140,7 @@ internal sealed class KafkaProducerTransport : ITransport, ITransportSendTracing
             {
                 var message = messages.Span[count];
                 var state = operation.States[count];
-                operation.Pending[count] = state.Tombstone
-                    ? _topics[message.Destination].ProduceAsync(state.Key, null, state.Headers, token)
-                    : _producer.ProduceAsync(message.Destination, state.Key, (message.Body, state.Headers), token);
+                operation.Pending[count] = ProduceAsync(message, state, token);
             }
         }
         catch (Exception error) { failure = System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(error); }
@@ -136,6 +150,37 @@ internal sealed class KafkaProducerTransport : ITransport, ITransportSendTracing
             catch (Exception error) { failure ??= System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(error); }
         }
         failure?.Throw();
+    }
+
+    private ValueTask<RecordMetadata> ProduceAsync(OutgoingMessage message, KafkaSendState state, CancellationToken token)
+    {
+        var duration = Endpoint(message.Destination)?.StartNativeSend() ?? default;
+        try
+        {
+            // Preserve synchronous admission failures: stop admitting and drain earlier calls.
+            var pending = state.Tombstone
+                ? _topics[message.Destination].ProduceAsync(state.Key, null, state.Headers, token)
+                : _producer.ProduceAsync(message.Destination, state.Key, (message.Body, state.Headers), token);
+            return duration.IsEnabled ? CompleteProduceAsync(pending, duration) : pending;
+        }
+        catch
+        {
+            duration.Complete(failed: true);
+            throw;
+        }
+    }
+
+    [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder<>))]
+    private static async ValueTask<RecordMetadata> CompleteProduceAsync(ValueTask<RecordMetadata> pending, SendTracing.NativeSendOperation duration)
+    {
+        var failed = true;
+        try
+        {
+            var result = await pending.ConfigureAwait(false);
+            failed = false;
+            return result;
+        }
+        finally { duration.Complete(failed); }
     }
 
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
