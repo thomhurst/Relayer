@@ -152,8 +152,11 @@ configuration. Only `docs/`, `website/`, the CI workflow, the detector and its
 tests, the common benchmark-version pinning script, the repository's agent guidance
 (`.agents/skills/issue-pr-loop/references/repository.md`), the merge-only scripts
 `Assert-PrGreen.ps1`, `AssertPrGreenChecks.ps1`, `Enable-AutoMerge.ps1` and
-`Test-AssertPrGreenChecks.ps1` under `scripts/`, and the two agent instruction
-aliases (`.claude/skills/issue-pr-loop/SKILL.md` and
+`Test-AssertPrGreenChecks.ps1` under `scripts/`, the cleanup-only scripts
+`DockerCleanup.ps1`, `Remove-MergedWorktrees.ps1`, `Test-DockerCleanup.ps1` and
+`Test-RemoveMergedWorktrees.ps1` and their `WorktreeLifecycle.md` documentation
+under `scripts/`, and the two agent instruction aliases
+(`.claude/skills/issue-pr-loop/SKILL.md` and
 `.claude/skills/issue-pr-loop/references`) are excluded; those do not enter the
 measured builds. These aliases are symlinks on Linux and can be plain files on
 Windows. Other symlinks still fail verification.

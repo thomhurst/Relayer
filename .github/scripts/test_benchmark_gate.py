@@ -501,6 +501,25 @@ class ComparisonInputTests(unittest.TestCase):
         self.write(self.candidate, "scripts/unknown-build-input.ps1", "must remain hashed")
         self.assertNotEqual(gate.input_manifest(self.baseline), gate.input_manifest(self.candidate))
 
+    def test_worktree_cleanup_tooling_does_not_enter_measured_builds(self):
+        for name in ("scripts/DockerCleanup.ps1", "scripts/Remove-MergedWorktrees.ps1",
+                     "scripts/Test-DockerCleanup.ps1", "scripts/Test-RemoveMergedWorktrees.ps1",
+                     "scripts/WorktreeLifecycle.md"):
+            with self.subTest(name=name):
+                self.write(self.candidate, name, "changed cleanup tooling")
+                self.assertEqual(gate.input_manifest(self.baseline), gate.input_manifest(self.candidate))
+        for name in ("scripts/unknown-cleanup.ps1", "src/Relayer/Changed.cs",
+                     "Directory.Build.props"):
+            with self.subTest(name=name):
+                path = self.candidate / name
+                original = path.read_bytes() if path.exists() else None
+                self.write(self.candidate, name, "must remain hashed")
+                self.assertNotEqual(gate.input_manifest(self.baseline), gate.input_manifest(self.candidate))
+                if original is None:
+                    path.unlink()
+                else:
+                    path.write_bytes(original)
+
     def symlink(self, name, target, *, directory=False):
         path = self.candidate / name
         path.parent.mkdir(parents=True, exist_ok=True)
