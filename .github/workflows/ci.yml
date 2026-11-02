@@ -82,6 +82,22 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      # This job owns its ephemeral runner. Prepare before starting the pinned
+      # daemon so Docker reads the reserved range, including for Ryuk's port.
+      - name: Separate Docker publications from outbound ports
+        run: sudo bash scripts/Prepare-ContainerTests.sh
+
+      # 28.0.4 misses conflicts between loopback PostgreSQL publications and
+      # wildcard Testcontainers publications. 28.5.1 fixes that bookkeeping.
+      - name: Set up Docker for container tests
+        uses: docker/setup-docker-action@e43656e248c0bd0647d3f5c195d116aacf6fcaf4 # v4
+        with:
+          version: v28.5.1
+          set-host: true
+
+      - name: Verify mixed-address port allocation
+        run: bash scripts/Test-ContainerPortAllocation.sh
+
       - name: Check for a solution
         id: solution
         run: |
