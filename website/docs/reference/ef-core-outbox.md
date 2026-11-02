@@ -161,3 +161,7 @@ run under the JIT and do not establish end-to-end EF Native AOT support.
 ### Declared scheduling requirements
 
 For `SendRouteOptions.RequiredDeliveryDelay` fallback, register matching [maintenance](postgres-maintenance.md) or [ordered dispatch](ordered-dispatch.md) workers. Keep the global `EntityFrameworkCoreOutboxOptions` used by startup validation consistent with the participating DbContext's schema, prefix and lane count. The selected context is checked again before a scheduled row is buffered. Direct commit dispatch alone cannot deliver future schedules. See [send requirements](../guides/sending.md) for native limits and transaction guarantees.
+
+Default scheduling capabilities are cached per options version. Resolving a sender without a DbContext
+does not generate database SQL. Configuration reload updates defaults for newly resolved scopes;
+an existing enlistment keeps its defaults. A selected DbContext always uses its own validated store settings.

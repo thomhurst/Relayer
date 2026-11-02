@@ -19,9 +19,12 @@ public static class EntityFrameworkCoreOutboxExtensions
         if (services.Any(static descriptor => descriptor.ServiceType == typeof(IOutboxEnlistment)) &&
             !services.Any(static descriptor => descriptor.ServiceType == typeof(EntityFrameworkCoreOutbox)))
             throw new InvalidOperationException("A different IOutboxEnlistment is already registered. Configure one scoped outbox integration.");
-        services.TryAddScoped<EntityFrameworkCoreOutbox>(provider => new(new OutboxConfiguration(
-            provider.GetRequiredService<IOptionsSnapshot<EntityFrameworkCoreOutboxOptions>>().Value,
-            workers: provider.GetServices<PostgreSqlSchedulingRegistration>())));
+        services.TryAddSingleton<DefaultOutboxCapabilities>();
+        services.TryAddScoped<EntityFrameworkCoreOutbox>(static provider =>
+        {
+            var capabilities = provider.GetRequiredService<DefaultOutboxCapabilities>().Get();
+            return new(capabilities.Scheduling, capabilities.OrderedScheduling);
+        });
         services.TryAddScoped<IOutboxEnlistment>(static provider => provider.GetRequiredService<EntityFrameworkCoreOutbox>());
         services.TryAddSingleton<IValidateOptions<EntityFrameworkCoreOutboxOptions>, OutboxOptionsValidator>();
         services.AddOptions<EntityFrameworkCoreOutboxOptions>().ValidateOnStart();

@@ -6,15 +6,15 @@ using Relayer.Outbox.PostgreSql;
 namespace Relayer.Outbox.EntityFrameworkCore;
 
 // Scoped, like DbContext and ISender. Never shared by concurrent units of work.
-internal sealed class EntityFrameworkCoreOutbox(OutboxConfiguration? defaults = null) : IOutboxEnlistment, IDisposable
+internal sealed class EntityFrameworkCoreOutbox(bool supportsScheduling = false, bool supportsOrderedScheduling = false) : IOutboxEnlistment, IDisposable
 {
     private readonly List<OutboxContext> _contexts = [];
     private readonly PostgreSqlOutboxBatch _batch = new();
     private Selection? _selection;
 
     private OutboxConfiguration? _activeConfiguration;
-    public bool SupportsScheduling => (_activeConfiguration ?? defaults)?.SupportsScheduling == true;
-    public bool SupportsOrderedScheduling => (_activeConfiguration ?? defaults)?.SupportsOrderedScheduling == true;
+    public bool SupportsScheduling => _activeConfiguration?.SupportsScheduling ?? supportsScheduling;
+    public bool SupportsOrderedScheduling => _activeConfiguration?.SupportsOrderedScheduling ?? supportsOrderedScheduling;
 
     public bool IsActive
     {

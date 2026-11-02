@@ -1,4 +1,6 @@
 using System.Buffers;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Options;
@@ -11,6 +13,90 @@ namespace Relayer.Outbox.PostgreSql.Tests;
 
 public class SchedulingRequirementTests
 {
+    [Test]
+    public async Task Ef_default_capabilities_validate_once_per_options_version_and_reload_for_new_scopes()
+    {
+        var configuration = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
+        { ["TablePrefix"] = "relayer_", ["Lanes"] = "32" }).Build();
+        var validations = new CountingValidator();
+        var services = new ServiceCollection().AddRelayerEntityFrameworkCoreOutbox(configuration);
+        services.AddSingleton<IValidateOptions<EntityFrameworkCoreOutboxOptions>>(validations);
+        services.AddSingleton(new PostgreSqlSchedulingRegistration(null, "relayer_"));
+        services.AddSingleton(new PostgreSqlSchedulingRegistration(null, "relayer_", 32));
+        await using var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
+        using var first = provider.CreateScope();
+        var original = first.ServiceProvider.GetRequiredService<IOutboxEnlistment>();
+        await Assert.That(original.SupportsScheduling).IsTrue();
+        await Assert.That(original.SupportsOrderedScheduling).IsTrue();
+        using (var sameVersion = provider.CreateScope())
+        {
+            var next = sameVersion.ServiceProvider.GetRequiredService<IOutboxEnlistment>();
+            await Assert.That(next.SupportsScheduling).IsTrue();
+            await Assert.That(next.SupportsOrderedScheduling).IsTrue();
+        }
+        await Assert.That(validations.Count).IsEqualTo(1);
+
+        configuration["Lanes"] = "16";
+        configuration.Reload();
+        using (var changedLanes = provider.CreateScope())
+        {
+            var next = changedLanes.ServiceProvider.GetRequiredService<IOutboxEnlistment>();
+            await Assert.That(next.SupportsScheduling).IsTrue();
+            await Assert.That(next.SupportsOrderedScheduling).IsFalse();
+        }
+        await Assert.That(validations.Count).IsEqualTo(2);
+        configuration["TablePrefix"] = "other_";
+        configuration.Reload();
+        using (var changedStore = provider.CreateScope())
+        {
+            var next = changedStore.ServiceProvider.GetRequiredService<IOutboxEnlistment>();
+            await Assert.That(next.SupportsScheduling).IsFalse();
+            await Assert.That(next.SupportsOrderedScheduling).IsFalse();
+        }
+        await Assert.That(validations.Count).IsEqualTo(3);
+        await Assert.That(original.SupportsScheduling).IsTrue();
+        await Assert.That(original.SupportsOrderedScheduling).IsTrue();
+    }
+
+    [Test]
+    public async Task Ef_selected_context_overrides_cached_default_capabilities()
+    {
+        var services = new ServiceCollection().AddRelayerEntityFrameworkCoreOutbox();
+        services.AddSingleton(new PostgreSqlSchedulingRegistration(null, "relayer_"));
+        services.AddSingleton(new PostgreSqlSchedulingRegistration(null, "relayer_", 32));
+        await using var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
+        using var scope = provider.CreateScope();
+        var executor = scope.ServiceProvider.GetRequiredService<IOutboxEnlistment>();
+        await Assert.That(executor.SupportsScheduling).IsTrue();
+        await Assert.That(executor.SupportsOrderedScheduling).IsTrue();
+        var options = new DbContextOptionsBuilder().UseNpgsql("Host=unused")
+            .AddRelayerOutbox(scope.ServiceProvider, new() { TablePrefix = "other_" });
+        using var context = new DbContext(options.Options);
+        using (context.EnlistRelayerOutbox())
+        {
+            await Assert.That(executor.IsActive).IsTrue();
+            await Assert.That(executor.SupportsScheduling).IsFalse();
+            await Assert.That(executor.SupportsOrderedScheduling).IsFalse();
+            var record = new OutboxRecord(Guid.NewGuid(), "events", "schedule.probe;v=1",
+                new("orders", default, deliverAt: DateTimeOffset.UtcNow.AddDays(1)), DateTimeOffset.UtcNow);
+            await Assert.That(async () => await executor.EnlistAsync(record, default))
+                .Throws<InvalidOperationException>().WithMessageContaining("selected DbContext");
+        }
+        await Assert.That(executor.IsActive).IsFalse();
+        await Assert.That(executor.SupportsScheduling).IsTrue();
+        await Assert.That(executor.SupportsOrderedScheduling).IsTrue();
+    }
+
+    private sealed class CountingValidator : IValidateOptions<EntityFrameworkCoreOutboxOptions>
+    {
+        internal int Count { get; private set; }
+        public ValidateOptionsResult Validate(string? name, EntityFrameworkCoreOutboxOptions options)
+        {
+            Count++;
+            return ValidateOptionsResult.Success;
+        }
+    }
+
     [Test]
     [Arguments(32, false)]
     [Arguments(16, true)]
