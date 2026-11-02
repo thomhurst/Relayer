@@ -124,7 +124,24 @@ of pending, parked and recent rows. Seed explicit timestamps and implement `Make
 durable eligibility; do not wait for wall-clock expiry. Keep real native transactions, claims and leases in the
 worker. Release worker resources before disposing the database fixture, including after failed assertions.
 
-These cases supplement provider-specific tests. Transaction commit/rollback, borrowed-memory ownership,
-inbox deduplication, ordered workers, connected-owner fencing and process-crash recovery need additional native integration tests.
-Passing the shared store cases alone does not establish those guarantees. The suite currently runs against
+### Inbox transaction boundaries
+
+For inbox transaction boundaries, also link `tests/Shared/InboxContractTests.cs`, derive from
+`InboxContractTests` and add `[InheritsTests]`. The PostgreSQL/EF adapter lives in
+`tests/Relayer.Outbox.PostgreSql.Tests/InboxTests.cs`. Each fixture creates independent consumer hosts against
+one database and reads committed business, inbox and outbox counts through a separate native connection.
+Each consumer uses the real consume pipeline, exposes its instrumentation and invocation/send counts, and
+supports hooks after business writes and before native settlement. The adapter must verify that the handler
+hook runs inside its native transaction.
+
+The shared inbox cases cover atomic commit before settlement, duplicate suppression and telemetry, identity
+scoped by consumer, concurrent commit/rollback, handler failure, cancellation, retry/dead-letter rollback and
+redelivery after acknowledgement loss. The contention hook must observe a native lock wait or transaction
+conflict before releasing the first handler; elapsed time alone is not evidence of contention. Tests release
+and drain concurrent deliveries before disposing their hosts and database.
+
+These cases supplement provider-specific tests. Borrowed-memory ownership, native transaction retries,
+configuration, scope disposal, ordered workers, connected-owner fencing and process-crash recovery need
+additional native integration tests. Passing the shared cases alone does not establish those guarantees.
+All three suites currently run against
 PostgreSQL; MongoDB support remains planned.
