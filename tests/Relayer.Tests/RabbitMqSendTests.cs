@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Diagnostics.Metrics;
 using System.Text;
+using System.Threading.Channels;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using RabbitMQ.Client;
@@ -14,6 +15,46 @@ namespace Relayer.Tests;
 
 public class RabbitMqSendTests
 {
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Delivery_deadline_expiring_while_waiting_for_a_publisher_uses_immediate_routing(bool replaceChannel)
+    {
+        using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(3));
+        var token = timeout.Token;
+        await using var broker = await RabbitMqTopologyTests.Broker.StartAsync(token);
+        var factory = broker.Factory();
+        await using var connection = await factory.CreateConnectionAsync(token);
+        await using var reader = await connection.CreateChannelAsync(cancellationToken: token);
+        await reader.QueueDeclareAsync("orders", true, false, false, cancellationToken: token);
+        var publisher = new RabbitMqPublisher(await connection.CreateChannelAsync(new(true, true), token));
+        try
+        {
+            if (replaceChannel) await publisher.Channel.CloseAsync(token);
+            await using var transport = new RabbitMqNativeTransport("rabbit", new() { ConnectionFactory = factory }, ["orders"]);
+            var endpoint = new RabbitMqSendEndpoint("orders", factory, null, null,
+                static (_, _) => ValueTask.CompletedTask, static (_, _) => ValueTask.CompletedTask)
+            {
+                // No such exchange exists. An expired deadline must use the ordinary destination instead.
+                DelayedExchange = "must.not.publish.here",
+            };
+            var publishers = Channel.CreateBounded<RabbitMqPublisher>(1);
+            var message = new OutgoingMessage("orders", new byte[] { 42 }, deliverAt: DateTimeOffset.UtcNow.AddMilliseconds(200));
+            var initialDelay = endpoint.Delay(message.DeliverAt);
+            await Assert.That(initialDelay).IsGreaterThan(0L);
+            var send = new RabbitMqSendPool().Rent().Start(transport, endpoint, message, initialDelay, connection, publishers, token);
+            await Assert.That(send.IsCompleted).IsFalse();
+            // The publisher remains unavailable until its absolute delivery deadline has elapsed.
+            await Task.Delay(TimeSpan.FromMilliseconds(initialDelay + 1), token);
+            await publishers.Writer.WriteAsync(publisher, token);
+            await send;
+            var received = (await reader.BasicGetAsync("orders", true, token))!;
+            await Assert.That(received.Body.Span[0]).IsEqualTo((byte)42);
+            await Assert.That(received.BasicProperties.Headers?.ContainsKey("x-delay") == true).IsFalse();
+        }
+        finally { await publisher.Channel.DisposeAsync(); }
+    }
+
     [Test]
     public async Task Confirmed_concurrent_sends_preserve_native_headers_configuration_and_channel_isolation()
     {

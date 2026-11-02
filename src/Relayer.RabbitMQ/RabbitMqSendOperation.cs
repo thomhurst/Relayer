@@ -150,6 +150,8 @@ internal sealed class RabbitMqSendOperation : IValueTaskSource
                         break;
                     case Stage.Recover:
                         _pending.GetResult();
+                        // Channel contention and recovery must not extend an absolute delivery deadline.
+                        _delay = _endpoint.Delay(_message.DeliverAt);
                         _publisher!.Prepare(_message, _delay);
                         _stage = Stage.Publish;
                         _pending = _publisher.Channel.BasicPublishAsync(_delay > 0 ? _endpoint.DelayedExchange! : _endpoint.Exchange,
