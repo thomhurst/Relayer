@@ -10,11 +10,21 @@ public interface ITopology
 
     /// <summary>Exports declarations as UTF-8 JSON, using stable message identities. Leaves the stream open.</summary>
     void ExportJson(Stream destination);
+
+    /// <summary>
+    /// Exports AsyncAPI 3.0.0 with JSON contract schemas from registered source-generated metadata.
+    /// Does not export protocol bindings or custom serializer formats. Leaves the stream open.
+    /// </summary>
+    void ExportAsyncApi(Stream destination, AsyncApiOptions options);
 }
 
-internal sealed class Topology(RelayerConfiguration configuration, MessageTypeRegistry messages, HandlerRegistry handlers) : ITopology
+internal sealed class Topology(RelayerConfiguration configuration, MessageTypeRegistry messages, HandlerRegistry handlers,
+    IEnumerable<JsonSerializerRegistration> jsonContexts) : ITopology
 {
     public IReadOnlyList<TransportDefinition> Transports => configuration.Transports;
+
+    public void ExportAsyncApi(Stream destination, AsyncApiOptions options) =>
+        AsyncApiExporter.Export(destination, options, Transports, messages, handlers, jsonContexts);
 
     public void ExportJson(Stream destination)
     {

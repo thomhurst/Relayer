@@ -299,6 +299,7 @@ const status = [
   ['Fallback partition watermarks, key scheduling, backpressure and bounded drain', 'Implemented core SPI; native runtime first', true],
   ['RabbitMQ native connection and topology', 'Implemented', true],
   ['NATS JetStream native connection and topology', 'Implemented; message execution blocked upstream', true],
+  ['AsyncAPI topology and JSON contract export', 'Implemented; protocol bindings unsupported', true],
   ['Kafka parallel receive via Dekaf, Service Bus receiver composition, SQS/SNS and RabbitMQ send/receive adapters', 'In progress', false],
   ['Health checks with application-provided adapters', 'Implemented', true],
   ['Scoped tenant header propagation', 'Implemented; tenant stores and dispatch planned', true],

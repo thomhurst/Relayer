@@ -703,7 +703,7 @@ Relayer-specific instruments, for which the conventions define nothing:
 
 ## 9. Topology
 
-- Topology is **declared, not inferred.** Routes and consumers form a topology model you can inspect at runtime (`ITopology`). See [Topology](https://relayer.tomlonghurst.dev/docs/guides/topology) for startup modes, the adapter contract and JSON export.
+- Topology is **declared, not inferred.** Routes and consumers form a topology model you can inspect at runtime (`ITopology`). See [Topology](https://relayer.tomlonghurst.dev/docs/guides/topology) for startup modes, the adapter contract, JSON export and AsyncAPI 3.0.0 export of registered JSON contracts. Protocol bindings and custom wire-format schemas are not exported.
 - Mode is chosen per transport:
   - `Provision` creates missing entities (development).
   - `Validate` checks that entities exist and fails fast with a diff (**default**). It needs only least-privilege permissions (MassTransit #5613, EasyNetQ #1000).
@@ -812,7 +812,6 @@ Transports target the latest major version of their native client. Updating clie
 - **Sagas / process managers** (`Relayer.Sagas`): explicit state classes, optimistic concurrency (no hand-written lock providers), built on the inbox and outbox for idempotency, timeouts through the scheduler, and diagram export (Rebus #341, #1136, #1205; SlimMessageBus #384). [Diagram declarations and export](https://relayer.tomlonghurst.dev/docs/guides/saga-diagrams) and [transactional state transitions](https://relayer.tomlonghurst.dev/docs/guides/sagas) are implemented. The optional `Relayer.Sagas.EntityFrameworkCore` integration uses the existing PostgreSQL EF Core consumer boundary, native `xmin` concurrency and generated handler dispatch. These are post-v1 extensions under D20. [Durable process timeouts](https://relayer.tomlonghurst.dev/docs/guides/saga-timeouts) compose typed handlers, explicit wait correlation and existing transactional scheduled sends with the PostgreSQL due-row dispatcher.
 - **Request/response** is implemented for explicit endpoints with mandatory timeouts, bounded process-local correlation, and `replyto`/`correlationid` CloudEvents extensions (D41). It reuses the send and consume pipelines; arbitrary reply destinations and temporary queues remain unsupported. See the [request/response guide](https://relayer.tomlonghurst.dev/docs/guides/request-response).
 - **Additional transports:** NATS JetStream connection/topology management is implemented, while message execution waits for a native byte-backed header API ([status](../website/docs/transports/nats.md)). Google Pub/Sub, Pulsar, RabbitMQ Streams, and the Azure Service Bus emulator profile remain planned.
-- **AsyncAPI document generation** from the topology model.
 - **Outbox dispatch from CDC** (§6.4).
 
 ---

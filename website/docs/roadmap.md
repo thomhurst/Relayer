@@ -37,7 +37,7 @@ Relayer is in early development. Track progress in [GitHub issues](https://githu
 - Generated batch handler execution, durable partial-failure decisions, and validated native/client-side receive executors for transport authors.
 - Typed failure classification, in-process retries, delayed redelivery and dead-letter copies with error history.
 - Manual settlement requests through `ISettlementFeature`, with exception precedence and durable capability fallbacks.
-- Declared topology with validate and provision modes, and JSON export.
+- Declared topology with validate and provision modes, JSON export and [AsyncAPI 3.0.0 export](guides/topology.md#asyncapi-export) using source-generated JSON contract schemas. Protocol bindings and custom wire-format schemas remain unsupported.
 - The [in-memory transport](transports/in-memory.md), with native queue and partitioned log semantics.
 - The [Kafka adapter](transports/kafka.md), with named producers, serial consumer groups, native batches and checkpoints, typed tombstones, durable dead-letter copies, offset and timestamp replay, independent startup-prepared JSON schema registries, application logging, receive telemetry, optional native connectivity and receiver liveness health adapters, and Testcontainers conformance. Parallel partition scheduling and dynamic schema discovery remain planned.
 - The packaged [transport conformance suite](transports/conformance.md), passing in-memory queue and log modes, with capability skips and native fixture hooks for third-party adapters.

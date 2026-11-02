@@ -53,6 +53,7 @@ using (var tenantProvider = new ServiceCollection().AddRelayerTenancy(1).BuildSe
 }
 Console.WriteLine("Tenant registration and pooled UTF-8 scope cleanup passed under Native AOT.");
 SagaDiagramSmoke.Run();
+AsyncApiSmoke.Run();
 await SagaDispatchSmoke.RunAsync();
 
 var serviceBusMessage = ServiceBusModelFactory.ServiceBusReceivedMessage(new BinaryData(new byte[] { 42 }),
