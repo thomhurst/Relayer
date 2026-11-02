@@ -66,6 +66,7 @@ To change a decision, add a new entry that supersedes it rather than editing his
 | [D53](#d53-singleton-only-consumers-open-delivery-scopes-on-demand) | Singleton-only consumers open delivery scopes on demand | Accepted |
 | [D54](#d54-service-bus-processors-drain-durable-work-before-settlement) | Service Bus processors drain durable work before settlement | Accepted |
 | [D55](#d55-mysql-direct-dispatch-reuses-native-batches-and-fenced-row-counts) | MySQL commit-triggered direct dispatch | Accepted |
+| [D56](#d56-postgresql-cdc-wakes-existing-unordered-recovery) | PostgreSQL CDC wakes existing unordered recovery | Accepted |
 
 ---
 
@@ -1160,3 +1161,29 @@ shutdown, expiry and post-send database errors leave durable work with the same 
 boundary as D33. Ordered dispatch, inbox and recovery remain separate deliverables; no eventual
 delivery guarantee is inferred from commit notification alone. See the
 [MySQL reference](../website/docs/reference/mysql-store.md#commit-triggered-unordered-dispatch).
+## D56. PostgreSQL CDC wakes existing unordered recovery
+
+**Status:** Accepted.
+
+**Context.** Npgsql 10.0.3 already provides `LogicalReplicationConnection`, `pgoutput` decoding, persistent
+slots and WAL feedback. Relayer already owns durable reads, fenced claims, native transport grouping and
+completion in PostgreSQL recovery. Replicating payload buffers or building another send/checkpoint runtime
+would duplicate those mechanisms. Logical replication commit events do not notify future due times or
+claim expiry. The existing schema differs from Debezium's default column names.
+
+**Decision.** Register an explicit optional native replication connection factory and pass native slot and
+pgoutput options unchanged. Require non-streaming V1 committed transactions and an application-provisioned
+persistent slot with INSERT-only, unfiltered outbox publications. Capture triggers bounded unordered
+recovery through a fixed ID boundary, including an initial catch-up on each connection. PostgreSQL owns
+slot exclusivity; existing row fencing arbitrates with direct dispatch and the maintenance sweeper without
+acquiring its idle leadership lease. Feedback follows committed database mutations, never a cancelled or
+failed database transaction. Native send failures remain durable and may be checkpointed; maintenance
+handles retries, expired claims, due schedules and retention. Ordered rows remain with existing lane leases.
+
+**Consequences.** CDC avoids waiting for a polling interval for new commits without changing native sends,
+table layout, ordering or at-least-once recovery. A crash after broker acceptance can duplicate delivery.
+The application provisions and monitors WAL retention and must use the writer's database for both
+connections. Native transient failures reconnect; permanent configuration failures stop the worker.
+SQL Server CDC remains planned. Debezium can use explicit column mappings and connector-specific binary
+header/payload handling, with a separate slot and one delivery owner; it does not inherit Relayer's lane,
+scheduling or settlement protocol. See the [CDC reference](../website/docs/reference/postgres-cdc.md).

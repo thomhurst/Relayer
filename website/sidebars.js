@@ -54,7 +54,7 @@ const sidebars = {
     {
       type: 'category',
       label: 'Reference',
-      items: ['reference/diagnostics', 'reference/outbox-stores', 'reference/postgres-schema', 'reference/postgres-store', 'reference/sqlserver-store', 'reference/mysql-store', 'reference/postgres-outbox', 'reference/ef-core-outbox', 'reference/tenant-stores', 'reference/direct-dispatch', 'reference/ordered-dispatch', 'reference/ef-core-inbox', 'reference/postgres-maintenance'],
+      items: ['reference/diagnostics', 'reference/outbox-stores', 'reference/postgres-schema', 'reference/postgres-store', 'reference/sqlserver-store', 'reference/mysql-store', 'reference/postgres-outbox', 'reference/ef-core-outbox', 'reference/tenant-stores', 'reference/direct-dispatch', 'reference/ordered-dispatch', 'reference/ef-core-inbox', 'reference/postgres-maintenance', 'reference/postgres-cdc'],
     },
     'roadmap',
     'contributing/documentation',

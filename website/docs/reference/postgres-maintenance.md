@@ -6,6 +6,8 @@ description: "Recover undispatched PostgreSQL outbox messages and apply leased, 
 Register maintenance alongside [direct dispatch](direct-dispatch.md) to recover unordered messages left
 by process death, queue overflow, failed sends, or a future delivery time. [Ordered lane dispatch](ordered-dispatch.md)
 already recovers its own lanes; the sweeper never sends ordered rows.
+Optional [PostgreSQL CDC dispatch](postgres-cdc.md) wakes unordered recovery from logical replication
+commits. Keep maintenance for failed sends, expired claims, future schedules and retention.
 
 ## Registration
 
