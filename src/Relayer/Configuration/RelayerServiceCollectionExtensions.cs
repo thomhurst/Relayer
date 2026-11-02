@@ -39,7 +39,7 @@ public static class RelayerServiceCollectionExtensions
         services.TryAddSingleton<SendPipeline>();
         services.TryAddSingleton<SenderPool>();
         services.TryAddScoped<ISender>(static provider => provider.GetRequiredService<SenderPool>()
-            .Rent(provider.GetService<IOutboxEnlistment>()));
+            .Rent(provider.GetService<IOutboxEnlistment>(), provider.GetService<TenantContext>()));
 
         services.AddSingleton(builder.MessageTypes);
         services.AddSingleton(builder.Handlers);

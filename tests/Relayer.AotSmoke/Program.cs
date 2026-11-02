@@ -27,6 +27,20 @@ PartitionSchedulerSmoke.Run();
 await KafkaSchemaSmoke.RunAsync();
 ProtobufSmoke.Run();
 MessagePackSmoke.Run();
+using (var tenantProvider = new ServiceCollection().AddRelayerTenancy(1).BuildServiceProvider())
+{
+    using (var tenantScope = tenantProvider.CreateScope())
+    {
+        var tenant = tenantScope.ServiceProvider.GetRequiredService<TenantContext>();
+        tenant.Id = new("tenant-aot"u8.ToArray());
+        if (!tenant.Id.Utf8.Span.SequenceEqual("tenant-aot"u8))
+            throw new InvalidOperationException("Native tenant storage failed under Native AOT.");
+    }
+    using var cleanTenantScope = tenantProvider.CreateScope();
+    if (!cleanTenantScope.ServiceProvider.GetRequiredService<TenantContext>().Id.IsEmpty)
+        throw new InvalidOperationException("Pooled tenant scope cleanup failed under Native AOT.");
+}
+Console.WriteLine("Tenant registration and pooled UTF-8 scope cleanup passed under Native AOT.");
 SagaDiagramSmoke.Run();
 await SagaDispatchSmoke.RunAsync();
 

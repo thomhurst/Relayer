@@ -56,7 +56,9 @@ internal sealed class SendRoute<TMessage>
     }
 
     internal ValueTask SendAsync(TMessage message, Action<SendOptions>? configure,
-        IOutboxEnlistment? outbox, CancellationToken callerToken, AttemptSendBuffer? buffer, ReplyMetadata reply = default) => Rent().Start(message, configure, outbox, callerToken, buffer, reply);
+        IOutboxEnlistment? outbox, CancellationToken callerToken, AttemptSendBuffer? buffer,
+        ReplyMetadata reply = default, WireString tenant = default)
+        => Rent().Start(message, configure, outbox, callerToken, buffer, reply, tenant);
 
     private Operation Rent()
     {
@@ -115,6 +117,7 @@ internal sealed class SendRoute<TMessage>
         private AttemptSendBuffer? _buffer;
         private MessageEnvelopeMetadata _metadata;
         private ReplyMetadata _reply;
+        private WireString _tenant;
         private string? _messageId;
         private Activity? _activity;
         private bool _tracingStarted;
@@ -138,9 +141,10 @@ internal sealed class SendRoute<TMessage>
         public override SendOptions Options { get; } = new();
         public override CancellationToken CancellationToken => Timeout.Token;
 
-        internal ValueTask Start(TMessage message, Action<SendOptions>? configure, IOutboxEnlistment? outbox, CancellationToken callerToken, AttemptSendBuffer? buffer, ReplyMetadata reply)
+        internal ValueTask Start(TMessage message, Action<SendOptions>? configure, IOutboxEnlistment? outbox, CancellationToken callerToken, AttemptSendBuffer? buffer, ReplyMetadata reply, WireString tenant)
         {
             _reply = reply;
+            _tenant = tenant;
             _message = message;
             _outbox = outbox;
             _buffer = buffer;
@@ -262,12 +266,15 @@ internal sealed class SendRoute<TMessage>
             if (!_route._isTombstone) _headers.Add("content-type", new WireString(_route._serializer.ContentType));
             foreach (var header in Options.Headers)
             {
+                if (!_tenant.IsEmpty && header.Key == TenantContext.HeaderName)
+                    throw new InvalidOperationException("SendOptions.Headers cannot override the scoped tenant. Set TenantContext.Id in an authorized scope instead.");
                 if (_route._options.EnvelopeMode == MessageEnvelopeMode.CloudEvents && IsEnvelopeHeader(header.Key))
                 {
                     throw new InvalidOperationException("SendOptions.Headers cannot override CloudEvents or creation-context headers. Use route envelope settings or raw mode.");
                 }
                 _headers.Add(header.Key, new WireString(header.Value));
             }
+            if (!_tenant.IsEmpty) _headers.Add(TenantContext.HeaderName, _tenant);
             if (!_reply.ReplyTo.IsEmpty) _headers.Add(_route._options.HeaderNames.ReplyTo, _reply.ReplyTo);
             if (!_reply.CorrelationId.IsEmpty) _headers.Add(_route._options.HeaderNames.CorrelationId, _reply.CorrelationId);
 
@@ -325,6 +332,7 @@ internal sealed class SendRoute<TMessage>
             _buffer = null;
             _metadata = default;
             _reply = default;
+            _tenant = default;
             _messageId = null;
             _pending = default;
             _callerToken = default;

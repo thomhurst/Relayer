@@ -1,3 +1,5 @@
+using Microsoft.Extensions.DependencyInjection;
+
 namespace Relayer;
 
 /// <summary>A context rented from a consumer's pool. Dispose it after awaiting processing.</summary>
@@ -103,7 +105,12 @@ public sealed class DefaultMessageContext : MessageContext, IDisposable
         Features.Set<ISettlementFeature>(Settlement);
     }
 
-    internal void SetServices(IServiceProvider services) => _services = services;
+    internal void SetServices(IServiceProvider services)
+    {
+        _services = services;
+        if (_owner.RestoresTenant)
+            services.GetRequiredService<TenantContext>().Id = Headers.TryGetValue(TenantContext.HeaderName, out var tenant) ? tenant : default;
+    }
     internal void ClearServices() => _services = null;
 
     internal void EndProcessing()

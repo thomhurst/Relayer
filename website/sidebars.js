@@ -18,6 +18,7 @@ const sidebars = {
         'guides/saga-timeouts',
         'guides/configuration',
         'guides/sending',
+        'guides/multi-tenancy',
         'guides/request-response',
         'guides/failure-handling',
         'guides/topology',

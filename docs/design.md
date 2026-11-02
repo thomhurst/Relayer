@@ -552,7 +552,7 @@ See [consumer configuration and failure boundaries](https://relayer.tomlonghurst
 
 - `IOutboxStoreResolver` maps the current tenant to a connection or DbContext, supporting a database per tenant or a schema per tenant (CAP #699, Rebus #1218, Wolverine #556).
 - `ITenantSource` enumerates tenants for the dispatcher. Each tenant store gets its own lanes and leases. Dispatchers share a bounded connection budget, which avoids per-tenant connection sprawl (Wolverine #3376).
-- The tenant ID travels in a header and is restored into the consumer's scope.
+- The tenant ID travels in a header and is restored into the consumer's scope. [Scoped propagation](../website/docs/guides/multi-tenancy.md) is implemented for single-message consumers and scoped sends, requests and replies. Tenant-aware store resolution and bounded multi-tenant dispatch remain planned; batch consumers cannot share a tenant scope.
 
 ---
 

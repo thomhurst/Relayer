@@ -10,6 +10,7 @@ namespace Relayer.Benchmarks;
 [MemoryDiagnoser]
 public class ReceivePipelineBenchmarks
 {
+    private readonly Serializer _serializer = new();
     private ServiceProvider _provider = null!;
     private ConsumePipeline _consumer = null!;
     private ReceivePipeline<Incoming, Binding> _receive = null!;
@@ -22,16 +23,20 @@ public class ReceivePipelineBenchmarks
     [Params(false, true)]
     public bool Utf8Headers { get; set; }
 
+    [Params(false, true)]
+    public bool Tenancy { get; set; }
+
     [GlobalSetup]
     public void Setup()
     {
         var services = new ServiceCollection();
+        if (Tenancy) services.AddRelayerTenancy();
         services.AddSingleton<Handler>();
         services.AddSingleton<TombstoneHandler>();
         services.AddRelayer(r => { r.MessageTypes.Add<Payload>("benchmark.payload"); r.Handler<Handler>().Handler<TombstoneHandler>(); });
         _provider = services.BuildServiceProvider();
         _consumer = new ConsumePipelineBuilder(_provider.GetRequiredService<IServiceScopeFactory>(),
-                _provider.GetRequiredService<MessageTypeRegistry>(), new Serializer(),
+                _provider.GetRequiredService<MessageTypeRegistry>(), _serializer,
                 static (_, error, _) => ValueTask.FromException(error))
             .Handler(_provider.GetRequiredService<HandlerRegistry>().GetHandler<Payload, Handler>())
             .Handler(_provider.GetRequiredService<HandlerRegistry>().GetHandler<Tombstone<Payload>, TombstoneHandler>()).Build(1);
@@ -44,6 +49,16 @@ public class ReceivePipelineBenchmarks
         {
             MessageId = "benchmark", MessageType = new("benchmark.payload", 1), Body = _incoming.Body,
         };
+    }
+
+    // Equivalent scope/service/serializer work attributes DI allocations separately from the receive SPI.
+    [Benchmark]
+    public Payload NativeScope()
+    {
+        using var scope = _provider.CreateScope();
+        if (Tenancy) scope.ServiceProvider.GetRequiredService<TenantContext>().Id = _incoming.Tenant;
+        _ = scope.ServiceProvider.GetRequiredService<Handler>();
+        return _serializer.Deserialize<Payload>(_incoming.Body);
     }
 
     [Benchmark(Baseline = true)]
@@ -85,6 +100,7 @@ public class ReceivePipelineBenchmarks
     private sealed class Incoming(WireString type, bool tombstone = false)
     {
         public WireString Type { get; } = type;
+        public WireString Tenant { get; } = new("tenant-1"u8.ToArray());
         public bool Tombstone { get; } = tombstone;
         public ReadOnlySequence<byte> Body { get; } = tombstone ? ReadOnlySequence<byte>.Empty : new(new byte[64]);
     }
@@ -100,6 +116,7 @@ public class ReceivePipelineBenchmarks
             {
                 "ce_type" => message.Type,
                 "ce_id" => new WireString("benchmark"),
+                TenantContext.HeaderName => message.Tenant,
                 _ => default,
             };
             return !value.IsEmpty;
