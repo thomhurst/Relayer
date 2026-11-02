@@ -42,7 +42,17 @@ and less than one third of the lease duration. Invalid settings fail registratio
 
 Normal route registration validates native ordering support. Persisted rows referencing missing adapters,
 missing ordering keys or endpoints without `OrderedByKey` fail dispatch with actionable errors. Destination
-capabilities are cached after first use; changing topology requires restarting workers.
+capabilities are retained for at most 256 successful `(transport, destination)` lookups per worker,
+shared across its lanes. FIFO eviction removes the oldest inserted entry; hits do not change eviction
+order. Before sending to an evicted destination again, the worker resolves and validates its native
+`OrderedByKey` capability. Failed lookups and endpoints without native ordering are never cached and
+can recover on a later attempt without restarting the worker. Retained entries remain snapshots;
+restart workers after changing topology rather than relying on eviction to refresh them.
+
+This bounds retained endpoint metadata when tenant destinations change. Working sets larger than
+256 entries can cause repeated native capability lookups, including any allocations performed by
+the native client. There is no cache setting. Eviction does not change lane ownership, durable claims
+or the broker's ordering and send semantics.
 
 ## Ownership and order
 

@@ -47,6 +47,7 @@ To change a decision, add a new entry that supersedes it rather than editing his
 | [D34](#d34-ordered-postgresql-dispatch-drains-a-locked-lane-before-transfer) | Ordered PostgreSQL lane ownership and transfer | Accepted |
 | [D35](#d35-direct-dispatch-bounds-endpoint-capability-retention) | Direct dispatch bounds endpoint capability retention | Accepted |
 | [D36](#d36-an-explicit-ef-core-consumer-boundary-owns-the-inbox-transaction) | An explicit EF Core consumer boundary owns the inbox transaction | Accepted |
+| [D37](#d37-ordered-dispatch-bounds-validated-endpoint-retention) | Ordered dispatch bounds validated endpoint retention | Accepted |
 
 ---
 
@@ -667,3 +668,29 @@ retry or dead-letter work after commit. Native acknowledgement loss
 therefore redelivers safely. Retrying EF strategies, pooled contexts, ambient transactions and batch
 consumers are rejected; Relayer retries with fresh scopes instead. Handlers must not end the owned
 transaction or perform native settlement. Inbox retention remains separate work.
+
+## D37. Ordered dispatch bounds validated endpoint retention
+
+**Context.** An ordered worker can outlive arbitrarily many tenant destinations. Retaining every
+historical endpoint leaks destination references and native capability objects after rows complete.
+Ordering support and other native limits vary by endpoint, so a transport-only key is unsafe.
+
+**Decision.** Each ordered PostgreSQL worker retains at most 256 successful `(ITransport, destination)`
+lookups in a preallocated dictionary and insertion-order ring, shared across its sequential lane loop.
+Use the FIFO policy selected for unordered direct dispatch in [#160](https://github.com/thomhurst/Relayer/pull/160):
+hits do not update eviction order; a successful miss at capacity replaces the oldest inserted entry.
+Resolve native capabilities and validate `OrderedByKey` before eviction. Exceptions and unsupported
+endpoints are not retained, so a later attempt can recover without replacing valid entries.
+
+**Consequences.** Retained endpoint count is bounded. Hot hits require one dictionary lookup and no
+recency writes or Relayer allocations. Misses at capacity add removal, insertion and ring replacement;
+storage is reused. Working sets over 256 endpoints can repeatedly resolve native capabilities, including
+any native client allocations. An evicted endpoint is validated again before its next native send,
+inside the existing durable claim/failure protocol. Retained capabilities remain snapshots, so topology
+changes still require a worker restart. No lane, lease, send or settlement semantics change.
+Benchmarks compare hot sets and churn against the previous unbounded lookup; raw evidence stays outside
+the repository. This applies the bounded-retention requirement of #159 without adding public options.
+
+**Alternatives rejected.** Transport-only keys lose endpoint-specific ordering support. LRU writes on
+every hit. Clearing the whole cache discards unrelated entries together. Sharing the unordered cache's
+positive-batch-size validator would change the ordered sender's contract; its sends remain sequential.

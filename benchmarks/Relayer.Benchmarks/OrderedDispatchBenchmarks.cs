@@ -9,7 +9,7 @@ namespace Relayer.Benchmarks;
 public class OrderedDispatchBenchmarks
 {
     private readonly Dictionary<string, ITransport> _transports = new(StringComparer.Ordinal);
-    private readonly Dictionary<(ITransport Transport, string Destination), TransportCapabilities> _capabilities = [];
+    private readonly OrderedDispatchCapabilityCache _capabilities = new();
     private readonly NoOpTransport _transport = new();
     private OutboxRecord _row;
 

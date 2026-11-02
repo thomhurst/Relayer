@@ -15,7 +15,7 @@ internal sealed partial class PostgreSqlOrderedDispatcher : BackgroundService
     private readonly Dictionary<string, ITransport> _transports = new(StringComparer.Ordinal);
     private readonly OutboxRecord[] _rows;
     private readonly bool[] _ready;
-    private readonly Dictionary<(ITransport Transport, string Destination), TransportCapabilities> _capabilities = [];
+    private readonly OrderedDispatchCapabilityCache _capabilities = new();
     private readonly ILogger<PostgreSqlOrderedDispatcher> _logger;
     private readonly TimeProvider _timeProvider;
 
@@ -153,20 +153,13 @@ internal sealed partial class PostgreSqlOrderedDispatcher : BackgroundService
 
     internal static (ITransport Transport, OutgoingMessage Message) Prepare(OutboxRecord row,
         Dictionary<string, ITransport> transports,
-        Dictionary<(ITransport Transport, string Destination), TransportCapabilities> capabilities)
+        OrderedDispatchCapabilityCache capabilities)
     {
         if (!transports.TryGetValue(row.TransportName, out var transport))
             throw new InvalidOperationException($"Outbox row references unknown transport '{row.TransportName}'. Register its named ITransport adapter.");
         if (row.Message.OrderingKey is null)
             throw new InvalidOperationException("An ordered outbox row must contain its original ordering key.");
-        var endpoint = (transport, row.Message.Destination);
-        if (!capabilities.TryGetValue(endpoint, out var capability))
-        {
-            capability = transport.GetCapabilities(row.Message.Destination);
-            capabilities.Add(endpoint, capability);
-        }
-        if (!capability.OrderedByKey)
-            throw new InvalidOperationException($"Ordered outbox destination '{row.Message.Destination}' on '{transport.Name}' does not support native ordering by key.");
+        _ = capabilities.Get(transport, row.Message.Destination);
         // The database already enforces deliver_at. Do not schedule again in the native client.
         var message = row.Message;
         return (transport, new(message.Destination, message.Body, message.Headers, message.OrderingKey));
