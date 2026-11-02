@@ -35,6 +35,10 @@ participating DbContext. Context pooling, concurrent use of one service scope an
 `TransactionScope` enlistment are not supported. Other EF database providers fail on first use;
 SQL Server and MySQL schemas are still planned.
 
+Application-owned scoped factories can select native stores for manually initiated units and explicitly
+composed tenant endpoints. See [native tenant store selection](tenant-stores.md) for database/schema
+isolation, ownership and the current dynamic-consumer limitation.
+
 The defaults are schema `public`, table prefix `relayer_`, and 32 lanes. Set immutable options per context:
 
 ```csharp

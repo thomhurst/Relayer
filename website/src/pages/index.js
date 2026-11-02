@@ -311,6 +311,7 @@ const status = [
   ['Other native broker health adapters', 'Planned', false],
   ['Ordered PostgreSQL dispatch and lane leases', 'Implemented', true],
   ['PostgreSQL outbox recovery and retention cleanup', 'Implemented', true],
+  ['Native tenant store selection for explicit scopes/endpoints', 'Validated; dynamic tenant consumers and dispatch planned', true],
   ['Send and delivery tracing, settlement, metrics and logs', 'Implemented', true],
   ['PostgreSQL outbox tracing and metrics', 'Implemented', true],
   ['Other native receive telemetry', 'Planned', false],
