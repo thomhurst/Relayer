@@ -356,7 +356,8 @@ public class KafkaReceiveTests
                     {
                         RetryDelays = new[] { TimeSpan.Zero }, Jitter = 0,
                         DeadLetterEndpoint = missingDeadLetter ? fixture.Destination + ".missing" : null,
-                        CopyTimeout = TimeSpan.FromSeconds(1),
+                        // Only missing-topic scenarios need a short failure-injection deadline.
+                        CopyTimeout = missingDeadLetter ? TimeSpan.FromSeconds(1) : new FailureOptions().CopyTimeout,
                     };
                     consumer.Handler<KafkaReceiveHandler>();
                 });
