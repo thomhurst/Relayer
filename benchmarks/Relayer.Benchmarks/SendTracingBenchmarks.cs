@@ -132,12 +132,22 @@ public class SendTracingBenchmarks
         private readonly SendTracing _tracing;
         public int Bytes { get; private set; }
         internal Sink(MessageTracing tracing) => _tracing = new(tracing,
-            new() { System = "relayer.inmemory", Destination = "orders" }, SendNative, SendBatchNative);
+            new() { System = "relayer.inmemory", Destination = "orders" }, SendInstrumented, SendBatchInstrumented);
         public string Name => "sink";
         public SendTracing GetSendTracing(string destination) => _tracing;
         public TransportCapabilities GetCapabilities(string endpoint) => new() { MaxBatchSize = 100 };
         public ValueTask SendAsync(OutgoingMessage message, CancellationToken cancellationToken) => _tracing.SendAsync(message, cancellationToken);
         public ValueTask SendBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken) => _tracing.SendBatchAsync(messages, cancellationToken);
+        private ValueTask SendInstrumented(OutgoingMessage message, CancellationToken cancellationToken)
+        {
+            _tracing.RecordNativeSend();
+            return SendNative(message, cancellationToken);
+        }
+        private ValueTask SendBatchInstrumented(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken)
+        {
+            _tracing.RecordNativeSend(messages.Length);
+            return SendBatchNative(messages, cancellationToken);
+        }
         internal ValueTask SendNative(OutgoingMessage message, CancellationToken cancellationToken)
         {
             Bytes = message.Body.Length;

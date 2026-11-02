@@ -336,6 +336,7 @@ public class OutboxTelemetryTests
         public ValueTask SendBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken) => _send.SendBatchAsync(messages, cancellationToken);
         private ValueTask SendNative(OutgoingMessage message, CancellationToken cancellationToken)
         {
+            _send.RecordNativeSend();
             Headers.Add(Snapshot(message));
             return Fail ? ValueTask.FromException(new InvalidOperationException("native send failed")) : default;
         }

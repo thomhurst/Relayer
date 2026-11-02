@@ -61,13 +61,14 @@ internal sealed class KafkaProducerTransport : ITransport, ITransportSendTracing
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
     private async ValueTask SendCoreAsync(OutgoingMessage message, CancellationToken cancellationToken)
     {
-        Validate(message, cancellationToken);
+        var tracing = Validate(message, cancellationToken);
         var operation = _operations.Rent(1);
         try
         {
             operation.States[0].Prepare(message);
             var state = operation.States[0];
-            var duration = Endpoint(message.Destination)?.StartNativeSend() ?? default;
+            tracing?.RecordNativeSend();
+            var duration = tracing?.StartNativeSend() ?? default;
             var failed = true;
             try
             {
@@ -115,7 +116,9 @@ internal sealed class KafkaProducerTransport : ITransport, ITransportSendTracing
                 await SendNullBatchAsync(messages, operation, cancellationToken).ConfigureAwait(false);
             else
             {
-                var duration = Endpoint(messages.Span[0].Destination)?.StartNativeSend() ?? default;
+                var tracing = Endpoint(messages.Span[0].Destination);
+                tracing?.RecordNativeSend(messages.Length);
+                var duration = tracing?.StartNativeSend() ?? default;
                 var failed = true;
                 try
                 {
@@ -132,6 +135,7 @@ internal sealed class KafkaProducerTransport : ITransport, ITransportSendTracing
     private async ValueTask SendNullBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, KafkaSendOperation operation, CancellationToken token)
     {
         operation.EnsurePending(messages.Length);
+        var tracing = Endpoint(messages.Span[0].Destination);
         var count = 0;
         System.Runtime.ExceptionServices.ExceptionDispatchInfo? failure = null;
         try
@@ -140,6 +144,7 @@ internal sealed class KafkaProducerTransport : ITransport, ITransportSendTracing
             {
                 var message = messages.Span[count];
                 var state = operation.States[count];
+                tracing?.RecordNativeSend();
                 operation.Pending[count] = ProduceAsync(message, state, token);
             }
         }
@@ -178,13 +183,14 @@ internal sealed class KafkaProducerTransport : ITransport, ITransportSendTracing
             await SendAsync(messages.Span[i], cancellationToken).ConfigureAwait(false);
     }
 
-    private void Validate(OutgoingMessage message, CancellationToken cancellationToken)
+    private SendTracing? Validate(OutgoingMessage message, CancellationToken cancellationToken)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         cancellationToken.ThrowIfCancellationRequested();
-        Endpoint(message.Destination);
+        var tracing = Endpoint(message.Destination);
         if (message.DeliverAt is not null)
             throw new NotSupportedException("Kafka has no native scheduled send. Use a durable scheduler before dispatch.");
+        return tracing;
     }
 
     public async Task StartAsync(CancellationToken cancellationToken)
