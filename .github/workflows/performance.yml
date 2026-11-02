@@ -57,6 +57,8 @@ jobs:
               - '.github/scripts/benchmark_gate.py'
               - '.github/scripts/test_benchmark_gate.py'
               - '.github/scripts/pin_benchmark_version.py'
+              - '.github/scripts/retain_benchmark_evidence.py'
+              - '.github/scripts/test_retain_benchmark_evidence.py'
               - '.github/workflows/performance.yml'
 
   performance:
@@ -124,40 +126,59 @@ jobs:
           echo "SDK: $candidate_sdk" >> performance-commits.txt
           find "candidate/$harness" -name '*.cs' -print0 | sort -z | xargs -0 sha256sum > performance-harness.sha256
 
-      - name: Test regression detector
-        run: python3 -m unittest discover -s candidate/.github/scripts -p test_benchmark_gate.py -v
+      - name: Test regression detector and evidence retention
+        run: |
+          python3 -m unittest discover -s candidate/.github/scripts -p test_benchmark_gate.py -v
+          python3 -m unittest discover -s candidate/.github/scripts -p test_retain_benchmark_evidence.py -v
 
       - name: Benchmark main snapshot
+        id: baseline
         working-directory: baseline
         run: |
           dotnet run -c Release --project benchmarks/Relayer.Benchmarks -- \
-            --filter '*' --anyCategories RegressionGate --exporters fulljson \
+            --filter '*' --anyCategories RegressionGate --exporters fulljson --keepFiles \
             --artifacts "$GITHUB_WORKSPACE/performance-results/baseline" \
             > "$GITHUB_WORKSPACE/performance-baseline.log" 2>&1 \
             || { tail -n 80 "$GITHUB_WORKSPACE/performance-baseline.log"; exit 1; }
+
+      # BDN can reuse a generated directory on the next execution. Copy each
+      # image before the next build, including when a measurement failed.
+      - name: Preserve first baseline benchmark build
+        if: always() && steps.baseline.outcome != 'skipped'
+        run: python3 candidate/.github/scripts/retain_benchmark_evidence.py baseline performance-builds/baseline
 
       - name: Prove unchanged measurements pass and injected regressions fail
         run: python3 candidate/.github/scripts/benchmark_gate.py self-test performance-results/baseline
 
       - name: Benchmark candidate
+        id: candidate
         working-directory: candidate
         run: |
           dotnet run -c Release --project benchmarks/Relayer.Benchmarks -- \
-            --filter '*' --anyCategories RegressionGate --exporters fulljson \
+            --filter '*' --anyCategories RegressionGate --exporters fulljson --keepFiles \
             --artifacts "$GITHUB_WORKSPACE/performance-results/candidate" \
             > "$GITHUB_WORKSPACE/performance-candidate.log" 2>&1 \
             || { tail -n 80 "$GITHUB_WORKSPACE/performance-candidate.log"; exit 1; }
 
+      - name: Preserve candidate benchmark build
+        if: always() && steps.candidate.outcome != 'skipped'
+        run: python3 candidate/.github/scripts/retain_benchmark_evidence.py candidate performance-builds/candidate
+
       # Always bracket the candidate, even when the first comparison would pass.
       # This is a fixed sampling plan, not a retry of a failed measurement.
       - name: Benchmark main snapshot after candidate
+        id: baseline_after
         working-directory: baseline
         run: |
           dotnet run -c Release --project benchmarks/Relayer.Benchmarks -- \
-            --filter '*' --anyCategories RegressionGate --exporters fulljson \
+            --filter '*' --anyCategories RegressionGate --exporters fulljson --keepFiles \
             --artifacts "$GITHUB_WORKSPACE/performance-results/baseline-after" \
             > "$GITHUB_WORKSPACE/performance-baseline-after.log" 2>&1 \
             || { tail -n 80 "$GITHUB_WORKSPACE/performance-baseline-after.log"; exit 1; }
+
+      - name: Preserve repeated baseline benchmark build
+        if: always() && steps.baseline_after.outcome != 'skipped'
+        run: python3 candidate/.github/scripts/retain_benchmark_evidence.py baseline performance-builds/baseline-after
 
       - name: Compare bracketed throughput, allocations and startup
         run: >-
@@ -180,8 +201,9 @@ jobs:
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: performance-${{ github.run_id }}-${{ github.run_attempt }}
-          retention-days: 14
+          retention-days: 90
           path: |
+            performance-builds/
             performance-results/
             performance-*.log
             performance-commits.txt
