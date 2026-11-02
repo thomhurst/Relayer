@@ -251,6 +251,39 @@ Use the separate checkouts that produced the reports, with their harness and SDK
 overlay still in place. CI retains `performance-inputs.json` with the raw reports.
 Comparisons without source verification keep the strict throughput and allocation rules.
 
+### Investigating changed comparison inputs
+
+When verified inventories differ, the summary lists added, removed and changed
+input paths. This is an investigation aid, not a causal assignment or an exemption
+from the thresholds. An unchanged benchmark and unchanged call-path source can
+still run in a changed containing assembly. Other methods, metadata, generated
+code and build inputs can affect the executable; matching source or method IL
+alone does not establish matching JIT output or performance.
+
+Preserve the original reports, logs, commit identities and input inventories
+before their artifact retention expires. Record file lengths and SHA-256 hashes,
+and verify the retained copies. Replay the original detector decision before
+changing the harness. Keep a failed changed-input comparison visible even if a
+later diagnostic experiment does not reproduce it.
+
+For a controlled investigation, pin the original commits, common harness, SDK,
+runtime and dependencies. Declare the case filters, launch count and measurement
+settings before running. Run baseline, candidate, candidate, baseline in sequence
+on one otherwise idle host to check for ordering effects as well as code differences.
+Inspect each process launch, including allocation totals and operation counts in
+the raw logs; an aggregate report can hide variation between launches. Automatic
+pilot calibration can choose different invocation counts, so use a further
+fixed-count experiment when that difference could explain the signal.
+
+Retain the effective compile inputs, binaries, probe sources and commands with
+the reports outside disposable worktrees. Compare the relevant assembly hashes
+and method IL as well as source inputs. Variation between launches of one frozen
+build demonstrates execution variation in that experiment. It does not identify
+the cause of a historical run, rule out a change-dependent effect on another host,
+or prove the raw-client 5% or zero-allocation budgets. Use allocation stacks and
+appropriate controls before assigning bytes to a particular component. Document
+remaining uncertainty rather than changing thresholds to make a signal pass.
+
 Startup allocation totals remain visible but are informational. D18 sets an
 allocation budget per message and a time budget for startup. Building frozen
 dispatch tables can allocate different bucket layouts across processes because

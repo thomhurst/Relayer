@@ -147,6 +147,31 @@ def input_manifest(checkout, *, referenced_test_sources=None):
         raise GateError(f"Cannot verify comparison inputs under {checkout}: {error}") from error
 
 
+def input_change_summary(baseline, candidate):
+    """Expose attribution inputs without changing the regression decision."""
+    changes = []
+    for name in sorted(baseline.keys() | candidate.keys()):
+        if baseline.get(name) == candidate.get(name):
+            continue
+        if name not in baseline:
+            kind = "Added"
+        elif name not in candidate:
+            kind = "Removed"
+        else:
+            kind = "Changed"
+        # Keep unusual filenames inside the code span in the Markdown summary.
+        display = name.replace("`", "&#96;").replace("\n", "&#10;").replace("\r", "&#13;")
+        changes.append(f"- {kind}: `{display}`")
+    if not changes:
+        return ""
+    return "\n".join([
+        "", "Comparison inputs differ; strict regression thresholds remain active.",
+        "Unchanged benchmark or call-path source does not establish an unchanged containing assembly, generated code or execution.",
+        "These paths guide investigation; they do not attribute a measured difference to a code change.",
+        "", *changes,
+    ])
+
+
 @dataclass(frozen=True)
 class Measurement:
     mean_ns: float
@@ -348,6 +373,8 @@ def main(argv=None):
             args.input_manifest.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
         failures, summary = compare(baseline, load_reports(args.candidate), baseline_after=baseline_after,
                                     identical_inputs=identical_inputs)
+        if any(source_arguments):
+            summary += input_change_summary(manifest["baseline"], manifest["candidate"])
         print(summary)
         if args.summary:
             args.summary.write_text(summary + "\n", encoding="utf-8")
