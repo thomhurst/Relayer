@@ -1,4 +1,5 @@
 using System.Buffers;
+using System.Data.Common;
 using System.Diagnostics;
 using Azure.Messaging.ServiceBus;
 using Azure.Messaging.ServiceBus.Administration;
@@ -41,13 +42,17 @@ public class ServiceBusSendBenchmarks
         var administration = Environment.GetEnvironmentVariable("RELAYER_SERVICEBUS_ADMIN_CONNECTION_STRING") ?? connection;
         _admin = new(administration);
         _queue = "relayer-benchmark-" + Guid.NewGuid().ToString("N");
-        // Stay within the emulator's documented size/TTL quotas as well as hosted namespace limits.
-        await _admin.CreateQueueAsync(new CreateQueueOptions(_queue)
+        var queueOptions = new CreateQueueOptions(_queue)
         {
-            MaxSizeInMegabytes = 100,
             DefaultMessageTimeToLive = TimeSpan.FromHours(1),
             DuplicateDetectionHistoryTimeWindow = TimeSpan.FromMinutes(10)
-        });
+        };
+        // The SDK's parsed emulator flag is internal; inspect the explicit connection-string option.
+        var connectionOptions = new DbConnectionStringBuilder { ConnectionString = administration };
+        if (connectionOptions.TryGetValue("UseDevelopmentEmulator", out var emulatorOption)
+            && bool.TryParse(emulatorOption.ToString(), out var useEmulator) && useEmulator)
+            queueOptions.MaxSizeInMegabytes = 100;
+        await _admin.CreateQueueAsync(queueOptions);
         _client = new(connection);
         _raw = _client.CreateSender(_queue);
         var options = new AzureServiceBusTransportOptions { Client = _client };

@@ -71,7 +71,7 @@ Relayer emits send spans with `messaging.system = servicebus`; enabling the Azur
 
 `ServiceBusSendBenchmarks` compares acknowledged single sends and 32-message batches against the raw SDK, including native message and header preparation, with `MemoryDiagnoser`. Its `DefaultJson` category also compares the real `ISender.SendAsync` path with direct SDK sending: both serialize the same model using the registered default JSON serializer and write a fresh CloudEvents envelope with changing IDs and timestamps. The raw baseline writes text directly into native application properties; Relayer also includes routing, its reusable UTF-8 envelope storage and send pipeline. The `Single` and `Batch` categories use pre-serialized bodies and isolate the transport adapter.
 
-Set `RELAYER_SERVICEBUS_CONNECTION_STRING` to a test namespace with Manage rights. The benchmark creates and deletes a fresh non-session queue per case, so earlier cases do not change the next case's queue depth. For the emulator, also set `RELAYER_SERVICEBUS_ADMIN_CONNECTION_STRING` to its HTTP management connection string:
+Set `RELAYER_SERVICEBUS_CONNECTION_STRING` to a test namespace with Manage rights. The benchmark creates and deletes a fresh non-session queue per case, so earlier cases do not change the next case's queue depth. Hosted namespaces use the SDK's default queue size. For the emulator, also set `RELAYER_SERVICEBUS_ADMIN_CONNECTION_STRING` to its HTTP management connection string, including `UseDevelopmentEmulator=true`; this selects the emulator's 100 MB queue size:
 
 ```shell
 dotnet run -c Release --project benchmarks/Relayer.Benchmarks -- --filter "*ServiceBusSendBenchmarks*"
