@@ -146,7 +146,9 @@ public class SchedulingRequirementTests
     }
 
     [Test]
-    public async Task Declared_fallback_persists_future_schedule_then_actual_worker_dispatches_when_due()
+    [Arguments(-1)]
+    [Arguments(1)]
+    public async Task Declared_fallback_persists_future_schedule_then_actual_worker_dispatches_when_due(int creationOffsetDays)
     {
         await using var fixture = new PostgreSqlFixture();
         await fixture.StartAsync();
@@ -171,12 +173,19 @@ public class SchedulingRequirementTests
                 options => options.DeliverAt = DateTimeOffset.UtcNow.AddDays(1));
             await transaction.CommitAsync();
         }
+        // Simulate an enqueue clock behind or ahead of PostgreSQL without changing either clock.
+        await using (var skew = source.CreateCommand("UPDATE relayer_outbox SET created_at = clock_timestamp() + @offset"))
+        {
+            skew.Parameters.AddWithValue("offset", TimeSpan.FromDays(creationOffsetDays));
+            await Assert.That(await skew.ExecuteNonQueryAsync()).IsEqualTo(1);
+        }
         var worker = provider.GetRequiredKeyedService<PostgreSqlMaintenanceWorker>("due");
         await Assert.That(await worker.SweepAsync(default)).IsEqualTo(0);
         await Assert.That(transport.Count).IsEqualTo(0);
-        // Advance durable eligibility explicitly: no wall-clock sleeps or deadline races.
-        await using (var due = source.CreateCommand("UPDATE relayer_outbox SET deliver_at = clock_timestamp() - interval '1 second'"))
-            await due.ExecuteNonQueryAsync();
+        // RecoveryDelay also compares host-originated created_at with the database clock.
+        // Advance both eligibility timestamps so clock skew cannot hide a due row.
+        await using (var due = source.CreateCommand("UPDATE relayer_outbox SET created_at = clock_timestamp() - interval '1 day', deliver_at = clock_timestamp() - interval '1 day'"))
+            await Assert.That(await due.ExecuteNonQueryAsync()).IsEqualTo(1);
         await Assert.That(await worker.SweepAsync(default)).IsEqualTo(1);
         await Assert.That(transport.Count).IsEqualTo(1);
         await Assert.That(transport.LastBody).IsEqualTo((byte)42);
