@@ -47,6 +47,10 @@ Relayer is in early development. Track progress in [GitHub issues](https://githu
 - Core tracing primitives, single and batch delivery spans, native settlement wrappers, consume metrics and generated failure logs. Kafka send, serial receive and batch-commit instrumentation are implemented; PostgreSQL outbox trace propagation, pending deltas and dispatch lag are implemented; the other native receive adapters remain planned.
 - The optional [health integration](guides/health-checks.md), with connectivity, consumer liveness and backlog checks. Kafka provides native adapters; the outbox adapter accepts application-provided durable stores. Other native broker adapters remain planned.
 
+## Native client prerequisites
+
+- [Apache Pulsar](transports/pulsar.md) remains planned. The client assessment found upstream prerequisites for byte-backed UTF-8 properties and a verified Native AOT byte-message path. No Pulsar adapter or package implementation is available yet.
+
 ## Phases
 
 | Phase | Scope | Exit criteria |
