@@ -8,7 +8,25 @@ namespace Relayer;
 internal sealed class RelayerConfigurationValidator(RelayerConfiguration configuration, MessageTypeRegistry messages,
     IServiceProvider services)
 {
-    public void Validate()
+    private readonly object _initialization = new();
+    private Task? _capabilityInitialization;
+
+    internal Task InitializeCapabilitiesAsync(CancellationToken cancellationToken)
+    {
+        // Shared by StartingAsync callbacks, including concurrent host startup. Cache failure as well as success.
+        lock (_initialization) return _capabilityInitialization ??= InitializeCapabilitiesCoreAsync(cancellationToken);
+    }
+
+    private async Task InitializeCapabilitiesCoreAsync(CancellationToken cancellationToken)
+    {
+        Validate(deferCapabilityInitialization: true);
+        var adapters = services.GetServices<ITransport>().ToDictionary(transport => transport.Name, StringComparer.Ordinal);
+        foreach (var declaration in configuration.Transports)
+            if (adapters.TryGetValue(declaration.Name, out var transport) && transport is ITransportCapabilityInitializer initializer)
+                await initializer.InitializeCapabilitiesAsync(declaration.TopologyMode ?? configuration.TopologyMode, cancellationToken).ConfigureAwait(false);
+    }
+
+    public void Validate(bool deferCapabilityInitialization = false)
     {
         var failures = new List<string>();
         if (!Enum.IsDefined(configuration.TopologyMode)) failures.Add("TopologyMode is not a defined value.");
@@ -45,7 +63,7 @@ internal sealed class RelayerConfigurationValidator(RelayerConfiguration configu
         try
         {
             var capabilities = new EndpointCapabilityValidator(services.GetServices<ITransport>(), failures, services.GetRequiredService<EndpointCapabilityCache>(), services.GetRequiredService<OutboxCapabilities>());
-            foreach (var transport in configuration.Transports) capabilities.Validate(transport);
+            foreach (var transport in configuration.Transports) capabilities.Validate(transport, deferCapabilityInitialization);
         }
         catch (OptionsValidationException error)
         {

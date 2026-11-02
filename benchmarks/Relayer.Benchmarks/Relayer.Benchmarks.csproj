@@ -20,6 +20,7 @@
     <ProjectReference Include="..\..\src\Relayer\Relayer.csproj" />
     <ProjectReference Include="..\..\src\Relayer.Outbox.EntityFrameworkCore\Relayer.Outbox.EntityFrameworkCore.csproj" />
     <ProjectReference Include="../../src/Relayer.Kafka/Relayer.Kafka.csproj" />
+    <ProjectReference Include="../../src/Relayer.RabbitMQ/Relayer.RabbitMQ.csproj" />
     <ProjectReference Include="../../src/Relayer.Kafka.SchemaRegistry/Relayer.Kafka.SchemaRegistry.csproj" />
     <ProjectReference Include="../../src/Relayer.Serialization.Protobuf/Relayer.Serialization.Protobuf.csproj" />
     <ProjectReference Include="../../src/Relayer.Serialization.Avro/Relayer.Serialization.Avro.csproj" />
