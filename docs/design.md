@@ -14,7 +14,7 @@ It is **not** a new broker abstraction. It does not change how the underlying te
 2. **No lowest common denominator.** Portable features (retry, outbox, tracing) are uniform. Transport-specific features are exposed through typed, discoverable extensions rather than hidden behind a generic API.
 3. **Explicit over magic.** No assembly scanning. No runtime code generation. Every handler, route, and piece of topology is declared in code or produced by a source generator you can read.
 4. **Correct by default.** The safe behaviour is the default behaviour: at-least-once delivery, idempotent consumers via the inbox, poison messages go to a dead-letter queue (they never crash or stall a consumer), and settlement happens only after the work is durable.
-5. **Native AOT and trimming from day one.** No reflection on the hot path. Serialization uses System.Text.Json source generation by default.
+5. **Native AOT and trimming from day one.** No reflection on the hot path. Serialization uses System.Text.Json source generation by default. Optional native integrations declare upstream restrictions explicitly: Avro (D39) and SQL Server runtime operations (D46) currently report build diagnostics for unsupported trimming/AOT use.
 6. **Performance is a feature.** The pipeline is composed once at startup, the hot path allocates as little as possible, and CI gates on benchmarks measured against the raw client.
 7. **Observable by default.** OpenTelemetry tracing and metrics, plus structured logging, are built into the core rather than shipped as an add-on.
 8. **Few dependencies.** The core depends only on `Microsoft.Extensions.*` abstractions and the BCL. Each transport package adds only its native client.

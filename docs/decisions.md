@@ -55,6 +55,8 @@ To change a decision, add a new entry that supersedes it rather than editing his
 | [D42](#d42-every-transport-reuses-its-native-clients-features) | Every transport reuses its native client's features | Accepted |
 | [D43](#d43-saga-transitions-share-the-consumer-transaction-and-retain-completed-state) | Saga transitions share the consumer transaction and retain completed state | Accepted |
 | [D44](#d44-messagepack-uses-native-generated-formatters-directly) | MessagePack uses native generated formatters directly | Accepted |
+| [D45](#d45-tenant-store-selection-reuses-native-scoped-factories) | Tenant store selection reuses native scoped factories | Accepted |
+| [D46](#d46-sql-server-primitives-use-native-sqlclient-with-an-explicit-aot-boundary) | SQL Server primitives use native SqlClient with an explicit AOT boundary | Accepted |
 
 ---
 
@@ -98,6 +100,8 @@ To change a decision, add a new entry that supersedes it rather than editing his
 - Handlers, routes, and consumers are registered explicitly in code.
 - An incremental source generator produces dispatch code, serializer contexts, and the message-type registry, plus an optional generated `AddHandlersFromThisAssembly()` that lists handlers explicitly.
 - No reflection on the hot path. All runtime packages set `IsAotCompatible`, and CI runs a Native AOT smoke test.
+- Optional native integrations with unresolved upstream limitations expose explicit build diagnostics;
+  see the Avro boundary in D39 and the SQL Server boundary in D46. Their unsupported paths are not in the core AOT smoke.
 
 **Consequences.**
 - Startup is fast and the behaviour is debuggable.
@@ -869,3 +873,30 @@ context during startup validation, before a delivery tenant exists. Dynamic inco
 binding must remove that assumption without a default tenant, preserve validation, and bind durable
 tenant metadata consistently with the wire header. Tenant enumeration and a shared dispatch connection
 budget remain separate work. Static per-tenant endpoints do not establish those dynamic guarantees.
+
+## D46. SQL Server primitives use native SqlClient with an explicit AOT boundary
+
+**Context.** #288 requires Microsoft.Data.SqlClient-backed durable store primitives. SqlClient 7.1.1 supplies
+native pooling, cancellation, typed SQL parameters and conditional autocommit statements. A strict .NET 10
+Native AOT publish of its open/read/mutation paths fails with IL2026, IL2057, IL2067 and IL2070 in native
+diagnostics, authentication and configuration code. This remains tracked by
+[SqlClient #1947](https://github.com/dotnet/SqlClient/issues/1947); the authentication subset has its own
+[pending backport #4349](https://github.com/dotnet/SqlClient/issues/4349). The pinned release has no complete
+warning-clean path. SqlClient's object-valued parameter API also boxes scalar values on assignment.
+
+**Decision.** Apply the optional-native-integration boundary used in D39: SQL Server schema tooling stays
+AOT safe, but constructing or registering its durable store exposes `RequiresUnreferencedCode` and
+`RequiresDynamicCode` diagnostics. SQL Server runtime trimming and Native AOT remain unsupported until the
+native client supplies a warning-clean path. Keep the core AOT smoke independent of this optional provider;
+do not suppress native warnings, weaken its CI gate, or introduce another SQL client/authentication stack.
+All other packages keep their existing contracts. Reuse the existing binary header codec through the core.
+Store IDs and fencing tokens as RFC-order binary(16), because SQL Server uniqueidentifier ordering does not
+match UUIDv7 ordering. Use datetimeoffset(7) for UTC-instant eligibility and atomic conditional statements for
+fencing. Reuse per-store exactly typed scalar boxes and UUID/payload buffers at the native API boundary.
+Reject ambient transactions so dispatcher mutations complete durably in native autocommit.
+
+**Consequences.** SQL Server reads, claims and health queries are usable independently of future enqueue,
+inbox, workers and maintenance integrations. Native driver allocations and I/O remain visible in performance
+coverage; Relayer does not install its own pool, retry engine or reflection path. The SQL Server AOT exception
+is explicit at the API and in the site, and does not change ordinary direct send/receive guarantees.
+Follow-up [#309](https://github.com/thomhurst/Relayer/issues/309) tracks warning-clean native runtime support.

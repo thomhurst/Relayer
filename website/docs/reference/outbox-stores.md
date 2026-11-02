@@ -7,6 +7,8 @@ The core package defines `IOutboxStore`, `OutboxRecord`, `OutboxReadRequest` and
 integration authors. These contracts, the optional health adapter and [PostgreSQL schema scripts](postgres-schema.md)
 are implemented, together with [PostgreSQL durable reads and fenced claims](postgres-store.md)
 and [EF Core transaction enlistment for PostgreSQL](ef-core-outbox.md).
+[SQL Server durable reads and fenced claims](sqlserver-store.md) are implemented as a separate package;
+SQL Server transaction enlistment, inbox and workers remain planned.
 [Unordered PostgreSQL direct dispatch](direct-dispatch.md) is available for EF commits.
 [Ordered PostgreSQL dispatch and lane leases](ordered-dispatch.md) are implemented separately.
 [Leased recovery and cleanup](postgres-maintenance.md) are available separately.
