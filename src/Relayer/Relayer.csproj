@@ -35,6 +35,7 @@
 
   <ItemGroup>
     <InternalsVisibleTo Include="Relayer.Tests" />
+    <InternalsVisibleTo Include="Relayer.Outbox.PostgreSql" />
     <InternalsVisibleTo Include="Relayer.Testing" />
   </ItemGroup>
 

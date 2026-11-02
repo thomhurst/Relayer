@@ -23,6 +23,7 @@ public sealed class SendTracing
     private readonly Func<ReadOnlyMemory<OutgoingMessage>, CancellationToken, ValueTask> _sendBatchNative;
     private readonly ILogger _logger;
     private readonly HeaderNames _names;
+    private readonly EndpointTelemetry? _telemetry;
     private readonly PoolSegment _states = new();
 
     /// <summary>Precomputes endpoint names and attributes supplied by the native adapter.</summary>
@@ -41,6 +42,11 @@ public sealed class SendTracing
         _sendBatchNative = sendBatch;
         _logger = logger ?? NullLogger.Instance;
         _names = headerNames ?? new();
+        _telemetry = tracing.Instrumentation?.CreateEndpoint(new()
+        {
+            System = endpoint.System, Destination = endpoint.Destination, OperationName = "send",
+            ServerAddress = endpoint.ServerAddress, ServerPort = endpoint.ServerPort,
+        });
         _states.Items[0] = new();
     }
 
@@ -56,10 +62,13 @@ public sealed class SendTracing
     }
 
     /// <summary>Sends one serialized message, preserving existing creation headers byte for byte.</summary>
-    public ValueTask SendAsync(OutgoingMessage message, CancellationToken cancellationToken = default) =>
-        message.TracingStarted
+    public ValueTask SendAsync(OutgoingMessage message, CancellationToken cancellationToken = default)
+    {
+        _telemetry?.RecordSent();
+        return message.TracingStarted
             ? _sendNative(message, cancellationToken)
             : SendCoreAsync(message, cancellationToken);
+    }
 
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
     private async ValueTask SendCoreAsync(OutgoingMessage message, CancellationToken cancellationToken)
@@ -70,10 +79,10 @@ public sealed class SendTracing
         {
             if (state is not null)
             {
-                activity = _send.Start(Data(message));
+                activity = _send.Start(Data(message), enrich: true, client: message.IsOutboxDispatch);
                 EnrichMessage(activity, message);
             }
-            var prepared = state is null ? message : Prepare(state, 0, message, activity?.Context ?? Activity.Current?.Context ?? default);
+            var prepared = state is null || message.IsOutboxDispatch ? message : Prepare(state, 0, message, activity?.Context ?? Activity.Current?.Context ?? default);
             await _sendNative(prepared, cancellationToken).ConfigureAwait(false);
         }
         catch (Exception exception)
@@ -90,10 +99,12 @@ public sealed class SendTracing
 
     /// <summary>Creates per-message producer spans and one native batch span, or one producer span when creation spans are disabled.</summary>
     /// <remarks>Supply a batch for this endpoint. Input order and native partial-failure behavior are unchanged.</remarks>
-    public ValueTask SendBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken = default) =>
-        messages.IsEmpty
-            ? _sendBatchNative(messages, cancellationToken)
-            : SendBatchCoreAsync(messages, cancellationToken);
+    public ValueTask SendBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken = default)
+    {
+        if (messages.IsEmpty) return _sendBatchNative(messages, cancellationToken);
+        _telemetry?.RecordSent(messages.Length);
+        return SendBatchCoreAsync(messages, cancellationToken);
+    }
 
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
     private async ValueTask SendBatchCoreAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken)
@@ -114,7 +125,7 @@ public sealed class SendTracing
                 var message = messages.Span[i];
                 var data = Data(message);
                 var context = data.CreationContext;
-                if (_tracing.Options.CreateSpansForBatches && !HasCreationHeader(message))
+                if (!message.IsOutboxDispatch && _tracing.Options.CreateSpansForBatches && !HasCreationHeader(message))
                 {
                     using var create = _create.Start(data);
                     EnrichMessage(create, message);
@@ -123,10 +134,12 @@ public sealed class SendTracing
                 state.Contexts[i] = context;
                 if (context != default) state.Links[linkCount++] = new(context);
             }
-            activity = _send.Start(new() { BatchCount = messages.Length, Links = state.Links.AsMemory(0, linkCount) });
+            activity = _send.Start(new() { BatchCount = messages.Length, Links = state.Links.AsMemory(0, linkCount) },
+                enrich: true, client: messages.Span[0].IsOutboxDispatch);
             var fallback = activity?.Context ?? Activity.Current?.Context ?? default;
             for (var i = 0; i < messages.Length; i++)
-                state.Messages[i] = Prepare(state, i, messages.Span[i], state.Contexts[i] != default ? state.Contexts[i] : fallback);
+                state.Messages[i] = messages.Span[i].IsOutboxDispatch ? messages.Span[i] :
+                    Prepare(state, i, messages.Span[i], state.Contexts[i] != default ? state.Contexts[i] : fallback);
             await _sendBatchNative(state.Messages.AsMemory(0, messages.Length), cancellationToken).ConfigureAwait(false);
         }
         catch (Exception exception)

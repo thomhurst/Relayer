@@ -12,6 +12,7 @@ public readonly struct OutgoingMessage
 {
     private readonly SendOptions? _options;
     internal bool TracingStarted { get; private init; }
+    internal bool IsOutboxDispatch { get; private init; }
 
     /// <summary>Creates a send without copying its body, headers, or native options.</summary>
     /// <param name="destination">The native destination on the selected named transport.</param>
@@ -61,6 +62,9 @@ public readonly struct OutgoingMessage
         DateTimeOffset? deliverAt) => new(destination, Body, headers, OrderingKey, deliverAt, _options);
 
     internal OutgoingMessage WithTracingStarted() => new(Destination, Body, Headers, OrderingKey, DeliverAt, _options) { TracingStarted = true };
+
+    // A new send span must link to stored creation headers, even when enqueue was already traced.
+    internal OutgoingMessage ForOutboxDispatch() => new(Destination, Body, Headers, OrderingKey, DeliverAt, _options) { IsOutboxDispatch = true };
 
     internal void CopyNativeOptionsTo(SendOptions target)
     {

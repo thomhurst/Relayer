@@ -1,6 +1,6 @@
 ---
 title: Tracing, metrics and logging
-description: Delivery and settlement spans, consume metrics, and generated failure logs.
+description: Send, outbox, delivery and settlement spans, messaging metrics, and generated failure logs.
 ---
 
 `AddRelayer` registers a single DI-owned `RelayerInstrumentation`. Its meter is named `Relayer`; subscribe with your OpenTelemetry provider's `AddMeter(RelayerTelemetry.MeterName)`. `RelayerTelemetry.SchemaUrl` pins the semantic conventions version. No OpenTelemetry SDK dependency is needed in the library.
@@ -104,4 +104,42 @@ Hosted in-memory consumers configure delivery tracing automatically. Their nativ
 
 Native adapters that log settlement errors themselves implement `IMessageBinding.TryConsumeLoggedSettlementError` to consume a delivery-local marker for the exact exception already logged. This prevents a second pipeline failure log while preserving native logs for errors a handler catches. Clear markers before native state is reused. The in-memory adapter implements this hook; it retains a marker only when a native log was actually emitted.
 
-See [Health checks](health-checks.md) for readiness integration, including optional Kafka native adapters. Other native broker adapters and outbox instrumentation remain planned; see the [roadmap](../roadmap.md).
+See [Health checks](health-checks.md) for readiness integration, including optional Kafka native adapters. Other native broker adapters remain planned; see the [roadmap](../roadmap.md).
+
+## Outbox tracing and metrics
+
+With `AddRelayer`, sends through the PostgreSQL EF Core or ADO.NET outbox create a
+`create {destination}` producer span inside the caller's trace, before serialization and
+enlistment. The span's W3C creation context is stored with the row's headers. Enqueue
+failures mark this span with status `Error` and `error.type = "_OTHER"`.
+
+Direct dispatch, leased unordered recovery and ordered lane dispatch emit
+`send {destination}` client spans through the configured native adapter. A native batch
+has one send span with a link to every message's creation context. Single sends link to
+that message's creation context. Dispatch never creates a new creation context, including
+for legacy rows with missing or invalid trace headers. Existing headers are preserved.
+The consumer's process span links to the enqueue span; it does not link to the dispatcher.
+With no ambient consumer span, the creation context is also its parent by default.
+
+`messaging.client.sent.messages` counts native send attempts, including dispatch retries,
+and never counts enqueue. It uses the adapter's precomputed native system and destination
+dimensions. Built-in Kafka and in-memory adapters use this shared send instrumentation.
+Standalone `MessageTracing` callers can supply `instrumentation:` to enable the same
+send counter without dependency injection. Custom adapters use `ITransportSendTracing`
+and `SendTracing` for the same creation and dispatch behavior.
+
+The PostgreSQL transaction integrations and dispatch workers also record:
+
+- `relayer.outbox.pending`: an up-down counter of durable row-count changes observed by
+  this instance. A successful commit adds its rows; a successful fenced dispatch deletion
+  subtracts its rows. Rollback, failed sends, competing claims and failed completion do
+  not subtract rows. Ordered deletions count only after their transaction commits.
+- `relayer.outbox.dispatch_lag`: seconds from the row's enqueue timestamp to the start
+  of each native dispatch attempt. Recovery uses the original durable timestamp. Failed
+  native attempts also record lag.
+
+These two store-wide metrics aggregate across stores and transports, without endpoint
+or message dimensions. The pending counter is a delta, not a database snapshot: it can
+be negative on an instance that recovers rows written elsewhere or before startup.
+Use the [outbox backlog health check](health-checks.md) or durable store count to query
+current eligible backlog. Neither enqueue nor claim reads emit a sent measurement.

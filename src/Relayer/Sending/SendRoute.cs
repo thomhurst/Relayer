@@ -196,7 +196,7 @@ internal sealed class SendRoute<TMessage>
         public ValueTask DispatchAsync()
         {
             CancellationToken.ThrowIfCancellationRequested();
-            if (!_tracingStarted && _outbox is null && _route._tracing is { } tracing)
+            if (!_tracingStarted && _route._tracing is { } tracing)
             {
                 var external = default(ActivityContext);
                 if (_route._options.EnvelopeMode == MessageEnvelopeMode.Raw &&
@@ -205,7 +205,7 @@ internal sealed class SendRoute<TMessage>
                     Options.Headers.TryGetValue(_route._options.HeaderNames.TraceState, out var state);
                     ActivityContext.TryParse(parent, state, true, out external);
                 }
-                _activity = tracing.Start(external, _buffer is not null);
+                _activity = tracing.Start(external, _outbox is not null || _buffer is not null);
                 _metadata = _metadata with { CreationContext = external != default ? external : _activity?.Context ?? _metadata.CreationContext };
                 _tracingStarted = true;
             }

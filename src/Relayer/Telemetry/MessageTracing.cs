@@ -14,13 +14,15 @@ public sealed class MessageTracing : IDisposable
     /// <summary>The immutable policy used by operations and batch send composition.</summary>
     public TracingOptions Options { get; }
     internal ILogger Logger { get; }
+    internal RelayerInstrumentation? Instrumentation { get; }
 
     /// <summary>Creates an isolated source owner; DI disposes it with its service provider.</summary>
-    public MessageTracing(IOptions<TracingOptions> options, IEnumerable<IActivityEnricher> enrichers, ILoggerFactory? loggerFactory = null)
+    public MessageTracing(IOptions<TracingOptions> options, IEnumerable<IActivityEnricher> enrichers, ILoggerFactory? loggerFactory = null, RelayerInstrumentation? instrumentation = null)
     {
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(enrichers);
         Options = options.Value;
+        Instrumentation = instrumentation;
         _enrichers = enrichers.ToArray();
         Logger = loggerFactory?.CreateLogger<ConsumePipeline>() ?? NullLogger<ConsumePipeline>.Instance;
         Source = new(new ActivitySourceOptions(RelayerTelemetry.ActivitySourceName)

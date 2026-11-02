@@ -28,7 +28,7 @@ internal sealed partial class PostgreSqlMaintenanceWorker : BackgroundService
 
     internal PostgreSqlMaintenanceWorker(NpgsqlDataSource source, PostgreSqlMaintenanceOptions options,
         IEnumerable<ITransport> transports, ILogger<PostgreSqlMaintenanceWorker> logger,
-        ILogger<PostgreSqlDirectDispatcher>? dispatchLogger = null)
+        ILogger<PostgreSqlDirectDispatcher>? dispatchLogger = null, RelayerInstrumentation? instrumentation = null)
     {
         _source = source;
         _options = options;
@@ -36,7 +36,7 @@ internal sealed partial class PostgreSqlMaintenanceWorker : BackgroundService
         _store = new(source, store);
         _logger = logger;
         _dispatcher = new(source, store, new() { BatchSize = options.BatchSize, QueueCapacity = 1, ClaimDuration = options.ClaimDuration },
-            transports, dispatchLogger ?? NullLogger<PostgreSqlDirectDispatcher>.Instance, _store);
+            transports, dispatchLogger ?? NullLogger<PostgreSqlDirectDispatcher>.Instance, _store, instrumentation);
         _rows = new OutboxRecord[options.BatchSize];
         var schema = PostgreSqlOutboxSchema.QuoteIdentifier(options.Schema ?? "public") + ".";
         string Table(string suffix) => schema + PostgreSqlOutboxSchema.QuoteIdentifier(options.TablePrefix + suffix);

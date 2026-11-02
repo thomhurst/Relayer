@@ -304,7 +304,8 @@ const status = [
   ['Ordered PostgreSQL dispatch and lane leases', 'Implemented', true],
   ['PostgreSQL outbox recovery and retention cleanup', 'Implemented', true],
   ['Send and delivery tracing, settlement, metrics and logs', 'Implemented', true],
-  ['Native receive and outbox telemetry', 'Planned', false],
+  ['PostgreSQL outbox tracing and metrics', 'Implemented', true],
+  ['Other native receive telemetry', 'Planned', false],
 ];
 
 function Status() {

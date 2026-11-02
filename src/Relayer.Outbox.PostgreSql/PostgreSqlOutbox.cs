@@ -13,15 +13,17 @@ public sealed class PostgreSqlOutbox : IOutboxEnlistment, IDisposable, IAsyncDis
     private readonly PostgreSqlOutboxBatch _batch = new();
     private readonly string _insertSql;
     private readonly int _lanes;
+    private readonly RelayerInstrumentation? _instrumentation;
     private PostgreSqlOutboxTransaction? _transaction;
     private int _count;
     private bool _disposed;
 
     /// <summary>Creates an enlistment using this scope's validated options.</summary>
-    public PostgreSqlOutbox(IOptionsSnapshot<PostgreSqlOutboxOptions> options) : this(options, []) { }
+    public PostgreSqlOutbox(IOptionsSnapshot<PostgreSqlOutboxOptions> options, RelayerInstrumentation? instrumentation = null)
+        : this(options, [], instrumentation) { }
 
     internal PostgreSqlOutbox(IOptionsSnapshot<PostgreSqlOutboxOptions> options,
-        IEnumerable<PostgreSqlSchedulingRegistration> workers)
+        IEnumerable<PostgreSqlSchedulingRegistration> workers, RelayerInstrumentation? instrumentation = null)
     {
         ArgumentNullException.ThrowIfNull(options);
         var value = options.Value;
@@ -29,6 +31,7 @@ public sealed class PostgreSqlOutbox : IOutboxEnlistment, IDisposable, IAsyncDis
         _lanes = value.Lanes;
         SupportsScheduling = PostgreSqlSchedulingRegistration.Supports(workers, value.Schema, value.TablePrefix);
         SupportsOrderedScheduling = PostgreSqlSchedulingRegistration.Supports(workers, value.Schema, value.TablePrefix, value.Lanes);
+        _instrumentation = instrumentation;
         _insertSql = PostgreSqlOutboxBatch.CreateInsertSql(
             PostgreSqlOutboxSchema.QuoteIdentifier(value.Schema ?? "public") + "." +
             PostgreSqlOutboxSchema.QuoteIdentifier(value.TablePrefix + "outbox"));
@@ -100,6 +103,8 @@ public sealed class PostgreSqlOutbox : IOutboxEnlistment, IDisposable, IAsyncDis
         for (var i = 0; i < _count; i++) _batch.Add(_rows[i]);
         return _batch;
     }
+
+    internal void Committed() => _instrumentation?.AddOutboxPending(_count);
 
     internal void Ended(PostgreSqlOutboxTransaction transaction)
     {

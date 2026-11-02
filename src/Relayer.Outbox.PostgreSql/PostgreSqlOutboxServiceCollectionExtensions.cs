@@ -39,7 +39,8 @@ public static partial class PostgreSqlOutboxServiceCollectionExtensions
         services.AddKeyedSingleton<PostgreSqlDirectDispatcher>(storeName, (provider, _) =>
             new PostgreSqlDirectDispatcher(dataSource, snapshot,
                 provider.GetRequiredService<IOptionsMonitor<PostgreSqlDirectDispatchOptions>>().Get(storeName),
-                provider.GetServices<ITransport>(), provider.GetRequiredService<ILogger<PostgreSqlDirectDispatcher>>()));
+                provider.GetServices<ITransport>(), provider.GetRequiredService<ILogger<PostgreSqlDirectDispatcher>>(),
+                instrumentation: provider.GetService<RelayerInstrumentation>()));
         services.AddSingleton<IHostedService>(provider => provider.GetRequiredKeyedService<PostgreSqlDirectDispatcher>(storeName));
         return services;
     }
@@ -122,7 +123,8 @@ public static partial class PostgreSqlOutboxServiceCollectionExtensions
                 provider.GetServices<IValidateOptions<PostgreSqlOrderedDispatchOptions>>()));
         services.AddKeyedSingleton<PostgreSqlOrderedDispatcher>(name, (provider, _) =>
             new(dataSource, provider.GetRequiredService<IOptionsMonitor<PostgreSqlOrderedDispatchOptions>>().Get(name),
-                provider.GetServices<ITransport>(), provider.GetRequiredService<ILogger<PostgreSqlOrderedDispatcher>>()));
+                provider.GetServices<ITransport>(), provider.GetRequiredService<ILogger<PostgreSqlOrderedDispatcher>>(),
+                instrumentation: provider.GetService<RelayerInstrumentation>()));
         services.AddSingleton<IHostedService>(provider => provider.GetRequiredKeyedService<PostgreSqlOrderedDispatcher>(name));
         services.AddSingleton<PostgreSqlSchedulingRegistration>(provider =>
         {
