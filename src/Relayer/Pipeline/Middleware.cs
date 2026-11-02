@@ -10,6 +10,9 @@ public interface IConsumeMiddleware
     ValueTask InvokeAsync(MessageContext context, ConsumeDelegate next);
 }
 
+/// <summary>A database transaction boundary. Register exactly once, before other consume middleware.</summary>
+public interface IConsumeTransactionMiddleware : IConsumeMiddleware;
+
 /// <summary>A step in the send pipeline.</summary>
 public delegate ValueTask SendDelegate(SendContext context);
 

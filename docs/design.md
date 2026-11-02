@@ -527,6 +527,15 @@ After dispatch, rows are deleted in batches. One leased **cleanup** job handles 
 - A duplicate delivery is acknowledged without invoking the handler, and a metric is recorded.
 - The inbox is opt-in per consumer. It is enabled automatically when the outbox is used on the same DbContext.
 
+The implemented PostgreSQL EF Core consumer boundary explicitly selects its scoped DbContext at
+composition time, validates its provider and owns the transaction around the complete handler attempt.
+It inserts the inbox key before dispatch with `ON CONFLICT DO NOTHING`; the database unique constraint
+coordinates overlapping instances and permits a waiting delivery to run if the first rolls back.
+Outbox configuration on the selected context enables inbox deduplication automatically (D36).
+Before commit the boundary requests completion if no settlement outcome is pending. The existing
+one-request rule rejects settlement changes during scope disposal after the work is durable.
+See [consumer configuration and failure boundaries](https://relayer.tomlonghurst.dev/docs/reference/ef-core-inbox).
+
 ### 6.6 Multi-tenancy
 
 - `IOutboxStoreResolver` maps the current tenant to a connection or DbContext, supporting a database per tenant or a schema per tenant (CAP #699, Rebus #1218, Wolverine #556).

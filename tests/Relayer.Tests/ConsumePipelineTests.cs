@@ -8,6 +8,41 @@ namespace Relayer.Tests;
 public class ConsumePipelineTests
 {
     [Test]
+    public async Task Middleware_factory_uses_temporary_startup_scope_and_transaction_must_be_first()
+    {
+        await using var provider = Provider();
+        StartupDependency? startup = null;
+        var builder = Builder(provider).Handler(Descriptor(provider));
+        builder.Use(services =>
+        {
+            startup = services.GetRequiredService<StartupDependency>();
+            return new TransactionMiddleware();
+        });
+        await Assert.That(startup!.Disposed).IsTrue();
+        await Assert.That(() => builder.Use(new TransactionMiddleware())).Throws<InvalidOperationException>();
+        builder.Use(new Middleware("inner", [], []));
+        var pipeline = builder.Build();
+        var invoked = false;
+        await Assert.That(() => builder.Use(_ => { invoked = true; return new TransactionMiddleware(); })).Throws<InvalidOperationException>();
+        await Assert.That(invoked).IsFalse();
+        using var context = pipeline.RentContext(Message());
+        await pipeline.ProcessAsync(context);
+        var other = Builder(provider).Handler(Descriptor(provider)).Use(new Middleware("outer", [], []));
+        await Assert.That(() => other.Use(new TransactionMiddleware())).Throws<InvalidOperationException>();
+    }
+
+    private sealed class StartupDependency : IDisposable
+    {
+        internal bool Disposed { get; private set; }
+        public void Dispose() => Disposed = true;
+    }
+
+    private sealed class TransactionMiddleware : IConsumeTransactionMiddleware
+    {
+        public ValueTask InvokeAsync(MessageContext context, ConsumeDelegate next) => next(context);
+    }
+
+    [Test]
     public async Task Middleware_wraps_generated_dispatch_in_registration_order_and_scopes_are_fresh()
     {
         var events = new List<string>();
@@ -288,6 +323,7 @@ public class ConsumePipelineTests
     private static ServiceProvider Provider()
     {
         var services = new ServiceCollection();
+        services.AddScoped<StartupDependency>();
         services.AddScoped<Dependency>();
         services.AddSingleton<Control>();
         services.AddSingleton(new List<string>());

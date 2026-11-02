@@ -8,7 +8,8 @@ It supplies durable reads, atomic claims, renewal, completion, failure persisten
 [EF Core transaction enlistment](ef-core-outbox.md) and [ADO.NET/Dapper transactions](postgres-outbox.md)
 supply atomic enqueue. [Unordered direct dispatch](direct-dispatch.md) can send due rows immediately after
 an EF commit. [Ordered dispatch with lane leases](ordered-dispatch.md) is available through separate
-registration. Recovery polling and inbox deduplication remain planned.
+registration. Recovery polling remains planned.
+[Inbox deduplication](ef-core-inbox.md) is available through the EF Core consumer boundary.
 
 ## Registration
 

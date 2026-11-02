@@ -101,8 +101,20 @@ public sealed class ConsumePipelineBuilder
     {
         EnsureMutable();
         ArgumentNullException.ThrowIfNull(middleware);
+        if (middleware is IConsumeTransactionMiddleware && _middleware.Count != 0)
+            throw new InvalidOperationException("Register the consumer transaction boundary once, before other middleware.");
         _middleware.Add(middleware);
         return this;
+    }
+
+    /// <summary>Creates concurrent middleware in a temporary synchronous startup scope. Do not retain scoped services.</summary>
+    /// <remarks>Services resolved by the factory must support synchronous disposal.</remarks>
+    public ConsumePipelineBuilder Use(Func<IServiceProvider, IConsumeMiddleware> factory)
+    {
+        EnsureMutable();
+        ArgumentNullException.ThrowIfNull(factory);
+        using var scope = _scopes.CreateScope();
+        return Use(factory(scope.ServiceProvider));
     }
 
     /// <summary>Attaches this endpoint's process metrics and generated failure logging.</summary>

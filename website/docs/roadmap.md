@@ -17,8 +17,9 @@ Relayer is in early development. Track progress in [GitHub issues](https://githu
 - [PostgreSQL schema scripts and database CLI](reference/postgres-schema.md), including an application-owned EF Core migration path.
 - [EF Core transaction enlistment for PostgreSQL](reference/ef-core-outbox.md): implicit saves, explicit transactions, atomic rollback, multiple contexts and one batched insert per transaction.
 - [Ordered PostgreSQL dispatch and lane leases](reference/ordered-dispatch.md).
+- [EF Core consumer inbox](reference/ef-core-inbox.md): PostgreSQL deduplication, concurrent redelivery, atomic business/inbox/outbox commits and duplicate metrics. Automatic for the selected outbox context, opt-in for inbox-only consumers.
 - [PostgreSQL ADO.NET and Dapper transactions](reference/postgres-outbox.md): scoped enlistment, owned message copies and one atomic batched insert on commit.
-- [Unordered PostgreSQL direct dispatch](reference/direct-dispatch.md): background sends immediately after EF commit, fenced claims, native transport batches and fenced batch deletion. Recovery polling, poison-row handling, cleanup and inbox remain planned.
+- [Unordered PostgreSQL direct dispatch](reference/direct-dispatch.md): background sends immediately after EF commit, fenced claims, native transport batches and fenced batch deletion. Recovery polling, poison-row handling and cleanup remain planned.
 - The consume pipeline and the native receive SPI.
 - [Service Bus receive primitives](transports/service-bus-receive.md): the native callback binding and manual settlement view. The complete Service Bus transport remains planned.
 - Generated batch handler execution, durable partial-failure decisions, and validated native/client-side receive executors for transport authors.

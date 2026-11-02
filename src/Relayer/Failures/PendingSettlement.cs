@@ -4,6 +4,7 @@ namespace Relayer;
 internal sealed class PendingSettlement(DefaultMessageContext context, ConsumePipeline owner) : ISettlementFeature
 {
     internal Disposition? Request { get; private set; }
+    public Disposition? RequestedDisposition => Request;
 
     public void Complete() => Set(Disposition.Complete);
     public void Retry(TimeSpan delay) => Set(Disposition.Redeliver(delay));
