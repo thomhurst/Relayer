@@ -211,6 +211,9 @@ internal sealed class KafkaConsumer : IAsyncDisposable
             if (_native.Subscription.Count != 0 || !_native.Assignment.Contains(partition)) return;
             assignment = Assign(partition); // Supports explicit native Assign as well as group subscriptions.
         }
+        // Synchronous handlers can reach a pending native commit before the next health update.
+        // Preserve an active worker's age; only start a new activity period from idle/unavailable.
+        if (_health is not null && _health.Read() <= 0) _health.Progress();
         var records = batch.GetEnumerator();
         while (!_stop.IsCancellationRequested && !assignment.Revoking && _source.Assignments.TryGetValue(partition, out var current) && ReferenceEquals(assignment, current))
         {

@@ -232,11 +232,14 @@ The health service reports a timed-out probe as unhealthy and passes cancellatio
 
 Liveness comes from each exact consumer declaration's receiver state. Workers waiting for native batches
 are idle and healthy regardless of elapsed time. Processing remains active through retries, durable failure
-copies and the batch commit; completed records refresh progress. The oldest active worker determines
-liveness, so idle workers and healthy declarations on the same source cannot mask a stall. Before receiver
+copies and the batch commit, including a commit after entirely synchronous handling. A stalled native
+commit therefore counts toward `ConsumerStallTimeout`; the worker becomes idle only after the commit
+finishes. The oldest outstanding delivery determines progress while handlers remain active. The oldest
+active worker determines liveness, so idle workers and healthy declarations on the same source cannot
+mask a stall. Before receiver
 startup and after receiver shutdown or failure, state is unavailable and health is unhealthy. Connectivity
-and liveness are separate checks: an idle receiver does not prove broker connectivity. Parallel workers
-remain planned, but the health snapshot already aggregates every registered worker.
+and liveness are separate checks: an idle receiver does not prove broker connectivity. The health snapshot
+aggregates every registered worker, including concurrent partition handling.
 
 Without this optional registration, Kafka consumers do not read the health clock or record health state.
 The Kafka transport itself has no dependency on the health-check packages. See [health integration](../guides/health-checks.md)

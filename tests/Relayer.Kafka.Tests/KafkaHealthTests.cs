@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using Dekaf;
 using Dekaf.Admin;
 using Dekaf.Consumer;
@@ -12,6 +13,66 @@ namespace Relayer.Kafka.Tests;
 
 public class KafkaHealthTests
 {
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Synchronous_batch_stays_active_through_native_commit_and_returns_idle_afterward(bool alreadyActive)
+    {
+        using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(2));
+        var token = timeout.Token;
+        using var tracing = new MessageTracing(Options.Create(new TracingOptions()), []);
+        await using var fixture = (KafkaFixture)await KafkaFixture.CreateAsync(tracing, token);
+        await using var producer = await new ProducerBuilder<byte[], byte[]>().WithBootstrapServers(fixture.Bootstrap).BuildAsync(token);
+        await producer.ProduceAsync(new() { Topic = fixture.Destination, Key = [1], Value = [1] }, token);
+        var native = new ConsumerBuilder<byte[], byte[]>().WithBootstrapServers(fixture.Bootstrap).WithGroupId(fixture.Destination)
+            .WithOffsetCommitMode(OffsetCommitMode.Manual).WithAutoOffsetStore(false).WithAutoOffsetReset(AutoOffsetReset.Earliest).Build();
+        native.Assign(new TopicPartition(fixture.Destination, 0));
+        await native.InitializeAsync(token);
+        var clock = new KafkaHealthClock();
+        var worker = new KafkaWorkerHealth(clock);
+        worker.Idle();
+        var startedAt = clock.GetUtcNow();
+        if (alreadyActive)
+        {
+            worker.Progress();
+            clock.Advance(TimeSpan.FromSeconds(10));
+        }
+        long duringHandler = 0, beforeCommit = 0, afterCommit = 0;
+        using var listener = new ActivityListener
+        {
+            ShouldListenTo = source => ReferenceEquals(source, tracing.Source),
+            Sample = (ref ActivityCreationOptions<ActivityContext> _) => ActivitySamplingResult.AllData,
+            ActivityStarted = activity =>
+            {
+                if (activity.OperationName != "commit " + fixture.Destination) return;
+                beforeCommit = worker.Read();
+                // A commit that takes longer than the stall timeout must remain active,
+                // including when every handler completed synchronously before the await.
+                clock.Advance(TimeSpan.FromMinutes(2));
+            },
+            ActivityStopped = activity =>
+            {
+                if (activity.OperationName == "commit " + fixture.Destination) afterCommit = worker.Read();
+            },
+        };
+        ActivitySource.AddActivityListener(listener);
+        await using var adapter = new KafkaConsumer(native, (_, _) =>
+        {
+            duringHandler = worker.Read();
+            return new(Disposition.Complete);
+        }, tracing, new() { System = "kafka", Destination = fixture.Destination }, new(), worker);
+        await using var batches = native.ConsumeBatchAsync(token).GetAsyncEnumerator();
+        await Assert.That(await batches.MoveNextAsync()).IsTrue();
+        await adapter.ProcessBatchAsync(batches.Current, token);
+        await Assert.That(duringHandler).IsEqualTo(startedAt.UtcTicks);
+        await Assert.That(beforeCommit).IsEqualTo(startedAt.UtcTicks);
+        await Assert.That(afterCommit).IsEqualTo(startedAt.UtcTicks);
+        await Assert.That(clock.GetUtcNow() - new DateTimeOffset(afterCommit, TimeSpan.Zero))
+            .IsEqualTo(TimeSpan.FromMinutes(2) + (alreadyActive ? TimeSpan.FromSeconds(10) : TimeSpan.Zero));
+        await Assert.That(worker.Read()).IsEqualTo(-clock.GetUtcNow().UtcTicks);
+        await Assert.That(await native.GetCommittedOffsetAsync(new(fixture.Destination, 0), token)).IsEqualTo(1L);
+    }
+
     [Test]
     public async Task Oldest_active_worker_wins_over_idle_and_progressing_workers_of_exact_declaration()
     {
