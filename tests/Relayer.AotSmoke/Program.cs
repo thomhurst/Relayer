@@ -26,6 +26,7 @@ PartitionCompletionSmoke.Run();
 PartitionSchedulerSmoke.Run();
 await KafkaSchemaSmoke.RunAsync();
 ProtobufSmoke.Run();
+MessagePackSmoke.Run();
 SagaDiagramSmoke.Run();
 await SagaDispatchSmoke.RunAsync();
 
