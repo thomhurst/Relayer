@@ -25,7 +25,7 @@ public class KafkaConformanceTests
 
 internal sealed class KafkaFixture : ITransportConformanceFixture<KafkaDelivery>
 {
-    internal KafkaTestBroker Broker { get; }
+    internal KafkaRestartableBroker Broker { get; }
     private readonly KafkaProducerTransport _transport;
     private readonly MessageTracing _tracing;
     private readonly ILoggerFactory _logs = LoggerFactory.Create(builder => builder
@@ -41,7 +41,7 @@ internal sealed class KafkaFixture : ITransportConformanceFixture<KafkaDelivery>
     public string SettlementOperation => "commit";
     public HeaderNames HeaderNames { get; } = new();
 
-    private KafkaFixture(KafkaTestBroker broker, MessageTracing tracing)
+    private KafkaFixture(KafkaRestartableBroker broker, MessageTracing tracing)
     {
         Broker = broker;
         _tracing = tracing;
@@ -53,7 +53,7 @@ internal sealed class KafkaFixture : ITransportConformanceFixture<KafkaDelivery>
 
     internal static async ValueTask<ITransportConformanceFixture<KafkaDelivery>> CreateAsync(MessageTracing tracing, CancellationToken token)
     {
-        var broker = new KafkaTestBroker();
+        var broker = new KafkaRestartableBroker();
         KafkaFixture? fixture = null;
         try
         {

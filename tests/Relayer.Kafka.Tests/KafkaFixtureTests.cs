@@ -22,7 +22,7 @@ public class KafkaFixtureTests
     {
         using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(2));
         var token = timeout.Token;
-        await using var broker = new KafkaTestBroker();
+        await using var broker = new KafkaRestartableBroker();
         await broker.Container.StartAsync(token);
         var script = await broker.Container.ReadFileAsync("/testcontainers.sh", token);
         var endpoint = new Uri(broker.Bootstrap);

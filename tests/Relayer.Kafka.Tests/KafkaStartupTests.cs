@@ -15,7 +15,7 @@ public class KafkaStartupTests
         var copies = 0;
         await using var container = new ContainerBuilder("apache/kafka:4.0.2")
             .WithEntrypoint("/bin/sh", "-c")
-            .WithCommand(KafkaStartupGate.StartupCommand)
+            .WithCommand(KafkaTestBroker.StartupCommand)
             .WithStartupCallback(async (container, ct) =>
             {
                 // Deterministically model the window between archive entry creation and
@@ -31,7 +31,7 @@ public class KafkaStartupTests
                 await Assert.That(process.Stdout.Trim()).IsEqualTo("sh");
                 copies++;
             })
-            .WithWaitStrategy(KafkaStartupGate.WaitForStartupCopy()
+            .WithWaitStrategy(KafkaTestBroker.WaitForStartupCopy()
                 .UntilCommandIsCompleted("/bin/sh", "-c", "test \"$(cat /proc/1/comm)\" = sleep"))
             .Build();
 
