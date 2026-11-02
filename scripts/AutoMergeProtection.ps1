@@ -1,3 +1,4 @@
+#!/usr/bin/env pwsh
 # GitHub's --auto can merge immediately when no enforced check blocks the caller.
 # Require an active repository ruleset that requires CI Passed, not merely a named check in CI.
 # The maintainer is a bypass actor, and agents act with the maintainer's credential, so the

@@ -1,3 +1,4 @@
+#!/usr/bin/env pwsh
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'AssertPrGreenChecks.ps1')
 . (Join-Path $PSScriptRoot 'AutoMergeProtection.ps1')

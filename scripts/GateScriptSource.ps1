@@ -1,3 +1,4 @@
+#!/usr/bin/env pwsh
 # Runs the merge gate as committed on the PR's base branch.
 #
 # Agents invoke the gate from a shared checkout that can lag the base branch, or from a PR

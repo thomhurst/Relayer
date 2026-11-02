@@ -1,3 +1,4 @@
+#!/usr/bin/env pwsh
 # Regression tests for the sweep's Docker cleanup. Needs PowerShell 7 and Docker.
 # Fixtures use a unique name prefix, so the container cleanup only sees its own containers.
 # The volume cleanup is daemon-wide by design, so these tests drive it through a short

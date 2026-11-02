@@ -1,3 +1,4 @@
+#!/usr/bin/env pwsh
 # Docker cleanup for the worktree sweep. Dot-source this file.
 #
 # Test fixtures and agent experiments leave Docker data behind: an image that declares
