@@ -1,7 +1,7 @@
 using System.Buffers;
 using System.Text;
 
-namespace Relayer.Outbox.PostgreSql;
+namespace Relayer;
 
 internal sealed class BufferedOutboxMessage
 {
@@ -43,7 +43,7 @@ internal sealed class BufferedOutboxMessage
         DeliverAt = message.DeliverAt?.ToUniversalTime();
         _buffer.Write(message.Body.Span);
         var bodyLength = _buffer.WrittenCount;
-        OutboxHeaderCodec.Write(_buffer, message.Headers.Span);
+        DurableOutboxHeaderCodec.Write(_buffer, message.Headers.Span);
         var headerEnd = _buffer.WrittenCount;
         if (message.OrderingKey is { } key) WriteValue(key);
         // Take slices only after growth has finished: ArrayBufferWriter can replace its backing array.
@@ -71,7 +71,7 @@ internal sealed class BufferedOutboxMessage
     }
 
     internal OutgoingMessage ToMessage() => new OutgoingMessage(Destination, Body,
-        OutboxHeaderCodec.Read(Headers, ref _decodedHeaders),
+        DurableOutboxHeaderCodec.Read(Headers, ref _decodedHeaders),
         OrderingKey is { } key ? new WireString(key) : null).ForOutboxDispatch();
 
     internal void Clear()

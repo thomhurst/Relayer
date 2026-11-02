@@ -58,6 +58,7 @@ To change a decision, add a new entry that supersedes it rather than editing his
 | [D45](#d45-tenant-store-selection-reuses-native-scoped-factories) | Tenant store selection reuses native scoped factories | Accepted |
 | [D46](#d46-sql-server-primitives-use-native-sqlclient-with-an-explicit-aot-boundary) | SQL Server primitives use native SqlClient with an explicit AOT boundary | Accepted |
 | [D47](#d47-sql-server-outbox-transactions-reuse-native-bulk-copy) | SQL Server outbox transactions reuse native bulk copy | Accepted |
+| [D48](#d48-mysql-enqueue-owns-native-transactions-and-reuses-mysqlbatch) | MySQL enqueue owns native transactions and reuses MySqlBatch | Accepted |
 
 ---
 
@@ -928,3 +929,28 @@ No parallel cancellation/retry engine is added. Completed Task read results and 
 native allocations separately from owned-buffer copying. Enlistment does not add SQL Server EF Core,
 inbox, workers, scheduling or maintenance; future scheduling through ISender fails until a matching
 worker exists. See the [SQL Server guide](../website/docs/reference/sqlserver-store.md).
+
+## D48. MySQL enqueue owns native transactions and reuses MySqlBatch
+
+**Context.** MySqlConnector commands accept only native MySqlTransaction instances. Transactional
+business writes and buffered sends need one explicit commit boundary, with the D32 connection-view
+pattern for ordinary ADO.NET and Dapper calls. MySqlConnector 2.6.2 already supplies MySqlBatch,
+including packet construction, execution and cancellation. MySqlBulkCopy requires local-infile
+configuration and a reader or row source, which is unnecessary for ordinary transactional enqueue.
+
+**Decision.** MySqlOutbox returns a DbTransaction wrapper over a native transaction. Commands from
+transaction.Connection unwrap that same transaction. Commit flushes owned messages through native
+MySqlBatch before native commit. Rollback, failed flush and disposal discard the complete unit.
+The data-source overload owns only its opened connection; caller-supplied open connections remain
+application-owned. Core shares the existing owned message buffer, metadata validation, header codec
+and stable lane hash with PostgreSQL. MySQL parameters reuse network-order UUID bytes, UTC timestamp
+buffers and reusable MemoryStream array slices without changing native connection settings.
+
+**Consequences.** No parallel batching or bulk-loading protocol is introduced. MySqlBatch is marked
+experimental upstream and does not guarantee one round trip on MySQL; packet and execution behavior
+remain native. Savepoints, nested transactions, overlapping scope operations and ambient transactions
+are rejected or unsupported. Participating tables must use InnoDB. Callers must not execute DDL,
+transaction-control SQL or other implicit-commit statements: MySQL can commit those independently of
+the wrapper, and Relayer cannot restore atomicity afterward. Lost COMMIT acknowledgements retain the
+native unknown-outcome semantics. Scheduling support remains false until matching workers exist;
+transactional enqueue alone never promises delivery. See the [MySQL store reference](https://relayer.tomlonghurst.dev/docs/reference/mysql-store).

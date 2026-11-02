@@ -1,11 +1,12 @@
 ---
 title: MySQL durable store
-description: "MySQL schema, bounded durable reads, atomic claims and fenced outcomes."
+description: "MySQL transactional enqueue, Dapper integration, durable reads and fenced claims."
 ---
 
 `Relayer.Outbox.MySql` implements the [durable store contract](outbox-stores.md) using
 MySqlConnector and MySQL 8.4+ InnoDB. It supplies bounded reads, atomic claims, renewal,
-completion, failure persistence and eligible backlog counts.
+completion, failure persistence and eligible backlog counts. Scoped ADO.NET transactions
+commit business writes and buffered sends together.
 
 ## Deployment and registration
 
@@ -67,13 +68,78 @@ The `headers` column uses the same versioned binary codec as the PostgreSQL stor
 duplicate names and arbitrary value bytes are preserved. Invalid versions, lengths or trailing bytes
 fail explicitly. Empty headers require the encoded version and zero count, not an empty BLOB.
 
+## Transactional enqueue with ADO.NET or Dapper
+
+Register one scoped outbox integration, separately from the named read/claim store:
+
+```csharp
+services.AddRelayerMySqlOutbox(new MySqlOutboxOptions
+{
+    TablePrefix = "orders_",
+    Lanes = 64
+});
+```
+
+Resolve `MySqlOutbox` and `ISender` from the same scope. Configure the message's route with
+`SendTransactionRequirement.Outbox` as described in the [send guide](../guides/sending.md).
+Begin a transaction, use its `Connection` for business commands, and commit through the
+returned `DbTransaction`:
+
+```csharp
+using Dapper;
+using System.Data.Common;
+
+await using DbTransaction transaction = await outbox.BeginTransactionAsync(dataSource,
+    cancellationToken: ct);
+await transaction.Connection!.ExecuteAsync(new CommandDefinition(
+    "INSERT INTO orders (id) VALUES (@Id)", new { Id = orderId },
+    transaction: transaction, cancellationToken: ct));
+await sender.SendAsync(new OrderPlaced(orderId), ct);
+await transaction.CommitAsync(ct);
+```
+
+`BeginTransactionAsync` also accepts an already open `MySqlConnection` and an isolation level.
+The application retains ownership of that connection. The data-source overload owns and
+disposes only the connection it opens. Neither overload disposes the data source. Use one
+transaction at a time per scope; overlapping operations are unsupported. Configuration can
+also bind through `AddRelayerMySqlOutbox(configurationSection)`, with immutable Options
+snapshots per scope, reload for new scopes, and startup validation.
+
+Enqueue takes an owned copy of the original UUIDv7 identity, stable message type, payload,
+headers, ordering key and tenant metadata. At commit, Relayer uses MySqlConnector's native
+`MySqlBatch` inside the same transaction. Native batching controls packet construction and
+execution; it does not promise a single round trip on MySQL. `MySqlBulkCopy` is not required,
+so neither `AllowLoadLocalInfile` nor server local-infile settings need changing. Cached
+buffers and parameter views are reused after warm-up. Dates and UUIDs use the representation
+described above, regardless of native `DateTimeKind` and `GuidFormat` settings.
+
+Both synchronous and asynchronous commit, rollback and disposal are supported. An insert
+failure or cancellation before commit rolls back the entire transaction, including earlier
+successful inserts in the batch. Disposing the transaction or scope without committing
+discards buffered sends and rolls back business writes. As with the native client, loss of
+connection or cancellation during COMMIT can leave the outcome unknown; retry the complete
+unit with application idempotency rather than assuming it failed.
+
+Use InnoDB for every participating business table. Do not issue transaction-control SQL,
+DDL, `LOCK TABLES`, or other statements that implicitly commit through business commands.
+MySQL's native implicit commits and nontransactional tables cannot be rolled back by Relayer.
+Complete the transaction only through the returned wrapper. Use its `Connection` for Dapper;
+assigning the wrapper to a command created directly on a native connection is unsupported.
+Savepoints and `CommandBehavior.CloseConnection` are rejected because their effects would
+not match the buffered sends. Disposing the borrowed connection view has no effect; dispose
+the transaction instead. Ambient `TransactionScope` is rejected before beginning a unit.
+
+Ordering keys use the shared stable lane hash. All writers and future ordered workers must
+agree on `Lanes` (default `64`); changing it requires draining or migrating existing rows.
+The enlistment reports no scheduling support until matching due-row workers are implemented.
+Registering this integration alone does not send persisted rows to a broker.
+
 ## Remaining integration
 
-Transactional enqueue and Dapper transaction integration remain planned in
-[#289](https://github.com/thomhurst/Relayer/issues/289). Inbox deduplication, direct and ordered
+Inbox deduplication, direct and ordered
 dispatch, recovery, poison-row handling and retention workers remain planned in
-[#291](https://github.com/thomhurst/Relayer/issues/291). This package currently creates only the
-outbox table and registers read/claim primitives. It does not register `IOutboxEnlistment`, write
-sends automatically, establish lane ownership or start workers. The schema helper is not exposed
+[#291](https://github.com/thomhurst/Relayer/issues/291). The package creates the outbox table,
+registers read/claim primitives and optionally registers scoped `IOutboxEnlistment` for sends.
+It does not establish lane ownership or start workers. The schema helper is not exposed
 through `dotnet relayer db` yet. Full SQL Server and MySQL parity remains tracked by
 [#41](https://github.com/thomhurst/Relayer/issues/41).
