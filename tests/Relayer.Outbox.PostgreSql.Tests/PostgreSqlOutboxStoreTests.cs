@@ -305,7 +305,7 @@ public class PostgreSqlOutboxStoreTests
         await command.ExecuteNonQueryAsync();
     }
 
-    private static async Task Insert(NpgsqlDataSource source, PostgreSqlOutboxOptions options, Guid id, DateTimeOffset now,
+    internal static async Task Insert(NpgsqlDataSource source, PostgreSqlOutboxOptions options, Guid id, DateTimeOffset now,
         int? lane = null, DateTimeOffset? deliverAt = null, string status = "pending", DateTimeOffset? expires = null)
     {
         var buffer = new ArrayBufferWriter<byte>();
