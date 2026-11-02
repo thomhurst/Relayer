@@ -275,6 +275,20 @@ and verify the retained copies. Replay the original detector decision before
 changing the harness. Keep a failed changed-input comparison visible even if a
 later diagnostic experiment does not reproduce it.
 
+For a retained changed-input run, replay the strict report comparison without
+rebuilding the source checkouts:
+
+```powershell
+python .github/scripts/benchmark_gate.py compare C:/retained/performance-results/baseline C:/retained/performance-results/candidate --baseline-after C:/retained/performance-results/baseline-after --summary C:/investigation/strict-replay.md
+```
+
+Check the retained input inventories separately to confirm that the original run
+had differing inputs. `--input-manifest` writes a new inventory from source
+checkouts; it does not read an archived inventory. Do not point it at the original
+evidence. Without source verification, the comparison applies the strict rules
+even to an originally identical-input run, so this command does not reproduce
+that run's verified-identical classification.
+
 For a controlled investigation, pin the original commits, common harness, SDK,
 runtime and dependencies. Declare the case filters, launch count and measurement
 settings before running. Run baseline, candidate, candidate, baseline in sequence
@@ -306,6 +320,9 @@ dotnet ./Relayer.Benchmarks-DefaultJob-1.dll --benchmarkId 1
 ```
 
 Check the generated `.notcs` source to confirm the ID's method and parameters.
+Check this mapping in both images. With multiple failing cases, run the declared
+sequence separately for each case and retain its own launch results. Do not pool
+different methods or parameter combinations into one comparison.
 The generated driver supports this direct execution without the original parent
 process's anonymous pipes. Its job settings are compiled into the driver;
 benchmark CLI options such as `--filter` or `--invocationCount` do not configure
