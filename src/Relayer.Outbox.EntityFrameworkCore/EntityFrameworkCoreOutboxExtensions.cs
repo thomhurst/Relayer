@@ -23,7 +23,7 @@ public static class EntityFrameworkCoreOutboxExtensions
         services.TryAddScoped<EntityFrameworkCoreOutbox>(static provider =>
         {
             var capabilities = provider.GetRequiredService<DefaultOutboxCapabilities>().Get();
-            return new(capabilities.Scheduling, capabilities.OrderedScheduling);
+            return new(capabilities.Scheduling, capabilities.OrderedScheduling, provider.GetService<RelayerInstrumentation>());
         });
         services.TryAddScoped<IOutboxEnlistment>(static provider => provider.GetRequiredService<EntityFrameworkCoreOutbox>());
         services.TryAddSingleton<IValidateOptions<EntityFrameworkCoreOutboxOptions>, OutboxOptionsValidator>();

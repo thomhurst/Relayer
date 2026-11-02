@@ -70,9 +70,9 @@ internal sealed class BufferedOutboxMessage
         else _buffer.Write(value.Utf8.Span);
     }
 
-    internal OutgoingMessage ToMessage() => new(Destination, Body,
+    internal OutgoingMessage ToMessage() => new OutgoingMessage(Destination, Body,
         OutboxHeaderCodec.Read(Headers, ref _decodedHeaders),
-        OrderingKey is { } key ? new WireString(key) : null);
+        OrderingKey is { } key ? new WireString(key) : null).ForOutboxDispatch();
 
     internal void Clear()
     {

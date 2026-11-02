@@ -1,3 +1,4 @@
+using System.Diagnostics.Metrics;
 using BenchmarkDotNet.Attributes;
 using Microsoft.Extensions.Logging.Abstractions;
 using Npgsql;
@@ -16,9 +17,16 @@ public class OutboxDirectDispatchBenchmarks
     private OutgoingMessage[] _messages = [];
     private OutboxClaim[] _claims = [];
     private bool[] _claimed = [];
+    private DateTimeOffset[] _created = [];
+    private readonly RelayerInstrumentation _instrumentation = new();
+    private MeterListener? _listener;
+
     private NpgsqlDataSource _dataSource = null!;
     private PostgreSqlDirectDispatcher _recovery = null!;
     private OutboxRecord[] _records = [];
+
+    [Params(false, true)]
+    public bool MetricsEnabled { get; set; }
 
     [Params(1, 100)]
     public int MessageCount { get; set; }
@@ -26,6 +34,19 @@ public class OutboxDirectDispatchBenchmarks
     [GlobalSetup]
     public void Setup()
     {
+        if (MetricsEnabled)
+        {
+            _listener = new()
+            {
+                InstrumentPublished = (instrument, listener) =>
+                {
+                    if (ReferenceEquals(instrument.Meter.Scope, _instrumentation)) listener.EnableMeasurementEvents(instrument);
+                },
+            };
+            _listener.SetMeasurementEventCallback<long>(static (_, _, _, _) => { });
+            _listener.SetMeasurementEventCallback<double>(static (_, _, _, _) => { });
+            _listener.Start();
+        }
         _now = DateTimeOffset.UtcNow;
         _record = new(Guid.CreateVersion7(), "events", "benchmark.order;v=1",
             new OutgoingMessage("orders", new byte[256], new KeyValuePair<string, WireString>[]
@@ -44,6 +65,7 @@ public class OutboxDirectDispatchBenchmarks
         _messages = new OutgoingMessage[MessageCount];
         _claims = new OutboxClaim[MessageCount];
         _claimed = new bool[MessageCount];
+        _created = new DateTimeOffset[MessageCount];
         for (var i = 0; i < MessageCount; i++) _claimed[i] = i % 2 == 0;
         // Warm both sides of the ownership swap, including decoded header names.
         if (CommitHandoffAndProjection() != MessageCount * 256 || CommitHandoffAndProjection() != MessageCount * 256)
@@ -55,6 +77,8 @@ public class OutboxDirectDispatchBenchmarks
     [GlobalCleanup]
     public void Cleanup()
     {
+        _listener?.Dispose();
+        _instrumentation.Dispose();
         _recovery.Dispose();
         _dataSource.Dispose();
     }
@@ -105,12 +129,18 @@ public class OutboxDirectDispatchBenchmarks
         _batch.Sort();
         for (var i = 0; i < _batch.Count; i++)
         {
+            _created[i] = _batch.Rows[i].CreatedAt;
             _claims[i] = new(_batch.Rows[i].Id, Guid.NewGuid());
             _messages[i] = _batch.Rows[i].ToMessage();
         }
-        var live = PostgreSqlDirectDispatcher.CompactClaims(_messages, _claims, _claimed);
+        var live = PostgreSqlDirectDispatcher.CompactClaims(_messages, _claims, _claimed, _created);
         var bytes = 0;
-        for (var i = 0; i < live; i++) bytes += _messages[i].Body.Length;
+        for (var i = 0; i < live; i++)
+        {
+            _instrumentation.RecordOutboxDispatchLag(_now - _created[i]);
+            bytes += _messages[i].Body.Length;
+        }
+        _instrumentation.AddOutboxPending(-live);
         Array.Clear(_messages);
         Array.Clear(_claims);
         _batch.Clear();

@@ -18,11 +18,13 @@ internal sealed partial class PostgreSqlOrderedDispatcher : BackgroundService
     private readonly OrderedDispatchCapabilityCache _capabilities = new();
     private readonly ILogger<PostgreSqlOrderedDispatcher> _logger;
     private readonly TimeProvider _timeProvider;
+    private readonly RelayerInstrumentation? _instrumentation;
 
     internal PostgreSqlOrderedDispatcher(NpgsqlDataSource source, PostgreSqlOrderedDispatchOptions options,
-        IEnumerable<ITransport> transports, ILogger<PostgreSqlOrderedDispatcher> logger, TimeProvider? timeProvider = null)
+        IEnumerable<ITransport> transports, ILogger<PostgreSqlOrderedDispatcher> logger, TimeProvider? timeProvider = null, RelayerInstrumentation? instrumentation = null)
     {
         _source = source;
+        _instrumentation = instrumentation;
         _options = options;
         var store = options.Validate();
         _coordinator = new(source, options);
@@ -131,6 +133,7 @@ internal sealed partial class PostgreSqlOrderedDispatcher : BackgroundService
                 try
                 {
                     var prepared = Prepare(row, _transports, _capabilities);
+                    _instrumentation?.RecordOutboxDispatchLag(_timeProvider.GetUtcNow() - row.CreatedAt);
                     await prepared.Transport.SendAsync(prepared.Message, cancellationToken).ConfigureAwait(false);
                 }
                 catch (Exception error) when (!cancellationToken.IsCancellationRequested)
@@ -146,6 +149,7 @@ internal sealed partial class PostgreSqlOrderedDispatcher : BackgroundService
                 sent++;
             }
             await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+            _instrumentation?.AddOutboxPending(-sent);
             return sent;
         }
         finally { Array.Clear(_rows); }
@@ -162,7 +166,7 @@ internal sealed partial class PostgreSqlOrderedDispatcher : BackgroundService
         _ = capabilities.Get(transport, row.Message.Destination);
         // The database already enforces deliver_at. Do not schedule again in the native client.
         var message = row.Message;
-        return (transport, new(message.Destination, message.Body, message.Headers, message.OrderingKey));
+        return (transport, new OutgoingMessage(message.Destination, message.Body, message.Headers, message.OrderingKey).ForOutboxDispatch());
     }
 
     [LoggerMessage(Level = LogLevel.Error, Message = "Ordered outbox dispatch failed; durable rows remain available for retry.")]

@@ -66,6 +66,12 @@ public sealed class RelayerInstrumentation : IDisposable
     public void RecordInboxDuplicate(string consumer)
         => Duplicates.Add(1, new KeyValuePair<string, object?>("relayer.consumer", consumer));
 
+    /// <summary>Records this instance's durable outbox row-count delta, across all stores and transports.</summary>
+    public void AddOutboxPending(long delta) => OutboxPending.Add(delta);
+
+    /// <summary>Records an outbox send attempt's start time minus its durable enqueue time, in seconds.</summary>
+    public void RecordOutboxDispatchLag(TimeSpan elapsed) => DispatchLag.Record(elapsed.TotalSeconds);
+
     /// <summary>Stops publishing every instrument owned by this instance.</summary>
     public void Dispose() => _meter.Dispose();
 }

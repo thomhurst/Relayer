@@ -74,24 +74,24 @@ public sealed class MessageOperationTracing
     public Activity? Start(in MessageTraceData data = default)
         => Start(data, enrich: true);
 
-    internal Activity? Start(in MessageTraceData data, bool enrich)
+    internal Activity? Start(in MessageTraceData data, bool enrich, bool client = false)
     {
         if (data.BatchCount is < 1) throw new ArgumentOutOfRangeException(nameof(data), "Batch count must be positive.");
         if (_operation == MessagingOperation.Create && data.BatchCount is not null)
             throw new ArgumentException("A create span describes one message, never a batch.", nameof(data));
         if (!_tracing.Source.HasListeners()) return null;
         if (_operation == MessagingOperation.Create && data.CreationContext != default) return null;
-        return StartActivity(data, enrich);
+        return StartActivity(data, enrich, client);
     }
 
-    private Activity? StartActivity(in MessageTraceData data, bool enrich)
+    private Activity? StartActivity(in MessageTraceData data, bool enrich, bool client)
     {
         var kind = _operation switch
         {
             MessagingOperation.Create => ActivityKind.Producer,
             MessagingOperation.Process => ActivityKind.Consumer,
             MessagingOperation.Settle => ActivityKind.Client,
-            _ => data.CreationContext != default || !data.Links.IsEmpty ? ActivityKind.Client : ActivityKind.Producer,
+            _ => client || data.CreationContext != default || !data.Links.IsEmpty ? ActivityKind.Client : ActivityKind.Producer,
         };
         var parent = Activity.Current?.Context ?? default;
         if (_operation == MessagingOperation.Process && parent == default && data.BatchCount is null &&

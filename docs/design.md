@@ -622,8 +622,8 @@ The attributes that samplers need are set when the span starts: `messaging.syste
 
 | Attribute | Set on | Value |
 |---|---|---|
-| `messaging.system` | All spans and metrics | `kafka`, `servicebus`, `aws_sqs`, `aws.sns` or `rabbitmq`; `relayer.inmemory` for the in-memory transport |
-| `messaging.operation.name` | All spans and metrics | `send`, `create`, `process`, or the system's settlement name |
+| `messaging.system` | Messaging spans and endpoint metrics | `kafka`, `servicebus`, `aws_sqs`, `aws.sns` or `rabbitmq`; `relayer.inmemory` for the in-memory transport |
+| `messaging.operation.name` | Messaging spans and endpoint metrics | `send`, `create`, `process`, or the system's settlement name |
 | `messaging.operation.type` | All spans | `create`, `send`, `process` or `settle` |
 | `messaging.destination.name` | All spans | The endpoint's destination, in the system's format |
 | `messaging.destination.template` | All spans | When the destination comes from a template |
@@ -670,8 +670,8 @@ Relayer-specific instruments, for which the conventions define nothing:
 - `relayer.critical_time` (histogram, `s`): processing end minus `ce_time`.
 - `relayer.retries` (counter, `{retry}`)
 - `relayer.dead_lettered` (counter, `{message}`)
-- `relayer.outbox.pending` (up-down counter, `{message}`)
-- `relayer.outbox.dispatch_lag` (histogram, `s`): dispatch time minus enqueue time.
+- `relayer.outbox.pending` (up-down counter, `{message}`): instance-observed durable row-count deltas, aggregated across stores and transports without endpoint dimensions. Commit adds rows; successful fenced deletion subtracts rows. This is not a database snapshot and can be negative when recovering another instance's rows.
+- `relayer.outbox.dispatch_lag` (histogram, `s`): native dispatch attempt start minus original enqueue time, aggregated without endpoint dimensions. Includes failed native attempts.
 - `relayer.inbox.duplicates` (counter, `{message}`)
 - `relayer.consumer.lag` (gauge, `{message}`, Kafka): taken from Dekaf where Dekaf already exposes it.
 - `relayer.circuit.state` (gauge)

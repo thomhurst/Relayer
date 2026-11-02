@@ -281,6 +281,54 @@ public class SendTracingTests
         await Assert.That(allocated).IsEqualTo(0);
     }
 
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Outbox_create_covers_serialization_and_enlistment_failure(bool serialization)
+    {
+        var outbox = new Outbox();
+        using var fixture = new Fixture(outbox: outbox);
+        using var request = new Activity("request").Start();
+        if (serialization) fixture.Serializer.Error = new InvalidOperationException("serialization failed");
+        else outbox.Error = new InvalidOperationException("enlistment failed");
+        await Assert.That(async () => await fixture.Sender.SendViaOutboxAsync(fixture.Message)).Throws<InvalidOperationException>();
+        var create = fixture.Stopped.Single();
+        await Assert.That(create.DisplayName).IsEqualTo("create orders");
+        await Assert.That(create.Kind).IsEqualTo(ActivityKind.Producer);
+        await Assert.That(create.ParentSpanId).IsEqualTo(request.SpanId);
+        await Assert.That(create.Status).IsEqualTo(ActivityStatusCode.Error);
+        await Assert.That(create.GetTagItem("error.type")).IsEqualTo("_OTHER");
+        await Assert.That(Activity.Current).IsSameReferenceAs(request);
+    }
+
+    [Test]
+    public async Task Outbox_preserves_external_creation_context_without_another_create_span()
+    {
+        var outbox = new Outbox();
+        using var fixture = new Fixture(raw: true, outbox: outbox);
+        const string parent = "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01";
+        await fixture.Sender.SendViaOutboxAsync(fixture.Message, options =>
+        {
+            options.Headers["traceparent"] = parent;
+            options.Headers["tracestate"] = "vendor=value";
+        });
+        await Assert.That(fixture.Stopped).IsEmpty();
+        await Assert.That(outbox.Context.SpanId.ToString()).IsEqualTo("0123456789abcdef");
+        await Assert.That(outbox.Context.TraceState).IsEqualTo("vendor=value");
+    }
+
+    private sealed class Outbox : IOutboxEnlistment
+    {
+        public bool IsActive => true;
+        internal Exception? Error;
+        internal ActivityContext Context;
+        public ValueTask EnlistAsync(OutboxRecord record, CancellationToken cancellationToken)
+        {
+            Context = Read(record.Message.Headers);
+            return Error is null ? default : ValueTask.FromException(Error);
+        }
+    }
+
     private static InMemoryTransport NativeTransport(MessageTracing tracing, Logger? logger = null) =>
         new("local", new Dictionary<string, InMemoryEndpointOptions> { ["orders"] = new() }, tracing: tracing,
             loggerFactory: logger is null ? null : new LoggerFactory(logger));
@@ -321,10 +369,11 @@ public class SendTracingTests
         internal ISender Sender { get; }
         internal Probe Message { get; } = new();
 
-        internal Fixture(TracingOptions? options = null, bool raw = false, bool listen = true, Action<SendOptions>? middleware = null)
+        internal Fixture(TracingOptions? options = null, bool raw = false, bool listen = true, Action<SendOptions>? middleware = null, IOutboxEnlistment? outbox = null)
         {
             var services = new ServiceCollection();
             services.AddSingleton<IMessageSerializer>(Serializer);
+            if (outbox is not null) services.AddSingleton(outbox);
             services.AddSingleton(Options.Create(options ?? new()));
             services.AddSingleton<ITransport>(provider => new Sink(provider.GetRequiredService<MessageTracing>(), Logger, listen));
             if (middleware is not null) services.AddSingleton<ISendMiddleware>(new ConfigureMiddleware(middleware));

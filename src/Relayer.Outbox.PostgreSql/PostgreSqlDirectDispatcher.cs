@@ -19,6 +19,8 @@ internal sealed class PostgreSqlDirectDispatcher : BackgroundService
     private readonly OutgoingMessage[] _messages;
     private readonly OutboxClaim[] _claims;
     private readonly bool[] _claimed;
+    private readonly DateTimeOffset[] _created;
+    private readonly RelayerInstrumentation? _instrumentation;
     private readonly string _schema;
     private readonly string _prefix;
     private readonly List<BufferedOutboxMessage> _recoveryRows = [];
@@ -26,12 +28,13 @@ internal sealed class PostgreSqlDirectDispatcher : BackgroundService
 
     internal PostgreSqlDirectDispatcher(Npgsql.NpgsqlDataSource dataSource, PostgreSqlOutboxOptions storeOptions,
         PostgreSqlDirectDispatchOptions options, IEnumerable<ITransport> transports, ILogger<PostgreSqlDirectDispatcher> logger,
-        PostgreSqlOutboxStore? store = null)
+        PostgreSqlOutboxStore? store = null, RelayerInstrumentation? instrumentation = null)
     {
         _store = store ?? new(dataSource, storeOptions);
         _schema = storeOptions.Schema ?? "public";
         _prefix = storeOptions.TablePrefix;
         _options = options;
+        _instrumentation = instrumentation;
         _logger = logger;
         _transports = transports.ToFrozenDictionary(static transport => transport.Name, StringComparer.Ordinal);
         _queue = Channel.CreateBounded<OutboxDispatchBatch>(new BoundedChannelOptions(options.QueueCapacity)
@@ -45,6 +48,7 @@ internal sealed class PostgreSqlDirectDispatcher : BackgroundService
         _messages = new OutgoingMessage[options.BatchSize];
         _claims = new OutboxClaim[options.BatchSize];
         _claimed = new bool[options.BatchSize];
+        _created = new DateTimeOffset[options.BatchSize];
     }
 
     internal void ValidateStore(string? schema, string prefix)
@@ -135,12 +139,14 @@ internal sealed class PostgreSqlDirectDispatcher : BackgroundService
                     if (row.Transport != first.Transport || row.Destination != first.Destination) break;
                     offset++;
                     _claims[count] = new(row.Id, Guid.NewGuid());
+                    _created[count] = row.CreatedAt;
                     _messages[count++] = row.ToMessage();
                 }
                 var now = DateTimeOffset.UtcNow;
                 var expires = now + _options.ClaimDuration;
                 await _store.ClaimBatchAsync(_claims.AsMemory(0, count), _claimed.AsMemory(0, count), now, expires, cancellationToken).ConfigureAwait(false);
-                var live = CompactClaims(_messages.AsSpan(0, count), _claims.AsSpan(0, count), _claimed.AsSpan(0, count));
+                var live = CompactClaims(_messages.AsSpan(0, count), _claims.AsSpan(0, count), _claimed.AsSpan(0, count),
+                    _created.AsSpan(0, count));
                 if (live == 0) continue;
                 // A slow database response can consume the lease. Never start a send with known expired ownership.
                 if (expires <= DateTimeOffset.UtcNow)
@@ -150,6 +156,11 @@ internal sealed class PostgreSqlDirectDispatcher : BackgroundService
                 }
                 try
                 {
+                    if (_instrumentation is not null)
+                    {
+                        var dispatchTime = DateTimeOffset.UtcNow;
+                        for (var i = 0; i < live; i++) _instrumentation.RecordOutboxDispatchLag(dispatchTime - _created[i]);
+                    }
                     if (live == 1) await transport.SendAsync(_messages[0], cancellationToken).ConfigureAwait(false);
                     else await transport.SendBatchAsync(_messages.AsMemory(0, live), cancellationToken).ConfigureAwait(false);
                 }
@@ -172,6 +183,7 @@ internal sealed class PostgreSqlDirectDispatcher : BackgroundService
                 try
                 {
                     var completed = await _store.CompleteBatchAsync(_claims.AsMemory(0, live), DateTimeOffset.UtcNow, cancellationToken).ConfigureAwait(false);
+                    _instrumentation?.AddOutboxPending(-completed);
                     if (completed != live) DirectDispatchLog.Incomplete(_logger, completed, live);
                 }
                 catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
@@ -207,12 +219,14 @@ internal sealed class PostgreSqlDirectDispatcher : BackgroundService
         return _recoveryBatch;
     }
 
-    internal static int CompactClaims(Span<OutgoingMessage> messages, Span<OutboxClaim> claims, ReadOnlySpan<bool> claimed)
+    internal static int CompactClaims(Span<OutgoingMessage> messages, Span<OutboxClaim> claims, ReadOnlySpan<bool> claimed,
+        Span<DateTimeOffset> created = default)
     {
         var live = 0;
         for (var i = 0; i < claimed.Length; i++)
         {
             if (!claimed[i]) continue;
+            if (!created.IsEmpty) created[live] = created[i];
             claims[live] = claims[i];
             messages[live++] = messages[i];
         }

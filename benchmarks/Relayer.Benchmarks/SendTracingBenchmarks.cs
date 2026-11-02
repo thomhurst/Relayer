@@ -1,8 +1,10 @@
 using System.Buffers;
 using System.Diagnostics;
+using System.Diagnostics.Metrics;
 using BenchmarkDotNet.Attributes;
 using BenchmarkDotNet.Configs;
 using Microsoft.Extensions.DependencyInjection;
+using Relayer.Outbox.PostgreSql;
 using Relayer.Serialization;
 using Relayer.Transports;
 
@@ -19,17 +21,21 @@ public class SendTracingBenchmarks
     private Sink _sink = null!;
     private IMessageSerializer _serializer = null!;
     private ActivityListener? _listener;
+    private MeterListener? _metrics;
+    private readonly Enlistment _outbox = new();
+    private OutgoingMessage[] _outboxBatch = [];
     private readonly SendOrder _message = new(42);
     private readonly ArrayBufferWriter<byte> _body = new();
     private readonly OutgoingMessage[] _batch = [new("orders", new byte[] { 1 }), new("orders", new byte[] { 2 })];
 
-    [Params("NoListener", "Drop", "Record")]
+    [Params("NoListener", "Metrics", "Drop", "Record")]
     public string Mode { get; set; } = "NoListener";
 
     [GlobalSetup]
     public void Setup()
     {
         var services = new ServiceCollection();
+        services.AddSingleton<IOutboxEnlistment>(_outbox);
         services.AddSingleton<ITransport>(provider => new Sink(provider.GetRequiredService<MessageTracing>()));
         services.AddRelayer(builder =>
         {
@@ -39,7 +45,7 @@ public class SendTracingBenchmarks
         });
         _provider = services.BuildServiceProvider();
         var tracing = _provider.GetRequiredService<MessageTracing>();
-        if (Mode != "NoListener")
+        if (Mode is "Drop" or "Record")
         {
             _listener = new()
             {
@@ -49,6 +55,26 @@ public class SendTracingBenchmarks
             };
             ActivitySource.AddActivityListener(_listener);
         }
+        if (Mode == "Metrics")
+        {
+            var instrumentation = _provider.GetRequiredService<RelayerInstrumentation>();
+            _metrics = new()
+            {
+                InstrumentPublished = (instrument, listener) =>
+                {
+                    if (ReferenceEquals(instrument.Meter.Scope, instrumentation)) listener.EnableMeasurementEvents(instrument);
+                },
+            };
+            _metrics.SetMeasurementEventCallback<long>(static (_, _, _, _) => { });
+            _metrics.Start();
+        }
+        var buffered = new BufferedOutboxMessage();
+        buffered.Copy(new(Guid.CreateVersion7(), "sink", "benchmark.order;v=1", new("orders", new byte[] { 1 },
+            new KeyValuePair<string, WireString>[]
+            {
+                new("traceparent", new WireString("00-0123456789abcdef0123456789abcdef-0123456789abcdef-01")),
+            }), DateTimeOffset.UtcNow), 1);
+        _outboxBatch = [buffered.ToMessage(), buffered.ToMessage()];
         _scope = _provider.CreateScope();
         _sender = _scope.ServiceProvider.GetRequiredService<ISender>();
         _sink = (Sink)_provider.GetRequiredService<ITransport>();
@@ -72,12 +98,33 @@ public class SendTracingBenchmarks
     [Benchmark, BenchmarkCategory("Batch")]
     public ValueTask TracedBatch() => _sink.SendBatchAsync(_batch, default);
 
+    [Benchmark, BenchmarkCategory("Single")]
+    public ValueTask OutboxEnqueue() => _sender.SendViaOutboxAsync(_message);
+
+    [Benchmark(Baseline = true), BenchmarkCategory("OutboxDispatch")]
+    public ValueTask NativeOutboxDispatch() => _sink.SendBatchNative(_outboxBatch, default);
+
+    [Benchmark, BenchmarkCategory("OutboxDispatch")]
+    public ValueTask TracedOutboxDispatch() => _sink.SendBatchAsync(_outboxBatch, default);
+
     [GlobalCleanup]
     public void Cleanup()
     {
         _scope.Dispose();
         _listener?.Dispose();
+        _metrics?.Dispose();
         _provider.Dispose();
+    }
+
+    private sealed class Enlistment : IOutboxEnlistment
+    {
+        private readonly BufferedOutboxMessage _row = new();
+        public bool IsActive => true;
+        public ValueTask EnlistAsync(OutboxRecord record, CancellationToken cancellationToken)
+        {
+            _row.Copy(record, 32);
+            return default;
+        }
     }
 
     private sealed class Sink : ITransport, ITransportSendTracing, IDisposable

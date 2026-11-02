@@ -12,7 +12,7 @@ Relayer is in early development. Track progress in [GitHub issues](https://githu
 - Required CI publishes and runs the Native AOT smoke app with reflection-disabled JSON, generated in-memory handler round trips, messaging spans and creation-context propagation assertions. Trimming and AOT warnings fail the build.
 - Compile-time analyzers and a code fix ([diagnostics](reference/diagnostics.md)).
 - The scoped send pipeline, send middleware and outbox enlistment hooks.
-- Provider-owned tracing and direct single/batch send tracing, integrated with the in-memory adapter's delivery and native settlement spans. Outbox tracing remains planned.
+- Provider-owned tracing and direct single/batch send tracing, integrated with the in-memory adapter's delivery and native settlement spans. PostgreSQL outbox enqueue, dispatch and consumer creation links are implemented.
 - The [durable outbox store contract](reference/outbox-stores.md), with bounded reads, fenced claims and an optional keyed health adapter, plus the [PostgreSQL read/claim implementation](reference/postgres-store.md).
 - [PostgreSQL schema scripts and database CLI](reference/postgres-schema.md), including an application-owned EF Core migration path.
 - [EF Core transaction enlistment for PostgreSQL](reference/ef-core-outbox.md): implicit saves, explicit transactions, atomic rollback, multiple contexts and one batched insert per transaction.
@@ -33,7 +33,7 @@ Relayer is in early development. Track progress in [GitHub issues](https://githu
 - The packaged [transport conformance suite](transports/conformance.md), passing in-memory queue and log modes, with capability skips and native fixture hooks for third-party adapters.
 - The [test harness and standalone handler context](guides/testing.md), with logical send and native dispatch observations, deterministic in-memory idle detection, reset and provider isolation.
 - The [performance regression gate](contributing/performance.md), covering end-to-end in-memory send/receive, concurrent delivery, allocation attribution and 100-handler composition. Raw broker comparisons remain planned with each adapter.
-- Core tracing primitives, single and batch delivery spans, native settlement wrappers, consume metrics and generated failure logs. Kafka send, serial receive and batch-commit instrumentation are implemented; the other native receive adapters and outbox instrumentation remain planned.
+- Core tracing primitives, single and batch delivery spans, native settlement wrappers, consume metrics and generated failure logs. Kafka send, serial receive and batch-commit instrumentation are implemented; PostgreSQL outbox trace propagation, pending deltas and dispatch lag are implemented; the other native receive adapters remain planned.
 - The optional [health integration](guides/health-checks.md), with connectivity, consumer liveness and backlog checks. Kafka provides native adapters; the outbox adapter accepts application-provided durable stores. Other native broker adapters remain planned.
 
 ## Phases
