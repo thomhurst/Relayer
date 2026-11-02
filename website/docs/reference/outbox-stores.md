@@ -104,7 +104,27 @@ and check bounded UUIDv7 scans, lane and schedule eligibility, backlog counts, c
 failure recording, exact-expiry recovery, stale-owner fencing, completion, invalid inputs and cancellation.
 Read, count and claim eligibility also run at one UTC instant expressed with a nonzero offset.
 
+### Recovery and retention
+
+Link `tests/Shared/OutboxMaintenanceContractTests.cs` and derive a concrete `[InheritsTests]` class from
+`OutboxMaintenanceContractTests` to reuse the maintenance cases. The PostgreSQL adapter is
+`tests/Relayer.Outbox.PostgreSql.Tests/SharedMaintenanceContractTests.cs`. This test fixture is separate from
+`IOutboxStore`: each provider supplies its own native maintenance worker, lease protocol and database setup.
+
+The fixture seeds original message IDs in `ce_id` headers with body bytes `7, 8, 9`, creates independent workers
+against the same database, and reports durable row counts and attempt counts. Configure recovery with a one-hour
+minimum row age, a caller-selected batch size, 30-day dead-row retention and seven-day inbox retention. Either
+retention can be disabled independently. Expose one bounded sweep, one bounded cleanup and explicit lease
+release through the worker adapter. A sweep reports rows attempted, including failed sends; cleanup reports
+rows deleted across the two retention collections.
+
+The shared cases verify age, schedule, claim, lane and parked-row eligibility, failure isolation, cursor wrap
+under continuing arrivals, bounded cleanup, idle lease exclusion and handoff, disabled retention, and preservation
+of pending, parked and recent rows. Seed explicit timestamps and implement `MakeDueAndExpireClaims` by changing
+durable eligibility; do not wait for wall-clock expiry. Keep real native transactions, claims and leases in the
+worker. Release worker resources before disposing the database fixture, including after failed assertions.
+
 These cases supplement provider-specific tests. Transaction commit/rollback, borrowed-memory ownership,
-inbox deduplication, ordered workers, crash recovery and retention need additional native integration tests.
+inbox deduplication, ordered workers, connected-owner fencing and process-crash recovery need additional native integration tests.
 Passing the shared store cases alone does not establish those guarantees. The suite currently runs against
 PostgreSQL; MongoDB support remains planned.
