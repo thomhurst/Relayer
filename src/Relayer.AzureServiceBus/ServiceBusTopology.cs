@@ -5,7 +5,8 @@ using Azure.Messaging.ServiceBus.Administration;
 namespace Relayer.AzureServiceBus;
 
 internal sealed class ServiceBusTopology(string name, ServiceBusClient client,
-    AzureServiceBusTransportOptions options, ServiceBusAdministrationClient? administration)
+    AzureServiceBusTransportOptions options, ServiceBusAdministrationClient? administration,
+    IReadOnlyList<IConsumerDefinition>? consumers = null, IReadOnlyCollection<string>? destinations = null)
 {
     internal async ValueTask<TopologyReport> ApplyAsync(TopologyMode mode, CancellationToken cancellationToken)
     {
@@ -19,7 +20,9 @@ internal sealed class ServiceBusTopology(string name, ServiceBusClient client,
             cancellationToken.ThrowIfCancellationRequested();
             if (mode == TopologyMode.Validate)
             {
-                await ValidateSendAsync(queue.Name, differences, cancellationToken).ConfigureAwait(false);
+                if (consumers?.Any(consumer => consumer.Source == queue.Name) == true && destinations?.Contains(queue.Name) != true)
+                    await ValidateReceiveAsync(queue.Name, null, differences, cancellationToken).ConfigureAwait(false);
+                else await ValidateSendAsync(queue.Name, differences, cancellationToken).ConfigureAwait(false);
                 if (queue.RequiresSession) UnresolvedSessions(queue.Name, differences);
             }
             else await ProvisionQueueAsync(queue, differences, cancellationToken).ConfigureAwait(false);
@@ -28,7 +31,10 @@ internal sealed class ServiceBusTopology(string name, ServiceBusClient client,
         {
             cancellationToken.ThrowIfCancellationRequested();
             if (mode == TopologyMode.Validate)
-                await ValidateSendAsync(topic.Name, differences, cancellationToken).ConfigureAwait(false);
+            {
+                if (consumers?.Any(consumer => consumer.Source == topic.Name) != true || destinations?.Contains(topic.Name) == true)
+                    await ValidateSendAsync(topic.Name, differences, cancellationToken).ConfigureAwait(false);
+            }
             else await ProvisionTopicAsync(topic, differences, cancellationToken).ConfigureAwait(false);
         }
         foreach (var subscription in options.Subscriptions)
@@ -37,22 +43,28 @@ internal sealed class ServiceBusTopology(string name, ServiceBusClient client,
             if (mode == TopologyMode.Validate)
             {
                 var entity = subscription.TopicName + "/Subscriptions/" + subscription.SubscriptionName;
-                var receiver = client.CreateReceiver(subscription.TopicName, subscription.SubscriptionName);
-                await using var receiverLifetime = receiver.ConfigureAwait(false);
-                try
-                {
-                    // Peek is read-only: no message is sent, locked, received or settled.
-                    await receiver.PeekMessageAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
-                }
-                catch (ServiceBusException error) when (error.Reason == ServiceBusFailureReason.MessagingEntityNotFound)
-                {
-                    differences.Add($"Missing subscription '{entity}'. Provision it outside the application or use Provision explicitly.");
-                }
+                await ValidateReceiveAsync(subscription.TopicName, subscription.SubscriptionName, differences, cancellationToken).ConfigureAwait(false);
                 if (subscription.RequiresSession) UnresolvedSessions(entity, differences);
             }
             else await ProvisionSubscriptionAsync(subscription, differences, cancellationToken).ConfigureAwait(false);
         }
         return new(differences);
+    }
+
+    private async Task ValidateReceiveAsync(string source, string? subscription, List<string> differences, CancellationToken cancellationToken)
+    {
+        var receiver = subscription is null ? client.CreateReceiver(source) : client.CreateReceiver(source, subscription);
+        await using var lifetime = receiver.ConfigureAwait(false);
+        try
+        {
+            // Peek validates Listen access without receiving, locking or settling a message.
+            await receiver.PeekMessageAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
+        }
+        catch (ServiceBusException error) when (error.Reason == ServiceBusFailureReason.MessagingEntityNotFound)
+        {
+            var entity = subscription is null ? source : source + "/Subscriptions/" + subscription;
+            differences.Add($"Missing receive entity '{entity}'. Provision it outside the application or use Provision explicitly.");
+        }
     }
 
     private static void UnresolvedSessions(string entity, List<string> differences) =>

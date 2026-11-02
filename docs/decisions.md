@@ -63,6 +63,7 @@ To change a decision, add a new entry that supersedes it rather than editing his
 | [D50](#d50-ordered-lanes-follow-a-database-assigned-insert-sequence) | Ordered lanes follow a database-assigned insert sequence | Proposed |
 | [D51](#d51-the-ef-core-consumer-boundary-takes-an-isolation-level-and-replays-conflicts) | The EF Core consumer boundary takes an isolation level and replays conflicts | Proposed |
 | [D52](#d52-allocations-a-native-api-requires-count-as-native-client-cost) | Allocations a native API requires count as native-client cost | Accepted |
+| [D54](#d54-service-bus-processors-drain-durable-work-before-settlement) | Service Bus processors drain durable work before settlement | Accepted |
 
 ---
 
@@ -1076,3 +1077,33 @@ The RabbitMQ header cache is temporary: the client accepted a request for memory
 - Strict absolute zero: blocks every client whose API takes strings or returns `Task`.
 - Per-transport exceptions granted one at a time: the same question, re-argued for each adapter.
 - Bypassing the client (direct HTTP or AMQP framing) to avoid its allocations: replaces what D1 wraps.
+## D54. Service Bus processors drain durable work before settlement
+
+**Context.** Native processors own receive concurrency, sessions, retries of transport operations and
+lock renewal. Their stop operation cancels the native callback token before awaiting callbacks.
+Passing that token into durable handling prevents an otherwise graceful stop from completing settlement.
+A topic/subscription delivery also cannot be retried by scheduling a copy to its topic without delivering
+that copy to unrelated subscriptions.
+
+**Decision.** Compose one core pipeline per native processor declaration. Pass the unchanged native
+options, require PeekLock and AutoCompleteMessages=false, and validate portable concurrency against
+the native concurrency at startup. Non-session and session bindings retain their original callback
+objects. Core settlement runs inside the process span after durable work and asynchronous scope disposal.
+A consumer-owned cancellation token keeps that work alive during native stop; the host drain deadline
+cancels it. A cancelled drain requires a new host. The native callback token remains available unchanged.
+Successful manual native settlement is final: a later handler exception propagates without another
+settlement or retry, and portable and native settlement cannot be combined in one attempt.
+
+**Consequences.** Immediate abandon and dead-letter operations retain failure metadata through native
+property modifications. Positive delayed redelivery is rejected at composition; applications can use
+in-process RetryDelays. No retry copy is broadcast through a topic. The optional
+Relayer.AzureServiceBus.HealthChecks companion package keeps health dependencies out of the transport.
+Its receiver slots track the oldest active callback only when explicitly enabled, and connectivity
+uses read-only peek or a fresh send-link attachment on the existing client, never a probe message.
+Fresh send links are necessary because the SDK caches message-batch limits after the first attachment.
+This does not waive D18 or classify adapter allocations as native SDK allocations.
+
+**Alternatives rejected.** Mutating native options hides configuration mistakes. Auto-complete and
+ReceiveAndDelete can settle before work is durable. Treating the native stop token as the drain deadline
+abandons successfully completed work at shutdown. Scheduling subscription retries through their topic
+changes native routing. Adding health dependencies to every transport user violates optional integration.

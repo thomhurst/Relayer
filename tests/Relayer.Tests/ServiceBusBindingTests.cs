@@ -280,6 +280,9 @@ public partial class ServiceBusBindingTests
             CancellationToken cancellationToken = default) => Record("abandon", message, propertiesToModify, cancellationToken);
         public override Task DeferMessageAsync(ServiceBusReceivedMessage message, IDictionary<string, object>? propertiesToModify = null,
             CancellationToken cancellationToken = default) => Record("defer", message, propertiesToModify, cancellationToken);
+        public override Task DeadLetterMessageAsync(ServiceBusReceivedMessage message, string deadLetterReason,
+            string? deadLetterErrorDescription = null, CancellationToken cancellationToken = default)
+            => Record("dead_letter", message, null, cancellationToken, deadLetterReason, deadLetterErrorDescription);
         public override Task DeadLetterMessageAsync(ServiceBusReceivedMessage message, IDictionary<string, object>? propertiesToModify,
             string deadLetterReason, string? deadLetterErrorDescription = null, CancellationToken cancellationToken = default)
             => Record("dead_letter", message, propertiesToModify, cancellationToken, deadLetterReason, deadLetterErrorDescription);

@@ -36,6 +36,8 @@ Scenario failures identify the case and active phase, such as `send 2`, `receive
 
 The reference fixture and executable tests live in [`tests/Relayer.Conformance.Tests`](https://github.com/thomhurst/Relayer/tree/main/tests/Relayer.Conformance.Tests). Queue and partitioned log modes both run every case. Separate tests verify capability skips and prove that missing send tracing or overwritten creation headers fail.
 
+The Kafka adapter runs its supported cases against Kafka in Testcontainers. Service Bus runs queue delivery, immediate redelivery, native dead-lettering, scheduling, tracing, creation-context copies and emulator restart recovery, plus native session ordering. Service Bus explicitly skips positive delayed redelivery because native abandon has no delay. Its recovery fixtures put owned endpoints in the emulator startup configuration: administration-created entities do not persist across an emulator restart. See [Service Bus validation boundaries](service-bus.md#health).
+
 ## Contracts
 
 | Case | Checks | Native capability required |

@@ -10,6 +10,7 @@
 
   <ItemGroup>
     <InternalsVisibleTo Include="Relayer.Tests" />
+    <InternalsVisibleTo Include="Relayer.AzureServiceBus.HealthChecks" />
     <InternalsVisibleTo Include="Relayer.Benchmarks" />
   </ItemGroup>
 

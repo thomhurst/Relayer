@@ -9,10 +9,10 @@ using Relayer.Transports;
 
 namespace Relayer.AzureServiceBus;
 
-/// <summary>Registers named Service Bus send transports with native topology declarations.</summary>
+/// <summary>Registers named Service Bus transports with native topology declarations and processors.</summary>
 public static class ServiceBusBuilderExtensions
 {
-    /// <summary>Declares native queue/topic sending. Complete receive composition is not implemented yet.</summary>
+    /// <summary>Declares native queue/topic sending and queue or subscription processors.</summary>
     public static IRelayerBuilder ServiceBus(this IRelayerBuilder builder, string name,
         Action<TransportBuilder<AzureServiceBusTransportOptions, ServiceBusRouteOptions, ServiceBusConsumerOptions>> configure)
     {
@@ -23,17 +23,17 @@ public static class ServiceBusBuilderExtensions
             transport.SendDefaults = new() { HeaderNames = new("cloudEvents:") };
             configure(transport);
         });
-        builder.Services.AddSingleton<ITransport>(provider =>
+        builder.Services.AddKeyedSingleton<ServiceBusSendTransport>(name, (provider, _) =>
         {
             var configuration = provider.GetRequiredService<RelayerConfiguration>();
             var definition = configuration.Transports.Single(item => item.Name == name);
-            if (definition.Consumers.Count != 0)
-                throw new NotSupportedException($"Service Bus transport '{name}': consumer execution is not implemented yet. Use the native receive primitives or wait for complete receiver composition.");
             var options = provider.GetRequiredService<IOptionsMonitor<AzureServiceBusTransportOptions>>().Get(name);
             if ((options.Client is null) == string.IsNullOrWhiteSpace(options.ConnectionString))
                 throw new InvalidOperationException($"Service Bus transport '{name}': configure exactly one of Client or ConnectionString.");
             ArgumentNullException.ThrowIfNull(options.ClientOptions);
             ServiceBusSendTransport.ValidateDeclarations(name, options, definition.Routes.Select(route => route.Destination));
+            foreach (var consumer in definition.Consumers)
+                ServiceBusConsumer.ValidateDeclaration(name, options, (ConsumerDefinition<ServiceBusConsumerOptions>)consumer);
             var mode = definition.TopologyMode ?? configuration.TopologyMode;
             var admin = options.AdministrationClient;
             if (mode == TopologyMode.Provision && admin is null)
@@ -44,9 +44,10 @@ public static class ServiceBusBuilderExtensions
             var logging = provider.GetService<ILoggerFactory>() ?? NullLoggerFactory.Instance;
             return new ServiceBusSendTransport(name, client, options.Client is null, options,
                 definition.Routes.Select(route => route.Destination), mode, admin,
-                provider.GetRequiredService<MessageTracing>(), logging);
+                provider.GetRequiredService<MessageTracing>(), logging, definition.Consumers);
         });
-        builder.Services.AddSingleton<IHostedService>(provider => new ServiceBusSendHostedService(provider, name));
+        builder.Services.AddSingleton<ITransport>(provider => provider.GetRequiredKeyedService<ServiceBusSendTransport>(name));
+        builder.Services.AddSingleton<IHostedService>(provider => new ServiceBusHostedService(provider, name));
         return builder;
     }
 
@@ -58,12 +59,18 @@ public static class ServiceBusBuilderExtensions
 /// <summary>Service Bus send route options. Declare native entities on the named transport options.</summary>
 public sealed class ServiceBusRouteOptions;
 
-/// <summary>Reserved for complete native receiver composition.</summary>
-public sealed class ServiceBusConsumerOptions;
-
-internal sealed class ServiceBusSendHostedService(IServiceProvider provider, string name) : IHostedService
+/// <summary>Native processor configuration and the common durable failure policy.</summary>
+public sealed class ServiceBusConsumerOptions
 {
-    private ITransport Transport => provider.GetServices<ITransport>().Single(transport => transport.Name == name);
-    public Task StartAsync(CancellationToken cancellationToken) => Transport.StartAsync(cancellationToken);
-    public Task StopAsync(CancellationToken cancellationToken) => Transport.StopAsync(cancellationToken);
+    /// <summary>The subscription when Source names a topic; null means Source names a queue.</summary>
+    public string? Subscription { get; set; }
+
+    /// <summary>Native non-session options, passed unchanged. Auto-complete and ReceiveAndDelete are unsupported.</summary>
+    public ServiceBusProcessorOptions ProcessorOptions { get; set; } = new() { AutoCompleteMessages = false };
+
+    /// <summary>Selects a native session processor when non-null. Disable AutoCompleteMessages and use PeekLock.</summary>
+    public ServiceBusSessionProcessorOptions? SessionProcessorOptions { get; set; }
+
+    /// <summary>In-process retries, immediate native redelivery and native dead-letter handling.</summary>
+    public FailureOptions Failure { get; set; } = new();
 }

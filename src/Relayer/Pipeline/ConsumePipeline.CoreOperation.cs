@@ -136,7 +136,9 @@ public sealed partial class ConsumePipeline
                         _stage = Stage.Failure;
                         try
                         {
-                            if (error is OperationCanceledException && _context.CancellationToken.IsCancellationRequested)
+                            // A handler's successful native settlement is final, even when later handler work fails.
+                            if (error is OperationCanceledException && _context.CancellationToken.IsCancellationRequested ||
+                                _context.ObservedDisposition.Kind == DispositionKind.SettledByHandler)
                                 ExceptionDispatchInfo.Throw(error);
                             _context.Settlement.Clear();
                             _failure = error;
