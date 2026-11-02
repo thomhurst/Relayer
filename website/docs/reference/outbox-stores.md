@@ -143,5 +143,26 @@ and drain concurrent deliveries before disposing their hosts and database.
 These cases supplement provider-specific tests. Borrowed-memory ownership, native transaction retries,
 configuration, scope disposal, ordered workers, connected-owner fencing and process-crash recovery need
 additional native integration tests. Passing the shared cases alone does not establish those guarantees.
-All three suites currently run against
+These shared suites currently run against
 PostgreSQL; MongoDB support remains planned.
+
+### Ordered dispatch contracts
+
+Link `tests/Shared/OutboxOrderedDispatchContractTests.cs` into a provider's TUnit test project, derive from
+`OutboxOrderedDispatchContractTests`, and add `[InheritsTests]`. The PostgreSQL adapter is
+`tests/Relayer.Outbox.PostgreSql.Tests/SharedOrderedDispatchContractTests.cs`.
+
+The fixture supplies the real ordered worker, native row seeding, routing changes, explicit head eligibility
+changes and durable row snapshots in ascending UUID order. Seed each row with its original ID in a `ce_id`
+header, body bytes `7, 8, 9`, the requested ordering key, transport `events`, destination `orders`, and a due
+delivery time. Configure a single lane with room for at least three rows per batch. One dispatch call returns
+the number of successfully sent and durably completed rows. Nine inherited cases check failed-head retry,
+original identity and payload preservation, successful-prefix durability after preparation failures,
+scheduled/live-claimed/parked heads, unrelated-key progress and unsupported native ordering. Change durable
+eligibility directly; do not wait for a schedule or claim to expire. Invoke the existing worker rather than
+reimplementing dispatch in the adapter.
+
+Keep membership fairness, connected-owner fencing, native locking, crash/rebalance, hosted lifecycle,
+lease-budget and capability-cache tests in the provider suite. These shared cases do not establish those
+provider-specific guarantees. MongoDB ordered dispatch and its adapter remain planned, gated by native
+persistence and inbox support; these tests do not enable a MongoDB provider.

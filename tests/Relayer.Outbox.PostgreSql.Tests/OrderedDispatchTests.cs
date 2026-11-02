@@ -93,123 +93,6 @@ public class OrderedDispatchTests
     }
 
     [Test]
-    public async Task Failed_head_blocks_later_rows_and_retries_preserve_native_payload()
-    {
-        await using var fixture = new PostgreSqlFixture();
-        await fixture.StartAsync();
-        await using var source = NpgsqlDataSource.Create(fixture.ConnectionString);
-        await PostgreSqlOutboxStoreTests.CreateSchema(source);
-        await Insert(source, Id(1), 0);
-        await Insert(source, Id(2), 0);
-        await Insert(source, Id(3), null);
-        var fail = true;
-        var transport = new RecordingTransport((message, _) =>
-        {
-            if (fail) throw new InvalidOperationException("broker offline");
-            return ValueTask.CompletedTask;
-        });
-        using var worker = Worker(source, transport);
-        await Assert.That(await worker.DispatchLaneAsync(0, default)).IsEqualTo(0);
-        await using (var error = source.CreateCommand("SELECT attempts::text || ':' || last_error FROM relayer_outbox WHERE id = @id"))
-        {
-            error.Parameters.AddWithValue("id", Id(1));
-            await Assert.That((string)(await error.ExecuteScalarAsync())!).IsEqualTo("1:broker offline");
-        }
-        fail = false;
-        await Assert.That(await worker.DispatchLaneAsync(0, default)).IsEqualTo(2);
-        await Assert.That(transport.Ids.SequenceEqual([Id(1), Id(2)])).IsTrue();
-        await Assert.That(transport.LastBody).IsEquivalentTo(new byte[] { 7, 8, 9 });
-        await Assert.That(transport.LastKey).IsEqualTo("customer-é");
-        await Assert.That(transport.LastDeliverAt).IsNull();
-        await using var remaining = source.CreateCommand("SELECT count(*) FROM relayer_outbox WHERE lane IS NULL");
-        await Assert.That((long)(await remaining.ExecuteScalarAsync())!).IsEqualTo(1);
-    }
-
-    [Test]
-    [Arguments("unknown_transport")]
-    [Arguments("missing_key")]
-    [Arguments("unsupported_endpoint")]
-    public async Task Preparation_failure_commits_successful_prefix_and_stops_before_later_rows(string kind)
-    {
-        await using var fixture = new PostgreSqlFixture();
-        await fixture.StartAsync();
-        await using var source = NpgsqlDataSource.Create(fixture.ConnectionString);
-        await PostgreSqlOutboxStoreTests.CreateSchema(source);
-        for (var index = 1; index <= 3; index++) await Insert(source, Id(index), 0);
-        var change = kind switch
-        {
-            "unknown_transport" => "transport = 'missing'",
-            "missing_key" => "ordering_key = NULL",
-            _ => "destination = 'unsupported'"
-        };
-        await using (var command = source.CreateCommand($"UPDATE relayer_outbox SET {change} WHERE id = @id"))
-        {
-            command.Parameters.AddWithValue("id", Id(2));
-            await command.ExecuteNonQueryAsync();
-        }
-        var transport = new RecordingTransport();
-        using var worker = Worker(source, transport);
-        await Assert.That(await worker.DispatchLaneAsync(0, default)).IsEqualTo(1);
-        await Assert.That(await worker.DispatchLaneAsync(0, default)).IsEqualTo(0);
-        await Assert.That(transport.Ids.SequenceEqual([Id(1)])).IsTrue();
-        await using (var command = source.CreateCommand("SELECT id, attempts, last_error, claim_token, claim_expires_at FROM relayer_outbox ORDER BY id"))
-        await using (var reader = await command.ExecuteReaderAsync())
-        {
-            await Assert.That(await reader.ReadAsync()).IsTrue();
-            await Assert.That(reader.GetGuid(0)).IsEqualTo(Id(2));
-            await Assert.That(reader.GetInt32(1)).IsEqualTo(2);
-            await Assert.That(reader.GetString(2).Length > 0).IsTrue();
-            await Assert.That(reader.IsDBNull(3) && reader.IsDBNull(4)).IsTrue();
-            await Assert.That(await reader.ReadAsync()).IsTrue();
-            await Assert.That(reader.GetGuid(0)).IsEqualTo(Id(3));
-            await Assert.That(reader.GetInt32(1)).IsEqualTo(0);
-            await Assert.That(await reader.ReadAsync()).IsFalse();
-        }
-        await using (var command = source.CreateCommand("UPDATE relayer_outbox SET transport = 'events', destination = 'orders', ordering_key = 'customer-é' WHERE id = @id"))
-        {
-            command.Parameters.AddWithValue("id", Id(2));
-            await command.ExecuteNonQueryAsync();
-        }
-        await Assert.That(await worker.DispatchLaneAsync(0, default)).IsEqualTo(2);
-        await Assert.That(transport.Ids.SequenceEqual([Id(1), Id(2), Id(3)])).IsTrue();
-    }
-
-    [Test]
-    [Arguments("future")]
-    [Arguments("claimed")]
-    [Arguments("parked")]
-    public async Task Ineligible_head_is_never_skipped(string kind)
-    {
-        await using var fixture = new PostgreSqlFixture();
-        await fixture.StartAsync();
-        await using var source = NpgsqlDataSource.Create(fixture.ConnectionString);
-        await PostgreSqlOutboxStoreTests.CreateSchema(source);
-        await Insert(source, Id(1), 0);
-        await Insert(source, Id(2), 0);
-        var change = kind switch
-        {
-            "future" => "deliver_at = clock_timestamp() + interval '1 day'",
-            "claimed" => "claim_token = gen_random_uuid(), claim_expires_at = clock_timestamp() + interval '1 day'",
-            _ => "status = 'parked'"
-        };
-        await using (var command = source.CreateCommand($"UPDATE relayer_outbox SET {change} WHERE id = @id"))
-        {
-            command.Parameters.AddWithValue("id", Id(1));
-            await command.ExecuteNonQueryAsync();
-        }
-        var transport = new RecordingTransport();
-        using var worker = Worker(source, transport);
-        await Assert.That(await worker.DispatchLaneAsync(0, default)).IsEqualTo(0);
-        await Assert.That(transport.Ids.Count).IsEqualTo(0);
-        await using (var command = source.CreateCommand("UPDATE relayer_outbox SET status = 'pending', deliver_at = clock_timestamp(), claim_token = NULL, claim_expires_at = NULL WHERE id = @id"))
-        {
-            command.Parameters.AddWithValue("id", Id(1));
-            await command.ExecuteNonQueryAsync();
-        }
-        await Assert.That(await worker.DispatchLaneAsync(0, default)).IsEqualTo(2);
-    }
-
-    [Test]
     public async Task Database_connection_crash_replays_head_before_later_rows_during_rebalance()
     {
         await using var fixture = new PostgreSqlFixture();
@@ -258,33 +141,6 @@ public class OrderedDispatchTests
         }
         await Assert.That(seen.Count).IsEqualTo(20);
         await Assert.That(observed.Count).IsEqualTo(21);
-    }
-
-    [Test]
-    public async Task Parked_keys_do_not_block_other_keys_and_unsupported_native_ordering_fails()
-    {
-        await using var fixture = new PostgreSqlFixture();
-        await fixture.StartAsync();
-        await using var source = NpgsqlDataSource.Create(fixture.ConnectionString);
-        await PostgreSqlOutboxStoreTests.CreateSchema(source);
-        await Insert(source, Id(1), 0);
-        await Insert(source, Id(2), 0);
-        await Insert(source, Id(3), 0);
-        await using (var park = source.CreateCommand("UPDATE relayer_outbox SET status = 'parked' WHERE id = @first; UPDATE relayer_outbox SET ordering_key = 'other-key' WHERE id = @last"))
-        {
-            park.Parameters.AddWithValue("first", Id(1));
-            park.Parameters.AddWithValue("last", Id(3));
-            await park.ExecuteNonQueryAsync();
-        }
-        var transport = new RecordingTransport();
-        using var worker = Worker(source, transport);
-        await Assert.That(await worker.DispatchLaneAsync(0, default)).IsEqualTo(1);
-        await Assert.That(transport.Ids.Single()).IsEqualTo(Id(3));
-        await Insert(source, Id(4), 1);
-        var unsupported = new RecordingTransport { Ordered = false };
-        using var invalid = Worker(source, unsupported, 2);
-        await Assert.That(await invalid.DispatchLaneAsync(1, default)).IsEqualTo(0);
-        await Assert.That(unsupported.Ids.Count).IsEqualTo(0);
     }
 
     [Test]
@@ -649,9 +505,6 @@ public class OrderedDispatchTests
     {
         public string Name => "events";
         internal ConcurrentQueue<Guid> Ids { get; } = new();
-        internal byte[]? LastBody { get; private set; }
-        internal string? LastKey { get; private set; }
-        internal DateTimeOffset? LastDeliverAt { get; private set; }
         internal bool Ordered { get; set; } = true;
         public TransportCapabilities GetCapabilities(string endpoint) => new() { OrderedByKey = Ordered && endpoint != "unsupported" };
         public ValueTask<TopologyReport> ApplyTopologyAsync(TopologyMode mode, CancellationToken cancellationToken) => new(new TopologyReport([]));
@@ -659,9 +512,6 @@ public class OrderedDispatchTests
         {
             if (send is not null) await send(message, cancellationToken);
             Ids.Enqueue(HeaderId(message));
-            LastBody = message.Body.ToArray();
-            LastKey = message.OrderingKey?.ToString();
-            LastDeliverAt = message.DeliverAt;
         }
         public ValueTask SendBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken) => throw new NotSupportedException();
         public Task StartAsync(CancellationToken cancellationToken) => Task.CompletedTask;
