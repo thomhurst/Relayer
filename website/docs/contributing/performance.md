@@ -275,6 +275,23 @@ the raw logs; an aggregate report can hide variation between launches. Automatic
 pilot calibration can choose different invocation counts, so use a further
 fixed-count experiment when that difference could explain the signal.
 
+CI runs BenchmarkDotNet with `--keepFiles` and retains every generated build
+directory from both checkouts, including both baseline executions. The
+`performance-builds/` artifact directory contains generated drivers, projects,
+executables and dependencies, original source ZIPs, and the effective common
+harness/SDK overlays. Each checkout has an `inventory-sha256.json` with its
+commit, original file locations, lengths and verified SHA-256 hashes. To recreate
+the source overlay, extract `source.zip`, remove benchmark C# files outside
+`Program.cs` and `RegressionGate/`, replace `RegressionGate/`, then apply
+`overlay/`. Generated binaries are evidence of those executions, not a portable
+benchmark baseline. A failed build can leave an incomplete directory; verify
+the corresponding execution log before claiming a successful measurement.
+
+The artifact retention is **90 days**. Copy evidence to an independent archive
+before that deadline when an investigation must outlive it. Local PR evidence
+can be deleted when the PR closes, so it is not a permanent archive. Historical
+runs that uploaded only reports cannot recover their exact loaded binaries.
+
 Retain the effective compile inputs, binaries, probe sources and commands with
 the reports outside disposable worktrees. Compare the relevant assembly hashes
 and method IL as well as source inputs. Variation between launches of one frozen
