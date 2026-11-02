@@ -1,0 +1,9 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <Description>NATS JetStream connection and topology integration for Relayer. Message execution remains planned.</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="NATS.Client.JetStream" />
+    <ProjectReference Include="../Relayer/Relayer.csproj" />
+  </ItemGroup>
+</Project>

@@ -31,6 +31,7 @@
     <PackageVersion Include="AWSSDK.SQS" Version="4.0.100.22" />
     <PackageVersion Include="AWSSDK.SimpleNotificationService" Version="4.0.100.22" />
     <PackageVersion Include="RabbitMQ.Client" Version="7.2.2" />
+    <PackageVersion Include="NATS.Client.JetStream" Version="3.3.2" />
   </ItemGroup>
 
   <ItemGroup Label="Serialization">
@@ -55,6 +56,7 @@
     <PackageVersion Include="Testcontainers.Kafka" Version="4.16.0" />
     <PackageVersion Include="Testcontainers.Redpanda" Version="4.16.0" />
     <PackageVersion Include="Testcontainers.ServiceBus" Version="4.16.0" />
+    <PackageVersion Include="Testcontainers" Version="4.16.0" />
     <PackageVersion Include="TUnit" Version="1.78.0" />
     <PackageVersion Include="BenchmarkDotNet" Version="0.15.8" />
   </ItemGroup>

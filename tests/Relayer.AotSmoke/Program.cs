@@ -35,6 +35,7 @@ Console.WriteLine("Cross-thread single and batch send tracing passed under Nativ
 PartitionCompletionSmoke.Run();
 PartitionSchedulerSmoke.Run();
 await KafkaSchemaSmoke.RunAsync();
+await NatsTopologySmoke.RunAsync();
 ProtobufSmoke.Run();
 MessagePackSmoke.Run();
 using (var tenantProvider = new ServiceCollection().AddRelayerTenancy(1).BuildServiceProvider())
