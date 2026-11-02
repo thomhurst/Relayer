@@ -1,62 +1,17 @@
 using System.Buffers;
-using System.Diagnostics.Metrics;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Npgsql;
 using Relayer.Outbox.EntityFrameworkCore;
 using Relayer.Serialization;
+using Relayer.TestFixtures;
 using Relayer.Transports;
 
 namespace Relayer.Outbox.PostgreSql.Tests;
 
-public class InboxTests
+[InheritsTests]
+public class InboxTests : InboxContractTests
 {
-    [Test]
-    public async Task Redelivery_skips_handler_and_records_metric_after_atomic_commit()
-    {
-        await using var database = new Database();
-        await database.Start();
-        await using var provider = database.Services(outbox: true);
-        var control = provider.GetRequiredService<Control>();
-        control.AfterSave = async context =>
-        {
-            await Assert.That(context.Services.GetRequiredService<OrdersContext>().Database.CurrentTransaction).IsNotNull();
-            await Assert.That(await database.Orders()).IsEqualTo(0L);
-            await Assert.That(await database.Count("inbox")).IsEqualTo(0L);
-            await Assert.That(await database.Count("outbox")).IsEqualTo(0L);
-            context.Features.GetRequired<ISettlementFeature>().Complete();
-        };
-        var instrumentation = provider.GetRequiredService<RelayerInstrumentation>();
-        long duplicates = 0;
-        using var listener = new MeterListener();
-        listener.InstrumentPublished = (instrument, meter) =>
-        {
-            if (instrument.Name == "relayer.inbox.duplicates" && ReferenceEquals(instrument.Meter.Scope, instrumentation))
-                meter.EnableMeasurementEvents(instrument);
-        };
-        listener.SetMeasurementEventCallback<long>((_, count, tags, _) =>
-        {
-            foreach (var tag in tags)
-                if (tag.Key == "relayer.consumer" && Equals(tag.Value, "orders")) Interlocked.Add(ref duplicates, count);
-        });
-        listener.Start();
-        var settlements = 0;
-        var pipeline = Pipeline(provider).Settle(async _ =>
-        {
-            await Assert.That(await database.Count("inbox")).IsEqualTo(1L);
-            await Assert.That(await database.Count("outbox")).IsEqualTo(1L);
-            await Assert.That(await database.Orders()).IsEqualTo(1L);
-            settlements++;
-        }).Build();
-        var message = Message();
-        await Deliver(pipeline, message);
-        await Deliver(pipeline, message);
-        await Assert.That(control.Invocations).IsEqualTo(1);
-        await Assert.That(duplicates).IsEqualTo(1L);
-        await Assert.That(settlements).IsEqualTo(2);
-        await Assert.That(provider.GetRequiredService<Transport>().Sends).IsEqualTo(0);
-    }
-
     [Test]
     [Arguments(false, false, 2)]
     [Arguments(false, true, 1)]
@@ -76,7 +31,7 @@ public class InboxTests
     }
 
     [Test]
-    public async Task Identity_is_scoped_by_consumer_and_other_context_outbox_does_not_enable_inbox()
+    public async Task Explicit_inbox_scopes_identity_by_consumer_without_same_context_outbox()
     {
         await using var database = new Database();
         await database.Start();
@@ -89,104 +44,26 @@ public class InboxTests
     }
 
     [Test]
-    [Arguments(false)]
-    [Arguments(true)]
-    public async Task Concurrent_redelivery_waits_for_commit_or_runs_after_rollback(bool rollback)
-    {
-        await using var database = new Database();
-        await database.Start();
-        await using var firstProvider = database.Services(outbox: true);
-        await using var secondProvider = database.Services(outbox: true);
-        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        firstProvider.GetRequiredService<Control>().AfterSave = async _ =>
-        {
-            entered.SetResult();
-            await release.Task;
-            if (rollback) throw new InvalidOperationException("Roll back first delivery.");
-        };
-        var message = Message();
-        var first = Deliver(Pipeline(firstProvider).Build(), message);
-        await entered.Task.WaitAsync(TimeSpan.FromSeconds(20));
-        var second = Deliver(Pipeline(secondProvider).Build(), message);
-        try
-        {
-            // Observe PostgreSQL's lock wait, rather than guessing from elapsed time or scheduling.
-            await database.WaitForInboxLock();
-            await Assert.That(secondProvider.GetRequiredService<Control>().Invocations).IsEqualTo(0);
-        }
-        finally { release.TrySetResult(); }
-        if (rollback) await Assert.That(async () => await first).Throws<InvalidOperationException>();
-        else await first;
-        await second;
-        await Assert.That(secondProvider.GetRequiredService<Control>().Invocations).IsEqualTo(rollback ? 1 : 0);
-        await Assert.That(await database.Count("inbox")).IsEqualTo(1L);
-        await Assert.That(await database.Count("outbox")).IsEqualTo(1L);
-        await Assert.That(await database.Orders()).IsEqualTo(1L);
-    }
-
-    [Test]
-    [Arguments("handler")]
-    [Arguments("cancel")]
-    [Arguments("outbox")]
-    [Arguments("retry")]
-    [Arguments("deadletter")]
-    public async Task Failed_or_noncomplete_work_rolls_back_and_redelivery_runs_handler(string failure)
+    public async Task Outbox_write_failure_rolls_back_and_redelivery_runs_handler()
     {
         await using var database = new Database();
         await database.Start();
         await using var provider = database.Services(outbox: true);
-        var control = provider.GetRequiredService<Control>();
-        using var cancellation = new CancellationTokenSource();
-        control.AfterSave = context =>
-        {
-            switch (failure)
-            {
-                case "handler": throw new InvalidOperationException("Handler failed after save.");
-                case "cancel": cancellation.Cancel(); break;
-                case "retry": context.Features.GetRequired<ISettlementFeature>().Retry(TimeSpan.Zero); break;
-                case "deadletter": context.Features.GetRequired<ISettlementFeature>().DeadLetter("Rejected"); break;
-            }
-            return default;
-        };
-        if (failure == "outbox")
-            await database.Execute("ALTER TABLE \"Case\"\"Inbox\".\"test_outbox\" ADD CONSTRAINT reject_rows CHECK (false)");
+        await database.Execute("ALTER TABLE \"Case\"\"Inbox\".\"test_outbox\" ADD CONSTRAINT reject_rows CHECK (false)");
         var settled = 0;
         var pipeline = Pipeline(provider).Settle(_ => { settled++; return default; }).Build();
         var message = Message();
-        if (failure is "retry" or "deadletter") await Deliver(pipeline, message);
-        else if (failure == "cancel")
-            await Assert.That(async () => await Deliver(pipeline, message, cancellation.Token)).Throws<OperationCanceledException>();
-        else if (failure == "outbox")
-            await Assert.That(async () => await Deliver(pipeline, message)).Throws<PostgresException>();
-        else await Assert.That(async () => await Deliver(pipeline, message)).Throws<InvalidOperationException>();
-        await Assert.That(settled).IsEqualTo(failure is "retry" or "deadletter" ? 1 : 0);
+        await Assert.That(async () => await Deliver(pipeline, message)).Throws<PostgresException>();
+        await Assert.That(settled).IsEqualTo(0);
         await Assert.That(await database.Count("inbox")).IsEqualTo(0L);
         await Assert.That(await database.Count("outbox")).IsEqualTo(0L);
         await Assert.That(await database.Orders()).IsEqualTo(0L);
-        if (failure == "outbox") await database.Execute("ALTER TABLE \"Case\"\"Inbox\".\"test_outbox\" DROP CONSTRAINT reject_rows");
-        control.AfterSave = null;
+        await database.Execute("ALTER TABLE \"Case\"\"Inbox\".\"test_outbox\" DROP CONSTRAINT reject_rows");
         await Deliver(pipeline, message);
-        await Assert.That(control.Invocations).IsEqualTo(2);
+        await Assert.That(provider.GetRequiredService<Control>().Invocations).IsEqualTo(2);
         await Assert.That(await database.Count("inbox")).IsEqualTo(1L);
         await Assert.That(await database.Count("outbox")).IsEqualTo(1L);
         await Assert.That(await database.Orders()).IsEqualTo(1L);
-    }
-
-    [Test]
-    public async Task Settlement_failure_after_commit_redelivers_without_repeating_work()
-    {
-        await using var database = new Database();
-        await database.Start();
-        await using var provider = database.Services(outbox: true);
-        var calls = 0;
-        var pipeline = Pipeline(provider).Settle(_ => ++calls == 1
-            ? ValueTask.FromException(new InvalidOperationException("Lost acknowledgement.")) : default).Build();
-        var message = Message();
-        await Assert.That(async () => await Deliver(pipeline, message)).Throws<InvalidOperationException>();
-        await Deliver(pipeline, message);
-        await Assert.That(provider.GetRequiredService<Control>().Invocations).IsEqualTo(1);
-        await Assert.That(calls).IsEqualTo(2);
     }
 
     [Test]
@@ -293,6 +170,56 @@ public class InboxTests
         await Assert.That(await database.Scalar("SELECT count(*) FROM \"Case\"\"Inbox\".reloaded_inbox")).IsEqualTo(1L);
         await Assert.That(await database.Scalar("SELECT count(*) FROM \"Case\"\"Inbox\".reloaded_outbox")).IsEqualTo(1L);
         await Assert.That(provider.GetRequiredService<Control>().Invocations).IsEqualTo(1);
+    }
+
+    protected override async Task<InboxFixture> CreateFixtureAsync()
+    {
+        var database = new Database();
+        try
+        {
+            await database.Start();
+            return new ContractFixture(database);
+        }
+        catch
+        {
+            await database.DisposeAsync();
+            throw;
+        }
+    }
+
+    private sealed class ContractFixture(Database database) : InboxFixture
+    {
+        public override InboxConsumer Consumer(string name = "orders") => new ContractConsumer(database.Services(outbox: true), name);
+        public override async Task<DurableState> ReadStateAsync() =>
+            new(await database.Orders(), await database.Count("inbox"), await database.Count("outbox"));
+        public override Task WaitForContentionAsync() => database.WaitForInboxLock();
+        public override ValueTask DisposeAsync() => database.DisposeAsync();
+    }
+
+    private sealed class ContractConsumer : InboxConsumer
+    {
+        private readonly ServiceProvider _provider;
+        private readonly Control _control;
+        private readonly ConsumePipeline _pipeline;
+
+        public ContractConsumer(ServiceProvider provider, string name)
+        {
+            _provider = provider;
+            _control = provider.GetRequiredService<Control>();
+            _control.AfterSave = async context =>
+            {
+                await Assert.That(context.Services.GetRequiredService<OrdersContext>().Database.CurrentTransaction).IsNotNull();
+                if (AfterSave is { } after) await after(context);
+            };
+            _pipeline = Pipeline(provider, name).Settle(_ => Settlement?.Invoke() ?? default).Build();
+        }
+
+        public override RelayerInstrumentation Instrumentation => _provider.GetRequiredService<RelayerInstrumentation>();
+        public override int Invocations => _control.Invocations;
+        public override int DirectSends => _provider.GetRequiredService<Transport>().Sends;
+        public override Task DeliverAsync(Guid messageId, CancellationToken cancellation = default) =>
+            Deliver(_pipeline, Message() with { MessageId = messageId.ToString("D") }, cancellation);
+        public override ValueTask DisposeAsync() => _provider.DisposeAsync();
     }
 
     private static ConsumePipelineBuilder Pipeline(ServiceProvider provider, string consumer = "orders", bool inbox = false,
