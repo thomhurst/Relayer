@@ -573,6 +573,38 @@ class ComparisonInputTests(unittest.TestCase):
             self.assertFalse(json.loads(manifest.read_text())["identical"])
             self.assertEqual(1, gate.main(["compare", str(first), str(current), "--baseline-source", str(self.baseline)]))
 
+    def test_cli_reports_changed_inputs_without_exempting_unchanged_call_paths(self):
+        before, candidate = report(), report()
+        for case in candidate["Benchmarks"]:
+            if case["Method"] == "ScopeAndHandlerResolution":
+                measurement(case, 1200)
+            if case["Method"] == "ConcurrentRoundTrip":
+                case["Memory"]["BytesAllocatedPerOperation"] += 2
+        first = self.write(self.root, "first/benchmarks-report-full.json", json.dumps(before)).parent
+        current = self.write(self.root, "current/benchmarks-report-full.json", json.dumps(candidate)).parent
+        for checkout in (self.baseline, self.candidate):
+            self.write(checkout, "src/Relayer/Transports/PartitionScheduler.cs", "original")
+            self.write(checkout, "benchmarks/Relayer.Benchmarks/RegressionGate/ConsumePipelineBenchmarks.cs", "unchanged")
+        self.write(self.candidate, "src/Relayer/Transports/PartitionScheduler.cs", "changed")
+        self.write(self.candidate, "src/Relayer.Kafka/Added.cs", "added")
+        self.write(self.baseline, "src/Relayer.Kafka/Removed.cs", "removed")
+        summary = self.root / "summary.md"
+        output, errors = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(output), contextlib.redirect_stderr(errors):
+            self.assertEqual(1, gate.main([
+                "compare", str(first), str(current), "--baseline-after", str(first),
+                "--baseline-source", str(self.baseline), "--candidate-source", str(self.candidate),
+                "--input-manifest", str(self.root / "inputs.json"), "--summary", str(summary)]))
+        text = summary.read_text()
+        self.assertEqual(text, output.getvalue())
+        self.assertIn("Changed: `src/Relayer/Transports/PartitionScheduler.cs`", text)
+        self.assertIn("Added: `src/Relayer.Kafka/Added.cs`", text)
+        self.assertIn("Removed: `src/Relayer.Kafka/Removed.cs`", text)
+        self.assertNotIn("ConsumePipelineBenchmarks.cs", text)
+        self.assertIn("containing assembly", text)
+        self.assertIn("ScopeAndHandlerResolution: throughput loss exceeds 5%", errors.getvalue())
+        self.assertIn("ConcurrentRoundTrip: allocations increased by more than 0.5 B/op", errors.getvalue())
+
 
 class BenchmarkVersionTests(unittest.TestCase):
     def setUp(self):
