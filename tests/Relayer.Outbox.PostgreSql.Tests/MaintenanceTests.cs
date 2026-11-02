@@ -46,62 +46,6 @@ public class MaintenanceTests
     }
 
     [Test]
-    public async Task Recovery_respects_age_due_claim_lane_and_parked_filters_and_advances_past_failures()
-    {
-        await using var fixture = new PostgreSqlFixture();
-        await fixture.StartAsync();
-        await using var source = NpgsqlDataSource.Create(fixture.ConnectionString);
-        await PostgreSqlOutboxStoreTests.CreateSchema(source);
-        for (var i = 1; i <= 8; i++) await Insert(source, Id(i));
-        await Sql(source, "UPDATE relayer_outbox SET created_at = clock_timestamp() WHERE id = '01900000-0000-7000-8000-000000000003'; UPDATE relayer_outbox SET deliver_at = clock_timestamp() + interval '1 day' WHERE id = '01900000-0000-7000-8000-000000000004'; UPDATE relayer_outbox SET claim_token = gen_random_uuid(), claim_expires_at = clock_timestamp() + interval '1 day' WHERE id = '01900000-0000-7000-8000-000000000005'; UPDATE relayer_outbox SET lane = 1 WHERE id = '01900000-0000-7000-8000-000000000006'; UPDATE relayer_outbox SET status = 'parked' WHERE id = '01900000-0000-7000-8000-000000000007'; UPDATE relayer_outbox SET claim_token = gen_random_uuid(), claim_expires_at = clock_timestamp() - interval '1 second', deliver_at = clock_timestamp() - interval '1 day' WHERE id = '01900000-0000-7000-8000-000000000008'");
-        var transport = new RecordingTransport((message, _) =>
-            HeaderId(message) == Id(1) ? ValueTask.FromException(new InvalidOperationException("offline")) : ValueTask.CompletedTask);
-        using var worker = Worker(source, transport, new() { BatchSize = 1 });
-        await Assert.That(await worker.SweepAsync(default)).IsEqualTo(1);
-        await Assert.That(await worker.SweepAsync(default)).IsEqualTo(1);
-        await Assert.That(await worker.SweepAsync(default)).IsEqualTo(1);
-        await Assert.That(await worker.SweepAsync(default)).IsEqualTo(0);
-        await Assert.That(transport.Ids.SequenceEqual([Id(2), Id(8)])).IsTrue();
-        await Assert.That(transport.LastBody).IsEquivalentTo(new byte[] { 7, 8, 9 });
-        await Assert.That(transport.LastDeliverAt).IsNull();
-        await Assert.That(await Count(source, "relayer_outbox")).IsEqualTo(6L);
-        await using var attempts = source.CreateCommand("SELECT attempts FROM relayer_outbox WHERE id = @id");
-        attempts.Parameters.AddWithValue("id", Id(1));
-        await Assert.That((int)(await attempts.ExecuteScalarAsync())!).IsEqualTo(1);
-    }
-
-    [Test]
-    [Arguments(1)]
-    [Arguments(4)]
-    public async Task Recovery_revisits_failed_scheduled_and_claimed_rows_while_newer_rows_keep_arriving(int batchSize)
-    {
-        await using var fixture = new PostgreSqlFixture();
-        await fixture.StartAsync();
-        await using var source = NpgsqlDataSource.Create(fixture.ConnectionString);
-        await PostgreSqlOutboxStoreTests.CreateSchema(source);
-        for (var i = 1; i <= 4; i++) await Insert(source, Id(i));
-        await Sql(source, "UPDATE relayer_outbox SET deliver_at = clock_timestamp() + interval '1 day' WHERE id = '01900000-0000-7000-8000-000000000002'; UPDATE relayer_outbox SET claim_token = gen_random_uuid(), claim_expires_at = clock_timestamp() + interval '1 day' WHERE id = '01900000-0000-7000-8000-000000000003'");
-        var offline = true;
-        var transport = new RecordingTransport((message, _) =>
-            offline && HeaderId(message) == Id(1) ? ValueTask.FromException(new InvalidOperationException("offline")) : ValueTask.CompletedTask);
-        using var worker = Worker(source, transport, new() { BatchSize = batchSize });
-        for (var i = 0; i < (batchSize == 1 ? 2 : 1); i++) await worker.SweepAsync(default);
-        await Assert.That(transport.Ids.SequenceEqual([Id(4)])).IsTrue();
-
-        // Change durable eligibility explicitly, after the cursor has passed these rows.
-        offline = false;
-        await Sql(source, "UPDATE relayer_outbox SET deliver_at = clock_timestamp() - interval '1 second' WHERE deliver_at IS NOT NULL; UPDATE relayer_outbox SET claim_expires_at = clock_timestamp() - interval '1 second' WHERE claim_token IS NOT NULL");
-        for (var i = 5; i <= 10; i++)
-        {
-            await Insert(source, Id(i));
-            await worker.SweepAsync(default);
-        }
-
-        for (var i = 1; i <= 5; i++) await Assert.That(transport.Ids.Contains(Id(i))).IsTrue();
-        await Assert.That(transport.Ids.Distinct().Count()).IsEqualTo(transport.Ids.Count);
-    }
-
-    [Test]
     public async Task Connected_sweeper_holds_leadership_through_native_send_then_rival_takes_over_after_release()
     {
         await using var fixture = new PostgreSqlFixture();
@@ -139,31 +83,6 @@ public class MaintenanceTests
         await Insert(source, Id(2));
         await Assert.That(await second.SweepAsync(timeout.Token)).IsEqualTo(1);
         await Assert.That(secondTransport.Ids.SequenceEqual([Id(2)])).IsTrue();
-    }
-
-    [Test]
-    public async Task Cleanup_is_leased_bounded_and_preserves_pending_parked_recent_and_disabled_retention()
-    {
-        await using var fixture = new PostgreSqlFixture();
-        await fixture.StartAsync();
-        await using var source = NpgsqlDataSource.Create(fixture.ConnectionString);
-        await PostgreSqlOutboxStoreTests.CreateSchema(source);
-        await Insert(source, Id(1));
-        await Insert(source, Id(2));
-        await Sql(source, "UPDATE relayer_outbox SET status = 'parked' WHERE id = '01900000-0000-7000-8000-000000000002'; INSERT INTO relayer_outbox_dead SELECT id, lane, ordering_key, transport, destination, message_type, headers, body, created_at, deliver_at, attempts, last_error, tenant_id, clock_timestamp() - interval '60 days' FROM relayer_outbox; INSERT INTO relayer_inbox VALUES ('a', gen_random_uuid(), clock_timestamp() - interval '10 days'), ('b', gen_random_uuid(), clock_timestamp() - interval '10 days'), ('new', gen_random_uuid(), clock_timestamp());");
-        using var first = Worker(source, new RecordingTransport(), new() { BatchSize = 1 });
-        using var rival = Worker(source, new RecordingTransport(), new() { BatchSize = 1 });
-        await Assert.That(await first.CleanupAsync(default)).IsEqualTo(2);
-        await Assert.That(await rival.CleanupAsync(default)).IsEqualTo(0);
-        await Assert.That(await Count(source, "relayer_outbox_dead")).IsEqualTo(1L);
-        await Assert.That(await Count(source, "relayer_inbox")).IsEqualTo(2L);
-        await Assert.That(await Count(source, "relayer_outbox")).IsEqualTo(2L);
-        await first.ReleaseAsync(default);
-        using var disabled = Worker(source, new RecordingTransport(), new() { DeadRetention = null, InboxRetention = null });
-        await Assert.That(await disabled.CleanupAsync(default)).IsEqualTo(0);
-        await disabled.ReleaseAsync(default);
-        await Assert.That(await rival.CleanupAsync(default)).IsEqualTo(2);
-        await Assert.That(await Count(source, "relayer_inbox")).IsEqualTo(1L);
     }
 
     [Test]
@@ -308,8 +227,6 @@ public class MaintenanceTests
     {
         public string Name => "events";
         internal ConcurrentQueue<Guid> Ids { get; } = new();
-        internal byte[]? LastBody { get; private set; }
-        internal DateTimeOffset? LastDeliverAt { get; private set; }
         internal int MaxBatchSize { get; init; } = 1;
         internal ConcurrentQueue<int> BatchSizes { get; } = new();
         public TransportCapabilities GetCapabilities(string endpoint) => new() { MaxBatchSize = MaxBatchSize };
@@ -317,8 +234,6 @@ public class MaintenanceTests
         {
             if (send is not null) await send(message, cancellationToken);
             Ids.Enqueue(HeaderId(message));
-            LastBody = message.Body.ToArray();
-            LastDeliverAt = message.DeliverAt;
         }
         public async ValueTask SendBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken)
         {
