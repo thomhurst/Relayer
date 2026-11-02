@@ -19,6 +19,7 @@
     <ProjectReference Include="..\..\src\Relayer\Relayer.csproj" />
     <ProjectReference Include="..\..\src\Relayer.Outbox.EntityFrameworkCore\Relayer.Outbox.EntityFrameworkCore.csproj" />
     <ProjectReference Include="../../src/Relayer.Kafka/Relayer.Kafka.csproj" />
+    <ProjectReference Include="../../src/Relayer.Kafka.SchemaRegistry/Relayer.Kafka.SchemaRegistry.csproj" />
     <ProjectReference Include="..\..\src\Relayer.SourceGenerators\Relayer.SourceGenerators.csproj"
                       ReferenceOutputAssembly="false" OutputItemType="Analyzer" />
   </ItemGroup>

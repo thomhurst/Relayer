@@ -333,6 +333,8 @@ services.AddRelayer(relayer =>
 
 Register a custom `IMessageSerializer` in the service collection before, inside or after `AddRelayer` to replace JSON. The default uses a lazy DI factory, so the final serializer registration determines whether JSON metadata is needed. Call `AddRelayer` once per service collection; a second call throws before running its configuration callback. Registrations on separate service collections keep their generated contexts, options and writer pools isolated. Typed metadata is resolved at startup. Serialization reuses a bounded writer pool per options instance; deserialization reads the sequence directly and rejects null bodies and trailing JSON values.
 
+Named transports can override the application serializer with `transport.UseSerializer(factory)`. The host resolves each keyed singleton once, awaits optional `IMessageSerializerInitializer` preparation before receivers start, and captures it in send and consume pipelines. See [named Kafka schema registries](../website/docs/transports/kafka.md#independent-schema-registries) for the optional startup-prepared JSON integration and its explicit contract limits.
+
 ### 4.4 Versioning
 
 - `Version` lives in the type name (`billing.charge-card;v=2`).

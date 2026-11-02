@@ -49,6 +49,7 @@ To change a decision, add a new entry that supersedes it rather than editing his
 | [D36](#d36-an-explicit-ef-core-consumer-boundary-owns-the-inbox-transaction) | An explicit EF Core consumer boundary owns the inbox transaction | Accepted |
 | [D37](#d37-ordered-dispatch-bounds-validated-endpoint-retention) | Ordered dispatch bounds validated endpoint retention | Accepted |
 | [D38](#d38-postgresql-maintenance-leases-recover-unordered-rows-and-bound-retention) | PostgreSQL maintenance leases recover unordered rows and bound retention | Accepted |
+| [D39](#d39-named-transports-capture-startup-prepared-serializers) | Named transports capture startup-prepared serializers | Accepted |
 
 ---
 
@@ -730,3 +731,24 @@ stored identity. A lease-row connection failure cannot retract an in-flight nati
 across multiple bounded passes, and native calls can delay cleanup. Poison handling and retry backoff remain
 separate work. D36 defines the EF Core inbox boundary. No schema evolution or expiry of undelivered messages
 is required.
+
+## D39. Named transports capture startup-prepared serializers
+
+**Context.** Named Kafka clusters can use independent registries, credentials and schemas. An application-wide
+serializer cannot isolate those contracts. The synchronous buffer-based body interface in D8 cannot await
+registry discovery, and Dekaf's synchronous deserializer fetches unknown or evicted schemas synchronously.
+
+**Decision.** Refine D8 with explicit `transport.UseSerializer(factory)` selection. Send routes and consumers
+capture the same keyed singleton at startup; transports without an override use the application serializer.
+Do not resolve unused default JSON metadata when every transport has an override. Await optional
+`IMessageSerializerInitializer` preparation before hosted receivers start, including concurrent startup.
+
+The optional `Relayer.Kafka.SchemaRegistry` package prepares explicit JSON writer contracts with Dekaf's
+AOT-safe serializer and native configuration. Accept only the prepared writer schema ID for each message
+type. Read that known five-byte prefix and source-generated JSON directly, without synchronous registry
+fetches or per-message discovery. Other schema versions require explicit wire types and upcasters.
+
+**Consequences.** Serializer selection adds no lookup to existing send or consume operations. Registry HTTP
+errors fail startup. Registry IDs remain local to each serializer and never replace stable CloudEvents
+message identity. Dynamic discovery, registry rules/validation, latest-version selection, header/GUID
+identities, Avro and Protobuf adapters remain planned. No broker send, receive or settlement semantics change.

@@ -1,0 +1,10 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <Description>Explicit, startup-prepared JSON Schema Registry serialization for named Relayer Kafka transports.</Description>
+    <IsAotCompatible>true</IsAotCompatible>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Dekaf.SchemaRegistry" />
+    <ProjectReference Include="../Relayer.Kafka/Relayer.Kafka.csproj" />
+  </ItemGroup>
+</Project>

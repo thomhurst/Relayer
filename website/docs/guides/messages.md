@@ -46,6 +46,10 @@ Serialization writes to pooled `IBufferWriter<byte>` storage and deserialization
 
 Register your own `IMessageSerializer` in the service collection, before, inside or after `AddRelayer`, to replace JSON. The default uses a lazy DI factory, so the final registration decides whether JSON metadata is needed at all.
 
+Use `transport.UseSerializer(provider => ...)` inside a named transport declaration to override serialization for that transport. Send routes and consumers use the same DI-owned singleton. Other transports keep the application serializer. Names are case-sensitive; selecting twice on one declaration fails. The factory must return a thread-safe serializer. If every transport selects its own serializer, the unused default JSON serializer does not require metadata.
+
+Custom serializers can implement `IMessageSerializerInitializer`. The host awaits `InitializeAsync(CancellationToken)` during its startup lifecycle, before any hosted receiver starts, including concurrent service startup. A shared instance is initialized once. Preparation failures stop startup. Preparation does not add work to the per-message path. See [Kafka schema registries](../transports/kafka.md#independent-schema-registries) for a concrete registration.
+
 ## Versioning and unknown types
 
 The version is part of the type name. Register `IUpcaster<TFrom, TTo>` instances explicitly to convert older payloads before the selected handler runs:

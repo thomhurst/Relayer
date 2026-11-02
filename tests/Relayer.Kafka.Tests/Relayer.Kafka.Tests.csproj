@@ -3,10 +3,12 @@
   <ItemGroup>
     <PackageReference Include="TUnit" />
     <PackageReference Include="Testcontainers.Kafka" />
+    <PackageReference Include="Testcontainers.Redpanda" />
     <PackageReference Include="Microsoft.Extensions.Hosting" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="../../src/Relayer.Kafka/Relayer.Kafka.csproj" />
+    <ProjectReference Include="../../src/Relayer.Kafka.SchemaRegistry/Relayer.Kafka.SchemaRegistry.csproj" />
     <ProjectReference Include="../../src/Relayer.Kafka.HealthChecks/Relayer.Kafka.HealthChecks.csproj" />
     <ProjectReference Include="../../src/Relayer.Testing/Relayer.Testing.csproj" />
     <ProjectReference Include="../../src/Relayer.SourceGenerators/Relayer.SourceGenerators.csproj" ReferenceOutputAssembly="false" OutputItemType="Analyzer" />

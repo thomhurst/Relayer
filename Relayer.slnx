@@ -6,6 +6,7 @@
     <Project Path="src/Relayer.SourceGenerators/Relayer.SourceGenerators.csproj" />
     <Project Path="src/Relayer.CodeFixes/Relayer.CodeFixes.csproj" />
     <Project Path="src/Relayer.Kafka/Relayer.Kafka.csproj" />
+    <Project Path="src/Relayer.Kafka.SchemaRegistry/Relayer.Kafka.SchemaRegistry.csproj" />
     <Project Path="src/Relayer.Kafka.HealthChecks/Relayer.Kafka.HealthChecks.csproj" />
     <Project Path="src/Relayer.AzureServiceBus/Relayer.AzureServiceBus.csproj" />
     <Project Path="src/dotnet-relayer/dotnet-relayer.csproj" />

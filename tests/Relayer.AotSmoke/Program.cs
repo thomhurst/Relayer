@@ -18,6 +18,7 @@ using Relayer.Serialization;
 using Relayer.Transports;
 
 PartitionCompletionSmoke.Run();
+await KafkaSchemaSmoke.RunAsync();
 
 var serviceBusMessage = ServiceBusModelFactory.ServiceBusReceivedMessage(new BinaryData(new byte[] { 42 }),
     properties: new Dictionary<string, object> { ["cloudEvents:type"] = "smoke;v=1" }, deliveryCount: 2);

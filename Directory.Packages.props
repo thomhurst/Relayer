@@ -26,6 +26,7 @@
 
   <ItemGroup Label="Transports">
     <PackageVersion Include="Dekaf" Version="1.25.0" />
+    <PackageVersion Include="Dekaf.SchemaRegistry" Version="1.25.0" />
     <PackageVersion Include="Azure.Messaging.ServiceBus" Version="7.21.0" />
     <PackageVersion Include="AWSSDK.SQS" Version="4.0.100.22" />
     <PackageVersion Include="AWSSDK.SimpleNotificationService" Version="4.0.100.22" />
@@ -44,6 +45,7 @@
     <PackageVersion Include="Microsoft.Extensions.DependencyInjection" Version="10.0.14" />
     <PackageVersion Include="Microsoft.Extensions.Logging" Version="10.0.14" />
     <PackageVersion Include="Testcontainers.Kafka" Version="4.16.0" />
+    <PackageVersion Include="Testcontainers.Redpanda" Version="4.16.0" />
     <PackageVersion Include="Testcontainers.ServiceBus" Version="4.16.0" />
     <PackageVersion Include="TUnit" Version="1.78.0" />
     <PackageVersion Include="BenchmarkDotNet" Version="0.15.8" />

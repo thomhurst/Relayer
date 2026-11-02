@@ -5,7 +5,6 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
-using Relayer.Serialization;
 using Relayer.Transports;
 
 namespace Relayer.Kafka;
@@ -37,7 +36,7 @@ internal sealed class KafkaHostedService(IServiceProvider provider, string name)
                 DeadLetterEndpoint = policy.DeadLetterEndpoint ?? consumer.Source + ".dead-letter",
             }, Copy);
             var pipeline = new ConsumePipelineBuilder(provider.GetRequiredService<IServiceScopeFactory>(),
-                provider.GetRequiredService<MessageTypeRegistry>(), provider.GetRequiredService<IMessageSerializer>(), failures,
+                provider.GetRequiredService<MessageTypeRegistry>(), provider.GetMessageSerializer(name), failures,
                 provider.GetService<IFailureClassifier>());
             var endpoint = new MessagingEndpoint { System = "kafka", Destination = consumer.Source, ConsumerGroup = consumer.Options.Group };
             pipeline.Tracing(tracing, endpoint).Telemetry(provider.GetRequiredService<RelayerInstrumentation>().CreateEndpoint(new()
