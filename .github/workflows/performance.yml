@@ -166,6 +166,7 @@ jobs:
           --baseline-after performance-results/baseline-after
           --baseline-source baseline --candidate-source candidate
           --input-manifest performance-inputs.json
+          --verify-test-sources
           --summary performance-summary.md
 
       - name: Publish comparison summary

@@ -3,9 +3,11 @@ import copy
 import io
 import json
 from pathlib import Path
+import shutil
 import subprocess
 import tempfile
 import unittest
+from unittest.mock import patch
 import xml.etree.ElementTree as ET
 
 import benchmark_gate as gate
@@ -355,6 +357,121 @@ class ComparisonInputTests(unittest.TestCase):
                      ".github/workflows/ci.yml", ".github/workflows/performance.yml"):
             self.write(self.candidate, name, "changed")
         self.assertEqual(gate.input_manifest(self.baseline), gate.input_manifest(self.candidate))
+
+    def test_only_verified_unreferenced_test_csharp_sources_are_excluded(self):
+        self.write(self.candidate, "tests/KafkaTests/Fixture.cs", "unbuilt source")
+        self.assertNotEqual(gate.input_manifest(self.baseline), gate.input_manifest(self.candidate))
+        self.assertEqual(gate.input_manifest(self.baseline, referenced_test_sources=[]),
+                         gate.input_manifest(self.candidate, referenced_test_sources=[]))
+        for name in ("tests/KafkaTests/Test.csproj", "tests/input.json", "unknown.cs"):
+            with self.subTest(name=name):
+                path = self.write(self.candidate, name, "still hashed")
+                self.assertNotEqual(gate.input_manifest(self.baseline, referenced_test_sources=[]),
+                                    gate.input_manifest(self.candidate, referenced_test_sources=[]))
+                path.unlink()
+
+    def test_referenced_test_source_remains_hashed(self):
+        source = "tests/Shared/Source.cs"
+        self.write(self.baseline, source, "original source")
+        self.write(self.candidate, source, "compiled or consumed source")
+        self.assertNotEqual(gate.input_manifest(self.baseline, referenced_test_sources=[source]),
+                            gate.input_manifest(self.candidate, referenced_test_sources=[source]))
+
+    def test_ignored_referenced_test_source_is_hashed_and_missing_source_fails(self):
+        source = "tests/Generated/Source.cs"
+        self.write(self.candidate, ".gitignore", "tests/Generated/\n")
+        self.write(self.baseline, ".gitignore", "tests/Generated/\n")
+        self.write(self.baseline, source, "original")
+        self.write(self.candidate, source, "changed")
+        self.assertEqual(gate.input_manifest(self.baseline), gate.input_manifest(self.candidate))
+        self.assertNotEqual(gate.input_manifest(self.baseline, referenced_test_sources=[source]),
+                            gate.input_manifest(self.candidate, referenced_test_sources=[source]))
+        (self.candidate / source).unlink()
+        with self.assertRaisesRegex(gate.GateError, "Referenced test source missing"):
+            gate.input_manifest(self.candidate, referenced_test_sources=[source])
+
+    def build_result(self, *, references=(), inputs=()):
+        items = {kind: [] for kind in gate.BUILD_ITEMS}
+        items["ProjectReference"] = [{"FullPath": str(self.candidate / path)} for path in references]
+        items["Compile"] = [{"FullPath": str(self.candidate / path)} for path in inputs]
+        return subprocess.CompletedProcess([], 0, stdout=json.dumps({
+            "Items": items, "Properties": {"MSBuildAllProjects": str(self.candidate / "Directory.Build.props")}}))
+
+    def test_build_verification_walks_transitive_projects_and_records_inputs(self):
+        child = "src/Child/Child.csproj"
+        source = "tests/Shared/Compiled.cs"
+        with patch.object(gate.subprocess, "run", side_effect=[
+                self.build_result(references=[child]), self.build_result(inputs=[source])]) as run:
+            verified = gate.test_source_inputs(self.candidate)
+        self.assertEqual([source], verified["test_sources"])
+        self.assertEqual({gate.BENCHMARK_PROJECT, child}, verified["projects"].keys())
+        for call in run.call_args_list:
+            self.assertIn("-target:Build", call.args[0])
+            self.assertIn("-property:Configuration=Release", call.args[0])
+            self.assertEqual(Path(call.args[0][2]).parent, call.kwargs["cwd"])
+
+    def test_build_verification_failure_never_excludes_test_sources(self):
+        for result in (subprocess.CompletedProcess([], 0, stdout="not JSON"),
+                       subprocess.CompletedProcess([], 0, stdout='{"Items": {}}')):
+            with self.subTest(result=result.stdout), patch.object(gate.subprocess, "run", return_value=result):
+                with self.assertRaises(gate.GateError):
+                    gate.test_source_inputs(self.candidate)
+        for error in (subprocess.CalledProcessError(1, "dotnet"), subprocess.TimeoutExpired("dotnet", 180)):
+            with self.subTest(error=error), patch.object(gate.subprocess, "run", side_effect=error):
+                with self.assertRaises(gate.GateError):
+                    gate.test_source_inputs(self.candidate)
+
+    def test_project_reference_outside_checkout_fails_verification(self):
+        with patch.object(gate.subprocess, "run", return_value=self.build_result(references=["../external.csproj"])):
+            with self.assertRaises(gate.GateError):
+                gate.test_source_inputs(self.candidate)
+
+    @unittest.skipUnless(shutil.which("dotnet"), "Requires the .NET SDK used by the measured builds")
+    def test_real_build_includes_target_added_test_source_from_transitive_project(self):
+        self.write(self.candidate, "global.json", "{}")
+        self.write(self.candidate, "Directory.Build.props", "<Project />")
+        self.write(self.candidate, "Directory.Packages.props", "<Project />")
+        child = "src/Child/Child.csproj"
+        project = ('<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup>'
+                   '<TargetFramework>net10.0</TargetFramework></PropertyGroup>{}</Project>')
+        self.write(self.candidate, gate.BENCHMARK_PROJECT, project.format(
+            '<ItemGroup><ProjectReference Include="../../src/Child/Child.csproj" /></ItemGroup>'))
+        self.write(self.candidate, child, project.format(""))
+        source = "tests/Shared.cs"
+        self.write(self.candidate, source, "public class Shared {}")
+        subprocess.run(["dotnet", "restore", str(self.candidate / gate.BENCHMARK_PROJECT), "--verbosity", "quiet"],
+                       cwd=(self.candidate / gate.BENCHMARK_PROJECT).parent,
+                       check=True, capture_output=True, timeout=180)
+        self.assertEqual([], gate.test_source_inputs(self.candidate)["test_sources"])
+        self.write(self.candidate, child, project.format(
+            '<Target Name="IncludeShared" BeforeTargets="CoreCompile">'
+            '<ItemGroup><Compile Include="../../tests/Shared.cs" /></ItemGroup></Target>'))
+        verified = gate.test_source_inputs(self.candidate)
+        self.assertEqual([source], verified["test_sources"])
+        self.assertIn(source, verified["projects"][child])
+
+    def test_cli_requires_sources_and_retains_build_verification_without_hiding_real_regressions(self):
+        candidate = report()
+        candidate["Benchmarks"][0]["Memory"]["BytesAllocatedPerOperation"] += 64
+        before = self.write(self.root, "before/benchmarks-report-full.json", json.dumps(report())).parent
+        after = self.write(self.root, "after/benchmarks-report-full.json", json.dumps(candidate)).parent
+        manifest = self.root / "inputs.json"
+        command = ["compare", str(before), str(after), "--verify-test-sources"]
+        verification = {"test_sources": [], "projects": {gate.BENCHMARK_PROJECT: []}}
+        self.write(self.candidate, "tests/Shared.cs", "unbuilt source")
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(1, gate.main(command))
+            command += ["--baseline-source", str(self.baseline), "--candidate-source", str(self.candidate),
+                        "--input-manifest", str(manifest)]
+            with patch.object(gate, "test_source_inputs", return_value=verification):
+                self.assertEqual(0, gate.main(command))
+                retained = json.loads(manifest.read_text())
+                self.assertTrue(retained["identical"])
+                self.assertEqual(verification, retained["test_source_verification"]["candidate"])
+                self.write(self.candidate, "src/Relayer/Changed.cs", "production change")
+                self.assertEqual(1, gate.main(command))
+            with patch.object(gate, "test_source_inputs", side_effect=gate.GateError("build failed")):
+                self.assertEqual(1, gate.main(command))
 
     def test_source_generator_dependencies_sdk_harness_and_unknown_inputs_disable_identity(self):
         for name in (*gate.REQUIRED_INPUTS, "src/Relayer/Changed.cs", "new-build-input.targets"):
