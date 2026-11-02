@@ -12,12 +12,13 @@ internal sealed class KafkaTestBroker : IAsyncDisposable
     private const string Supervisor = """
         set -eu
         broker=
+        start=(/bin/bash /testcontainers.sh)
         trap 'if [ -n "$broker" ]; then kill -TERM "$broker" 2>/dev/null || true; wait "$broker" || true; fi; exit 0' TERM INT
         while true; do
             while [ ! -f /tmp/relayer-kafka-start ]; do sleep 0.1; done
             : > /tmp/relayer-kafka.log
             rm -f /tmp/relayer-kafka-start /tmp/relayer-kafka-stopped /tmp/relayer-kafka-stop
-            /bin/bash /testcontainers.sh >> /tmp/relayer-kafka.log 2>&1 &
+            "${start[@]}" >> /tmp/relayer-kafka.log 2>&1 &
             broker=$!
             echo "$broker" > /tmp/relayer-kafka.pid
             wait "$broker" || true
@@ -25,6 +26,8 @@ internal sealed class KafkaTestBroker : IAsyncDisposable
             rm /tmp/relayer-kafka.pid
             cat /tmp/relayer-kafka.log
             if [ ! -f /tmp/relayer-kafka-stop ]; then exit 1; fi
+            # Configuration and storage formatting already completed on the first start.
+            start=(/opt/kafka/bin/kafka-server-start.sh /opt/kafka/config/server.properties)
             touch /tmp/relayer-kafka-stopped
         done
         """;
@@ -35,6 +38,8 @@ internal sealed class KafkaTestBroker : IAsyncDisposable
     internal KafkaTestBroker()
     {
         var builder = new KafkaBuilder("apache/kafka:4.0.2").WithVendor(KafkaVendor.ApacheSoftwareFoundation)
+            // These tiny test topics do not need Kafka's default 1 GiB initial heap per fixture.
+            .WithEnvironment("KAFKA_HEAP_OPTS", "-Xms128m -Xmx256m")
             .WithKRaft().WithWaitStrategy(Wait.ForUnixContainer())
             .WithEntrypoint("/bin/bash", "-c")
             .WithCommand(new OverwriteEnumerable<string>([Supervisor.ReplaceLineEndings("\n")]));

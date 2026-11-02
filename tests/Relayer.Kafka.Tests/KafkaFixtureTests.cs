@@ -41,6 +41,7 @@ public class KafkaFixtureTests
         using var docker = TestcontainersSettings.OS.DockerEndpointAuthConfig.GetDockerClientBuilder(Guid.NewGuid()).Build();
         var endpoint = fixture.Bootstrap;
         var script = await fixture.Broker.Container.ReadFileAsync("/testcontainers.sh", token);
+        var configuration = await fixture.Broker.Container.ReadFileAsync("/opt/kafka/config/server.properties", token);
 
         for (var cycle = 0; cycle < 2; cycle++)
         {
@@ -56,6 +57,7 @@ public class KafkaFixtureTests
             await fixture.ReconnectAsync(token);
             await Assert.That(fixture.Bootstrap).IsEqualTo(endpoint);
             await Assert.That(await fixture.Broker.Container.ReadFileAsync("/testcontainers.sh", token)).IsEquivalentTo(script);
+            await Assert.That(await fixture.Broker.Container.ReadFileAsync("/opt/kafka/config/server.properties", token)).IsEquivalentTo(configuration);
             await using var admin = new AdminClientBuilder().WithBootstrapServers(endpoint).Build();
             var topics = await admin.ListTopicsAsync(cancellationToken: token);
             await Assert.That(topics.Any(topic => topic.Name == fixture.Destination)).IsTrue();
