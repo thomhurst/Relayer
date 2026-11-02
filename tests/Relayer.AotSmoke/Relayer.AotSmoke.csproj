@@ -11,6 +11,7 @@
     <PackageReference Include="Microsoft.Extensions.DependencyInjection" />
     <PackageReference Include="Microsoft.Extensions.Configuration" />
     <ProjectReference Include="../../src/Relayer/Relayer.csproj" />
+    <ProjectReference Include="../../src/Relayer.Sagas/Relayer.Sagas.csproj" />
     <ProjectReference Include="../../src/Relayer.Serialization.Protobuf/Relayer.Serialization.Protobuf.csproj" />
     <ProjectReference Include="../../src/Relayer.AzureServiceBus/Relayer.AzureServiceBus.csproj" />
     <ProjectReference Include="../../src/Relayer.Kafka.SchemaRegistry/Relayer.Kafka.SchemaRegistry.csproj" />

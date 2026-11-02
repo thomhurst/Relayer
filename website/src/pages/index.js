@@ -272,6 +272,8 @@ function CallSite() {
 }
 
 const status = [
+  ['Saga process declarations and Mermaid export', 'Implemented diagram tooling', true],
+  ['Transactional saga execution and durable timeouts', 'Planned', false],
   ['NuGet packaging, symbols and tag release workflow', 'Implemented; packages not released yet', true],
   ['Configuration, routes and startup validation', 'Implemented', true],
   ['Source-generated handlers, messages and JSON', 'Implemented', true],

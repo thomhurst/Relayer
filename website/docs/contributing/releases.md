@@ -16,6 +16,7 @@ The packages are `Relayer`, `Relayer.Testing`, `Relayer.HealthChecks`, `Relayer.
 `Relayer.Kafka.HealthChecks`, `Relayer.AzureServiceBus`, `Relayer.AmazonSqs`, `Relayer.RabbitMQ`,
 `Relayer.Outbox.PostgreSql`, `Relayer.Outbox.EntityFrameworkCore` and the `dotnet-relayer` tool.
 `Relayer.Kafka.SchemaRegistry` and `Relayer.Serialization.Protobuf` are optional integration packages.
+`Relayer.Sagas` currently provides [process diagram declarations and export](../guides/saga-diagrams.md); saga execution remains planned.
 The source generator and code fixes ship inside `Relayer`; they are not separate packages.
 
 ## Versions and local verification
