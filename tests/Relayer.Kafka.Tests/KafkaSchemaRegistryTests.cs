@@ -87,8 +87,8 @@ public class KafkaSchemaRegistryTests
         await Task.WhenAll(west.StartAsync(token), east.StartAsync(token), westRegistry.StartAsync(token), eastRegistry.StartAsync(token));
         await CreateTopic(west, token);
         await CreateTopic(east, token);
-        var westHttp = new CredentialCheck("west:secret");
-        var eastHttp = new CredentialCheck("east:other-secret");
+        var westHttp = new CredentialCheck("west:secret", westRegistry);
+        var eastHttp = new CredentialCheck("east:other-secret", eastRegistry);
         using var westClient = new SchemaRegistryClient(new()
         { Url = westRegistry.GetSchemaRegistryAddress(), BasicAuthUserInfo = "west:secret" }, westHttp);
         using var eastClient = new SchemaRegistryClient(new()
@@ -168,10 +168,18 @@ public class KafkaSchemaRegistryTests
         return builder.AfterStartupCopy().Build();
     }
 
-    private static RedpandaContainer Registry() => new RedpandaBuilder("redpandadata/redpanda:v25.1.9")
-        .WithCommand(new OverwriteEnumerable<string>([$"while [ ! -f /tmp/relayer-ready ]; do sleep 0.1; done; rm /tmp/relayer-ready; exec {RedpandaBuilder.StartupScriptFilePath}"]))
-        .WithWaitStrategy(Wait.ForUnixContainer().UntilCommandIsCompleted("touch", "/tmp/relayer-ready")
-            .UntilMessageIsLogged("Started Kafka API server")).Build();
+    private static RedpandaContainer Registry()
+    {
+        var builder = new RedpandaBuilder("redpandadata/redpanda:v25.1.9");
+        if (OperatingSystem.IsLinux())
+            builder = builder.WithPortBinding("20000-29999", "8081").WithPortBinding("20000-29999", "9092");
+        return builder
+            .WithCommand(new OverwriteEnumerable<string>([$"while [ ! -f /tmp/relayer-ready ]; do sleep 0.1; done; rm /tmp/relayer-ready; exec {RedpandaBuilder.StartupScriptFilePath}"]))
+            .WithWaitStrategy(Wait.ForUnixContainer().UntilCommandIsCompleted("touch", "/tmp/relayer-ready")
+                // Kafka readiness does not establish that the independent HTTP registry is ready.
+                .UntilHttpRequestIsSucceeded(request => request.ForPort(RedpandaBuilder.SchemaRegistryPort).ForPath("/subjects")))
+            .Build();
+    }
 
     private static void Configure(TransportBuilder<KafkaTransportOptions, KafkaRouteOptions, KafkaConsumerOptions> kafka, string bootstrap)
     {
@@ -223,16 +231,36 @@ public class KafkaSchemaRegistryTests
         }
     }
 
-    private sealed class CredentialCheck(string credentials) : DelegatingHandler(new HttpClientHandler())
+    private sealed class CredentialCheck(string credentials, RedpandaContainer registry) : DelegatingHandler(new HttpClientHandler())
     {
         public int Requests;
-        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
             var expected = Convert.ToBase64String(Encoding.UTF8.GetBytes(credentials));
             if (request.Headers.Authorization?.ToString() != "Basic " + expected)
                 throw new InvalidOperationException("Registry credentials crossed transport boundaries.");
             Interlocked.Increment(ref Requests);
-            return base.SendAsync(request, cancellationToken);
+            try
+            {
+                return await base.SendAsync(request, cancellationToken);
+            }
+            catch (Exception error) when (error is HttpRequestException or OperationCanceledException)
+            {
+                Console.Error.WriteLine($"Registry request failed: {request.Method} {request.RequestUri}; container {registry.Id}, state {registry.State}.");
+                try
+                {
+                    // The test token may have expired. Bound diagnostics independently and retain the original failure.
+                    using var diagnostics = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+                    var (stdout, stderr) = await registry.GetLogsAsync(ct: diagnostics.Token);
+                    Console.Error.WriteLine(stdout);
+                    Console.Error.WriteLine(stderr);
+                }
+                catch (Exception diagnosticError)
+                {
+                    Console.Error.WriteLine($"Registry diagnostics failed: {diagnosticError}");
+                }
+                throw;
+            }
         }
     }
 }
