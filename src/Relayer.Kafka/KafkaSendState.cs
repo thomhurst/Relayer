@@ -30,6 +30,11 @@ internal sealed class KafkaSendState
     internal const string TombstoneHeader = "relayer.internal.kafka.tombstone";
     private readonly Headers _headers = new(16);
     private byte[] _utf8 = [];
+    private KafkaSendCompletion? _completion;
+
+    internal ValueTask<Dekaf.Producer.RecordMetadata> TrackSend(ValueTask<Dekaf.Producer.RecordMetadata> pending, SendTracing.NativeSendOperation duration) =>
+        (_completion ??= new()).Track(pending, duration);
+
     internal WireString? Key { get; private set; }
     internal bool Tombstone { get; set; }
     internal Headers Headers => _headers;

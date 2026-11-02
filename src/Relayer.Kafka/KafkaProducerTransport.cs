@@ -161,26 +161,13 @@ internal sealed class KafkaProducerTransport : ITransport, ITransportSendTracing
             var pending = state.Tombstone
                 ? _topics[message.Destination].ProduceAsync(state.Key, null, state.Headers, token)
                 : _producer.ProduceAsync(message.Destination, state.Key, (message.Body, state.Headers), token);
-            return duration.IsEnabled ? CompleteProduceAsync(pending, duration) : pending;
+            return duration.IsEnabled ? state.TrackSend(pending, duration) : pending;
         }
         catch
         {
             duration.Complete(failed: true);
             throw;
         }
-    }
-
-    [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder<>))]
-    private static async ValueTask<RecordMetadata> CompleteProduceAsync(ValueTask<RecordMetadata> pending, SendTracing.NativeSendOperation duration)
-    {
-        var failed = true;
-        try
-        {
-            var result = await pending.ConfigureAwait(false);
-            failed = false;
-            return result;
-        }
-        finally { duration.Complete(failed); }
     }
 
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
