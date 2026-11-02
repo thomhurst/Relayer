@@ -752,4 +752,4 @@ fetches or per-message discovery. Other schema versions require explicit wire ty
 **Consequences.** Serializer selection adds no lookup to existing send or consume operations. Registry HTTP
 errors fail startup. Registry IDs remain local to each serializer and never replace stable CloudEvents
 message identity. Dynamic discovery, registry rules/validation, latest-version selection, header/GUID
-identities, Avro and Protobuf adapters remain planned. No broker send, receive or settlement semantics change.
+identities, Avro and Protobuf schema registry adapters remain planned. No broker send, receive or settlement semantics change.
