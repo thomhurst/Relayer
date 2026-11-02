@@ -50,6 +50,32 @@ public sealed class SendTracing
         _states.Items[0] = new();
     }
 
+    /// <summary>Starts timing an actual native send call, independently of tracing and logical batch composition.</summary>
+    /// <remarks>Complete once after native acknowledgement or failure. Do not time outbox enqueue or message preparation.</remarks>
+    public NativeSendOperation StartNativeSend() => new(_telemetry);
+
+    /// <summary>An allocation-free timer for one native send, including asynchronous completion.</summary>
+    public readonly struct NativeSendOperation
+    {
+        private readonly EndpointTelemetry? _telemetry;
+        private readonly long _started;
+
+        internal NativeSendOperation(EndpointTelemetry? telemetry)
+        {
+            _telemetry = telemetry;
+            _started = telemetry is { DurationEnabled: true } ? Stopwatch.GetTimestamp() : 0;
+        }
+
+        /// <summary>Whether the duration instrument had a listener when this operation started.</summary>
+        public bool IsEnabled => _started != 0;
+
+        /// <summary>Records one duration, with bounded error.type on failure. A default timer records nothing.</summary>
+        public void Complete(bool failed = false)
+        {
+            if (_started != 0) _telemetry!.RecordDuration(Stopwatch.GetElapsedTime(_started), failed);
+        }
+    }
+
     internal Activity? Start(ActivityContext creationContext, bool deferred) =>
         (deferred ? _create : _send).Start(new() { CreationContext = creationContext });
 

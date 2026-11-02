@@ -32,4 +32,7 @@
     <Compile Include="..\..\tests\Shared\ConcurrentReceiveFixture.cs" Link="Fixtures\ConcurrentReceiveFixture.cs" />
   </ItemGroup>
 
+  <ItemGroup>
+    <Compile Include="../../tests/Shared/SendDurationCapture.cs" Link="Fixtures/SendDurationCapture.cs" />
+  </ItemGroup>
 </Project>

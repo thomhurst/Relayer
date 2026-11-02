@@ -1,6 +1,7 @@
 using Azure.Messaging.ServiceBus;
 using Azure.Messaging.ServiceBus.Administration;
 using DotNet.Testcontainers.Builders;
+using Microsoft.Extensions.Options;
 using Relayer.AzureServiceBus;
 using Testcontainers.MsSql;
 using Testcontainers.ServiceBus;
@@ -27,6 +28,9 @@ public class ServiceBusSendEmulatorTests
         await using var database = databaseBuilder.Build();
         await using var emulator = emulatorBuilder.WithMsSqlContainer(network, database, ServiceBusBuilder.DatabaseNetworkAlias).Build();
         await emulator.StartAsync(token);
+        using var instrumentation = new RelayerInstrumentation();
+        using var capture = new SendDurationCapture(instrumentation);
+        using var tracing = new MessageTracing(Options.Create(new TracingOptions()), [], instrumentation: instrumentation);
         await using var client = new ServiceBusClient(emulator.GetConnectionString());
         var admin = new ServiceBusAdministrationClient(emulator.GetHttpConnectionString());
         var options = new AzureServiceBusTransportOptions { Client = client, AdministrationClient = admin };
@@ -36,7 +40,7 @@ public class ServiceBusSendEmulatorTests
         options.Topics.Add(new("send-events") { DefaultMessageTimeToLive = TimeSpan.FromHours(1), MaxSizeInMegabytes = 100, DuplicateDetectionHistoryTimeWindow = TimeSpan.FromMinutes(10), SupportOrdering = true });
         options.Subscriptions.Add(new("send-events", "audit") { DefaultMessageTimeToLive = TimeSpan.FromHours(1), AutoDeleteOnIdle = TimeSpan.FromHours(1) });
         await using (var transport = new ServiceBusSendTransport("emulator", client, false, options,
-            ["send-orders", "send-sessions", "send-events"], TopologyMode.Provision, admin))
+            ["send-orders", "send-sessions", "send-events"], TopologyMode.Provision, admin, tracing))
         {
             var provisioned = await transport.ApplyTopologyAsync(TopologyMode.Provision, token);
             foreach (var difference in provisioned.Differences) Console.WriteLine(difference);
@@ -91,6 +95,11 @@ public class ServiceBusSendEmulatorTests
             await Assert.That(scheduled.EnqueuedTime >= DateTimeOffset.FromUnixTimeMilliseconds(scheduledAt.ToUnixTimeMilliseconds())).IsTrue();
             await Assert.That(scheduled.Body.ToMemory().Span[0]).IsEqualTo((byte)99);
             await orders.CompleteMessageAsync(scheduled, token);
+
+            await Assert.That(capture.Values.Count).IsEqualTo(4);
+            await Assert.That(capture.Values.All(value => value.Seconds > 0 &&
+                Equals(value.Tags["messaging.system"], "servicebus") &&
+                Equals(value.Tags["server.address"], client.FullyQualifiedNamespace) && !value.Tags.ContainsKey("error.type"))).IsTrue();
 
             // Existing properties are reported, never updated or replaced.
             options.Queues[0].MaxDeliveryCount = 11;

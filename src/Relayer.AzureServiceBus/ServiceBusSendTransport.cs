@@ -63,7 +63,7 @@ internal sealed class ServiceBusSendTransport : ITransport, ITransportSendTracin
                 // Receive features and namespace-dependent transaction/size limits are deliberately unresolved.
             });
             if (tracing is not null)
-                endpoint.Tracing = new(tracing, new() { System = "servicebus", Destination = destination },
+                endpoint.Tracing = new(tracing, new() { System = "servicebus", Destination = destination, ServerAddress = client.FullyQualifiedNamespace },
                     SendCoreAsync, SendBatchCoreAsync, logging?.CreateLogger<ServiceBusSendTransport>(), new("cloudEvents:"));
             endpoints.Add(destination, endpoint);
         }
@@ -95,7 +95,14 @@ internal sealed class ServiceBusSendTransport : ITransport, ITransportSendTracin
         try
         {
             state.Prepare(outgoing);
-            await endpoint.Sender.SendMessageAsync(state.Message, cancellationToken).ConfigureAwait(false);
+            var duration = endpoint.Tracing?.StartNativeSend() ?? default;
+            var failed = true;
+            try
+            {
+                await endpoint.Sender.SendMessageAsync(state.Message, cancellationToken).ConfigureAwait(false);
+                failed = false;
+            }
+            finally { duration.Complete(failed); }
         }
         finally { endpoint.Return(state); }
     }
@@ -170,7 +177,14 @@ internal sealed class ServiceBusSendTransport : ITransport, ITransportSendTracin
                         pending = null;
                         index++;
                     }
-                    await endpoint.Sender.SendMessagesAsync(batch, cancellationToken).ConfigureAwait(false);
+                    var duration = endpoint.Tracing?.StartNativeSend() ?? default;
+                    var failed = true;
+                    try
+                    {
+                        await endpoint.Sender.SendMessagesAsync(batch, cancellationToken).ConfigureAwait(false);
+                        failed = false;
+                    }
+                    finally { duration.Complete(failed); }
                 }
                 finally
                 {

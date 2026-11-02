@@ -123,10 +123,34 @@ With no ambient consumer span, the creation context is also its parent by defaul
 
 `messaging.client.sent.messages` counts native send attempts, including dispatch retries,
 and never counts enqueue. It uses the adapter's precomputed native system and destination
-dimensions. Built-in Kafka and in-memory adapters use this shared send instrumentation.
+dimensions. Built-in Kafka, Service Bus and in-memory adapters use this shared send instrumentation.
 Standalone `MessageTracing` callers can supply `instrumentation:` to enable the same
-send counter without dependency injection. Custom adapters use `ITransportSendTracing`
+send metrics without dependency injection. Custom adapters use `ITransportSendTracing`
 and `SendTracing` for the same creation and dispatch behavior.
+
+Kafka and Service Bus also record `messaging.client.operation.duration` in seconds
+for each actual native send call, from invocation through acknowledgement or failure.
+This includes native retries and works without an activity listener. A homogeneous Kafka
+batch records one duration for `ProduceAllAsync`; a Kafka batch containing tombstones
+uses individual native sends and records each completion. Mixed destinations are measured
+at their native send boundaries. Service Bus records each `SendMessageAsync` or
+`SendMessagesAsync` call, including each batch split by size, session or partition.
+The logical batch span can cover several native calls, so its duration can differ.
+
+Durations carry `messaging.system`, `messaging.operation.name = "send"` and
+`messaging.destination.name`. Service Bus also supplies `server.address` from the native
+client's fully qualified namespace. Kafka does not claim a broker address or port before
+native routing identifies it. Failed calls, including cancellation returned by the native
+client, add `error.type = "_OTHER"`; successful calls omit it. Empty batches, validation
+or preparation failures before a native call, and outbox enqueue emit no send duration.
+Outbox dispatch uses the same native timing, without a second measurement in the pipeline.
+
+Custom adapters call `SendTracing.StartNativeSend()` immediately before each native send
+and call the returned timer's `Complete(failed)` once in `finally`, after native completion.
+Set `failed` to `true` initially and clear it only when the native await succeeds. The timer
+uses precomputed endpoint tags and reads the clock only when the duration instrument has
+a listener. `IsEnabled` lets concurrent adapters avoid a completion wrapper when no
+measurement is needed. The timer does not create another meter or span.
 
 The PostgreSQL transaction integrations and dispatch workers also record:
 
