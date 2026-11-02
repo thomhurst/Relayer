@@ -4,6 +4,7 @@ using Dekaf.Consumer;
 using Dekaf.Serialization;
 using System.Net;
 using System.Net.Sockets;
+using Microsoft.Extensions.Logging;
 using Relayer.Testing;
 using Relayer.Transports;
 using Testcontainers.Kafka;
@@ -30,6 +31,12 @@ internal sealed class KafkaFixture : ITransportConformanceFixture<KafkaDelivery>
     private readonly KafkaContainer _broker;
     private readonly KafkaProducerTransport _transport;
     private readonly MessageTracing _tracing;
+    private readonly ILoggerFactory _logs = LoggerFactory.Create(builder => builder
+        .SetMinimumLevel(LogLevel.Debug).AddSimpleConsole(options =>
+        {
+            options.SingleLine = true;
+            options.TimestampFormat = "HH:mm:ss.fff ";
+        }));
     internal string Bootstrap => _broker.GetBootstrapAddress();
     public string Destination { get; } = "relayer-" + Guid.NewGuid().ToString("N");
     public ITransport Transport => _transport;
@@ -42,7 +49,8 @@ internal sealed class KafkaFixture : ITransportConformanceFixture<KafkaDelivery>
         _broker = broker;
         _tracing = tracing;
         var producer = new ProducerBuilder<WireString?, (ReadOnlyMemory<byte> Body, Headers Headers)?>()
-            .WithBootstrapServers(Bootstrap).WithKeySerializer(new KafkaKeySerializer()).WithValueSerializer(new KafkaValueSerializer()).Build();
+            .WithBootstrapServers(Bootstrap).WithLoggerFactory(_logs)
+            .WithKeySerializer(new KafkaKeySerializer()).WithValueSerializer(new KafkaValueSerializer()).Build();
         _transport = new("conformance", producer, [Destination, Destination + ".dead-letter"], tracing);
     }
 
@@ -55,16 +63,22 @@ internal sealed class KafkaFixture : ITransportConformanceFixture<KafkaDelivery>
             .WithPortBinding(clientPort, 9092);
         if (OperatingSystem.IsLinux()) builder = builder.WithPortBinding("20000-29999", "9093");
         var broker = builder.Build();
+        KafkaFixture? fixture = null;
         try
         {
             await broker.StartAsync(token);
-            var fixture = new KafkaFixture(broker, tracing);
+            fixture = new KafkaFixture(broker, tracing);
             await using var admin = new AdminClientBuilder().WithBootstrapServers(fixture.Bootstrap).Build();
             await admin.CreateTopicsAsync([new() { Name = fixture.Destination, NumPartitions = 1, ReplicationFactor = 1 },
                 new() { Name = fixture.Destination + ".dead-letter", NumPartitions = 1, ReplicationFactor = 1 }], cancellationToken: token);
             return fixture;
         }
-        catch { await broker.DisposeAsync(); throw; }
+        catch
+        {
+            if (fixture is null) await broker.DisposeAsync();
+            else await fixture.DisposeAsync();
+            throw;
+        }
     }
 
     private static int ReserveClientPort()
@@ -89,6 +103,7 @@ internal sealed class KafkaFixture : ITransportConformanceFixture<KafkaDelivery>
     {
         var ownership = new KafkaOwnership();
         var consumer = new ConsumerBuilder<byte[], byte[]>().WithBootstrapServers(Bootstrap).WithGroupId(Destination)
+            .WithLoggerFactory(_logs)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest).WithOffsetCommitMode(OffsetCommitMode.Manual)
             .WithAutoOffsetStore(false).AddRebalanceListener(ownership).SubscribeTo(Destination).Build();
         _transport.Consumers.Add(new(consumer, receive, _tracing,
@@ -107,6 +122,10 @@ internal sealed class KafkaFixture : ITransportConformanceFixture<KafkaDelivery>
     public async ValueTask DisposeAsync()
     {
         try { await _transport.DisposeAsync(); }
-        finally { await _broker.DisposeAsync(); }
+        finally
+        {
+            try { await _broker.DisposeAsync(); }
+            finally { _logs.Dispose(); }
+        }
     }
 }

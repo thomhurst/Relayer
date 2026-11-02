@@ -23,6 +23,8 @@ foreach (var scenario in Enum.GetValues<TransportConformanceCase>())
 
 `NativeDelivery`, `NativeBinding` and `BrokerFixture` above are your adapter's types. Prefer a separate parameterized test for each enum value. Translate `result.Skipped` into your framework's skip mechanism, preserving `SkipReason`; let exceptions fail the test. A broker connection failure or missing tracing is a failure, never a capability skip.
 
+Scenario failures identify the case and active phase, such as `send 2`, `receive completion` or `broker reconnect`, and retain the original exception as the inner exception. Transport shutdown receives a separate ten-second cancellation budget even when the scenario deadline or caller token has expired. If shutdown or fixture disposal also fails, an `AggregateException` retains both the scenario failure and cleanup failures. Fixture disposal must still release its owned resources; the shutdown budget does not impose a disposal deadline.
+
 ## Fixture responsibilities
 
 - Provision an empty, isolated endpoint with capacity for at least 32 small messages. Supply its destination, CloudEvents `HeaderNames`, expected OpenTelemetry `messaging.system` and native completion operation name.
