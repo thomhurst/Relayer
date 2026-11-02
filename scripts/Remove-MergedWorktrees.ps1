@@ -52,6 +52,13 @@
 #   still uses it, under a temporary Redis lease. Any other entry is removed once its
 #   newest write is older than -EvidenceRetentionDays (default 7).
 #
+# DOCKER:
+#   Docker data is not tied to a worktree, so the sweep cleans it separately
+#   (DockerCleanup.ps1): anonymous volumes that no container references, once older than
+#   -DockerVolumeGraceHours (default 1), and stopped `relayer-*` containers idle longer than
+#   -DockerContainerRetentionHours (default 24). Named volumes and the agent-lock Redis
+#   container are never removed. Skipped with a warning when Docker is unavailable.
+#
 # Guards (never delete work):
 #   - skip the main checkout and anything inside it (.claude/worktrees is harness-managed)
 #   - skip locked worktrees (an agent session may still own them)
@@ -71,6 +78,7 @@
 # call per unmatched leftover — a set that shrinks to near-zero after the first run).
 #
 # Usage:  pwsh scripts/Remove-MergedWorktrees.ps1 [-Repo owner/name] [-WhatIf] [-StaleDays n] [-EvidenceRetentionDays n]
+#                                                  [-DockerVolumeGraceHours n] [-DockerContainerRetentionHours n] [-SkipDocker]
 # Known ignored workflow output is disposable, like build artifacts.
 # -WhatIf reports the same dirty-file blockers as a real sweep.
 # Exit:   0 always (a sweep failure must not break the loop; problems are logged)
@@ -85,11 +93,20 @@ param(
     [int]$StaleDays = 0,
     # Remove agent evidence entries whose newest file is older than this many days.
     [ValidateRange(1, 3650)]
-    [int]$EvidenceRetentionDays = 7
+    [int]$EvidenceRetentionDays = 7,
+    # Remove unreferenced anonymous Docker volumes older than this many hours.
+    [ValidateRange(0, 87600)]
+    [int]$DockerVolumeGraceHours = 1,
+    # Remove stopped relayer-* containers idle for longer than this many hours.
+    [ValidateRange(0, 87600)]
+    [int]$DockerContainerRetentionHours = 24,
+    # Leave Docker alone (fixture tests that must not touch the machine's daemon).
+    [switch]$SkipDocker
 )
 
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'WorktreeCleanup.ps1')
+. (Join-Path $PSScriptRoot 'DockerCleanup.ps1')
 $repoArgs = @(); if ($Repo) { $repoArgs = @('--repo', $Repo) }
 
 function Warn([string]$m) { [Console]::Error.WriteLine("sweep: $m") }
@@ -330,8 +347,23 @@ try {
 
     $staleRemoved = Remove-StaleAgentEvidence -Root $evidenceRoot -RetentionDays $EvidenceRetentionDays -WhatIf:$WhatIf
 
+    # Leaked Docker data; a Docker failure must not hide the worktree summary.
+    $volumesRemoved = 0
+    $containersRemoved = 0
+    try {
+        if ($SkipDocker) {
+        } elseif (Test-DockerAvailable) {
+            $containersRemoved = Remove-StaleRepositoryContainers -NamePrefix 'relayer-' -ExcludeNames @('relayer-agent-locks-redis') `
+                -MinimumIdle ([TimeSpan]::FromHours($DockerContainerRetentionHours)) -WhatIf:$WhatIf
+            $volumesRemoved = Remove-DanglingAnonymousVolumes -MinimumAge ([TimeSpan]::FromHours($DockerVolumeGraceHours)) -WhatIf:$WhatIf
+        } else {
+            Warn 'Docker is not available -- skipping Docker cleanup this round'
+        }
+    }
+    catch { Warn "Docker cleanup failed (ignored): $_" }
+
     if (-not $WhatIf) { git -C $mainRepo worktree prune }
-    Write-Host "sweep: removed $removed merged worktree(s), preserved $orphansPreserved orphaned dir(s), finished $pendingRemoved pending removal(s), removed $finishedRemoved finished and $staleRemoved stale evidence entr(ies)."
+    Write-Host "sweep: removed $removed merged worktree(s), preserved $orphansPreserved orphaned dir(s), finished $pendingRemoved pending removal(s), removed $finishedRemoved finished and $staleRemoved stale evidence entr(ies), $containersRemoved stale container(s) and $volumesRemoved dangling volume(s)."
 }
 catch {
     Warn "unexpected sweep error (ignored, loop continues): $_"

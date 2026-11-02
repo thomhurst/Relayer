@@ -47,7 +47,7 @@ internal sealed class PostgreSqlFixture : IAsyncDisposable
         catch (Exception exception)
         {
             exception.Data["DockerContainerName"] = _name;
-            Console.Error.WriteLine($"PostgreSQL fixture startup failed. After Docker recovers, clean up with: docker rm --force {_name}");
+            Console.Error.WriteLine($"PostgreSQL fixture startup failed. After Docker recovers, clean up with: docker rm --force --volumes {_name}");
             throw;
         }
     }
@@ -58,12 +58,12 @@ internal sealed class PostgreSqlFixture : IAsyncDisposable
         _startupAttempted = false;
         try
         {
-            await _docker(["rm", "--force", _name]);
+            await _docker(["rm", "--force", "--volumes", _name]);
         }
         catch (Exception exception)
         {
             var failure = new InvalidOperationException(
-                $"PostgreSQL fixture cleanup failed. After Docker recovers, run: docker rm --force {_name}", exception);
+                $"PostgreSQL fixture cleanup failed. After Docker recovers, run: docker rm --force --volumes {_name}", exception);
             // Throwing here would replace an exception unwinding through await using.
             _reportCleanupFailure(failure);
         }
