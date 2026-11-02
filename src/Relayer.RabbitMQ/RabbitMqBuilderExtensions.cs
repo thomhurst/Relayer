@@ -1,14 +1,18 @@
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Options;
+using RabbitMQ.Client;
 using Relayer.Transports;
 
 namespace Relayer.RabbitMQ;
 
-/// <summary>Registers native RabbitMQ connection and topology management.</summary>
+/// <summary>Registers native RabbitMQ connections, topology and confirmed outgoing sends.</summary>
 public static class RabbitMqBuilderExtensions
 {
-    /// <summary>Registers a named RabbitMQ connection. Send and receive execution remain planned.</summary>
+    /// <summary>Configures native basic properties for one send. The object is borrowed until send completion.</summary>
+    public static SendOptions RabbitMQ(this SendOptions options, Action<BasicProperties> configure) => options.ConfigureNative(configure);
+
+    /// <summary>Registers a named RabbitMQ connection. Receive execution remains planned.</summary>
     public static IRelayerBuilder RabbitMQ(this IRelayerBuilder builder, string name,
         Action<TransportBuilder<RabbitMqTransportOptions, RabbitMqRouteOptions, RabbitMqConsumerOptions>> configure)
     {
@@ -23,17 +27,18 @@ public static class RabbitMqBuilderExtensions
         builder.Services.AddSingleton<ITransport>(provider =>
         {
             var definition = provider.GetRequiredService<RelayerConfiguration>().Transports.Single(item => item.Name == name);
-            if (definition.Routes.Count != 0 || definition.Consumers.Count != 0)
-                throw new NotSupportedException($"RabbitMQ transport '{name}': send and receive execution are not implemented yet. This registration manages native connections and topology only.");
+            if (definition.Consumers.Count != 0)
+                throw new NotSupportedException($"RabbitMQ transport '{name}': receive execution is not implemented yet.");
             return new RabbitMqNativeTransport(name,
-                provider.GetRequiredService<IOptionsMonitor<RabbitMqTransportOptions>>().Get(name));
+                provider.GetRequiredService<IOptionsMonitor<RabbitMqTransportOptions>>().Get(name),
+                definition.Routes.Select(route => route.Destination), provider.GetRequiredService<MessageTracing>(), provider.GetRequiredService<RelayerInstrumentation>());
         });
         builder.Services.AddSingleton<IHostedService>(provider => new RabbitMqHostedService(provider, name));
         return builder;
     }
 }
 
-/// <summary>Reserved for native RabbitMQ send composition.</summary>
+/// <summary>RabbitMQ route configuration. Destinations select the native exchange and routing key.</summary>
 public sealed class RabbitMqRouteOptions;
 
 /// <summary>Reserved for native RabbitMQ receive composition.</summary>

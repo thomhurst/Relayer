@@ -3,7 +3,7 @@ using Relayer.Transports;
 
 namespace Relayer.RabbitMQ;
 
-internal sealed class RabbitMqNativeTransport : ITransport
+internal sealed partial class RabbitMqNativeTransport : ITransport
 {
     private readonly ConnectionFactory _factory;
     private readonly RabbitMqTopology _topology;
@@ -12,17 +12,16 @@ internal sealed class RabbitMqNativeTransport : ITransport
     private IConnection? _connection;
     private bool _disposed;
 
-    internal RabbitMqNativeTransport(string name, RabbitMqTransportOptions options)
-    {
-        Name = name;
-        ArgumentNullException.ThrowIfNull(options.ConnectionFactory);
-        _factory = options.ConnectionFactory;
-        _topology = new(options);
-    }
-
     public string Name { get; }
 
-    public TransportCapabilities GetCapabilities(string endpoint) => RabbitMqTransport.GetCapabilities(endpoint);
+    public TransportCapabilities GetCapabilities(string endpoint)
+    {
+        if (_endpoints.Count == 0) return RabbitMqTransport.GetCapabilities(endpoint);
+        var destination = Endpoint(endpoint);
+        if (!_initialized && _options.DelayedExchanges.ContainsKey(destination.Exchange))
+            throw new InvalidOperationException("RabbitMQ delayed exchange capabilities are not initialized. Start the application host before resolving send routes.");
+        return destination.Capabilities;
+    }
 
     public async ValueTask<TopologyReport> ApplyTopologyAsync(TopologyMode mode, CancellationToken cancellationToken)
     {
@@ -45,6 +44,23 @@ internal sealed class RabbitMqNativeTransport : ITransport
         {
             ObjectDisposedException.ThrowIf(_disposed, this);
             _connection ??= await _factory.CreateConnectionAsync(cancellationToken).ConfigureAwait(false);
+            if (_publishers is not null || _endpoints.Count == 0) return;
+            var publishers = System.Threading.Channels.Channel.CreateBounded<RabbitMqPublisher>(
+                new System.Threading.Channels.BoundedChannelOptions(_publisherCount)
+                { AllowSynchronousContinuations = false });
+            try
+            {
+                for (var i = 0; i < _publisherCount; i++)
+                    publishers.Writer.TryWrite(new(await _connection.CreateChannelAsync(
+                        _publisherChannelOptions, cancellationToken).ConfigureAwait(false)));
+                Volatile.Write(ref _publishers, publishers);
+            }
+            catch
+            {
+                while (publishers.Reader.TryRead(out var publisher))
+                    await publisher.Channel.DisposeAsync().ConfigureAwait(false);
+                throw;
+            }
         }
         finally { _lifecycle.Release(); }
     }
@@ -52,7 +68,7 @@ internal sealed class RabbitMqNativeTransport : ITransport
     public async Task StopAsync(CancellationToken cancellationToken)
     {
         await _lifecycle.WaitAsync(cancellationToken).ConfigureAwait(false);
-        try { await CloseAsync().ConfigureAwait(false); }
+        try { await CloseAsync(cancellationToken).ConfigureAwait(false); }
         finally { _lifecycle.Release(); }
     }
 
@@ -68,16 +84,27 @@ internal sealed class RabbitMqNativeTransport : ITransport
         finally { _lifecycle.Release(); }
     }
 
-    private async ValueTask CloseAsync()
+    private async ValueTask CloseAsync(CancellationToken cancellationToken = default)
     {
+        var publishers = Interlocked.Exchange(ref _publishers, null);
         var connection = _connection;
-        _connection = null;
-        if (connection is not null) await connection.DisposeAsync().ConfigureAwait(false);
+        try
+        {
+            if (publishers is not null)
+            {
+                // Stop admission first. Drain borrowed channels before disposing the connection.
+                for (var i = 0; i < _publisherCount; i++)
+                {
+                    var publisher = await publishers.Reader.ReadAsync(cancellationToken).ConfigureAwait(false);
+                    await publisher.Channel.DisposeAsync().ConfigureAwait(false);
+                }
+            }
+        }
+        finally
+        {
+            publishers?.Writer.TryComplete();
+            _connection = null;
+            if (connection is not null) await connection.DisposeAsync().ConfigureAwait(false);
+        }
     }
-
-    public ValueTask SendAsync(OutgoingMessage message, CancellationToken cancellationToken) =>
-        throw new NotSupportedException("RabbitMQ send execution is not implemented yet.");
-
-    public ValueTask SendBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken) =>
-        throw new NotSupportedException("RabbitMQ send execution is not implemented yet.");
 }

@@ -5,6 +5,11 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <InternalsVisibleTo Include="Relayer.Tests" />
+    <InternalsVisibleTo Include="Relayer.Benchmarks" />
+  </ItemGroup>
+
+  <ItemGroup>
     <PackageReference Include="RabbitMQ.Client" />
   </ItemGroup>
 

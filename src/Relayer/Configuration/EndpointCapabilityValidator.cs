@@ -33,7 +33,7 @@ internal sealed class EndpointCapabilityValidator
         }
     }
 
-    internal void Validate(TransportDefinition definition)
+    internal void Validate(TransportDefinition definition, bool deferInitialization = false)
     {
         // Configuration-only applications can inspect declarations without installing native adapters.
         if (!_hasRuntimeTransports || string.IsNullOrWhiteSpace(definition.Name)) return;
@@ -43,6 +43,7 @@ internal sealed class EndpointCapabilityValidator
             return;
         }
         if (transport is null) return; // Duplicate names have already been reported; neither adapter is authoritative.
+        if (deferInitialization && transport is ITransportCapabilityInitializer) return;
 
         foreach (var route in definition.Routes)
         {

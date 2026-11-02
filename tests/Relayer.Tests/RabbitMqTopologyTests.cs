@@ -182,9 +182,9 @@ public class RabbitMqTopologyTests
         }
     }
 
-    private sealed class Broker(IContainer container) : IAsyncDisposable
+    internal sealed class Broker(IContainer container) : IAsyncDisposable
     {
-        internal static async Task<Broker> StartAsync(CancellationToken token)
+        internal static async Task<Broker> StartAsync(CancellationToken token, bool delayedPlugin = false)
         {
             var builder = new ContainerBuilder("rabbitmq:4.1.4-alpine")
                 .WithEnvironment("RABBITMQ_DEFAULT_USER", "relayer")
@@ -192,6 +192,13 @@ public class RabbitMqTopologyTests
                 .WithEnvironment("RABBITMQ_SERVER_ADDITIONAL_ERL_ARGS", "+S 2:2 +A 2")
                 .WithPortBinding(5672, true)
                 .WithWaitStrategy(Wait.ForUnixContainer().UntilMessageIsLogged("Server startup complete"));
+            if (delayedPlugin)
+            {
+                using var http = new HttpClient();
+                var plugin = await http.GetByteArrayAsync("https://github.com/rabbitmq/rabbitmq-delayed-message-exchange/releases/download/v4.1.0/rabbitmq_delayed_message_exchange-4.1.0.ez", token);
+                builder = builder.WithResourceMapping(plugin, "/opt/rabbitmq/plugins/rabbitmq_delayed_message_exchange-4.1.0.ez")
+                    .WithResourceMapping("[rabbitmq_delayed_message_exchange]."u8.ToArray(), "/etc/rabbitmq/enabled_plugins");
+            }
             if (OperatingSystem.IsLinux()) builder = builder.WithPortBinding("20000-29999", "5672");
             var container = builder.Build();
             try { await container.StartAsync(token); return new(container); }
