@@ -88,6 +88,11 @@ public class KafkaHealthTests
         var control = new KafkaHealthControl();
         var builder = Host.CreateApplicationBuilder();
         builder.Logging.ClearProviders();
+        builder.Logging.SetMinimumLevel(LogLevel.Debug).AddSimpleConsole(options =>
+        {
+            options.SingleLine = true;
+            options.TimestampFormat = "HH:mm:ss.fff ";
+        });
         builder.Services.AddSingleton<TimeProvider>(clock);
         builder.Services.AddSingleton(control);
         var adminConfigured = 0;
@@ -175,7 +180,8 @@ public class KafkaHealthTests
         await Assert.That(disconnected.Status).IsEqualTo(HealthStatus.Unhealthy);
         await Assert.That(disconnected.Entries["relayer.transport"].Exception).IsNotNull();
         await fixture.ReconnectAsync(token);
-        await Assert.That((await checks.CheckHealthAsync(check => check.Name == "relayer.transport", token)).Status).IsEqualTo(HealthStatus.Healthy);
+        var recovered = await checks.CheckHealthAsync(check => check.Name == "relayer.transport", token);
+        await Assert.That(recovered.Status).IsEqualTo(HealthStatus.Healthy);
         await Assert.That(adminConfigured).IsEqualTo(1);
     }
 

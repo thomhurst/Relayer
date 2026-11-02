@@ -118,7 +118,14 @@ internal sealed class KafkaFixture : ITransportConformanceFixture<KafkaDelivery>
     }
     public ValueTask<ConformanceDeadLetter> ReadDeadLetterAsync(CancellationToken cancellationToken) => throw new NotSupportedException();
     public Task DisconnectAsync(CancellationToken cancellationToken) => _broker.StopAsync(cancellationToken);
-    public Task ReconnectAsync(CancellationToken cancellationToken) => _broker.StartAsync(cancellationToken);
+    public async Task ReconnectAsync(CancellationToken cancellationToken)
+    {
+        await _broker.StartAsync(cancellationToken);
+        // Container startup can finish before Kafka accepts protocol requests after a restart.
+        // Synchronize with live native discovery, without changing the conformance deadline.
+        await using var admin = new AdminClientBuilder().WithBootstrapServers(Bootstrap).WithLoggerFactory(_logs).Build();
+        await admin.DescribeClusterAsync(new DescribeClusterOptions(), cancellationToken);
+    }
     public async ValueTask DisposeAsync()
     {
         try { await _transport.DisposeAsync(); }
