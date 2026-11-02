@@ -16,6 +16,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\Relayer.Outbox.PostgreSql\Relayer.Outbox.PostgreSql.csproj" />
+    <ProjectReference Include="../../src/Relayer.Outbox.MongoDB/Relayer.Outbox.MongoDB.csproj" />
     <ProjectReference Include="..\..\src\Relayer\Relayer.csproj" />
     <ProjectReference Include="..\..\src\Relayer.Outbox.EntityFrameworkCore\Relayer.Outbox.EntityFrameworkCore.csproj" />
     <ProjectReference Include="../../src/Relayer.Kafka/Relayer.Kafka.csproj" />

@@ -40,6 +40,10 @@ Relayer is in early development. Track progress in [GitHub issues](https://githu
 
 ## Phases
 
+The [MongoDB persistence foundation](reference/mongodb-outbox.md) is under development. Native transaction
+enlistment and read/claim operations have replica-set coverage, but upstream driver AOT analysis diagnostics block
+release. MongoDB inbox, dispatch, recovery and retention remain planned.
+
 | Phase | Scope | Exit criteria |
 |---|---|---|
 | 0 | Core abstractions, pipeline, source generator and analyzers, in-memory transport, test harness, telemetry | Handler round trip under Native AOT; benchmarks in CI |

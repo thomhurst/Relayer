@@ -138,6 +138,28 @@ jobs:
           dotnet publish tests/Relayer.AotSmoke -c Release -r linux-x64 -o .artifacts/aot-smoke
           .artifacts/aot-smoke/Relayer.AotSmoke
 
+      # This remains a strict gate. MongoDB.Driver's upstream analysis diagnostics currently
+      # block the MongoDB provider draft; do not suppress them to promote that work.
+      - name: MongoDB Native AOT persistence smoke test
+        if: steps.solution.outputs.present == 'true'
+        run: |
+          dotnet publish tests/Relayer.Outbox.MongoDB.AotSmoke -c Release -r linux-x64 -o .artifacts/mongodb-aot-smoke
+          mongo_container=$(docker run --detach --rm --publish 127.0.0.1::27017 mongo:8.0.16 --replSet rs0 --bind_ip_all)
+          trap 'docker rm --force "$mongo_container"' EXIT
+          for attempt in {1..60}; do
+            if docker exec "$mongo_container" mongosh --quiet --eval 'db.adminCommand({ping:1})' >/dev/null 2>&1; then break; fi
+            if [ "$attempt" -eq 60 ]; then docker logs "$mongo_container"; exit 1; fi
+            sleep 1
+          done
+          docker exec "$mongo_container" mongosh --quiet --eval 'rs.initiate({_id:"rs0",members:[{_id:0,host:"localhost:27017"}]})'
+          for attempt in {1..60}; do
+            if docker exec "$mongo_container" mongosh --quiet --eval 'if (!db.hello().isWritablePrimary) quit(1)' >/dev/null 2>&1; then break; fi
+            if [ "$attempt" -eq 60 ]; then docker logs "$mongo_container"; exit 1; fi
+            sleep 1
+          done
+          mongo_port=$(docker port "$mongo_container" 27017/tcp | sed 's/.*://')
+          .artifacts/mongodb-aot-smoke/Relayer.Outbox.MongoDB.AotSmoke "mongodb://127.0.0.1:$mongo_port/?directConnection=true&serverSelectionTimeoutMS=10000"
+
   # Tests for the issue/PR loop's merge gate and the Claude review helper. They run here, not in
   # their own workflow, so `CI Passed` (and therefore auto-merge) waits for them.
   agent-tooling:

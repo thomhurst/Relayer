@@ -13,6 +13,8 @@ and [EF Core transaction enlistment for PostgreSQL](ef-core-outbox.md).
 [Inbox deduplication](ef-core-inbox.md) is implemented
 through the EF Core consumer boundary, separately from the read/claim store contract.
 
+The [MongoDB persistence foundation](mongodb-outbox.md) is under development, with a native-driver AOT release blocker.
+
 ## Register a named store
 
 Use normal keyed DI with an explicit, case-sensitive name. This example assumes an application-supplied
