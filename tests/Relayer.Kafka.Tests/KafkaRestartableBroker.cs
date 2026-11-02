@@ -67,11 +67,11 @@ internal sealed class KafkaRestartableBroker : IAsyncDisposable
         await WaitAsync("test -f /tmp/relayer-kafka-stopped", token);
     }
 
-    internal async Task RestartAsync(CancellationToken token)
+    internal async Task RestartAsync(CancellationToken token, Action? onWaiting = null)
     {
         await ExecuteAsync("touch /tmp/relayer-kafka-start", token);
         // A fresh log prevents stale readiness. Kafka reports RUNNING before its socket acceptors start.
-        await WaitAsync("test ! -f /tmp/relayer-kafka-start && test -f /tmp/relayer-kafka.pid && grep -q 'Kafka Server started' /tmp/relayer-kafka.log", token);
+        await WaitAsync("test ! -f /tmp/relayer-kafka-start && test -f /tmp/relayer-kafka.pid && grep -q 'Kafka Server started' /tmp/relayer-kafka.log", token, onWaiting);
     }
 
     private async Task ExecuteAsync(string command, CancellationToken token)
@@ -81,10 +81,11 @@ internal sealed class KafkaRestartableBroker : IAsyncDisposable
             throw new InvalidOperationException($"Kafka lifecycle command failed ({result.ExitCode}): {result.Stderr}");
     }
 
-    private async Task WaitAsync(string condition, CancellationToken token)
+    private async Task WaitAsync(string condition, CancellationToken token, Action? onWaiting = null)
     {
         try
         {
+            onWaiting?.Invoke();
             // Keep the 100 ms readiness checks inside one exec. Launching a Docker exec for
             // every probe competes with concurrent broker JVMs and their lifecycle commands.
             await ExecuteAsync($"until {condition}; do sleep 0.1; done", token);
