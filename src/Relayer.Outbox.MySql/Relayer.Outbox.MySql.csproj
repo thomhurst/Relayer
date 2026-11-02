@@ -1,6 +1,6 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
-    <Description>MySQL durable outbox reads and fenced claims for Relayer.</Description>
+    <Description>MySQL transactional outbox enqueue, durable reads and fenced claims for Relayer.</Description>
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="MySqlConnector" />

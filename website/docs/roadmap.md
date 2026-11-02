@@ -20,7 +20,7 @@ Relayer is in early development. Track progress in [GitHub issues](https://githu
 - Provider-owned tracing and direct single/batch send tracing, integrated with the in-memory adapter's delivery and native settlement spans. PostgreSQL outbox enqueue, dispatch and consumer creation links are implemented.
 - The [durable outbox store contract](reference/outbox-stores.md), with bounded reads, fenced claims and an optional keyed health adapter, plus the [PostgreSQL read/claim implementation](reference/postgres-store.md).
 - [SQL Server durable store primitives](reference/sqlserver-store.md): explicit schema, UUIDv7-ordered reads, atomic fenced mutations and eligible counts. SQL Server ADO.NET/Dapper transactional enqueue is implemented; EF Core, inbox, workers and maintenance remain planned.
-- [MySQL durable read/claim primitives](reference/mysql-store.md), with InnoDB schema SQL, network-order UUIDs and the shared store contract suite. MySQL enqueue, inbox and worker integrations remain planned.
+- [MySQL durable store and transactional enqueue](reference/mysql-store.md), with InnoDB schema SQL, network-order UUIDs, the shared store contract suite and ADO.NET/Dapper transaction ownership. Inbox and worker integrations remain planned.
 - [PostgreSQL schema scripts and database CLI](reference/postgres-schema.md), including an application-owned EF Core migration path.
 - [EF Core transaction enlistment for PostgreSQL](reference/ef-core-outbox.md): implicit saves, explicit transactions, atomic rollback, multiple contexts and one batched insert per transaction.
 - [Ordered PostgreSQL dispatch and lane leases](reference/ordered-dispatch.md).
