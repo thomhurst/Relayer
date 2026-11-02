@@ -62,7 +62,7 @@ internal sealed class KafkaFixture : ITransportConformanceFixture<KafkaDelivery>
         var builder = new KafkaBuilder("apache/kafka:4.0.2").WithVendor(KafkaVendor.ApacheSoftwareFoundation)
             .WithPortBinding(clientPort, 9092);
         if (OperatingSystem.IsLinux()) builder = builder.WithPortBinding("20000-29999", "9093");
-        var broker = builder.Build();
+        var broker = builder.AfterStartupCopy().Build();
         KafkaFixture? fixture = null;
         try
         {
