@@ -344,6 +344,66 @@ public class PartitionSchedulerTests
     }
 
     [Test]
+    [Arguments(1, 0)]
+    [Arguments(1, 5)]
+    [Arguments(2, 0)]
+    [Arguments(2, 5)]
+    public async Task Shutdown_applies_to_every_assignment_when_native_pause_throws(int failingPartition, int timeoutSeconds)
+    {
+        var clock = new InMemoryTestClock();
+        var fixture = new Fixture(concurrency: 1, clock: clock);
+        var first = fixture.Scheduler.Assign(1);
+        var second = fixture.Scheduler.Assign(2);
+        var firstActive = new Delivery(1);
+        var secondActive = new Delivery(2);
+        var firstQueued = new Delivery(3);
+        var secondQueued = new Delivery(4);
+        fixture.Enqueue(first, firstActive, "first active");
+        fixture.Enqueue(second, secondActive, "second active");
+        fixture.Enqueue(first, firstQueued, "first queued");
+        fixture.Enqueue(second, secondQueued, "second queued");
+        fixture.Scheduler.Pump();
+        fixture.Source.ThrowPausePartition = failingPartition;
+
+        await Assert.That(() => fixture.Scheduler.Stop(TimeSpan.FromSeconds(timeoutSeconds)))
+            .Throws<ApplicationException>();
+        fixture.Source.ThrowPausePartition = null;
+        fixture.Scheduler.Pump();
+        if (timeoutSeconds > 0)
+        {
+            await Assert.That(fixture.Source.Pauses).IsEquivalentTo(new[] { 1, 2 });
+            clock.Advance(TimeSpan.FromSeconds(timeoutSeconds) - TimeSpan.FromTicks(1));
+            fixture.Scheduler.Pump();
+            await Assert.That(fixture.Scheduler.IsDraining).IsTrue();
+            await Assert.That(firstActive.Cancellation.IsCancellationRequested).IsFalse();
+            await Assert.That(secondActive.Cancellation.IsCancellationRequested).IsFalse();
+            clock.Advance(TimeSpan.FromTicks(1));
+            fixture.Scheduler.Pump();
+        }
+
+        await Assert.That(fixture.Scheduler.IsDraining).IsFalse();
+        await Assert.That(firstQueued.Started).IsFalse();
+        await Assert.That(secondQueued.Started).IsFalse();
+        await Assert.That(firstQueued.Releases).IsEqualTo(1);
+        await Assert.That(secondQueued.Releases).IsEqualTo(1);
+        await Assert.That(firstActive.Cancellation.IsCancellationRequested).IsTrue();
+        await Assert.That(secondActive.Cancellation.IsCancellationRequested).IsTrue();
+        await Assert.That(firstActive.Releases + secondActive.Releases).IsEqualTo(0);
+        await Assert.That(fixture.Scheduler.ActiveCount).IsEqualTo(2);
+        await Assert.That(fixture.Scheduler.BufferedCount).IsEqualTo(2);
+        firstActive.Complete();
+        secondActive.Complete();
+        fixture.Scheduler.Pump();
+        fixture.Scheduler.Pump();
+        await Assert.That(firstActive.Releases).IsEqualTo(1);
+        await Assert.That(secondActive.Releases).IsEqualTo(1);
+        await Assert.That(fixture.Scheduler.ActiveCount).IsEqualTo(0);
+        await Assert.That(fixture.Scheduler.BufferedCount).IsEqualTo(0);
+        await Assert.That(fixture.Source.Commits.Count).IsEqualTo(0);
+        await Assert.That(fixture.Source.Resumes).IsEquivalentTo(new[] { 1, 2 });
+    }
+
+    [Test]
     public async Task Throwing_checkpoint_capture_retries_before_releasing_native_storage()
     {
         var fixture = new Fixture();
@@ -644,12 +704,17 @@ public class PartitionSchedulerTests
         internal readonly List<int> Pauses = [];
         internal readonly List<int> Resumes = [];
         internal bool ThrowCommit;
+        internal int? ThrowPausePartition;
         public void Commit(int partition, string position)
         {
             if (ThrowCommit) throw new ApplicationException("native checkpoint capture failed");
             Commits.Add((partition, position));
         }
-        public void Pause(int partition) => Pauses.Add(partition);
+        public void Pause(int partition)
+        {
+            if (ThrowPausePartition == partition) throw new ApplicationException("native pause failed");
+            Pauses.Add(partition);
+        }
         public void Resume(int partition) => Resumes.Add(partition);
     }
 
