@@ -18,6 +18,7 @@ using Relayer.Serialization;
 using Relayer.Transports;
 
 PartitionCompletionSmoke.Run();
+PartitionSchedulerSmoke.Run();
 await KafkaSchemaSmoke.RunAsync();
 
 var serviceBusMessage = ServiceBusModelFactory.ServiceBusReceivedMessage(new BinaryData(new byte[] { 42 }),
