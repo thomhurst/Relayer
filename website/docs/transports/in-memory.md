@@ -62,4 +62,6 @@ Stop first stops fetching and drains active handlers. Cancelling stop cancels ac
 
 Inspect owned dead-letter snapshots with `transport.DeadLetters(endpoint)` and native group progress with `GetCommittedPosition`. Copied body, headers and UTF-8 ordering keys outlive the borrowed send buffers; completed messages return their storage to a bounded pool. Size `MessagePoolCapacity` for expected retained traffic and warm representative body/header sizes when measuring steady-state allocation.
 
+For populated-queue allocation measurements, use the [64-message batch and channel controls](../contributing/performance.md#populated-queues-and-asynchronous-coordination). The native receive loop no longer adds a pooled async wrapper around channel reads. Callback continuations, concurrent channel waits, serialization and DI can still allocate; inclusive round-trip totals do not measure native message storage alone.
+
 The native adapter preserves `traceparent` and `tracestate` unchanged. Its system identifier is `InMemoryTransport.MessagingSystem` (`relayer.inmemory`). Queue and partitioned log modes pass the reusable [transport conformance suite](conformance.md), including shared send/process/settlement tracing and creation-context preservation.

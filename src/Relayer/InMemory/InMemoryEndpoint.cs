@@ -256,7 +256,11 @@ internal sealed class InMemoryEndpoint
                 if (state.Pending is null)
                 {
                     state.Pending = await state.Reader.ReadAsync(stop).ConfigureAwait(false);
-                    if (state.Pending is null) continue;
+                    if (state.Reader.IsWakeup(state.Pending, stop))
+                    {
+                        state.Pending = null;
+                        continue;
+                    }
                     state.Pending.Position = state.NextPosition++;
                     state.Pending.References = groups.Length;
                     state.NextGroup = 0;
@@ -365,7 +369,11 @@ internal sealed class InMemoryReceiver(InMemoryEndpoint endpoint, InMemoryReadSt
                 if (_pending is null)
                 {
                     _pending = await reader.ReadAsync(stop).ConfigureAwait(false);
-                    if (_pending is null) continue;
+                    if (reader.IsWakeup(_pending, stop))
+                    {
+                        _pending = null;
+                        continue;
+                    }
                     Attempt = _pending.QueueAttempt;
                 }
                 if (stop.IsCancellationRequested) break;
@@ -447,13 +455,17 @@ internal sealed class InMemoryReadState(Channel<InMemoryMessage> channel, InMemo
         if (Interlocked.Exchange(ref _wakeWritten, 1) == 0) channel.Writer.TryWrite(wakeup);
     }
 
-    [System.Runtime.CompilerServices.AsyncMethodBuilder(typeof(System.Runtime.CompilerServices.PoolingAsyncValueTaskMethodBuilder<>))]
-    internal async ValueTask<InMemoryMessage?> ReadAsync(CancellationToken stop)
+    internal ValueTask<InMemoryMessage> ReadAsync(CancellationToken stop)
     {
         stop.ThrowIfCancellationRequested();
-        var message = await channel.Reader.ReadAsync().ConfigureAwait(false);
-        if (!message.IsWakeup) return message;
+        // Return the channel's source directly. A pooled async wrapper can still allocate when workers migrate.
+        return channel.Reader.ReadAsync();
+    }
+
+    internal bool IsWakeup(InMemoryMessage message, CancellationToken stop)
+    {
+        if (!message.IsWakeup) return false;
         if (shared && stop.IsCancellationRequested) channel.Writer.TryWrite(wakeup);
-        return null;
+        return true;
     }
 }
