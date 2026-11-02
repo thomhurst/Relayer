@@ -230,6 +230,11 @@ public class KafkaReceiveTests
     {
         var builder = Host.CreateApplicationBuilder();
         builder.Logging.ClearProviders();
+        builder.Logging.SetMinimumLevel(LogLevel.Debug).AddSimpleConsole(options =>
+        {
+            options.SingleLine = true;
+            options.TimestampFormat = "HH:mm:ss.fff ";
+        });
         builder.Services.Configure<HostOptions>(options => options.BackgroundServiceExceptionBehavior = BackgroundServiceExceptionBehavior.Ignore);
         builder.Services.AddSingleton(control);
         builder.Services.AddRelayer(relayer =>
