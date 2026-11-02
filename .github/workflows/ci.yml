@@ -147,6 +147,7 @@ jobs:
           ./scripts/Test-AssertPrGreenReviewThreads.ps1
           ./scripts/Test-AssertPrGreenChecks.ps1
           ./scripts/Test-AutoMergeProtection.ps1
+          ./scripts/Test-GateScriptSource.ps1
           ./scripts/Test-IssuePrLoop.ps1
 
   # Builds the documentation site. The build fails on broken links and anchors, so a PR that

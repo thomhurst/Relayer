@@ -1,6 +1,8 @@
 # Enable-AutoMerge.ps1
 # Arms GitHub native auto-merge (squash) for PR #<N>, pinned to the reviewed head.
 #
+#   First, re-runs itself from origin/<base> when the local scripts differ from it
+#   (GateScriptSource.ps1), so a stale shared checkout cannot apply outdated gate rules.
 #   0. with -MarkReady, promotes the approved draft (`gh pr ready`), undoes the promotion if
 #      the head moved, and waits for the ready CI run to register
 #      (first verifies an active, non-bypassable CI Passed ruleset on the target branch)
@@ -35,6 +37,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'AutoMergeProtection.ps1')
+. (Join-Path $PSScriptRoot 'GateScriptSource.ps1')
 
 function Fail([string]$reason) {
     [Console]::Error.WriteLine("NOT ARMED #${Pr} -- $reason")
@@ -53,6 +56,13 @@ $target = gh pr view $Pr @repoArgs --json baseRefName 2>$null | ConvertFrom-Json
 if ($LASTEXITCODE -ne 0 -or -not $target.baseRefName) { Fail 'could not read the PR target branch' }
 try { Assert-AutoMergeProtection -Repo $targetRepo -Branch $target.baseRefName }
 catch { Fail $_.Exception.Message }
+
+# Arm with the base branch's rules, not a stale or PR-modified local copy of these scripts.
+$selfArgs = @('-Pr', $Pr, '-Repo', $targetRepo)
+if ($MarkReady) { $selfArgs += '-MarkReady' }
+try { $pinnedExit = Invoke-GateFromBase -ScriptPath $PSCommandPath -Branch $target.baseRefName -Arguments $selfArgs }
+catch { Fail $_.Exception.Message }
+if ($null -ne $pinnedExit) { exit $pinnedExit }
 
 if ($MarkReady) {
     $before = gh pr view $Pr @repoArgs --json isDraft,headRefOid 2>$null | ConvertFrom-Json

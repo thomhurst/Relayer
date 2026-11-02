@@ -39,6 +39,7 @@ $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'AssertPrGreenChecks.ps1')
 . (Join-Path $PSScriptRoot 'AssertPrGreenReviewHeuristics.ps1')
 . (Join-Path $PSScriptRoot 'AssertPrGreenReviewThreads.ps1')
+. (Join-Path $PSScriptRoot 'GateScriptSource.ps1')
 
 function Deny([string]$reason) {
     [Console]::Error.WriteLine("DO NOT MERGE #${Pr} -- $reason")
@@ -55,6 +56,15 @@ else {
     if ($LASTEXITCODE -ne 0 -or -not $nwo) { Deny "could not resolve the repository" }
     $owner, $name = $nwo.Trim() -split '/', 2
 }
+
+# Judge the PR by the base branch's rules, not a stale or PR-modified local copy of this gate.
+$base = gh pr view $Pr @repoArgs --json baseRefName --jq '.baseRefName' 2>$null
+if ($LASTEXITCODE -ne 0 -or -not $base) { Deny "could not read the PR target branch" }
+$selfArgs = @('-Pr', $Pr, '-Repo', "$owner/$name")
+if ($ForAutoMerge) { $selfArgs += '-ForAutoMerge' }
+try { $pinnedExit = Invoke-GateFromBase -ScriptPath $PSCommandPath -Branch $base.Trim() -Arguments $selfArgs }
+catch { Deny $_.Exception.Message }
+if ($null -ne $pinnedExit) { exit $pinnedExit }
 
 # Re-fetch fresh — survey output goes stale within seconds.
 $raw = gh pr view $Pr @repoArgs --json number,state,isDraft,headRefOid,mergeable,mergeStateStatus,statusCheckRollup,latestReviews,commits 2>$null

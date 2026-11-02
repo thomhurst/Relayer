@@ -75,10 +75,13 @@ New-Item -ItemType Directory -Path $testRoot -Force | Out-Null
 try {
     Copy-Item (Join-Path $PSScriptRoot 'Enable-AutoMerge.ps1') $testRoot
     Copy-Item (Join-Path $PSScriptRoot 'AutoMergeProtection.ps1') $testRoot
+    Copy-Item (Join-Path $PSScriptRoot 'GateScriptSource.ps1') $testRoot
     Set-Content (Join-Path $testRoot 'Assert-PrGreen.ps1') 'exit 0'
     $runner = @'
 param([string]$Scenario, [switch]$AlreadyReady)
 $ErrorActionPreference = 'Stop'
+# Run the copied wrapper in place; Test-GateScriptSource.ps1 covers the re-run from the base.
+$env:RELAYER_GATE_SCRIPTS_COMMIT = 'pinned-by-test'
 $global:AutoMergeTestState = @{ protectionReads = 0; targetReads = 0; draft = -not $AlreadyReady }
 function gh {
     $global:LASTEXITCODE = 0
