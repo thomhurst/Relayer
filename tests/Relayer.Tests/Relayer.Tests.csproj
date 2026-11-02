@@ -28,4 +28,8 @@
                       OutputItemType="Analyzer" />
   </ItemGroup>
 
+  <ItemGroup>
+    <Compile Include="..\..\tests\Shared\ConcurrentReceiveFixture.cs" Link="Fixtures\ConcurrentReceiveFixture.cs" />
+  </ItemGroup>
+
 </Project>

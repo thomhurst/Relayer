@@ -1,5 +1,6 @@
 using System.Buffers;
 using System.Runtime.CompilerServices;
+using System.Threading.Tasks.Sources;
 
 namespace Relayer;
 
@@ -35,24 +36,10 @@ public sealed class ReceivePipeline<TIncoming, TBinding>
     }
 
     /// <summary>Processes one delivery and releases all native references before returning its disposition.</summary>
-    [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder<>))]
-    public async ValueTask<Disposition> ProcessAsync(TIncoming message, CancellationToken cancellationToken = default)
+    public ValueTask<Disposition> ProcessAsync(TIncoming message, CancellationToken cancellationToken = default)
     {
-        cancellationToken.ThrowIfCancellationRequested();
-        var state = Rent();
-        try
-        {
-            state.Initialize(message);
-            using var context = _consumer.RentContext(state, cancellationToken);
-            context.Features.Set(state.Native);
-            await _consumer.ProcessAsync(context).ConfigureAwait(false);
-            return state.Native.Disposition;
-        }
-        finally
-        {
-            state.Clear();
-            Return(state);
-        }
+        if (cancellationToken.IsCancellationRequested) return ValueTask.FromCanceled<Disposition>(cancellationToken);
+        return Rent().Start(this, message, cancellationToken);
     }
 
     /// <summary>Processes deliveries in input order, writing one disposition per delivery.</summary>
@@ -165,10 +152,128 @@ public sealed class ReceivePipeline<TIncoming, TBinding>
             if (Interlocked.CompareExchange(ref _states[i], state, null) is null) return;
     }
 
-    private sealed class State(ConsumePipeline consumer, HeaderNames names, int poolSlot = -1) : ReceiveMessageState
+    private sealed class State : ReceiveMessageState, IValueTaskSource<Disposition>
     {
+        private readonly ConsumePipeline consumer;
+        private readonly HeaderNames names;
+        private readonly Action _continuation;
+        private ReceivePipeline<TIncoming, TBinding> _owner = null!;
+        private DefaultMessageContext? _context;
+        private ConfiguredValueTaskAwaitable.ConfiguredValueTaskAwaiter _pending;
+        private ManualResetValueTaskSourceCore<Disposition> _completion;
+        private ExecutionContext? _executionContext;
+        private Disposition _result;
+        private Exception? _error;
+        private bool _asynchronous;
+
+        internal State(ConsumePipeline consumer, HeaderNames names, int poolSlot = -1)
+        {
+            this.consumer = consumer;
+            this.names = names;
+            PoolSlot = poolSlot;
+            _continuation = Complete;
+        }
+
+        internal ValueTask<Disposition> Start(ReceivePipeline<TIncoming, TBinding> owner, TIncoming message, CancellationToken cancellationToken)
+        {
+            _owner = owner;
+            var runner = new Runner(this, message, cancellationToken);
+            var builder = AsyncTaskMethodBuilder.Create();
+            builder.Start(ref runner);
+            if (_asynchronous) return new ValueTask<Disposition>(this, _completion.Version);
+            var result = _result;
+            var failure = _error;
+            _result = default;
+            _error = null;
+            _owner = null!;
+            owner.Return(this);
+            return failure is null ? new ValueTask<Disposition>(result) : ValueTask.FromException<Disposition>(failure);
+        }
+
+        private void Begin(TIncoming message, CancellationToken cancellationToken)
+        {
+            _asynchronous = false;
+            try
+            {
+                Initialize(message);
+                _context = consumer.RentContext(this, cancellationToken);
+                _context.Features.Set(Native);
+                _pending = consumer.ProcessAsync(_context).ConfigureAwait(false).GetAwaiter();
+                if (!_pending.IsCompleted)
+                {
+                    _completion.Reset();
+                    _asynchronous = true;
+                    _executionContext = ExecutionContext.Capture();
+                    _pending.UnsafeOnCompleted(_continuation);
+                    return;
+                }
+                _pending.GetResult();
+                _result = Native.Disposition;
+            }
+            catch (Exception error) { _error = error; }
+            Cleanup();
+        }
+
+        private struct Runner(State state, TIncoming message, CancellationToken cancellationToken) : IAsyncStateMachine
+        {
+            public void MoveNext() => state.Begin(message, cancellationToken);
+            public void SetStateMachine(IAsyncStateMachine stateMachine) => throw new NotSupportedException();
+        }
+        private void Complete()
+        {
+            var executionContext = _executionContext;
+            _executionContext = null;
+            if (executionContext is not null)
+                ExecutionContext.Run(executionContext, static state => ((State)state!).CompleteCore(), this);
+            else CompleteCore();
+        }
+
+        private void CompleteCore()
+        {
+            try
+            {
+                _pending.GetResult();
+                _result = Native.Disposition;
+            }
+            catch (Exception error) { _error = error; }
+            Cleanup();
+            var errorResult = _error;
+            _error = null;
+            if (errorResult is null) _completion.SetResult(_result);
+            else _completion.SetException(errorResult);
+        }
+
+        private void Cleanup()
+        {
+            try { _context?.Dispose(); }
+            catch (Exception error) { _error = error; }
+            finally
+            {
+                _context = null;
+                _pending = default;
+                Clear();
+            }
+        }
+
+        public Disposition GetResult(short token)
+        {
+            // Keep continuation storage reserved until its ValueTask is consumed.
+            try { return _completion.GetResult(token); }
+            finally
+            {
+                _completion.Reset();
+                _result = default;
+                var owner = _owner;
+                _owner = null!;
+                owner.Return(this);
+            }
+        }
+        public ValueTaskSourceStatus GetStatus(short token) => _completion.GetStatus(token);
+        public void OnCompleted(Action<object?> continuation, object? state, short token, ValueTaskSourceOnCompletedFlags flags)
+            => _completion.OnCompleted(continuation, state, token, flags);
+
         internal override HeaderNames EnvelopeNames => names;
-        internal int PoolSlot { get; } = poolSlot;
+        internal int PoolSlot { get; }
         private MessageHeaders<TIncoming, TBinding> _headers;
         private WireString _id;
         private string? _messageId;

@@ -17,6 +17,11 @@ using Relayer.Outbox.PostgreSql;
 using Relayer.Serialization;
 using Relayer.Transports;
 
+using (var asynchronousReceive = new Relayer.TestFixtures.ConcurrentReceiveFixture())
+{
+    for (var i = 0; i < 4; i++) asynchronousReceive.Run(Relayer.TestFixtures.ConcurrentReceiveFixture.Mode.Receive);
+}
+Console.WriteLine("Concurrent cross-thread receive passed under Native AOT.");
 PartitionCompletionSmoke.Run();
 PartitionSchedulerSmoke.Run();
 await KafkaSchemaSmoke.RunAsync();

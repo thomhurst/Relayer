@@ -747,6 +747,7 @@ Techniques:
 
 - The middleware pipeline is compiled into a delegate chain once per consumer at startup. Nothing is resolved per message except the DI scope.
 - `ValueTask` everywhere. Context objects are pooled. Headers are read lazily from the native message and only materialized when accessed.
+- Single-message dispatch with an explicit failure delegate keeps continuation storage with the rented context and native receive state. Cross-worker completion does not depend on runtime async state-machine cache hits. Fresh scopes, async disposal and settlement ordering remain unchanged; batch and executable-retry paths retain their existing implementations.
 - `IBufferWriter<byte>` / `ReadOnlySequence<byte>` serialization with pooled buffers.
 - Source-generated dispatch per message type: no `Type` lookups, no `MethodInfo.Invoke`, no `dynamic`.
 - Outbox writes are batched per transaction (one insert of N rows). Dispatch uses native batch send APIs.
