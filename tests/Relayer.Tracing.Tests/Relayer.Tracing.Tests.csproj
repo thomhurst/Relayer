@@ -9,4 +9,7 @@
     <ProjectReference Include="../../src/Relayer.SourceGenerators/Relayer.SourceGenerators.csproj"
                       ReferenceOutputAssembly="false" OutputItemType="Analyzer" />
   </ItemGroup>
+  <ItemGroup>
+    <Compile Include="../Shared/SendTracingCompletionFixture.cs" Link="Fixtures/SendTracingCompletionFixture.cs" />
+  </ItemGroup>
 </Project>

@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
+using System.Threading.Tasks.Sources;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
@@ -47,7 +48,7 @@ public sealed class SendTracing
             System = endpoint.System, Destination = endpoint.Destination, OperationName = "send",
             ServerAddress = endpoint.ServerAddress, ServerPort = endpoint.ServerPort,
         });
-        _states.Items[0] = new();
+        _states.Items[0] = new(this);
     }
 
     /// <summary>Starts timing an actual native send call, independently of tracing and logical batch composition.</summary>
@@ -93,34 +94,61 @@ public sealed class SendTracing
         _telemetry?.RecordSent();
         return message.TracingStarted
             ? _sendNative(message, cancellationToken)
-            : SendCoreAsync(message, cancellationToken);
+            : Start(message, default, false, cancellationToken);
     }
 
-    [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
-    private async ValueTask SendCoreAsync(OutgoingMessage message, CancellationToken cancellationToken)
+    private ValueTask Start(OutgoingMessage message, ReadOnlyMemory<OutgoingMessage> messages,
+        bool batch, CancellationToken cancellationToken)
     {
-        var state = _tracing.Source.HasListeners() ? Rent(1) : null;
-        Activity? activity = null;
+        // Builder.Start isolates native Activity/AsyncLocal changes without renting a runtime continuation box.
+        var runner = new Runner(this, message, messages, batch, cancellationToken);
+        var builder = AsyncTaskMethodBuilder.Create();
+        builder.Start(ref runner);
+        return runner.Result;
+    }
+
+    private ValueTask StartCore(OutgoingMessage message, ReadOnlyMemory<OutgoingMessage> messages,
+        bool batch, CancellationToken cancellationToken)
+    {
+        State? state = null;
+        Exception? error = null;
         try
         {
-            if (state is not null)
+            if (_tracing.Source.HasListeners())
             {
-                activity = _send.Start(Data(message), enrich: true, client: message.IsOutboxDispatch);
-                EnrichMessage(activity, message);
+                state = Rent();
+                state.Ensure(batch ? messages.Length : 1);
+                if (batch) messages = PrepareBatch(state, messages, cancellationToken);
+                else message = PrepareSingle(state, message);
             }
-            var prepared = state is null || message.IsOutboxDispatch ? message : Prepare(state, 0, message, activity?.Context ?? Activity.Current?.Context ?? default);
-            await _sendNative(prepared, cancellationToken).ConfigureAwait(false);
+            var pending = (batch ? _sendBatchNative(messages, cancellationToken) : _sendNative(message, cancellationToken))
+                .ConfigureAwait(false).GetAwaiter();
+            if (!pending.IsCompleted)
+            {
+                state ??= Rent();
+                return state.Suspend(pending);
+            }
+            pending.GetResult();
         }
-        catch (Exception exception)
-        {
-            Fail(activity, exception);
-            throw;
-        }
-        finally
-        {
-            activity?.Dispose();
-            if (state is not null) Return(state);
-        }
+        catch (Exception exception) { error = exception; }
+        // An untraced synchronous success needs neither borrowed preparation storage nor a continuation slot.
+        return state is null && error is null ? default : (state ?? Rent()).FinishSynchronous(error);
+    }
+
+    private struct Runner(SendTracing owner, OutgoingMessage message, ReadOnlyMemory<OutgoingMessage> messages,
+        bool batch, CancellationToken cancellationToken) : IAsyncStateMachine
+    {
+        internal ValueTask Result;
+        public void MoveNext() => Result = owner.StartCore(message, messages, batch, cancellationToken);
+        public void SetStateMachine(IAsyncStateMachine stateMachine) { }
+    }
+
+    private OutgoingMessage PrepareSingle(State state, OutgoingMessage message)
+    {
+        state.Activity = _send.Start(Data(message), enrich: true, client: message.IsOutboxDispatch);
+        EnrichMessage(state.Activity, message);
+        return message.IsOutboxDispatch ? message :
+            Prepare(state, 0, message, state.Activity?.Context ?? Activity.Current?.Context ?? default);
     }
 
     /// <summary>Creates per-message producer spans and one native batch span, or one producer span when creation spans are disabled.</summary>
@@ -129,55 +157,35 @@ public sealed class SendTracing
     {
         if (messages.IsEmpty) return _sendBatchNative(messages, cancellationToken);
         _telemetry?.RecordSent(messages.Length);
-        return SendBatchCoreAsync(messages, cancellationToken);
+        return Start(default, messages, true, cancellationToken);
     }
 
-    [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
-    private async ValueTask SendBatchCoreAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken)
+    private ReadOnlyMemory<OutgoingMessage> PrepareBatch(State state, ReadOnlyMemory<OutgoingMessage> messages,
+        CancellationToken cancellationToken)
     {
-        var state = _tracing.Source.HasListeners() ? Rent(messages.Length) : null;
-        Activity? activity = null;
-        try
+        var linkCount = 0;
+        for (var i = 0; i < messages.Length; i++)
         {
-            if (state is null)
+            cancellationToken.ThrowIfCancellationRequested();
+            var message = messages.Span[i];
+            var data = Data(message);
+            var context = data.CreationContext;
+            if (!message.IsOutboxDispatch && _tracing.Options.CreateSpansForBatches && !HasCreationHeader(message))
             {
-                await _sendBatchNative(messages, cancellationToken).ConfigureAwait(false);
-                return;
+                using var create = _create.Start(data);
+                EnrichMessage(create, message);
+                context = create?.Context ?? Activity.Current?.Context ?? default;
             }
-            var linkCount = 0;
-            for (var i = 0; i < messages.Length; i++)
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-                var message = messages.Span[i];
-                var data = Data(message);
-                var context = data.CreationContext;
-                if (!message.IsOutboxDispatch && _tracing.Options.CreateSpansForBatches && !HasCreationHeader(message))
-                {
-                    using var create = _create.Start(data);
-                    EnrichMessage(create, message);
-                    context = create?.Context ?? Activity.Current?.Context ?? default;
-                }
-                state.Contexts[i] = context;
-                if (context != default) state.Links[linkCount++] = new(context);
-            }
-            activity = _send.Start(new() { BatchCount = messages.Length, Links = state.Links.AsMemory(0, linkCount) },
-                enrich: true, client: messages.Span[0].IsOutboxDispatch);
-            var fallback = activity?.Context ?? Activity.Current?.Context ?? default;
-            for (var i = 0; i < messages.Length; i++)
-                state.Messages[i] = messages.Span[i].IsOutboxDispatch ? messages.Span[i] :
-                    Prepare(state, i, messages.Span[i], state.Contexts[i] != default ? state.Contexts[i] : fallback);
-            await _sendBatchNative(state.Messages.AsMemory(0, messages.Length), cancellationToken).ConfigureAwait(false);
+            state.Contexts[i] = context;
+            if (context != default) state.Links[linkCount++] = new(context);
         }
-        catch (Exception exception)
-        {
-            Fail(activity, exception);
-            throw;
-        }
-        finally
-        {
-            activity?.Dispose();
-            if (state is not null) Return(state);
-        }
+        state.Activity = _send.Start(new() { BatchCount = messages.Length, Links = state.Links.AsMemory(0, linkCount) },
+            enrich: true, client: messages.Span[0].IsOutboxDispatch);
+        var fallback = state.Activity?.Context ?? Activity.Current?.Context ?? default;
+        for (var i = 0; i < messages.Length; i++)
+            state.Messages[i] = messages.Span[i].IsOutboxDispatch ? messages.Span[i] :
+                Prepare(state, i, messages.Span[i], state.Contexts[i] != default ? state.Contexts[i] : fallback);
+        return state.Messages.AsMemory(0, messages.Length);
     }
 
     private bool HasCreationHeader(OutgoingMessage message) => OutgoingHeaders.TryGetHeader(message, _names.TraceParent, out _);
@@ -209,7 +217,7 @@ public sealed class SendTracing
         return message.Forward(message.Destination, headers.Written, message.DeliverAt).WithTracingStarted();
     }
 
-    private State Rent(int count)
+    private State Rent()
     {
         var segment = _states;
         while (true)
@@ -219,12 +227,11 @@ public sealed class SendTracing
                 var state = Volatile.Read(ref segment.Items[i]);
                 if (state is null)
                 {
-                    var added = new State();
+                    var added = new State(this);
                     state = Interlocked.CompareExchange(ref segment.Items[i], added, null) ?? added;
                 }
                 if (Volatile.Read(ref state.InUse) != 0) continue;
                 if (Interlocked.CompareExchange(ref state.InUse, 1, 0) != 0) continue;
-                state.Ensure(count);
                 return state;
             }
             // Retain the observed concurrency high-water mark instead of dropping overflow states each burst.
@@ -240,8 +247,7 @@ public sealed class SendTracing
 
     private static void Return(State state)
     {
-        state.Clear();
-        // States stay in their slots. Publish availability only after all borrowed storage is cleared.
+        // States stay in their slots. Publish availability only after completion is consumed.
         Volatile.Write(ref state.InUse, 0);
     }
 
@@ -251,8 +257,112 @@ public sealed class SendTracing
         internal PoolSegment? Next;
     }
 
-    private sealed class State
+    private sealed class State : IValueTaskSource
     {
+        private readonly SendTracing _owner;
+        private readonly Action _continuation;
+        private ManualResetValueTaskSourceCore<bool> _completion;
+        private ConfiguredValueTaskAwaitable.ConfiguredValueTaskAwaiter _pending;
+        private ExecutionContext? _executionContext;
+        internal Activity? Activity;
+
+        internal State(SendTracing owner)
+        {
+            _owner = owner;
+            _continuation = Resume;
+        }
+
+        internal ValueTask Suspend(ConfiguredValueTaskAwaitable.ConfiguredValueTaskAwaiter pending)
+        {
+            _pending = pending;
+            var result = new ValueTask(this, _completion.Version);
+            _executionContext = ExecutionContext.Capture();
+            _pending.UnsafeOnCompleted(_continuation);
+            return result;
+        }
+
+        internal ValueTask FinishSynchronous(Exception? error)
+        {
+            error = Finish(error);
+            if (error is null)
+            {
+                Return(this);
+                return default;
+            }
+            // Keep synchronous cancellation status and the original exception, without a Task wrapper.
+            var failed = new ValueTask(this, _completion.Version);
+            _completion.SetException(error);
+            return failed;
+        }
+
+        private void Resume()
+        {
+            var context = _executionContext;
+            _executionContext = null;
+            if (context is not null)
+                ExecutionContext.Run(context, static state => ((State)state!).Complete(), this);
+            else
+            {
+                var runner = new CompletionRunner(this);
+                var builder = AsyncTaskMethodBuilder.Create();
+                builder.Start(ref runner);
+            }
+        }
+
+        private void Complete()
+        {
+            Exception? error = null;
+            try { _pending.GetResult(); }
+            catch (Exception exception) { error = exception; }
+            error = Finish(error);
+            // Clear borrowed references before an inline caller continuation can consume and reuse this slot.
+            if (error is null) _completion.SetResult(true);
+            else _completion.SetException(error);
+        }
+
+        private Exception? Finish(Exception? error)
+        {
+            try
+            {
+                try
+                {
+                    if (error is not null) _owner.Fail(Activity, error);
+                }
+                finally { Activity?.Dispose(); }
+            }
+            catch (Exception exception) { error = exception; }
+            finally
+            {
+                Activity = null;
+                _pending = default;
+                _executionContext = null;
+                Clear();
+            }
+            return error;
+        }
+
+        public void GetResult(short token)
+        {
+            // Completion alone does not release the slot: its version belongs to the awaiting caller.
+            try { _completion.GetResult(token); }
+            finally
+            {
+                // Drop the caller continuation and ExecutionContext before this retained slot becomes idle.
+                _completion.Reset();
+                Return(this);
+            }
+        }
+
+        public ValueTaskSourceStatus GetStatus(short token) => _completion.GetStatus(token);
+        public void OnCompleted(Action<object?> continuation, object? state, short token, ValueTaskSourceOnCompletedFlags flags) =>
+            _completion.OnCompleted(continuation, state, token, flags);
+
+        private readonly struct CompletionRunner(State state) : IAsyncStateMachine
+        {
+            public void MoveNext() => state.Complete();
+            public void SetStateMachine(IAsyncStateMachine stateMachine) { }
+        }
+
         internal int InUse;
         internal OutgoingMessage[] Messages = [];
         internal ActivityContext[] Contexts = [];

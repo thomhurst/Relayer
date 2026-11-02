@@ -22,6 +22,16 @@ using (var asynchronousReceive = new Relayer.TestFixtures.ConcurrentReceiveFixtu
     for (var i = 0; i < 4; i++) asynchronousReceive.Run(Relayer.TestFixtures.ConcurrentReceiveFixture.Mode.Receive);
 }
 Console.WriteLine("Concurrent cross-thread receive passed under Native AOT.");
+foreach (var batch in new[] { false, true })
+foreach (var listener in new[] { false, true })
+{
+    using var send = new Relayer.TestFixtures.SendTracingCompletionFixture(batch, listener);
+    for (var i = 0; i < 16; i++) send.Run(traced: true);
+    if (send.Run(traced: true) != 0) throw new InvalidOperationException("Send tracing allocates under Native AOT.");
+    if (send.Run(traced: true, asynchronousCaller: true) != 0)
+        throw new InvalidOperationException("Awaited send tracing allocates under Native AOT.");
+}
+Console.WriteLine("Cross-thread single and batch send tracing passed under Native AOT.");
 PartitionCompletionSmoke.Run();
 PartitionSchedulerSmoke.Run();
 await KafkaSchemaSmoke.RunAsync();

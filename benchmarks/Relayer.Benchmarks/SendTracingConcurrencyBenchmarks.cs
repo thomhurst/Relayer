@@ -7,7 +7,7 @@ namespace Relayer.Benchmarks;
 
 /// <summary>
 /// Measures complete warmed bursts with deterministic overlapping native sends. Totals are per burst and include
-/// Activity and framework async-builder costs; SendTracingPoolTests separately isolate preparation storage.
+/// Activity costs; SendTracingPoolTests separately verify retained preparation and continuation storage.
 /// </summary>
 [MemoryDiagnoser]
 public class SendTracingConcurrencyBenchmarks

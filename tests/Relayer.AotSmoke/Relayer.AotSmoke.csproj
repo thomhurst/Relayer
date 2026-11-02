@@ -26,5 +26,6 @@
   </ItemGroup>
   <ItemGroup>
     <Compile Include="../Shared/ConcurrentReceiveFixture.cs" Link="ConcurrentReceiveFixture.cs" />
+    <Compile Include="../Shared/SendTracingCompletionFixture.cs" Link="SendTracingCompletionFixture.cs" />
   </ItemGroup>
 </Project>

@@ -1,11 +1,32 @@
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 using Microsoft.Extensions.Options;
+using Relayer.TestFixtures;
 
 namespace Relayer.Tests;
 
 public class SendTracingPoolTests
 {
+    [Test]
+    [Arguments(false, false, false)]
+    [Arguments(false, false, true)]
+    [Arguments(false, true, false)]
+    [Arguments(false, true, true)]
+    [Arguments(true, false, false)]
+    [Arguments(true, false, true)]
+    [Arguments(true, true, false)]
+    [Arguments(true, true, true)]
+    public async Task Cross_thread_sends_retain_continuations_after_warmup(bool batch, bool listener, bool asynchronousCaller)
+    {
+        using var fixture = new SendTracingCompletionFixture(batch, listener);
+        for (var i = 0; i < 16; i++) fixture.Run(traced: true, asynchronousCaller);
+        var native = fixture.Run(traced: false, asynchronousCaller);
+        long allocated = 0;
+        for (var i = 0; i < 8; i++) allocated += fixture.Run(traced: true, asynchronousCaller);
+        await Assert.That(native).IsEqualTo(0L);
+        await Assert.That(allocated).IsEqualTo(0L);
+    }
+
     [Test]
     [Arguments(false, false)]
     [Arguments(true, false)]
