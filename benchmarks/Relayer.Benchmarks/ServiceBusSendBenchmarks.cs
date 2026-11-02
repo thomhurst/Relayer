@@ -89,6 +89,7 @@ public class ServiceBusSendBenchmarks
         _message = new(_queue, _body, _headers);
         _batch = Enumerable.Repeat(_message, 32).ToArray();
         var services = new ServiceCollection();
+        services.AddSingleton(_instrumentation);
         services.AddRelayer(builder =>
         {
             builder.AddMessageTypesFromThisAssembly();
