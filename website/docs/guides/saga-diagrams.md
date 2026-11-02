@@ -5,7 +5,7 @@ description: "Declare and export a process diagram explicitly, without executing
 
 `Relayer.Sagas` provides explicit process declarations and [Mermaid state diagram](https://mermaid.js.org/syntax/stateDiagram.html) export. Declare the diagram in application code; no assembly scanning or handler discovery runs.
 
-These declarations describe a process; they do not register consumers, persist state, invoke handlers, or schedule timeouts. [Transactional state transitions](sagas.md) are available separately through explicit handlers and the EF Core inbox/outbox boundary. Diagram metadata does not generate or enforce runtime transitions. Durable process timeout handling remains planned in [#249](https://github.com/thomhurst/Relayer/issues/249); existing [scheduled sends](sending.md) remain available.
+These declarations describe a process; they do not register consumers, persist state, invoke handlers, or schedule timeouts. [Transactional state transitions](sagas.md) are available separately through explicit handlers and the EF Core inbox/outbox boundary. Diagram metadata does not generate or enforce runtime transitions. [Durable saga timeouts](saga-timeouts.md) use typed handlers and existing [scheduled sends](sending.md).
 
 ## Declare and export
 

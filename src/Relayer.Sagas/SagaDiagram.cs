@@ -3,7 +3,7 @@ using System.Text;
 
 namespace Relayer.Sagas;
 
-/// <summary>An immutable process declaration for inspection and diagram export. Saga execution is not implemented.</summary>
+/// <summary>An immutable process declaration for inspection and diagram export, independent of saga execution.</summary>
 public sealed class SagaDiagram
 {
     internal SagaDiagram(SagaState[] states, SagaTransition[] transitions)

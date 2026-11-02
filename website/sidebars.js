@@ -15,6 +15,7 @@ const sidebars = {
         'guides/messages',
         'guides/handlers',
         'guides/sagas',
+        'guides/saga-timeouts',
         'guides/configuration',
         'guides/sending',
         'guides/request-response',

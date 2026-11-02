@@ -7,7 +7,7 @@ Relayer is in early development. Track progress in [GitHub issues](https://githu
 
 ## Implemented
 
-- [Explicit saga process diagrams](guides/saga-diagrams.md), with immutable declarations and deterministic Mermaid export, independent of typed runtime transitions. Durable process timeout handling remains planned.
+- [Explicit saga process diagrams](guides/saga-diagrams.md), with immutable declarations and deterministic Mermaid export, independent of typed runtime transitions.
 - [NuGet packaging and tag-triggered releases](contributing/releases.md), with shared metadata, git-derived versions, SourceLink, portable symbols and OIDC publishing. This infrastructure does not mean packages have been released.
 - Configuration, named transports, routes and consumers, with startup validation of declarations, options and endpoint capabilities, including [declared scheduling and transaction requirements](guides/sending.md).
 - Source-generated message registration, handler registration and dispatch, and System.Text.Json serialization.
@@ -22,7 +22,7 @@ Relayer is in early development. Track progress in [GitHub issues](https://githu
 - [EF Core transaction enlistment for PostgreSQL](reference/ef-core-outbox.md): implicit saves, explicit transactions, atomic rollback, multiple contexts and one batched insert per transaction.
 - [Ordered PostgreSQL dispatch and lane leases](reference/ordered-dispatch.md).
 - [EF Core consumer inbox](reference/ef-core-inbox.md): PostgreSQL deduplication, concurrent redelivery, atomic business/inbox/outbox commits and duplicate metrics. Automatic for the selected outbox context, opt-in for inbox-only consumers.
-- [Saga state transitions](guides/sagas.md): explicit process state, PostgreSQL optimistic concurrency and atomic state/inbox/outbox commits using the existing EF Core boundary. Durable process timeout handling remains planned.
+- [Saga state transitions](guides/sagas.md): explicit process state, PostgreSQL optimistic concurrency and atomic state/inbox/outbox commits using the existing EF Core boundary. [Durable saga timeouts](guides/saga-timeouts.md) compose typed messages, explicit wait correlation and existing transactional scheduled sends.
 - [PostgreSQL ADO.NET and Dapper transactions](reference/postgres-outbox.md): scoped enlistment, owned message copies and one atomic batched insert on commit.
 - [Unordered PostgreSQL direct dispatch](reference/direct-dispatch.md): background sends immediately after EF commit, fenced claims, native transport batches and fenced batch deletion. Register [leased recovery and cleanup](reference/postgres-maintenance.md) for unordered crash recovery and bounded dead/inbox retention. Poison-row handling remains planned.
 - The consume pipeline and the native receive SPI.

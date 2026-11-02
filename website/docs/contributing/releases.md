@@ -19,7 +19,7 @@ The packages are `Relayer`, `Relayer.Testing`, `Relayer.HealthChecks`, `Relayer.
 `Relayer.Kafka.SchemaRegistry`, `Relayer.Serialization.Protobuf` and `Relayer.Serialization.Avro` are optional integration packages.
 `Relayer.Sagas` provides [process diagram declarations and export](../guides/saga-diagrams.md) and
 typed execution. [Transactional state transitions](../guides/sagas.md) use the optional EF Core
-integration; durable process timeout handling remains planned.
+integration; [durable process timeouts](../guides/saga-timeouts.md) reuse transactional scheduled sends.
 The source generator and code fixes ship inside `Relayer`; they are not separate packages.
 
 ## Versions and local verification
