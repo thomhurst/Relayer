@@ -53,8 +53,10 @@ An idle leader renews on its next pass; another instance can take over after exp
 
 Each recovery pass reads at most `BatchSize` pending unordered rows in ID order, with no live claim and a
 due delivery time. `RecoveryDelay` measures age from stored `created_at`, not from a separately recorded
-commit timestamp. Recent rows remain available for immediate commit-triggered dispatch. Keyset traversal
-wraps after an empty pass, so a failed destination cannot permanently hide later rows. Each pass waits
+commit timestamp. Recent rows remain available for immediate commit-triggered dispatch. Each keyset traversal
+captures the highest pending unordered ID and scans only through that fixed boundary. It wraps after an empty
+pass within that boundary, so continuous newer traffic cannot prevent retries of failed sends, newly due schedules
+or expired claims behind the cursor. A failed destination cannot permanently hide later rows. Each pass waits
 `SweepInterval` before the next; this also bounds retry frequency. Large backlogs require multiple passes.
 
 Recovery reuses direct dispatch's conditional claims, transport/destination grouping, native batch limits,

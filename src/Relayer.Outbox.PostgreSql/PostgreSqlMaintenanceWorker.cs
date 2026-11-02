@@ -18,11 +18,13 @@ internal sealed partial class PostgreSqlMaintenanceWorker : BackgroundService
     private readonly string _acquire;
     private readonly string _renew;
     private readonly string _release;
+    private readonly string _highWaterMark;
     private readonly string _read;
     private readonly string _dead;
     private readonly string _inbox;
     private readonly OutboxRecord[] _rows;
     private Guid? _after;
+    private Guid? _through;
 
     internal PostgreSqlMaintenanceWorker(NpgsqlDataSource source, PostgreSqlMaintenanceOptions options,
         IEnumerable<ITransport> transports, ILogger<PostgreSqlMaintenanceWorker> logger,
@@ -42,7 +44,8 @@ internal sealed partial class PostgreSqlMaintenanceWorker : BackgroundService
         _acquire = $"INSERT INTO {leases} (name, owner, expires_at) VALUES (@name, @owner, clock_timestamp() + @duration) ON CONFLICT (name) DO UPDATE SET owner = EXCLUDED.owner, expires_at = EXCLUDED.expires_at WHERE {leases}.owner = @owner OR {leases}.expires_at <= clock_timestamp() RETURNING true";
         _renew = $"UPDATE {leases} SET expires_at = clock_timestamp() + @duration WHERE name = @name AND owner = @owner";
         _release = $"DELETE FROM {leases} WHERE name IN ('sweeper', 'cleanup') AND owner = @owner";
-        _read = $"SELECT id, transport, message_type, destination, body, headers, ordering_key, deliver_at, created_at, lane, attempts, last_error, tenant_id FROM {Table("outbox")} WHERE lane IS NULL AND status = 'pending' AND created_at <= clock_timestamp() - @age AND (deliver_at IS NULL OR deliver_at <= clock_timestamp()) AND (claim_expires_at IS NULL OR claim_expires_at <= clock_timestamp()) AND (@after IS NULL OR id > @after) ORDER BY id LIMIT @limit";
+        _highWaterMark = $"SELECT id FROM {Table("outbox")} WHERE lane IS NULL AND status = 'pending' ORDER BY id DESC LIMIT 1";
+        _read = $"SELECT id, transport, message_type, destination, body, headers, ordering_key, deliver_at, created_at, lane, attempts, last_error, tenant_id FROM {Table("outbox")} WHERE lane IS NULL AND status = 'pending' AND created_at <= clock_timestamp() - @age AND (deliver_at IS NULL OR deliver_at <= clock_timestamp()) AND (claim_expires_at IS NULL OR claim_expires_at <= clock_timestamp()) AND (@after IS NULL OR id > @after) AND id <= @through ORDER BY id LIMIT @limit";
         _dead = $"DELETE FROM {Table("outbox_dead")} WHERE id IN (SELECT id FROM {Table("outbox_dead")} WHERE failed_at <= clock_timestamp() - @retention ORDER BY failed_at, id LIMIT @limit)";
         _inbox = $"DELETE FROM {Table("inbox")} WHERE (consumer, message_id) IN (SELECT consumer, message_id FROM {Table("inbox")} WHERE processed_at <= clock_timestamp() - @retention ORDER BY processed_at, consumer, message_id LIMIT @limit)";
     }
@@ -104,15 +107,23 @@ internal sealed partial class PostgreSqlMaintenanceWorker : BackgroundService
 
     private async ValueTask<int> DispatchAsync(NpgsqlConnection connection, NpgsqlTransaction transaction, CancellationToken cancellationToken)
     {
+        if (_through is null)
+        {
+            await using var boundary = new NpgsqlCommand(_highWaterMark, connection, transaction);
+            if (await boundary.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) is not Guid through) return 0;
+            _through = through;
+        }
         await using var command = new NpgsqlCommand(_read, connection, transaction);
         command.Parameters.AddWithValue("age", _options.RecoveryDelay);
         command.Parameters.Add(new NpgsqlParameter<Guid?>("after", NpgsqlDbType.Uuid) { TypedValue = _after });
+        command.Parameters.Add(new NpgsqlParameter<Guid?>("through", NpgsqlDbType.Uuid) { TypedValue = _through });
         command.Parameters.AddWithValue("limit", _rows.Length);
         var count = await _store.ReadRowsAsync(command, _rows, cancellationToken).ConfigureAwait(false);
         try
         {
             _after = count == 0 ? null : _rows[count - 1].Id;
-            // Keyset traversal avoids a failing destination starving later rows. Wrap on the next empty scan.
+            // A fixed boundary forces wrapping even while newer rows arrive, revisiting failed or newly eligible rows.
+            if (count == 0) _through = null;
             _store.UseDispatchTransaction(connection, transaction);
             await _dispatcher.DispatchRecoveredAsync(_rows.AsMemory(0, count), cancellationToken).ConfigureAwait(false);
             return count;

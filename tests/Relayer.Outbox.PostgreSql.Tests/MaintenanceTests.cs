@@ -71,6 +71,37 @@ public class MaintenanceTests
     }
 
     [Test]
+    [Arguments(1)]
+    [Arguments(4)]
+    public async Task Recovery_revisits_failed_scheduled_and_claimed_rows_while_newer_rows_keep_arriving(int batchSize)
+    {
+        await using var fixture = new PostgreSqlFixture();
+        await fixture.StartAsync();
+        await using var source = NpgsqlDataSource.Create(fixture.ConnectionString);
+        await PostgreSqlOutboxStoreTests.CreateSchema(source);
+        for (var i = 1; i <= 4; i++) await Insert(source, Id(i));
+        await Sql(source, "UPDATE relayer_outbox SET deliver_at = clock_timestamp() + interval '1 day' WHERE id = '01900000-0000-7000-8000-000000000002'; UPDATE relayer_outbox SET claim_token = gen_random_uuid(), claim_expires_at = clock_timestamp() + interval '1 day' WHERE id = '01900000-0000-7000-8000-000000000003'");
+        var offline = true;
+        var transport = new RecordingTransport((message, _) =>
+            offline && HeaderId(message) == Id(1) ? ValueTask.FromException(new InvalidOperationException("offline")) : ValueTask.CompletedTask);
+        using var worker = Worker(source, transport, new() { BatchSize = batchSize });
+        for (var i = 0; i < (batchSize == 1 ? 2 : 1); i++) await worker.SweepAsync(default);
+        await Assert.That(transport.Ids.SequenceEqual([Id(4)])).IsTrue();
+
+        // Change durable eligibility explicitly, after the cursor has passed these rows.
+        offline = false;
+        await Sql(source, "UPDATE relayer_outbox SET deliver_at = clock_timestamp() - interval '1 second' WHERE deliver_at IS NOT NULL; UPDATE relayer_outbox SET claim_expires_at = clock_timestamp() - interval '1 second' WHERE claim_token IS NOT NULL");
+        for (var i = 5; i <= 10; i++)
+        {
+            await Insert(source, Id(i));
+            await worker.SweepAsync(default);
+        }
+
+        for (var i = 1; i <= 5; i++) await Assert.That(transport.Ids.Contains(Id(i))).IsTrue();
+        await Assert.That(transport.Ids.Distinct().Count()).IsEqualTo(transport.Ids.Count);
+    }
+
+    [Test]
     public async Task Connected_sweeper_holds_leadership_through_native_send_then_rival_takes_over_after_release()
     {
         await using var fixture = new PostgreSqlFixture();

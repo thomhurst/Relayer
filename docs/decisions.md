@@ -706,7 +706,9 @@ cleanup jobs on every replica.
 rows in the existing lease table. Database-clock expiries govern idle leadership; hold the lease row's transaction
 lock throughout each connected pass, then renew from completion. Release owned leases on graceful shutdown.
 Read bounded unordered, due, unclaimed pending rows older than a configured `created_at` threshold. Traverse by
-ID and wrap after an empty pass so failed rows do not starve later work. Reuse direct dispatch's native grouping,
+ID up to a fixed high-water mark captured at traversal start, then wrap after an empty pass within that boundary.
+This revisits failed or newly eligible older rows even under continuous newer traffic, while failed rows do not
+starve later work. Reuse direct dispatch's native grouping,
 row fencing and batch deletion. Recovery claim/completion mutations share the leadership transaction, using
 one pooled connection per pass. A crash rolls these mutations back and permits replay; direct dispatch keeps
 its independent auto-committed claims. No pass holds one pool connection while waiting to borrow another.
