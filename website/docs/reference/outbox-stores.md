@@ -166,3 +166,27 @@ Keep membership fairness, connected-owner fencing, native locking, crash/rebalan
 lease-budget and capability-cache tests in the provider suite. These shared cases do not establish those
 provider-specific guarantees. MongoDB ordered dispatch and its adapter remain planned, gated by native
 persistence and inbox support; these tests do not enable a MongoDB provider.
+
+### Commit-triggered unordered dispatch
+
+Link `tests/Shared/OutboxDirectDispatchContractTests.cs`, derive from `OutboxDirectDispatchContractTests`, and
+add `[InheritsTests]`. The PostgreSQL adapter is
+`tests/Relayer.Outbox.PostgreSql.Tests/SharedDirectDispatchContractTests.cs`. The fixture starts the real
+commit-triggered dispatcher with the requested batch and queue limits. Each application session owns one
+scope and can begin, save, commit or roll back multiple native transactions. `SaveAsync` runs application
+persistence inside that transaction; a provider that writes immediately can use a completed task. Its native
+commit hook must persist enlisted rows before commit and queue dispatch only after commit succeeds. Committed row
+snapshots come from a separate native connection and include IDs, attempts, errors and claim state.
+
+Seven inherited cases cover dispatch only after durable commit, rollback, borrowed payload and duplicate/binary
+header ownership across buffer reuse and scope disposal, native destination/batch limits, future and ordered
+row exclusion, send failure, partial batch failure and queue overflow. The recording transport exposes explicit
+entry/release signals so tests can hold a native send while committing later work. It advertises batch limits
+of two messages, or one for destination `single`, and rejects native scheduling. Due rows must reach it without
+`DeliverAt`. `StopAsync` drains queued work with a bounded deadline. Fixture disposal must release blocked sends,
+stop the worker and dispose application services before removing its database, including after an assertion fails.
+
+Reuse the provider's native transaction and commit hook; do not emulate dispatch in the adapter. Keep synchronous
+EF interception, implicit-commit buffer reuse, SQL statement batching, native contention, completion-failure injection, shutdown and logging
+tests in the provider suite. MongoDB commit-triggered dispatch and its adapter remain planned; passing these
+PostgreSQL cases does not establish MongoDB support or resolve its strict Native AOT release gate.

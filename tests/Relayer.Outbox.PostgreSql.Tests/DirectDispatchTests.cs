@@ -11,6 +11,7 @@ using Relayer.Outbox.EntityFrameworkCore;
 using Relayer.Outbox.PostgreSql;
 using Relayer.Serialization;
 using Relayer.Transports;
+using Transport = Relayer.TestFixtures.OutboxDirectDispatchContractTests.RecordingTransport;
 
 namespace Relayer.Outbox.PostgreSql.Tests;
 
@@ -116,9 +117,7 @@ public class DirectDispatchTests
     }
 
     [Test]
-    [Arguments(false)]
-    [Arguments(true)]
-    public async Task Explicit_transactions_dispatch_only_after_commit_and_rollback_never_sends(bool synchronous)
+    public async Task Synchronous_explicit_transactions_dispatch_only_after_commit_and_rollback_never_sends()
     {
         await using var database = new Database();
         await database.Start();
@@ -131,19 +130,19 @@ public class DirectDispatchTests
             await using var scope = provider.CreateAsyncScope();
             var db = scope.ServiceProvider.GetRequiredService<TestContext>();
             var sender = scope.ServiceProvider.GetRequiredService<ISender>();
-            await using (var transaction = synchronous ? db.Database.BeginTransaction() : await db.Database.BeginTransactionAsync())
+            await using (var transaction = db.Database.BeginTransaction())
             {
                 await sender.SendAsync(new Probe(1));
-                if (synchronous) db.SaveChanges(); else await db.SaveChangesAsync();
-                if (synchronous) transaction.Rollback(); else await transaction.RollbackAsync();
+                db.SaveChanges();
+                transaction.Rollback();
             }
-            await using (var transaction = synchronous ? db.Database.BeginTransaction() : await db.Database.BeginTransactionAsync())
+            await using (var transaction = db.Database.BeginTransaction())
             {
                 await sender.SendAsync(new Probe(2));
-                if (synchronous) db.SaveChanges(); else await db.SaveChangesAsync();
+                db.SaveChanges();
                 await Assert.That(transport.Entered.Task.IsCompleted).IsFalse();
                 await Assert.That(await database.Count()).IsEqualTo(0L);
-                if (synchronous) transaction.Commit(); else await transaction.CommitAsync();
+                transaction.Commit();
             }
             await transport.Entered.Task.WaitAsync(TimeSpan.FromSeconds(30));
             await Assert.That(await database.Count()).IsEqualTo(1L);
@@ -274,61 +273,6 @@ public class DirectDispatchTests
     }
 
     [Test]
-    public async Task Ordered_and_future_rows_remain_durable_while_due_unordered_rows_dispatch()
-    {
-        await using var database = new Database();
-        await database.Start();
-        var transport = new Transport();
-        await using var provider = database.Services(transport);
-        var worker = provider.GetRequiredKeyedService<PostgreSqlDirectDispatcher>("store");
-        await worker.StartAsync(default);
-        try
-        {
-            await using (var scope = provider.CreateAsyncScope())
-            {
-                var db = scope.ServiceProvider.GetRequiredService<TestContext>();
-                using var selection = db.EnlistRelayerOutbox();
-                var outbox = scope.ServiceProvider.GetRequiredService<IOutboxEnlistment>();
-                await outbox.EnlistAsync(Record(1, orderingKey: new WireString("")), default);
-                await outbox.EnlistAsync(Record(2, deliverAt: DateTimeOffset.UtcNow.AddDays(1)), default);
-                await outbox.EnlistAsync(Record(3, deliverAt: DateTimeOffset.UtcNow.AddDays(-1)), default);
-                await db.SaveChangesAsync();
-            }
-            await Stop(worker);
-            await Assert.That(transport.Received.Select(sent => sent.Body[0])).IsEquivalentTo(new byte[] { 3 });
-            await Assert.That(await database.Count()).IsEqualTo(2L);
-            await Assert.That(await database.Scalar($"SELECT count(*) FROM {Database.Table} WHERE claim_token IS NOT NULL")).IsEqualTo(0L);
-        }
-        finally { await Stop(worker); }
-    }
-
-    [Test]
-    public async Task Native_failure_is_recorded_once_and_does_not_prevent_next_commit_dispatch()
-    {
-        await using var database = new Database();
-        await database.Start();
-        var transport = new Transport { FailFirst = 1 };
-        await using var provider = database.Services(transport);
-        var worker = provider.GetRequiredKeyedService<PostgreSqlDirectDispatcher>("store");
-        await worker.StartAsync(default);
-        try
-        {
-            await database.Commit(provider, Record(1));
-            await transport.Entered.Task.WaitAsync(TimeSpan.FromSeconds(30));
-            await database.Commit(provider, Record(2));
-            await Stop(worker);
-            await Assert.That(transport.Calls.Count).IsEqualTo(2);
-            await Assert.That(transport.Received.Select(sent => sent.Body[0])).IsEquivalentTo(new byte[] { 2 });
-            await Assert.That(await database.Count()).IsEqualTo(1L);
-            await Assert.That(await database.Scalar($"SELECT attempts FROM {Database.Table}")).IsEqualTo(1L);
-            await using var command = database.Source.CreateCommand($"SELECT last_error FROM {Database.Table}");
-            await Assert.That((string)(await command.ExecuteScalarAsync())!).IsEqualTo("native send failed");
-            await Assert.That(await database.Scalar($"SELECT count(*) FROM {Database.Table} WHERE claim_token IS NOT NULL")).IsEqualTo(0L);
-        }
-        finally { await Stop(worker); }
-    }
-
-    [Test]
     public async Task Completion_failure_keeps_delivered_rows_claimed_without_recording_send_failure()
     {
         await using var database = new Database();
@@ -378,39 +322,6 @@ public class DirectDispatchTests
             await Assert.That(log.Messages.Any(message => message.Contains("deleted 0 of 1 sent rows", StringComparison.Ordinal))).IsTrue();
         }
         finally { transport.Release.TrySetResult(); await Stop(worker); }
-    }
-
-    [Test]
-    public async Task Partial_native_batch_failure_preserves_every_row_for_at_least_once_recovery()
-    {
-        await using var database = new Database();
-        await database.Start();
-        var transport = new Transport { PartialFirst = 1 };
-        await using var provider = database.Services(transport);
-        var worker = provider.GetRequiredKeyedService<PostgreSqlDirectDispatcher>("store");
-        await worker.StartAsync(default);
-        try
-        {
-            await using (var scope = provider.CreateAsyncScope())
-            {
-                var db = scope.ServiceProvider.GetRequiredService<TestContext>();
-                using var selection = db.EnlistRelayerOutbox();
-                var outbox = scope.ServiceProvider.GetRequiredService<IOutboxEnlistment>();
-                await outbox.EnlistAsync(Record(1), default);
-                await outbox.EnlistAsync(Record(2), default);
-                await db.SaveChangesAsync();
-            }
-            await transport.Entered.Task.WaitAsync(TimeSpan.FromSeconds(30));
-            await database.Commit(provider, Record(3));
-            await Stop(worker);
-            await Assert.That(transport.Calls.Select(call => call.Count)).IsEquivalentTo(new[] { 2, 1 });
-            await Assert.That(transport.Received.Count).IsEqualTo(2);
-            await Assert.That(transport.Received.Count(sent => sent.Body[0] == 3)).IsEqualTo(1);
-            await Assert.That(transport.Received.Count(sent => sent.Body[0] is 1 or 2)).IsEqualTo(1);
-            await Assert.That(await database.Count()).IsEqualTo(2L);
-            await Assert.That(await database.Scalar($"SELECT count(*) FROM {Database.Table} WHERE attempts = 1 AND claim_token IS NULL")).IsEqualTo(2L);
-        }
-        finally { await Stop(worker); }
     }
 
     [Test]
@@ -551,7 +462,7 @@ public class DirectDispatchTests
         await worker.StopAsync(timeout.Token);
     }
 
-    private sealed class Database : IAsyncDisposable
+    internal sealed class Database : IAsyncDisposable
     {
         internal const string Schema = "Dispatch\"Schema";
         internal const string Table = "\"Dispatch\"\"Schema\".\"test_outbox\"";
@@ -636,74 +547,7 @@ public class DirectDispatchTests
         public TMessage Deserialize<TMessage>(ReadOnlySequence<byte> source) => throw new NotSupportedException();
     }
 
-    private sealed record Sent(byte[] Body, KeyValuePair<string, byte[]>[] Headers);
-    private sealed record NativeCall(string Destination, int Count);
-
-    private sealed class Transport : ITransport
-    {
-        internal bool Block { get; init; }
-        internal string? CapabilityFailure { get; init; }
-        internal int FailFirst;
-        internal int PartialFirst;
-        internal TaskCompletionSource Entered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        internal TaskCompletionSource Release { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        internal ConcurrentQueue<Sent> Received { get; } = new();
-        internal ConcurrentQueue<NativeCall> Calls { get; } = new();
-        public string Name => "events";
-        public TransportCapabilities GetCapabilities(string endpoint)
-        {
-            if (endpoint == "alpha")
-            {
-                if (CapabilityFailure == "throw") throw new InvalidOperationException("invalid destination");
-                if (CapabilityFailure is "zero" or "negative")
-                    return new() { MaxBatchSize = CapabilityFailure == "zero" ? 0 : -1 };
-            }
-            return new() { OrderedByKey = true, MaxBatchSize = endpoint == "single" ? 1 : 2 };
-        }
-
-        public async ValueTask SendAsync(OutgoingMessage message, CancellationToken cancellationToken)
-        {
-            Calls.Enqueue(new(message.Destination, 1));
-            Entered.TrySetResult();
-            if (Block) await Release.Task.WaitAsync(cancellationToken);
-            if (Interlocked.Exchange(ref FailFirst, 0) != 0) throw new InvalidOperationException("native send failed");
-            Record(message);
-        }
-
-        public async ValueTask SendBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken)
-        {
-            Calls.Enqueue(new(messages.Span[0].Destination, messages.Length));
-            Entered.TrySetResult();
-            if (Block) await Release.Task.WaitAsync(cancellationToken);
-            if (Interlocked.Exchange(ref PartialFirst, 0) != 0)
-            {
-                Record(messages.Span[0]);
-                throw new InvalidOperationException("native send failed");
-            }
-            if (Interlocked.Exchange(ref FailFirst, 0) != 0) throw new InvalidOperationException("native send failed");
-            for (var i = 0; i < messages.Length; i++) Record(messages.Span[i]);
-        }
-
-        private void Record(OutgoingMessage message)
-        {
-            // Like Kafka, this endpoint has no native scheduling. The outbox already checked the due time.
-            if (message.DeliverAt is not null) throw new NotSupportedException("Native scheduling is unavailable.");
-            var headers = new KeyValuePair<string, byte[]>[message.Headers.Length];
-            for (var i = 0; i < headers.Length; i++)
-            {
-                var header = message.Headers.Span[i];
-                headers[i] = new(header.Key, header.Value.Text is { } text ? System.Text.Encoding.UTF8.GetBytes(text) : header.Value.Utf8.ToArray());
-            }
-            Received.Enqueue(new(message.Body.ToArray(), headers));
-        }
-
-        public ValueTask<TopologyReport> ApplyTopologyAsync(TopologyMode mode, CancellationToken cancellationToken) => new(new TopologyReport([]));
-        public Task StartAsync(CancellationToken cancellationToken) => Task.CompletedTask;
-        public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
-        public ValueTask DisposeAsync() => default;
-    }
-
-    private sealed class CaptureLogger : ILogger<PostgreSqlDirectDispatcher>
+    internal sealed class CaptureLogger : ILogger<PostgreSqlDirectDispatcher>
     {
         internal ConcurrentQueue<string> Messages { get; } = new();
         public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
