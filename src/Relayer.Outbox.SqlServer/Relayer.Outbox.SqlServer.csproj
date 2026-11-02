@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <Description>SQL Server durable outbox read and claim primitives for Relayer.</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Data.SqlClient" />
+    <!-- Override SqlClient's vulnerable transitive 9.0.18 dependency. -->
+    <PackageReference Include="System.Security.Cryptography.Pkcs" />
+    <ProjectReference Include="../Relayer/Relayer.csproj" />
+  </ItemGroup>
+</Project>

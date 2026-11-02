@@ -126,6 +126,7 @@ jobs:
         run: |
           docker pull apache/kafka:4.0.2
           docker pull postgres:18-alpine
+          docker pull mcr.microsoft.com/mssql/server:2022-CU14-ubuntu-22.04
           dotnet test --no-build -c Release
 
       - name: Pack and verify NuGet artifacts
