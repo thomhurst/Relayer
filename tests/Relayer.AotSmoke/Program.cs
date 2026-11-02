@@ -26,6 +26,7 @@ PartitionCompletionSmoke.Run();
 PartitionSchedulerSmoke.Run();
 await KafkaSchemaSmoke.RunAsync();
 ProtobufSmoke.Run();
+SagaDiagramSmoke.Run();
 
 var serviceBusMessage = ServiceBusModelFactory.ServiceBusReceivedMessage(new BinaryData(new byte[] { 42 }),
     properties: new Dictionary<string, object> { ["cloudEvents:type"] = "smoke;v=1" }, deliveryCount: 2);

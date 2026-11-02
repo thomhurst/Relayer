@@ -1,0 +1,5 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <Description>Explicit process diagram declarations and export for Relayer. Saga execution is planned.</Description>
+  </PropertyGroup>
+</Project>

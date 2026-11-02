@@ -1,5 +1,6 @@
 <Solution>
   <Folder Name="/src/">
+    <Project Path="src/Relayer.Sagas/Relayer.Sagas.csproj" />
     <Project Path="src/Relayer/Relayer.csproj" />
     <Project Path="src/Relayer.Serialization.Protobuf/Relayer.Serialization.Protobuf.csproj" />
     <Project Path="src/Relayer.Testing/Relayer.Testing.csproj" />
@@ -17,6 +18,7 @@
     <Project Path="src/Relayer.Outbox.PostgreSql/Relayer.Outbox.PostgreSql.csproj" />
   </Folder>
   <Folder Name="/tests/">
+    <Project Path="tests/Relayer.Sagas.Tests/Relayer.Sagas.Tests.csproj" />
     <Project Path="tests/Relayer.Outbox.CrashProbe/Relayer.Outbox.CrashProbe.csproj" />
     <Project Path="tests/Relayer.Testing.Tests/Relayer.Testing.Tests.csproj" />
     <Project Path="tests/Relayer.AotSmoke/Relayer.AotSmoke.csproj" />

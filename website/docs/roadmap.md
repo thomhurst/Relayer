@@ -7,6 +7,7 @@ Relayer is in early development. Track progress in [GitHub issues](https://githu
 
 ## Implemented
 
+- [Explicit saga process diagrams](guides/saga-diagrams.md), with immutable declarations and deterministic Mermaid export. Transactional saga execution and durable timeouts remain planned.
 - [NuGet packaging and tag-triggered releases](contributing/releases.md), with shared metadata, git-derived versions, SourceLink, portable symbols and OIDC publishing. This infrastructure does not mean packages have been released.
 - Configuration, named transports, routes and consumers, with startup validation of declarations, options and endpoint capabilities, including [declared scheduling and transaction requirements](guides/sending.md).
 - Source-generated message registration, handler registration and dispatch, and System.Text.Json serialization.
