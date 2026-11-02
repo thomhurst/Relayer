@@ -12,7 +12,7 @@ namespace Relayer.Kafka;
 /// <summary>Registers named Kafka transports backed by Dekaf.</summary>
 public static class KafkaBuilderExtensions
 {
-    /// <summary>Declares Kafka send routes and serial consumers with durable dead-letter copies.</summary>
+    /// <summary>Declares Kafka send routes and key-ordered consumers with durable dead-letter copies.</summary>
     public static IRelayerBuilder Kafka(this IRelayerBuilder builder, string name,
         Action<TransportBuilder<KafkaTransportOptions, KafkaRouteOptions, KafkaConsumerOptions>> configure)
     {
@@ -27,8 +27,9 @@ public static class KafkaBuilderExtensions
                 var consumer = (ConsumerDefinition<KafkaConsumerOptions>)declaration;
                 if (string.IsNullOrWhiteSpace(consumer.Options.Group))
                     throw new InvalidOperationException($"Kafka consumer '{consumer.Source}': set Options.Group to a consumer group name.");
-                if (consumer.Concurrency != 1 || consumer.BatchSize != 1)
-                    throw new NotSupportedException($"Kafka consumer '{consumer.Source}': use Concurrency(1) and single-message handlers. Parallel partition scheduling and batch handlers are not implemented yet (#22).");
+                if (consumer.BatchSize != 1)
+                    throw new NotSupportedException($"Kafka consumer '{consumer.Source}': use single-message handlers. Kafka batch handlers are not implemented yet.");
+                consumer.Options.Validate(consumer.Concurrency);
                 if (!consumer.Options.Failure.RedeliveryDelays.IsEmpty)
                     throw new NotSupportedException($"Kafka consumer '{consumer.Source}': durable redelivery cannot yet persist native tombstones and null-valued headers, even with IFailureScheduler. Use RetryDelays for in-process retries and dead-letter copies instead.");
                 endpoints.Add(consumer.Source);
@@ -62,4 +63,33 @@ public sealed class KafkaConsumerOptions
     public string? Group { get; set; }
     /// <summary>Core retry and dead-letter policy. The default dead-letter topic is source + ".dead-letter".</summary>
     public FailureOptions Failure { get; set; } = new();
+
+    /// <summary>Simultaneous independent keys in one partition, bounded by Concurrency. Equal keys remain ordered.</summary>
+    public int ConcurrencyPerPartition { get; set; } = 1;
+    /// <summary>Maximum retained deliveries per assigned partition.</summary>
+    public int MaxBufferedPerPartition { get; set; } = 64;
+    /// <summary>Maximum retained deliveries across all assignments.</summary>
+    public int MaxBufferedDeliveries { get; set; } = 1024;
+    /// <summary>Maximum drain time before revoked work is cancelled and fenced.</summary>
+    public TimeSpan DrainTimeout { get; set; } = TimeSpan.FromSeconds(30);
+
+    internal PartitionSchedulerOptions SchedulerOptions(int concurrency) => new()
+    {
+        MaxConcurrency = concurrency, ConcurrencyPerPartition = ConcurrencyPerPartition,
+        MaxBufferedPerPartition = MaxBufferedPerPartition, MaxBufferedDeliveries = MaxBufferedDeliveries,
+    };
+
+    internal void Validate(int concurrency)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThan(DrainTimeout, TimeSpan.Zero);
+        _ = new PartitionScheduler<KafkaDelivery, KafkaMessageBinding, Dekaf.TopicPartition, KafkaCheckpoint>(
+            new ValidationSource(), static (_, _) => new(Disposition.Complete), SchedulerOptions(concurrency));
+    }
+
+    private sealed class ValidationSource : IPartitionSource<Dekaf.TopicPartition, KafkaCheckpoint>
+    {
+        public void Commit(Dekaf.TopicPartition partition, KafkaCheckpoint position) { }
+        public void Pause(Dekaf.TopicPartition partition) { }
+        public void Resume(Dekaf.TopicPartition partition) { }
+    }
 }

@@ -24,6 +24,7 @@ using (var asynchronousReceive = new Relayer.TestFixtures.ConcurrentReceiveFixtu
 Console.WriteLine("Concurrent cross-thread receive passed under Native AOT.");
 PartitionCompletionSmoke.Run();
 PartitionSchedulerSmoke.Run();
+await KafkaSchedulingSmoke.RunAsync();
 await KafkaSchemaSmoke.RunAsync();
 ProtobufSmoke.Run();
 

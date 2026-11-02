@@ -39,6 +39,8 @@ internal sealed class KafkaRestartableBroker : IAsyncDisposable
     {
         var builder = new KafkaBuilder("apache/kafka:4.0.2").WithVendor(KafkaVendor.ApacheSoftwareFoundation)
             .ForSmallWorkload()
+            .WithEnvironment("KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR", "1")
+            .WithEnvironment("KAFKA_TRANSACTION_STATE_LOG_MIN_ISR", "1")
             .WithKRaft().WithWaitStrategy(Wait.ForUnixContainer())
             .WithEntrypoint("/bin/bash", "-c")
             .WithCommand(new OverwriteEnumerable<string>([Supervisor.ReplaceLineEndings("\n")]));

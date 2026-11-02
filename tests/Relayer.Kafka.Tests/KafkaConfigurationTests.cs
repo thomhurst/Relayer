@@ -70,17 +70,21 @@ public class KafkaConfigurationTests
     }
 
     [Test]
-    public async Task Parallel_consumers_fail_with_an_actionable_message()
+    public async Task Parallel_consumers_accept_typed_partition_limits()
     {
         var services = new ServiceCollection();
-        services.AddRelayer(builder => builder.Kafka("events", kafka => kafka.Consume("orders", consumer =>
+        services.AddRelayer(builder => builder.Kafka("events", kafka =>
         {
-            consumer.Options.Group = "orders";
-            consumer.Concurrency(2);
-            consumer.Handler<KafkaReceiveHandler>();
-        })));
+            kafka.Options.Configure(options => options.BootstrapServers.Add("localhost:9092"));
+            kafka.Consume("orders", consumer =>
+            {
+                consumer.Options.Group = "orders";
+                consumer.Concurrency(2);
+                consumer.Options.ConcurrencyPerPartition = 2;
+                consumer.Handler<KafkaReceiveHandler>();
+            });
+        }));
         await using var provider = services.BuildServiceProvider();
-        await Assert.That(() => provider.GetServices<ITransport>().ToArray())
-            .Throws<NotSupportedException>().WithMessageContaining("Parallel partition scheduling");
+        await Assert.That(provider.GetServices<ITransport>().Count()).IsEqualTo(1);
     }
 }

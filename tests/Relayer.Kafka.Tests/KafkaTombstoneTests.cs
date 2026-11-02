@@ -121,7 +121,8 @@ public class KafkaTombstoneTests
         await Assert.That(await control.Handled.Reader.ReadAsync(token)).IsEqualTo("deleted:customer-1");
         // Stop drains the native commit before inspecting the durable offset.
         await host.StopAsync(token);
-        await Assert.That(await reader.GetCommittedOffsetAsync(new(fixture.Destination, 0), token)).IsEqualTo(2L);
+        var offsets = await reader.GetCommittedOffsetsAsync([new(fixture.Destination, 0)], token);
+        await Assert.That(offsets[new(fixture.Destination, 0)].Offset).IsEqualTo(2L);
         reader.Seek(new TopicPartitionOffset(fixture.Destination, 0, 1));
         var record = (await reader.ConsumeOneAsync(TimeSpan.FromSeconds(30), token))!.Value;
         await Assert.That(record.Value).IsNull();

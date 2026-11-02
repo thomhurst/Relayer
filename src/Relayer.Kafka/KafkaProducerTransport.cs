@@ -19,6 +19,8 @@ internal sealed class KafkaProducerTransport : ITransport, ITransportSendTracing
     {
         OrderedByKey = true,
         Tombstones = true,
+        PauseResume = true,
+        Replay = true,
         MaxBatchSize = int.MaxValue,
         ConsumptionModel = ConsumptionModel.Log,
     };

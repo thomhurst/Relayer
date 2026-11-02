@@ -7,6 +7,7 @@ namespace Relayer;
 /// ReceivePipeline.ProcessAsync delegate; only Complete and SettledByHandler are durable successes.
 /// Keep pumping after a drain deadline or loss until BufferedCount reaches zero, so late handlers are
 /// observed and their borrowed storage released. Never dispose native buffers while handlers use them.
+/// An optional completionReady callback only wakes the pump; it must never reenter the scheduler.
 /// </remarks>
 public sealed class PartitionScheduler<TIncoming, TBinding, TPartition, TPosition>
     where TBinding : struct, IPartitionMessageBinding<TIncoming>
@@ -16,6 +17,7 @@ public sealed class PartitionScheduler<TIncoming, TBinding, TPartition, TPositio
     private readonly Func<TIncoming, CancellationToken, ValueTask<Disposition>> _receive;
     private readonly PartitionSchedulerOptions _options;
     private readonly TimeProvider _clock;
+    private readonly Action? _completionReady;
     private readonly List<Assignment> _assignments = [];
     private int _dispatchCursor;
     private bool _stopping;
@@ -23,7 +25,7 @@ public sealed class PartitionScheduler<TIncoming, TBinding, TPartition, TPositio
     /// <summary>Creates a scheduler; cache the receive delegate once, sized for the configured concurrency.</summary>
     public PartitionScheduler(IPartitionSource<TPartition, TPosition> source,
         Func<TIncoming, CancellationToken, ValueTask<Disposition>> receive,
-        PartitionSchedulerOptions? options = null, TimeProvider? timeProvider = null)
+        PartitionSchedulerOptions? options = null, TimeProvider? timeProvider = null, Action? completionReady = null)
     {
         ArgumentNullException.ThrowIfNull(source);
         ArgumentNullException.ThrowIfNull(receive);
@@ -39,6 +41,7 @@ public sealed class PartitionScheduler<TIncoming, TBinding, TPartition, TPositio
         _source = source;
         _receive = receive;
         _clock = timeProvider ?? TimeProvider.System;
+        _completionReady = completionReady;
         LastProgressAt = _clock.GetUtcNow();
     }
 
@@ -59,6 +62,19 @@ public sealed class PartitionScheduler<TIncoming, TBinding, TPartition, TPositio
     /// <summary>Last observed durable pipeline completion, for the transport's consumer liveness provider.</summary>
     /// <remarks>Use BufferedCount == 0 for idle. A failed gap is not idle even when ActiveCount is zero.</remarks>
     public DateTimeOffset LastProgressAt { get; private set; }
+
+    /// <summary>Start time of the oldest outstanding delivery, including queued work and failed gaps; null when idle.</summary>
+    public DateTimeOffset? OldestOutstandingAt
+    {
+        get
+        {
+            long oldest = long.MaxValue;
+            for (var i = 0; i < _assignments.Count; i++)
+                foreach (ref readonly var entry in _assignments[i].Entries.AsSpan())
+                    if (entry.State != EntryState.Empty) oldest = Math.Min(oldest, entry.EnqueuedAt);
+            return oldest == long.MaxValue ? null : new DateTimeOffset(oldest, TimeSpan.Zero);
+        }
+    }
 
     /// <summary>Creates a fresh epoch. Do not reassign retained partitions during cooperative rebalancing.</summary>
     public PartitionAssignmentToken Assign(TPartition partition)
@@ -89,6 +105,7 @@ public sealed class PartitionScheduler<TIncoming, TBinding, TPartition, TPositio
         assignment.Entries[tail] = new()
         {
             Message = message, Token = completion, State = EntryState.Queued,
+            EnqueuedAt = _clock.GetUtcNow().UtcTicks,
             NextKey = -1, NextReady = -1, KeyTail = tail, KeyHead = keyHead < 0,
         };
         if (keyHead < 0) MakeReady(assignment, tail);
@@ -106,6 +123,9 @@ public sealed class PartitionScheduler<TIncoming, TBinding, TPartition, TPositio
     /// <summary>Returns the pipeline failure that stopped this assignment, or null.</summary>
     /// <remarks>Report through the transport's existing worker health/error path. Recover by revoking and replaying, never by skipping the gap.</remarks>
     public Exception? GetFailure(PartitionAssignmentToken token) => Get(token)?.Failure;
+
+    /// <summary>Whether an assignment still owns dispatch or bounded draining rights.</summary>
+    public bool IsAssigned(PartitionAssignmentToken token) => Get(token) is { Fenced: false };
 
     /// <summary>Stops dispatch immediately and drains active work until the monotonic deadline.</summary>
     /// <remarks>Queued work is replayed. Call Pump until IsDraining is false before returning native revocation.</remarks>
@@ -224,6 +244,7 @@ public sealed class PartitionScheduler<TIncoming, TBinding, TPartition, TPositio
             return;
         }
         if (entry.Pending.IsCompleted) Complete(assignment, slot);
+        else if (_completionReady is not null) entry.Pending.GetAwaiter().UnsafeOnCompleted(_completionReady);
     }
 
     private static int FindKeyHead(Assignment assignment, TIncoming message)
@@ -350,6 +371,7 @@ public sealed class PartitionScheduler<TIncoming, TBinding, TPartition, TPositio
         internal TIncoming Message;
         internal PartitionCompletionToken Token;
         internal ValueTask<Disposition> Pending;
+        internal long EnqueuedAt;
         internal EntryState State;
         internal bool KeyHead;
         internal int KeyTail;

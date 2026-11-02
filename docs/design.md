@@ -181,7 +181,7 @@ public interface IPartitionSource<TPartition, TPosition>
 
 `TPosition` is whatever the broker uses: a `long` offset for Kafka, a sequence-number string for Kinesis, a `MessageId` for Pulsar. The scheduler never compares positions; it tracks them in arrival order.
 
-The implemented [partition scheduler](../website/docs/transports/partition-scheduler.md) uses `IPartitionMessageBinding<TIncoming>` for native key equality and lease release, and the [completion-window primitive](../website/docs/transports/partition-completion.md) for bounded arrival-order checkpoints. One transport-owned pump serializes admission, dispatch, completion observation and native calls without per-delivery tasks or continuations. Assignment tokens fence stale completions; configurable global/per-assignment limits include retained work, and global limits include late handlers after ownership ends. Revoke stops dispatch and drains active work up to a monotonic deadline; loss fences immediately. Native Kafka integration remains planned.
+The implemented [partition scheduler](../website/docs/transports/partition-scheduler.md) uses `IPartitionMessageBinding<TIncoming>` for native key equality and lease release, and the [completion-window primitive](../website/docs/transports/partition-completion.md) for bounded arrival-order checkpoints. One transport-owned pump serializes admission, dispatch, completion observation and native calls without per-delivery tasks or allocations. An optional cached completion callback wakes the owner for asynchronous handlers. Assignment tokens fence stale completions; configurable global/per-assignment limits include retained work, and global limits include late handlers after ownership ends. Revoke stops dispatch and drains active work up to a monotonic deadline; loss fences immediately. The Kafka adapter integrates native fetch checkpoints and safe header snapshots with this scheduler.
 
 Every transport proves the SPI contract by passing the transport conformance suite (§15). The in-memory transport is the first implementation, in phase 0.
 
@@ -191,7 +191,7 @@ Every transport proves the SPI contract by passing the transport conformance sui
 
 ### 3.1 Configuration
 
-The core configuration surface is available now. Transport packages supply the three option types and wrap `AddTransport` in typed extensions. The [Kafka adapter](../website/docs/transports/kafka.md) implements producers and serial consumer groups through `Kafka`; parallel partition scheduling and the other broker adapters remain roadmap work. The following call site uses the real core API:
+The core configuration surface is available now. Transport packages supply the three option types and wrap `AddTransport` in typed extensions. The [Kafka adapter](../website/docs/transports/kafka.md) implements producers and key-ordered parallel consumer groups through `Kafka`; the other broker adapters remain roadmap work. The following call site uses the real core API:
 
 ```csharp
 var services = new ServiceCollection();
@@ -558,9 +558,9 @@ Kafka gets its own consumption model instead of being forced into a queue shape 
 
 The transport wraps **[Dekaf](https://github.com/thomhurst/Dekaf)**, a pure C# Kafka client (decision D22). Dekaf has no native dependencies, supports Native AOT, and is built for zero-allocation hot paths, which matches Relayer's own goals. Dekaf already ships features such as retry and dead-letter topics, an outbox, and OpenTelemetry instrumentation. Following principle 1, the Kafka transport reuses Dekaf's mechanisms where they fit Relayer's uniform pipeline, rather than re-implementing them. Relayer's outbox remains the cross-transport outbox.
 
-- **Key-ordered parallelism:** within a partition, messages with different keys are processed concurrently (`Concurrency(perPartition: n, orderBy: OrderBy.Key)`), while messages with the same key stay ordered. This, the watermark commits and the rebalance handling below live in the core's partition scheduler (§2.4), so other log-based transports reuse them.
+- **Key-ordered parallelism:** within a partition, messages with different keys are processed concurrently (`consumer.Concurrency(n)` with `consumer.Options.ConcurrencyPerPartition`), while messages with the same key stay ordered. This, the watermark commits and the rebalance handling below live in the core's partition scheduler (§2.4), so other log-based transports reuse them.
 - **Offset commits by watermark:** Relayer commits the highest *contiguous* completed offset per partition, asynchronously and batched, and flushes on rebalance and shutdown (Brighter #2269).
-- **Rebalance safety:** `cooperative-sticky` is supported. On revoke, Relayer stops dispatching for the revoked partitions, drains in-flight work up to a timeout, then commits. Pause and resume are tracked per partition, so a rebalance while paused cannot deadlock (KafkaFlow #456, #681).
+- **Rebalance safety:** Dekaf's native KIP-848 consumer protocol supplies cooperative incremental rebalancing with the server-side sticky `uniform` assignor. On revoke, Relayer stops dispatching for the revoked partitions, drains in-flight work up to a timeout, then commits. Pause and resume are tracked per partition, so a rebalance while paused cannot deadlock (KafkaFlow #456, #681).
 - **Consume-transform-produce:**
   - *Kafka → database → anything:* the inbox, business data, and outbox are written in one database transaction. The offset is committed only after that transaction commits. Redelivery after a crash is deduplicated by the inbox.
   - *Kafka → Kafka:* optional native Kafka transactions (Dekaf's `SendOffsetsToTransactionAsync`) give exactly-once processing.

@@ -1,16 +1,46 @@
 using System.Buffers;
 using System.Diagnostics;
+using System.Runtime.InteropServices;
 using System.Text;
 using Dekaf.Consumer;
+using Dekaf.Serialization;
 
 namespace Relayer.Kafka;
 
 /// <summary>A borrowed Kafka record, valid only while the receive callback runs.</summary>
-public readonly record struct KafkaDelivery(ConsumeResult<byte[], byte[]> Result, string PartitionId);
+public readonly record struct KafkaDelivery(ConsumeResult<byte[], byte[]> Result, string PartitionId)
+{
+    internal static KafkaDelivery Snapshot(ConsumeResult<byte[], byte[]> record, string partitionId)
+    {
+        // Dekaf owns deserialized byte arrays. Materialize its native header snapshot once,
+        // before advancing the fetch window, and retain that list with those same arrays.
+        var headers = record.Headers;
+        if (headers.Count != 0) _ = headers[0];
+        return new(new(record.Topic, record.Partition, record.Offset, record.Key, record.IsKeyNull,
+            record.Value, record.Value is null, headers, record.TimestampMs, record.TimestampType,
+            record.LeaderEpoch, OwnedBytes.Instance, OwnedBytes.Instance), partitionId);
+    }
+
+    private sealed class OwnedBytes : IDeserializer<byte[]>
+    {
+        internal static readonly OwnedBytes Instance = new();
+        public byte[] Deserialize(ReadOnlyMemory<byte> data, SerializationContext context)
+        {
+            if (context.IsNull) return null!;
+            if (MemoryMarshal.TryGetArray(data, out var segment) && segment.Offset == 0 && segment.Count == segment.Array!.Length)
+                return segment.Array;
+            throw new InvalidOperationException("Kafka delivery snapshots require native byte-array deserialization.");
+        }
+    }
+}
 
 /// <summary>Reads the native Kafka binary CloudEvents binding without copying headers or body.</summary>
-public readonly struct KafkaMessageBinding : IMessageBinding<KafkaDelivery>
+public readonly struct KafkaMessageBinding : IPartitionMessageBinding<KafkaDelivery>
 {
+    /// <summary>Compares native key bytes without decoding. Null keys share their own ordered lane.</summary>
+    public static bool KeysEqual(KafkaDelivery first, KafkaDelivery second) =>
+        first.Result.IsKeyNull == second.Result.IsKeyNull &&
+        (first.Result.IsKeyNull || first.Result.Key.AsSpan().SequenceEqual(second.Result.Key));
     /// <inheritdoc />
     public static ReadOnlySequence<byte> GetBody(KafkaDelivery message) => new(message.Result.Value ?? []);
     /// <inheritdoc />

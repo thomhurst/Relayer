@@ -23,6 +23,27 @@ public class KafkaBindingTests
     }
 
     [Test]
+    public async Task Warm_snapshot_and_binary_key_comparison_reuse_owned_arrays_without_allocating()
+    {
+        var original = Record(false, false);
+        for (var i = 0; i < 1000; i++) _ = KafkaDelivery.Snapshot(original.Result, "0");
+        var before = GC.GetAllocatedBytesForCurrentThread();
+        var snapshot = default(KafkaDelivery);
+        for (var i = 0; i < 1000; i++)
+        {
+            snapshot = KafkaDelivery.Snapshot(original.Result, "0");
+            if (!KafkaMessageBinding.KeysEqual(snapshot, original)) throw new InvalidOperationException("Native key changed.");
+        }
+        var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+        await Assert.That(allocated).IsEqualTo(0L);
+        await Assert.That(snapshot.Result.Key).IsSameReferenceAs(original.Result.Key);
+        await Assert.That(snapshot.Result.Value).IsSameReferenceAs(original.Result.Value);
+        var nullKey = Record(true, false);
+        await Assert.That(KafkaMessageBinding.KeysEqual(nullKey, nullKey)).IsTrue();
+        await Assert.That(KafkaMessageBinding.KeysEqual(nullKey, original)).IsFalse();
+    }
+
+    [Test]
     public async Task Warm_binding_borrows_storage_without_allocating()
     {
         var incoming = Record(false, false);

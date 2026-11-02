@@ -1,9 +1,9 @@
 ---
 title: Kafka
-description: "Named Kafka producers and serial consumers backed by Dekaf, with durable failure handling."
+description: "Named Kafka producers and key-ordered parallel consumers backed by Dekaf, with durable failure handling."
 ---
 
-`Relayer.Kafka` implements producers and serial consumer groups on [Dekaf](https://github.com/thomhurst/Dekaf). Consumers use the core failure pipeline and acknowledge offsets after durable handling, including dead-letter copies. Optional health adapters are available in `Relayer.Kafka.HealthChecks`. Typed tombstones use native null values and the original message's wire identity. Parallel partition scheduling, drain-on-revoke, topology management and transactions remain planned.
+`Relayer.Kafka` implements producers and key-ordered consumer groups on [Dekaf](https://github.com/thomhurst/Dekaf). Consumers use the core failure pipeline and acknowledge offsets after durable handling, including dead-letter copies. Optional health adapters are available in `Relayer.Kafka.HealthChecks`. Typed tombstones use native null values and the original message's wire identity. Partition scheduling, backpressure and bounded drain use the reusable core scheduler. Topology management and transactions remain planned.
 
 ## Register a producer
 
@@ -69,11 +69,27 @@ Register the handler and its message with source generation. Create both topics 
 
 `KafkaTransportOptions.ConfigureConsumer` receives Dekaf's `ConsumerBuilder<byte[], byte[]>`. Native security, offset-reset, fetch and group settings remain available. Keep the raw byte deserializers. After that callback, Relayer sets the declared group and source subscription, disables automatic offset storage and commits, and adds its rebalance listener. These ownership settings ensure polling never acknowledges unfinished work. Dekaf's native offset-reset default still applies; set `WithAutoOffsetReset(AutoOffsetReset.Earliest)` explicitly when a new group must read existing records.
 
-One declaration currently processes records serially, with `Concurrency(1)` and single-message handlers. Other values fail at startup with an actionable error. The adapter consumes native fetch batches and commits their native next-offset checkpoints only after every delivered record completes. It abandons an invalidated batch on rebalance. If the partition remains assigned, it seeks to the batch's first delivered offset and replays the uncommitted batch; a revoked partition resumes through native reassignment. Successful records in that batch may therefore run again. Native batch checkpoints preserve offset gaps and leader epochs. Key-parallel processing, contiguous watermark tracking across parallel work, and bounded drain-on-revoke belong to the planned partition scheduler. Shutdown stops fetching and drains the current batch; its cancellation deadline aborts unfinished handling without committing it. Each hosted service starts once; recreate the host to restart Kafka consumers, including after a failed or aborted receive. A fresh native consumer resumes at the broker's committed offsets. Partial startup failure disposes the transport and all consumers already created.
+Consumers default to one active handler. Increase total concurrency and per-partition concurrency explicitly:
 
-Inside a handler, `context.Kafka().ConsumeResult` exposes Dekaf's original record. Durable dead-letter copies retain native null values and nullable application headers. The struct view wraps a pooled `NativeMessage<KafkaDelivery>` feature and is valid only during processing. It provides native headers, key, partition, offset and timestamp without allocating a feature for each record. Null-value records receive the tombstone telemetry attribute and dispatch to `IHandler<Tombstone<T>>`. Non-null records, including empty values, dispatch to `IHandler<T>`. Missing handlers or malformed non-null bodies follow the core failure policy.
+```csharp
+consumer.Concurrency(16);
+consumer.Options.ConcurrencyPerPartition = 4;
+consumer.Options.MaxBufferedPerPartition = 64;
+consumer.Options.MaxBufferedDeliveries = 1024;
+consumer.Options.DrainTimeout = TimeSpan.FromSeconds(30);
+```
 
-Consumer failures reach the application's background-service supervision immediately, even when another consumer is still running. The host's default policy stops the application. Shutdown signals every consumer before waiting for their current batches, so a failed consumer cannot prevent its siblings from stopping. Override `HostOptions.BackgroundServiceExceptionBehavior` only when the application provides its own recovery policy.
+All limits must be positive and fit their corresponding buffer and global limits. Equal native key bytes stay ordered within each partition; unrelated keys can run concurrently. Null keys share one ordered lane, separate from non-null empty keys. Single-message handlers remain required. The core scheduler bounds active and queued deliveries, including completed work behind a gap and late work after ownership ends. Native `Pause` holds undisclosed records when capacity fills; retained partitions can keep receiving and processing.
+
+The adapter captures Dekaf's native next-offset checkpoints, including leader epochs and offset gaps. It commits only the contiguous durable prefix, batches asynchronous commits across partitions, and flushes on revoke and shutdown. Polling never proves application durability. Each native commit has one CLIENT `commit {topic}` settle span with `messaging.batch.message_count`, outside process spans.
+
+Dekaf uses Kafka's incremental KIP-848 consumer protocol. Its native `WithGroupRemoteAssignor("uniform")` selects the server-side sticky assignor, the [migration equivalent of classic CooperativeStickyAssignor](https://kafka.apache.org/43/operations/consumer-rebalance-protocol/#migrating-from-client-side-assignors). Relayer preserves native builder settings and uses native rebalance callbacks. Only revoked partitions stop dispatch. Active work drains for at most `DrainTimeout`; safe checkpoints flush while ownership remains valid. At the deadline, queued work is discarded for replay and active handlers are cancelled and fenced. Ownership loss immediately discards pending commits. Each replacement assignment gets fresh pause state and an epoch that ignores late completions.
+
+Shutdown stops admission and applies the same bounded drain, including when a pending replay is waiting for active work. Shutdown cancels pending seeks and starts `DrainTimeout` without waiting for that replay drain to finish. Its cancellation token can shorten the deadline. Cancellation is cooperative: handlers must honor their token; disposal observes late handlers before releasing their state. Recreate the host to restart a stopped, failed or aborted receiver. A fresh native consumer resumes at broker-committed offsets. Partial startup failure disposes the transport and all consumers already created.
+
+Inside a handler, `context.Kafka().ConsumeResult` exposes a Dekaf record with the original native fields and byte arrays. Before advancing a fetch window, the adapter materializes Dekaf's native header snapshot once so asynchronous handlers cannot read expired borrowed headers. Durable dead-letter copies retain native null values and nullable application headers. The struct view wraps a pooled `NativeMessage<KafkaDelivery>` feature and is valid only during processing. It provides native headers, key, partition, offset and timestamp without allocating a feature for each record. Null-value records receive the tombstone telemetry attribute and dispatch to `IHandler<Tombstone<T>>`. Non-null records, including empty values, dispatch to `IHandler<T>`. Missing handlers or malformed non-null bodies follow the core failure policy.
+
+Consumer failures reach the application's background-service supervision immediately, even when another consumer is still running. The host's default policy stops the application. Shutdown signals every consumer before waiting for their drains, so a failed consumer cannot prevent its siblings from stopping. Override `HostOptions.BackgroundServiceExceptionBehavior` only when the application provides its own recovery policy.
 
 Relayer discards the legacy `relayer.internal.kafka.tombstone` header, including values added by native callbacks. Null-value state comes only from the native record or the explicit serialized send flag; a header cannot turn an empty value into a tombstone.
 
@@ -216,11 +232,14 @@ The health service reports a timed-out probe as unhealthy and passes cancellatio
 
 Liveness comes from each exact consumer declaration's receiver state. Workers waiting for native batches
 are idle and healthy regardless of elapsed time. Processing remains active through retries, durable failure
-copies and the batch commit; completed records refresh progress. The oldest active worker determines
-liveness, so idle workers and healthy declarations on the same source cannot mask a stall. Before receiver
+copies and the batch commit, including a commit after entirely synchronous handling. A stalled native
+commit therefore counts toward `ConsumerStallTimeout`; the worker becomes idle only after the commit
+finishes. The oldest outstanding delivery determines progress while handlers remain active. The oldest
+active worker determines liveness, so idle workers and healthy declarations on the same source cannot
+mask a stall. Before receiver
 startup and after receiver shutdown or failure, state is unavailable and health is unhealthy. Connectivity
-and liveness are separate checks: an idle receiver does not prove broker connectivity. Parallel workers
-remain planned, but the health snapshot already aggregates every registered worker.
+and liveness are separate checks: an idle receiver does not prove broker connectivity. The health snapshot
+aggregates every registered worker, including concurrent partition handling.
 
 Without this optional registration, Kafka consumers do not read the health clock or record health state.
 The Kafka transport itself has no dependency on the health-check packages. See [health integration](../guides/health-checks.md)
@@ -236,7 +255,7 @@ dotnet run -c Release --project benchmarks/Relayer.Benchmarks -- --filter "*Kafk
 
 Each benchmark creates and deletes its own topic. The comparison measures the serialized adapter seam, including header conversion. It does not establish the full default-JSON send pipeline's 5% throughput budget. That acceptance gate remains part of the transport rollout.
 
-`KafkaReceiveBenchmarks` replays a fixed 4096-record topic through raw Dekaf and the production serial receive adapter. Both paths deserialize the same source-generated JSON contract and commit native fetch-batch checkpoints. `HealthEnabled` compares receiver health tracking enabled and disabled against raw Dekaf. Tracing is disabled and `MemoryDiagnoser` reports allocations. This comparison includes the core receive pipeline and generated handler dispatch; it does not measure the planned parallel scheduler. With the same broker environment variable set, run `--filter "*KafkaReceiveBenchmarks*"`. Results are local diagnostics, not a claim that the 5% receive budget has passed.
+`KafkaReceiveBenchmarks` replays a fixed 4096-record topic through raw Dekaf and the production scheduled receive adapter. Both paths deserialize the same source-generated JSON contract and commit native checkpoints. `Concurrency` compares one and four handler slots; `HealthEnabled` compares receiver health tracking enabled and disabled against raw Dekaf. Tracing is disabled and `MemoryDiagnoser` reports allocations. This comparison includes the core receive pipeline and generated handler dispatch, including the production partition scheduler. With the same broker environment variable set, run `--filter "*KafkaReceiveBenchmarks*"`. Results are local diagnostics, not a claim that the 5% receive budget has passed.
 
 ## Typed tombstones
 

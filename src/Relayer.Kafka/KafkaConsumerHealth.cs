@@ -40,9 +40,11 @@ internal sealed class KafkaConsumerHealth(TimeProvider clock)
 
 internal sealed class KafkaWorkerHealth(TimeProvider clock)
 {
+    internal TimeProvider Clock => clock;
     private long _progress;
     internal long Read() => Volatile.Read(ref _progress);
     internal void Progress() => Volatile.Write(ref _progress, clock.GetUtcNow().UtcTicks);
+    internal void ActiveAt(DateTimeOffset startedAt) => Volatile.Write(ref _progress, startedAt.UtcTicks);
     internal void Idle() => Volatile.Write(ref _progress, -clock.GetUtcNow().UtcTicks);
     internal void Unavailable() => Volatile.Write(ref _progress, 0);
 }

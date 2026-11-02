@@ -31,6 +31,9 @@ public class KafkaReceiveBenchmarks
     [Params(false, true)]
     public bool HealthEnabled { get; set; }
 
+    [Params(1, 4)]
+    public int Concurrency { get; set; }
+
     [GlobalSetup]
     public async Task Setup()
     {
@@ -43,7 +46,8 @@ public class KafkaReceiveBenchmarks
         {
             var headers = new Headers().Add("ce_id", "benchmark").Add("ce_type", "benchmarks.kafka-receive;v=1");
             var body = "{\"Value\":42}"u8.ToArray();
-            for (var i = 0; i < Records; i++) await producer.ProduceAsync(new() { Topic = _topic, Key = null, Value = body, Headers = headers });
+            var keys = Enumerable.Range(0, 16).Select(static i => new[] { (byte)i }).ToArray();
+            for (var i = 0; i < Records; i++) await producer.ProduceAsync(new() { Topic = _topic, Key = keys[i % keys.Length], Value = body, Headers = headers });
         }
         _raw = await BuildConsumer(bootstrap, "raw");
         _native = await BuildConsumer(bootstrap, "relayer");
@@ -59,10 +63,11 @@ public class KafkaReceiveBenchmarks
         var pipeline = new ConsumePipelineBuilder(_provider.GetRequiredService<IServiceScopeFactory>(),
             _provider.GetRequiredService<MessageTypeRegistry>(), _provider.GetRequiredService<IMessageSerializer>(),
             static (_, error, _) => ValueTask.FromException(error))
-            .Handler(_provider.GetRequiredService<HandlerRegistry>().GetHandler<KafkaBenchmarkPayload, KafkaBenchmarkHandler>()).Build(1);
-        var receive = new ReceivePipeline<KafkaDelivery, KafkaMessageBinding>(pipeline, new(), 1);
+            .Handler(_provider.GetRequiredService<HandlerRegistry>().GetHandler<KafkaBenchmarkPayload, KafkaBenchmarkHandler>()).Build(Concurrency);
+        var receive = new ReceivePipeline<KafkaDelivery, KafkaMessageBinding>(pipeline, new(), Concurrency);
         _health = HealthEnabled ? new KafkaWorkerHealth(TimeProvider.System) : null;
-        _adapter = new(_native, receive.ProcessAsync, _tracing, new() { System = "kafka", Destination = _topic }, new(), _health);
+        _adapter = new(_native, receive.ProcessAsync, _tracing, new() { System = "kafka", Destination = _topic }, new(), _health,
+            new() { ConcurrencyPerPartition = Concurrency }, Concurrency);
     }
 
     private async Task<IKafkaConsumer<byte[], byte[]>> BuildConsumer(string bootstrap, string suffix)
@@ -111,9 +116,7 @@ public class KafkaReceiveBenchmarks
         var count = 0;
         await foreach (var batch in _native.ConsumeBatchAsync(timeout.Token))
         {
-            _health?.Progress();
             count += await _adapter.ProcessBatchAsync(batch, timeout.Token);
-            _health?.Idle();
             if (count >= Records) return count;
         }
         throw new InvalidOperationException("Native stream ended before all benchmark records.");
