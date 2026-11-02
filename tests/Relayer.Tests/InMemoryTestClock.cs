@@ -32,6 +32,14 @@ internal sealed class InMemoryTestClock : TimeProvider
         foreach (var timer in timers) timer.Fire();
     }
 
+    // System timers use whole-millisecond ticks and can wake before a precise elapsed-time deadline.
+    internal void FireTimersEarly()
+    {
+        TestTimer[] timers;
+        lock (_timers) timers = _timers.ToArray();
+        foreach (var timer in timers) timer.Fire(early: true);
+    }
+
     private sealed class TestTimer(InMemoryTestClock clock, TimerCallback callback, object? state) : ITimer
     {
         private long _due = long.MaxValue;
@@ -42,10 +50,11 @@ internal sealed class InMemoryTestClock : TimeProvider
             if (dueTime != Timeout.InfiniteTimeSpan) clock._registered.Writer.TryWrite(true);
             return true;
         }
-        internal void Fire()
+        internal void Fire(bool early = false)
         {
             var due = Interlocked.Read(ref _due);
-            if (due <= clock.GetTimestamp() && Interlocked.CompareExchange(ref _due, long.MaxValue, due) == due) callback(state);
+            if (due != long.MaxValue && (early || due <= clock.GetTimestamp()) &&
+                Interlocked.CompareExchange(ref _due, long.MaxValue, due) == due) callback(state);
         }
         public void Dispose() => Interlocked.Exchange(ref _due, long.MaxValue);
         public ValueTask DisposeAsync() { Dispose(); return default; }

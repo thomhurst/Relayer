@@ -205,7 +205,9 @@ public sealed class TransportConformanceSuite<TIncoming, TBinding>
                 CheckCreation(first);
                 CheckCreation(retry);
                 Require(first.Attempt is null || retry.Attempt > first.Attempt, "Native delivery count did not advance.");
-                Require(retry.ReceivedAt >= redeliverAt(), "Native redelivery ran before its due time.");
+                var retryDue = redeliverAt();
+                if (retry.ReceivedAt < retryDue)
+                    Require(false, $"Native redelivery ran before its due time. Due: {retryDue:O}; received: {retry.ReceivedAt:O}; early by: {retryDue - retry.ReceivedAt}.");
                 break;
             case TransportConformanceCase.DeadLetter:
                 await Send(1, creation: true).ConfigureAwait(false);
