@@ -424,6 +424,92 @@ public class InMemoryTransportTests
         await Assert.That(transport.DeadLetters("orders").TryRead(out _)).IsFalse();
     }
     [Test]
+    [Arguments(false, 200.0)]
+    [Arguments(true, 200.0)]
+    [Arguments(false, 0.5)]
+    [Arguments(true, 0.5)]
+    public async Task Ordered_redelivery_waits_for_elapsed_deadline_despite_timer_precision(bool log, double milliseconds)
+    {
+        var clock = new InMemoryTestClock();
+        var delay = TimeSpan.FromMilliseconds(milliseconds);
+        var due = clock.GetUtcNow() + delay;
+        await using var transport = Transport(new()
+        {
+            Capabilities = new()
+            {
+                ConsumptionModel = log ? ConsumptionModel.Log : ConsumptionModel.Queue,
+                OrderedByKey = true,
+                MaxRedeliveryDelay = delay,
+            },
+        }, clock);
+        var redelivered = new TaskCompletionSource<DateTimeOffset>(TaskCreationOptions.RunContinuationsAsynchronously);
+        transport.RegisterConsumer("orders", (delivery, _) =>
+        {
+            if (delivery.Attempt == 1) return new(Disposition.Redeliver(delay));
+            redelivered.TrySetResult(clock.GetUtcNow());
+            return new(Disposition.Complete);
+        }, log ? "workers" : null);
+        await transport.StartAsync(default);
+        await Send(transport, 1, "key");
+        var armed = clock.NextTimer();
+        await Assert.That(await Task.WhenAny(armed, redelivered.Task).WaitAsync(Limit)).IsSameReferenceAs(armed);
+        await armed;
+        if (milliseconds >= 1)
+        {
+            clock.Advance(delay - TimeSpan.FromMilliseconds(0.5));
+            clock.FireTimersEarly();
+            var rearmed = clock.NextTimer();
+            await Assert.That(await Task.WhenAny(rearmed, redelivered.Task).WaitAsync(Limit)).IsSameReferenceAs(rearmed);
+            await rearmed;
+        }
+        await Assert.That(redelivered.Task.IsCompleted).IsFalse();
+        clock.Advance(TimeSpan.FromMilliseconds(1));
+        await Assert.That(await redelivered.Task.WaitAsync(Limit)).IsGreaterThanOrEqualTo(due);
+        await transport.StopAsync(default);
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Ordered_redelivery_deadline_survives_timer_chunks_and_restart(bool log)
+    {
+        var clock = new InMemoryTestClock();
+        var delay = TimeSpan.FromDays(2);
+        await using var transport = Transport(new()
+        {
+            Capabilities = new()
+            {
+                ConsumptionModel = log ? ConsumptionModel.Log : ConsumptionModel.Queue,
+                OrderedByKey = true,
+                MaxRedeliveryDelay = delay,
+            },
+        }, clock);
+        var values = Channel.CreateUnbounded<int>();
+        transport.RegisterConsumer("orders", (delivery, _) =>
+        {
+            if (Value(delivery) == 1 && delivery.Attempt == 1) return new(Disposition.Redeliver(delay));
+            values.Writer.TryWrite(Value(delivery) * 10 + delivery.Attempt);
+            return new(Disposition.Complete);
+        }, log ? "workers" : null);
+        await transport.StartAsync(default);
+        await Send(transport, 1, "key");
+        await Send(transport, 2, "key");
+        await clock.NextTimer();
+        clock.Advance(TimeSpan.FromDays(1));
+        await clock.NextTimer();
+        await Assert.That(values.Reader.TryRead(out _)).IsFalse();
+        await transport.StopAsync(default).WaitAsync(Limit);
+        clock.Advance(TimeSpan.FromHours(12));
+        await transport.StartAsync(default);
+        await clock.NextTimer();
+        await Assert.That(values.Reader.TryRead(out _)).IsFalse();
+        clock.Advance(TimeSpan.FromHours(12));
+        await Assert.That(await Next(values)).IsEqualTo(12);
+        await Assert.That(await Next(values)).IsEqualTo(21);
+        await transport.StopAsync(default);
+    }
+
+    [Test]
     public async Task Native_scheduling_accepts_immediately_and_delivers_earlier_due_messages_first()
     {
         var clock = new InMemoryTestClock();

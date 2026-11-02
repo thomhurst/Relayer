@@ -329,6 +329,7 @@ internal sealed class InMemoryReceiver(InMemoryEndpoint endpoint, InMemoryReadSt
     private Exception? _loggedSettlementError;
     private long _committed = -1;
     private TimeSpan _retryDelay;
+    private long _retryStarted;
     internal string? Group { get; } = group;
     internal int Partition { get; } = partition;
     internal string PartitionId { get; } = partition.ToString(System.Globalization.CultureInfo.InvariantCulture);
@@ -379,9 +380,17 @@ internal sealed class InMemoryReceiver(InMemoryEndpoint endpoint, InMemoryReadSt
                 if (stop.IsCancellationRequested) break;
                 while (_retryDelay > TimeSpan.Zero)
                 {
-                    var delay = _retryDelay > TimeSpan.FromDays(1) ? TimeSpan.FromDays(1) : _retryDelay;
+                    var remaining = _retryDelay - endpoint.Clock.GetElapsedTime(_retryStarted);
+                    if (remaining <= TimeSpan.Zero)
+                    {
+                        _retryDelay = TimeSpan.Zero;
+                        break;
+                    }
+                    var delay = remaining > TimeSpan.FromDays(1) ? TimeSpan.FromDays(1) : remaining;
+                    // Task.Delay truncates to whole milliseconds. Re-check elapsed time after each wake,
+                    // and round up so a fractional remainder cannot become a synchronous busy loop.
+                    delay = TimeSpan.FromMilliseconds(Math.Ceiling(delay.TotalMilliseconds));
                     await Task.Delay(delay, endpoint.Clock, stop).ConfigureAwait(false);
-                    _retryDelay -= delay;
                 }
                 _manual = false;
                 var delivery = new InMemoryDelivery(this, _pending);
@@ -406,7 +415,12 @@ internal sealed class InMemoryReceiver(InMemoryEndpoint endpoint, InMemoryReadSt
                         await endpoint.EnqueueAsync(_pending, abort).ConfigureAwait(false);
                         _pending = null;
                     }
-                    else _retryDelay = disposition.Delay; // Keep the ordered partition head until settlement.
+                    else
+                    {
+                        // Keep the ordered partition head until its monotonic redelivery deadline.
+                        _retryDelay = disposition.Delay;
+                        if (_retryDelay > TimeSpan.Zero) _retryStarted = endpoint.Clock.GetTimestamp();
+                    }
                     continue;
                 }
                 if (disposition.Kind == DispositionKind.DeadLetter)
