@@ -34,6 +34,36 @@ public class KafkaFixtureTests
         await admin.ListTopicsAsync(cancellationToken: token);
     }
 
+    [Test]
+    public async Task Pending_readiness_wait_observes_cancellation_and_preserves_broker_output()
+    {
+        using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(2));
+        await using var broker = new KafkaRestartableBroker();
+        await broker.Container.StartAsync(timeout.Token);
+        // Replace Kafka with a process that acknowledges startup but never reports readiness.
+        // Wait for both broker output and host entry into the readiness wait before cancelling.
+        await broker.Container.CopyAsync(Encoding.UTF8.GetBytes(
+            "#!/bin/bash\necho 'fixture startup pending'\ntouch /tmp/relayer-fixture-pending\nexec sleep infinity\n"),
+            "/testcontainers.sh", ct: timeout.Token);
+        using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(timeout.Token);
+        var waiting = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var pending = broker.RestartAsync(cancellation.Token, () => waiting.SetResult());
+        await waiting.Task.WaitAsync(timeout.Token);
+        await broker.Container.ExecAsync(["/bin/bash", "-ec",
+            "until test -f /tmp/relayer-fixture-pending; do sleep 0.1; done"], timeout.Token);
+        await cancellation.CancelAsync();
+
+        try
+        {
+            await pending;
+            throw new InvalidOperationException("Readiness completed without cancellation.");
+        }
+        catch (InvalidOperationException error) when (error.InnerException is OperationCanceledException)
+        {
+            await Assert.That(error.Message).Contains("fixture startup pending");
+        }
+    }
+
     private static async Task<string> VerifyLifecycleAsync(CancellationToken token)
     {
         using var tracing = new MessageTracing(Options.Create(new TracingOptions()), []);
