@@ -71,7 +71,7 @@ The serializer captures an immutable parser registry during construction and is 
 
 Empty Protobuf bodies represent default messages. Unknown fields follow the supplied parser's settings; for example, pass `OrderPlaced.Parser.WithDiscardUnknownFields(true)` to discard them. Malformed input throws the native `InvalidProtocolBufferException` and enters Relayer's normal deserialization failure policy.
 
-Only generated contracts implementing `IMessage<T>` and `IBufferMessage` are supported. There is no reflection fallback, runtime model generation, JSON conversion, or descriptor-based dispatch. Native AOT and trimming smoke coverage verifies generated buffer serialization and parsing; applications must also validate their own generated contracts and any custom parser factories. Protobuf JSON and reflection-based descriptor operations are outside this integration. MessagePack remains planned.
+Only generated contracts implementing `IMessage<T>` and `IBufferMessage` are supported. There is no reflection fallback, runtime model generation, JSON conversion, or descriptor-based dispatch. Native AOT and trimming smoke coverage verifies generated buffer serialization and parsing; applications must also validate their own generated contracts and any custom parser factories. Protobuf JSON and reflection-based descriptor operations are outside this integration.
 
 ## Avro
 
@@ -107,6 +107,51 @@ Bodies use Confluent's five-byte schema ID prefix followed by native Avro binary
 Writes go directly to `IBufferWriter<byte>`. Contiguous input reads directly from native memory; segmented `ReadOnlySequence<byte>` input uses one pooled copy because Dekaf reads contiguous memory. The rented buffer is cleared on return. No reflection fallback, runtime codec generation or per-message registry discovery is used. Only generated `IAvroPocoCodec<T>` contracts are supported; Apache Avro reflection/specific-record serializers are outside this adapter. Latest-version selection, asynchronous/associated subject strategies, registry rules/validation and header/GUID identities fail during configuration because they require per-record preparation.
 
 **Native AOT and trimming are currently unsupported for this optional package.** Although record encoding uses generated codecs, Dekaf 1.25.0's startup schema preparation reaches Apache.Avro/Newtonsoft.Json reflection and dynamic-code paths. A Native AOT publish probe fails with IL2026/IL3050; [Dekaf #4060](https://github.com/thomhurst/Dekaf/issues/4060) tracks the upstream limitation. `Add` carries `RequiresUnreferencedCode` and `RequiresDynamicCode` so affected applications receive build diagnostics. Relayer does not suppress those diagnostics or substitute a reflection serializer. Use the default generated JSON serializer or Protobuf in AOT applications.
+
+## MessagePack
+
+Reference `Relayer.Serialization.MessagePack` to use uncompressed MessagePack-CSharp 3.x bodies. Its transitive analyzer generates formatters for `[MessagePackObject]` contracts. Supply native options explicitly, including the generated resolver and each primitive formatter your contracts use:
+
+```csharp
+using MessagePack;
+using MessagePack.Formatters;
+using MessagePack.Resolvers;
+using Relayer.Serialization;
+using Relayer.Serialization.MessagePack;
+
+var options = new MessagePackSerializerOptions(CompositeResolver.Create(
+    [NullableStringFormatter.Instance], [ContractResolver.Instance]))
+    .WithSecurity(MessagePackSecurity.UntrustedData);
+services.AddSingleton<IMessageSerializer>(new MessagePackMessageSerializer(options));
+services.AddRelayer(relayer => relayer.MessageTypes.Add<OrderPlaced>("orders.placed"));
+
+[MessagePackObject]
+public sealed class OrderPlaced
+{
+    [Key(0)] public string OrderId { get; set; } = "";
+    [Key(1)] public int Quantity { get; set; }
+}
+
+[GeneratedMessagePackResolver]
+internal partial class ContractResolver;
+```
+
+For a named transport, return this serializer from `transport.UseSerializer(_ => ...)`. Resolver registration does not register the stable Relayer message identity. Generated formatters in other assemblies need their generated resolvers included explicitly in the composite.
+
+The adapter passes your `MessagePackSerializerOptions` to native `IMessagePackFormatter<T>` instances with `MessagePackWriter` and `MessagePackReader`. It writes directly to `IBufferWriter<byte>` and reads segmented `ReadOnlySequence<byte>` input without flattening it. The content type is `application/x-msgpack`. Bodies are native MessagePack values, with no schema registry envelope. Native `OldSpec` and security settings apply. Compression options fail during construction: MessagePack-CSharp 3.1.12's high-level serializer and built-in resolver retain reflection paths under strict Native AOT publishing. Relayer uses the native formatter API instead and does not implement its own compression. Malformed input, nil messages and trailing values throw `MessagePackSerializationException` and enter the normal permanent deserialization failure policy.
+
+No resolver is selected implicitly, and the adapter never reads or writes `MessagePackSerializer.DefaultOptions`. The composite above contains only explicitly supplied generated and primitive formatters; missing formatters fail rather than generating code at runtime. Avoid `MessagePackSerializerOptions.Standard`, `BuiltinResolver`, `StandardResolver`, contractless, typeless and dynamic resolvers for strict AOT/trimming: these retain reflection or dynamic code paths. Include generated or hand-written formatters for every nested type. The generator writes some primitives, such as the example's integer, directly; it resolves strings through the supplied `NullableStringFormatter`.
+
+For warning-clean Native AOT publishing with `MessagePackSecurity.UntrustedData`, also enable MessagePack's native nonreflective object comparer in the application project:
+
+```xml
+<ItemGroup>
+  <RuntimeHostConfigurationOption Include="MessagePack.Security.UseNonReflectiveObjectComparer"
+                                  Value="true" Trim="true" />
+</ItemGroup>
+```
+
+This keeps native collision resistance and depth checks, but unsupported object dictionary keys fail rather than using reflective comparers. Custom resolvers and formatters must be thread-safe, AOT-safe and enforce native security depth checks. Native AOT smoke coverage verifies the example's generated contracts, segmented reads and missing-formatter rejection without warning suppressions; publish and run your own contracts to validate more complex graphs and custom formatters. See the [MessagePack-CSharp documentation](https://github.com/MessagePack-CSharp/MessagePack-CSharp#readme) for native options and formatter support, and the [upstream trimming limitation](https://github.com/MessagePack-CSharp/MessagePack-CSharp/issues/1666).
 
 ## Versioning and unknown types
 

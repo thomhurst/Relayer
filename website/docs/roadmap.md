@@ -11,7 +11,7 @@ Relayer is in early development. Track progress in [GitHub issues](https://githu
 - [NuGet packaging and tag-triggered releases](contributing/releases.md), with shared metadata, git-derived versions, SourceLink, portable symbols and OIDC publishing. This infrastructure does not mean packages have been released.
 - Configuration, named transports, routes and consumers, with startup validation of declarations, options and endpoint capabilities, including [declared scheduling and transaction requirements](guides/sending.md).
 - Source-generated message registration, handler registration and dispatch, and System.Text.Json serialization.
-- Optional [Protobuf serialization](guides/messages.md#protobuf) with Native AOT smoke coverage, and [Avro/schema registry serialization](guides/messages.md#avro) with explicit generated contracts and startup preparation. Avro AOT/trimming support is limited by upstream schema preparation. MessagePack remains planned.
+- Optional [Protobuf serialization](guides/messages.md#protobuf) and [MessagePack serialization](guides/messages.md#messagepack) with explicit generated contracts, native buffer APIs and Native AOT smoke coverage, and [Avro/schema registry serialization](guides/messages.md#avro) with explicit generated contracts and startup preparation. Avro AOT/trimming support is limited by upstream schema preparation.
 - Required CI publishes and runs the Native AOT smoke app with reflection-disabled JSON, generated in-memory handler round trips, messaging spans and creation-context propagation assertions. Trimming and AOT warnings fail the build.
 - Compile-time analyzers and a code fix ([diagnostics](reference/diagnostics.md)).
 - The scoped send pipeline, send middleware and outbox enlistment hooks.

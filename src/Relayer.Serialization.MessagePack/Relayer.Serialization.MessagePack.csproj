@@ -1,0 +1,9 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <Description>Buffer-based MessagePack serialization for Relayer using explicit native options and generated formatters.</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="MessagePack" />
+    <ProjectReference Include="../Relayer/Relayer.csproj" />
+  </ItemGroup>
+</Project>
