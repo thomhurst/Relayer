@@ -1,0 +1,9 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <Description>Native RabbitMQ Streams connection and topology integration for Relayer. Message execution remains planned.</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="RabbitMQ.Stream.Client" />
+    <ProjectReference Include="../Relayer/Relayer.csproj" />
+  </ItemGroup>
+</Project>

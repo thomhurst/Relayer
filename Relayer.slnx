@@ -19,6 +19,7 @@
     <Project Path="src/Relayer.Outbox.SqlServer/Relayer.Outbox.SqlServer.csproj" />
     <Project Path="src/Relayer.RabbitMQ/Relayer.RabbitMQ.csproj" />
     <Project Path="src/Relayer.Nats/Relayer.Nats.csproj" />
+    <Project Path="src/Relayer.RabbitMQ.Streams/Relayer.RabbitMQ.Streams.csproj" />
     <Project Path="src/Relayer.Outbox.EntityFrameworkCore/Relayer.Outbox.EntityFrameworkCore.csproj" />
     <Project Path="src/Relayer.Outbox.MySql/Relayer.Outbox.MySql.csproj" />
     <Project Path="src/Relayer.Outbox.PostgreSql/Relayer.Outbox.PostgreSql.csproj" />
@@ -27,6 +28,7 @@
     <Project Path="tests/Relayer.Outbox.SqlServer.Tests/Relayer.Outbox.SqlServer.Tests.csproj" />
     <Project Path="tests/Relayer.Sagas.Tests/Relayer.Sagas.Tests.csproj" />
     <Project Path="tests/Relayer.Nats.Tests/Relayer.Nats.Tests.csproj" />
+    <Project Path="tests/Relayer.RabbitMQ.Streams.Tests/Relayer.RabbitMQ.Streams.Tests.csproj" />
     <Project Path="tests/Relayer.Outbox.CrashProbe/Relayer.Outbox.CrashProbe.csproj" />
     <Project Path="tests/Relayer.Testing.Tests/Relayer.Testing.Tests.csproj" />
     <Project Path="tests/Relayer.AotSmoke/Relayer.AotSmoke.csproj" />
