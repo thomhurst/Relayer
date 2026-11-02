@@ -92,6 +92,8 @@ slow baseline cannot prevent a candidate that fixes startup from being measured.
 | `EndToEndBenchmarks.ConcurrentRoundTrip` | Eight messages in flight through eight consumer workers. A barrier holds all handlers on pending asynchronous reads before releasing them. Results are normalized per message with `OperationsPerInvoke = 8`. |
 | `ConsumePipelineBenchmarks` | Scope-only, scope and handler resolution, direct scoped dispatch, and composed receive, with singleton and scoped handlers. A cached serializer isolates non-serializer allocations. |
 | `InMemoryTransportBenchmarks` | Native opaque, native JSON, and composed JSON round trips, in queue and log modes. |
+| `InMemoryQueuedBatchBenchmarks` (outside the gate) | A native queue with 64 admitted messages before the first delivery can settle, an extra pooled-callback comparison, and a channel-only coordination control. All results are per **batch**, not per message. |
+| `ConcurrentChannelControlBenchmarks` (outside the gate) | Eight channel workers execute the gate's asynchronous handler and entry/release/completion protocol without JSON, DI or a transport. Results are per **item**, normalized with `OperationsPerInvoke = 8`. |
 | `StartupBenchmarks.Build100Handlers` | A fresh consume pipeline, dispatch table and context pool for 100 distinct generated handlers. Registration and service-provider setup happen outside the measurement. This measures pipeline composition, not cold process startup or the entire host. |
 
 Every suite uses `[MemoryDiagnoser]`. Receive totals include a fresh DI scope for
@@ -108,6 +110,52 @@ it does not satisfy the absolute receive allocation goal. The regression gate
 prevents increases from the measured baseline without accepting that gap as a
 new budget. Async driver scheduling also prevents treating the full round-trip
 total as pipeline-only allocation evidence.
+
+### Populated queues and asynchronous coordination
+
+Run the attribution controls alongside the end-to-end fixture:
+
+```powershell
+dotnet run -c Release --project benchmarks/Relayer.Benchmarks -- --filter '*InMemoryQueuedBatchBenchmarks*' '*ConcurrentChannelControlBenchmarks*' '*EndToEndBenchmarks.ConcurrentRoundTrip' --keepFiles
+```
+
+`QueuedBatchRoundTrip` holds the first native delivery until all 64 messages
+have been admitted. Its callback returns the release channel's
+`ValueTask<Disposition>` directly. `QueuedBatchWithPooledCallback` adds an
+await through `PoolingAsyncValueTaskMethodBuilder`, reproducing the original
+fixture's additional callback continuation. `ChannelBatchControl` retains the
+same gated 64-item drain and acknowledgement, without native admission, message
+copying, message storage or settlement. Divide each batch's reported time and
+bytes by **64** for per-message costs. These are distinct workloads; the channel
+control is not a raw-client throughput baseline and its total must not be
+subtracted as an exact allocation attribution.
+
+Allocation stacks in the original populated-queue fixture identify pooled
+state-machine boxes in both the callback and the native read wrapper. Pooled
+async methods can still allocate when their runtime cache has no available box.
+The native receive and log fan-out loops now await the channel's source directly
+and handle shutdown wake-ups after that await, removing the extra native state
+machine. The pooled-callback comparison keeps the fixture-owned cost visible
+without assigning it to native message storage.
+
+The eight-worker channel control preserves genuinely incomplete handler reads
+and the same three signal channels as `ConcurrentRoundTrip`. Its totals include
+channel wait operations, the user handler's pooled continuation and worker
+scheduling. End-to-end profiles also contain JSON objects, fresh DI scopes and
+service caches, scoped handler instances, native multiple-reader channel waits,
+and core receive/consume pooled state machines. Core continuation cache misses
+remain tracked separately in [#203](https://github.com/thomhurst/Relayer/issues/203);
+these Relayer-owned boxes are not a serializer or native-client exclusion.
+The control does not establish zero total core allocations or change the gate's
+inclusive measurements and thresholds.
+
+Use allocation stacks to establish ownership rather than inferring it from a
+small difference between runs. For example, collect `gc-verbose` events with
+`dotnet-trace` while repeatedly running a warmed fixture. Separate setup,
+warmup and cleanup from the measured phase. `GCAllocationTick` events sample
+allocations: their byte weights are not exact counts or bytes for each sampled
+type. Pair the stacks with unprofiled `MemoryDiagnoser` reports; profiling can
+change scheduling and its timing is not a throughput comparison.
 
 ## CI thresholds and evidence
 

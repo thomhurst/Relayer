@@ -73,6 +73,50 @@ public class InMemoryTransportTests
     }
 
     [Test]
+    public async Task Populated_batch_holds_admission_until_first_delivery_settles()
+    {
+        const int batchSize = 64;
+        await using var transport = Transport(new()
+        {
+            Capacity = batchSize,
+            MessagePoolCapacity = batchSize,
+            Capabilities = new() { MaxBatchSize = batchSize },
+        });
+        var entered = Signal();
+        var finished = Signal();
+        var release = new TaskCompletionSource<Disposition>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var seen = new int[batchSize + 1];
+        var count = 0;
+        transport.RegisterConsumer("orders", (delivery, _) =>
+        {
+            seen[count++] = Value(delivery);
+            if (count == 1)
+            {
+                entered.TrySetResult();
+                return new(release.Task);
+            }
+            if (count == seen.Length) finished.TrySetResult();
+            return new(Disposition.Complete);
+        });
+        await transport.StartAsync(default);
+        try
+        {
+            var batch = new OutgoingMessage[batchSize];
+            for (var i = 0; i < batch.Length; i++) batch[i] = new("orders", BitConverter.GetBytes(i));
+            await transport.SendBatchAsync(batch, default);
+            await entered.Task.WaitAsync(Limit);
+            var blocked = Send(transport, batchSize);
+            await Assert.That(blocked.IsCompleted).IsFalse();
+            release.TrySetResult(Disposition.Complete);
+            await blocked.AsTask().WaitAsync(Limit);
+            await finished.Task.WaitAsync(Limit);
+            await transport.StopAsync(default).WaitAsync(Limit);
+            for (var i = 0; i < seen.Length; i++) await Assert.That(seen[i]).IsEqualTo(i);
+        }
+        finally { release.TrySetResult(Disposition.Complete); }
+    }
+
+    [Test]
     public async Task Bounded_send_observes_cancellation_and_cancelled_message_is_not_delivered()
     {
         await using var transport = Transport(new() { Capacity = 1 });
@@ -627,14 +671,19 @@ public class InMemoryTransportTests
         var reader = new InMemoryReadState(channel, new(true), shared: true);
         using var stop = new CancellationTokenSource();
         using var registration = reader.RegisterStop(stop.Token);
-        var first = reader.ReadAsync(stop.Token);
-        var second = reader.ReadAsync(stop.Token);
+        async ValueTask<bool> ReadAndRelayWakeup()
+        {
+            var message = await reader.ReadAsync(stop.Token);
+            return reader.IsWakeup(message, stop.Token);
+        }
+        var first = ReadAndRelayWakeup();
+        var second = ReadAndRelayWakeup();
         stop.Cancel();
         var bothCompleted = first.IsCompleted && second.IsCompleted;
         // Release the old implementation's stranded reader before asserting.
         channel.Writer.TryWrite(new(true));
-        await first;
-        await second;
+        await Assert.That(await first).IsTrue();
+        await Assert.That(await second).IsTrue();
         await Assert.That(bothCompleted).IsTrue();
     }
 
