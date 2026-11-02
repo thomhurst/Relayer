@@ -235,6 +235,15 @@ Custom build tasks must declare their file inputs in MSBuild items; the query do
 not trace arbitrary file reads inside a task. Without this option, all test source
 remains conservatively hashed.
 
+The same verified project graphs also distinguish three repository policy files
+from build inputs: `renovate.json`, `.github/workflows/claude-code-review.yml`
+and `.github/scripts/test_dependency_review_policy.py`. These files are excluded
+only when none of the measured projects consumes them as an MSBuild item or import.
+An explicit resource, content or analyzer reference keeps the file hashed, including
+an ignored file; a missing referenced file fails verification. Without
+`--verify-test-sources`, these policy files remain hashed. Unknown configuration,
+scripts and workflows remain hashed even with verification enabled.
+
 Every other tracked or unignored file is hashed, including unknown scripts.
 Different or unverified inventories retain the strict
 5% throughput and 0.5 B/op rules. Startup and invalid-input checks remain active
