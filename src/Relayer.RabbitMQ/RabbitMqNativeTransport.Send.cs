@@ -1,6 +1,4 @@
 using System.Collections.Frozen;
-using System.Diagnostics;
-using System.Runtime.CompilerServices;
 using System.Threading.Channels;
 using RabbitMQ.Client;
 using Relayer.Transports;
@@ -15,6 +13,7 @@ internal sealed partial class RabbitMqNativeTransport : ITransportSendTracing, I
     private readonly CreateChannelOptions _publisherChannelOptions;
     private Channel<RabbitMqPublisher>? _publishers;
     private bool _initialized;
+    private readonly RabbitMqSendPool _operations = new();
 
     internal RabbitMqNativeTransport(string name, RabbitMqTransportOptions options,
         IEnumerable<string> destinations, MessageTracing? tracing = null, RelayerInstrumentation? instrumentation = null)
@@ -68,12 +67,15 @@ internal sealed partial class RabbitMqNativeTransport : ITransportSendTracing, I
         finally { _lifecycle.Release(); }
     }
 
-    public ValueTask SendAsync(OutgoingMessage message, CancellationToken cancellationToken) =>
-        Endpoint(message.Destination).Tracing is { } tracing
-            ? tracing.SendAsync(message, cancellationToken) : SendCoreAsync(message, cancellationToken);
+    public ValueTask SendAsync(OutgoingMessage message, CancellationToken cancellationToken)
+    {
+        var endpoint = Endpoint(message.Destination);
+        if (endpoint.TraceEnabled) return endpoint.Tracing!.SendAsync(message, cancellationToken);
+        endpoint.Telemetry?.RecordSent();
+        return SendCoreAsync(message, cancellationToken);
+    }
 
-    [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
-    private async ValueTask SendCoreAsync(OutgoingMessage message, CancellationToken cancellationToken)
+    internal ValueTask SendCoreAsync(OutgoingMessage message, CancellationToken cancellationToken)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         cancellationToken.ThrowIfCancellationRequested();
@@ -83,47 +85,27 @@ internal sealed partial class RabbitMqNativeTransport : ITransportSendTracing, I
         var delay = endpoint.Delay(message.DeliverAt);
         var publishers = Volatile.Read(ref _publishers) ?? throw new InvalidOperationException("Start the RabbitMQ transport before sending.");
         var connection = _connection ?? throw new InvalidOperationException("Start the RabbitMQ transport before sending.");
-        var publisher = await publishers.Reader.ReadAsync(cancellationToken).ConfigureAwait(false);
-        var started = Stopwatch.GetTimestamp();
-        var failed = true;
-        try
-        {
-            if (!publisher.Channel.IsOpen)
-            {
-                await publisher.Channel.DisposeAsync().ConfigureAwait(false);
-                publisher.Channel = await connection.CreateChannelAsync(_publisherChannelOptions, cancellationToken).ConfigureAwait(false);
-            }
-            publisher.Prepare(message, delay);
-            // Native tracking waits for ack and propagates nack, basic.return and channel/connection failures.
-            await publisher.Channel.BasicPublishAsync(delay > 0 ? endpoint.DelayedExchange! : endpoint.Exchange,
-                endpoint.RoutingKey, mandatory: delay == 0, publisher.Properties, message.Body, cancellationToken).ConfigureAwait(false);
-            failed = false;
-        }
-        finally
-        {
-            endpoint.Telemetry?.RecordDuration(Stopwatch.GetElapsedTime(started), failed);
-            publisher.Clear();
-            publishers.Writer.TryWrite(publisher);
-        }
+        return _operations.Rent().Start(this, endpoint, message, delay, connection, publishers, cancellationToken);
     }
 
-    [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
-    public async ValueTask SendBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken)
+    internal async ValueTask ReplacePublisherChannelAsync(RabbitMqPublisher publisher, IConnection connection, CancellationToken token)
+    {
+        await publisher.Channel.DisposeAsync().ConfigureAwait(false);
+        publisher.Channel = await connection.CreateChannelAsync(_publisherChannelOptions, token).ConfigureAwait(false);
+    }
+
+    public ValueTask SendBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         cancellationToken.ThrowIfCancellationRequested();
-        // There is no native batch publish: each confirmed native call gets its own send span and duration.
-        for (var i = 0; i < messages.Length; i++)
-            await SendAsync(messages.Span[i], cancellationToken).ConfigureAwait(false);
+        // There is no native batch publish: each confirmed native call gets its own span and duration.
+        return messages.IsEmpty ? ValueTask.CompletedTask : _operations.Rent().StartBatch(this, messages, cancellationToken, traceMessages: true);
     }
 
-    [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
-    private async ValueTask SendBatchCoreAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken)
+    private ValueTask SendBatchCoreAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         cancellationToken.ThrowIfCancellationRequested();
-        // AMQP 0-9-1 has no atomic batch publish. Preserve native sequential partial-success semantics.
-        for (var i = 0; i < messages.Length; i++)
-            await SendCoreAsync(messages.Span[i], cancellationToken).ConfigureAwait(false);
+        return messages.IsEmpty ? ValueTask.CompletedTask : _operations.Rent().StartBatch(this, messages, cancellationToken, traceMessages: false);
     }
 }

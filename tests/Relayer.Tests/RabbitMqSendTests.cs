@@ -270,6 +270,13 @@ public class RabbitMqSendTests
         var send = Task.Run(async () => await transport.SendAsync(new("orders", new byte[] { 1 }, options:
             new SendOptions().RabbitMQ(_ => { entered.SetResult(); release.Wait(token); })), token), token);
         await entered.Task.WaitAsync(token);
+        using (var waitingToken = new CancellationTokenSource())
+        {
+            var waiting = transport.SendAsync(new("orders", new byte[] { 2 }), waitingToken.Token);
+            await Assert.That(waiting.IsCompleted).IsFalse();
+            waitingToken.Cancel();
+            await Assert.That(async () => await waiting).Throws<OperationCanceledException>();
+        }
         var stop = transport.StopAsync(token);
         try
         {

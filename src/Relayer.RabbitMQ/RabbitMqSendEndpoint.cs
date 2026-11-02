@@ -9,6 +9,8 @@ internal sealed class RabbitMqSendEndpoint
     internal readonly string Exchange;
     internal readonly string RoutingKey;
     internal readonly SendTracing? Tracing;
+    private readonly MessageTracing? _tracing;
+    internal bool TraceEnabled => _tracing?.Source.HasListeners() == true;
     internal readonly EndpointTelemetry? Telemetry;
     internal string? DelayedExchange;
     internal TransportCapabilities Capabilities = RabbitMqTransport.GetCapabilities("endpoint");
@@ -20,6 +22,7 @@ internal sealed class RabbitMqSendEndpoint
         var separator = destination.IndexOf(':');
         Exchange = separator < 0 ? "" : destination[..separator];
         RoutingKey = separator < 0 ? destination : destination[(separator + 1)..];
+        _tracing = tracing;
         if (tracing is null) return;
         var name = Exchange + ":" + RoutingKey;
         Tracing = new(tracing, new()
