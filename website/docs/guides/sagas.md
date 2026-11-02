@@ -130,5 +130,5 @@ from EF persistence; PostgreSQL integration tests cover the transaction and conc
 
 Use the existing [process diagram API](saga-diagrams.md) for declarations and export. Diagram
 `SagaState` metadata and persisted `SagaData` are separate: diagrams do not generate or enforce
-application transitions. Durable process timeout handling remains planned in
-[#249](https://github.com/thomhurst/Relayer/issues/249); this runtime does not add a scheduler.
+application transitions. [Durable process timeouts](saga-timeouts.md) use ordinary typed messages
+and existing transactional scheduled sends.
