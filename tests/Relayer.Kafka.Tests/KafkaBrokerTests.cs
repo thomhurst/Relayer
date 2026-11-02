@@ -27,9 +27,9 @@ public class KafkaBrokerTests
             brokerBuilder = brokerBuilder.WithPortBinding("20000-29999", "9092").WithPortBinding("20000-29999", "9093");
         }
         await using var broker = brokerBuilder.Build();
-        await broker.StartAsync();
         using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(2));
         var token = timeout.Token;
+        await broker.StartAsync(token);
         var bootstrap = broker.GetBootstrapAddress();
         var topic = "relayer-" + Guid.NewGuid().ToString("N");
         var other = topic + "-other";
