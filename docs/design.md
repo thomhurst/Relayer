@@ -337,6 +337,8 @@ Register a custom `IMessageSerializer` in the service collection before, inside 
 
 Named transports can override the application serializer with `transport.UseSerializer(factory)`. The host resolves each keyed singleton once, awaits optional `IMessageSerializerInitializer` preparation before receivers start, and captures it in send and consume pipelines. See [named Kafka schema registries](../website/docs/transports/kafka.md#independent-schema-registries) for the optional startup-prepared JSON integration and its explicit contract limits.
 
+The optional [Avro/schema registry adapter](../website/docs/guides/messages.md#avro) reuses Dekaf's generated codecs and startup preparation under D39. Its native schema parser currently prevents Native AOT/trimming; registration exposes that limitation through build diagnostics rather than a reflection fallback.
+
 ### 4.4 Versioning
 
 - `Version` lives in the type name (`billing.charge-card;v=2`).

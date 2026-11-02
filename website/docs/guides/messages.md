@@ -71,7 +71,42 @@ The serializer captures an immutable parser registry during construction and is 
 
 Empty Protobuf bodies represent default messages. Unknown fields follow the supplied parser's settings; for example, pass `OrderPlaced.Parser.WithDiscardUnknownFields(true)` to discard them. Malformed input throws the native `InvalidProtocolBufferException` and enters Relayer's normal deserialization failure policy.
 
-Only generated contracts implementing `IMessage<T>` and `IBufferMessage` are supported. There is no reflection fallback, runtime model generation, JSON conversion, or descriptor-based dispatch. Native AOT and trimming smoke coverage verifies generated buffer serialization and parsing; applications must also validate their own generated contracts and any custom parser factories. Protobuf JSON and reflection-based descriptor operations are outside this integration. Avro and MessagePack packages remain planned.
+Only generated contracts implementing `IMessage<T>` and `IBufferMessage` are supported. There is no reflection fallback, runtime model generation, JSON conversion, or descriptor-based dispatch. Native AOT and trimming smoke coverage verifies generated buffer serialization and parsing; applications must also validate their own generated contracts and any custom parser factories. Protobuf JSON and reflection-based descriptor operations are outside this integration. MessagePack remains planned.
+
+## Avro
+
+Reference `Relayer.Serialization.Avro` for Dekaf's source-generated Avro codecs and Schema Registry client. Opt each contract into generation with `[AvroRecord]`, then register its generated `AvroCodec` explicitly:
+
+```csharp
+using Dekaf.SchemaRegistry;
+using Dekaf.SchemaRegistry.Avro.Poco;
+using Relayer.Serialization;
+using Relayer.Serialization.Avro;
+
+services.AddSingleton<ISchemaRegistryClient>(_ => new SchemaRegistryClient(
+    new SchemaRegistryConfig { Url = "http://localhost:8081" }));
+services.AddSingleton<IMessageSerializer>(sp => new AvroMessageSerializer(
+    sp.GetRequiredService<ISchemaRegistryClient>())
+    .Add<OrderPlaced, OrderPlaced.AvroCodec>("orders"));
+services.AddRelayer(relayer => relayer.MessageTypes.Add<OrderPlaced>("orders.placed"));
+
+[AvroRecord(Name = "OrderPlaced", Namespace = "orders")]
+public sealed partial class OrderPlaced
+{
+    public int Number { get; init; }
+    public string Customer { get; init; } = "";
+}
+```
+
+Host startup awaits registry registration or lookup and prepares the native reader before receivers start. Standalone callers must await `InitializeAsync(cancellationToken)` before use. Registry errors fail startup; initialization failures require a new serializer. The registry client remains caller-owned. Dispose the serializer after all operations finish. Declare every contract before initialization, then share the prepared serializer across concurrent sends and receives. Missing and duplicate codecs fail with actionable errors; codec registration does not register the Relayer message identity.
+
+For independent registries, return this serializer from `transport.UseSerializer(sp => ...)`. The `topic` argument selects the registry subject, not routing; use the same topic in transport declarations. Pass native `AvroSerializerConfig` as the second argument to `Add` to select fixed schema IDs, disable auto-registration, normalize schemas or change the synchronous subject strategy. Native client configuration passes through unchanged.
+
+Bodies use Confluent's five-byte schema ID prefix followed by native Avro binary, with content type `avro/binary`. CloudEvents headers retain the stable Relayer identity. Only the prepared writer schema ID for that message is accepted; unknown IDs fail without registry I/O. Declare older wire contracts separately and use [upcasters](#versioning-and-unknown-types). Invalid prefixes, truncated values and malformed Avro enter the normal deserialization failure policy. Value parsing follows Dekaf, including its acceptance of bytes after the decoded record.
+
+Writes go directly to `IBufferWriter<byte>`. Contiguous input reads directly from native memory; segmented `ReadOnlySequence<byte>` input uses one pooled copy because Dekaf reads contiguous memory. The rented buffer is cleared on return. No reflection fallback, runtime codec generation or per-message registry discovery is used. Only generated `IAvroPocoCodec<T>` contracts are supported; Apache Avro reflection/specific-record serializers are outside this adapter. Latest-version selection, asynchronous/associated subject strategies, registry rules/validation and header/GUID identities fail during configuration because they require per-record preparation.
+
+**Native AOT and trimming are currently unsupported for this optional package.** Although record encoding uses generated codecs, Dekaf 1.25.0's startup schema preparation reaches Apache.Avro/Newtonsoft.Json reflection and dynamic-code paths. A Native AOT publish probe fails with IL2026/IL3050; [Dekaf #4060](https://github.com/thomhurst/Dekaf/issues/4060) tracks the upstream limitation. `Add` carries `RequiresUnreferencedCode` and `RequiresDynamicCode` so affected applications receive build diagnostics. Relayer does not suppress those diagnostics or substitute a reflection serializer. Use the default generated JSON serializer or Protobuf in AOT applications.
 
 ## Versioning and unknown types
 

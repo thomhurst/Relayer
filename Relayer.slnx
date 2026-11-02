@@ -3,6 +3,7 @@
     <Project Path="src/Relayer.Sagas/Relayer.Sagas.csproj" />
     <Project Path="src/Relayer/Relayer.csproj" />
     <Project Path="src/Relayer.Serialization.Protobuf/Relayer.Serialization.Protobuf.csproj" />
+    <Project Path="src/Relayer.Serialization.Avro/Relayer.Serialization.Avro.csproj" />
     <Project Path="src/Relayer.Testing/Relayer.Testing.csproj" />
     <Project Path="src/Relayer.HealthChecks/Relayer.HealthChecks.csproj" />
     <Project Path="src/Relayer.SourceGenerators/Relayer.SourceGenerators.csproj" />
@@ -25,6 +26,7 @@
     <Project Path="tests/Relayer.Kafka.Tests/Relayer.Kafka.Tests.csproj" />
     <Project Path="tests/Relayer.Tests/Relayer.Tests.csproj" />
     <Project Path="tests/Relayer.Serialization.Protobuf.Tests/Relayer.Serialization.Protobuf.Tests.csproj" />
+    <Project Path="tests/Relayer.Serialization.Avro.Tests/Relayer.Serialization.Avro.Tests.csproj" />
     <Project Path="tests/Relayer.Conformance.Tests/Relayer.Conformance.Tests.csproj" />
     <Project Path="tests/Relayer.Tracing.Tests/Relayer.Tracing.Tests.csproj" />
     <Project Path="tests/Relayer.Outbox.PostgreSql.Tests/Relayer.Outbox.PostgreSql.Tests.csproj" />

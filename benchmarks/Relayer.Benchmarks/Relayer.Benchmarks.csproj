@@ -21,12 +21,14 @@
     <ProjectReference Include="../../src/Relayer.Kafka/Relayer.Kafka.csproj" />
     <ProjectReference Include="../../src/Relayer.Kafka.SchemaRegistry/Relayer.Kafka.SchemaRegistry.csproj" />
     <ProjectReference Include="../../src/Relayer.Serialization.Protobuf/Relayer.Serialization.Protobuf.csproj" />
+    <ProjectReference Include="../../src/Relayer.Serialization.Avro/Relayer.Serialization.Avro.csproj" />
     <ProjectReference Include="..\..\src\Relayer.SourceGenerators\Relayer.SourceGenerators.csproj"
                       ReferenceOutputAssembly="false" OutputItemType="Analyzer" />
   </ItemGroup>
 
   <ItemGroup>
     <Compile Include="..\..\tests\Shared\ConcurrentReceiveFixture.cs" Link="Fixtures\ConcurrentReceiveFixture.cs" />
+    <Compile Include="../../tests/Shared/AvroFixture.cs" Link="Fixtures/AvroFixture.cs" />
   </ItemGroup>
 
 </Project>

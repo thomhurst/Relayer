@@ -757,7 +757,15 @@ fetches or per-message discovery. Other schema versions require explicit wire ty
 **Consequences.** Serializer selection adds no lookup to existing send or consume operations. Registry HTTP
 errors fail startup. Registry IDs remain local to each serializer and never replace stable CloudEvents
 message identity. Dynamic discovery, registry rules/validation, latest-version selection, header/GUID
-identities, Avro and Protobuf schema registry adapters remain planned. No broker send, receive or settlement semantics change.
+identities and Protobuf schema registry adapters remain planned. `Relayer.Serialization.Avro` follows the
+same fixed-contract startup boundary, using Dekaf's generated POCO writer and cache-only reader after
+asynchronous warmup. Unknown IDs never trigger discovery. Segmented bodies use a pooled contiguous copy
+required by the native reader; no parallel Avro codec or reflection fallback is introduced. This optional
+adapter currently excludes Native AOT/trimming: a publish probe found Apache.Avro/Newtonsoft.Json dynamic
+paths in native startup schema preparation ([Dekaf #4060](https://github.com/thomhurst/Dekaf/issues/4060)).
+Its registration API exposes `RequiresUnreferencedCode`/`RequiresDynamicCode` diagnostics until upstream
+supports this path. Generated JSON and Protobuf remain the AOT choices. No broker send, receive or
+settlement semantics change.
 
 ## D40. Log transports reuse native processing runtimes
 

@@ -159,7 +159,7 @@ function Hero() {
 
 const split = {
   relayer: [
-    ['Serialization', 'System.Text.Json source generation by default; optional Protobuf with explicit generated parsers and Native AOT coverage.'],
+    ['Serialization', 'System.Text.Json source generation by default; optional Protobuf with Native AOT coverage, and startup-prepared Avro/schema registry (AOT/trimming currently unsupported).'],
     ['Message identity', 'Stable names like orders.placed;v=1 on the wire, never CLR type names.'],
     ['Message versioning', 'Explicit upcaster chains upgrade older contracts before single-message and batch handlers.'],
     ['Failure handling', 'Classification, immediate retries, delayed redelivery, dead-letter copies with full history.'],
@@ -293,6 +293,7 @@ const status = [
   ['CI performance regression gate and in-memory benchmarks', 'Implemented; raw broker cases planned', true],
   ['Kafka producers, serial consumers, typed tombstones, dead-letter copies and offset/timestamp replay', 'Implemented', true],
   ['Named transport serializers and independent Kafka JSON schema registries', 'Implemented; explicit startup contracts', true],
+  ['Avro with generated codecs and startup-prepared schema registry', 'Implemented; Native AOT/trimming unsupported', true],
   ['Fallback partition watermarks, key scheduling, backpressure and bounded drain', 'Implemented core SPI; native runtime first', true],
   ['Kafka parallel receive via Dekaf, Service Bus receiver composition, SQS/SNS and RabbitMQ transports', 'In progress', false],
   ['Health checks with application-provided adapters', 'Implemented', true],
