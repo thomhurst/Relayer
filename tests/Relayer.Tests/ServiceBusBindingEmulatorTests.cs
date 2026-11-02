@@ -45,7 +45,11 @@ public partial class ServiceBusBindingTests
 
         foreach (var operation in new[] { "complete", "abandon", "defer", "dead_letter" })
         {
-            var outgoing = new ServiceBusMessage(new BinaryData(new byte[] { 42 })) { MessageId = operation };
+            var outgoing = new ServiceBusMessage(new BinaryData(new byte[] { 42 }))
+            {
+                MessageId = operation,
+                ContentType = "application/cbor",
+            };
             outgoing.ApplicationProperties["cloudEvents:id"] = operation;
             outgoing.ApplicationProperties["cloudEvents:type"] = "servicebus.payload;v=1";
             outgoing.ApplicationProperties["traceparent"] = "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01";
@@ -56,6 +60,10 @@ public partial class ServiceBusBindingTests
             {
                 await Assert.That(context.MessageId).IsEqualTo(operation);
                 await Assert.That(context.Attempt).IsEqualTo(1);
+                await Assert.That(context.ServiceBus().Message.ContentType).IsEqualTo(outgoing.ContentType);
+                await Assert.That(context.ServiceBus().Message.ApplicationProperties.ContainsKey("content-type")).IsFalse();
+                await Assert.That(context.Headers.TryGetValue("content-type", out var contentType)).IsTrue();
+                await Assert.That(contentType.Text).IsEqualTo(outgoing.ContentType);
                 await Assert.That(ServiceBusBinding.GetBody(context.ServiceBus().Callback).First.Span[0]).IsEqualTo((byte)42);
                 await Settle(context.ServiceBus(), operation, properties);
             };

@@ -25,9 +25,17 @@ public readonly struct ServiceBusBinding : IMessageBinding<ProcessMessageEventAr
     public static int? GetDeliveryCount(ProcessMessageEventArgs message) => message.Message.DeliveryCount;
 
     /// <inheritdoc />
-    /// <remarks>Non-text application properties remain available through the native message.</remarks>
+    /// <remarks>
+    /// The logical content-type header uses the native AMQP ContentType when present, with application properties as fallback.
+    /// Non-text application properties remain available through the native message.
+    /// </remarks>
     public static bool TryGetHeader(ProcessMessageEventArgs message, string name, out WireString value)
     {
+        if (name == "content-type" && message.Message.ContentType is { } contentType)
+        {
+            value = new(contentType);
+            return true;
+        }
         if (message.Message.GetRawAmqpMessage().ApplicationProperties.TryGetValue(name, out var native))
         {
             switch (native)
