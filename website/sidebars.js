@@ -37,6 +37,7 @@ const sidebars = {
         'transports/receive',
         'transports/consume-pipeline',
         'transports/partition-completion',
+        'transports/partition-scheduler',
         'transports/envelopes',
       ],
     },

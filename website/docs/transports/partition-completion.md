@@ -5,7 +5,7 @@ description: "Bounded arrival-order completion tracking for log transport author
 
 `PartitionCompletionWindow<TPosition>` is a core building block for log transports. It tracks deliveries in native arrival order and releases only the contiguous completed prefix. Positions are opaque: the window never compares, sorts or increments them. A position can include a native next offset and leader epoch, or be a string checkpoint.
 
-The window does not dispatch handlers, commit to a broker, pause fetching or drain workers. The core partition scheduler and [Kafka integration](kafka.md#register-a-consumer) remain planned under [#181](https://github.com/thomhurst/Relayer/issues/181) and [#182](https://github.com/thomhurst/Relayer/issues/182). Kafka consumers still require `Concurrency(1)`.
+The window does not dispatch handlers, commit to a broker, pause fetching or drain workers. The core [partition scheduler](partition-scheduler.md) composes those mechanisms. [Kafka integration](kafka.md#register-a-consumer) remains planned under [#182](https://github.com/thomhurst/Relayer/issues/182); Kafka consumers still require `Concurrency(1)`.
 
 ## Tracking and completion
 

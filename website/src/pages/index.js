@@ -291,7 +291,7 @@ const status = [
   ['CI performance regression gate and in-memory benchmarks', 'Implemented; raw broker cases planned', true],
   ['Kafka producers, serial consumers, typed tombstones, dead-letter copies and offset/timestamp replay', 'Implemented', true],
   ['Named transport serializers and independent Kafka JSON schema registries', 'Implemented; explicit startup contracts', true],
-  ['Bounded partition completion watermarks', 'Implemented core primitive', true],
+  ['Partition watermarks, key scheduling, backpressure and bounded drain', 'Implemented core SPI', true],
   ['Kafka parallel scheduling, Service Bus receiver composition, SQS/SNS and RabbitMQ transports', 'In progress', false],
   ['Health checks with application-provided adapters', 'Implemented', true],
   ['Durable outbox contracts and keyed health adapter', 'Implemented core seam', true],
