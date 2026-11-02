@@ -92,7 +92,7 @@ jobs:
       # 28.0.4 misses conflicts between loopback PostgreSQL publications and
       # wildcard Testcontainers publications. 28.5.1 fixes that bookkeeping.
       - name: Set up Docker for container tests
-        uses: docker/setup-docker-action@e43656e248c0bd0647d3f5c195d116aacf6fcaf4 # v4
+        uses: docker/setup-docker-action@7ec28a010822b4626af4874f9448a4b05ac6f3e5 # v5
         with:
           version: v29.9.2
           set-host: true
