@@ -13,4 +13,9 @@
     <ProjectReference Include="..\Relayer\Relayer.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <InternalsVisibleTo Include="Relayer.Tests" />
+    <InternalsVisibleTo Include="Relayer.Benchmarks" />
+  </ItemGroup>
+
 </Project>

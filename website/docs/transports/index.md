@@ -10,7 +10,7 @@ A transport is an adapter over one native client. Each transport package depends
 | `Relayer` | [In-memory](in-memory.md), for tests and samples | Built in | Implemented |
 | `Relayer.Kafka` | [Apache Kafka](kafka.md) | [Dekaf](https://dekaf.tomlonghurst.dev/), a pure C# Kafka client | Producers and serial consumers implemented; parallel partition scheduling planned |
 | `Relayer.AzureServiceBus` | Azure Service Bus | `Azure.Messaging.ServiceBus` | [Native sending and topology](service-bus.md), [receive primitives](service-bus-receive.md) implemented; receiver composition in development |
-| `Relayer.AmazonSqs` | Amazon SQS and SNS | `AWSSDK.SQS` and `AWSSDK.SimpleNotificationService` | In development |
+| `Relayer.AmazonSqs` | Amazon SQS and SNS | `AWSSDK.SQS` and `AWSSDK.SimpleNotificationService` | [SQS native sending and queue topology](amazon-sqs.md) implemented; receivers, SNS and health adapters planned |
 | `Relayer.RabbitMQ` | RabbitMQ | `RabbitMQ.Client` | [Native connection and topology](rabbitmq.md) implemented; send, receive and health adapters planned |
 | `Relayer.Nats` | NATS JetStream | `NATS.Client.JetStream` | [Native connection and topology](nats.md) implemented; message execution blocked on native byte-backed headers |
 | `Relayer.Pulsar` (planned) | Apache Pulsar | Client assessment: DotPulsar 5.3.4 | [Implementation blocked on native UTF-8 properties and Native AOT compatibility](pulsar.md); no adapter implemented |
