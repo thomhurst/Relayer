@@ -60,6 +60,32 @@ public sealed class TransportBuilder<TTransportOptions, TRouteOptions, TConsumer
         return this;
     }
 
+    /// <summary>Declares a request send route and a dedicated, process-local reply consumer.</summary>
+    /// <remarks>Give each requesting process its own reply endpoint. The responder declares an ordinary Send route to that endpoint.</remarks>
+    public TransportBuilder<TTransportOptions, TRouteOptions, TConsumerOptions> Request<TRequest, TResponse>(
+        string destination, string replyAddress, RequestOptions? options = null,
+        Action<ConsumerBuilder<TConsumerOptions>>? configureReplies = null,
+        Action<RouteBuilder<TRequest, TRouteOptions>>? configureRequest = null)
+    {
+        EnsureMutable();
+        ArgumentException.ThrowIfNullOrWhiteSpace(destination);
+        ArgumentException.ThrowIfNullOrWhiteSpace(replyAddress);
+        options ??= new();
+        options.Validate();
+        if (_services.Any(service => service.ServiceType == typeof(IRequestClient<TRequest, TResponse>)))
+            throw new InvalidOperationException("This request/response pair already has a registration. Declare it once.");
+        _services.AddSingleton(new RequestReplies<TRequest, TResponse>(Name, replyAddress, options));
+        _services.AddScoped<IRequestClient<TRequest, TResponse>, RequestClient<TRequest, TResponse>>();
+        _services.AddSingleton<IRequestRegistration, RequestRegistration<TRequest, TResponse>>();
+        Send(destination, configureRequest);
+        Consume(replyAddress, consumer =>
+        {
+            configureReplies?.Invoke(consumer);
+            ((IConsumerBuilder)consumer).AddHandler(new ReplyDescriptor<TRequest, TResponse>());
+        });
+        return this;
+    }
+
     /// <summary>Declares a consumer on a native source endpoint.</summary>
     public TransportBuilder<TTransportOptions, TRouteOptions, TConsumerOptions> Consume(string source,
         Action<ConsumerBuilder<TConsumerOptions>> configure)

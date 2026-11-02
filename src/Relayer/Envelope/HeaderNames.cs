@@ -13,6 +13,7 @@ public sealed class HeaderNames
         Time = prefix + "time";
         SpecVersion = prefix + "specversion";
         CorrelationId = prefix + "correlationid";
+        ReplyTo = prefix + "replyto";
     }
 
     /// <summary>The event ID header.</summary>
@@ -27,6 +28,8 @@ public sealed class HeaderNames
     public string SpecVersion { get; }
     /// <summary>The optional CloudEvents correlationid extension header.</summary>
     public string CorrelationId { get; }
+    /// <summary>The optional CloudEvents replyto extension header.</summary>
+    public string ReplyTo { get; }
     /// <summary>The W3C trace parent header.</summary>
     public string TraceParent => "traceparent";
     /// <summary>The W3C trace state header.</summary>

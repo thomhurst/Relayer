@@ -9,6 +9,10 @@ internal class Sender(SendPipeline pipeline, IOutboxEnlistment? outbox = null) :
 
     internal virtual void EndAttempt() => AttemptBuffer = null;
 
+    internal ValueTask ReplyAsync<TMessage>(TMessage message, WireString correlationId, CancellationToken cancellationToken) =>
+        pipeline.GetRoute<TMessage>().SendAsync(message, null, Outbox is { IsActive: true } ? Outbox : null,
+            cancellationToken, AttemptBuffer, new(default, correlationId));
+
     public ValueTask SendAsync<TMessage>(TMessage message, CancellationToken cancellationToken = default) =>
         Send(message, null, SendMode.Automatic, cancellationToken);
 
