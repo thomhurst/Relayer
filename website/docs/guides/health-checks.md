@@ -26,17 +26,18 @@ In a standalone `ServiceCollection`, also register logging before resolving `Hea
 Microsoft's health service. Normal application hosts already provide logging.
 
 These checks describe readiness. Do not use broker connectivity or a dispatch backlog to trigger process restarts.
-The core package has no health-check dependency. Health polls add no work to the message pipeline.
+The core package has no health-check dependency. Polls read receiver snapshots; optional native adapters
+record progress in their receive paths. Kafka health tracking adds no per-message allocations.
 
 ## Explicit adapters
 
-Native broker connectivity adapters are not supplied yet. This package supplies an outbox
-health adapter for `IOutboxStore`; use the [PostgreSQL read/claim store](../reference/postgres-store.md)
+`Relayer.HealthChecks` supplies an outbox health adapter for `IOutboxStore`; use the [PostgreSQL read/claim store](../reference/postgres-store.md)
 or an application-supplied store.
-Registering a transport does not establish native connectivity. Applications or future native
-integrations register their adapters explicitly as keyed services. Without these adapters, configured transports,
-consumers and stores report unhealthy. Built-in adapter work is tracked with the
-[Kafka](https://github.com/thomhurst/Relayer/issues/21),
+Registering a transport does not establish native connectivity. Register adapters explicitly as keyed services.
+For Kafka, reference `Relayer.Kafka.HealthChecks` and call `AddRelayerKafkaHealthProviders("orders-broker")`
+with the exact transport name; see [Kafka health checks](../transports/kafka.md#health-checks) for native
+configuration and receiver state. Without adapters, configured transports, consumers and stores report unhealthy.
+Remaining native broker adapter work is tracked with the
 [Service Bus](https://github.com/thomhurst/Relayer/issues/24),
 [SQS/SNS](https://github.com/thomhurst/Relayer/issues/39),
 [RabbitMQ](https://github.com/thomhurst/Relayer/issues/40) and

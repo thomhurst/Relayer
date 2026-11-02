@@ -17,15 +17,17 @@ internal sealed class KafkaConsumer : IAsyncDisposable
     private CancellationTokenSource _stop = new();
     private CancellationTokenSource _abort = new();
     private readonly KafkaOwnership _ownership;
+    private readonly KafkaWorkerHealth? _health;
     internal Task Completion { get; private set; } = Task.CompletedTask;
 
     internal KafkaConsumer(IKafkaConsumer<byte[], byte[]> native,
         Func<KafkaDelivery, CancellationToken, ValueTask<Disposition>> receive, MessageTracing tracing, MessagingEndpoint endpoint,
-        KafkaOwnership ownership)
+        KafkaOwnership ownership, KafkaWorkerHealth? health = null)
     {
         _native = native;
         _receive = receive;
         _ownership = ownership;
+        _health = health;
         _commit = new(tracing, endpoint, MessagingOperation.Settle, "commit");
     }
 
@@ -42,6 +44,7 @@ internal sealed class KafkaConsumer : IAsyncDisposable
             _abort = new();
         }
         await _native.InitializeAsync(cancellationToken).ConfigureAwait(false);
+        _health?.Idle();
         // Polling and processing never inherit the application's startup Activity.
         if (ExecutionContext.IsFlowSuppressed()) Completion = Task.Run(RunAsync);
         else { using (ExecutionContext.SuppressFlow()) Completion = Task.Run(RunAsync); }
@@ -52,9 +55,14 @@ internal sealed class KafkaConsumer : IAsyncDisposable
         try
         {
             await foreach (var batch in _native.ConsumeBatchAsync(_stop.Token).ConfigureAwait(false))
+            {
+                _health?.Progress();
                 await ProcessBatchAsync(batch, _abort.Token).ConfigureAwait(false);
+                _health?.Idle();
+            }
         }
         catch (OperationCanceledException) when (_stop.IsCancellationRequested) { }
+        finally { _health?.Unavailable(); }
     }
 
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder<>))]
@@ -77,6 +85,7 @@ internal sealed class KafkaConsumer : IAsyncDisposable
             var disposition = await _receive(new(record, partitionId), cancellationToken).ConfigureAwait(false);
             if (disposition.Kind is not (DispositionKind.Complete or DispositionKind.SettledByHandler))
                 throw new InvalidOperationException("Kafka receive must complete durable failure handling before returning Complete. Kafka has no native redelivery or dead-letter settlement.");
+            _health?.Progress();
             count++;
         }
         while (records.MoveNext());

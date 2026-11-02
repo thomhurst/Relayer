@@ -25,6 +25,7 @@ internal sealed class KafkaHostedService(IServiceProvider provider, string name)
         var options = provider.GetRequiredService<IOptionsMonitor<KafkaTransportOptions>>().Get(name);
         var tracing = provider.GetRequiredService<MessageTracing>();
         var handlers = provider.GetRequiredService<HandlerRegistry>();
+        var health = provider.GetKeyedService<KafkaConsumerHealth>(name);
         foreach (var declaration in definition.Consumers)
         {
             var consumer = (ConsumerDefinition<KafkaConsumerOptions>)declaration;
@@ -51,7 +52,8 @@ internal sealed class KafkaHostedService(IServiceProvider provider, string name)
             // Offset ownership belongs to durable processing, never polling or native auto-commit.
             native.WithGroupId(consumer.Options.Group!).SubscribeTo(consumer.Source)
                 .WithOffsetCommitMode(OffsetCommitMode.Manual).WithAutoOffsetStore(false).AddRebalanceListener(ownership);
-            _nativeTransport.Consumers.Add(new(native.Build(), receive.ProcessAsync, tracing, endpoint, ownership));
+            _nativeTransport.Consumers.Add(new(native.Build(), receive.ProcessAsync, tracing, endpoint, ownership,
+                health?.Register(declaration)));
         }
         await _transport.StartAsync(cancellationToken).ConfigureAwait(false);
         await base.StartAsync(cancellationToken).ConfigureAwait(false);
