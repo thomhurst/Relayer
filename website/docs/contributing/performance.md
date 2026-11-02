@@ -140,19 +140,27 @@ The gate fails when any case:
 - takes **50 ms or more** to compose 100 handlers.
 
 CI also hashes the actual comparison inputs after overlaying the common harness
-and SDK. When the inventories are byte-identical, allocation increases are
+and SDK. When the inventories are byte-identical, throughput losses and allocation increases are
 reported as **inconclusive execution variation**, even above both baselines:
 there is no implementation change to attribute them to. This is not evidence
-that the allocation goal is met. The inventory includes production source,
+that either performance goal is met. Confidence intervals describe the sampled
+execution, not all future processes: JIT decisions, process layout and host load
+can vary between launches. Bracketing alone cannot attribute that variation to
+a source change. The inventory includes production source,
 generators, the benchmark harness, SDK selection, dependency versions and build
 configuration. Only `docs/`, `website/`, the CI workflow, the detector and its
-tests, the common benchmark-version pinning script, and the two agent instruction
+tests, the common benchmark-version pinning script, the repository's agent guidance
+(`.agents/skills/issue-pr-loop/references/repository.md`), the merge-only scripts
+`Assert-PrGreen.ps1`, `AssertPrGreenChecks.ps1`, `Enable-AutoMerge.ps1` and
+`Test-AssertPrGreenChecks.ps1` under `scripts/`, and the two agent instruction
 aliases (`.claude/skills/issue-pr-loop/SKILL.md` and
 `.claude/skills/issue-pr-loop/references`) are excluded; those do not enter the
 measured builds. These aliases are symlinks on Linux and can be plain files on
 Windows. Other symlinks still fail verification. Every other tracked or unignored file is hashed,
-including unknown files. Different inventories retain the strict 0.5 B/op rule.
-Throughput, startup and invalid-input checks remain active in both cases.
+including unknown scripts. Different or unverified inventories retain the strict
+5% throughput and 0.5 B/op rules. Startup and invalid-input checks remain active
+in both cases. Inconclusive rows keep their measured loss, intervals and totals;
+they do not establish unchanged performance or compliance with D18.
 
 To use this check locally, add all three options to the comparison command:
 
@@ -162,7 +170,7 @@ python .github/scripts/benchmark_gate.py compare C:/benchmark-results/baseline C
 
 Use the separate checkouts that produced the reports, with their harness and SDK
 overlay still in place. CI retains `performance-inputs.json` with the raw reports.
-Comparisons without source verification keep the strict allocation rule.
+Comparisons without source verification keep the strict throughput and allocation rules.
 
 Startup allocation totals remain visible but are informational. D18 sets an
 allocation budget per message and a time budget for startup. Building frozen
