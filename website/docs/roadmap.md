@@ -21,6 +21,7 @@ Relayer is in early development. Track progress in [GitHub issues](https://githu
 - [PostgreSQL ADO.NET and Dapper transactions](reference/postgres-outbox.md): scoped enlistment, owned message copies and one atomic batched insert on commit.
 - [Unordered PostgreSQL direct dispatch](reference/direct-dispatch.md): background sends immediately after EF commit, fenced claims, native transport batches and fenced batch deletion. Recovery polling, poison-row handling and cleanup remain planned.
 - The consume pipeline and the native receive SPI.
+- Explicit [message upcaster chains](guides/messages.md#versioning-and-unknown-types), composed at startup for single-message and batch handlers.
 - [Service Bus receive primitives](transports/service-bus-receive.md): the native callback binding and manual settlement view. The complete Service Bus transport remains planned.
 - Generated batch handler execution, durable partial-failure decisions, and validated native/client-side receive executors for transport authors.
 - Typed failure classification, in-process retries, delayed redelivery and dead-letter copies with error history.

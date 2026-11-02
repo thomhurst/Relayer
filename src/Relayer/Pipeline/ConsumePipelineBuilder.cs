@@ -14,6 +14,7 @@ public sealed class ConsumePipelineBuilder
     private readonly IFailureClassifier _classifier;
     private readonly FailurePipeline? _failures;
     private readonly Dictionary<MessageType, ConsumeDelegate> _dispatch = [];
+    private readonly List<HandlerDescriptor> _handlers = [];
     private readonly List<IConsumeMiddleware> _middleware = [];
     private bool _built;
     private EndpointTelemetry? _telemetry;
@@ -39,14 +40,18 @@ public sealed class ConsumePipelineBuilder
         ArgumentOutOfRangeException.ThrowIfLessThan(consumer.BatchSize, 1);
         ArgumentOutOfRangeException.ThrowIfLessThan(consumer.Concurrency, 1);
         if (consumer.BatchWait <= TimeSpan.Zero) throw new ArgumentOutOfRangeException(nameof(consumer));
-        var batch = descriptor.CreateBatchDispatcher(_serializer, consumer.BatchSize, consumer.Concurrency);
-        using (var scope = _scopes.CreateScope()) scope.ServiceProvider.GetService<SenderPool>()?.Enable();
+        using var compositionScope = _scopes.CreateScope();
+        var readers = compositionScope.ServiceProvider.GetService<UpcasterRegistry>()?.Compose(descriptor.MessageType, _messages, _serializer) ?? [];
+        var batch = descriptor.CreateBatchDispatcher(_serializer, consumer.BatchSize, consumer.Concurrency, readers);
+        compositionScope.ServiceProvider.GetService<SenderPool>()?.Enable();
         _built = true;
         var identities = new Dictionary<MessageType, ConsumeDelegate> { [identity] = static _ => throw new InvalidOperationException("Use ProcessBatchAsync for a batch handler.") };
+        foreach (var source in readers.Keys) identities.Add(source, identities[identity]);
         return new ConsumePipeline(_scopes, identities.ToFrozenDictionary(), [], _failure, _classifier,
             checked(consumer.BatchSize * consumer.Concurrency), _failures, null, _settlement, _tracing)
         {
-            BatchExecution = new BatchExecution(_scopes, batch, identity, consumer, _failure, _classifier, _failures, activitySource, _tracing)
+            BatchExecution = new BatchExecution(_scopes, batch, identity, consumer, _failure, _classifier, _failures, activitySource, _tracing,
+                readers.Count == 0 ? null : readers.Keys.ToFrozenSet())
         };
     }
 
@@ -93,6 +98,7 @@ public sealed class ConsumePipelineBuilder
         {
             throw new InvalidOperationException($"Consumer already handles '{identity}'. Use one handler to coordinate work for this message type.");
         }
+        _handlers.Add(descriptor);
         return this;
     }
 
@@ -160,6 +166,16 @@ public sealed class ConsumePipelineBuilder
         if (_dispatch.Count == 0)
         {
             throw new InvalidOperationException("Register at least one generated handler before building a consumer.");
+        }
+        using (var scope = _scopes.CreateScope())
+        {
+            if (scope.ServiceProvider.GetService<UpcasterRegistry>() is { } upcasters)
+            {
+                foreach (var descriptor in _handlers)
+                    foreach (var pair in upcasters.Compose(descriptor.MessageType, _messages, _serializer))
+                        if (!_dispatch.TryAdd(pair.Key, descriptor.CreateUpcastDelegate(pair.Value)))
+                            throw new InvalidOperationException($"Consumer has ambiguous handlers for '{pair.Key}'. Select one handler reachable from each incoming version.");
+            }
         }
         _built = true;
         return new ConsumePipeline(_scopes, _dispatch.ToFrozenDictionary(), _middleware, _failure, _classifier,

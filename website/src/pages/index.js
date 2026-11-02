@@ -161,6 +161,7 @@ const split = {
   relayer: [
     ['Serialization', 'System.Text.Json source generation by default, so Native AOT works.'],
     ['Message identity', 'Stable names like orders.placed;v=1 on the wire, never CLR type names.'],
+    ['Message versioning', 'Explicit upcaster chains upgrade older contracts before single-message and batch handlers.'],
     ['Failure handling', 'Classification, immediate retries, delayed redelivery, dead-letter copies with full history.'],
     ['Outbox and inbox', 'Sends inside a transaction are enlisted automatically.'],
     ['Telemetry', 'OpenTelemetry messaging conventions, with one ActivitySource and one Meter.'],
@@ -277,6 +278,7 @@ const status = [
   ['Batch dispatch and receive executor composition', 'Implemented core seam', true],
   ['Send pipeline and middleware', 'Implemented', true],
   ['Consume pipeline and receive SPI', 'Implemented', true],
+  ['Message upcaster chains for single and batch handlers', 'Implemented', true],
   ['Failure classification, retries and dead-letter copies', 'Implemented', true],
   ['Manual settlement requests with exception precedence', 'Implemented', true],
   ['Declared topology and JSON export', 'Implemented', true],

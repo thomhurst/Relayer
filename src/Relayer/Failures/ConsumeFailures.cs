@@ -5,7 +5,7 @@ public sealed class MessageEnvelopeException(string message) : Exception(message
 
 /// <summary>The consumer has no generated handler for an incoming wire identity.</summary>
 public sealed class UnknownMessageTypeException(MessageType messageType)
-    : Exception($"No handler is configured for message type '{messageType}'. Register its stable identity and generated handler on this consumer.")
+    : Exception($"No handler is configured for message type '{messageType}'. Register its stable identity and generated handler, or an upcaster chain to a handler on this consumer.")
 {
     /// <summary>The unrecognized wire identity.</summary>
     public MessageType MessageType { get; } = messageType;
