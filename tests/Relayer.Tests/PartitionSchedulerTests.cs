@@ -308,6 +308,42 @@ public class PartitionSchedulerTests
     }
 
     [Test]
+    [Arguments(300, 10, 0, 0)]
+    [Arguments(300, 10, 5, 5)]
+    [Arguments(5, 3, 300, 2)]
+    [Arguments(5, 10, 300, 0)]
+    public async Task Shutdown_uses_earliest_deadline_for_already_revoking_assignment(
+        int revokeSeconds, int elapsedSeconds, int stopSeconds, int remainingSeconds)
+    {
+        var clock = new InMemoryTestClock();
+        var fixture = new Fixture(clock: clock);
+        var assignment = fixture.Scheduler.Assign(1);
+        var delivery = new Delivery(1);
+        fixture.Enqueue(assignment, delivery, "unfinished");
+        fixture.Scheduler.Pump();
+        fixture.Scheduler.Revoke(assignment, TimeSpan.FromSeconds(revokeSeconds));
+        clock.Advance(TimeSpan.FromSeconds(elapsedSeconds));
+        fixture.Scheduler.Stop(TimeSpan.FromSeconds(stopSeconds));
+        if (remainingSeconds > 0)
+        {
+            clock.Advance(TimeSpan.FromSeconds(remainingSeconds) - TimeSpan.FromTicks(1));
+            fixture.Scheduler.Pump();
+            await Assert.That(fixture.Scheduler.IsDraining).IsTrue();
+            await Assert.That(delivery.Cancellation.IsCancellationRequested).IsFalse();
+            clock.Advance(TimeSpan.FromTicks(1));
+        }
+        fixture.Scheduler.Pump();
+        await Assert.That(fixture.Scheduler.IsDraining).IsFalse();
+        await Assert.That(delivery.Cancellation.IsCancellationRequested).IsTrue();
+        await Assert.That(delivery.Releases).IsEqualTo(0);
+        delivery.Complete();
+        fixture.Scheduler.Pump();
+        await Assert.That(delivery.Releases).IsEqualTo(1);
+        await Assert.That(fixture.Scheduler.BufferedCount).IsEqualTo(0);
+        await Assert.That(fixture.Source.Commits.Count).IsEqualTo(0);
+    }
+
+    [Test]
     public async Task Throwing_checkpoint_capture_retries_before_releasing_native_storage()
     {
         var fixture = new Fixture();

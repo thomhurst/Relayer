@@ -128,11 +128,25 @@ public sealed class PartitionScheduler<TIncoming, TBinding, TPartition, TPositio
     }
 
     /// <summary>Rejects new assignments and starts bounded draining for every owned partition.</summary>
+    /// <remarks>Shortens an existing revocation deadline when necessary; never extends it.</remarks>
     public void Stop(TimeSpan timeout)
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(timeout, TimeSpan.Zero);
         _stopping = true;
-        for (var i = 0; i < _assignments.Count; i++) Revoke(new(_assignments[i]), timeout);
+        var started = _clock.GetTimestamp();
+        for (var i = 0; i < _assignments.Count; i++)
+        {
+            var assignment = _assignments[i];
+            if (assignment.Fenced) continue;
+            if (!assignment.Revoking ||
+                timeout < assignment.DrainTimeout - _clock.GetElapsedTime(assignment.DrainStarted, started))
+            {
+                assignment.Revoking = true;
+                assignment.DrainStarted = started;
+                assignment.DrainTimeout = timeout;
+            }
+            UpdatePause(assignment);
+        }
     }
 
     /// <summary>Observes completions, publishes safe checkpoints, dispatches eligible keys, and updates native backpressure.</summary>
