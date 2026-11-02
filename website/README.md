@@ -2,9 +2,9 @@
 
 Use Node.js 22 or later. From this directory, run `npm ci` and `npm run build`.
 The production build checks broken links and anchors. CI and the Pages deployment
-use Node.js 24 and publish only `build/`; neither `node_modules` nor a Node.js
-server is deployed. The npm dependency tree is tooling for this site, separate
-from the Relayer NuGet packages.
+use the Node.js version in their workflows and publish only `build/`.
+Neither `node_modules` nor a Node.js server is deployed. The npm dependency tree
+is tooling for this site, separate from the Relayer NuGet packages.
 
 ## Security overrides
 
