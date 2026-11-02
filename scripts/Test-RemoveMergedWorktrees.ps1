@@ -113,11 +113,11 @@ exit 3
     Push-Location $repo
     try {
         $failOpenQuery = $true
-        & $sweep -Repo fixture/repo
+        & $sweep -Repo fixture/repo -SkipDocker
         Assert-True (Test-Path -LiteralPath $mergedWorktree) 'Failed open-PR query allowed removal.'
         $failOpenQuery = $false
 
-        $preview = (& $sweep -Repo fixture/repo -WhatIf 6>&1) -join "`n"
+        $preview = (& $sweep -Repo fixture/repo -SkipDocker -WhatIf 6>&1) -join "`n"
         Assert-True ($preview -match 'WOULD remove .*[\\/]merged') 'Preview did not identify merged worktree.'
         Assert-True ($preview -match 'WOULD remove .*[\/]dirty -- .*\(saving 1') 'Preview did not report saving merged leftover work.'
         Assert-True (Test-Path -LiteralPath $mergedWorktree) 'Preview removed worktree.'
@@ -126,7 +126,7 @@ exit 3
         Assert-True ($preview -match 'WOULD remove .*pr-500-review -- \(closed work item pr-500\) \(saving 2') 'Preview did not report retained work.'
         Assert-True (Test-Path -LiteralPath (Join-Path $review 'Draft.cs')) 'Preview saved or removed closed-item work.'
 
-        & $sweep -Repo fixture/repo
+        & $sweep -Repo fixture/repo -SkipDocker
         Assert-True (-not (Test-Path -LiteralPath $mergedWorktree)) 'Merged worktree was not removed autonomously.'
         Assert-True (-not (Test-Path -LiteralPath $dirtyWorktree)) 'Merged worktree with leftover changes was not removed.'
         $dirtyWip = @(git -C $repo for-each-ref --format='%(refname:short)' 'refs/heads/retained-worktrees/dirty-wip-*')

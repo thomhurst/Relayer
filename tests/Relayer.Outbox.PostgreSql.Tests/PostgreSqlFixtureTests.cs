@@ -53,9 +53,9 @@ public class PostgreSqlFixtureTests
         await Assert.That(observed).IsSameReferenceAs(primary);
         var name = (string)primary.Data["DockerContainerName"]!;
         await Assert.That(name).StartsWith("relayer-schema-test-");
-        await Assert.That(calls[^1]).IsEquivalentTo(new[] { "rm", "--force", name });
+        await Assert.That(calls[^1]).IsEquivalentTo(new[] { "rm", "--force", "--volumes", name });
         await Assert.That(failures.Count).IsEqualTo(1);
-        await Assert.That(failures[0].Message).Contains($"docker rm --force {name}");
+        await Assert.That(failures[0].Message).Contains($"docker rm --force --volumes {name}");
         await Assert.That(failures[0].InnerException).IsSameReferenceAs(cleanup);
         await fixture.DisposeAsync();
         await Assert.That(calls.Count(args => args[0] == "rm")).IsEqualTo(1);
@@ -97,7 +97,7 @@ public class PostgreSqlFixtureTests
         await Assert.ThrowsAsync<TimeoutException>(() => fixture.StartAsync());
         await fixture.DisposeAsync();
         var nameIndex = Array.IndexOf(calls[0], "--name") + 1;
-        await Assert.That(calls[1]).IsEquivalentTo(new[] { "rm", "--force", calls[0][nameIndex] });
+        await Assert.That(calls[1]).IsEquivalentTo(new[] { "rm", "--force", "--volumes", calls[0][nameIndex] });
     }
 
     [Test]

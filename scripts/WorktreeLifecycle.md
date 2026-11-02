@@ -14,6 +14,8 @@ After a successful merge, `Merge-Pr.ps1` opts into cleanup using the caller's ex
 
 Directories with dangling Git registration are reported and preserved: the sweep cannot verify their ownership marker or uncommitted source. Inspect these directories and retain valuable evidence before manual cleanup.
 
+Docker data is not tied to a worktree, so each sweep cleans it separately through `DockerCleanup.ps1`. It removes anonymous volumes that no container references once they are older than `-DockerVolumeGraceHours` (default 1), and stopped `relayer-*` containers idle for longer than `-DockerContainerRetentionHours` (default 24), together with their anonymous volumes. The Docker daemon is shared with other repositories, so the volume cleanup is daemon-wide but limited to volumes nothing can reach by name. Named volumes and `relayer-agent-locks-redis` are never removed. Docker frees the space inside its disk image; on Docker Desktop for Windows the image file shrinks only when it is sparse or compacted. Pass `-SkipDocker` to leave Docker alone.
+
 Run regression tests locally with PowerShell 7, Git and Docker (`Test-AgentEvidenceCleanup.ps1` needs PowerShell only):
 
 ```powershell
@@ -24,4 +26,5 @@ pwsh scripts/Test-MergePr.ps1
 pwsh scripts/Test-WorktreeCleanup.ps1
 pwsh scripts/Test-RemoveMergedWorktrees.ps1
 pwsh scripts/Test-AgentEvidenceCleanup.ps1
+pwsh scripts/Test-DockerCleanup.ps1
 ```
