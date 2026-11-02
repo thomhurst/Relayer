@@ -6,13 +6,26 @@ using Relayer.Outbox.PostgreSql;
 namespace Relayer.Outbox.EntityFrameworkCore;
 
 // Scoped, like DbContext and ISender. Never shared by concurrent units of work.
-internal sealed class EntityFrameworkCoreOutbox : IOutboxEnlistment, IDisposable
+internal sealed class EntityFrameworkCoreOutbox(OutboxConfiguration? defaults = null) : IOutboxEnlistment, IDisposable
 {
     private readonly List<OutboxContext> _contexts = [];
     private readonly PostgreSqlOutboxBatch _batch = new();
     private Selection? _selection;
 
-    public bool IsActive => Target() is not null;
+    private OutboxConfiguration? _activeConfiguration;
+    public bool SupportsScheduling => (_activeConfiguration ?? defaults)?.SupportsScheduling == true;
+    public bool SupportsOrderedScheduling => (_activeConfiguration ?? defaults)?.SupportsOrderedScheduling == true;
+
+    public bool IsActive
+    {
+        get
+        {
+            // Sender already resolves the active target. Cache its immutable dispatch settings without another context scan.
+            var target = Target();
+            _activeConfiguration = target?.Configuration;
+            return target is not null;
+        }
+    }
 
     public ValueTask EnlistAsync(OutboxRecord record, CancellationToken cancellationToken)
     {
@@ -189,6 +202,9 @@ internal sealed class OutboxContext(DbContext context, OutboxConfiguration confi
     internal void Add(OutboxRecord record)
     {
         if (Failed) throw new InvalidOperationException("Roll back the failed outbox transaction before sending again.");
+        if (record.Message.DeliverAt is not null && !(record.Message.OrderingKey is not null
+                ? Configuration.SupportsOrderedScheduling : Configuration.SupportsScheduling))
+            throw new InvalidOperationException("Scheduled EF Core outbox sends require a matching due-row dispatch worker for the selected DbContext schema, table prefix and ordered lane count. Register PostgreSQL maintenance or ordered dispatch for that store.");
         BufferedOutboxMessage.Validate(record);
         if (Count == Rows.Count) Rows.Add(new());
         Rows[Count].Copy(record, Configuration.Lanes);

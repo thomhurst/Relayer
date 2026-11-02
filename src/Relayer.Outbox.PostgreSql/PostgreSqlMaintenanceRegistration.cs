@@ -34,6 +34,12 @@ public static partial class PostgreSqlOutboxServiceCollectionExtensions
             provider.GetRequiredService<IOptionsMonitor<PostgreSqlMaintenanceOptions>>().Get(name), provider.GetServices<ITransport>(),
             provider.GetRequiredService<ILogger<PostgreSqlMaintenanceWorker>>(), provider.GetRequiredService<ILogger<PostgreSqlDirectDispatcher>>()));
         services.AddSingleton<IHostedService>(provider => provider.GetRequiredKeyedService<PostgreSqlMaintenanceWorker>(name));
+        services.AddSingleton<PostgreSqlSchedulingRegistration>(provider =>
+        {
+            var settings = provider.GetRequiredService<IOptionsMonitor<PostgreSqlMaintenanceOptions>>().Get(name);
+            _ = settings.Validate();
+            return new(settings.Schema, settings.TablePrefix);
+        });
         return services;
     }
 

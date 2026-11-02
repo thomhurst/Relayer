@@ -165,7 +165,7 @@ const split = {
     ['Failure handling', 'Classification, immediate retries, delayed redelivery, dead-letter copies with full history.'],
     ['Outbox and inbox', 'Sends inside a transaction are enlisted automatically.'],
     ['Telemetry', 'OpenTelemetry messaging conventions, with one ActivitySource and one Meter.'],
-    ['Startup validation', 'Routes, handlers and endpoint capabilities are checked before any consumer starts.'],
+    ['Startup validation', 'Routes, handlers, scheduling, transaction requirements and endpoint capabilities are checked before consumers start.'],
   ],
   native: [
     ['Sending and receiving', 'Dekaf, the Azure SDK, the AWS SDK and RabbitMQ.Client do the I/O.'],

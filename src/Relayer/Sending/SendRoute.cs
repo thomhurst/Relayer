@@ -209,14 +209,25 @@ internal sealed class SendRoute<TMessage>
                 _metadata = _metadata with { CreationContext = external != default ? external : _activity?.Context ?? _metadata.CreationContext };
                 _tracingStarted = true;
             }
+            if (_route._options.TransactionRequirement == SendTransactionRequirement.Native && _outbox is not null)
+                throw new InvalidOperationException($"Send route '{_route._messageType}' on transport '{_route._transport.Name}' to endpoint '{_route._destination}' requires native transactions. Use SendNowAsync with the native client's transaction configuration; database outbox durability does not provide native broker transactions.");
+            if (_route._options.TransactionRequirement == SendTransactionRequirement.Outbox && _outbox is null)
+                throw new InvalidOperationException($"Send route '{_route._messageType}' on transport '{_route._transport.Name}' to endpoint '{_route._destination}' requires an active outbox transaction. Begin or select the outbox transaction and use SendAsync or SendViaOutboxAsync.");
             if (Options.OrderingKey is not null && !_route._capabilities.OrderedByKey)
             {
                 throw new InvalidOperationException($"Send route '{_route._messageType}' on transport '{_route._transport.Name}' to endpoint '{_route._destination}' specifies an OrderingKey, but the endpoint does not support OrderedByKey. Configure an endpoint with native ordering or remove the OrderingKey override.");
             }
-            if (_outbox is null && Options.DeliverAt is { } deliverAt &&
-                (_route._capabilities.MaxDeliveryDelay is not { } maxDelay || deliverAt - DateTimeOffset.UtcNow > maxDelay))
+            if (Options.DeliverAt is { } deliverAt)
             {
-                throw new InvalidOperationException($"Send route '{_route._messageType}' on transport '{_route._transport.Name}' to endpoint '{_route._destination}' specifies a DeliverAt outside the endpoint's MaxDeliveryDelay. Use an endpoint with a sufficient native delay, shorten or remove DeliverAt, or send through an active outbox transaction.");
+                bool supported;
+                if (_outbox is null)
+                    supported = _route._capabilities.MaxDeliveryDelay is { } maxDelay && deliverAt - DateTimeOffset.UtcNow <= maxDelay;
+                else if (Options.OrderingKey is not null || _route._orderingKey is not null)
+                    supported = _outbox.SupportsOrderedScheduling;
+                else
+                    supported = _outbox.SupportsScheduling;
+                if (!supported)
+                    throw new InvalidOperationException($"Send route '{_route._messageType}' on transport '{_route._transport.Name}' to endpoint '{_route._destination}' cannot execute DeliverAt. Use sufficient native MaxDeliveryDelay for direct sends, or an active outbox transaction with a matching due-row dispatch worker.");
             }
             if (_outbox is not null && Options.HasNativeConfigurators)
             {

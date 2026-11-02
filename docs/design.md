@@ -84,6 +84,8 @@ Each transport declares the capabilities of each endpoint (decision D24). A feat
 
 Transport stubs declare only conservative known values; native adapters must resolve configuration-dependent limits and features at startup. In particular, a Service Bus endpoint name does not establish session support, and a RabbitMQ queue name does not establish delayed-message plugin support. SQS declarations distinguish standard and FIFO queues: [FIFO queues do not support per-message delivery timers](https://docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSDeveloperGuide/sqs-message-timers.html).
 
+Send routes declare known scheduling needs with `SendRouteOptions.RequiredDeliveryDelay` and select transaction guarantees with `TransactionRequirement` (`None`, `Native`, `Outbox`). Composition validates native limits or the actual registered outbox executor and due-row workers once. Native transaction availability never implies database durability or automatic native transaction ownership. Runtime checks reject unavailable schedules and missing active outbox transactions before serialization. See the [send guide](https://relayer.tomlonghurst.dev/docs/guides/sending) for configuration and executor contracts.
+
 The native mechanisms and core fallbacks are:
 
 | Feature | Native when available | Fallback |

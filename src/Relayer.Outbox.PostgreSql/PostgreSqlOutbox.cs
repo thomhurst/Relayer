@@ -18,16 +18,27 @@ public sealed class PostgreSqlOutbox : IOutboxEnlistment, IDisposable, IAsyncDis
     private bool _disposed;
 
     /// <summary>Creates an enlistment using this scope's validated options.</summary>
-    public PostgreSqlOutbox(IOptionsSnapshot<PostgreSqlOutboxOptions> options)
+    public PostgreSqlOutbox(IOptionsSnapshot<PostgreSqlOutboxOptions> options) : this(options, []) { }
+
+    internal PostgreSqlOutbox(IOptionsSnapshot<PostgreSqlOutboxOptions> options,
+        IEnumerable<PostgreSqlSchedulingRegistration> workers)
     {
         ArgumentNullException.ThrowIfNull(options);
         var value = options.Value;
         ValidateOptions(value);
         _lanes = value.Lanes;
+        SupportsScheduling = PostgreSqlSchedulingRegistration.Supports(workers, value.Schema, value.TablePrefix);
+        SupportsOrderedScheduling = PostgreSqlSchedulingRegistration.Supports(workers, value.Schema, value.TablePrefix, value.Lanes);
         _insertSql = PostgreSqlOutboxBatch.CreateInsertSql(
             PostgreSqlOutboxSchema.QuoteIdentifier(value.Schema ?? "public") + "." +
             PostgreSqlOutboxSchema.QuoteIdentifier(value.TablePrefix + "outbox"));
     }
+
+    /// <inheritdoc />
+    public bool SupportsScheduling { get; }
+
+    /// <inheritdoc />
+    public bool SupportsOrderedScheduling { get; }
 
     /// <inheritdoc />
     public bool IsActive => _transaction is { IsActive: true };

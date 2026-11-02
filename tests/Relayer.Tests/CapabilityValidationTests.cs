@@ -278,12 +278,109 @@ public class CapabilityValidationTests
         await Assert.That(await Start(provider)).IsNull();
     }
 
+    [Test]
+    [Arguments(-1, 0, false, false, false, false)]
+    [Arguments(0, 0, false, false, false, true)]
+    [Arguments(10, 9, false, false, false, true)]
+    [Arguments(10, 10, false, false, false, true)]
+    [Arguments(10, 11, false, false, false, false)]
+    [Arguments(-1, 10, true, false, false, false)]
+    [Arguments(10, 11, true, true, false, true)]
+    [Arguments(-1, 10, true, true, false, true)]
+    [Arguments(-1, 10, true, true, true, false)]
+    public async Task Scheduling_selects_native_boundaries_or_an_executable_fallback(int nativeTicks, int requiredTicks,
+        bool hasOutbox, bool scheduler, bool ordered, bool valid)
+    {
+        var transport = new TestTransport("events", _ => new()
+        {
+            MaxDeliveryDelay = nativeTicks < 0 ? null : TimeSpan.FromTicks(nativeTicks), OrderedByKey = ordered
+        });
+        await using var provider = Create(transport, route =>
+        {
+            route.SendOptions = new() { RequiredDeliveryDelay = TimeSpan.FromTicks(requiredTicks) };
+            if (ordered) route.OrderingKey(_ => "key");
+        }, outbox: hasOutbox ? new SchedulingOutbox(scheduler) : null);
+        var failure = await Start(provider);
+        await Assert.That(failure is null).IsEqualTo(valid);
+        if (!valid)
+            foreach (var part in new[] { nameof(OrderPlaced), "orders", "events", "RequiredDeliveryDelay", "dispatch worker" })
+                await Assert.That(failure!.Message).Contains(part);
+    }
+
+    [Test]
+    [Arguments(SendTransactionRequirement.None, false, false, true)]
+    [Arguments(SendTransactionRequirement.Native, true, false, true)]
+    [Arguments(SendTransactionRequirement.Native, false, true, false)]
+    [Arguments(SendTransactionRequirement.Outbox, true, false, false)]
+    [Arguments(SendTransactionRequirement.Outbox, false, true, true)]
+    [Arguments((SendTransactionRequirement)99, true, true, false)]
+    public async Task Transaction_requirements_preserve_the_requested_guarantee(SendTransactionRequirement requirement,
+        bool native, bool outbox, bool valid)
+    {
+        await using var provider = Create(new TestTransport("events", _ => new() { Transactions = native }),
+            route => route.SendOptions = new() { TransactionRequirement = requirement },
+            outbox: outbox ? new SchedulingOutbox(false) : null);
+        var failure = await Start(provider);
+        await Assert.That(failure is null).IsEqualTo(valid);
+        if (!valid)
+            foreach (var part in new[] { nameof(OrderPlaced), "events", "Transaction" })
+                await Assert.That(failure!.Message).Contains(part);
+    }
+
+    [Test]
+    public async Task Native_transactions_cannot_use_a_database_scheduler_fallback()
+    {
+        await using var provider = Create(new TestTransport("events", _ => new() { Transactions = true }),
+            route => route.SendOptions = new() { TransactionRequirement = SendTransactionRequirement.Native,
+                RequiredDeliveryDelay = TimeSpan.FromSeconds(1) }, outbox: new SchedulingOutbox(true));
+        await Assert.That(await Start(provider)).IsNotNull();
+    }
+
+    [Test]
+    public async Task Negative_required_delay_fails_before_receivers_start()
+    {
+        var receiver = new Receiver();
+        await using var provider = Create(new TestTransport("events", _ => new()),
+            route => route.SendOptions = new() { RequiredDeliveryDelay = TimeSpan.FromTicks(-1) }, receiver: receiver);
+        await Assert.That(await Start(provider)).IsNotNull();
+        await Assert.That(receiver.Started).IsFalse();
+    }
+
+    [Test]
+    public async Task Ordered_scheduling_fallback_requires_the_ordered_executor()
+    {
+        await using var provider = Create(new TestTransport("events", _ => new() { OrderedByKey = true }), route =>
+        {
+            route.OrderingKey(_ => "key");
+            route.SendOptions = new() { RequiredDeliveryDelay = TimeSpan.FromDays(1) };
+        }, outbox: new SchedulingOutbox(true, ordered: true));
+        await Assert.That(await Start(provider)).IsNull();
+    }
+
+    [Test]
+    public async Task Required_outbox_scheduling_cannot_use_native_delay_instead_of_a_due_worker()
+    {
+        await using var provider = Create(new TestTransport("events", _ => new() { MaxDeliveryDelay = TimeSpan.MaxValue }),
+            route => route.SendOptions = new() { RequiredDeliveryDelay = TimeSpan.FromSeconds(1),
+                TransactionRequirement = SendTransactionRequirement.Outbox }, outbox: new SchedulingOutbox(false));
+        await Assert.That(await Start(provider)).IsNotNull();
+    }
+
+    private sealed class SchedulingOutbox(bool scheduled, bool ordered = false) : IOutboxEnlistment
+    {
+        public bool IsActive => false;
+        public bool SupportsScheduling => scheduled;
+        public bool SupportsOrderedScheduling => ordered;
+        public ValueTask EnlistAsync(OutboxRecord record, CancellationToken cancellationToken) => throw new NotSupportedException();
+    }
+
     private static ServiceProvider Create(TestTransport? transport,
         Action<RouteBuilder<OrderPlaced, BuilderTests.RouteOptions>>? route = null,
         Action<TransportBuilder<BuilderTests.BrokerOptions, BuilderTests.RouteOptions, BuilderTests.ConsumerOptions>>? additional = null,
-        TestTransport? extra = null, Receiver? receiver = null)
+        TestTransport? extra = null, Receiver? receiver = null, IOutboxEnlistment? outbox = null)
     {
         var services = new ServiceCollection();
+        if (outbox is not null) services.AddScoped<IOutboxEnlistment>(_ => outbox);
         if (transport is not null) services.AddSingleton<ITransport>(transport);
         if (extra is not null) services.AddSingleton<ITransport>(extra);
         services.AddRelayer(relayer =>

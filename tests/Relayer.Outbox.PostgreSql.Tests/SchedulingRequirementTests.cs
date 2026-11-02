@@ -1,0 +1,142 @@
+using System.Buffers;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Options;
+using Npgsql;
+using Relayer.Outbox.EntityFrameworkCore;
+using Relayer.Serialization;
+using Relayer.Transports;
+
+namespace Relayer.Outbox.PostgreSql.Tests;
+
+public class SchedulingRequirementTests
+{
+    [Test]
+    [Arguments(32, false)]
+    [Arguments(16, true)]
+    public async Task Ordered_schedule_requires_the_native_ordered_worker_with_the_writer_lane_count(int workerLanes, bool mismatch)
+    {
+        await using var source = NpgsqlDataSource.Create("Host=unused");
+        var services = new ServiceCollection().AddLogging();
+        services.AddRelayerPostgreSqlOutbox();
+        services.AddRelayerPostgreSqlMaintenance("unordered", source);
+        services.AddRelayerPostgreSqlOrderedDispatch("ordered", source,
+            new PostgreSqlOrderedDispatchOptions { Lanes = workerLanes });
+        await using var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
+        await using var scope = provider.CreateAsyncScope();
+        var executor = scope.ServiceProvider.GetRequiredService<IOutboxEnlistment>();
+        await Assert.That(executor.SupportsScheduling).IsTrue();
+        await Assert.That(executor.SupportsOrderedScheduling).IsEqualTo(!mismatch);
+    }
+
+    [Test]
+    [Arguments(false, false, false, false)]
+    [Arguments(false, true, false, true)]
+    [Arguments(false, true, true, false)]
+    [Arguments(true, false, false, false)]
+    [Arguments(true, true, false, true)]
+    [Arguments(true, true, true, false)]
+    public async Task Enlistment_requires_a_matching_due_row_worker(bool ef, bool worker, bool mismatch, bool valid)
+    {
+        await using var source = NpgsqlDataSource.Create("Host=unused");
+        var services = new ServiceCollection().AddLogging();
+        if (ef) services.AddRelayerEntityFrameworkCoreOutbox();
+        else services.AddRelayerPostgreSqlOutbox();
+        // Commit-only dispatch is insufficient: it intentionally skips future rows.
+        services.AddRelayerPostgreSqlDirectDispatch("direct", source);
+        if (worker) services.AddRelayerPostgreSqlMaintenance("due", source,
+            new PostgreSqlMaintenanceOptions { TablePrefix = mismatch ? "other_" : "relayer_" });
+        services.AddSingleton<ITransport>(new Transport());
+        services.AddSingleton<IMessageSerializer, Serializer>();
+        Configure(services);
+        await using var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
+        var start = async () =>
+        {
+            foreach (var lifecycle in provider.GetServices<IHostedService>().OfType<IHostedLifecycleService>())
+                await lifecycle.StartingAsync(default);
+        };
+        if (valid) await start();
+        else await Assert.That(start).Throws<OptionsValidationException>().WithMessageContaining("matching due-row dispatch worker");
+    }
+
+    [Test]
+    public async Task Declared_fallback_persists_future_schedule_then_actual_worker_dispatches_when_due()
+    {
+        await using var fixture = new PostgreSqlFixture();
+        await fixture.StartAsync();
+        await using var source = NpgsqlDataSource.Create(fixture.ConnectionString);
+        await PostgreSqlOutboxStoreTests.CreateSchema(source);
+        var transport = new Transport();
+        var services = new ServiceCollection().AddLogging();
+        services.AddRelayerPostgreSqlOutbox();
+        services.AddRelayerPostgreSqlMaintenance("due", source, new PostgreSqlMaintenanceOptions { RecoveryDelay = TimeSpan.Zero });
+        services.AddSingleton<ITransport>(transport);
+        services.AddSingleton<IMessageSerializer, Serializer>();
+        Configure(services);
+        await using var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
+        // Validate before opening any transaction or starting a dispatcher.
+        foreach (var lifecycle in provider.GetServices<IHostedService>().OfType<IHostedLifecycleService>())
+            await lifecycle.StartingAsync(default);
+        await using (var scope = provider.CreateAsyncScope())
+        {
+            var outbox = scope.ServiceProvider.GetRequiredService<PostgreSqlOutbox>();
+            await using var transaction = await outbox.BeginTransactionAsync(source);
+            await scope.ServiceProvider.GetRequiredService<ISender>().SendAsync(new Probe(42),
+                options => options.DeliverAt = DateTimeOffset.UtcNow.AddDays(1));
+            await transaction.CommitAsync();
+        }
+        var worker = provider.GetRequiredKeyedService<PostgreSqlMaintenanceWorker>("due");
+        await Assert.That(await worker.SweepAsync(default)).IsEqualTo(0);
+        await Assert.That(transport.Count).IsEqualTo(0);
+        // Advance durable eligibility explicitly: no wall-clock sleeps or deadline races.
+        await using (var due = source.CreateCommand("UPDATE relayer_outbox SET deliver_at = clock_timestamp() - interval '1 second'"))
+            await due.ExecuteNonQueryAsync();
+        await Assert.That(await worker.SweepAsync(default)).IsEqualTo(1);
+        await Assert.That(transport.Count).IsEqualTo(1);
+        await Assert.That(transport.LastBody).IsEqualTo((byte)42);
+        await Assert.That(transport.LastDeliverAt).IsNull();
+        await worker.ReleaseAsync(default);
+    }
+
+    private static void Configure(IServiceCollection services) => services.AddRelayer(builder =>
+    {
+        builder.MessageTypes.Add<Probe>("schedule.probe");
+        builder.AddTransport<Empty, Empty, Empty>("events", transport => transport.Send<Probe>("orders", route =>
+            route.SendOptions = new() { RequiredDeliveryDelay = TimeSpan.FromDays(1),
+                TransactionRequirement = SendTransactionRequirement.Outbox }));
+    });
+
+    [Message("schedule.probe")]
+    public sealed record Probe(byte Value);
+    public sealed class Empty;
+    private sealed class Serializer : IMessageSerializer
+    {
+        public string ContentType => "application/test";
+        public void Serialize<TMessage>(TMessage message, IBufferWriter<byte> destination)
+        {
+            destination.GetSpan(1)[0] = ((Probe)(object)message!).Value;
+            destination.Advance(1);
+        }
+        public TMessage Deserialize<TMessage>(ReadOnlySequence<byte> source) => throw new NotSupportedException();
+    }
+    private sealed class Transport : ITransport
+    {
+        public string Name => "events";
+        internal int Count { get; private set; }
+        internal byte LastBody { get; private set; }
+        internal DateTimeOffset? LastDeliverAt { get; private set; }
+        public TransportCapabilities GetCapabilities(string endpoint) => new();
+        public ValueTask SendAsync(OutgoingMessage message, CancellationToken cancellationToken)
+        {
+            Count++;
+            LastBody = message.Body.Span[0];
+            LastDeliverAt = message.DeliverAt;
+            return ValueTask.CompletedTask;
+        }
+        public ValueTask SendBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken) => throw new NotSupportedException();
+        public ValueTask<TopologyReport> ApplyTopologyAsync(TopologyMode mode, CancellationToken cancellationToken) => new(new TopologyReport([]));
+        public Task StartAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+        public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+    }
+}

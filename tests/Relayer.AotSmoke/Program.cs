@@ -156,7 +156,24 @@ await using (var maintenanceSource = new Npgsql.NpgsqlSlimDataSourceBuilder("Hos
         {
             ["BatchSize"] = "3", ["DeadRetention"] = "infinite", ["InboxRetention"] = "365.00:00:00"
         }).Build());
-    await using var maintenanceProvider = maintenanceServices.BuildServiceProvider();
+    maintenanceServices.AddRelayerPostgreSqlOutbox();
+    maintenanceServices.AddSingleton<ITransport>(new SmokeTransport());
+    maintenanceServices.AddRelayer(builder =>
+    {
+        builder.AddMessageTypesFromThisAssembly();
+        builder.AddTransport<SmokeOptions, SmokeOptions, SmokeOptions>("smoke", broker =>
+            broker.Send<Order>("orders", route => route.SendOptions = new()
+            {
+                RequiredDeliveryDelay = TimeSpan.FromDays(1),
+                TransactionRequirement = SendTransactionRequirement.Outbox
+            }));
+    });
+    await using var maintenanceProvider = maintenanceServices.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
+    foreach (var lifecycle in maintenanceProvider.GetServices<IHostedService>().OfType<IHostedLifecycleService>())
+        await lifecycle.StartingAsync(default);
+    await using (var schedulingScope = maintenanceProvider.CreateAsyncScope())
+        if (!schedulingScope.ServiceProvider.GetRequiredService<IOutboxEnlistment>().SupportsScheduling)
+            throw new InvalidOperationException("Declared durable scheduling fallback failed under Native AOT.");
     var settings = maintenanceProvider.GetRequiredService<Microsoft.Extensions.Options.IOptionsMonitor<PostgreSqlMaintenanceOptions>>().Get("maintenance-smoke");
     if (settings.BatchSize != 3 || settings.DeadRetention is not null || settings.InboxRetention != TimeSpan.FromDays(365))
         throw new InvalidOperationException("Maintenance immutable options failed under Native AOT.");

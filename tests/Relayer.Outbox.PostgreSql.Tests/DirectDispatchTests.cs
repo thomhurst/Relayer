@@ -582,6 +582,7 @@ public class DirectDispatchTests
             services.AddSingleton<ITransport>(transport);
             services.AddSingleton<IMessageSerializer, Serializer>();
             services.AddRelayerEntityFrameworkCoreOutbox();
+            services.AddRelayerPostgreSqlMaintenance("schedules", Source, new PostgreSqlMaintenanceOptions { Schema = Schema, TablePrefix = "test_" });
             if (enableDispatch) services.AddRelayerPostgreSqlDirectDispatch("store", Source,
                 new() { Schema = Schema, TablePrefix = "test_" }, options);
             services.AddDbContext<TestContext>((provider, builder) => builder.UseNpgsql(_fixture.ConnectionString)

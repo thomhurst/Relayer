@@ -476,6 +476,8 @@ public class AdoNetEnlistmentTests
         {
             var services = new ServiceCollection();
             services.AddRelayerPostgreSqlOutbox(Options);
+            services.AddRelayerPostgreSqlOrderedDispatch("schedule", Source,
+                new PostgreSqlOrderedDispatchOptions { Schema = Options.Schema, TablePrefix = Options.TablePrefix, Lanes = Options.Lanes });
             services.AddSingleton<Transport>();
             services.AddSingleton<ITransport>(static provider => provider.GetRequiredService<Transport>());
             services.AddSingleton<IMessageSerializer, Serializer>();
