@@ -48,7 +48,26 @@ public sealed class TransportConformanceSuite<TIncoming, TBinding>
             ActivityStopped = spans.Enqueue,
         };
         ActivitySource.AddActivityListener(listener);
-        await using var fixture = await _create(tracing, token).ConfigureAwait(false);
+        var fixture = await _create(tracing, token).ConfigureAwait(false);
+        Exception? failure = null;
+        try
+        {
+            return await RunFixtureAsync(scenario, fixture, tracing, spans, token).ConfigureAwait(false);
+        }
+        catch (Exception error) { failure = error; throw; }
+        finally
+        {
+            try { await fixture.DisposeAsync().ConfigureAwait(false); }
+            catch (Exception cleanup) when (failure is not null)
+            {
+                throw new AggregateException("Transport conformance and fixture disposal both failed.", failure, cleanup);
+            }
+        }
+    }
+
+    private static async Task<TransportConformanceResult> RunFixtureAsync(TransportConformanceCase scenario,
+        ITransportConformanceFixture<TIncoming> fixture, MessageTracing tracing, ConcurrentQueue<Activity> spans, CancellationToken token)
+    {
         var capabilities = fixture.Transport.GetCapabilities(fixture.Destination);
         var skip = SkipReason(scenario, capabilities);
         if (skip is not null) return new(scenario, skip);
@@ -100,16 +119,28 @@ public sealed class TransportConformanceSuite<TIncoming, TBinding>
             return new(Disposition.Complete);
         };
 
-        await fixture.Transport.StartAsync(token).ConfigureAwait(false);
+        var progress = new ScenarioProgress { Phase = "transport start" };
+        Exception? failure = null;
         try
         {
-            await RunScenarioAsync(scenario, fixture, received.Reader, spans, () => redeliverAt, orderRelease, token).ConfigureAwait(false);
+            await fixture.Transport.StartAsync(token).ConfigureAwait(false);
+            await RunScenarioAsync(scenario, fixture, received.Reader, spans, () => redeliverAt, orderRelease, progress, token).ConfigureAwait(false);
+        }
+        catch (Exception error)
+        {
+            failure = new InvalidOperationException($"Transport conformance {scenario} failed during {progress.Phase}.", error);
+            throw failure;
         }
         finally
         {
             orderRelease.TrySetResult();
-            // A cancelled operation must not turn cleanup into an unbounded drain.
-            await fixture.Transport.StopAsync(token).ConfigureAwait(false);
+            // Cleanup has its own bounded budget, even when the scenario deadline expired.
+            using var cleanupDeadline = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+            try { await fixture.Transport.StopAsync(cleanupDeadline.Token).ConfigureAwait(false); }
+            catch (Exception cleanup) when (failure is not null)
+            {
+                throw new AggregateException("Transport conformance and transport shutdown both failed.", failure, cleanup);
+            }
         }
         return new(scenario);
     }
@@ -126,11 +157,16 @@ public sealed class TransportConformanceSuite<TIncoming, TBinding>
 
     private static async Task RunScenarioAsync(TransportConformanceCase scenario, ITransportConformanceFixture<TIncoming> fixture,
         ChannelReader<Delivery> received, ConcurrentQueue<Activity> spans, Func<DateTimeOffset> redeliverAt,
-        TaskCompletionSource orderRelease, CancellationToken token)
+        TaskCompletionSource orderRelease, ScenarioProgress progress, CancellationToken token)
     {
-        async Task<Delivery> Next() => await received.ReadAsync(token).ConfigureAwait(false);
+        async Task<Delivery> Next()
+        {
+            progress.Phase = "receive completion";
+            return await received.ReadAsync(token).ConfigureAwait(false);
+        }
         async Task Send(int value, bool creation = false, WireString? key = null, DateTimeOffset? at = null)
         {
+            progress.Phase = $"send {value}";
             var body = Encoding.UTF8.GetBytes($"{{\"Value\":{value}}}");
             var headers = Headers(fixture.HeaderNames, creation);
             await fixture.Transport.SendAsync(new(fixture.Destination, body, headers, key, at), token).ConfigureAwait(false);
@@ -138,14 +174,24 @@ public sealed class TransportConformanceSuite<TIncoming, TBinding>
             Array.Clear(body);
             Array.Clear(headers);
         }
+        Task Stop()
+        {
+            progress.Phase = "transport drain";
+            return fixture.Transport.StopAsync(token);
+        }
+        Task Start()
+        {
+            progress.Phase = "transport restart";
+            return fixture.Transport.StartAsync(token);
+        }
 
         switch (scenario)
         {
             case TransportConformanceCase.SendReceiveSettle:
                 await Send(1).ConfigureAwait(false);
                 CheckBody(await Next().ConfigureAwait(false), 1);
-                await fixture.Transport.StopAsync(token).ConfigureAwait(false);
-                await fixture.Transport.StartAsync(token).ConfigureAwait(false);
+                await Stop().ConfigureAwait(false);
+                await Start().ConfigureAwait(false);
                 await Send(2).ConfigureAwait(false);
                 CheckBody(await Next().ConfigureAwait(false), 2);
                 break;
@@ -164,6 +210,7 @@ public sealed class TransportConformanceSuite<TIncoming, TBinding>
             case TransportConformanceCase.DeadLetter:
                 await Send(1, creation: true).ConfigureAwait(false);
                 CheckBody(await Next().ConfigureAwait(false), 1);
+                progress.Phase = "dead-letter receive";
                 var dead = await fixture.ReadDeadLetterAsync(token).ConfigureAwait(false);
                 Require(Encoding.UTF8.GetString(dead.Body.Span) == "{\"Value\":1}", "Dead-letter body changed.");
                 Require(dead.Reason == "conformance_poison" && dead.Description == "expected failure", "Dead-letter error metadata changed.");
@@ -188,7 +235,8 @@ public sealed class TransportConformanceSuite<TIncoming, TBinding>
                 await Send(1).ConfigureAwait(false);
                 var delivered = await Next().ConfigureAwait(false);
                 // Stop drains settlement and closes process spans before inspecting the source-local capture.
-                await fixture.Transport.StopAsync(token).ConfigureAwait(false);
+                await Stop().ConfigureAwait(false);
+                progress.Phase = "trace validation";
                 CheckSpans(fixture, spans, delivered);
                 break;
             case TransportConformanceCase.CreationContextCopies:
@@ -201,7 +249,8 @@ public sealed class TransportConformanceSuite<TIncoming, TBinding>
                     CheckBody(copy, i);
                     CheckCreation(copy);
                 }
-                await fixture.Transport.StopAsync(token).ConfigureAwait(false);
+                await Stop().ConfigureAwait(false);
+                progress.Phase = "creation trace validation";
                 var sends = spans.Where(span => Equals(span.GetTagItem("messaging.operation.type"), "send")).ToArray();
                 Require(sends.Length == 3, "Expected one send span per stored-envelope copy.");
                 foreach (var send in sends)
@@ -214,9 +263,11 @@ public sealed class TransportConformanceSuite<TIncoming, TBinding>
                 await Send(1).ConfigureAwait(false);
                 CheckBody(await Next().ConfigureAwait(false), 1);
                 // Drain the first completion before fault injection. At-least-once brokers may otherwise redeliver it legitimately.
-                await fixture.Transport.StopAsync(token).ConfigureAwait(false);
-                await fixture.Transport.StartAsync(token).ConfigureAwait(false);
+                await Stop().ConfigureAwait(false);
+                await Start().ConfigureAwait(false);
+                progress.Phase = "broker disconnect";
                 await fixture.DisconnectAsync(token).ConfigureAwait(false);
+                progress.Phase = "broker reconnect";
                 await fixture.ReconnectAsync(token).ConfigureAwait(false);
                 await Send(2).ConfigureAwait(false);
                 CheckBody(await Next().ConfigureAwait(false), 2);
@@ -289,4 +340,8 @@ public sealed class TransportConformanceSuite<TIncoming, TBinding>
         if (!condition) throw new InvalidOperationException($"Transport conformance: {message}");
     }
     private sealed record Delivery(byte[] Body, string? TraceParent, string? TraceState, int? Attempt, DateTimeOffset ReceivedAt);
+    private sealed class ScenarioProgress
+    {
+        internal string Phase { get; set; } = "scenario setup";
+    }
 }
