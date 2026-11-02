@@ -370,6 +370,46 @@ class ComparisonInputTests(unittest.TestCase):
                                     gate.input_manifest(self.candidate, referenced_test_sources=[]))
                 path.unlink()
 
+    def test_policy_files_require_build_verification_before_exclusion(self):
+        for name in ("renovate.json", ".github/workflows/claude-code-review.yml",
+                     ".github/scripts/test_dependency_review_policy.py"):
+            with self.subTest(name=name):
+                path = self.write(self.candidate, name, "changed policy")
+                self.assertNotEqual(gate.input_manifest(self.baseline), gate.input_manifest(self.candidate))
+                self.assertEqual(gate.input_manifest(self.baseline, referenced_build_inputs=[]),
+                                 gate.input_manifest(self.candidate, referenced_build_inputs=[]))
+                baseline = self.write(self.baseline, name, "original policy")
+                self.assertNotEqual(gate.input_manifest(self.baseline, referenced_build_inputs=[name]),
+                                    gate.input_manifest(self.candidate, referenced_build_inputs=[name]))
+                path.unlink()
+                baseline.unlink()
+
+    def test_verified_policy_exclusions_keep_unknown_files_and_production_hashed(self):
+        for name in ("unknown.json", ".github/scripts/unknown.py", ".github/workflows/unknown.yml",
+                     "src/Relayer/Changed.cs", "Directory.Build.props"):
+            with self.subTest(name=name):
+                path = self.candidate / name
+                original = path.read_bytes() if path.exists() else None
+                self.write(self.candidate, name, "still hashed")
+                self.assertNotEqual(gate.input_manifest(self.baseline, referenced_build_inputs=[]),
+                                    gate.input_manifest(self.candidate, referenced_build_inputs=[]))
+                if original is None:
+                    path.unlink()
+                else:
+                    path.write_bytes(original)
+
+    def test_ignored_referenced_policy_is_hashed_and_missing_policy_fails(self):
+        name = "renovate.json"
+        for checkout in (self.baseline, self.candidate):
+            self.write(checkout, ".gitignore", name + "\n")
+        self.write(self.baseline, name, "original policy")
+        self.write(self.candidate, name, "changed policy")
+        self.assertNotEqual(gate.input_manifest(self.baseline, referenced_build_inputs=[name]),
+                            gate.input_manifest(self.candidate, referenced_build_inputs=[name]))
+        (self.candidate / name).unlink()
+        with self.assertRaisesRegex(gate.GateError, "Referenced policy input missing"):
+            gate.input_manifest(self.candidate, referenced_build_inputs=[name])
+
     def test_referenced_test_source_remains_hashed(self):
         source = "tests/Shared/Source.cs"
         self.write(self.baseline, source, "original source")
@@ -450,6 +490,18 @@ class ComparisonInputTests(unittest.TestCase):
         self.assertEqual([source], verified["test_sources"])
         self.assertIn(source, verified["projects"][child])
 
+        policy = "renovate.json"
+        self.write(self.candidate, policy, "embedded policy")
+        self.write(self.candidate, child, project.format(
+            '<Target Name="IncludePolicy" BeforeTargets="CoreCompile">'
+            '<ItemGroup><EmbeddedResource Include="../../renovate.json" /></ItemGroup></Target>'))
+        verified = gate.test_source_inputs(self.candidate)
+        self.assertIn(policy, verified["projects"][child])
+        inputs = {name for paths in verified["projects"].values() for name in paths}
+        original = gate.input_manifest(self.candidate, referenced_build_inputs=inputs)
+        self.write(self.candidate, policy, "changed embedded policy")
+        self.assertNotEqual(original, gate.input_manifest(self.candidate, referenced_build_inputs=inputs))
+
     def test_cli_requires_sources_and_retains_build_verification_without_hiding_real_regressions(self):
         candidate = report()
         candidate["Benchmarks"][0]["Memory"]["BytesAllocatedPerOperation"] += 64
@@ -459,6 +511,7 @@ class ComparisonInputTests(unittest.TestCase):
         command = ["compare", str(before), str(after), "--verify-test-sources"]
         verification = {"test_sources": [], "projects": {gate.BENCHMARK_PROJECT: []}}
         self.write(self.candidate, "tests/Shared.cs", "unbuilt source")
+        self.write(self.candidate, "renovate.json", "unbuilt policy")
         with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
             self.assertEqual(1, gate.main(command))
             command += ["--baseline-source", str(self.baseline), "--candidate-source", str(self.candidate),
@@ -468,6 +521,11 @@ class ComparisonInputTests(unittest.TestCase):
                 retained = json.loads(manifest.read_text())
                 self.assertTrue(retained["identical"])
                 self.assertEqual(verification, retained["test_source_verification"]["candidate"])
+                self.write(self.baseline, "renovate.json", "original embedded policy")
+                verification["projects"][gate.BENCHMARK_PROJECT] = ["renovate.json"]
+                self.assertEqual(1, gate.main(command))
+                self.assertFalse(json.loads(manifest.read_text())["identical"])
+                verification["projects"][gate.BENCHMARK_PROJECT] = []
                 self.write(self.candidate, "src/Relayer/Changed.cs", "production change")
                 self.assertEqual(1, gate.main(command))
             with patch.object(gate, "test_source_inputs", side_effect=gate.GateError("build failed")):

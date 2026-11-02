@@ -53,6 +53,13 @@ NON_BUILD_FILES = {
     ".github/workflows/ci.yml",
     ".github/workflows/performance.yml",
 }
+# Exclude these policy files only after querying both measured project graphs.
+# Explicit resources, content, analyzer inputs and imports must remain hashed.
+POLICY_FILES = {
+    "renovate.json",
+    ".github/workflows/claude-code-review.yml",
+    ".github/scripts/test_dependency_review_policy.py",
+}
 REQUIRED_INPUTS = {
     "global.json", "Directory.Build.props", "Directory.Packages.props",
     "src/Relayer/Relayer.csproj",
@@ -110,7 +117,7 @@ def test_source_inputs(checkout):
         raise GateError(f"Cannot verify benchmark test sources under {checkout}: {error}") from error
 
 
-def input_manifest(checkout, *, referenced_test_sources=None):
+def input_manifest(checkout, *, referenced_test_sources=None, referenced_build_inputs=None):
     """Hash actual checkout inputs after CI overlays the common harness and SDK."""
     checkout = Path(checkout).resolve()
     try:
@@ -123,6 +130,8 @@ def input_manifest(checkout, *, referenced_test_sources=None):
         paths = set(git("ls-files", "--cached", "--others", "--exclude-standard", "-z").split("\0"))
         if referenced_test_sources is not None:
             paths.update(referenced_test_sources)
+        if referenced_build_inputs is not None:
+            paths.update(POLICY_FILES.intersection(referenced_build_inputs))
         manifest = {}
         for name in sorted(paths):
             if not name or name in NON_BUILD_FILES or name.startswith(("docs/", "website/")):
@@ -132,6 +141,11 @@ def input_manifest(checkout, *, referenced_test_sources=None):
                 raise GateError(f"Cannot verify symlink input: {path}")
             if path.is_dir():
                 raise GateError(f"Cannot verify directory or submodule input: {path}")
+            if name in POLICY_FILES and referenced_build_inputs is not None:
+                if name not in referenced_build_inputs:
+                    continue
+                if not path.is_file():
+                    raise GateError(f"Referenced policy input missing: {path}")
             if (referenced_test_sources is not None and name.startswith("tests/")
                     and name.endswith(".cs") and name not in referenced_test_sources):
                 continue
@@ -361,11 +375,13 @@ def main(argv=None):
                 raise GateError("Source verification requires separate checkouts")
             verification, manifest = {}, {}
             for side, checkout in (("baseline", args.baseline_source), ("candidate", args.candidate_source)):
-                referenced = None
+                referenced, build_inputs = None, None
                 if args.verify_test_sources:
                     verification[side] = test_source_inputs(checkout)
                     referenced = verification[side]["test_sources"]
-                manifest[side] = input_manifest(checkout, referenced_test_sources=referenced)
+                    build_inputs = {name for paths in verification[side]["projects"].values() for name in paths}
+                manifest[side] = input_manifest(checkout, referenced_test_sources=referenced,
+                                                referenced_build_inputs=build_inputs)
             identical_inputs = manifest["baseline"] == manifest["candidate"]
             manifest["identical"] = identical_inputs
             if verification:
