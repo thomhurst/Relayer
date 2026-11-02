@@ -13,8 +13,13 @@ public interface ITopology
 
     /// <summary>
     /// Exports AsyncAPI 3.0.0 with JSON contract schemas from registered source-generated metadata.
+    /// Requires source-generated JSON metadata for every registered message, including messages using custom serializers.
     /// Does not export protocol bindings or custom serializer formats. Leaves the stream open.
     /// </summary>
+    /// <exception cref="InvalidOperationException">
+    /// A registered message lacks source-generated JSON metadata or a declared message lacks a stable identity.
+    /// Export fails before writing the document; registering an IMessageSerializer does not satisfy the metadata requirement.
+    /// </exception>
     void ExportAsyncApi(Stream destination, AsyncApiOptions options);
 }
 

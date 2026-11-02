@@ -1,9 +1,11 @@
 #pragma warning disable RLY001 // Export fixtures use explicit MessageTypeRegistry registrations.
+using System.Buffers;
 using System.Globalization;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Microsoft.Extensions.DependencyInjection;
+using Relayer.Serialization;
 
 namespace Relayer.Tests;
 
@@ -62,6 +64,22 @@ public class AsyncApiTests
         await Assert.That(tree.GetProperty("$schema").GetString()).IsEqualTo("https://json-schema.org/draft/2020-12/schema");
         await Assert.That(tree.GetProperty("properties").GetProperty("child").GetProperty("properties")
             .GetProperty("child").GetProperty("$ref").GetString()).IsEqualTo("#/properties/child");
+    }
+
+    [Test]
+    public async Task Export_before_serializer_resolution_preserves_serialization_contract()
+    {
+        using var provider = Create();
+        _ = Export(provider);
+        var serializer = provider.GetRequiredService<IMessageSerializer>();
+        var buffer = new ArrayBufferWriter<byte>();
+        var message = new ExportOrder("Ada", [1, 2]);
+        serializer.Serialize(message, buffer);
+        using var document = JsonDocument.Parse(buffer.WrittenMemory);
+        await Assert.That(document.RootElement.GetProperty("customer_name").GetString()).IsEqualTo("Ada");
+        var roundTrip = serializer.Deserialize<ExportOrder>(new ReadOnlySequence<byte>(buffer.WrittenMemory));
+        await Assert.That(roundTrip.CustomerName).IsEqualTo(message.CustomerName);
+        await Assert.That(roundTrip.Items).IsEquivalentTo(message.Items);
     }
 
     [Test]
