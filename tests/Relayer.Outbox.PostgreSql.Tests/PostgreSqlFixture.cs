@@ -28,7 +28,9 @@ internal sealed class PostgreSqlFixture : IAsyncDisposable
             await _docker(["run", "--detach", "--rm", "--name", _name, "--publish", "127.0.0.1::5432",
                 "--env", "POSTGRES_PASSWORD=relayer-test", "postgres:18-alpine"]);
             var port = (await _docker(["port", _name, "5432/tcp"])).Trim().Split(':')[^1];
-            ConnectionString = $"Host=127.0.0.1;Port={port};Username=postgres;Password=relayer-test;Database=postgres;Pooling=false;Timeout=2";
+            // This container has neither TLS nor Kerberos. Native encryption fallback can
+            // reconnect after authentication fails and replace the original failure.
+            ConnectionString = $"Host=127.0.0.1;Port={port};Username=postgres;Password=relayer-test;Database=postgres;Pooling=false;Timeout=2;SSL Mode=Disable;GSS Encryption Mode=Disable";
             var timeout = Stopwatch.StartNew();
             while (true)
             {
