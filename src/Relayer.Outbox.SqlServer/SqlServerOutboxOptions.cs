@@ -3,6 +3,9 @@ namespace Relayer.Outbox.SqlServer;
 /// <summary>Database identifiers for SQL Server durable outbox primitives.</summary>
 public sealed class SqlServerOutboxOptions
 {
+    /// <summary>Named commit-triggered direct dispatcher, or null to leave all rows for recovery workers.</summary>
+    public string? DispatchStoreName { get; init; }
+
     /// <summary>Schema containing the outbox. Null selects dbo.</summary>
     public string? Schema { get; init; }
 

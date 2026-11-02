@@ -1,7 +1,7 @@
 using System.Runtime.CompilerServices;
 using Relayer.Transports;
 
-namespace Relayer.Outbox.PostgreSql;
+namespace Relayer.Outbox;
 
 // Owned exclusively by the direct dispatch worker's single reader.
 internal sealed class DirectDispatchCapabilityCache

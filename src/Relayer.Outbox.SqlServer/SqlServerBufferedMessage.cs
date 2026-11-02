@@ -11,6 +11,7 @@ internal sealed class SqlServerBufferedMessage
     internal readonly object[] Values = [new byte[16], 0, DBNull.Value, "", "", "", new MemoryStream(), new MemoryStream(), default(DateTimeOffset), default(DateTimeOffset), DBNull.Value];
     private readonly ArrayBufferWriter<byte> _headers = new();
     private SqlChars _key = new([]);
+    private KeyValuePair<string, WireString>[] _decodedHeaders = [];
     private bool _hasLane;
     private bool _hasDelivery;
 
@@ -72,6 +73,22 @@ internal sealed class SqlServerBufferedMessage
         stream.Position = 0;
     }
 
+    internal Guid Id => new((byte[])Values[0], bigEndian: true);
+    internal string Transport => (string)Values[3];
+    internal string Destination => (string)Values[4];
+    internal DateTimeOffset CreatedAt => (DateTimeOffset)Values[8];
+    internal DateTimeOffset? DeliverAt => _hasDelivery ? (DateTimeOffset)Values[9] : null;
+    internal int? Lane => _hasLane ? (int)Values[1] : null;
+
+    internal OutgoingMessage ToMessage()
+    {
+        var headers = (MemoryStream)Values[6];
+        var body = (MemoryStream)Values[7];
+        return new OutgoingMessage(Destination, body.GetBuffer().AsMemory(0, checked((int)body.Length)),
+            DurableOutboxHeaderCodec.Read(headers.GetBuffer().AsMemory(0, checked((int)headers.Length)), ref _decodedHeaders))
+            .ForOutboxDispatch();
+    }
+
     internal object GetValue(int ordinal) => ordinal switch
     {
         1 when !_hasLane => DBNull.Value,
@@ -81,6 +98,9 @@ internal sealed class SqlServerBufferedMessage
 
     internal void Clear()
     {
+        for (var i = 0; i < _decodedHeaders.Length; i++)
+            _decodedHeaders[i] = new(_decodedHeaders[i].Key, default);
+        _hasLane = _hasDelivery = false;
         Values[2] = Values[10] = DBNull.Value;
         Values[3] = Values[4] = Values[5] = "";
         _headers.Clear();

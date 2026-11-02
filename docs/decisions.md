@@ -59,6 +59,7 @@ To change a decision, add a new entry that supersedes it rather than editing his
 | [D46](#d46-sql-server-primitives-use-native-sqlclient-with-an-explicit-aot-boundary) | SQL Server primitives use native SqlClient with an explicit AOT boundary | Accepted |
 | [D47](#d47-sql-server-outbox-transactions-reuse-native-bulk-copy) | SQL Server outbox transactions reuse native bulk copy | Accepted |
 | [D48](#d48-mysql-enqueue-owns-native-transactions-and-reuses-mysqlbatch) | MySQL enqueue owns native transactions and reuses MySqlBatch | Accepted |
+| [D49](#d49-sql-server-commit-dispatch-reuses-native-rpc-batches) | SQL Server commit dispatch reuses native RPC batches | Accepted |
 
 ---
 
@@ -954,3 +955,31 @@ transaction-control SQL or other implicit-commit statements: MySQL can commit th
 the wrapper, and Relayer cannot restore atomicity afterward. Lost COMMIT acknowledgements retain the
 native unknown-outcome semantics. Scheduling support remains false until matching workers exist;
 transactional enqueue alone never promises delivery. See the [MySQL store reference](https://relayer.tomlonghurst.dev/docs/reference/mysql-store).
+
+## D49. SQL Server commit dispatch reuses native RPC batches
+
+**Context.** #329 adds independently useful unordered dispatch after D47's native commit. SqlClient 7.1.1's
+[`SqlBatch`](https://github.com/dotnet/SqlClient/blob/v7.1.1/src/Microsoft.Data.SqlClient/src/Microsoft/Data/SqlClient/SqlBatch.cs)
+groups commands through native RPC batches, including cancellation and sequential result reading.
+[`SqlDependency`](https://github.com/dotnet/SqlClient/blob/v7.1.1/src/Microsoft.Data.SqlClient/src/Microsoft/Data/SqlClient/SqlDependency.cs)
+uses process-wide listener state and Service Broker query notifications. Service Broker's native conversation
+queues require explicit database infrastructure; they do not represent this process's already-owned committed buffers.
+
+**Decision.** Reuse the PostgreSQL direct-dispatch lifecycle: after durable commit, transfer owned buffers to a
+bounded local queue, group destinations using the shared bounded capability cache, and invoke the ordinary
+named native transports. Use SqlBatch for independently fenced autocommit claims and completion, preserving
+binary UUID order and native pooling. Read explicit per-statement row counts so trigger row counts cannot
+inflate successful completion. Do not add a cross-process listener, notification runtime or recovery poll.
+Service Broker remains an optional mechanism to assess for recovery work, not a prerequisite for local commit dispatch.
+
+Require an explicit native Initial Catalog for the dispatcher. Compare the writer's actual database and data source
+before opening a transaction, without opening a second pooled connection (which could exhaust Max Pool Size = 1).
+Use exact database spelling so case-sensitive databases cannot be confused. Connection strings and all native
+pool/authentication settings pass through unchanged. The ordinary transaction integration still permits login defaults
+when no dispatcher is selected. Configuration mismatches fail explicitly rather than stranding rows in another store.
+
+**Consequences.** SQL Server unordered commit dispatch is opt-in; ordered dispatch, inbox, recovery, poison rows and
+retention remain separate work. Full queues, shutdown, future rows and unknown send outcomes retain durable rows.
+Native failures update attempts under the live token; successful sends followed by failed or expired completion do
+not consume another send attempt. D46's unsupported trimming/AOT boundary remains explicit. Buffer-transfer
+benchmarks isolate Relayer's reusable copy/swap/group work; database and native transport costs remain separate.

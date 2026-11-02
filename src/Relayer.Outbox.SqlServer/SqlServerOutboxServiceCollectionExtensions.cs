@@ -4,7 +4,7 @@ using Microsoft.Extensions.DependencyInjection;
 namespace Relayer.Outbox.SqlServer;
 
 /// <summary>Explicitly named SQL Server durable stores.</summary>
-public static class SqlServerOutboxServiceCollectionExtensions
+public static partial class SqlServerOutboxServiceCollectionExtensions
 {
     /// <summary>Registers a keyed scoped store, without schema deployment, enqueue or workers.</summary>
     /// <remarks>The native connection string, including pooling and authentication settings, passes through unchanged.</remarks>
