@@ -67,8 +67,8 @@ internal sealed class KafkaTestBroker : IAsyncDisposable
     internal async Task RestartAsync(CancellationToken token)
     {
         await ExecuteAsync("touch /tmp/relayer-kafka-start", token);
-        // A consumed request and a fresh log prevent a previous generation's readiness from passing.
-        await WaitAsync("test ! -f /tmp/relayer-kafka-start && test -f /tmp/relayer-kafka.pid && grep -q 'Transitioning from RECOVERY to RUNNING' /tmp/relayer-kafka.log", token);
+        // A fresh log prevents stale readiness. Kafka reports RUNNING before its socket acceptors start.
+        await WaitAsync("test ! -f /tmp/relayer-kafka-start && test -f /tmp/relayer-kafka.pid && grep -q 'Kafka Server started' /tmp/relayer-kafka.log", token);
     }
 
     private async Task ExecuteAsync(string command, CancellationToken token)

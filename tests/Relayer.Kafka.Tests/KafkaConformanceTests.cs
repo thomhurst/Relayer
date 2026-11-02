@@ -59,7 +59,7 @@ internal sealed class KafkaFixture : ITransportConformanceFixture<KafkaDelivery>
         {
             await broker.StartAsync(token);
             fixture = new KafkaFixture(broker, tracing);
-            await using var admin = new AdminClientBuilder().WithBootstrapServers(fixture.Bootstrap).Build();
+            await using var admin = new AdminClientBuilder().WithBootstrapServers(fixture.Bootstrap).WithLoggerFactory(fixture._logs).Build();
             await admin.CreateTopicsAsync([new() { Name = fixture.Destination, NumPartitions = 1, ReplicationFactor = 1 },
                 new() { Name = fixture.Destination + ".dead-letter", NumPartitions = 1, ReplicationFactor = 1 }], cancellationToken: token);
             return fixture;
