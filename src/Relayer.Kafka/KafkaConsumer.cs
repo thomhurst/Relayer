@@ -366,7 +366,8 @@ internal sealed class KafkaConsumer : IAsyncDisposable
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
     private async ValueTask DrainAcceptedAsync()
     {
-        while (_scheduler.BufferedCount != 0)
+        // Shutdown takes over with its bounded drain, including handlers that outlive it.
+        while (_scheduler.BufferedCount != 0 && !_stop.IsCancellationRequested)
         {
             await PumpAsync().ConfigureAwait(false);
             if (_scheduler.BufferedCount != 0) await _wake.WaitAsync().ConfigureAwait(false);

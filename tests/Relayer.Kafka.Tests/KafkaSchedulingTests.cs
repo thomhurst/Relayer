@@ -188,6 +188,54 @@ public class KafkaSchedulingTests
     }
 
     [Test]
+    public async Task Stop_interrupts_accepted_work_drain_without_waiting_for_late_handlers()
+    {
+        using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(2));
+        var token = timeout.Token;
+        using var tracing = new MessageTracing(Options.Create(new TracingOptions()), []);
+        await using var fixture = (KafkaFixture)await KafkaFixture.CreateAsync(tracing, token);
+        await using var producer = await new ProducerBuilder<byte[], byte[]>().WithBootstrapServers(fixture.Bootstrap).BuildAsync(token);
+        for (var i = 0; i < 2; i++)
+            await producer.ProduceAsync(new() { Topic = fixture.Destination, Partition = 0, Key = [(byte)i], Value = [(byte)i] }, token);
+        var native = new ConsumerBuilder<byte[], byte[]>().WithBootstrapServers(fixture.Bootstrap).WithGroupId(fixture.Destination)
+            .WithOffsetCommitMode(OffsetCommitMode.Manual).WithAutoOffsetStore(false).WithAutoOffsetReset(AutoOffsetReset.Earliest).Build();
+        native.Assign(new TopicPartition(fixture.Destination, 0));
+        await native.InitializeAsync(token);
+        var late = new TaskCompletionSource<Disposition>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var peer = new TaskCompletionSource<Disposition>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var received = 0;
+        await using var adapter = new KafkaConsumer(native, (delivery, _) =>
+        {
+            received++;
+            return new(delivery.Result.Offset == 0 ? late.Task : peer.Task);
+        },
+            tracing, new() { System = "kafka", Destination = fixture.Destination }, new(),
+            options: new() { ConcurrencyPerPartition = 2 }, concurrency: 2);
+        await using var batches = native.ConsumeBatchAsync(token).GetAsyncEnumerator();
+        await Assert.That(await batches.MoveNextAsync()).IsTrue();
+        // This entry point enters the same accepted-work drain as a replay. Both handlers
+        // are pending when it yields, so stop cannot race ahead of entry into that drain.
+        var draining = adapter.ProcessBatchAsync(batches.Current, token).AsTask();
+        try
+        {
+            await Assert.That(received).IsEqualTo(2);
+            await Assert.That(draining.IsCompleted).IsFalse();
+            await adapter.StopAsync(token);
+            // The standalone batch entry point has no running poll pump. A peer completion
+            // supplies the wake normally supplied by RunAsync's stop registration.
+            peer.SetResult(Disposition.Complete);
+            await draining.WaitAsync(TimeSpan.FromSeconds(5), token);
+            await Assert.That(late.Task.IsCompleted).IsFalse();
+        }
+        finally
+        {
+            peer.TrySetResult(Disposition.Complete);
+            late.TrySetResult(Disposition.Complete);
+            await draining.WaitAsync(token);
+        }
+    }
+
+    [Test]
     public async Task Bounded_stop_cancels_active_work_and_fresh_receiver_replays_discarded_queue()
     {
         using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(2));

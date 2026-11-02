@@ -133,7 +133,7 @@ public class KafkaSeekTests
         using var tracing = new MessageTracing(Options.Create(new TracingOptions()), []);
         await using var fixture = (KafkaFixture)await KafkaFixture.CreateAsync(tracing, token);
         var state = new KafkaReplayState { BlockFirst = true };
-        using var host = BuildHost(fixture, state);
+        using var host = BuildHost(fixture, state, TimeSpan.FromMilliseconds(100));
         await host.StartAsync(token);
         await fixture.Transport.StartAsync(token);
         await fixture.Transport.SendAsync(Message(fixture.Destination, 0), token);
@@ -147,16 +147,20 @@ public class KafkaSeekTests
             .Throws<InvalidOperationException>().WithMessageContaining("multiple consumer declarations");
         transport.Consumers.RemoveAt(1);
         var replay = control.SeekAsync(fixture.Destination, new TopicPartitionOffset(fixture.Destination, 0, 0), token).AsTask();
-        var stopping = host.StopAsync(token);
-        await Assert.That(async () => await replay).Throws<OperationCanceledException>();
-        state.Release.SetResult();
-        await stopping;
+        try
+        {
+            var stopping = host.StopAsync(token);
+            await Assert.That(async () => await replay).Throws<OperationCanceledException>();
+            await stopping.WaitAsync(TimeSpan.FromSeconds(5), token);
+            await Assert.That(state.Release.Task.IsCompleted).IsFalse();
+        }
+        finally { state.Release.TrySetResult(); }
     }
 
     private static OutgoingMessage Message(string topic, int number) => new(topic, Encoding.UTF8.GetBytes($"{{\"Number\":{number}}}"),
         new KeyValuePair<string, WireString>[] { new("ce_id", new("record-" + number)), new("ce_type", new("tests.kafka.receive;v=1")) });
 
-    private static IHost BuildHost(KafkaFixture fixture, KafkaReplayState state)
+    private static IHost BuildHost(KafkaFixture fixture, KafkaReplayState state, TimeSpan? drainTimeout = null)
     {
         var builder = Host.CreateApplicationBuilder();
         builder.Logging.ClearProviders();
@@ -176,6 +180,7 @@ public class KafkaSeekTests
                 kafka.Consume(fixture.Destination, consumer =>
                 {
                     consumer.Options.Group = fixture.Destination;
+                    if (drainTimeout is { } timeout) consumer.Options.DrainTimeout = timeout;
                     consumer.Handler<KafkaReplayHandler>();
                 });
             });
