@@ -193,7 +193,7 @@ Every transport proves the SPI contract by passing the transport conformance sui
 
 ### 3.1 Configuration
 
-The core configuration surface is available now. Transport packages supply the three option types and wrap `AddTransport` in typed extensions. The [Kafka adapter](../website/docs/transports/kafka.md) implements producers and serial consumer groups through `Kafka`; parallel partition scheduling and the other broker adapters remain roadmap work. The following call site uses the real core API:
+The core configuration surface is available now. Transport packages supply the three option types and wrap `AddTransport` in typed extensions. The [Kafka adapter](../website/docs/transports/kafka.md) implements producers and native partition processing through `Kafka`. Transport pages describe each adapter's implemented features. The following call site uses the real core API:
 
 ```csharp
 var services = new ServiceCollection();
@@ -229,7 +229,7 @@ Names are case-sensitive and unique across all transport kinds. Several transpor
 
 `AddRelayer` captures `RelayerConfiguration`; declarations freeze when their callbacks finish. Its first hosted service checks all declarations and all named option validators before later transport hosted services start, and reports their errors together in `OptionsValidationException.Failures`. Handler types are registered explicitly as scoped services, preserving existing registrations. Message names must be registered explicitly or through the generated `AddMessageTypesFromThisAssembly` method.
 
-This API declares configuration. Startup validates runtime adapters' endpoint capability values and rejects ordering keys on destinations without native ordering support. Receive dispatch (#4), sender execution (#5), native adapters, failure policies, inbox/outbox integration and topology validation consume these declarations in their own roadmap work. Feature-specific capability and fallback selection ships with the corresponding execution path. See [Writing a transport](https://relayer.tomlonghurst.dev/docs/transports/authoring) and [Configuration](https://relayer.tomlonghurst.dev/docs/guides/configuration) for the transport-author contract and validation boundaries.
+This API declares configuration. Startup validates runtime adapters' endpoint capability values and rejects ordering keys on destinations without native ordering support. Receive dispatch, sender execution, native adapters, failure policies, inbox/outbox integration and topology validation consume these declarations. Feature-specific capability and fallback selection belongs to the corresponding execution path. See [Writing a transport](https://relayer.tomlonghurst.dev/docs/transports/authoring) and [Configuration](https://relayer.tomlonghurst.dev/docs/guides/configuration) for the transport-author contract and validation boundaries.
 
 ### 3.2 Handlers
 
@@ -458,7 +458,7 @@ The outbox is the area where every existing library has had correctness bugs, so
 ### 6.2 Enlisting: hard to misuse
 
 - **EF Core:** Relayer registers a `SaveChangesInterceptor` and a `DbTransactionInterceptor`. Before an implicit save, `context.EnlistRelayerOutbox()` explicitly selects the context that owns buffered sends. An explicit EF transaction activates enlistment automatically when unambiguous. `SaveChangesAsync`, or committing the EF transaction directly, writes business data and outgoing rows atomically. You do not need to override `SaveChanges` (Silverback #164), and it works with **multiple DbContexts** (Silverback #163). Commit through EF's `IDbContextTransaction`, including its `UseTransaction` wrapper: calling the underlying `DbTransaction.Commit` bypasses EF interception. D31 records ownership and failure boundaries; [the site](https://relayer.tomlonghurst.dev/docs/reference/ef-core-outbox) documents implemented PostgreSQL enlistment and remaining dispatch work.
-- **ADO.NET / Dapper:** `await using var tx = await outbox.BeginTransactionAsync(connection)` returns a `DbTransaction` subclass. Commit writes the shared outbox batch before the native commit. Create business commands through `tx.Connection`, including Dapper calls: Npgsql commands from the original connection cannot accept a wrapper transaction (D32). Rollback and disposal discard buffered messages. See [PostgreSQL transactions](../website/docs/reference/postgres-outbox.md) for ownership and recovery boundaries.
+- **ADO.NET / Dapper:** `await using var tx = await outbox.BeginTransactionAsync(connection)` returns a `DbTransaction` subclass. Commit writes the shared outbox batch before the native commit. Create business commands through `tx.Connection`, including Dapper calls: Npgsql commands from the original connection cannot accept a wrapper transaction (D32). Rollback and disposal discard buffered messages. See [PostgreSQL transactions](../website/docs/reference/postgres-outbox.md) for ownership and recovery boundaries. SQL Server follows the same command-connection lifecycle (D47), flushing reusable rows through native `SqlBulkCopy` on the business transaction; see [SQL Server transactions](../website/docs/reference/sqlserver-store.md). SQL Server EF Core, inbox and dispatch workers remain planned.
 - **MongoDB / DynamoDB:** use their session and transaction APIs in the same style.
 
 ### 6.3 Schema

@@ -1,17 +1,17 @@
 ---
 title: SQL Server durable store
-description: "Explicit SQL Server outbox schema, bounded reads, fenced claims and backlog queries."
+description: "SQL Server ADO.NET/Dapper transactions, explicit schema, bounded reads and fenced claims."
 ---
 
 `Relayer.Outbox.SqlServer` implements the [durable store contract](outbox-stores.md) using
 `Microsoft.Data.SqlClient` and SQL Server's native connection pooling. It supplies reads, atomic claims,
-renewal, completion, failure persistence and eligible backlog counts. **Transactional enqueue, EF Core and
-ADO.NET/Dapper enlistment, inbox deduplication, dispatch workers, lane leases, poison-row movement and
-maintenance remain planned for SQL Server.** Registering this package does not enable those features or
-make `ISender` transactional. PostgreSQL's worker registrations do not accept this provider.
+renewal, completion, failure persistence, eligible backlog counts and scoped ADO.NET/Dapper transaction
+enlistment. **EF Core, inbox deduplication, dispatch workers, lane leases, poison-row movement and
+maintenance remain planned for SQL Server.** PostgreSQL's worker registrations do not accept this provider.
+Registering a durable store alone does not make `ISender` transactional.
 
 **Native AOT and trimming are currently unsupported for SQL Server runtime operations.** SqlClient 7.1.1
-retains reflection in authentication, configuration and diagnostics. Store construction and registration
+retains reflection in authentication, configuration and diagnostics. Outbox/store construction and registration
 carry `RequiresUnreferencedCode` and `RequiresDynamicCode` diagnostics; see
 [the upstream Native AOT issue](https://github.com/dotnet/SqlClient/issues/1947).
 Schema SQL/options remain AOT safe. This restriction is specific to this optional native provider.
@@ -46,6 +46,61 @@ each schema, table and index name. Keep deployment and registration options iden
 The optional `Relayer.HealthChecks` package can adapt this named store through
 `AddRelayerOutboxHealthProvider("orders")`; see [health checks](../guides/health-checks.md).
 
+## ADO.NET and Dapper transactions
+
+Register one scoped enlistment and explicitly deploy the schema using the same options:
+
+```csharp
+using Dapper;
+using Relayer.Outbox.SqlServer;
+
+services.AddRelayerSqlServerOutbox(new SqlServerOutboxOptions { Lanes = 32 });
+
+// In an application DI scope:
+var outbox = serviceProvider.GetRequiredService<SqlServerOutbox>();
+var sender = serviceProvider.GetRequiredService<ISender>();
+await using var transaction = await outbox.BeginTransactionAsync(connectionString);
+await transaction.Connection!.ExecuteAsync(
+    "INSERT INTO orders (id) VALUES (@Id)", new { Id = order.Id }, transaction);
+await sender.SendAsync(new OrderPlaced(order.Id));
+await transaction.CommitAsync();
+```
+
+`BeginTransactionAsync` returns `DbTransaction`. Create business commands or call Dapper through
+**`transaction.Connection`**, passing this transaction. SqlClient commands accept only `SqlTransaction`;
+the connection view creates native commands and unwraps the matching transaction. Commands created on
+the original `SqlConnection` cannot accept the wrapper. Native parameters, command settings and isolation
+levels pass through unchanged.
+
+An overload accepts an already open, caller-owned `SqlConnection`; it stays open after completion.
+The connection-string overload owns its pooled native connection and disposes it after completion,
+without changing native configuration. Disposing the borrowed connection view does not close that
+connection. Commit, rollback and transaction disposal support synchronous and asynchronous calls.
+Disposing the enlistment scope abandons an unfinished transaction.
+
+Inside an active transaction, `ISender.SendAsync` and `SendViaOutboxAsync` copy the original envelope
+into reusable owned buffers. No broker send occurs. Commit writes all rows through native `SqlBulkCopy`
+with `CheckConstraints` and `FireTriggers`, using the **same native transaction** as business commands,
+then commits. Defaults initialize dispatch state. Large batches do not create one SQL parameter per
+field or hit the 2100-parameter limit. Rollback, disposal, insertion failure and cancellation discard
+buffered rows and roll back uncommitted business writes. Start another unit after completion; old
+commands cannot attach to it. A lost commit acknowledgement can still have committed, so use application
+idempotency for unknown outcomes.
+
+Options are init-only. `AddRelayerSqlServerOutbox(configurationSection)` binds `Schema`, `TablePrefix`
+and positive `Lanes` without runtime reflection, validates at host startup, and reloads for new scopes.
+Keep the lane count identical across writers. Lanes use the UTF-8 ordering key's FNV-1a hash modulo
+`Lanes`, matching PostgreSQL. One scoped `IOutboxEnlistment` integration is allowed.
+
+Use one unit at a time per scope. Ambient `TransactionScope`, nested transactions and savepoints are
+rejected. Do not complete native transactions, close native connections or issue SQL transaction-control
+commands behind the wrapper. Native per-send callbacks cannot be persisted. No custom retry, pool,
+scheduler or dispatch loop is installed. Future scheduled sender calls fail explicitly until a SQL Server
+scheduling worker exists. Low-level `IOutboxEnlistment.EnlistAsync` can preserve a supplied `DeliverAt`
+for a future dispatcher. Cancellation is passed to SqlClient; some server-side bulk-copy waits can end
+only when the server responds or the native timeout expires ([SqlClient #4965](https://github.com/dotnet/SqlClient/issues/4965)). Cancellation before native commit still
+rolls back the complete unit.
+
 ## Storage and UUID ordering
 
 The outbox columns match `OutboxRecord`: `id`, `lane`, `ordering_key`, `transport`, `destination`,
@@ -69,7 +124,7 @@ then each UTF-8 name and raw value prefixed by a little-endian 32-bit byte lengt
 entry order, empty values and arbitrary value bytes survive storage. Corrupt headers fail explicitly.
 Do not populate `headers` with JSON or empty bytes. Native writers must preserve the original CloudEvents
 identity, stable versioned wire message type, creation context, body, ordering key and schedule. They must
-reject native callbacks, which cannot be persisted. This package currently provides no enqueue API.
+reject native callbacks, which cannot be persisted. Use the scoped transaction integration below to enqueue through `ISender`.
 
 ## Reads and fenced outcomes
 
@@ -98,7 +153,12 @@ Set `RELAYER_SQLSERVER_BENCHMARK_CONNECTION` to an isolated database with schema
 dotnet run -c Release --project benchmarks/Relayer.Benchmarks -- --filter '*SqlServerOutboxReadBenchmarks*'
 ```
 
-The benchmark creates and removes its own table. Results include SqlClient's allocations and I/O;
+`SqlServerOutboxBufferBenchmarks` attributes reusable copy/header/lane work at 256 and 4096 bytes without database I/O.
+`SqlServerOutboxCommitBenchmarks` compares native bulk-copy commits with buffered commits at 1 and 64 rows.
+Use the same connection variable and select either class with `--filter`. Each commit invocation deletes
+its previous batch in the same transaction to keep table size stable.
+
+The database benchmarks create and remove their own tables. Results include SqlClient's allocations and I/O;
 they are diagnostic and do not establish the direct-send/receive throughput budget. Relayer reuses
 UUID buffers, header entries, payload buffers and boxed parameter values; native SqlClient commands,
 parameters, readers and decoded strings remain driver allocations.

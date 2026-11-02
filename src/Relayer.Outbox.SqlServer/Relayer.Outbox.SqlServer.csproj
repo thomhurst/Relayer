@@ -1,8 +1,10 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
-    <Description>SQL Server durable outbox read and claim primitives for Relayer.</Description>
+    <Description>SQL Server transactional outbox enlistment, durable reads and fenced claims for Relayer.</Description>
   </PropertyGroup>
   <ItemGroup>
+    <InternalsVisibleTo Include="Relayer.Benchmarks" />
+    <InternalsVisibleTo Include="Relayer.Outbox.SqlServer.Tests" />
     <PackageReference Include="Microsoft.Data.SqlClient" />
     <!-- Override SqlClient's vulnerable transitive 9.0.18 dependency. -->
     <PackageReference Include="System.Security.Cryptography.Pkcs" />

@@ -57,6 +57,7 @@ To change a decision, add a new entry that supersedes it rather than editing his
 | [D44](#d44-messagepack-uses-native-generated-formatters-directly) | MessagePack uses native generated formatters directly | Accepted |
 | [D45](#d45-tenant-store-selection-reuses-native-scoped-factories) | Tenant store selection reuses native scoped factories | Accepted |
 | [D46](#d46-sql-server-primitives-use-native-sqlclient-with-an-explicit-aot-boundary) | SQL Server primitives use native SqlClient with an explicit AOT boundary | Accepted |
+| [D47](#d47-sql-server-outbox-transactions-reuse-native-bulk-copy) | SQL Server outbox transactions reuse native bulk copy | Accepted |
 
 ---
 
@@ -900,3 +901,30 @@ inbox, workers and maintenance integrations. Native driver allocations and I/O r
 coverage; Relayer does not install its own pool, retry engine or reflection path. The SQL Server AOT exception
 is explicit at the API and in the site, and does not change ordinary direct send/receive guarantees.
 Follow-up [#309](https://github.com/thomhurst/Relayer/issues/309) tracks warning-clean native runtime support.
+
+## D47. SQL Server outbox transactions reuse native bulk copy
+
+**Context.** #290 adds SQL Server ADO.NET/Dapper enlistment to D46's durable primitives.
+SqlClient 7.1.1 supplies local transactions and `SqlBulkCopy` with an external `SqlTransaction`,
+streaming `DbDataReader` input, constraint checks and insert triggers. Like Npgsql in D32,
+`SqlCommand.Transaction` accepts only its provider transaction, so Dapper cannot pass a wrapper to
+commands created on the original connection.
+
+**Decision.** Apply D32's transaction and borrowed command-connection lifecycle to SQL Server.
+Copy original envelopes using the core's lossless binary header codec, RFC-order UUID bytes and
+established UTF-8 lane hash. Commit streams reusable rows into native `SqlBulkCopy` with
+`CheckConstraints | FireTriggers` on the business transaction, then commits natively. Reuse native bulk
+copy instead of row SQL, table-valued schema types, a private batch engine or a custom pool.
+A connection-string overload owns its opened pooled connection; the open-connection overload leaves
+the caller's connection open. Immutable options bind explicitly and validate on startup. Savepoints,
+nesting, ambient transactions and concurrent scope use are rejected or unsupported. D46's explicit
+SqlClient trimming/AOT restriction also applies to enlistment construction and registration.
+
+**Consequences.** Business writes and sends are atomic. Failure, cancellation and disposal release the
+buffer and dispose the uncommitted native transaction. A lost commit acknowledgement remains an unknown
+outcome. Cancellation remains native: some server-side bulk-copy waits may require the server response or
+native timeout before returning ([SqlClient #4965](https://github.com/dotnet/SqlClient/issues/4965)).
+No parallel cancellation/retry engine is added. Completed Task read results and byte/character storage are reused after warmup at the streaming boundary. Benchmarks expose
+native allocations separately from owned-buffer copying. Enlistment does not add SQL Server EF Core,
+inbox, workers, scheduling or maintenance; future scheduling through ISender fails until a matching
+worker exists. See the [SQL Server guide](../website/docs/reference/sqlserver-store.md).
