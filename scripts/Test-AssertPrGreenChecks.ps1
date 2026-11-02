@@ -67,6 +67,16 @@ Assert-Equal (Test-ClaudeReviewForHead -Comments @($review) -Head 'def') $false 
 $forged = [pscustomobject]@{ user = [pscustomobject]@{ login = 'someone' }; body = $review.body }
 Assert-Equal (Test-ClaudeReviewForHead -Comments @($forged) -Head 'abc') $false 'Only the workflow account posts reviews'
 
+# A manual dispatch's verdict is not a replacement for the PR-associated failed check (#220).
+$receiptFailure = New-Check 'claude-review' 'Claude Code Review' 'COMPLETED' 'FAILURE' '2026-11-02T12:00:00Z'
+$dispatchReview = [pscustomobject]@{ user = [pscustomobject]@{ login = 'github-actions[bot]' }; body = "<!-- REVIEW_RUN: 2/1; HEAD: abc -->`nLooks good.`n<!-- REVIEW_VERDICT: CLEAR -->" }
+Assert-Equal (Test-ClaudeReviewForHead -Comments @($dispatchReview) -Head 'abc') $true 'A dispatched current-head verdict can satisfy the head marker requirement'
+foreach ($mode in @($false, $true)) {
+    Assert-Equal @(Get-CheckDenial @(Select-CurrentCheck @($green + $receiptFailure)) -ForAutoMerge:$mode) @('claude-review: state=FAILURE') "A valid verdict does not clear the failed PR check (auto=$mode)"
+    $originalRetry = New-Check 'claude-review' 'Claude Code Review' 'COMPLETED' 'SUCCESS' '2026-11-02T13:00:00Z'
+    Assert-Equal @(Get-CheckDenial @(Select-CurrentCheck @($green + $receiptFailure + $originalRetry)) -ForAutoMerge:$mode).Count 0 "A successful PR-associated retry replaces the failed execution (auto=$mode)"
+}
+
 # Workflow contracts the auto-merge gate relies on.
 $ci = Get-Content -Raw (Join-Path $workflows 'ci.yml')
 Assert-Equal ([regex]::Match($ci, '(?m)^name:\s*(.+)$').Groups[1].Value.Trim()) 'CI' 'ci.yml is the awaited CI workflow'

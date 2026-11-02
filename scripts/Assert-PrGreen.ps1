@@ -101,7 +101,7 @@ if ($ForAutoMerge) {
     if ($LASTEXITCODE -ne 0) { Deny "could not fetch PR comments (exit $LASTEXITCODE)" }
     $comments = @($firstLines | ForEach-Object { [pscustomobject]@{ user = [pscustomobject]@{ login = 'github-actions[bot]' }; body = $_ } })
     if (-not (Test-ClaudeReviewForHead -Comments $comments -Head $head)) {
-        Deny "no Claude review of head $head yet; wait for it (or dispatch claude-code-review.yml with pr_number=$Pr) before arming auto-merge"
+        Deny "no Claude review of head $head yet; wait for it or follow Claude review recovery in .agents/skills/issue-pr-loop/references/repository.md before arming auto-merge"
     }
 }
 
