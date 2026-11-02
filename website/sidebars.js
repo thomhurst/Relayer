@@ -40,6 +40,7 @@ const sidebars = {
         'transports/rabbitmq',
           'transports/nats',
         'transports/pulsar',
+        'transports/google-pubsub',
         'transports/authoring',
         'transports/conformance',
         'transports/receive',
