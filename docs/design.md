@@ -179,6 +179,8 @@ public interface IPartitionSource<TPartition, TPosition>
 
 `TPosition` is whatever the broker uses: a `long` offset for Kafka, a sequence-number string for Kinesis, a `MessageId` for Pulsar. The scheduler never compares positions; it tracks them in arrival order.
 
+The scheduler remains planned. Its implemented [completion-window primitive](../website/docs/transports/partition-completion.md), `PartitionCompletionWindow<TPosition>`, provides bounded arrival-order watermark tracking and ownership-fenced completion tokens. It does not dispatch handlers or perform native commits, backpressure or draining.
+
 Every transport proves the SPI contract by passing the transport conformance suite (§15). The in-memory transport is the first implementation, in phase 0.
 
 ---
