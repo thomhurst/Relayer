@@ -11,7 +11,7 @@ Register [EF Core transaction enlistment](ef-core-outbox.md) separately to persi
 are implemented separately. [Leased recovery and cleanup](postgres-maintenance.md) are also available.
 Poison-row handling remains [planned](../roadmap.md).
 [EF Core consumer inbox](ef-core-inbox.md) implements deduplication using the inbox table.
-SQL Server and MySQL scripts are not implemented.
+[SQL Server schema tooling](sqlserver-store.md) and [MySQL schema tooling](mysql-store.md) are implemented separately.
 
 ## Print SQL
 

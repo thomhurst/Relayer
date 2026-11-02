@@ -33,7 +33,7 @@ services.AddDbContext<OrdersDbContext>((provider, options) =>
 Keep your normal `AddRelayer` message and route registrations. Register these interceptors on each
 participating DbContext. Context pooling, concurrent use of one service scope and ambient
 `TransactionScope` enlistment are not supported. Other EF database providers fail on first use;
-SQL Server and MySQL schemas are still planned.
+[SQL Server schema tooling and ADO.NET enlistment](sqlserver-store.md) and [MySQL schema tooling](mysql-store.md) are implemented separately. EF Core integration for those providers remains planned.
 
 Application-owned scoped factories can select native stores for manually initiated units and explicitly
 composed tenant endpoints. See [native tenant store selection](tenant-stores.md) for database/schema
