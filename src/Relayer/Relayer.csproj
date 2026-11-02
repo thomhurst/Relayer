@@ -2,7 +2,6 @@
 
   <PropertyGroup>
     <Description>Modern .NET messaging: wraps native broker clients and adds outbox, resiliency, telemetry and testing.</Description>
-    <PackageReadmeFile>README.md</PackageReadmeFile>
   </PropertyGroup>
 
   <ItemGroup>
@@ -15,7 +14,6 @@
 
   <!-- Ship the source generator inside the Relayer package (docs/decisions.md D4). -->
   <ItemGroup>
-    <None Include="..\..\README.md" Pack="true" PackagePath="/" />
     <ProjectReference Include="..\Relayer.SourceGenerators\Relayer.SourceGenerators.csproj"
                       ReferenceOutputAssembly="false"
                       OutputItemType="Analyzer" />

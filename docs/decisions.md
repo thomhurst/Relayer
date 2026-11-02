@@ -280,6 +280,12 @@ Superseded by [D24](#d24-capabilities-are-valued-and-declared-per-endpoint).
 - Nullable reference types on, and warnings treated as errors.
 - Layout: `src/`, `tests/`, `benchmarks/`, `docs/`.
 - CI on GitHub Actions.
+- MinVer derives a shared package and assembly version from `v`-prefixed SemVer tags. Untagged builds
+  use preview versions (minimum `0.1`). Full Git history is required for CI and release builds.
+- Packages include the repository README and icon, commit-bound SourceLink from the .NET SDK, and
+  portable PDB symbol packages. Release builds are deterministic with normalized source paths.
+- Tag pushes publish through NuGet trusted publishing only for commits on `main` with successful
+  `CI Passed`. See the [release workflow guide](../website/docs/contributing/releases.md) for setup.
 
 ## D22. The Kafka transport wraps Dekaf
 

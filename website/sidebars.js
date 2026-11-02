@@ -48,6 +48,7 @@ const sidebars = {
     'roadmap',
     'contributing/documentation',
     'contributing/performance',
+    'contributing/releases',
   ],
 };
 

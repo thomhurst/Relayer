@@ -272,6 +272,7 @@ function CallSite() {
 }
 
 const status = [
+  ['NuGet packaging, symbols and tag release workflow', 'Implemented; packages not released yet', true],
   ['Configuration, routes and startup validation', 'Implemented', true],
   ['Source-generated handlers, messages and JSON', 'Implemented', true],
   ['Native AOT handler round trips and trace propagation in CI', 'Implemented', true],
