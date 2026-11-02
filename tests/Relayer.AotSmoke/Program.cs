@@ -17,6 +17,8 @@ using Relayer.Outbox.PostgreSql;
 using Relayer.Serialization;
 using Relayer.Transports;
 
+PartitionCompletionSmoke.Run();
+
 var serviceBusMessage = ServiceBusModelFactory.ServiceBusReceivedMessage(new BinaryData(new byte[] { 42 }),
     properties: new Dictionary<string, object> { ["cloudEvents:type"] = "smoke;v=1" }, deliveryCount: 2);
 var serviceBusArgs = new ProcessMessageEventArgs(serviceBusMessage, new SmokeServiceBusReceiver(), "aot", default);

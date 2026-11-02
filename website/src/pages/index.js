@@ -289,6 +289,7 @@ const status = [
   ['Test harness and standalone handler context', 'Implemented', true],
   ['CI performance regression gate and in-memory benchmarks', 'Implemented; raw broker cases planned', true],
   ['Kafka producers, serial consumers and durable dead-letter copies', 'Implemented', true],
+  ['Bounded partition completion watermarks', 'Implemented core primitive', true],
   ['Kafka parallel scheduling, Service Bus receiver composition, SQS/SNS and RabbitMQ transports', 'In progress', false],
   ['Health checks with application-provided adapters', 'Implemented', true],
   ['Durable outbox contracts and keyed health adapter', 'Implemented core seam', true],
