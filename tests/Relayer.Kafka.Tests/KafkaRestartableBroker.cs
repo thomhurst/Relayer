@@ -85,8 +85,9 @@ internal sealed class KafkaRestartableBroker : IAsyncDisposable
     {
         try
         {
-            while ((await Container.ExecAsync(["/bin/bash", "-c", condition], token)).ExitCode != 0)
-                await Task.Delay(TimeSpan.FromMilliseconds(100), token);
+            // Keep the 100 ms readiness checks inside one exec. Launching a Docker exec for
+            // every probe competes with concurrent broker JVMs and their lifecycle commands.
+            await ExecuteAsync($"until {condition}; do sleep 0.1; done", token);
         }
         catch (Exception error)
         {
