@@ -176,6 +176,7 @@ public class NatsTopologyTests
             var arguments = configuration is null ? "-js" : "-js -c /etc/nats.conf";
             // Docker stop/start reallocates random published ports. Restart only the broker process
             // so the recovery test preserves the endpoint every existing native client uses.
+            // Raw string line endings follow the checkout; /bin/sh requires LF even on Windows.
             builder = builder.WithEntrypoint("/bin/sh", "-c").WithCommand($"""
                 while true; do
                     nats-server {arguments} &
@@ -183,7 +184,7 @@ public class NatsTopologyTests
                     trap 'kill -TERM "$broker"; wait "$broker"; exit 0' TERM INT
                     wait "$broker"
                 done
-                """);
+                """.ReplaceLineEndings("\n"));
             if (OperatingSystem.IsLinux()) builder = builder.WithPortBinding("20000-29999", "4222");
             var container = builder.Build();
             try { await container.StartAsync(token); return new(container); }
