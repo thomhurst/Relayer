@@ -28,13 +28,11 @@ concurrency:
 
 jobs:
   claude-review:
+    # Dependency updates follow the same head-bound review lifecycle, whether
+    # Renovate runs as a bot or through the maintainer's account.
     if: |
       github.event_name == 'workflow_dispatch' ||
-      (
-        github.actor != 'claude[bot]' &&
-        github.event.pull_request.user.login != 'dependabot[bot]' &&
-        !startsWith(github.event.pull_request.head.ref, 'renovate/')
-      )
+      github.actor != 'claude[bot]'
 
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -144,7 +142,7 @@ jobs:
             Perform the review directly using these instructions and the allowed read tools, then post through the required helper. Do not finish with terminal output alone: a review is incomplete until the helper confirms the comment was posted.
           claude_args: |
             --add-dir pr-head --allowedTools "Read,Glob,Grep,Bash(.github/scripts/pr-review-comment.sh:*),Bash(gh pr view:*),Bash(gh pr diff:*),Bash(git diff:*),Bash(git log:*),Bash(git show:*)"
-          allowed_bots: "dependabot[bot]"
+          allowed_bots: "dependabot[bot],renovate[bot]"
 
       # A successful model exit does not prove it posted a review. Verify this
       # invocation's receipt against GitHub using only the trusted base helper.

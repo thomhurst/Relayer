@@ -67,6 +67,7 @@ jobs:
         with:
           filters: |
             tooling:
+              - 'renovate.json'
               - 'scripts/**'
               - '.github/scripts/**'
               - '.github/workflows/**'

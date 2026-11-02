@@ -6,6 +6,24 @@ description: "Build, inspect and publish Relayer packages from version tags."
 Relayer has packaging and release infrastructure. Packages are not released yet, and some transport
 packages still contain scaffolding. Check the [roadmap](../roadmap.md) before choosing a transport.
 
+## Dependency updates
+
+Renovate opens dependency updates as draft pull requests. It cannot merge updates itself or arm
+GitHub auto-merge. The repository configuration applies this policy to all packages, overriding
+inherited package rules that enable auto-merge.
+
+Dependency updates require the same review as other changes: Claude and Codex must each approve
+the exact current head, and every review finding must have a disposition. Claude reviews drafts
+automatically, including Renovate branches and dependency bot actors. Request Codex on a draft
+with `@codex review`, following the repository's issue/PR loop instructions. After both reviews
+approve that head, promote and arm the PR with `scripts/Enable-AutoMerge.ps1 -Pr <N> -MarkReady`.
+GitHub merges only after the protected `CI Passed` check succeeds. A new push requires a new review
+cycle before auto-merge can be armed again.
+
+This configuration does not convert existing PRs to drafts or cancel an auto-merge request already
+registered with GitHub. When taking over an older dependency PR, disable any existing auto-merge
+request and restore the draft under its PR lock before applying this review lifecycle.
+
 ## Package contents
 
 Every packable project under `src/` includes the repository README, the Relayer icon, MIT license
