@@ -1,0 +1,9 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><OutputType>Exe</OutputType></PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="TUnit" />
+    <PackageReference Include="Microsoft.Extensions.Hosting" />
+    <ProjectReference Include="../../src/Relayer.Serialization.Avro/Relayer.Serialization.Avro.csproj" />
+  </ItemGroup>
+  <ItemGroup><Compile Include="../Shared/AvroFixture.cs" Link="AvroFixture.cs" /></ItemGroup>
+</Project>

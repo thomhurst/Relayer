@@ -1,0 +1,9 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <Description>Startup-prepared, source-generated Avro serialization with Schema Registry integration for Relayer.</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Dekaf.SchemaRegistry.Avro" />
+    <ProjectReference Include="../Relayer/Relayer.csproj" />
+  </ItemGroup>
+</Project>
