@@ -3,6 +3,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -12,6 +13,29 @@ import unittest
 
 ROOT = Path(__file__).resolve().parent
 BASH = shutil.which('bash')
+WORKFLOW = ROOT.parent / 'workflows' / 'claude-code-review.yml'
+
+
+def verification_step():
+    steps = re.split(r'^      - name: ', WORKFLOW.read_text(), flags=re.MULTILINE)
+    return next(step for step in steps if step.startswith('Verify the posted review receipt\n'))
+
+
+class ReviewWorkflowTests(unittest.TestCase):
+    def test_verifier_runs_after_review_with_pinned_context(self):
+        workflow = WORKFLOW.read_text()
+        step = verification_step()
+        self.assertGreater(workflow.index(step), workflow.index('id: claude-review'))
+        self.assertNotIn('continue-on-error:', step)
+        self.assertNotIn('if:', step)
+        for binding in (
+                'GH_TOKEN: ${{ github.token }}',
+                'REVIEW_RECEIPT: ${{ runner.temp }}/claude-review-${{ github.run_id }}-${{ github.run_attempt }}.json',
+                'REVIEW_HEAD_SHA: ${{ steps.target.outputs.head_sha }}',
+                'REVIEW_STARTED_AT: ${{ steps.target.outputs.started_at }}'):
+            with self.subTest(binding=binding):
+                self.assertIn(binding, step)
+        self.assertIn('run: python3 .github/scripts/pr_review_comment.py --verify-receipt', step)
 
 
 @unittest.skipIf(os.name == 'nt', 'The posting helper runs on Linux; use the Linux container test command.')
@@ -59,7 +83,9 @@ else:
                               env=self.env, capture_output=True, text=True)
 
     def verify(self):
-        return subprocess.run([sys.executable, str(ROOT / 'pr_review_comment.py'), '--verify-receipt'],
+        # Execute the workflow's command so receipt cases also cover its wiring.
+        command = re.search(r'^        run: (.+)$', verification_step(), re.MULTILINE)[1]
+        return subprocess.run([BASH, '-c', command], cwd=ROOT.parent.parent,
                               env=self.env, capture_output=True, text=True)
 
     def test_observed_test_comment_is_rejected_before_github(self):
@@ -118,6 +144,26 @@ else:
         self.assertEqual(self.post('Reviewed.\n<!-- REVIEW_VERDICT: CLEAR -->').returncode, 0)
         self.assertNotEqual(self.post('--verify-receipt').returncode, 0)
         self.assertFalse(self.receipt.exists())
+
+    def test_mismatched_receipt_fails(self):
+        for field, value in (('repository', 'example/other'), ('pr', '43'),
+                             ('head_sha', 'b' * 40), ('verdict', 'BLOCKING'),
+                             ('body_sha256', '0' * 64)):
+            with self.subTest(field=field):
+                self.assertEqual(self.post('Reviewed.\n<!-- REVIEW_VERDICT: CLEAR -->').returncode, 0)
+                data = json.loads(self.receipt.read_text())
+                data[field] = value
+                self.receipt.write_text(json.dumps(data))
+                self.assertNotEqual(self.verify().returncode, 0)
+
+    def test_previous_run_or_attempt_fails(self):
+        self.assertEqual(self.post('Reviewed.\n<!-- REVIEW_VERDICT: CLEAR -->').returncode, 0)
+        for field in ('GITHUB_RUN_ID', 'GITHUB_RUN_ATTEMPT'):
+            with self.subTest(field=field):
+                original = self.env[field]
+                self.env[field] = '9999'
+                self.assertNotEqual(self.verify().returncode, 0)
+                self.env[field] = original
 
     def test_missing_or_wrong_posted_url_does_not_create_receipt(self):
         for url in ('', 'https://github.com/example/repo/pull/43#issuecomment-123', 'not a URL'):

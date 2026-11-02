@@ -145,3 +145,13 @@ jobs:
           claude_args: |
             --add-dir pr-head --allowedTools "Read,Glob,Grep,Bash(.github/scripts/pr-review-comment.sh:*),Bash(gh pr view:*),Bash(gh pr diff:*),Bash(git diff:*),Bash(git log:*),Bash(git show:*)"
           allowed_bots: "dependabot[bot]"
+
+      # A successful model exit does not prove it posted a review. Verify this
+      # invocation's receipt against GitHub using only the trusted base helper.
+      - name: Verify the posted review receipt
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REVIEW_RECEIPT: ${{ runner.temp }}/claude-review-${{ github.run_id }}-${{ github.run_attempt }}.json
+          REVIEW_HEAD_SHA: ${{ steps.target.outputs.head_sha }}
+          REVIEW_STARTED_AT: ${{ steps.target.outputs.started_at }}
+        run: python3 .github/scripts/pr_review_comment.py --verify-receipt
