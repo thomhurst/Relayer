@@ -18,12 +18,17 @@ public class PartitionSchedulerBenchmarks
     private PartitionAssignmentToken _assignment;
     private long _position = 91;
 
+    [Params(1, 16)]
+    public int PartitionCount { get; set; }
+
     [GlobalSetup]
     public void Setup()
     {
         _receive = static (message, _) => message.Start();
         _scheduler = new(_source, _receive, new() { ConcurrencyPerPartition = 2 });
         _assignment = _scheduler.Assign(1);
+        // Include retained, idle assignments in every pump's control and completion scans.
+        for (var partition = 2; partition <= PartitionCount; partition++) _scheduler.Assign(partition);
     }
 
     [Benchmark(Baseline = true)]

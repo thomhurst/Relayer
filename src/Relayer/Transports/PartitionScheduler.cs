@@ -154,13 +154,18 @@ public sealed class PartitionScheduler<TIncoming, TBinding, TPartition, TPositio
     /// <remarks>No waits, worker tasks, locks or allocations. Native callback errors propagate; call again to retry pending checkpoint capture.</remarks>
     public void Pump()
     {
-        // Observe every partition before dispatch, so retained partitions can use newly freed global capacity.
+        // A native checkpoint callback can throw. Fence every expired assignment before invoking any.
         for (var i = 0; i < _assignments.Count; i++)
         {
             var assignment = _assignments[i];
             if (!assignment.Fenced && assignment.Revoking &&
                 _clock.GetElapsedTime(assignment.DrainStarted) >= assignment.DrainTimeout)
                 Fence(assignment);
+        }
+        // Observe every partition before dispatch, so retained partitions can use newly freed global capacity.
+        for (var i = 0; i < _assignments.Count; i++)
+        {
+            var assignment = _assignments[i];
             Publish(assignment);
             var head = assignment.Head;
             var count = assignment.Count;

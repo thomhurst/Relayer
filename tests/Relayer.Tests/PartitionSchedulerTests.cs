@@ -243,6 +243,66 @@ public class PartitionSchedulerTests
     }
 
     [Test]
+    [Arguments(false, 0)]
+    [Arguments(false, 5)]
+    [Arguments(true, 0)]
+    [Arguments(true, 5)]
+    public async Task Revocation_deadline_survives_an_earlier_partitions_checkpoint_failure(
+        bool pendingCheckpoint, int timeoutSeconds)
+    {
+        var clock = new InMemoryTestClock();
+        var fixture = new Fixture(concurrency: 1, clock: clock);
+        var retained = fixture.Scheduler.Assign(1);
+        var revoked = fixture.Scheduler.Assign(2);
+        var completed = new Delivery(1);
+        var late = new Delivery(2);
+        var queued = new Delivery(3);
+        fixture.Enqueue(retained, completed, "retained");
+        fixture.Enqueue(revoked, late, "late");
+        fixture.Enqueue(revoked, queued, "queued");
+        fixture.Scheduler.Pump();
+        fixture.Source.ThrowCommit = true;
+        if (pendingCheckpoint)
+        {
+            completed.Complete();
+            await Assert.That(() => fixture.Scheduler.Pump()).Throws<ApplicationException>();
+        }
+        fixture.Scheduler.Revoke(revoked, TimeSpan.FromSeconds(timeoutSeconds));
+        if (timeoutSeconds > 0)
+        {
+            clock.Advance(TimeSpan.FromSeconds(timeoutSeconds) - TimeSpan.FromTicks(1));
+            if (pendingCheckpoint)
+                await Assert.That(() => fixture.Scheduler.Pump()).Throws<ApplicationException>();
+            else fixture.Scheduler.Pump();
+            await Assert.That(fixture.Scheduler.IsDraining).IsTrue();
+            await Assert.That(late.Cancellation.IsCancellationRequested).IsFalse();
+            clock.Advance(TimeSpan.FromTicks(1));
+        }
+        completed.Complete();
+        await Assert.That(() => fixture.Scheduler.Pump()).Throws<ApplicationException>();
+
+        await Assert.That(fixture.Scheduler.IsDraining).IsFalse();
+        await Assert.That(late.Cancellation.IsCancellationRequested).IsTrue();
+        await Assert.That(late.Releases).IsEqualTo(0);
+        await Assert.That(completed.Releases).IsEqualTo(0);
+        await Assert.That(queued.Started).IsFalse();
+        await Assert.That(queued.Releases).IsEqualTo(1);
+        await Assert.That(fixture.Scheduler.ActiveCount).IsEqualTo(1);
+        await Assert.That(fixture.Scheduler.BufferedCount).IsEqualTo(2);
+        await Assert.That(fixture.Source.Commits.Count).IsEqualTo(0);
+
+        fixture.Source.ThrowCommit = false;
+        late.Complete();
+        fixture.Scheduler.Pump();
+        fixture.Scheduler.Pump();
+        await Assert.That(late.Releases).IsEqualTo(1);
+        await Assert.That(completed.Releases).IsEqualTo(1);
+        await Assert.That(fixture.Scheduler.ActiveCount).IsEqualTo(0);
+        await Assert.That(fixture.Scheduler.BufferedCount).IsEqualTo(0);
+        await Assert.That(fixture.Source.Commits).IsEquivalentTo(new[] { (1, "retained") });
+    }
+
+    [Test]
     public async Task Cooperative_retained_partition_keeps_dispatching_during_another_partitions_drain()
     {
         var fixture = new Fixture(concurrency: 1);
