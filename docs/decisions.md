@@ -844,3 +844,28 @@ Calling CoreOperation recursively would create another consumer scope and repeat
 **Decision.** The optional MessagePack adapter calls native `IMessagePackFormatter<T>` methods with `MessagePackWriter` and `MessagePackReader`, passing explicit native options. The application supplies generated resolvers and the concrete primitive formatters it needs. There is no default resolver, runtime formatter discovery, or Relayer formatter registry. Preserve native old-spec and security settings. Reject compression options during construction rather than duplicating MessagePack's LZ4 implementation or silently ignoring the option. Reject nil bodies and trailing values, consistent with the message contract. Wrap formatter errors in the native serialization exception for a uniform malformed-body contract.
 
 **Consequences.** Uncompressed native wire bytes and segmented buffers work under Native AOT without warning suppressions. Applications using native untrusted-data security must enable `MessagePack.Security.UseNonReflectiveObjectComparer` with trimming, retaining collision resistance while rejecting unsupported object keys. Custom formatters and complex contract graphs need application validation. Full high-level serializer/compression support waits for warning-clean upstream APIs; no parallel compression implementation is introduced.
+
+## D45. Tenant store selection reuses native scoped factories
+
+Replaces the proposed library-owned `IOutboxStoreResolver` facade in design §6.6. The remaining tenant
+propagation, durable metadata and bounded dispatcher requirements are unchanged.
+
+**Context.** EF Core 10.0.14 already creates options through an `IServiceProvider` callback with scoped
+options and context lifetimes. Npgsql's 10.0.3 EF provider accepts an application-owned `NpgsqlDataSource`,
+and the native connection string supports database and search-path selection. Relayer's existing
+interceptors enlist that context's connection and transaction. Its PostgreSQL transaction overloads
+also accept native connections or data sources. A second resolver contract would wrap the same native
+configuration without adding a durable guarantee.
+
+**Decision.** Applications select authorized tenant stores through their normal scoped factories and
+pass native configuration through unchanged. Relayer does not add a competing resolver or native
+configuration model. Validate manual scoped outbox units and explicitly composed tenant endpoints
+against multiple PostgreSQL databases and schemas, including overlapping inbox IDs and rollback.
+Application-owned data sources retain their native ownership and pool semantics.
+
+**Consequences.** This supplies independently useful store isolation without waiting for automatic
+tenant-header propagation. It does not complete multi-tenancy: the EF consumer currently resolves a
+context during startup validation, before a delivery tenant exists. Dynamic incoming-tenant context
+binding must remove that assumption without a default tenant, preserve validation, and bind durable
+tenant metadata consistently with the wire header. Tenant enumeration and a shared dispatch connection
+budget remain separate work. Static per-tenant endpoints do not establish those dynamic guarantees.
