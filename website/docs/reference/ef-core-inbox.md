@@ -86,5 +86,5 @@ outside the database transaction and need their own idempotency.
 Context pooling, ambient transactions and batch consumers are unsupported. Composition rejects
 pooled contexts, other providers and `EnableRetryOnFailure`. Use Relayer's consumer retry policy so
 each retry gets a fresh DI scope and DbContext. Register scoped services for the lifetime of a delivery;
-do not share a scope concurrently. Inbox retention and cleanup remain planned; deleting a row ends
-its deduplication protection.
+do not share a scope concurrently. Configure [inbox retention and cleanup](postgres-maintenance.md)
+to bound retained history; deleting a row ends its deduplication protection.

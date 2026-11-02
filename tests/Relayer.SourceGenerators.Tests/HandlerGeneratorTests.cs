@@ -6,6 +6,31 @@ namespace Relayer.SourceGenerators.Tests;
 
 public class HandlerGeneratorTests
 {
+    [Test]
+    public async Task Inherited_saga_registers_one_typed_execution_pool_per_registration()
+    {
+        const string source = """
+            namespace Relayer.Sagas
+            {
+                public abstract class Saga<TState,TMessage> : global::Relayer.IHandler<TMessage>
+                {
+                    public global::System.Threading.Tasks.ValueTask HandleAsync(TMessage message, global::Relayer.MessageContext context,
+                        global::System.Threading.CancellationToken cancellationToken) => default;
+                }
+                public sealed class SagaExecution<TState,TMessage> { }
+            }
+            namespace Example
+            {
+                public sealed class State { }
+                public abstract class Intermediate<T> : global::Relayer.Sagas.Saga<State,T> { }
+                public sealed class Process : Intermediate<int> { }
+            }
+            """;
+        var driver = Run(CreateCompilation(source), out var output);
+        await Assert.That(Generated(driver)).Contains("TryAddSingleton<global::Relayer.Sagas.SagaExecution<global::Example.State, int>>");
+        await Assert.That(output.GetDiagnostics().Any(d => d.Severity == DiagnosticSeverity.Error)).IsFalse();
+    }
+
     private const string Handlers = """
         using Relayer;
         using System.Threading;

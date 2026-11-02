@@ -30,7 +30,7 @@ To change a decision, add a new entry that supersedes it rather than editing his
 | [D17](#d17-testing-is-a-first-class-product) | Testing is a first-class product | Accepted |
 | [D18](#d18-performance-budget-enforced-in-ci) | Performance budget enforced in CI | Accepted |
 | [D19](#d19-dependency-policy) | Dependency policy | Accepted |
-| [D20](#d20-sagas-are-out-of-scope-for-v1) | Sagas are out of scope for v1 | Accepted |
+| [D20](#d20-sagas-are-out-of-scope-for-v1) | Sagas are out of scope for v1 | Accepted; post-v1 implementation specified by [D43](#d43-saga-transitions-share-the-consumer-transaction-and-retain-completed-state) |
 | [D21](#d21-repository-conventions) | Repository conventions | Accepted |
 | [D22](#d22-the-kafka-transport-wraps-dekaf) | The Kafka transport wraps Dekaf | Accepted; native reuse rule generalized to every transport by [D42](#d42-every-transport-reuses-its-native-clients-features) |
 | [D23](#d23-a-generic-transport-spi-owned-by-the-core) | A generic transport SPI owned by the core | Accepted; core-first log scheduling superseded by [D40](#d40-log-transports-reuse-native-processing-runtimes) |
@@ -53,6 +53,7 @@ To change a decision, add a new entry that supersedes it rather than editing his
 | [D40](#d40-log-transports-reuse-native-processing-runtimes) | Log transports reuse native processing runtimes | Accepted |
 | [D41](#d41-requests-correlate-ordinary-messages-on-explicitly-declared-endpoints) | Requests correlate ordinary messages on explicitly declared endpoints | Accepted |
 | [D42](#d42-every-transport-reuses-its-native-clients-features) | Every transport reuses its native client's features | Accepted |
+| [D43](#d43-saga-transitions-share-the-consumer-transaction-and-retain-completed-state) | Saga transitions share the consumer transaction and retain completed state | Accepted |
 
 ---
 
@@ -276,6 +277,8 @@ Superseded by [D24](#d24-capabilities-are-valued-and-declared-per-endpoint).
 ## D20. Sagas are out of scope for v1
 
 **Decision.** Sagas and process managers ship later as `Relayer.Sagas`, built on the inbox and outbox. v1 focuses on a sound core.
+
+**Implementation note.** D43 specifies the post-v1 runtime and optional EF Core persistence package. It does not bring sagas into v1. Completed state is retained; durable process timeout handling remains separate work in #249.
 
 ## D21. Repository conventions
 
@@ -818,3 +821,17 @@ Generalizes D22's native reuse rule, which was written for Dekaf, to every trans
 **Alternatives rejected.**
 - Keep the rule Kafka-specific: leaves the other transports free to duplicate their native clients, which contradicts D1.
 - Repeat the rule in each transport's decision: multiplies wording that drifts; one general rule with transport-specific records is easier to keep consistent.
+
+## D43. Saga transitions share the consumer transaction and retain completed state
+
+Extends D20's post-v1 scope; it does not change the v1 boundary.
+
+**Context.** #248 requires explicit process state, atomic outgoing work and optimistic concurrency. EF Core 10.0.14 already checks concurrency tokens, and Npgsql.EntityFrameworkCore.PostgreSQL 10.0.3 maps a uint row version to PostgreSQL xmin. Native primary-key uniqueness detects concurrent creation. D31/D36 already supply scoped sender enlistment and the consumer's atomic inbox/outbox transaction. The failure pipeline already rolls back a failed attempt and retries in a fresh scope. None of these need a second implementation.
+
+**Decision.** Keep typed execution in `Relayer.Sagas` and persistence in optional `Relayer.Sagas.EntityFrameworkCore`. State queries and native EF model configuration remain application code. Startup validates an explicit non-generated correlation key, native xmin row version and the selected outbox context. Save state, inbox identity and outgoing messages in the existing consumer transaction, and leave settlement and complete-attempt retries to the existing pipelines. A send-only transition still issues a native version-checked update. Keep completed rows as tombstones so later starting messages cannot recreate a completed process. Deleting retained state deliberately ends that protection. Diagram metadata remains independent of execution. Durable process timeout handling belongs to #249 and must reuse scheduled sends.
+
+**Execution state.** Reuse the continuation and ExecutionContext restoration pattern from `ConsumePipeline.CoreOperation` and the provider-owned, peak-retaining cross-thread pool pattern from `SendRoute`. A plain async ValueTask requires a state-machine object on suspension; the runtime's pooled async builders use [thread-local and per-core caches](https://github.com/dotnet/runtime/blob/v10.0.14/src/libraries/System.Private.CoreLib/src/System/Runtime/CompilerServices/PoolingAsyncValueTaskMethodBuilderT.cs#L256-L283) and do not guarantee reuse after worker changes. The saga executor therefore retains its typed load/transition/save operation until the caller consumes GetResult, then clears completion references and returns it to its owning pool. Generated handler registration adds the typed singleton explicitly. There are no process-wide mutable pools, background threads, timers, per-message callback allocations or additional retry loops. The EF save hook returns the native task directly.
+
+Calling CoreOperation recursively would create another consumer scope and repeat the consume/settlement lifecycle. SendRoute owns send buffers and transport dispatch rather than typed state loading. Neither can execute a saga transition directly. The small saga operation uses their established patterns within the existing consumer boundary; it does not replace a native locking, scheduling, settlement or transaction feature. Benchmarks compare native EF updates with saga updates, and use a reusable synchronous/cross-thread read fixture to attribute execution allocations independently of native EF allocations. Lifecycle tests cover every suspension stage, exceptions, cancellation, execution-context isolation and reservation until GetResult. Local benchmark timings remain diagnostic under D18.
+
+**Consequences.** The provider-independent runtime and generated dispatch are Native AOT tested. EF persistence inherits the provider's trimming, compiled-model and query restrictions; this decision does not claim to make EF Core AOT compatible. Ordinary non-saga send/receive paths retain their existing contracts. The additional execution complexity serves the zero-allocation requirement without introducing a separate saga transaction, inbox, outbox, retry or lock provider. See the [state-transition guide](../website/docs/guides/sagas.md) for supported registration and calls.

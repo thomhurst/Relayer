@@ -6,8 +6,9 @@ description: "Dispatch ordered outbox rows with lane leases, heartbeats and fair
 `Relayer.Outbox.PostgreSql` supplies a hosted dispatcher for ordered rows written by
 [EF Core outbox enlistment](ef-core-outbox.md) or [ADO.NET/Dapper transactions](postgres-outbox.md).
 [Unordered direct dispatch](direct-dispatch.md) runs separately after a business transaction commits.
-Recovery polling for unordered rows, poison-row movement, cleanup, inbox deduplication and outbox tracing
-remain separate planned work.
+[Maintenance](postgres-maintenance.md) supplies unordered recovery and retention cleanup;
+[consumer inbox deduplication](ef-core-inbox.md) and outbox tracing are also implemented.
+Poison-row movement remains planned.
 
 ## Register
 
@@ -101,5 +102,5 @@ that identity. Cancellation and database fencing cannot retract a native request
 broker. If a database connection dies while a native request remains in flight, its duplicate can arrive after
 a successor's sends. The protocol prevents overlapping connected database owners, but does not promise
 exactly-once delivery or fence native broker requests. Consumers needing duplicate suppression must use
-idempotent processing; the built-in inbox remains planned. A transport must observe cancellation for prompt
+idempotent processing or the [EF Core consumer inbox](ef-core-inbox.md). A transport must observe cancellation for prompt
 shutdown. A stalled connected transaction deliberately delays takeover until it ends.

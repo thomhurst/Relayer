@@ -4,6 +4,7 @@
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="TUnit" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection" />
     <ProjectReference Include="../../src/Relayer.Sagas/Relayer.Sagas.csproj" />
   </ItemGroup>
 </Project>

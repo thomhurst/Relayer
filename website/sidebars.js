@@ -14,6 +14,7 @@ const sidebars = {
       items: [
         'guides/messages',
         'guides/handlers',
+        'guides/sagas',
         'guides/configuration',
         'guides/sending',
         'guides/request-response',

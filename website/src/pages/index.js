@@ -273,7 +273,7 @@ function CallSite() {
 
 const status = [
   ['Saga process declarations and Mermaid export', 'Implemented diagram tooling', true],
-  ['Transactional saga execution and durable timeouts', 'Planned', false],
+  ['Durable saga timeouts', 'Planned', false],
   ['NuGet packaging, symbols and tag release workflow', 'Implemented; packages not released yet', true],
   ['Configuration, routes and startup validation', 'Implemented', true],
   ['Source-generated handlers, messages and JSON', 'Implemented', true],
@@ -305,6 +305,7 @@ const status = [
   ['PostgreSQL ADO.NET and Dapper transactions', 'Implemented enqueue path', true],
   ['Unordered PostgreSQL direct dispatch after EF commit', 'Implemented direct path', true],
   ['EF Core consumer inbox for PostgreSQL', 'Implemented deduplication', true],
+  ['Saga state transitions on the EF Core inbox/outbox', 'Implemented; durable process timeouts planned', true],
   ['Kafka connectivity and receiver liveness health adapters', 'Implemented', true],
   ['Other native broker health adapters', 'Planned', false],
   ['Ordered PostgreSQL dispatch and lane leases', 'Implemented', true],

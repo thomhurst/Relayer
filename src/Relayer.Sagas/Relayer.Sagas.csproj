@@ -1,5 +1,8 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
-    <Description>Explicit process diagram declarations and export for Relayer. Saga execution is planned.</Description>
+    <Description>Explicit process diagrams, state and typed saga execution for Relayer.</Description>
   </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../Relayer/Relayer.csproj" />
+  </ItemGroup>
 </Project>

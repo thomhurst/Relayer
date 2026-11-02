@@ -4,6 +4,7 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="../Shared/OutboxMaintenanceContractTests.cs" Link="OutboxMaintenanceContractTests.cs" />
+    <ProjectReference Include="../../src/Relayer.Sagas.EntityFrameworkCore/Relayer.Sagas.EntityFrameworkCore.csproj" />
     <Compile Include="../Shared/OutboxStoreContractTests.cs" Link="OutboxStoreContractTests.cs" />
     <PackageReference Include="Dapper" />
     <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" />
