@@ -50,9 +50,53 @@ public partial class ServiceBusBindingTests
     }
 
     [Test]
-    public async Task Binding_does_not_allocate_after_warmup()
+    [Arguments("application/cbor", null)]
+    [Arguments("application/cbor", "application/json")]
+    [Arguments("", "application/json")]
+    [Arguments(null, "application/json")]
+    [Arguments(null, null)]
+    public async Task Binding_reads_native_content_type_before_application_property(string? native, string? fallback)
+    {
+        var properties = new Dictionary<string, object> { ["other"] = "unchanged" };
+        if (fallback is not null) properties["content-type"] = fallback;
+        var message = ServiceBusModelFactory.ServiceBusReceivedMessage(contentType: native, properties: properties);
+        var args = new ProcessMessageEventArgs(message, new RecordingReceiver(), "content-type", default);
+
+        var found = ServiceBusBinding.TryGetHeader(args, "content-type", out var value);
+        var expected = native ?? fallback;
+        await Assert.That(found).IsEqualTo(expected is not null);
+        await Assert.That(value.Text).IsSameReferenceAs(expected);
+        await Assert.That(ServiceBusBinding.TryGetHeader(args, "other", out value)).IsTrue();
+        await Assert.That(value.Text).IsEqualTo("unchanged");
+        await Assert.That(message.ContentType).IsEqualTo(native);
+        await Assert.That(message.ApplicationProperties.ContainsKey("content-type")).IsEqualTo(fallback is not null);
+    }
+
+    [Test]
+    public async Task Native_content_type_is_visible_through_context_headers()
     {
         var args = Args(new RecordingReceiver());
+        args.Message.GetRawAmqpMessage().Properties.ContentType = "application/cbor";
+        await using var provider = Provider();
+        var handled = false;
+        provider.GetRequiredService<Control>().Handle = async context =>
+        {
+            await Assert.That(context.Headers.TryGetValue("content-type", out var value)).IsTrue();
+            await Assert.That(value.Text).IsEqualTo("application/cbor");
+            handled = true;
+        };
+        await Pipeline(provider).ProcessAsync(args);
+        await Assert.That(handled).IsTrue();
+    }
+
+    [Test]
+    [Arguments(true)]
+    [Arguments(false)]
+    public async Task Binding_does_not_allocate_after_warmup(bool nativeContentType)
+    {
+        var args = Args(new RecordingReceiver());
+        if (nativeContentType) args.Message.GetRawAmqpMessage().Properties.ContentType = "application/cbor";
+        else args.Message.GetRawAmqpMessage().ApplicationProperties["content-type"] = "application/cbor";
         for (var i = 0; i < 1_000; i++) Read(args);
         var before = GC.GetAllocatedBytesForCurrentThread();
         for (var i = 0; i < 10_000; i++) Read(args);
@@ -64,6 +108,7 @@ public partial class ServiceBusBindingTests
             _ = ServiceBusBinding.GetBody(args);
             _ = ServiceBusBinding.GetDeliveryCount(args);
             if (!ServiceBusBinding.TryGetHeader(args, "cloudEvents:type", out _)) throw new InvalidOperationException();
+            if (!ServiceBusBinding.TryGetHeader(args, "content-type", out _)) throw new InvalidOperationException();
         }
     }
 
