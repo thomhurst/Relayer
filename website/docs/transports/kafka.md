@@ -77,6 +77,28 @@ Consumer failures reach the application's background-service supervision immedia
 
 Failure copies discard any incoming `relayer.internal.kafka.tombstone` header. This private send marker cannot turn a non-null empty Kafka value into a tombstone; copies derive null-value state from the native record.
 
+## Seek and replay
+
+Resolve the control service with the exact transport name after starting the host. Select the declared consumer group, topic and partition explicitly:
+
+```csharp
+using Dekaf;
+using Microsoft.Extensions.DependencyInjection;
+using Relayer.Kafka;
+
+var control = host.Services.GetRequiredKeyedService<IKafkaConsumerControl>("events");
+await control.SeekAsync("billing", new TopicPartitionOffset("orders", 0, 42), cancellationToken);
+await control.SeekAsync("billing",
+    new TopicPartitionTimestamp(new TopicPartition("orders", 0), DateTimeOffset.UtcNow.AddHours(-1)),
+    cancellationToken);
+```
+
+Call control from an operational endpoint or service outside the consumer's handlers. The receiver finishes its current batch and durable offset commit, releases the native poll stream, then applies the seek on that same receiver. Idle polling is interrupted immediately. No old batch can commit after the seek is applied. Seeking neither changes the group's committed offset immediately nor bypasses inbox deduplication. After replay, normal durable handling commits new checkpoints; restarting before then resumes from the last committed offset. Replayed work can run again, so handlers must tolerate at-least-once delivery.
+
+Offset seeks accept nonnegative absolute offsets and retain Dekaf's leader epoch and native offset-reset behavior. Timestamp seeks use Dekaf's native lookup; when Kafka returns no matching offset, the call fails without seeking. `TopicPartitionTimestamp.Earliest` and `Latest` retain their native lookup semantics. There is no application-side timestamp filtering or broadcast to other group members.
+
+The partition must be assigned to this local receiver when the command executes. An unknown group/topic, multiple matching local declarations, an unassigned partition, an assignment change during lookup, or a stopped receiver fails with an actionable error. Target the process that owns the partition; a consumer on another cluster is reached through its own keyed service. Pending commands cancel on shutdown. Caller cancellation before execution skips the command; cancellation racing an applied seek cannot undo the native position change.
+
 ## Tracing and native feature reuse
 
 Relayer emits `send {topic}` spans with `messaging.system = kafka`. Enable `Relayer` as an activity source; enabling Dekaf's source additionally produces native child spans. The record-header serializer installs the original CloudEvents and creation-context headers after native tracing starts, preserving `traceparent` and `tracestate` rather than propagating the native send span. Broker tests cover both sources together.

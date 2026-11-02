@@ -46,6 +46,9 @@ public class KafkaConfigurationTests
             });
         });
         await using var provider = services.BuildServiceProvider();
+        var firstControl = provider.GetRequiredKeyedService<IKafkaConsumerControl>("first");
+        var secondControl = provider.GetRequiredKeyedService<IKafkaConsumerControl>("second");
+        await Assert.That(ReferenceEquals(firstControl, secondControl)).IsFalse();
         var options = provider.GetRequiredService<IOptionsMonitor<KafkaTransportOptions>>();
         await Assert.That(options.Get("first").BootstrapServers.Single()).IsEqualTo("first:9092");
         await Assert.That(options.Get("second").BootstrapServers.Single()).IsEqualTo("second:9092");

@@ -18,6 +18,9 @@ internal sealed class KafkaConsumer : IAsyncDisposable
     private CancellationTokenSource _abort = new();
     private readonly KafkaOwnership _ownership;
     private readonly KafkaWorkerHealth? _health;
+    private readonly KafkaReplay _replay = new();
+    internal string Topic { get; }
+    internal string? Group { get; }
     internal Task Completion { get; private set; } = Task.CompletedTask;
 
     internal KafkaConsumer(IKafkaConsumer<byte[], byte[]> native,
@@ -28,6 +31,8 @@ internal sealed class KafkaConsumer : IAsyncDisposable
         _receive = receive;
         _ownership = ownership;
         _health = health;
+        Topic = endpoint.Destination;
+        Group = endpoint.ConsumerGroup;
         _commit = new(tracing, endpoint, MessagingOperation.Settle, "commit");
     }
 
@@ -45,6 +50,7 @@ internal sealed class KafkaConsumer : IAsyncDisposable
         }
         await _native.InitializeAsync(cancellationToken).ConfigureAwait(false);
         _health?.Idle();
+        _replay.Start();
         // Polling and processing never inherit the application's startup Activity.
         if (ExecutionContext.IsFlowSuppressed()) Completion = Task.Run(RunAsync);
         else { using (ExecutionContext.SuppressFlow()) Completion = Task.Run(RunAsync); }
@@ -54,15 +60,45 @@ internal sealed class KafkaConsumer : IAsyncDisposable
     {
         try
         {
-            await foreach (var batch in _native.ConsumeBatchAsync(_stop.Token).ConfigureAwait(false))
+            while (!_stop.IsCancellationRequested)
             {
-                _health?.Progress();
-                await ProcessBatchAsync(batch, _abort.Token).ConfigureAwait(false);
-                _health?.Idle();
+                using var poll = _replay.BeginPolling(_stop.Token);
+                try
+                {
+                    var batches = _native.ConsumeBatchAsync(poll.Token).GetAsyncEnumerator();
+                    await using var lease = batches.ConfigureAwait(false);
+                    while (true)
+                    {
+                        // Only polling cancellation means a control wake-up. A handler or
+                        // commit cancellation must still fail the receiver and its batch.
+                        try
+                        {
+                            if (!await batches.MoveNextAsync().ConfigureAwait(false)) break;
+                        }
+                        catch (OperationCanceledException) when (poll.IsCancellationRequested) { break; }
+                        _health?.Progress();
+                        await ProcessBatchAsync(batches.Current, _abort.Token).ConfigureAwait(false);
+                        _health?.Idle();
+                    }
+                }
+                finally { _replay.EndPolling(); }
+                // The native stream has released its borrowed batch before any seek.
+                // Neither polling nor old checkpoint commits can overlap control.
+                while (_replay.TryRead(out var request))
+                {
+                    try
+                    {
+                        await ApplySeekAsync(request).ConfigureAwait(false);
+                        request.Completion.TrySetResult();
+                    }
+                    catch (OperationCanceledException) { request.Completion.TrySetCanceled(request.Token); }
+                    catch (Exception error) { request.Completion.TrySetException(error); }
+                }
+                if (!poll.IsCancellationRequested) break;
             }
         }
         catch (OperationCanceledException) when (_stop.IsCancellationRequested) { }
-        finally { _health?.Unavailable(); }
+        finally { _replay.Stop(); _health?.Unavailable(); }
     }
 
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder<>))]
@@ -110,6 +146,52 @@ internal sealed class KafkaConsumer : IAsyncDisposable
         using var activity = _commit.Start(new() { BatchCount = count });
         try { await _native.CommitAsync(offsets, cancellationToken).ConfigureAwait(false); }
         catch (Exception) { activity?.SetStatus(ActivityStatusCode.Error); activity?.SetTag("error.type", "_OTHER"); throw; }
+    }
+
+    internal async ValueTask SeekAsync(TopicPartitionOffset offset, TopicPartitionTimestamp? timestamp, CancellationToken cancellationToken)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(offset.Partition);
+        if (timestamp is null) ArgumentOutOfRangeException.ThrowIfNegative(offset.Offset);
+        cancellationToken.ThrowIfCancellationRequested();
+        EnsureRunning();
+        using var stop = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _stop.Token);
+        var request = new KafkaSeekRequest(offset, timestamp, stop.Token);
+        _replay.Enqueue(request);
+        await request.Completion.Task.WaitAsync(stop.Token).ConfigureAwait(false);
+    }
+
+    private async ValueTask ApplySeekAsync(KafkaSeekRequest request)
+    {
+        var cancellationToken = request.Token;
+        cancellationToken.ThrowIfCancellationRequested();
+        var offset = request.Offset;
+        var partition = new TopicPartition(offset.Topic, offset.Partition);
+        var ownership = _ownership.Version;
+        EnsureAssigned(partition);
+        if (request.Timestamp is { } search)
+        {
+            var offsets = await _native.GetOffsetsForTimesAsync([search], cancellationToken).ConfigureAwait(false);
+            if (!offsets.TryGetValue(partition, out var found) || found < 0)
+                throw new InvalidOperationException($"Kafka has no matching timestamp offset for '{partition}'. No seek was applied.");
+            offset = new(offset.Topic, offset.Partition, found);
+        }
+        cancellationToken.ThrowIfCancellationRequested();
+        if (ownership != _ownership.Version)
+            throw new InvalidOperationException("Kafka assignment changed during seek. Retry against the current assignment.");
+        EnsureAssigned(partition);
+        _native.Seek(offset);
+    }
+
+    private void EnsureRunning()
+    {
+        if (_stop.IsCancellationRequested || Completion.IsCompleted)
+            throw new InvalidOperationException("Kafka consumer is not running. Seek only after startup and before shutdown.");
+    }
+
+    private void EnsureAssigned(TopicPartition partition)
+    {
+        if (!_native.Assignment.Contains(partition))
+            throw new InvalidOperationException($"Kafka partition '{partition}' is not assigned to this consumer. Replay must target its current local owner.");
     }
 
     internal async Task StopAsync(CancellationToken cancellationToken)
