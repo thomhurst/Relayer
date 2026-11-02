@@ -18,8 +18,10 @@ public sealed class DefaultMessageContext : MessageContext, IDisposable
         _owner = owner;
         PoolSlot = poolSlot;
         Settlement = new(this, owner);
+        CoreProcessing = new(owner, this);
     }
 
+    internal ConsumePipeline.CoreOperation CoreProcessing { get; }
     internal PendingSettlement Settlement { get; }
     internal bool CanRequestSettlement => Volatile.Read(ref _state) == 2 && _services is not null;
 

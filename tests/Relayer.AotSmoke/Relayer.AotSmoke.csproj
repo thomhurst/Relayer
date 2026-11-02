@@ -20,4 +20,7 @@
     <ProjectReference Include="../../src/Relayer.SourceGenerators/Relayer.SourceGenerators.csproj"
                       ReferenceOutputAssembly="false" OutputItemType="Analyzer" />
   </ItemGroup>
+  <ItemGroup>
+    <Compile Include="../Shared/ConcurrentReceiveFixture.cs" Link="ConcurrentReceiveFixture.cs" />
+  </ItemGroup>
 </Project>

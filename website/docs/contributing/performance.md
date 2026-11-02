@@ -141,11 +141,12 @@ without assigning it to native message storage.
 The eight-worker channel control preserves genuinely incomplete handler reads
 and the same three signal channels as `ConcurrentRoundTrip`. Its totals include
 channel wait operations, the user handler's pooled continuation and worker
-scheduling. End-to-end profiles also contain JSON objects, fresh DI scopes and
+scheduling. Earlier end-to-end profiles also contain JSON objects, fresh DI scopes and
 service caches, scoped handler instances, native multiple-reader channel waits,
-and core receive/consume pooled state machines. Core continuation cache misses
-remain tracked separately in [#203](https://github.com/thomhurst/Relayer/issues/203);
-these Relayer-owned boxes are not a serializer or native-client exclusion.
+and core receive/consume pooled state machines. [#203](https://github.com/thomhurst/Relayer/issues/203)
+attributes the core continuation cache misses. Single-message dispatch now uses
+instance-owned continuation storage as described below. Relayer-owned boxes
+are never a serializer or native-client exclusion.
 The control does not establish zero total core allocations or change the gate's
 inclusive measurements and thresholds.
 
@@ -156,6 +157,19 @@ warmup and cleanup from the measured phase. `GCAllocationTick` events sample
 allocations: their byte weights are not exact counts or bytes for each sampled
 type. Pair the stacks with unprofiled `MemoryDiagnoser` reports; profiling can
 change scheduling and its timing is not a throughput comparison.
+
+### Instance-owned receive continuations
+
+Outside the gate, `ConcurrentReceiveBenchmarks` isolates the single-message
+continuation path with a cached serializer. Eight handlers remain pending before
+an alternating dedicated worker completes them. `DirectScoped`, `DirectConsumer`
+and `NativeReceive` all create fresh native DI scopes. The shared fixture returns
+exact inclusive allocation counts from both the driver and completion worker;
+`MemoryDiagnoser` reports its allocation totals separately. The regression test
+uses these counters to compare composition with direct scopes after warmup.
+Matching totals establish zero incremental continuation allocations in this case,
+not zero total receive allocations. Batch dispatch, executable retry policies,
+application handlers and native transports need their own attribution.
 
 ## CI thresholds and evidence
 

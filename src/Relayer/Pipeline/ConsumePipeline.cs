@@ -12,7 +12,7 @@ namespace Relayer;
 public delegate ValueTask ConsumeFailureDelegate(MessageContext context, Exception error, FailureAction action);
 
 /// <summary>A consumer's composed middleware and generated dispatch, shared across concurrent deliveries.</summary>
-public sealed class ConsumePipeline
+public sealed partial class ConsumePipeline
 {
     internal BatchExecution? BatchExecution { get; init; }
 
@@ -163,77 +163,7 @@ public sealed class ConsumePipeline
         return _failures is null ? ProcessCoreAsync(context) : ProcessWithFailuresAsync(context);
     }
 
-    [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
-    private async ValueTask ProcessCoreAsync(DefaultMessageContext context)
-    {
-        var telemetry = _telemetry;
-        var start = telemetry is { DurationEnabled: true } ? Stopwatch.GetTimestamp() : 0;
-        Exception? failure = null;
-        Activity? activity = null;
-        try
-        {
-            activity = _tracing?.Start(context);
-            telemetry?.RecordConsumed();
-            context.CancellationToken.ThrowIfCancellationRequested();
-            var scope = new AsyncServiceScope(_scopes.CreateScope());
-            try
-            {
-                context.SetServices(scope.ServiceProvider);
-                try
-                {
-                    if (!_dispatch.TryGetValue(context.MessageType, out var dispatch))
-                        throw new UnknownMessageTypeException(context.MessageType);
-                    context.Dispatch = dispatch;
-                    await _pipeline(context).ConfigureAwait(false);
-                }
-                catch (OperationCanceledException) when (context.CancellationToken.IsCancellationRequested) { throw; }
-                catch (Exception error)
-                {
-                    context.Settlement.Clear();
-                    failure = error;
-                    LogFailure(context, error);
-                    await _failure(context, error, _classifier.Classify(error, context)).ConfigureAwait(false);
-                }
-            }
-            finally
-            {
-                // Calling the struct directly avoids boxing it through IAsyncDisposable.ConfigureAwait.
-                await scope.DisposeAsync().ConfigureAwait(false);
-            }
-            context.CancellationToken.ThrowIfCancellationRequested();
-            if (failure is null && context.Settlement.Request is { } request)
-            {
-                context.FailureDisposition = request;
-                context.ApplyFailureDisposition();
-            }
-            context.ClearServices();
-            if (_settlement is { } settle) await settle(context).ConfigureAwait(false);
-        }
-        catch (OperationCanceledException) when (context.CancellationToken.IsCancellationRequested) { throw; }
-        catch (Exception error)
-        {
-            if (!ReferenceEquals(failure, error)) LogFailure(context, error);
-            failure = error;
-            throw;
-        }
-        finally
-        {
-            try
-            {
-                if (start != 0) telemetry!.RecordDuration(Stopwatch.GetElapsedTime(start), failure is not null);
-                telemetry?.RecordCriticalTime(context);
-            }
-            finally
-            {
-                try
-                {
-                    if (failure is not null) MessageOperationTracing.Fail(activity, "_OTHER");
-                    activity?.Dispose();
-                }
-                finally { context.EndProcessing(); }
-            }
-        }
-    }
+    private static ValueTask ProcessCoreAsync(DefaultMessageContext context) => context.CoreProcessing.Start();
 
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
     private async ValueTask ProcessWithFailuresAsync(DefaultMessageContext context)
