@@ -26,7 +26,7 @@ public class KafkaBrokerTests
             // its ten bind attempts on occupied ephemeral ports: moby/moby#54079.
             brokerBuilder = brokerBuilder.WithPortBinding("20000-29999", "9092").WithPortBinding("20000-29999", "9093");
         }
-        await using var broker = brokerBuilder.Build();
+        await using var broker = brokerBuilder.AfterStartupCopy().Build();
         using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(2));
         var token = timeout.Token;
         await broker.StartAsync(token);
