@@ -9,6 +9,7 @@ sudo bash scripts/Prepare-ContainerTests.sh
 sudo systemctl restart docker
 bash scripts/Test-ContainerPortAllocation.sh
 docker pull apache/kafka:4.0.2
+docker pull postgres:18-alpine
 dotnet test -c Release
 ```
 
@@ -45,10 +46,14 @@ is no automatic retry. Hosted failure logs do not identify their conflicting
 socket owners; an isolated reproduction establishes the allocator mechanism,
 not the destroyed runner's exact socket state.
 
-CI pulls the pinned Kafka image before starting the test process. On a cold
-runner, downloading and unpacking that image consumed 48 seconds of the Kafka
-lifecycle tests' two-minute deadline (#195). Image preparation fails the job if
-the pull fails; it does not retry. Keep this image tag aligned with the Kafka
-fixtures. Tests retain their deadlines, parallel execution, both restart cycles,
-and native protocol assertions. Ordinary local runs still let Testcontainers
-pull missing images; use the command above when validating lifecycle timing.
+CI pulls the pinned Kafka and PostgreSQL images before starting the test process.
+On a cold runner, downloading and unpacking Kafka consumed 48 seconds of its
+lifecycle tests' two-minute deadline (#195). PostgreSQL's `docker run` commands
+also have a 60-second deadline that includes any missing-image acquisition.
+Preparing both images removes acquisition from these budgets; it does not
+guarantee container startup completes within them. Image preparation fails the
+job if either pull fails; it does not retry. Keep these image tags aligned with
+their fixtures. Tests retain their deadlines, parallel execution, both restart
+cycles, and native protocol assertions. Ordinary local runs still let
+Testcontainers and the Docker CLI pull missing images; use the commands above
+when validating lifecycle timing.

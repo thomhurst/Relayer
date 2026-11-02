@@ -120,10 +120,11 @@ jobs:
 
       - name: Test
         if: steps.solution.outputs.present == 'true'
-        # Cold Kafka image acquisition consumed 48 seconds of the two-minute
-        # lifecycle deadline in #195. Prepare it before any test clock starts.
+        # Keep image acquisition outside Kafka's lifecycle deadline and
+        # PostgreSQL's bounded docker run commands.
         run: |
           docker pull apache/kafka:4.0.2
+          docker pull postgres:18-alpine
           dotnet test --no-build -c Release
 
       - name: Pack and verify NuGet artifacts
