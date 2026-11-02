@@ -3,7 +3,7 @@ title: Kafka
 description: "Named Kafka producers and serial consumers backed by Dekaf, with durable failure handling."
 ---
 
-`Relayer.Kafka` implements producers and serial consumer groups on [Dekaf](https://github.com/thomhurst/Dekaf). Consumers use the core failure pipeline and acknowledge offsets after durable handling, including dead-letter copies. Optional health adapters are available in `Relayer.Kafka.HealthChecks`. Parallel partition scheduling, drain-on-revoke, typed tombstones, topology management and transactions remain planned.
+`Relayer.Kafka` implements producers and serial consumer groups on [Dekaf](https://github.com/thomhurst/Dekaf). Consumers use the core failure pipeline and acknowledge offsets after durable handling, including dead-letter copies. Optional health adapters are available in `Relayer.Kafka.HealthChecks`. Typed tombstones use native null values and the original message's wire identity. Parallel partition scheduling, drain-on-revoke, topology management and transactions remain planned.
 
 ## Register a producer
 
@@ -71,11 +71,11 @@ Register the handler and its message with source generation. Create both topics 
 
 One declaration currently processes records serially, with `Concurrency(1)` and single-message handlers. Other values fail at startup with an actionable error. The adapter consumes native fetch batches and commits their native next-offset checkpoints only after every delivered record completes. It abandons an invalidated batch on rebalance. If the partition remains assigned, it seeks to the batch's first delivered offset and replays the uncommitted batch; a revoked partition resumes through native reassignment. Successful records in that batch may therefore run again. Native batch checkpoints preserve offset gaps and leader epochs. Key-parallel processing, contiguous watermark tracking across parallel work, and bounded drain-on-revoke belong to the planned partition scheduler. Shutdown stops fetching and drains the current batch; its cancellation deadline aborts unfinished handling without committing it. Each hosted service starts once; recreate the host to restart Kafka consumers, including after a failed or aborted receive. A fresh native consumer resumes at the broker's committed offsets. Partial startup failure disposes the transport and all consumers already created.
 
-Inside a handler, `context.Kafka().ConsumeResult` exposes Dekaf's original record. Durable dead-letter copies retain native null values and nullable application headers. The struct view wraps a pooled `NativeMessage<KafkaDelivery>` feature and is valid only during processing. It provides native headers, key, partition, offset and timestamp without allocating a feature for each record. Null-value records receive the tombstone telemetry attribute; typed `Tombstone<T>` dispatch remains planned, so an unsupported tombstone body follows the core deserialization failure policy.
+Inside a handler, `context.Kafka().ConsumeResult` exposes Dekaf's original record. Durable dead-letter copies retain native null values and nullable application headers. The struct view wraps a pooled `NativeMessage<KafkaDelivery>` feature and is valid only during processing. It provides native headers, key, partition, offset and timestamp without allocating a feature for each record. Null-value records receive the tombstone telemetry attribute and dispatch to `IHandler<Tombstone<T>>`. Non-null records, including empty values, dispatch to `IHandler<T>`. Missing handlers or malformed non-null bodies follow the core failure policy.
 
 Consumer failures reach the application's background-service supervision immediately, even when another consumer is still running. The host's default policy stops the application. Shutdown signals every consumer before waiting for their current batches, so a failed consumer cannot prevent its siblings from stopping. Override `HostOptions.BackgroundServiceExceptionBehavior` only when the application provides its own recovery policy.
 
-Failure copies discard any incoming `relayer.internal.kafka.tombstone` header. This private send marker cannot turn a non-null empty Kafka value into a tombstone; copies derive null-value state from the native record.
+Relayer discards the legacy `relayer.internal.kafka.tombstone` header, including values added by native callbacks. Null-value state comes only from the native record or the explicit serialized send flag; a header cannot turn an empty value into a tombstone.
 
 ## Seek and replay
 
@@ -159,7 +159,7 @@ for endpoint registration, thresholds and the adapter contracts.
 
 ## Performance validation
 
-`KafkaSendBenchmarks` compares acknowledged single sends and 32-message batches with raw Dekaf, with tracing disabled and `MemoryDiagnoser`. Set `RELAYER_KAFKA_BOOTSTRAP_SERVERS` to a test broker, then run:
+`KafkaSendBenchmarks` compares acknowledged single sends and 32-message batches with raw Dekaf, with tracing disabled and `MemoryDiagnoser`. The `Tombstone` parameter covers native null values alongside ordinary records. `SendPipelineBenchmarks.TombstoneSend` and `ReceivePipelineBenchmarks.NativeTombstone` isolate typed pipeline cost. Set `RELAYER_KAFKA_BOOTSTRAP_SERVERS` to a test broker, then run:
 
 ```shell
 dotnet run -c Release --project benchmarks/Relayer.Benchmarks -- --filter "*KafkaSendBenchmarks*"
@@ -168,3 +168,32 @@ dotnet run -c Release --project benchmarks/Relayer.Benchmarks -- --filter "*Kafk
 Each benchmark creates and deletes its own topic. The comparison measures the serialized adapter seam, including header conversion. It does not establish the full default-JSON send pipeline's 5% throughput budget. That acceptance gate remains part of the transport rollout.
 
 `KafkaReceiveBenchmarks` replays a fixed 4096-record topic through raw Dekaf and the production serial receive adapter. Both paths deserialize the same source-generated JSON contract and commit native fetch-batch checkpoints. `HealthEnabled` compares receiver health tracking enabled and disabled against raw Dekaf. Tracing is disabled and `MemoryDiagnoser` reports allocations. This comparison includes the core receive pipeline and generated handler dispatch; it does not measure the planned parallel scheduler. With the same broker environment variable set, run `--filter "*KafkaReceiveBenchmarks*"`. Results are local diagnostics, not a claim that the 5% receive budget has passed.
+
+## Typed tombstones
+
+Declare the send route for the original message type. `Tombstone.For<T>(key)` uses that route and T's stable `[Message]` name and version, bypasses body serialization, and sends a native null Kafka value. Text and borrowed UTF-8 keys are supported; empty keys remain distinct from null keys.
+
+```csharp
+kafka.Send<Customer>("customers");
+kafka.Consume("customers", consumer =>
+{
+    consumer.Options.Group = "customer-cache";
+    consumer.Handler<CustomerDeletedHandler>();
+});
+
+await sender.SendAsync(Tombstone.For<Customer>("customer-42"), cancellationToken);
+
+public sealed class CustomerDeletedHandler(ICustomerCache cache) : IHandler<Tombstone<Customer>>
+{
+    public ValueTask HandleAsync(Tombstone<Customer> message, MessageContext context,
+        CancellationToken cancellationToken)
+    {
+        // Delete the keyed state durably before returning. The key is borrowed.
+        return cache.DeleteAsync(message.Key, cancellationToken);
+    }
+}
+```
+
+Register `Customer` with `AddMessageTypesFromThisAssembly()` or `MessageTypes.Add<Customer>(...)`; do not register a separate identity or route for `Tombstone<Customer>`. A consumer can register both its regular handler and its tombstone handler. Tombstones never enter the JSON deserializer or upcaster chain. Native null records require a non-null key for typed dispatch; unkeyed null records follow the failure policy. The Kafka feature remains available and offsets commit only after durable handling.
+
+This API requires a transport whose `TransportCapabilities.Tombstones` is true (currently Kafka). It does not enable broker log compaction; configure the topic's native cleanup policy separately. Tombstones can be buffered by a handler's send pipeline and retained in dead-letter copies. Database outbox persistence and durable redelivery of native null values remain unsupported: sends through an active outbox fail before enlistment. Use `SendNowAsync` for a direct native send when an outbox transaction is active.

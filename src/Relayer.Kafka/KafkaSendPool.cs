@@ -50,6 +50,7 @@ internal sealed class KafkaSendPool
 internal sealed class KafkaSendOperation
 {
     internal KafkaSendState[] States = [];
+    internal ValueTask<Dekaf.Producer.RecordMetadata>[] Pending = [];
     internal readonly List<(WireString? Key, (ReadOnlyMemory<byte> Body, Headers Headers)? Value)> Messages = [];
     private int _count;
 
@@ -65,9 +66,18 @@ internal sealed class KafkaSendOperation
         _count = count;
     }
 
+    private int _pendingCount;
+    internal void EnsurePending(int count)
+    {
+        if (Pending.Length < count) Array.Resize(ref Pending, count);
+        _pendingCount = count;
+    }
+
     internal void Clear()
     {
         for (var i = 0; i < _count; i++) States[i].Clear();
+        if (_pendingCount != 0) Array.Clear(Pending, 0, _pendingCount);
+        _pendingCount = 0;
         Messages.Clear();
         _count = 0;
     }

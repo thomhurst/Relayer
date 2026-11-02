@@ -14,6 +14,10 @@ public readonly struct KafkaMessageBinding : IMessageBinding<KafkaDelivery>
     /// <inheritdoc />
     public static ReadOnlySequence<byte> GetBody(KafkaDelivery message) => new(message.Result.Value ?? []);
     /// <inheritdoc />
+    public static bool IsTombstone(KafkaDelivery message) => message.Result.Value is null;
+    /// <inheritdoc />
+    public static WireString? GetTombstoneKey(KafkaDelivery message) => message.Result.IsKeyNull ? null : new WireString(message.Result.Key!);
+    /// <inheritdoc />
     public static int? GetDeliveryCount(KafkaDelivery message) => null;
     /// <inheritdoc />
     public static string GetPartitionId(KafkaDelivery message) => message.PartitionId;

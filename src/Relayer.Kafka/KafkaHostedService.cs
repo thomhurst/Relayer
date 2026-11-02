@@ -83,9 +83,8 @@ internal sealed class KafkaHostedService(IServiceProvider provider, string name)
                 for (var j = 0; j < record.Headers.Count; j++)
                     if (record.Headers[j].Key == header.Key) native.Add(record.Headers[j]);
             }
-            if (record.Value is null) native.Add(KafkaSendState.TombstoneHeader, "true");
         });
-        return new(record.Topic, record.Value ?? [], headers, record.IsKeyNull ? null : new WireString(record.Key!), options: options);
+        return new(record.Topic, record.Value ?? [], headers, record.IsKeyNull ? null : new WireString(record.Key!), options: options, isTombstone: record.Value is null);
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)

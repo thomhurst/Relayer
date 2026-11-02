@@ -51,6 +51,9 @@ public sealed class ConfigurationAnalyzer : DiagnosticAnalyzer
             void CheckMessage(ITypeSymbol message, Location use)
             {
                 if (message.TypeKind is TypeKind.TypeParameter or TypeKind.Error) return;
+                if (message is INamedTypeSymbol wrapper && SymbolEqualityComparer.Default.Equals(wrapper.OriginalDefinition,
+                        compilation.GetTypeByMetadataName("Relayer.Tombstone`1")))
+                    message = wrapper.TypeArguments[0];
                 if (message is INamedTypeSymbol named) message = named.OriginalDefinition;
                 if (message.GetAttributes().Any(a => SymbolEqualityComparer.Default.Equals(a.AttributeClass, attribute))) return;
                 var location = message.Locations.FirstOrDefault(static l => l.IsInSource) ?? use;

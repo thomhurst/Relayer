@@ -197,6 +197,23 @@ public class HandlerGeneratorTests
         await Assert.That(discovery).DoesNotContain("Handler<global::Example.Handler>(builder)");
     }
 
+    [Test]
+    public async Task Tombstone_handler_uses_a_closed_native_dispatcher()
+    {
+        var driver = Run(CreateCompilation("""
+            using Relayer;
+            using System.Threading;
+            using System.Threading.Tasks;
+            public sealed class Order;
+            public sealed class Handler : IHandler<Tombstone<Order>>
+            {
+                public ValueTask HandleAsync(Tombstone<Order> message, MessageContext context, CancellationToken token) => default;
+            }
+            """), out _);
+        await Assert.That(Generated(driver)).Contains("TombstoneHandlerDescriptor<global::Order>");
+        await Assert.That(Generated(driver)).Contains("IHandler<global::Relayer.Tombstone<global::Order>>");
+    }
+
     private static CSharpCompilation CreateCompilation(string source)
     {
         var paths = ((string)AppContext.GetData("TRUSTED_PLATFORM_ASSEMBLIES")!).Split(Path.PathSeparator);

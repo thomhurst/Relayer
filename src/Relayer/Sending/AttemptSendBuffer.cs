@@ -88,7 +88,7 @@ internal sealed class AttemptSendBuffer
             var key = message.OrderingKey is { } orderingKey ? CopyValue(orderingKey, ref offset) : (WireString?)null;
             message.CopyNativeOptionsTo(_options);
             _message = new(message.Destination, _bytes.AsMemory(0, message.Body.Length),
-                _headers.AsMemory(0, message.Headers.Length), key, message.DeliverAt, _options);
+                _headers.AsMemory(0, message.Headers.Length), key, message.DeliverAt, _options, message.IsTombstone);
             _transport = transport;
             _timeoutDelay = timeout;
             Ready = true;

@@ -51,6 +51,9 @@ public class SendPipelineBenchmarks
     }
 
     [Benchmark]
+    public ValueTask TombstoneSend() => _sender.SendAsync(Tombstone.For<SendOrder>("customer-1"));
+
+    [Benchmark]
     public ValueTask DirectSend() => _sender.SendAsync(_message);
 
     [GlobalCleanup]
@@ -68,7 +71,7 @@ public class SendPipelineBenchmarks
     private sealed class SinkTransport : ITransport
     {
         public string Name => "sink";
-        public TransportCapabilities GetCapabilities(string endpoint) => new() { OrderedByKey = true };
+        public TransportCapabilities GetCapabilities(string endpoint) => new() { OrderedByKey = true, Tombstones = true };
         public int Bytes { get; private set; }
         public ValueTask SendAsync(OutgoingMessage message, CancellationToken cancellationToken)
         {

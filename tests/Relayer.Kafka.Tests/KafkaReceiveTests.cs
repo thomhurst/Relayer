@@ -113,7 +113,7 @@ public class KafkaReceiveTests
                 headers.Add(new Dekaf.Serialization.Header("nullable", (byte[]?)null)).Add("nullable", "second"))), token);
         var tombstone = Message(source, 4);
         await fixture.Transport.SendAsync(new(source, default, tombstone.Headers, tombstone.OrderingKey,
-            options: new SendOptions().ConfigureNative<Dekaf.Serialization.Headers>(static headers => headers.Add(KafkaSendState.TombstoneHeader, "true"))), token);
+            isTombstone: true), token);
         // Bypass Relayer's send marker handling to simulate an untrusted source header.
         await using var rawProducer = new ProducerBuilder<byte[], byte[]>().WithBootstrapServers(fixture.Bootstrap).Build();
         await rawProducer.InitializeAsync(token);

@@ -49,6 +49,7 @@ public sealed class MessageTypeRegistry
         {
             _jsonTypes.Add(static contexts => ResolveJsonType<TMessage>(contexts));
         }
+        _byType[typeof(Tombstone<TMessage>)] = identity;
         _byType[typeof(TMessage)] = identity;
         _byName[identity] = typeof(TMessage);
         return this;

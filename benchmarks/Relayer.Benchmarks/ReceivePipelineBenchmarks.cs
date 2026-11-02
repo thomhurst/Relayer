@@ -16,6 +16,7 @@ public class ReceivePipelineBenchmarks
     private ConsumeMessage _message;
     private Incoming _incoming = null!;
     private Incoming[] _batch = null!;
+    private Incoming _tombstone = null!;
     private readonly Disposition[] _dispositions = new Disposition[10];
 
     [Params(false, true)]
@@ -26,14 +27,17 @@ public class ReceivePipelineBenchmarks
     {
         var services = new ServiceCollection();
         services.AddSingleton<Handler>();
-        services.AddRelayer(r => { r.MessageTypes.Add<Payload>("benchmark.payload"); r.Handler<Handler>(); });
+        services.AddSingleton<TombstoneHandler>();
+        services.AddRelayer(r => { r.MessageTypes.Add<Payload>("benchmark.payload"); r.Handler<Handler>().Handler<TombstoneHandler>(); });
         _provider = services.BuildServiceProvider();
         _consumer = new ConsumePipelineBuilder(_provider.GetRequiredService<IServiceScopeFactory>(),
                 _provider.GetRequiredService<MessageTypeRegistry>(), new Serializer(),
                 static (_, error, _) => ValueTask.FromException(error))
-            .Handler(_provider.GetRequiredService<HandlerRegistry>().GetHandler<Payload, Handler>()).Build(1);
+            .Handler(_provider.GetRequiredService<HandlerRegistry>().GetHandler<Payload, Handler>())
+            .Handler(_provider.GetRequiredService<HandlerRegistry>().GetHandler<Tombstone<Payload>, TombstoneHandler>()).Build(1);
         _receive = new(_consumer, new HeaderNames(), 1);
         _incoming = new Incoming(Utf8Headers ? new WireString("benchmark.payload;v=1"u8.ToArray()) : new("benchmark.payload;v=1"));
+        _tombstone = new Incoming(_incoming.Type, tombstone: true);
         _batch = new Incoming[10];
         Array.Fill(_batch, _incoming);
         _message = new ConsumeMessage
@@ -52,6 +56,9 @@ public class ReceivePipelineBenchmarks
     [Benchmark]
     public ValueTask<Disposition> NativeReceive() => _receive.ProcessAsync(_incoming);
 
+    [Benchmark]
+    public ValueTask<Disposition> NativeTombstone() => _receive.ProcessAsync(_tombstone);
+
     [Benchmark(OperationsPerInvoke = 10)]
     public ValueTask NativeBatch() => _receive.ProcessBatchAsync(_batch, _dispositions);
 
@@ -64,6 +71,10 @@ public class ReceivePipelineBenchmarks
     {
         public ValueTask HandleAsync(Payload message, MessageContext context, CancellationToken cancellationToken) => default;
     }
+    public sealed class TombstoneHandler : IHandler<Tombstone<Payload>>
+    {
+        public ValueTask HandleAsync(Tombstone<Payload> message, MessageContext context, CancellationToken cancellationToken) => default;
+    }
     private sealed class Serializer : IMessageSerializer
     {
         private readonly Payload _payload = new();
@@ -71,14 +82,17 @@ public class ReceivePipelineBenchmarks
         public TMessage Deserialize<TMessage>(ReadOnlySequence<byte> source) => (TMessage)(object)_payload;
         public void Serialize<TMessage>(TMessage message, IBufferWriter<byte> destination) => throw new NotSupportedException();
     }
-    private sealed class Incoming(WireString type)
+    private sealed class Incoming(WireString type, bool tombstone = false)
     {
         public WireString Type { get; } = type;
-        public ReadOnlySequence<byte> Body { get; } = new(new byte[64]);
+        public bool Tombstone { get; } = tombstone;
+        public ReadOnlySequence<byte> Body { get; } = tombstone ? ReadOnlySequence<byte>.Empty : new(new byte[64]);
     }
     private readonly struct Binding : IMessageBinding<Incoming>
     {
         public static ReadOnlySequence<byte> GetBody(Incoming message) => message.Body;
+        public static bool IsTombstone(Incoming message) => message.Tombstone;
+        public static WireString? GetTombstoneKey(Incoming message) => new WireString("customer-1");
         public static int? GetDeliveryCount(Incoming message) => 1;
         public static bool TryGetHeader(Incoming message, string name, out WireString value)
         {

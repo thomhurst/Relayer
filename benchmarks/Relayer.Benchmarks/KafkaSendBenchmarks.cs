@@ -24,6 +24,9 @@ public class KafkaSendBenchmarks
     private OutgoingMessage[] _batch = null!;
     private string _topic = null!;
 
+    [Params(false, true)]
+    public bool Tombstone { get; set; }
+
     [GlobalSetup]
     public async Task Setup()
     {
@@ -43,8 +46,8 @@ public class KafkaSendBenchmarks
             new("ce_source", new("/benchmarks")), new("ce_specversion", new("1.0")),
             new("ce_id", new("019a3c1b-97c0-7000-8000-000000000001")), new("content-type", new("application/json"))];
         var nativeHeaders = new Headers(headers.Select(header => new Header(header.Key, Encoding.UTF8.GetBytes(header.Value.Text!))));
-        _native = new() { Topic = _topic, Key = key, Value = body, Headers = nativeHeaders };
-        _message = new(_topic, body, headers, new WireString("customer-1"));
+        _native = new() { Topic = _topic, Key = key, Value = Tombstone ? null! : body, Headers = nativeHeaders };
+        _message = new(_topic, Tombstone ? default : body, headers, new WireString("customer-1"), isTombstone: Tombstone);
         _nativeBatch = Enumerable.Repeat(_native, 32).ToList();
         _batch = Enumerable.Repeat(_message, 32).ToArray();
         await _raw.ProduceAsync(_native);

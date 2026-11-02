@@ -23,9 +23,10 @@ public readonly struct OutgoingMessage
     /// <param name="options">
     /// Native callbacks only. Portable headers, ordering, and scheduling must already be resolved into the other arguments.
     /// </param>
+    /// <param name="isTombstone">Whether to send a native null value; supported only by tombstone-capable transports.</param>
     public OutgoingMessage(string destination, ReadOnlyMemory<byte> body,
         ReadOnlyMemory<KeyValuePair<string, WireString>> headers = default,
-        WireString? orderingKey = null, DateTimeOffset? deliverAt = null, SendOptions? options = null)
+        WireString? orderingKey = null, DateTimeOffset? deliverAt = null, SendOptions? options = null, bool isTombstone = false)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(destination);
         Destination = destination;
@@ -34,10 +35,14 @@ public readonly struct OutgoingMessage
         OrderingKey = orderingKey;
         DeliverAt = deliverAt;
         _options = options;
+        IsTombstone = isTombstone;
     }
 
     /// <summary>The native destination on the selected named transport.</summary>
     public string Destination { get; }
+
+    /// <summary>Whether the native value is null rather than a non-null, possibly empty body.</summary>
+    public bool IsTombstone { get; }
 
     /// <summary>The serialized body, borrowed until send completion.</summary>
     public ReadOnlyMemory<byte> Body { get; }
@@ -59,12 +64,12 @@ public readonly struct OutgoingMessage
     }
 
     internal OutgoingMessage Forward(string destination, ReadOnlyMemory<KeyValuePair<string, WireString>> headers,
-        DateTimeOffset? deliverAt) => new(destination, Body, headers, OrderingKey, deliverAt, _options);
+        DateTimeOffset? deliverAt) => new(destination, Body, headers, OrderingKey, deliverAt, _options, IsTombstone);
 
-    internal OutgoingMessage WithTracingStarted() => new(Destination, Body, Headers, OrderingKey, DeliverAt, _options) { TracingStarted = true };
+    internal OutgoingMessage WithTracingStarted() => new(Destination, Body, Headers, OrderingKey, DeliverAt, _options, IsTombstone) { TracingStarted = true };
 
     // A new send span must link to stored creation headers, even when enqueue was already traced.
-    internal OutgoingMessage ForOutboxDispatch() => new(Destination, Body, Headers, OrderingKey, DeliverAt, _options) { IsOutboxDispatch = true };
+    internal OutgoingMessage ForOutboxDispatch() => new(Destination, Body, Headers, OrderingKey, DeliverAt, _options, IsTombstone) { IsOutboxDispatch = true };
 
     internal void CopyNativeOptionsTo(SendOptions target)
     {
@@ -72,10 +77,12 @@ public readonly struct OutgoingMessage
         _options?.CopyNativeTo(target);
     }
 
-    /// <summary>Rejects non-persistable native callbacks. Call before enlisting this message in an outbox.</summary>
-    /// <exception cref="InvalidOperationException">Native callbacks cannot be persisted.</exception>
+    /// <summary>Rejects native callbacks and null values that cannot be persisted. Call before outbox enlistment.</summary>
+    /// <exception cref="InvalidOperationException">Native callbacks or null values cannot be persisted.</exception>
     public void ValidateForOutbox()
     {
+        if (IsTombstone)
+            throw new InvalidOperationException("Native tombstones cannot yet be persisted in the outbox. Use SendNowAsync outside the outbox path.");
         if (_options is { HasNativeConfigurators: true })
         {
             throw new InvalidOperationException(
