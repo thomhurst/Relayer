@@ -150,10 +150,13 @@ public sealed class DefaultMessageContext : MessageContext, IDisposable
         {
             if (_services is { } services) return services;
             if (_demand != ScopeDemand.Open) throw new InvalidOperationException("Services are available only during message processing.");
-            CreateScope();
-            BindScope();
+            // Publish last: a reader holding these services must never reach an unattached sender.
+            // Tenant restoration keeps eager scopes, so SetServices has nothing further to do here.
+            if (_scope is null) CreateScope();
             AttachSender();
-            return _services!;
+            var provider = _scope!.ServiceProvider;
+            Volatile.Write(ref _services, provider);
+            return provider;
         }
     }
 

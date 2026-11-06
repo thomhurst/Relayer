@@ -500,6 +500,77 @@ public class FailurePipelineTests
     }
 
     [Test]
+    public async Task An_on_demand_scope_is_hidden_from_concurrent_readers_until_its_sender_is_attached()
+    {
+        MessageContext? current = null;
+        var published = false;
+        using var provider = Provider(new Transport(), services => services.AddScoped<IOutboxEnlistment>(_ =>
+        {
+            // Sender creation resolves this. A reader that finishes here could send before buffering starts.
+            var context = current!;
+            published = Task.Run(() => context.Services).Wait(TimeSpan.FromMilliseconds(200));
+            return new InactiveOutbox();
+        }));
+        var control = provider.GetRequiredService<Control>();
+        var pipeline = SingletonPipeline(provider, provider.GetRequiredService<IServiceScopeFactory>());
+        control.Invoke = context =>
+        {
+            current = context;
+            _ = context.Services;
+            return default;
+        };
+        await pipeline.ProcessAsync(new());
+        await Assert.That(published).IsFalse();
+    }
+
+    [Test]
+    public async Task A_failed_sender_attachment_does_not_open_a_second_scope()
+    {
+        var failures = 0;
+        using var provider = Provider(new Transport(), services => services.AddScoped<ISender>(_ =>
+        {
+            failures++;
+            throw new ApplicationException("sender failed");
+        }));
+        var control = provider.GetRequiredService<Control>();
+        var scopes = new CountingScopes(provider.GetRequiredService<IServiceScopeFactory>());
+        var pipeline = SingletonPipeline(provider, scopes);
+        var composed = scopes.Created;
+        control.Invoke = static context =>
+        {
+            try { _ = context.Services; }
+            catch (ApplicationException) { }
+            _ = context.Services;
+            return default;
+        };
+        await Assert.That((await pipeline.ProcessAsync(new())).Kind).IsEqualTo(DispositionKind.DeadLetter);
+        await Assert.That(failures).IsEqualTo(2);
+        await Assert.That(scopes.Created).IsEqualTo(composed + 1);
+    }
+
+    [Test]
+    public async Task Ordinary_scope_senders_work_but_are_not_returned_to_the_pool()
+    {
+        var transport = new Transport();
+        using var provider = Provider(transport);
+        var pipeline = Pipeline(provider);
+        await pipeline.ProcessAsync(new());
+        ISender first;
+        await using (var scope = provider.CreateAsyncScope())
+        {
+            first = scope.ServiceProvider.GetRequiredService<ISender>();
+            await first.SendAsync(new Payload());
+        }
+        await using (var scope = provider.CreateAsyncScope())
+        {
+            var second = scope.ServiceProvider.GetRequiredService<ISender>();
+            await Assert.That(second).IsNotSameReferenceAs(first);
+            await second.SendAsync(new Payload());
+        }
+        await Assert.That(transport.Sends.Count).IsEqualTo(2);
+    }
+
+    [Test]
     public async Task A_later_scoped_registration_keeps_one_scope_per_attempt()
     {
         using var provider = Provider(new Transport(), static services =>
