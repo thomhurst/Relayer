@@ -45,6 +45,9 @@ public sealed class TransportDefinition
 /// <summary>A message route. CLR types identify registrations only, never wire messages.</summary>
 public interface IRouteDefinition
 {
+    /// <summary>Portable send settings captured when the route declaration is frozen.</summary>
+    public SendRouteOptions SendOptions { get; }
+
     /// <summary>The CLR type used to select this declaration at startup.</summary>
     public Type MessageType { get; }
     /// <summary>The native destination name.</summary>

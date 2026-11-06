@@ -38,8 +38,23 @@ internal sealed class SqsSendTransport : ITransport, ITransportSendTracing
                 throw new InvalidOperationException($"SQS transport '{name}': destination '{destination}' needs a native CreateQueueRequest declaration.");
     }
 
+    // Resolve bindings before constructing an owned client, so invalid declarations cannot leak it.
+    internal static IReadOnlyDictionary<string, string> ResolveIdentityHeaders(IReadOnlyList<IRouteDefinition> routes)
+    {
+        var headers = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var route in routes)
+        {
+            if (!route.Destination.EndsWith(".fifo", StringComparison.Ordinal) ||
+                route.SendOptions.EnvelopeMode != MessageEnvelopeMode.CloudEvents) continue;
+            var identityHeader = route.SendOptions.HeaderNames.Id;
+            if (headers.TryGetValue(route.Destination, out var existing) && existing != identityHeader)
+                throw new InvalidOperationException($"SQS FIFO queue '{route.Destination}': CloudEvents routes must use the same HeaderNames identity binding. Configure matching HeaderNames for every route to this queue.");
+            headers[route.Destination] = identityHeader;
+        }
+        return headers;
+    }
     internal SqsSendTransport(string name, IAmazonSQS client, bool ownsClient, AmazonSqsTransportOptions options,
-        MessageTracing? tracing = null, ILoggerFactory? logging = null)
+        MessageTracing? tracing = null, ILoggerFactory? logging = null, IReadOnlyDictionary<string, string>? identityHeaders = null)
     {
         Name = name;
         _client = client;
@@ -48,7 +63,7 @@ internal sealed class SqsSendTransport : ITransport, ITransportSendTracing
         var endpoints = new Dictionary<string, Endpoint>(StringComparer.Ordinal);
         foreach (var declaration in options.Queues)
         {
-            var endpoint = new Endpoint(declaration);
+            var endpoint = new Endpoint(declaration, identityHeaders?.GetValueOrDefault(declaration.QueueName) ?? "ce_id");
             if (tracing is not null)
                 endpoint.Tracing = new(tracing, new() { System = "aws_sqs", Destination = declaration.QueueName },
                     SendCoreAsync, SendBatchCoreAsync, logging?.CreateLogger<SqsSendTransport>());
@@ -125,7 +140,7 @@ internal sealed class SqsSendTransport : ITransport, ITransportSendTracing
         Enrich(activity, endpoint.Url!, null);
         try
         {
-            var size = state.Messages[0].Prepare(message, endpoint.Url!, endpoint.Fifo);
+            var size = state.Messages[0].Prepare(message, endpoint.Url!, endpoint.Fifo, endpoint.IdentityHeader);
             ValidateSize(endpoint, size);
             var response = await _client.SendMessageAsync(state.Messages[0].Request, cancellationToken).ConfigureAwait(false);
             Enrich(activity, endpoint.Url!, response.ResponseMetadata?.RequestId);
@@ -183,7 +198,7 @@ internal sealed class SqsSendTransport : ITransport, ITransportSendTracing
                 }
                 var pending = state.Messages[count];
                 state.Used = count + 1;
-                var size = pending.Prepare(messages.Span[i], endpoint.Url!, endpoint.Fifo);
+                var size = pending.Prepare(messages.Span[i], endpoint.Url!, endpoint.Fifo, endpoint.IdentityHeader);
                 ValidateSize(endpoint, size);
                 if (count > 0 && bytes + size > 1_048_576)
                 {
@@ -272,9 +287,10 @@ internal sealed class SqsSendTransport : ITransport, ITransportSendTracing
 
     private sealed class Endpoint
     {
-        internal Endpoint(CreateQueueRequest declaration)
+        internal Endpoint(CreateQueueRequest declaration, string identityHeader)
         {
             Declaration = declaration;
+            IdentityHeader = identityHeader;
             Fifo = declaration.QueueName.EndsWith(".fifo", StringComparison.Ordinal);
             Capabilities = new() { OrderedByKey = Fifo, MaxBatchSize = 10, MaxDeliveryDelay = Fifo ? null : TimeSpan.FromMinutes(15) };
             if (declaration.Attributes?.TryGetValue("MaximumMessageSize", out var maximum) == true)
@@ -282,6 +298,7 @@ internal sealed class SqsSendTransport : ITransport, ITransportSendTracing
         }
         internal CreateQueueRequest Declaration { get; }
         internal bool Fifo { get; }
+        internal string IdentityHeader { get; }
         internal string? Url { get; set; }
         internal TransportCapabilities Capabilities { get; set; }
         internal SendTracing? Tracing { get; set; }
