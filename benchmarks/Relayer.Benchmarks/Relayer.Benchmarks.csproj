@@ -10,6 +10,7 @@
     <ProjectReference Include="../../src/Relayer.Outbox.SqlServer/Relayer.Outbox.SqlServer.csproj" />
     <ProjectReference Include="../../src/Relayer.Sagas.EntityFrameworkCore/Relayer.Sagas.EntityFrameworkCore.csproj" />
     <ProjectReference Include="..\..\src\Relayer.AzureServiceBus\Relayer.AzureServiceBus.csproj" />
+    <ProjectReference Include="..\..\src\Relayer.AmazonSqs\Relayer.AmazonSqs.csproj" />
     <PackageReference Include="BenchmarkDotNet" />
     <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" />
     <PackageReference Include="Microsoft.Extensions.DependencyInjection" />

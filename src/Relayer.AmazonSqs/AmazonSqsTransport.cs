@@ -18,7 +18,7 @@ public static class AmazonSqsTransport
         OrderedByKey = true,
     };
 
-    /// <summary>Returns conservative SQS queue capabilities for the transport stub (docs/decisions.md D24).</summary>
+    /// <summary>Returns conservative SQS queue capabilities, independently of a registered native adapter (docs/decisions.md D24).</summary>
     /// <remarks>
     /// Accepts a queue name or URL. FIFO queues require the case-sensitive .fifo suffix and do not support
     /// per-message delivery timers. Redrive cannot dead-letter an individual message on demand with error metadata.
