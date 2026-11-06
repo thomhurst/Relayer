@@ -11,7 +11,7 @@ namespace Relayer.Serialization.Avro;
 /// <summary>Uses Dekaf's generated Avro codecs and prepares registry contracts before message processing starts.</summary>
 /// <remarks>The registry client is caller-owned. Declare contracts before initialization; thereafter concurrent reads and writes are supported.
 /// Only the prepared writer schema ID is accepted. Use explicit wire types and Relayer upcasters for older versions.
-/// Native schema preparation currently prevents Native AOT and trimming; registration emits build diagnostics.</remarks>
+/// Trimmed JIT schema preparation remains unsupported; registration emits a trimming diagnostic, including in Native AOT builds.</remarks>
 public sealed class AvroMessageSerializer(ISchemaRegistryClient client) : IMessageSerializer, IMessageSerializerInitializer, IAsyncDisposable
 {
     private readonly ISchemaRegistryClient _client = client ?? throw new ArgumentNullException(nameof(client));
@@ -26,8 +26,7 @@ public sealed class AvroMessageSerializer(ISchemaRegistryClient client) : IMessa
     /// <summary>Declares a generated codec and its native topic/subject configuration.</summary>
     /// <remarks>Topic selects the registry subject, not Relayer routing. Native configuration is passed unchanged.
     /// Dynamic schemas, rules and header identities require per-record preparation and are unsupported.</remarks>
-    [RequiresUnreferencedCode("Dekaf 1.25.0 Avro schema preparation reaches Apache.Avro/Newtonsoft.Json reflection. Trimming is unsupported; see https://github.com/thomhurst/Dekaf/issues/4060.")]
-    [RequiresDynamicCode("Dekaf 1.25.0 Avro schema preparation reaches Apache.Avro/Newtonsoft.Json dynamic code. Native AOT is unsupported; see https://github.com/thomhurst/Dekaf/issues/4060.")]
+    [RequiresUnreferencedCode("Dekaf 1.26.0 Avro schema preparation still reaches Apache.Avro/Newtonsoft.Json reflection in trimmed JIT applications. Trimming is unsupported; see https://github.com/thomhurst/Dekaf/issues/4060.")]
     public AvroMessageSerializer Add<TMessage, TCodec>(string topic, AvroSerializerConfig? config = null)
         where TCodec : struct, IAvroPocoCodec<TMessage>
     {

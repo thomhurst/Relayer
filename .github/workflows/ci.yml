@@ -95,7 +95,7 @@ jobs:
       - name: Set up Docker for container tests
         uses: docker/setup-docker-action@7ec28a010822b4626af4874f9448a4b05ac6f3e5 # v5
         with:
-          version: v29.9.2
+          version: v29.9.3
           set-host: true
 
       - name: Verify mixed-address port allocation
@@ -106,7 +106,7 @@ jobs:
         run: |
           if [ -f Relayer.slnx ]; then echo "present=true" >> "$GITHUB_OUTPUT"; else echo "::notice::No Relayer.slnx yet; skipping build."; fi
 
-      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+      - uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
         if: steps.solution.outputs.present == 'true'
         with:
           global-json-file: global.json
