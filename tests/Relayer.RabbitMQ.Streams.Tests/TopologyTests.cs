@@ -1,4 +1,5 @@
 using System.Net;
+using System.Reflection;
 using System.Text;
 using DotNet.Testcontainers.Builders;
 using DotNet.Testcontainers.Containers;
@@ -123,11 +124,22 @@ public class TopologyTests
         });
         var transport = provider.GetRequiredService<ITransport>();
         await transport.ApplyTopologyAsync(TopologyMode.Provision, token);
+        // Inspect only the owned native instance in this test. Keeping this observation
+        // test-local avoids adding a public API just to synchronize fault injection.
+        var native = (StreamSystem)transport.GetType()
+            .GetField("_system", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(transport)!;
+        await Assert.That(native.IsClosed).IsFalse();
         // RabbitMQ's connection tracker includes stream protocol connections. Assert the
         // close actually targets our locator, rather than passing through a no-op fault.
         var closed = await broker.CommandAsync(["rabbitmqctl", "close_all_connections", "--global", "--per-connection-delay", "0", "native recovery test"], token);
         await Assert.That(closed).Contains("Closed 1 connections");
+        // The broker command completing does not mean the client's socket reader has
+        // observed the close. Native recovery checks IsClosed, and ServerProperties
+        // otherwise returns cached data. Wait for that precondition without retrying RPCs.
+        using var observation = new PeriodicTimer(TimeSpan.FromMilliseconds(10));
+        while (!native.IsClosed) await observation.WaitForNextTickAsync(token);
         await transport.StartAsync(token);
+        await Assert.That(native.IsClosed).IsFalse();
         await Assert.That((await transport.ApplyTopologyAsync(TopologyMode.Provision, token)).Differences.Count).IsEqualTo(0);
     }
 

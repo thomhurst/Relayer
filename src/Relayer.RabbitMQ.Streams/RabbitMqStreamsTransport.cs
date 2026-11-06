@@ -77,7 +77,7 @@ internal sealed class RabbitMqStreamsTransport : ITransport
         {
             ObjectDisposedException.ThrowIf(_disposed, this);
             await ConnectAsync(cancellationToken).ConfigureAwait(false);
-            // This native metadata request also recovers a disconnected locator connection.
+            // Native ServerProperties recovers an observed disconnect before returning cached metadata.
             await _system!.ServerProperties().ConfigureAwait(false);
             cancellationToken.ThrowIfCancellationRequested();
         }
