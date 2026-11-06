@@ -96,6 +96,12 @@ slow baseline cannot prevent a candidate that fixes startup from being measured.
 | `ConcurrentChannelControlBenchmarks` (outside the gate) | Eight channel workers execute the gate's asynchronous handler and entry/release/completion protocol without JSON, DI or a transport. Results are per **item**, normalized with `OperationsPerInvoke = 8`. |
 | `StartupBenchmarks.Build100Handlers` | A fresh consume pipeline, dispatch table and context pool for 100 distinct generated handlers. Registration and service-provider setup happen outside the measurement. This measures pipeline composition, not cold process startup or the entire host. |
 
+The concurrent fixture publishes each handler's barrier entry only after registering
+its release continuation. Checking that a read is incomplete and then publishing
+entry before awaiting it would let the driver release that handler before it
+suspends. The barrier fixes that ordering; it does not make channel, pooled
+async-state-machine or scheduler allocation totals deterministic.
+
 Every suite uses `[MemoryDiagnoser]`. Receive totals include a fresh DI scope for
 each delivery; scopes and scoped handlers are never reused. Driver channels,
 native scheduling and JSON costs remain in the end-to-end totals. Report those
