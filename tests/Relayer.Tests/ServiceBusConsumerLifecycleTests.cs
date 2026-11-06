@@ -10,7 +10,7 @@ public sealed class ServiceBusConsumerLifecycleTests
     {
         using var nativeStop = new CancellationTokenSource();
         var processor = new DrainProcessor(nativeStop);
-        var pending = new TaskCompletionSource<Disposition>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var pending = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var workToken = CancellationToken.None;
         await using var consumer = new ServiceBusConsumer(Declaration(), processor, (_, token) =>
         { workToken = token; return new(pending.Task.WaitAsync(token)); });
@@ -21,7 +21,7 @@ public sealed class ServiceBusConsumerLifecycleTests
         await Assert.That(nativeStop.IsCancellationRequested).IsTrue();
         await Assert.That(workToken.IsCancellationRequested).IsFalse();
         await Assert.That(drain.IsCompleted).IsFalse();
-        pending.SetResult(Disposition.Complete);
+        pending.SetResult();
         await drain;
     }
 
@@ -31,7 +31,7 @@ public sealed class ServiceBusConsumerLifecycleTests
         using var nativeStop = new CancellationTokenSource();
         using var deadline = new CancellationTokenSource();
         var processor = new DrainProcessor(nativeStop);
-        var pending = new TaskCompletionSource<Disposition>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var pending = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var workToken = CancellationToken.None;
         await using var consumer = new ServiceBusConsumer(Declaration(), processor, (_, token) =>
         { workToken = token; return new(pending.Task.WaitAsync(token)); });

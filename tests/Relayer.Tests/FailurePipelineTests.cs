@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Buffers;
 using System.Text;
 using System.Text.Json;
@@ -408,16 +409,15 @@ public class FailurePipelineTests
         {
             await pipeline.ProcessAsync(incoming);
             var scope = new AsyncServiceScope(scopes.CreateScope());
-            _ = scope.ServiceProvider.GetRequiredService<ISender>();
             _ = scope.ServiceProvider.GetRequiredService<Handler>();
             _ = serializer.Deserialize<Payload>(new(incoming.Body));
             await scope.DisposeAsync();
         }
         var start = GC.GetAllocatedBytesForCurrentThread();
+        // The pooled attempt sender is attached without any DI disposal bookkeeping, so it is absent here.
         for (var i = 0; i < 1000; i++)
         {
             var scope = new AsyncServiceScope(scopes.CreateScope());
-            _ = scope.ServiceProvider.GetRequiredService<ISender>();
             _ = scope.ServiceProvider.GetRequiredService<Handler>();
             _ = serializer.Deserialize<Payload>(new(incoming.Body));
             await scope.DisposeAsync();
@@ -427,6 +427,109 @@ public class FailurePipelineTests
         for (var i = 0; i < 1000; i++) await pipeline.ProcessAsync(incoming);
         var pipelineBytes = GC.GetAllocatedBytesForCurrentThread() - start;
         await Assert.That(pipelineBytes).IsEqualTo(nativeBytes);
+    }
+
+    [Test]
+    public async Task Singleton_handlers_open_a_scope_only_when_services_are_requested()
+    {
+        using var provider = Provider(new Transport());
+        var control = provider.GetRequiredService<Control>();
+        var scopes = new CountingScopes(provider.GetRequiredService<IServiceScopeFactory>());
+        var pipeline = SingletonPipeline(provider, scopes);
+        var composed = scopes.Created;
+        await pipeline.ProcessAsync(new());
+        await pipeline.ProcessAsync(new());
+        await Assert.That(control.Calls).IsEqualTo(2);
+        await Assert.That(scopes.Created).IsEqualTo(composed);
+
+        var disposed = 0;
+        control.Dispose = () => { disposed++; return default; };
+        control.Invoke = static context =>
+        {
+            _ = context.Services.GetRequiredService<Lifetime>();
+            return default;
+        };
+        await Assert.That((await pipeline.ProcessAsync(new())).Kind).IsEqualTo(DispositionKind.Complete);
+        await Assert.That(scopes.Created).IsEqualTo(composed + 1);
+        await Assert.That(disposed).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task On_demand_scopes_are_fresh_per_attempt_and_keep_failed_sends_buffered()
+    {
+        var transport = new Transport();
+        using var provider = Provider(transport);
+        var control = provider.GetRequiredService<Control>();
+        var scopes = new CountingScopes(provider.GetRequiredService<IServiceScopeFactory>());
+        var pipeline = SingletonPipeline(provider, scopes, new() { RetryDelays = new TimeSpan[1], Jitter = 0 });
+        var composed = scopes.Created;
+        control.Invoke = async context =>
+        {
+            await context.Services.GetRequiredService<ISender>().SendNowAsync(new Payload());
+            await Assert.That(transport.Sends.Count).IsEqualTo(0);
+            if (context.Attempt == 1) throw new InvalidOperationException("failed attempt");
+        };
+        await Assert.That((await pipeline.ProcessAsync(new())).Kind).IsEqualTo(DispositionKind.Complete);
+        await Assert.That(scopes.Created).IsEqualTo(composed + 2);
+        await Assert.That(transport.Sends.Count).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task Concurrent_service_requests_share_one_on_demand_scope()
+    {
+        using var provider = Provider(new Transport());
+        var control = provider.GetRequiredService<Control>();
+        var scopes = new CountingScopes(provider.GetRequiredService<IServiceScopeFactory>());
+        var pipeline = SingletonPipeline(provider, scopes);
+        var composed = scopes.Created;
+        var resolved = new ConcurrentBag<Lifetime>();
+        control.Invoke = async context =>
+        {
+            var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var work = Enumerable.Range(0, 16).Select(_ => Task.Run(async () =>
+            {
+                await gate.Task;
+                resolved.Add(context.Services.GetRequiredService<Lifetime>());
+            })).ToArray();
+            gate.SetResult();
+            await Task.WhenAll(work);
+        };
+        await pipeline.ProcessAsync(new());
+        await Assert.That(scopes.Created).IsEqualTo(composed + 1);
+        await Assert.That(resolved.Distinct().Count()).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task A_later_scoped_registration_keeps_one_scope_per_attempt()
+    {
+        using var provider = Provider(new Transport(), static services =>
+            services.AddScoped(static scope => new SingletonHandler(scope.GetRequiredService<Control>())));
+        var scopes = new CountingScopes(provider.GetRequiredService<IServiceScopeFactory>());
+        var pipeline = SingletonPipeline(provider, scopes);
+        var composed = scopes.Created;
+        await pipeline.ProcessAsync(new());
+        await Assert.That(scopes.Created).IsEqualTo(composed + 1);
+    }
+
+    [Test]
+    public async Task Singleton_handlers_allocate_nothing_beyond_JSON()
+    {
+        using var provider = Provider(new Transport());
+        var pipeline = SingletonPipeline(provider, provider.GetRequiredService<IServiceScopeFactory>());
+        var incoming = new Incoming();
+        var serializer = provider.GetRequiredService<Relayer.Serialization.IMessageSerializer>();
+        for (var i = 0; i < 1000; i++)
+        {
+            await pipeline.ProcessAsync(incoming);
+            _ = serializer.Deserialize<Payload>(new(incoming.Body));
+        }
+        var start = GC.GetAllocatedBytesForCurrentThread();
+        for (var i = 0; i < 1000; i++) _ = serializer.Deserialize<Payload>(new(incoming.Body));
+        var jsonBytes = GC.GetAllocatedBytesForCurrentThread() - start;
+        start = GC.GetAllocatedBytesForCurrentThread();
+        for (var i = 0; i < 1000; i++) await pipeline.ProcessAsync(incoming);
+        var pipelineBytes = GC.GetAllocatedBytesForCurrentThread() - start;
+        await Assert.That(pipelineBytes).IsEqualTo(jsonBytes);
     }
 
     [Test]
@@ -747,10 +850,12 @@ public class FailurePipelineTests
         services.AddSingleton<ITransport>(transport);
         services.AddSingleton<Control>();
         services.AddScoped<Lifetime>();
+        services.AddSingleton<SingletonHandler>();
         services.AddRelayer(r =>
         {
             r.AddMessageTypesFromThisAssembly();
             r.Handler<Handler>();
+            r.Handler<SingletonHandler>();
             r.DeclareRoute<Payload>("test", "destination");
         });
         configure?.Invoke(services);
@@ -766,6 +871,27 @@ public class FailurePipelineTests
             provider.GetRequiredService<MessageTypeRegistry>(), provider.GetRequiredService<Relayer.Serialization.IMessageSerializer>(), failure, classifier)
             .Handler(provider.GetRequiredService<HandlerRegistry>().GetHandler<Payload, Handler>()).Build(1);
         return new(pipeline, new HeaderNames(), 1);
+    }
+
+    private static ReceivePipeline<Incoming, Binding> SingletonPipeline(ServiceProvider provider, IServiceScopeFactory scopes,
+        FailureOptions? options = null)
+    {
+        var failure = new FailurePipeline(provider, "test", "source", "consumer", options);
+        var pipeline = new ConsumePipelineBuilder(scopes, provider.GetRequiredService<MessageTypeRegistry>(),
+                provider.GetRequiredService<Relayer.Serialization.IMessageSerializer>(), failure)
+            .Handler(provider.GetRequiredService<HandlerRegistry>().GetHandler<Payload, SingletonHandler>()).Build(1);
+        return new(pipeline, new HeaderNames(), 1);
+    }
+
+    private sealed class CountingScopes(IServiceScopeFactory inner) : IServiceScopeFactory
+    {
+        private int _created;
+        internal int Created => Volatile.Read(ref _created);
+        public IServiceScope CreateScope()
+        {
+            Interlocked.Increment(ref _created);
+            return inner.CreateScope();
+        }
     }
 
     private static OutgoingMessage Copy(MessageContext context)
@@ -787,6 +913,14 @@ public class FailurePipelineTests
         public ValueTask HandleAsync(Payload message, MessageContext context, CancellationToken cancellationToken)
         {
             _ = lifetime;
+            control.Calls++;
+            return control.Invoke?.Invoke(context) ?? default;
+        }
+    }
+    public sealed class SingletonHandler(Control control) : IHandler<Payload>
+    {
+        public ValueTask HandleAsync(Payload message, MessageContext context, CancellationToken cancellationToken)
+        {
             control.Calls++;
             return control.Invoke?.Invoke(context) ?? default;
         }

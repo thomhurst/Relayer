@@ -51,8 +51,9 @@ public abstract class HandlerDescriptor<TMessage>(Type handlerType)
     {
         public ValueTask InvokeAsync(MessageContext context)
         {
-            var message = reader.Read((DefaultMessageContext)context);
-            var handler = descriptor.Resolve(context.Services);
+            var incoming = (DefaultMessageContext)context;
+            var message = reader.Read(incoming);
+            var handler = descriptor.Resolve(incoming.HandlerServices);
             return descriptor.DispatchAsync(handler, message, context, context.CancellationToken);
         }
     }
@@ -72,7 +73,7 @@ public abstract class HandlerDescriptor<TMessage>(Type handlerType)
             {
                 throw new MessageDeserializationException(context.MessageType, error);
             }
-            var handler = descriptor.Resolve(context.Services);
+            var handler = descriptor.Resolve(incoming.HandlerServices);
             return descriptor.DispatchAsync(handler, message, context, context.CancellationToken);
         }
     }
@@ -101,6 +102,6 @@ public abstract class TombstoneHandlerDescriptor<T>(Type handlerType) : HandlerD
     {
         var incoming = (DefaultMessageContext)context;
         var key = incoming.TombstoneKey ?? throw new MessageEnvelopeException("A typed tombstone requires a non-null native key.");
-        return DispatchAsync(Resolve(context.Services), Tombstone.For<T>(key), context, context.CancellationToken);
+        return DispatchAsync(Resolve(incoming.HandlerServices), Tombstone.For<T>(key), context, context.CancellationToken);
     }
 }

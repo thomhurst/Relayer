@@ -28,7 +28,8 @@ Microsoft's health service. Normal application hosts already provide logging.
 These checks describe readiness. Do not use broker connectivity or a dispatch backlog to trigger process restarts.
 The core package has no health-check dependency. Polls read receiver snapshots; optional native adapters
 record progress in their receive paths. Kafka health tracking adds no per-message allocations. Service Bus tracks
-active callback slots only when its optional adapter is registered.
+active callback slots only when its optional adapter is registered, and that tracking adds no allocation to
+the callback. Tracking never affects delivery: a callback that finds no free slot is processed but not reported.
 
 ## Explicit adapters
 

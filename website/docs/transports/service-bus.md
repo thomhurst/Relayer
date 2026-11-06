@@ -164,8 +164,9 @@ The registered serializer's content type is already a string, so the normal `con
 
 `ServiceBusReceiveBenchmarks` compares raw SDK processor callbacks with the composed Relayer receive pipeline, using the same source-generated default JSON and native completion. Each iteration seeds 128 messages outside the timed region, then measures processor start and handler progress for both cases. Both signal progress before native completion; iteration cleanup drains the final settlement and stops the processor outside timing. This excludes at most the last settlement from each measured workload. Both clients use the same three-second native try timeout. It uses `MemoryDiagnoser` and the same namespace environment variables as sending. Run `--filter "*ServiceBusReceiveBenchmarks*"`; use an isolated test namespace. Startup, the final settlement boundary and emulator latency limit its use as a steady-state comparison; these numbers do not establish the production budget.
 
-The receive adapter returns the SDK-required callback `Task` when its pooled `ValueTask` pipeline
-completes asynchronously. That callback allocation belongs to Relayer. Optional liveness tracking also
-reads the clock and reserves an active worker slot per callback. These boundaries, DI scopes, serializer
-allocations and native SDK allocations must be attributed separately before declaring the receive budget
-met. No allocation-budget exception is implied by the raw-client comparison.
+The SDK's processor callback must return a `Task`, and a `Task` cannot be reused. When the pipeline suspends,
+the adapter therefore allocates one small one-shot `Task` from `ValueTask.AsTask`, which is smaller than the
+state machine of an equivalent raw `async` callback. Optional liveness tracking runs in a pooled frame, so it adds
+no allocation; it reads the clock and reserves an active worker slot per callback. This `Task`, DI scopes,
+serializer allocations and native SDK allocations must be attributed separately before declaring the receive
+budget met. No allocation-budget exception is implied by the raw-client comparison.

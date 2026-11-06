@@ -233,7 +233,7 @@ This API declares configuration. Startup validates runtime adapters' endpoint ca
 
 ### 3.2 Handlers
 
-Handlers are plain classes that are resolved from a fresh DI scope for every message (or batch). They can inject scoped services such as a `DbContext`.
+Handlers are plain classes that are resolved from a fresh DI scope for every message (or batch). They can inject scoped services such as a `DbContext`. A failure-pipeline consumer whose handlers are all singletons opens that scope on demand (D51).
 
 ```csharp
 public sealed class OrderPlacedHandler(AppDbContext db, ISender sender) : IHandler<OrderPlaced>
@@ -751,7 +751,7 @@ Goals, measured against the raw native client in the same benchmark:
 
 Techniques:
 
-- The middleware pipeline is compiled into a delegate chain once per consumer at startup. Nothing is resolved per message except the DI scope.
+- The middleware pipeline is compiled into a delegate chain once per consumer at startup. Nothing is resolved per message except the DI scope, which singleton-only consumers open on demand (D51).
 - `ValueTask` everywhere. Context objects are pooled. Headers are read lazily from the native message and only materialized when accessed.
 - Single-message dispatch with an explicit failure delegate keeps continuation storage with the rented context and native receive state. Cross-worker completion does not depend on runtime async state-machine cache hits. Fresh scopes, async disposal and settlement ordering remain unchanged; batch and executable-retry paths retain their existing implementations.
 - `IBufferWriter<byte>` / `ReadOnlySequence<byte>` serialization with pooled buffers.

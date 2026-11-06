@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using Azure.Messaging.ServiceBus;
 using Microsoft.Extensions.Logging;
 
@@ -8,8 +9,8 @@ internal sealed partial class ServiceBusConsumer : IAsyncDisposable
 {
     private readonly ServiceBusProcessor? _processor;
     private readonly ServiceBusSessionProcessor? _sessions;
-    private readonly Func<ProcessMessageEventArgs, CancellationToken, ValueTask<Disposition>>? _receive;
-    private readonly Func<ProcessSessionMessageEventArgs, CancellationToken, ValueTask<Disposition>>? _receiveSession;
+    private readonly Func<ProcessMessageEventArgs, CancellationToken, ValueTask>? _receive;
+    private readonly Func<ProcessSessionMessageEventArgs, CancellationToken, ValueTask>? _receiveSession;
     private readonly TimeProvider _time;
     private readonly long[] _active;
     private readonly ILogger? _logger;
@@ -20,7 +21,7 @@ internal sealed partial class ServiceBusConsumer : IAsyncDisposable
     internal bool TrackHealth { get; set; }
 
     internal ServiceBusConsumer(IConsumerDefinition declaration, ServiceBusProcessor processor,
-        Func<ProcessMessageEventArgs, CancellationToken, ValueTask<Disposition>> receive, TimeProvider? timeProvider = null,
+        Func<ProcessMessageEventArgs, CancellationToken, ValueTask> receive, TimeProvider? timeProvider = null,
         ILogger? logger = null)
     {
         Declaration = declaration;
@@ -34,7 +35,7 @@ internal sealed partial class ServiceBusConsumer : IAsyncDisposable
     }
 
     internal ServiceBusConsumer(IConsumerDefinition declaration, ServiceBusSessionProcessor processor,
-        Func<ProcessSessionMessageEventArgs, CancellationToken, ValueTask<Disposition>> receive, TimeProvider? timeProvider = null,
+        Func<ProcessSessionMessageEventArgs, CancellationToken, ValueTask> receive, TimeProvider? timeProvider = null,
         ILogger? logger = null)
     {
         Declaration = declaration;
@@ -110,47 +111,42 @@ internal sealed partial class ServiceBusConsumer : IAsyncDisposable
         finally { Volatile.Write(ref _running, 0); }
     }
 
-    internal Task ProcessAsync(ProcessMessageEventArgs args)
-    {
-        if (TrackHealth) return ProcessTrackedAsync(args);
-        return AsTask(_receive!(args, _abort.Token));
-    }
+    // The SDK callback must return a Task. AsTask is its smallest form: it allocates only when the pipeline
+    // suspends, and a pipeline that finishes synchronously returns the cached completed Task.
+    internal Task ProcessAsync(ProcessMessageEventArgs args) =>
+        (TrackHealth ? ProcessTrackedAsync(args) : _receive!(args, _abort.Token)).AsTask();
 
-    internal Task ProcessSessionAsync(ProcessSessionMessageEventArgs args)
-    {
-        if (TrackHealth) return ProcessSessionTrackedAsync(args);
-        return AsTask(_receiveSession!(args, _abort.Token));
-    }
+    internal Task ProcessSessionAsync(ProcessSessionMessageEventArgs args) =>
+        (TrackHealth ? ProcessSessionTrackedAsync(args) : _receiveSession!(args, _abort.Token)).AsTask();
 
-    private static Task AsTask(ValueTask<Disposition> pending)
-    {
-        if (!pending.IsCompletedSuccessfully) return AwaitAsync(pending);
-        pending.GetAwaiter().GetResult();
-        return Task.CompletedTask;
-    }
-
-    private static async Task AwaitAsync(ValueTask<Disposition> pending) => await pending.ConfigureAwait(false);
-
-    private async Task ProcessTrackedAsync(ProcessMessageEventArgs args)
+    [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
+    private async ValueTask ProcessTrackedAsync(ProcessMessageEventArgs args)
     {
         var slot = Activate();
         try { await _receive!(args, _abort.Token).ConfigureAwait(false); }
-        finally { Volatile.Write(ref _active[slot], 0); }
+        finally { Deactivate(slot); }
     }
 
-    private async Task ProcessSessionTrackedAsync(ProcessSessionMessageEventArgs args)
+    [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
+    private async ValueTask ProcessSessionTrackedAsync(ProcessSessionMessageEventArgs args)
     {
         var slot = Activate();
         try { await _receiveSession!(args, _abort.Token).ConfigureAwait(false); }
-        finally { Volatile.Write(ref _active[slot], 0); }
+        finally { Deactivate(slot); }
     }
 
+    // Liveness bookkeeping never affects delivery. A callback without a slot is processed but not reported.
     private int Activate()
     {
         var ticks = _time.GetUtcNow().UtcTicks;
         for (var i = 0; i < _active.Length; i++)
             if (Interlocked.CompareExchange(ref _active[i], ticks, 0) == 0) return i;
-        throw new InvalidOperationException("Native Service Bus concurrency exceeds its startup declaration. Do not update processor concurrency after composition.");
+        return -1;
+    }
+
+    private void Deactivate(int slot)
+    {
+        if (slot >= 0) Volatile.Write(ref _active[slot], 0);
     }
 
     internal (bool IsIdle, DateTimeOffset LastProgressAt)? GetHealthState()

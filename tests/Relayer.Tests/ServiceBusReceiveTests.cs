@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Text.Json.Serialization;
+using System.Threading.Tasks.Sources;
 using Azure.Messaging.ServiceBus;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -199,8 +200,8 @@ public sealed class ServiceBusReceiveTests
     [Test]
     public async Task Liveness_reports_oldest_active_worker_until_that_worker_finishes()
     {
-        var first = new TaskCompletionSource<Disposition>(TaskCreationOptions.RunContinuationsAsynchronously);
-        var second = new TaskCompletionSource<Disposition>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var first = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var second = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var declaration = new ConsumerDefinition<ServiceBusConsumerOptions>("orders", new(), [], 2, 1, TimeSpan.FromMilliseconds(100));
         var clock = new TestTimeProvider();
         var activated = clock.Now;
@@ -215,10 +216,10 @@ public sealed class ServiceBusReceiveTests
         var state = consumer.GetHealthState()!.Value;
         await Assert.That(state.IsIdle).IsFalse();
         await Assert.That(state.LastProgressAt).IsEqualTo(activated);
-        first.SetResult(Disposition.Complete);
+        first.SetResult();
         await one;
         await Assert.That(consumer.GetHealthState()!.Value.LastProgressAt).IsEqualTo(clock.Now);
-        second.SetResult(Disposition.Complete);
+        second.SetResult();
         await two;
         await Assert.That(consumer.GetHealthState()!.Value.IsIdle).IsTrue();
         await consumer.StopAsync(default);
@@ -303,6 +304,97 @@ public sealed class ServiceBusReceiveTests
         return new(receiver.Incoming, receiver, "test", default);
     }
 
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task A_suspended_callback_allocates_only_the_task_the_SDK_requires(bool health)
+    {
+        var declaration = new ConsumerDefinition<ServiceBusConsumerOptions>("orders", new(), [], 1, 1, TimeSpan.FromMilliseconds(100));
+        var gate = new ReusableGate();
+        await using var consumer = new ServiceBusConsumer(declaration,
+            new NativeProcessor("orders", null, new() { AutoCompleteMessages = false }), (_, _) => gate.Wait()) { TrackHealth = health };
+        var args = Args(new());
+        for (var i = 0; i < 1_000; i++) Once();
+        var before = GC.GetAllocatedBytesForCurrentThread();
+        for (var i = 0; i < 1_000; i++) Once();
+        var perCallback = (GC.GetAllocatedBytesForCurrentThread() - before) / 1_000;
+        // ValueTask.AsTask's one-shot Task. A raw async callback allocates more than this for its own Task.
+        await Assert.That(perCallback).IsLessThanOrEqualTo(80);
+
+        void Once()
+        {
+            var task = consumer.ProcessAsync(args);
+            if (task.IsCompleted) throw new InvalidOperationException("The callback did not suspend.");
+            gate.Release();
+            if (!task.IsCompletedSuccessfully) throw new InvalidOperationException("The callback did not complete.");
+        }
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Callbacks_beyond_the_declared_concurrency_are_processed_with_or_without_health(bool health)
+    {
+        var declaration = new ConsumerDefinition<ServiceBusConsumerOptions>("orders", new(), [], 1, 1, TimeSpan.FromMilliseconds(100));
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var calls = 0;
+        await using var consumer = new ServiceBusConsumer(declaration,
+            new NativeProcessor("orders", null, new() { AutoCompleteMessages = false }),
+            (_, _) => { calls++; return new(release.Task); }) { TrackHealth = health };
+        var first = consumer.ProcessAsync(Args(new()));
+        var second = consumer.ProcessAsync(Args(new()));
+        release.SetResult();
+        await first;
+        await second;
+        await Assert.That(calls).IsEqualTo(2);
+    }
+
+    [Test]
+    public async Task A_failed_composition_retries_without_duplicating_consumers()
+    {
+        var client = new NativeClient { FailProcessorNamed = "payments" };
+        var services = new ServiceCollection();
+        services.AddSingleton<Control>();
+        services.AddRelayer(builder =>
+        {
+            builder.MessageTypes.Add<Payload>("servicebus.receive-test");
+            builder.UseJsonSerializer(ServiceBusReceiveTestJson.Default);
+            builder.ServiceBus("bus", bus =>
+            {
+                bus.TopologyMode = TopologyMode.None;
+                bus.Options.Configure(options =>
+                {
+                    options.Client = client;
+                    options.Queues.Add(new("orders"));
+                    options.Queues.Add(new("payments"));
+                });
+                bus.Consume("orders", consumer => consumer.Handler<Handler>());
+                bus.Consume("payments", consumer => consumer.Handler<Handler>());
+            });
+        });
+        await using var provider = services.BuildServiceProvider();
+        await Assert.That(async () => await Start(provider)).Throws<InvalidOperationException>().WithMessageContaining("Native processor failed");
+        client.FailProcessorNamed = null;
+        await Start(provider);
+        await Assert.That(provider.GetRequiredKeyedService<ServiceBusSendTransport>("bus").Consumers.Count).IsEqualTo(2);
+        await Stop(provider);
+    }
+
+    private sealed class ReusableGate : IValueTaskSource
+    {
+        private ManualResetValueTaskSourceCore<bool> _core;
+        internal ValueTask Wait()
+        {
+            _core.Reset();
+            return new(this, _core.Version);
+        }
+        internal void Release() => _core.SetResult(true);
+        public void GetResult(short token) => _core.GetResult(token);
+        public ValueTaskSourceStatus GetStatus(short token) => _core.GetStatus(token);
+        public void OnCompleted(Action<object?> continuation, object? state, short token, ValueTaskSourceOnCompletedFlags flags) =>
+            _core.OnCompleted(continuation, state, token, flags);
+    }
+
     [Message("servicebus.receive-test")]
     public sealed record Payload(int Value);
 
@@ -321,6 +413,7 @@ public sealed class ServiceBusReceiveTests
     {
         internal List<NativeProcessor> Processors { get; } = [];
         internal List<NativeSessionProcessor> SessionProcessors { get; } = [];
+        internal string? FailProcessorNamed { get; set; }
         public override string FullyQualifiedNamespace => "test.servicebus.windows.net";
         public override ServiceBusProcessor CreateProcessor(string queueName, ServiceBusProcessorOptions options) => Add(queueName, null, options);
         public override ServiceBusProcessor CreateProcessor(string topicName, string subscriptionName, ServiceBusProcessorOptions options) =>
@@ -335,6 +428,7 @@ public sealed class ServiceBusReceiveTests
         }
         private NativeProcessor Add(string source, string? subscription, ServiceBusProcessorOptions options)
         {
+            if (source == FailProcessorNamed) throw new InvalidOperationException("Native processor failed.");
             var processor = new NativeProcessor(source, subscription, options);
             Processors.Add(processor);
             return processor;
