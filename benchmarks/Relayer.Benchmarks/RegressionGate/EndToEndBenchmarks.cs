@@ -131,11 +131,9 @@ public sealed class ConcurrentHandler(EndToEndSignals signals) : IHandler<Concur
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
     public async ValueTask HandleAsync(ConcurrentOrder message, MessageContext context, CancellationToken cancellationToken)
     {
-        // Obtain the pending read before signalling entry so the driver cannot release us before suspension is exercised.
-        var release = signals.Release.Reader.ReadAsync(cancellationToken);
-        if (release.IsCompleted) throw new InvalidOperationException("Expected an asynchronous delivery.");
-        if (!signals.Entered.Writer.TryWrite(0)) throw new InvalidOperationException("Entry channel is full.");
-        await release;
+        // Publish entry only after the release continuation is registered. Merely observing
+        // an incomplete read before signalling leaves a race with the driver's release.
+        await new PendingReadBarrier(signals.Release.Reader.ReadAsync(cancellationToken), signals.Entered.Writer);
         if (!signals.Completed.Writer.TryWrite(message.Id)) throw new InvalidOperationException("Completion channel is full.");
     }
 }
