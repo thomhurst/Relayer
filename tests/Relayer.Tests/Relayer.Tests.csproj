@@ -3,6 +3,9 @@
   <PropertyGroup>
     <OutputType>Exe</OutputType>
     <EnableConfigurationBindingGenerator>true</EnableConfigurationBindingGenerator>
+    <!-- Background GC can charge unused allocation-context bytes to the measuring thread
+         (dotnet/runtime#134724). Keep exact allocation assertions and parallel test execution. -->
+    <ConcurrentGarbageCollection>false</ConcurrentGarbageCollection>
   </PropertyGroup>
 
   <ItemGroup>
