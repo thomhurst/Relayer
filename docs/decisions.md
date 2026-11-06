@@ -60,6 +60,7 @@ To change a decision, add a new entry that supersedes it rather than editing his
 | [D47](#d47-sql-server-outbox-transactions-reuse-native-bulk-copy) | SQL Server outbox transactions reuse native bulk copy | Accepted |
 | [D48](#d48-mysql-enqueue-owns-native-transactions-and-reuses-mysqlbatch) | MySQL enqueue owns native transactions and reuses MySqlBatch | Accepted |
 | [D49](#d49-sql-server-commit-dispatch-reuses-native-rpc-batches) | SQL Server commit dispatch reuses native RPC batches | Accepted |
+| [D50](#d50-mysql-direct-dispatch-reuses-native-batches-and-fenced-row-counts) | MySQL commit-triggered direct dispatch | Accepted |
 
 ---
 
@@ -978,3 +979,27 @@ retention remain separate work. Full queues, shutdown, future rows and unknown s
 Native failures update attempts under the live token; successful sends followed by failed or expired completion do
 not consume another send attempt. D46's unsupported trimming/AOT boundary remains explicit. Buffer-transfer
 benchmarks isolate Relayer's reusable copy/swap/group work; database and native transport costs remain separate.
+
+## D50. MySQL direct dispatch reuses native batches and fenced row counts
+
+**Context.** MySQL enqueue (D48) commits durable rows but has no commit-triggered sender.
+MySqlConnector 2.6.2 already provides packet construction, execution and cancellation through
+[MySqlBatch](https://github.com/mysql-net/MySqlConnector/blob/2.6.2/src/MySqlConnector/MySqlBatch.cs).
+Its per-command `RecordsAffected` is hardcoded to zero, tracked in
+[MySqlConnector #1696](https://github.com/mysql-net/MySqlConnector/issues/1696). MySQL's Event
+Scheduler executes SQL at scheduled times; it cannot notify application-owned native transports
+of a local transaction commit.
+
+**Decision.** Apply D33/D35's bounded owned-buffer handoff and capability cache to ADO.NET
+MySQL commits. Reuse native conditional InnoDB updates/deletes, `MySqlBatch` and `SELECT ROW_COUNT()`
+for each fenced outcome. Keep UUID and timestamp parameter storage reusable, as in D48. Do not
+implement a second packet protocol or replace native transport sends. The writer and worker's
+explicit database, server, port and table prefix must agree; validate before the transaction.
+
+**Consequences.** MySQL batching remains experimental upstream and does not promise one round
+trip. Partial claim batches may leave expiring claims after an error; no send begins without all
+outcomes being read. Completion failure never increments broker failure attempts. Queue overflow,
+shutdown, expiry and post-send database errors leave durable work with the same at-least-once
+boundary as D33. Ordered dispatch, inbox and recovery remain separate deliverables; no eventual
+delivery guarantee is inferred from commit notification alone. See the
+[MySQL reference](../website/docs/reference/mysql-store.md#commit-triggered-unordered-dispatch).

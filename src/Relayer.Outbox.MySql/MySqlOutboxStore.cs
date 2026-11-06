@@ -19,6 +19,8 @@ public sealed class MySqlOutboxStore : IOutboxStore, IDisposable
     private readonly MySqlStoreParameters _complete;
     private readonly MySqlStoreParameters _fail;
     private readonly MySqlStoreParameters _count;
+    private readonly MySqlDispatchMutations _claimBatch;
+    private readonly MySqlDispatchMutations _completeBatch;
     private readonly List<HeaderSlot> _headers = [];
     private readonly byte[] _readId = new byte[16];
     private bool _disposed;
@@ -37,6 +39,8 @@ public sealed class MySqlOutboxStore : IOutboxStore, IDisposable
         _renew = new($"UPDATE {table} SET claim_expires_at = GREATEST(claim_expires_at, @expires) WHERE {fenced}");
         _complete = new($"DELETE FROM {table} WHERE {fenced}");
         _fail = new($"UPDATE {table} SET attempts = attempts + 1, last_error = @error, claim_token = NULL, claim_expires_at = NULL WHERE {fenced}");
+        _claimBatch = new($"UPDATE {table} SET claim_token = @token, claim_expires_at = @expires WHERE id = @id AND lane IS NULL AND {eligible}");
+        _completeBatch = new($"DELETE FROM {table} WHERE {fenced}");
         _count = new($"SELECT COUNT(*) FROM {table} WHERE {eligible}");
     }
 
@@ -152,6 +156,37 @@ public sealed class MySqlOutboxStore : IOutboxStore, IDisposable
         finally { command.Connection = null; }
     }
 
+    [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
+    internal async ValueTask ClaimBatchAsync(ReadOnlyMemory<OutboxClaim> claims, Memory<bool> claimed,
+        DateTimeOffset now, DateTimeOffset expires, CancellationToken cancellationToken)
+    {
+        EnsureAvailable(cancellationToken);
+        if (claimed.Length != claims.Length) throw new ArgumentException("Claims and outcomes must have equal lengths.", nameof(claimed));
+        claimed.Span.Clear();
+        if (claims.IsEmpty) return;
+        ValidateBatch(claims.Span, now, expires);
+        _claimBatch.Prepare(claims.Span, now, expires);
+        await using var connection = await _dataSource.OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+        await _claimBatch.ExecuteAsync(connection, claimed, cancellationToken).ConfigureAwait(false);
+    }
+
+    [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder<>))]
+    internal async ValueTask<long> CompleteBatchAsync(ReadOnlyMemory<OutboxClaim> claims,
+        DateTimeOffset now, CancellationToken cancellationToken)
+    {
+        EnsureAvailable(cancellationToken);
+        if (claims.IsEmpty) return 0;
+        ValidateBatch(claims.Span);
+        _completeBatch.Prepare(claims.Span, now, now);
+        await using var connection = await _dataSource.OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+        return await _completeBatch.ExecuteAsync(connection, default, cancellationToken).ConfigureAwait(false);
+    }
+
+    private static void ValidateBatch(ReadOnlySpan<OutboxClaim> claims, DateTimeOffset? now = null, DateTimeOffset? expires = null)
+    {
+        foreach (var claim in claims) Validate(claim, now, expires);
+    }
+
     private static DateTimeOffset Utc(DateTime value) => new(DateTime.SpecifyKind(value, DateTimeKind.Utc));
 
     private void EnsureAvailable(CancellationToken cancellationToken)
@@ -180,6 +215,8 @@ public sealed class MySqlOutboxStore : IOutboxStore, IDisposable
         _complete.Command.Dispose();
         _fail.Command.Dispose();
         _count.Command.Dispose();
+        _claimBatch.Dispose();
+        _completeBatch.Dispose();
         _headers.Clear();
     }
 

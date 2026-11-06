@@ -308,7 +308,7 @@ const status = [
   ['PostgreSQL schema scripts, CLI and EF migration path', 'Implemented schema tooling', true],
   ['PostgreSQL durable reads and fenced claims', 'Implemented store operations', true],
   ['SQL Server outbox transactions and durable stores', 'ADO.NET/Dapper enlistment, fenced claims and unordered commit dispatch implemented; inbox, recovery and ordered workers planned', true],
-  ['MySQL durable store and transactional enqueue', 'Implemented store operations and ADO.NET/Dapper; workers planned', true],
+  ['MySQL store, transactions and direct dispatch', 'Implemented ADO.NET/Dapper and unordered sends; ordered/inbox/recovery planned', true],
   ['EF Core transaction enlistment for PostgreSQL', 'Implemented enqueue path', true],
   ['PostgreSQL ADO.NET and Dapper transactions', 'Implemented enqueue path', true],
   ['Unordered PostgreSQL direct dispatch after EF commit', 'Implemented direct path', true],
