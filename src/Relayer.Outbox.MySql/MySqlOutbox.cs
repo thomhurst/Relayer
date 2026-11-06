@@ -13,16 +13,25 @@ public sealed class MySqlOutbox : IOutboxEnlistment, IDisposable, IAsyncDisposab
     private readonly MySqlOutboxBatch _batch;
     private readonly int _lanes;
     private readonly RelayerInstrumentation? _instrumentation;
+    private readonly MySqlDirectDispatcher? _dispatcher;
     private MySqlOutboxTransaction? _transaction;
     private int _count;
     private bool _disposed;
 
     /// <summary>Creates an enlistment using this scope's validated options.</summary>
     public MySqlOutbox(IOptionsSnapshot<MySqlOutboxOptions> options, RelayerInstrumentation? instrumentation = null)
+        : this(options, instrumentation, null) { }
+
+    internal MySqlOutbox(IOptionsSnapshot<MySqlOutboxOptions> options, RelayerInstrumentation? instrumentation,
+        MySqlDirectDispatcher? dispatcher)
     {
         ArgumentNullException.ThrowIfNull(options);
         var value = options.Value;
         ValidateOptions(value);
+        if (value.DispatchStoreName is not null && dispatcher is null)
+            throw new InvalidOperationException("Resolve a MySQL outbox with DispatchStoreName through its registered service provider.");
+        _dispatcher = dispatcher;
+        dispatcher?.ValidateStore(value.TablePrefix);
         _lanes = value.Lanes;
         _instrumentation = instrumentation;
         _batch = new(MySqlOutboxBatch.CreateInsertSql(MySqlOutboxSchema.Table(value)));
@@ -39,6 +48,7 @@ public sealed class MySqlOutbox : IOutboxEnlistment, IDisposable, IAsyncDisposab
         ArgumentNullException.ThrowIfNull(connection);
         EnsureAvailable();
         RejectAmbientTransaction();
+        _dispatcher?.ValidateConnection(connection);
         var native = await connection.BeginTransactionAsync(isolationLevel, cancellationToken).ConfigureAwait(false);
         return _transaction = new(this, native, null);
     }
@@ -53,6 +63,7 @@ public sealed class MySqlOutbox : IOutboxEnlistment, IDisposable, IAsyncDisposab
         var connection = await dataSource.OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
         try
         {
+            _dispatcher?.ValidateConnection(connection);
             var native = await connection.BeginTransactionAsync(isolationLevel, cancellationToken).ConfigureAwait(false);
             return _transaction = new(this, native, connection);
         }
@@ -97,7 +108,11 @@ public sealed class MySqlOutbox : IOutboxEnlistment, IDisposable, IAsyncDisposab
         return _batch;
     }
 
-    internal void Committed() => _instrumentation?.AddOutboxPending(_count);
+    internal void Committed()
+    {
+        _instrumentation?.AddOutboxPending(_count);
+        _dispatcher?.Committed(_rows, _count);
+    }
 
     internal void Ended(MySqlOutboxTransaction transaction)
     {
@@ -110,6 +125,8 @@ public sealed class MySqlOutbox : IOutboxEnlistment, IDisposable, IAsyncDisposab
     internal static void ValidateOptions(MySqlOutboxOptions options)
     {
         _ = MySqlOutboxSchema.Table(options);
+        if (options.DispatchStoreName is not null && string.IsNullOrWhiteSpace(options.DispatchStoreName))
+            throw new ArgumentException("DispatchStoreName must be nonempty when supplied.", nameof(options));
         if (options.Lanes <= 0) throw new ArgumentOutOfRangeException(nameof(options), "Lanes must be positive.");
     }
 

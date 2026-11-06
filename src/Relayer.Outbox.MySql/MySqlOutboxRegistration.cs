@@ -17,8 +17,13 @@ public static class MySqlOutboxRegistration
             !services.Any(static descriptor => descriptor.ServiceType == typeof(MySqlOutbox)))
             throw new InvalidOperationException("A different IOutboxEnlistment is already registered. Configure one scoped outbox integration.");
         if (options is not null) MySqlOutbox.ValidateOptions(options);
-        services.TryAddScoped<MySqlOutbox>(provider => new(provider.GetRequiredService<IOptionsSnapshot<MySqlOutboxOptions>>(),
-            provider.GetService<RelayerInstrumentation>()));
+        services.TryAddScoped<MySqlOutbox>(provider =>
+        {
+            var snapshot = provider.GetRequiredService<IOptionsSnapshot<MySqlOutboxOptions>>();
+            var dispatcher = snapshot.Value.DispatchStoreName is { } name
+                ? provider.GetRequiredKeyedService<MySqlDirectDispatcher>(name) : null;
+            return new(snapshot, provider.GetService<RelayerInstrumentation>(), dispatcher);
+        });
         services.TryAddScoped<IOutboxEnlistment>(static provider => provider.GetRequiredService<MySqlOutbox>());
         services.TryAddSingleton<IValidateOptions<MySqlOutboxOptions>, Validator>();
         services.AddOptions<MySqlOutboxOptions>().ValidateOnStart();
@@ -62,6 +67,7 @@ public static class MySqlOutboxRegistration
         protected override MySqlOutboxOptions CreateInstance(string name) => new()
         {
             TablePrefix = configuration?[nameof(defaults.TablePrefix)] ?? defaults.TablePrefix,
+            DispatchStoreName = configuration?[nameof(defaults.DispatchStoreName)] ?? defaults.DispatchStoreName,
             Lanes = Read(nameof(defaults.Lanes), defaults.Lanes)
         };
 

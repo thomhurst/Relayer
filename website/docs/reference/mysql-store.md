@@ -1,12 +1,12 @@
 ---
 title: MySQL durable store
-description: "MySQL transactional enqueue, Dapper integration, durable reads and fenced claims."
+description: "MySQL transactional enqueue, commit-triggered dispatch, Dapper integration and fenced claims."
 ---
 
 `Relayer.Outbox.MySql` implements the [durable store contract](outbox-stores.md) using
 MySqlConnector and MySQL 8.4+ InnoDB. It supplies bounded reads, atomic claims, renewal,
 completion, failure persistence and eligible backlog counts. Scoped ADO.NET transactions
-commit business writes and buffered sends together.
+commit business writes and buffered sends together. An optional hosted worker dispatches due unordered messages after commit.
 
 ## Deployment and registration
 
@@ -134,12 +134,62 @@ agree on `Lanes` (default `64`); changing it requires draining or migrating exis
 The enlistment reports no scheduling support until matching due-row workers are implemented.
 Registering this integration alone does not send persisted rows to a broker.
 
+## Commit-triggered unordered dispatch
+
+Register a named worker and select it on the scoped outbox. Register the application's named
+transports before starting the host; they perform the actual broker sends.
+
+```csharp
+var options = new MySqlOutboxOptions
+{
+    TablePrefix = "orders_",
+    DispatchStoreName = "orders"
+};
+services.AddRelayerMySqlOutbox(options);
+services.AddRelayerMySqlDirectDispatch("orders", dataSource, options,
+    new MySqlDirectDispatchOptions
+    {
+        QueueCapacity = 256,
+        BatchSize = 100,
+        ClaimDuration = TimeSpan.FromSeconds(30)
+    });
+```
+
+The worker registration includes the named `IOutboxStore`; do not also register the same store
+name separately. `AddRelayerMySqlDirectDispatch` also accepts an `IConfiguration` section for
+its immutable dispatch options, read once at registration; configuration reload does not change
+running workers. Set limits through this overload or the explicit options object. The application
+owns the data source and disposes it after
+workers stop. Its connection string must specify `Database`; writer and worker must use the
+same server, port, database spelling and table prefix. Server aliases such as `localhost` and
+`127.0.0.1` must also match exactly. Mismatches fail before beginning a transaction.
+
+Synchronous and asynchronous commits transfer owned buffers to a bounded queue only after the
+native transaction succeeds. Scope disposal and later transactions cannot overwrite in-flight
+payloads. Rollback and abandoned scopes never notify the worker. The worker groups by native
+transport and destination and respects both `BatchSize` and each endpoint's native batch limit.
+It uses native `SendAsync`/`SendBatchAsync`, preserving message identity, bytes and headers.
+
+Each due unordered row receives a fresh expiring claim token through native conditional updates.
+Claim and completion commands use `MySqlBatch`, including native `ROW_COUNT()` results for exact
+per-command outcomes. A successful broker send deletes only rows whose token still matches and
+whose claim has not expired. A broker failure records the error and increments attempts; a
+completion error after a successful send leaves attempts unchanged. An expired or interrupted
+send may be delivered again: this is at-least-once delivery, not an atomic broker/database commit.
+Size `ClaimDuration` for the slowest expected database and broker operation.
+
+Queue overflow or a stopped worker logs an error and leaves rows durable without failing an
+already committed transaction. Graceful shutdown drains accepted work until the host's shutdown
+deadline; cancellation leaves unfinished rows durable. Ordered rows and future-due rows are not
+queued. This worker does not poll after restart, retry failed rows, or recover overflow: recovery
+remains planned in [#345](https://github.com/thomhurst/Relayer/issues/345). Use it only with an
+application-owned recovery path until that worker ships; enqueue/notification alone does not
+guarantee eventual delivery after a crash.
+
 ## Remaining integration
 
-Inbox deduplication, direct and ordered
-dispatch, recovery, poison-row handling and retention workers remain planned in
-[#291](https://github.com/thomhurst/Relayer/issues/291). The package creates the outbox table,
-registers read/claim primitives and optionally registers scoped `IOutboxEnlistment` for sends.
-It does not establish lane ownership or start workers. The schema helper is not exposed
-through `dotnet relayer db` yet. Full SQL Server and MySQL parity remains tracked by
-[#41](https://github.com/thomhurst/Relayer/issues/41).
+Ordered lane ownership is tracked by [#344](https://github.com/thomhurst/Relayer/issues/344),
+recovery/poison/retention by [#345](https://github.com/thomhurst/Relayer/issues/345), and atomic
+inbox integration by [#346](https://github.com/thomhurst/Relayer/issues/346). These remain planned.
+The schema helper is not exposed through `dotnet relayer db` yet. Full SQL Server and MySQL
+parity remains tracked by [#41](https://github.com/thomhurst/Relayer/issues/41).
