@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Text.Json.Serialization;
@@ -7,6 +8,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Relayer.AzureServiceBus;
 using Relayer.HealthChecks;
+using Relayer.Serialization;
 using Relayer.Transports;
 
 namespace Relayer.Tests;
@@ -378,6 +380,49 @@ public sealed class ServiceBusReceiveTests
         await Start(provider);
         await Assert.That(provider.GetRequiredKeyedService<ServiceBusSendTransport>("bus").Consumers.Count).IsEqualTo(2);
         await Stop(provider);
+    }
+
+    [Test]
+    public async Task Consumers_deserialize_with_the_transport_serializer_used_for_sending()
+    {
+        var client = new NativeClient();
+        var serializer = new TransportSerializer();
+        var services = new ServiceCollection();
+        services.AddSingleton<Control>();
+        services.AddRelayer(builder =>
+        {
+            builder.MessageTypes.Add<Payload>("servicebus.receive-test");
+            builder.ServiceBus("bus", bus =>
+            {
+                bus.TopologyMode = TopologyMode.None;
+                bus.UseSerializer(_ => serializer);
+                bus.Options.Configure(options =>
+                {
+                    options.Client = client;
+                    options.Queues.Add(new("orders"));
+                });
+                bus.Consume("orders", consumer => consumer.Handler<Handler>());
+            });
+        });
+        await using var provider = services.BuildServiceProvider();
+        await Start(provider);
+        var receiver = new NativeReceiver();
+        await client.Processors.Single().Emit(Args(receiver));
+        await Assert.That(serializer.Reads).IsEqualTo(1);
+        await Assert.That(receiver.Operations.Single()).IsEqualTo("complete");
+        await Stop(provider);
+    }
+
+    private sealed class TransportSerializer : IMessageSerializer
+    {
+        internal int Reads { get; private set; }
+        public string ContentType => "application/test";
+        public void Serialize<TMessage>(TMessage message, IBufferWriter<byte> destination) => throw new NotSupportedException();
+        public TMessage Deserialize<TMessage>(ReadOnlySequence<byte> source)
+        {
+            Reads++;
+            return (TMessage)(object)new Payload(42);
+        }
     }
 
     private sealed class ReusableGate : IValueTaskSource
