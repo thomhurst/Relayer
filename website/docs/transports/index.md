@@ -12,6 +12,7 @@ A transport is an adapter over one native client. Each transport package depends
 | `Relayer.AzureServiceBus` | Azure Service Bus | `Azure.Messaging.ServiceBus` | [Native sending and topology](service-bus.md), [receive primitives](service-bus-receive.md) implemented; receiver composition in development |
 | `Relayer.AmazonSqs` | Amazon SQS and SNS | `AWSSDK.SQS` and `AWSSDK.SimpleNotificationService` | In development |
 | `Relayer.RabbitMQ` | RabbitMQ | `RabbitMQ.Client` | [Native connection and topology](rabbitmq.md) implemented; send, receive and health adapters planned |
+| `Relayer.RabbitMQ.Streams` | RabbitMQ Streams | `RabbitMQ.Stream.Client` | [Native connection and stream topology](rabbitmq-streams.md) implemented; message execution blocked on native failed-offset recovery |
 | `Relayer.Nats` | NATS JetStream | `NATS.Client.JetStream` | [Native connection and topology](nats.md) implemented; message execution blocked on native byte-backed headers |
 | `Relayer.Pulsar` (planned) | Apache Pulsar | Client assessment: DotPulsar 5.3.4 | [Implementation blocked on native UTF-8 properties and Native AOT compatibility](pulsar.md); no adapter implemented |
 

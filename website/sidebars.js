@@ -38,6 +38,7 @@ const sidebars = {
         'transports/service-bus',
         'transports/service-bus-receive',
         'transports/rabbitmq',
+          'transports/rabbitmq-streams',
           'transports/nats',
         'transports/pulsar',
         'transports/authoring',
