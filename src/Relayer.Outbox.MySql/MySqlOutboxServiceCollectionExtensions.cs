@@ -4,7 +4,7 @@ using MySqlConnector;
 namespace Relayer.Outbox.MySql;
 
 /// <summary>Registers explicitly named MySQL durable read/claim stores.</summary>
-public static class MySqlOutboxServiceCollectionExtensions
+public static partial class MySqlOutboxServiceCollectionExtensions
 {
     /// <summary>Registers a scoped keyed store. The data source remains application-owned.</summary>
     /// <remarks>Does not create tables, register an enlistment or start workers.</remarks>

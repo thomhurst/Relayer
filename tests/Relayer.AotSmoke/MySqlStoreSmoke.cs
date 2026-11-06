@@ -11,8 +11,8 @@ internal static class MySqlStoreSmoke
         await using var source = new MySqlDataSource("Server=127.0.0.1;Port=1;Connection Timeout=1;Database=relayer");
         if (!MySqlOutboxSchema.CreateScript().Contains("ENGINE=InnoDB", StringComparison.Ordinal))
             throw new InvalidOperationException("MySQL schema creation failed under Native AOT.");
-        await using var provider = new ServiceCollection().AddRelayerMySqlOutboxStore("mysql-smoke", source)
-            .AddRelayerMySqlOutbox(new MySqlOutboxOptions { Lanes = 8 })
+        await using var provider = new ServiceCollection().AddLogging().AddRelayerMySqlDirectDispatch("mysql-smoke", source)
+            .AddRelayerMySqlOutbox(new MySqlOutboxOptions { Lanes = 8, DispatchStoreName = "mysql-smoke" })
             .BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
         await using var scope = provider.CreateAsyncScope();
         var store = scope.ServiceProvider.GetRequiredKeyedService<IOutboxStore>("mysql-smoke");

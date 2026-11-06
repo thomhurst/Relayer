@@ -1,6 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup><OutputType>Exe</OutputType></PropertyGroup>
   <ItemGroup>
+    <Compile Include="../Shared/OutboxDirectDispatchContractTests.cs" Link="OutboxDirectDispatchContractTests.cs" />
     <Compile Include="../Shared/OutboxStoreContractTests.cs" Link="OutboxStoreContractTests.cs" />
     <Compile Include="../Shared/DockerCommand.cs" Link="DockerCommand.cs" />
     <PackageReference Include="TUnit" />
