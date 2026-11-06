@@ -5,7 +5,7 @@ description: "Write single-message and batch handlers, register them explicitly 
 
 ## Single-message handlers
 
-A handler implements `IHandler<TMessage>`. It is resolved from a fresh DI scope for every message, so it can inject scoped services:
+A handler implements `IHandler<TMessage>`. By default it is scoped and resolved from a fresh DI scope for every message, so it can inject scoped services:
 
 ```csharp
 public sealed class OrderPlacedHandler(AppDbContext db, ISender sender) : IHandler<OrderPlaced>
@@ -18,6 +18,8 @@ public sealed class OrderPlacedHandler(AppDbContext db, ISender sender) : IHandl
     }
 }
 ```
+
+A handler with no scoped dependencies can be registered as a singleton before `AddRelayer` with `services.AddSingleton<OrderPlacedHandler>()`. When every handler on a consumer that uses the failure pipeline is a singleton, Relayer opens a delivery's DI scope only if something reads `context.Services`, which avoids the scope's allocations for handlers that never need it. A scope that does open behaves as usual: it is fresh for each attempt, and its sends stay buffered until the attempt succeeds. Tenant propagation always keeps one scope per attempt.
 
 `MessageContext` gives you the message ID, the stable `MessageType`, lazily read `Headers`, the delivery `Attempt` (starting at 1), the scoped `Services`, the `CancellationToken` and the `Features` collection that exposes the native message. The context is borrowed for the duration of the call; do not keep a reference to it.
 

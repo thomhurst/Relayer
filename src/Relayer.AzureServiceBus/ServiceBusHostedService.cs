@@ -19,6 +19,8 @@ internal sealed class ServiceBusHostedService(IServiceProvider provider, string 
             var definition = provider.GetRequiredService<RelayerConfiguration>().Transports.Single(item => item.Name == name);
             var tracing = provider.GetRequiredService<MessageTracing>();
             var handlers = provider.GetRequiredService<HandlerRegistry>();
+            // Publish only a complete set, so a retried start cannot compose a consumer twice.
+            var receivers = new List<ServiceBusConsumer>(definition.Consumers.Count);
             foreach (var declaration in definition.Consumers)
             {
                 var consumer = (ConsumerDefinition<ServiceBusConsumerOptions>)declaration;
@@ -52,7 +54,7 @@ internal sealed class ServiceBusHostedService(IServiceProvider provider, string 
                     var native = consumer.Options.Subscription is { } sub
                         ? _transport.Client.CreateSessionProcessor(consumer.Source, sub, sessionOptions)
                         : _transport.Client.CreateSessionProcessor(consumer.Source, sessionOptions);
-                    receiver = new(consumer, native, receive.ProcessAsync, time, logger);
+                    receiver = new(consumer, native, receive.ProcessSettledAsync, time, logger);
                 }
                 else
                 {
@@ -61,11 +63,12 @@ internal sealed class ServiceBusHostedService(IServiceProvider provider, string 
                     var native = consumer.Options.Subscription is { } sub
                         ? _transport.Client.CreateProcessor(consumer.Source, sub, consumer.Options.ProcessorOptions)
                         : _transport.Client.CreateProcessor(consumer.Source, consumer.Options.ProcessorOptions);
-                    receiver = new(consumer, native, receive.ProcessAsync, time, logger);
+                    receiver = new(consumer, native, receive.ProcessSettledAsync, time, logger);
                 }
                 receiver.TrackHealth = _transport.HealthTracking;
-                _transport.Consumers.Add(receiver);
+                receivers.Add(receiver);
             }
+            _transport.Consumers.AddRange(receivers);
             _composed = true;
         }
         await _transport.StartAsync(cancellationToken).ConfigureAwait(false);

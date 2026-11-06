@@ -93,13 +93,13 @@ internal sealed class ServiceBusConformanceFixture<TIncoming> : ITransportConfor
         {
             var processor = _client.CreateSessionProcessor(Destination, _declaration.Options.SessionProcessorOptions!);
             _transport.Consumers.Add(new(_declaration, processor,
-                (args, token) => receive((TIncoming)(object)args, token)));
+                async (args, token) => await receive((TIncoming)(object)args, token)));
         }
         else
         {
             var processor = _client.CreateProcessor(Destination, _declaration.Options.ProcessorOptions);
             _transport.Consumers.Add(new(_declaration, processor,
-                (args, token) => receive((TIncoming)(object)args, token)));
+                async (args, token) => await receive((TIncoming)(object)args, token)));
         }
     }
 

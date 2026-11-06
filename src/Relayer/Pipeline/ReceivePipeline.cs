@@ -42,6 +42,17 @@ public sealed class ReceivePipeline<TIncoming, TBinding>
         return Rent().Start(this, message, cancellationToken);
     }
 
+    /// <summary>Processes one delivery settled by the consumer's native settlement callback.</summary>
+    /// <remarks>
+    /// Use this overload for a native callback that needs no settlement decision: it avoids carrying a
+    /// <see cref="Disposition"/> through the callback's returned task.
+    /// </remarks>
+    public ValueTask ProcessSettledAsync(TIncoming message, CancellationToken cancellationToken = default)
+    {
+        if (cancellationToken.IsCancellationRequested) return ValueTask.FromCanceled(cancellationToken);
+        return Rent().StartSettled(this, message, cancellationToken);
+    }
+
     /// <summary>Processes deliveries in input order, writing one disposition per delivery.</summary>
     /// <remarks>
     /// A consumer built with BuildBatch dispatches its generated batch handler; other consumers process deliveries individually. Output may be larger than input;
@@ -152,7 +163,7 @@ public sealed class ReceivePipeline<TIncoming, TBinding>
             if (Interlocked.CompareExchange(ref _states[i], state, null) is null) return;
     }
 
-    private sealed class State : ReceiveMessageState, IValueTaskSource<Disposition>
+    private sealed class State : ReceiveMessageState, IValueTaskSource<Disposition>, IValueTaskSource
     {
         private readonly ConsumePipeline consumer;
         private readonly HeaderNames names;
@@ -176,18 +187,37 @@ public sealed class ReceivePipeline<TIncoming, TBinding>
 
         internal ValueTask<Disposition> Start(ReceivePipeline<TIncoming, TBinding> owner, TIncoming message, CancellationToken cancellationToken)
         {
+            Run(owner, message, cancellationToken);
+            if (_asynchronous) return new ValueTask<Disposition>(this, _completion.Version);
+            var result = _result;
+            var failure = Release(owner);
+            return failure is null ? new ValueTask<Disposition>(result) : ValueTask.FromException<Disposition>(failure);
+        }
+
+        internal ValueTask StartSettled(ReceivePipeline<TIncoming, TBinding> owner, TIncoming message, CancellationToken cancellationToken)
+        {
+            Run(owner, message, cancellationToken);
+            if (_asynchronous) return new ValueTask(this, _completion.Version);
+            var failure = Release(owner);
+            return failure is null ? default : ValueTask.FromException(failure);
+        }
+
+        private void Run(ReceivePipeline<TIncoming, TBinding> owner, TIncoming message, CancellationToken cancellationToken)
+        {
             _owner = owner;
             var runner = new Runner(this, message, cancellationToken);
             var builder = AsyncTaskMethodBuilder.Create();
             builder.Start(ref runner);
-            if (_asynchronous) return new ValueTask<Disposition>(this, _completion.Version);
-            var result = _result;
+        }
+
+        private Exception? Release(ReceivePipeline<TIncoming, TBinding> owner)
+        {
             var failure = _error;
             _result = default;
             _error = null;
             _owner = null!;
             owner.Return(this);
-            return failure is null ? new ValueTask<Disposition>(result) : ValueTask.FromException<Disposition>(failure);
+            return failure;
         }
 
         private void Begin(TIncoming message, CancellationToken cancellationToken)
@@ -268,6 +298,7 @@ public sealed class ReceivePipeline<TIncoming, TBinding>
                 owner.Return(this);
             }
         }
+        void IValueTaskSource.GetResult(short token) => GetResult(token);
         public ValueTaskSourceStatus GetStatus(short token) => _completion.GetStatus(token);
         public void OnCompleted(Action<object?> continuation, object? state, short token, ValueTaskSourceOnCompletedFlags flags)
             => _completion.OnCompleted(continuation, state, token, flags);

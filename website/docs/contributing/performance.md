@@ -97,14 +97,17 @@ slow baseline cannot prevent a candidate that fixes startup from being measured.
 | `StartupBenchmarks.Build100Handlers` | A fresh consume pipeline, dispatch table and context pool for 100 distinct generated handlers. Registration and service-provider setup happen outside the measurement. This measures pipeline composition, not cold process startup or the entire host. |
 
 Every suite uses `[MemoryDiagnoser]`. Receive totals include a fresh DI scope for
-each delivery; scopes and scoped handlers are never reused. Driver channels,
+each delivery unless a failure-pipeline consumer has only singleton handlers and
+nothing reads `MessageContext.Services`; scopes and scoped handlers are never
+reused. Driver channels,
 native scheduling and JSON costs remain in the end-to-end totals. Report those
 totals alongside the isolated attribution cases. Do not subtract a scoped
 baseline and describe the difference as total pipeline allocations.
 
 The absolute D18 goal remains **zero allocations per message from Relayer's own
 pipeline**, excluding serializer and native-client allocations. Fresh Microsoft
-DI scopes currently allocate even for singleton handlers. Matching direct scoped
+DI scopes still allocate for scoped handlers, and for singleton handlers on the
+explicit failure-delegate path. Matching direct scoped
 and composed totals demonstrates zero *incremental composition* allocations;
 it does not satisfy the absolute receive allocation goal. The regression gate
 prevents increases from the measured baseline without accepting that gap as a

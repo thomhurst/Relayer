@@ -64,6 +64,7 @@ To change a decision, add a new entry that supersedes it rather than editing his
 | [D51](#d51-the-ef-core-consumer-boundary-takes-an-isolation-level-and-replays-conflicts) | The EF Core consumer boundary takes an isolation level and replays conflicts | Proposed |
 | [D52](#d52-allocations-a-native-api-requires-count-as-native-client-cost) | Allocations a native API requires count as native-client cost | Accepted |
 | [D54](#d54-service-bus-processors-drain-durable-work-before-settlement) | Service Bus processors drain durable work before settlement | Accepted |
+| [D53](#d53-singleton-only-consumers-open-delivery-scopes-on-demand) | Singleton-only consumers open delivery scopes on demand | Accepted |
 
 ---
 
@@ -1101,9 +1102,35 @@ Relayer.AzureServiceBus.HealthChecks companion package keeps health dependencies
 Its receiver slots track the oldest active callback only when explicitly enabled, and connectivity
 uses read-only peek or a fresh send-link attachment on the existing client, never a probe message.
 Fresh send links are necessary because the SDK caches message-batch limits after the first attachment.
+The processor callback type is `Func<ProcessMessageEventArgs, Task>`, and a `Task` is single-use, so a suspended
+callback needs a new one. `ReceivePipeline.ProcessSettledAsync` returns a plain `ValueTask` because settlement has
+already run, and `AsTask` then allocates the smallest available `Task`; health tracking stays in a pooled frame.
 This does not waive D18 or classify adapter allocations as native SDK allocations.
 
 **Alternatives rejected.** Mutating native options hides configuration mistakes. Auto-complete and
 ReceiveAndDelete can settle before work is durable. Treating the native stop token as the drain deadline
 abandons successfully completed work at shutdown. Scheduling subscription retries through their topic
 changes native routing. Adding health dependencies to every transport user violates optional integration.
+
+## D53. Singleton-only consumers open delivery scopes on demand
+
+**Context.** D18 requires zero allocations from Relayer's own pipeline. Microsoft DI scopes cannot be pooled, and
+each fresh scope allocates even when a singleton handler never uses it. The failure pipeline also resolved the
+scoped `ISender` for every attempt, which grew the scope's service cache and, because pooled senders were
+disposable, its disposal list.
+
+**Decision.** A failure-pipeline consumer whose handlers are all singletons resolves them from a long-lived
+composition scope and opens the attempt's scope on the first `MessageContext.Services` read. That read also attaches
+the attempt's scoped sender, so buffering and failed-attempt semantics are unchanged. Lifetimes come from the
+final registration in `IRelayerBuilder.Services`. Scoped and transient handlers, tenant propagation, batch consumers,
+the explicit failure-delegate path and pipelines composed outside `AddRelayer` keep one eager scope per attempt.
+Pooled senders are not disposable: `EndAttempt` returns them, so scopes record nothing for them.
+
+**Consequences.** A singleton handler that does not read `Services` adds no DI allocation. Default scoped handlers
+keep their scope, service cache and handler instance, which are Microsoft DI costs that D18 has not excluded. A
+sender resolved from an ordinary application scope is no longer returned to the pool, so that scope may allocate one
+sender, and an attempt that finds the pool empty allocates one too.
+
+**Alternatives rejected.** Reusing scopes would leak scoped state between deliveries. Finding the current attempt
+through `AsyncLocal` allocates on every write, and a thread-static is unsafe once middleware suspends. Inferring
+lifetimes by resolving handlers twice at startup would construct application services as a side effect.

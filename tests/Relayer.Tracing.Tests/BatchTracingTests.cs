@@ -22,6 +22,8 @@ public class BatchTracingTests
         var services = new ServiceCollection();
         services.AddSingleton<IMessageSerializer, Serializer>();
         services.AddSingleton<Handler>();
+        // Same DI bookkeeping as the attached sender, without allocating a service instance.
+        services.AddScoped(static _ => ScopedBaseline.Shared);
         services.AddRelayer(builder =>
         {
             builder.MessageTypes.Add<Payload>("batch.tracing");
@@ -73,10 +75,15 @@ public class BatchTracingTests
         void Baseline()
         {
             using var scope = scopes.CreateScope();
-            _ = scope.ServiceProvider.GetRequiredService<ISender>();
+            _ = scope.ServiceProvider.GetRequiredService<ScopedBaseline>();
             if (links && listenerAttached)
                 for (var i = 0; i < size; i++) ActivityContext.TryParse(TraceHeaders.Parent, null, true, out _);
         }
+    }
+
+    private sealed class ScopedBaseline
+    {
+        internal static readonly ScopedBaseline Shared = new();
     }
 
     public sealed class Options;
