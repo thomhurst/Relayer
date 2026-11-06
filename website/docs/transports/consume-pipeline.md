@@ -50,7 +50,11 @@ stable message identities can share a consumer. One handler owns each identity;
 that handler can coordinate several operations explicitly.
 
 `ProcessAsync` creates a fresh DI scope for each message. Middleware, generated
-handler resolution, invocation and failure handling use that scope. Processing
+handler resolution, invocation and failure handling use that scope. With a
+`FailurePipeline`, a consumer whose handlers are all singletons opens that scope
+on the first `MessageContext.Services` read instead, unless tenant propagation is
+registered. Applications that compose outside `AddRelayer` keep the eager scope,
+because Relayer has no record of their registrations. Processing
 awaits asynchronous handler completion and asynchronous scope disposal before
 returning. `MessageContext.Services` is available only during processing.
 Cancellation propagates without entering the failure pipeline when the delivery
@@ -100,8 +104,9 @@ context. A cached-reference serializer isolates pipeline allocations from
 serializer allocations. The singleton and scoped-handler cases expose the DI
 cost instead of hiding it in setup. Report total allocations and their difference:
 equal allocation counts establish zero additional allocations from composition,
-not zero total receive allocations. Fresh Microsoft DI scopes allocate even for
-a singleton handler. No scopes or scoped handlers are reused to hide that cost.
+not zero total receive allocations. On this explicit failure-delegate path, fresh
+Microsoft DI scopes allocate even for a singleton handler. No scopes or scoped
+handlers are reused to hide that cost.
 
 This microbenchmark does not establish D18's end-to-end throughput budget against
 a real native client, or its total receive allocation goal. The

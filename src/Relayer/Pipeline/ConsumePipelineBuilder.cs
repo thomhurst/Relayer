@@ -192,7 +192,28 @@ public sealed class ConsumePipelineBuilder
         }
         _built = true;
         return new ConsumePipeline(_scopes, _dispatch.ToFrozenDictionary(), _middleware, _failure, _classifier,
-            contextPoolCapacity, _failures, _telemetry, _settlement, _tracing);
+            contextPoolCapacity, _failures, _telemetry, _settlement, _tracing, SingletonHandlerServices());
+    }
+
+    // The final registration of a service wins, matching how the container resolves it. Applications that
+    // compose outside AddRelayer have no recorded registrations, so they keep one scope per attempt.
+    private IServiceProvider? SingletonHandlerServices()
+    {
+        // This scope lives as long as the consumer. It only resolves singletons, which the root owns.
+        var scope = _scopes.CreateScope();
+        if (scope.ServiceProvider.GetService<IRelayerBuilder>() is { } builder)
+        {
+            var singletons = new HashSet<Type>();
+            foreach (var service in builder.Services)
+            {
+                if (service.IsKeyedService) continue;
+                if (service.Lifetime == ServiceLifetime.Singleton) singletons.Add(service.ServiceType);
+                else singletons.Remove(service.ServiceType);
+            }
+            if (_handlers.TrueForAll(handler => singletons.Contains(handler.HandlerType))) return scope.ServiceProvider;
+        }
+        scope.Dispose();
+        return null;
     }
 
     private sealed class NativeValueDispatch(ConsumeDelegate? value, ConsumeDelegate? tombstone)

@@ -14,6 +14,8 @@ internal sealed class PendingSettlement(DefaultMessageContext context, ConsumePi
     {
         if (!context.CanRequestSettlement)
             throw new InvalidOperationException("Settlement can be requested only during message handling and scope disposal.");
+        if (context.ObservedDisposition.Kind == DispositionKind.SettledByHandler)
+            throw new InvalidOperationException("This delivery has already been settled natively by the handler.");
         if (Request is not null)
             throw new InvalidOperationException("Only one settlement request is allowed per processing attempt.");
         owner.ValidateSettlement(disposition);

@@ -25,6 +25,11 @@ public sealed partial class ConsumePipeline
         => Observer is { } observer ? observer.ProcessBatchAsync(this, contexts, cancellationToken)
             : ProcessBatchCoreAsync(contexts, cancellationToken);
 
+    internal IServiceScopeFactory Scopes => _scopes;
+
+    // Set when every handler is a singleton, so dispatch needs no delivery scope.
+    internal IServiceProvider? SingletonHandlerServices { get; }
+
     internal ValueTask ProcessBatchCoreAsync(ReadOnlyMemory<DefaultMessageContext> contexts, CancellationToken cancellationToken)
         => (BatchExecution ?? throw new InvalidOperationException("Build a batch consumer before using batch dispatch."))
             .ProcessAsync(this, contexts, cancellationToken);
@@ -32,6 +37,7 @@ public sealed partial class ConsumePipeline
     internal bool RestoresTenant { get; }
     private readonly ConsumeDelegate _process;
     private readonly IServiceScopeFactory _scopes;
+    private readonly bool _scopesOnDemand;
     private readonly FrozenDictionary<MessageType, ConsumeDelegate> _dispatch;
     private readonly ConsumeFailureDelegate _failure;
     private readonly IFailureClassifier _classifier;
@@ -48,7 +54,8 @@ public sealed partial class ConsumePipeline
 
     internal ConsumePipeline(IServiceScopeFactory scopes, FrozenDictionary<MessageType, ConsumeDelegate> dispatch,
         IReadOnlyList<IConsumeMiddleware> middleware, ConsumeFailureDelegate failure, IFailureClassifier classifier,
-        int capacity, FailurePipeline? failures, EndpointTelemetry? telemetry, ConsumeDelegate? settlement, ConsumeTracing? tracing)
+        int capacity, FailurePipeline? failures, EndpointTelemetry? telemetry, ConsumeDelegate? settlement, ConsumeTracing? tracing,
+        IServiceProvider? singletonHandlerServices = null)
     {
         _scopes = scopes;
         using (var scope = scopes.CreateScope())
@@ -56,6 +63,9 @@ public sealed partial class ConsumePipeline
             Observer = scope.ServiceProvider.GetService<IRelayerObserver>();
             RestoresTenant = scope.ServiceProvider.GetService<TenantContextPool>() is not null;
         }
+        SingletonHandlerServices = singletonHandlerServices;
+        // Tenant restoration writes to a scoped service, so those consumers keep one scope per attempt.
+        _scopesOnDemand = failures is not null && singletonHandlerServices is not null && !RestoresTenant;
         _failures = failures;
         _dispatch = dispatch;
         _failure = failure;
@@ -173,6 +183,7 @@ public sealed partial class ConsumePipeline
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
     private async ValueTask ProcessWithFailuresAsync(DefaultMessageContext context)
     {
+        var onDemand = _scopesOnDemand;
         var telemetry = _telemetry;
         var start = telemetry is { DurationEnabled: true } ? Stopwatch.GetTimestamp() : 0;
         Exception? failure = null;
@@ -188,11 +199,11 @@ public sealed partial class ConsumePipeline
                 context.CancellationToken.ThrowIfCancellationRequested();
                 Exception? attemptFailure = null;
                 var action = FailureAction.Retry;
-                var scope = new AsyncServiceScope(_scopes.CreateScope());
-                Sender? sender = null;
+                if (!onDemand) context.CreateScope();
                 try
                 {
-                    context.SetServices(scope.ServiceProvider);
+                    if (onDemand) context.DemandScope();
+                    else context.BindScope();
                     try
                     {
                         if (initialize)
@@ -201,11 +212,7 @@ public sealed partial class ConsumePipeline
                             context.InitializeAttempts();
                         }
                         // This is the same scoped sender injected into handlers and their dependencies.
-                        var service = scope.ServiceProvider.GetService<ISender>();
-                        if (service is not null && service is not Sender)
-                            throw new InvalidOperationException("The failure pipeline requires Relayer's scoped ISender to buffer failed-attempt sends.");
-                        sender = (Sender?)service;
-                        if (sender is not null) sender.AttemptBuffer = context.SendBuffer;
+                        if (!onDemand) context.AttachSender();
                         if (!_dispatch.TryGetValue(context.MessageType, out var dispatch))
                             throw new UnknownMessageTypeException(context.MessageType);
                         context.Dispatch = dispatch;
@@ -214,6 +221,7 @@ public sealed partial class ConsumePipeline
                     catch (OperationCanceledException) when (context.CancellationToken.IsCancellationRequested) { throw; }
                     catch (Exception error)
                     {
+                        if (context.ObservedDisposition.Kind == DispositionKind.SettledByHandler) throw;
                         context.Settlement.Clear();
                         failure = attemptFailure = error;
                         LogFailure(context, error);
@@ -225,14 +233,9 @@ public sealed partial class ConsumePipeline
                 {
                     try
                     {
-                        await scope.DisposeAsync().ConfigureAwait(false);
+                        await context.DisposeScopeAsync().ConfigureAwait(false);
                     }
-                    finally
-                    {
-                        // Disposers can send too. Keep the buffer and sender reserved until all disposal ends,
-                        // including when a disposer throws before DI reaches the sender's own Dispose.
-                        sender?.EndAttempt();
-                    }
+                    finally { context.EndAttemptSender(); }
                 }
                 context.CancellationToken.ThrowIfCancellationRequested();
                 if (attemptFailure is null)

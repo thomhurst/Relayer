@@ -11,6 +11,10 @@ public sealed class DefaultMessageContext : MessageContext, IDisposable
     private ReceiveMessageState? _receive;
     private CancellationToken _cancellation;
     private IServiceProvider? _services;
+    private IServiceScope? _scope;
+    private Sender? _sender;
+    private ScopeDemand _demand;
+    private readonly Lock _scopeGate = new();
     // 0: pooled, 1: rented, 2: processing, 3: processed. A delivery can run only once.
     private int _state;
 
@@ -25,7 +29,7 @@ public sealed class DefaultMessageContext : MessageContext, IDisposable
 
     internal ConsumePipeline.CoreOperation CoreProcessing { get; }
     internal PendingSettlement Settlement { get; }
-    internal bool CanRequestSettlement => Volatile.Read(ref _state) == 2 && _services is not null;
+    internal bool CanRequestSettlement => Volatile.Read(ref _state) == 2 && (_services is not null || _demand != ScopeDemand.None);
 
     /// <inheritdoc />
     public override string MessageId => _receive?.MessageId ?? _message.MessageId;
@@ -36,7 +40,9 @@ public sealed class DefaultMessageContext : MessageContext, IDisposable
     /// <inheritdoc />
     public override int Attempt => _attempt > 0 ? _attempt : _receive?.Attempt ?? _message.Attempt;
     /// <inheritdoc />
-    public override IServiceProvider Services => _services ?? throw new InvalidOperationException("Services are available only during message processing.");
+    public override IServiceProvider Services => _services ?? OpenDemandedScope();
+    // Singleton handlers resolve without forcing a delivery scope.
+    internal IServiceProvider HandlerServices => _owner.SingletonHandlerServices ?? Services;
     /// <inheritdoc />
     public override MessageFeatures Features { get; } = new();
     /// <inheritdoc />
@@ -111,11 +117,77 @@ public sealed class DefaultMessageContext : MessageContext, IDisposable
         if (_owner.RestoresTenant)
             services.GetRequiredService<TenantContext>().Id = Headers.TryGetValue(TenantContext.HeaderName, out var tenant) ? tenant : default;
     }
-    internal void ClearServices() => _services = null;
+    internal void ClearServices()
+    {
+        _services = null;
+        _demand = ScopeDemand.None;
+    }
+
+    internal void CreateScope() => _scope = _owner.Scopes.CreateScope();
+
+    internal void BindScope() => SetServices(_scope!.ServiceProvider);
+
+    // The attempt's sends stay in its buffer until the handler, middleware and scope disposal succeed.
+    internal void AttachSender()
+    {
+        var service = _scope!.ServiceProvider.GetService<ISender>();
+        if (service is not null && service is not Sender)
+            throw new InvalidOperationException("The failure pipeline requires Relayer's scoped ISender to buffer failed-attempt sends.");
+        _sender = (Sender?)service;
+        if (_sender is not null) _sender.AttemptBuffer = SendBuffer;
+    }
+
+    internal void DemandScope()
+    {
+        _services = null;
+        _demand = ScopeDemand.Open;
+    }
+
+    private IServiceProvider OpenDemandedScope()
+    {
+        // Concurrent handler work can race here. Only consumers without a scoped handler reach this path.
+        lock (_scopeGate)
+        {
+            if (_services is { } services) return services;
+            if (_demand != ScopeDemand.Open) throw new InvalidOperationException("Services are available only during message processing.");
+            // Publish last: a reader holding these services must never reach an unattached sender.
+            // Tenant restoration keeps eager scopes, so SetServices has nothing further to do here.
+            if (_scope is null) CreateScope();
+            AttachSender();
+            var provider = _scope!.ServiceProvider;
+            Volatile.Write(ref _services, provider);
+            return provider;
+        }
+    }
+
+    internal ValueTask DisposeScopeAsync()
+    {
+        IServiceScope? scope;
+        if (_demand == ScopeDemand.None) scope = _scope;
+        else
+        {
+            lock (_scopeGate)
+            {
+                scope = _scope;
+                _demand = ScopeDemand.Closed;
+            }
+        }
+        _scope = null;
+        return scope is null ? default : new AsyncServiceScope(scope).DisposeAsync();
+    }
+
+    // Disposers can send too. Keep the buffer and sender reserved until all disposal ends.
+    internal void EndAttemptSender()
+    {
+        var sender = _sender;
+        _sender = null;
+        sender?.EndAttempt();
+    }
 
     internal void EndProcessing()
     {
         _services = null;
+        _demand = ScopeDemand.None;
         Volatile.Write(ref _state, 3);
     }
 
@@ -138,9 +210,14 @@ public sealed class DefaultMessageContext : MessageContext, IDisposable
         _receive = null;
         _cancellation = default;
         _services = null;
+        _scope = null;
+        _sender = null;
+        _demand = ScopeDemand.None;
         Dispatch = null!;
         LoggedSettlementError = null;
         Features.Clear();
         _owner.Return(this);
     }
+
+    private enum ScopeDemand : byte { None, Open, Closed }
 }

@@ -1,7 +1,8 @@
 namespace Relayer;
 
-// Failure-enabled consumers resolve one scoped sender before dispatch. Reuse that sender across scopes
-// so the failure pipeline adds no steady-state allocation beyond the DI scope's own bookkeeping.
+// Failure-enabled consumers attach one scoped sender to each attempt and return it through EndAttempt.
+// Pooled senders are not disposable, so the DI scope records nothing for them. A sender resolved from an
+// ordinary application scope is simply not returned; the pool refills from later attempts.
 internal sealed class SenderPool(SendPipeline pipeline)
 {
     private readonly SendPipeline _pipeline = pipeline;
@@ -55,18 +56,12 @@ internal sealed class SenderPool(SendPipeline pipeline)
         }
     }
 
-    private sealed class PooledSender(SenderPool owner, SendPipeline pipeline) : Sender(pipeline), IDisposable
+    private sealed class PooledSender(SenderPool owner, SendPipeline pipeline) : Sender(pipeline)
     {
+        // The consume pipeline ends an attempt after the entire scope finishes disposing.
         internal override void EndAttempt()
         {
             base.EndAttempt();
-            Dispose();
-        }
-
-        public void Dispose()
-        {
-            // The consume pipeline returns an attached sender after the entire scope finishes disposing.
-            if (AttemptBuffer is not null) return;
             Outbox = null;
             Tenant = null;
             owner.Return(this);

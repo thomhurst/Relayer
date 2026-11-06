@@ -15,6 +15,12 @@ internal sealed class ServiceBusSendTransport : ITransport, ITransportSendTracin
     private readonly FrozenDictionary<string, Endpoint> _endpoints;
     private readonly ServiceBusTopology _topology;
     private int _disposed;
+    private readonly HashSet<string> _receiveSources;
+    private readonly IReadOnlyList<IConsumerDefinition> _declarations;
+    private readonly List<ServiceBusReceiver> _healthReceivers = [];
+    internal ServiceBusClient Client => _client;
+    internal List<ServiceBusConsumer> Consumers { get; } = [];
+    internal bool HealthTracking { get; set; }
 
     internal static void ValidateDeclarations(string name, AzureServiceBusTransportOptions options, IEnumerable<string> destinations)
     {
@@ -37,12 +43,14 @@ internal sealed class ServiceBusSendTransport : ITransport, ITransportSendTracin
 
     internal ServiceBusSendTransport(string name, ServiceBusClient client, bool ownsClient,
         AzureServiceBusTransportOptions options, IEnumerable<string> destinations, TopologyMode mode,
-        ServiceBusAdministrationClient? administration = null, MessageTracing? tracing = null, ILoggerFactory? logging = null)
+        ServiceBusAdministrationClient? administration = null, MessageTracing? tracing = null, ILoggerFactory? logging = null, IReadOnlyList<IConsumerDefinition>? consumers = null)
     {
         Name = name;
         _client = client;
         _ownsClient = ownsClient;
-        _topology = new(name, client, options, administration);
+        _topology = new(name, client, options, administration, consumers, destinations.ToArray());
+        _declarations = consumers ?? [];
+        _receiveSources = consumers is null ? [] : consumers.Select(consumer => consumer.Source).ToHashSet(StringComparer.Ordinal);
         var endpoints = new Dictionary<string, Endpoint>(StringComparer.Ordinal);
         foreach (var destination in destinations)
         {
@@ -74,7 +82,16 @@ internal sealed class ServiceBusSendTransport : ITransport, ITransportSendTracin
     private Endpoint GetEndpoint(string destination) => _endpoints.TryGetValue(destination, out var endpoint) ? endpoint
         : throw new InvalidOperationException($"Service Bus transport '{Name}': undeclared send destination '{destination}'.");
 
-    public TransportCapabilities GetCapabilities(string endpoint) => GetEndpoint(endpoint).Capabilities;
+    public TransportCapabilities GetCapabilities(string endpoint)
+    {
+        if (_receiveSources.Contains(endpoint))
+        {
+            if (_endpoints.TryGetValue(endpoint, out var send))
+                return send.Capabilities with { DeadLetter = true, MaxRedeliveryDelay = TimeSpan.Zero };
+            return new() { DeadLetter = true, MaxRedeliveryDelay = TimeSpan.Zero };
+        }
+        return GetEndpoint(endpoint).Capabilities;
+    }
     public SendTracing? GetSendTracing(string destination) => GetEndpoint(destination).Tracing;
 
     public ValueTask<TopologyReport> ApplyTopologyAsync(TopologyMode mode, CancellationToken cancellationToken)
@@ -210,19 +227,72 @@ internal sealed class ServiceBusSendTransport : ITransport, ITransportSendTracin
             throw new InvalidOperationException($"Service Bus destination '{message.Destination}': session ordering is unresolved. Declare RequiresSession on the queue or every topic subscription and use Provision to verify it; Validate/None do not establish session requirements.");
     }
 
-    public Task StartAsync(CancellationToken cancellationToken)
+    public async Task StartAsync(CancellationToken cancellationToken)
     {
         ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
         cancellationToken.ThrowIfCancellationRequested();
-        return Task.CompletedTask;
+        try
+        {
+            foreach (var consumer in Consumers) await consumer.StartAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch
+        {
+            foreach (var consumer in Consumers) await consumer.StopAsync(CancellationToken.None).ConfigureAwait(false);
+            throw;
+        }
     }
 
-    public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+    public async Task StopAsync(CancellationToken cancellationToken)
+    {
+        // Start every drain before awaiting it so one busy declaration cannot keep siblings accepting messages.
+        await Task.WhenAll(Consumers.Select(consumer => consumer.StopAsync(cancellationToken))).ConfigureAwait(false);
+    }
+
+    internal void EnableHealthTracking()
+    {
+        if (HealthTracking) return;
+        HealthTracking = true;
+        foreach (var declaration in _declarations)
+        {
+            var consumer = (ConsumerDefinition<ServiceBusConsumerOptions>)declaration;
+            _healthReceivers.Add(consumer.Options.Subscription is { } subscription
+                ? _client.CreateReceiver(consumer.Source, subscription) : _client.CreateReceiver(consumer.Source));
+        }
+        foreach (var consumer in Consumers) consumer.TrackHealth = true;
+    }
+
+    internal async ValueTask CheckConnectivityAsync(CancellationToken cancellationToken)
+    {
+        ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
+        cancellationToken.ThrowIfCancellationRequested();
+        foreach (var endpoint in _endpoints)
+        {
+            // The SDK caches negotiated batch limits. A fresh link is required for each Send-only probe;
+            // CreateMessageBatchAsync on a previously opened sender can succeed without contacting the broker.
+            var sender = _client.CreateSender(endpoint.Key);
+            await using var lifetime = sender.ConfigureAwait(false);
+            using var batch = await sender.CreateMessageBatchAsync(cancellationToken).ConfigureAwait(false);
+        }
+        foreach (var receiver in _healthReceivers)
+            await receiver.PeekMessageAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
+        if (_endpoints.Count == 0 && _healthReceivers.Count == 0)
+            throw new InvalidOperationException($"Service Bus transport '{Name}': declare a send or receive endpoint for a native connectivity probe.");
+    }
 
     public async ValueTask DisposeAsync()
     {
         if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
         List<Exception>? failures = null;
+        foreach (var consumer in Consumers)
+        {
+            try { await consumer.DisposeAsync().ConfigureAwait(false); }
+            catch (Exception error) { (failures ??= []).Add(error); }
+        }
+        foreach (var receiver in _healthReceivers)
+        {
+            try { await receiver.DisposeAsync().ConfigureAwait(false); }
+            catch (Exception error) { (failures ??= []).Add(error); }
+        }
         foreach (var endpoint in _endpoints.Values)
         {
             try { await endpoint.Sender.DisposeAsync().ConfigureAwait(false); }

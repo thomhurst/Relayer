@@ -7,6 +7,8 @@
 
   <ItemGroup>
     <None Update="servicebus-config.json" CopyToOutputDirectory="PreserveNewest" />
+    <!-- The SDK's messaging ActivitySource is opt-in. Set it at process startup, never mutate a global switch in a test. -->
+    <RuntimeHostConfigurationOption Include="Azure.Experimental.EnableActivitySource" Value="true" />
     <PackageReference Include="Testcontainers.ServiceBus" />
     <PackageReference Include="TUnit" />
     <PackageReference Include="Microsoft.Extensions.Hosting" />
@@ -18,6 +20,8 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\Relayer\Relayer.csproj" />
     <ProjectReference Include="..\..\src\Relayer.HealthChecks\Relayer.HealthChecks.csproj" />
+    <ProjectReference Include="..\..\src\Relayer.AzureServiceBus.HealthChecks\Relayer.AzureServiceBus.HealthChecks.csproj" />
+    <ProjectReference Include="..\..\src\Relayer.Testing\Relayer.Testing.csproj" />
     <ProjectReference Include="..\..\src\Relayer.Kafka\Relayer.Kafka.csproj" />
     <ProjectReference Include="..\..\src\Relayer.AzureServiceBus\Relayer.AzureServiceBus.csproj" />
     <ProjectReference Include="..\..\src\Relayer.AmazonSqs\Relayer.AmazonSqs.csproj" />
