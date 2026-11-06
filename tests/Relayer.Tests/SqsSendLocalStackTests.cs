@@ -34,7 +34,8 @@ public class SqsSendLocalStackTests
         var urls = new List<string>();
         try
         {
-            await using var transport = new SqsSendTransport("localstack", client, false, options);
+            IRouteDefinition[] routes = [new RouteDefinition<SqsSendTests.Order, AmazonSqsRouteOptions>(fifo, new(), null, null, new() { HeaderNames = new("event_") })];
+            await using var transport = new SqsSendTransport("localstack", client, false, options, identityHeaders: SqsSendTransport.ResolveIdentityHeaders(routes));
             var missing = await transport.ApplyTopologyAsync(TopologyMode.Validate, token);
             await Assert.That(missing.Differences.Count).IsEqualTo(2);
             await Assert.That((await transport.ApplyTopologyAsync(TopologyMode.Provision, token)).Differences.Count).IsEqualTo(0);
@@ -56,13 +57,14 @@ public class SqsSendLocalStackTests
 
             var batch = new OutgoingMessage[12];
             for (var i = 0; i < batch.Length; i++)
-                batch[i] = new(fifo, System.Text.Encoding.UTF8.GetBytes(i.ToString()),
-                    new KeyValuePair<string, WireString>[] { new("ce_id", new WireString("event-" + i)) }, new WireString("customer"));
+                batch[i] = new(fifo, "identical body"u8.ToArray(),
+                    new KeyValuePair<string, WireString>[] { new("event_id", new WireString("event-" + i)) }, new WireString("customer"));
             await transport.SendBatchAsync(batch, token);
             for (var i = 0; i < batch.Length; i++)
             {
                 var ordered = await ReceiveAsync(client, fifoUrl, token);
-                await Assert.That(ordered.Body).IsEqualTo(i.ToString());
+                await Assert.That(ordered.Body).IsEqualTo("identical body");
+                await Assert.That(ordered.MessageAttributes["event_id"].StringValue).IsEqualTo("event-" + i);
                 await Assert.That(ordered.Attributes["MessageGroupId"]).IsEqualTo("customer");
                 await Assert.That(ordered.Attributes["MessageDeduplicationId"]).IsEqualTo("event-" + i);
                 await client.DeleteMessageAsync(fifoUrl, ordered.ReceiptHandle, token);

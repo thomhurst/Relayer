@@ -18,7 +18,7 @@ internal sealed class SqsSendState
         for (var i = 0; i < _values.Length; i++) _values[i] = new() { DataType = "String" };
     }
 
-    internal int Prepare(OutgoingMessage outgoing, string queueUrl, bool fifo)
+    internal int Prepare(OutgoingMessage outgoing, string queueUrl, bool fifo, string identityHeader = "ce_id")
     {
         Request.QueueUrl = queueUrl;
         // SQS has a native text body. Reject invalid UTF-8 rather than silently replacing serializer bytes.
@@ -41,7 +41,7 @@ internal sealed class SqsSendState
             var value = _values[index++];
             value.StringValue = header.Value.ToString();
             _attributes[header.Key] = value;
-            if (fifo && header.Key == "ce_id") Request.MessageDeduplicationId = value.StringValue;
+            if (fifo && header.Key == identityHeader) Request.MessageDeduplicationId = value.StringValue;
         }
         if (_attributes.Count > 10)
             throw new InvalidOperationException("SQS supports at most 10 message attributes, including CloudEvents and tracing headers.");

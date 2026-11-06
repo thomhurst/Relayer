@@ -44,6 +44,76 @@ public class SqsSendTests
     }
 
     [Test]
+    public async Task Custom_fifo_identity_binding_preserves_distinct_events_and_replays()
+    {
+        using var client = new SqsTestClient();
+        var app = Host.CreateApplicationBuilder();
+        app.Services.AddRelayer(builder =>
+        {
+            builder.AddMessageTypesFromThisAssembly();
+            builder.AmazonSqs("test", sqs =>
+            {
+                sqs.Options.Configure(o =>
+                {
+                    o.SqsClient = client;
+                    o.Queues.Add(new("ordered.fifo") { Attributes = new() { ["FifoQueue"] = "true" } });
+                });
+                sqs.Send<Order>("ordered.fifo", route =>
+                {
+                    route.SendOptions = new() { HeaderNames = new("event_") };
+                    route.OrderingKey(_ => "customer");
+                });
+            });
+        });
+        using var host = app.Build();
+        await host.StartAsync();
+        try
+        {
+            await using var scope = host.Services.CreateAsyncScope();
+            var sender = scope.ServiceProvider.GetRequiredService<ISender>();
+            await sender.SendNowAsync(new Order());
+            await sender.SendNowAsync(new Order());
+            var first = client.Sent[0];
+            var second = client.Sent[1];
+            await Assert.That(first.Body).IsEqualTo(second.Body);
+            await Assert.That(first.Deduplication).IsEqualTo(first.Attributes["event_id"]);
+            await Assert.That(second.Deduplication).IsEqualTo(second.Attributes["event_id"]);
+            await Assert.That(first.Deduplication).IsNotEqualTo(second.Deduplication);
+            var transport = host.Services.GetServices<ITransport>().Single();
+            var replay = new OutgoingMessage("ordered.fifo", Encoding.UTF8.GetBytes(first.Body),
+                first.Attributes.Select(pair => new KeyValuePair<string, WireString>(pair.Key, new(pair.Value))).ToArray(),
+                new WireString("customer"));
+            await transport.SendAsync(replay, default);
+            await transport.SendBatchAsync(new[] { replay, replay }, default);
+            await Assert.That(client.Sent[2].Deduplication).IsEqualTo(first.Deduplication);
+            await Assert.That(client.Batches.Single().All(entry => entry.Message.Deduplication == first.Deduplication)).IsTrue();
+        }
+        finally { await host.StopAsync(); }
+    }
+
+    [Test]
+    public async Task Conflicting_fifo_identity_bindings_fail_before_native_calls()
+    {
+        using var client = new SqsTestClient();
+        var services = new ServiceCollection();
+        services.AddRelayer(builder => builder.AmazonSqs("test", sqs =>
+        {
+            sqs.Options.Configure(o =>
+            {
+                o.SqsClient = client;
+                o.Queues.Add(new("ordered.fifo") { Attributes = new() { ["FifoQueue"] = "true" } });
+            });
+            sqs.Send<Order>("ordered.fifo");
+            sqs.Send<Audit>("ordered.fifo", route => route.SendOptions = new() { HeaderNames = new("event_") });
+        }));
+        await using var provider = services.BuildServiceProvider();
+        await Assert.That(() => provider.GetServices<ITransport>().ToArray()).Throws<InvalidOperationException>()
+            .WithMessage("SQS FIFO queue 'ordered.fifo': CloudEvents routes must use the same HeaderNames identity binding. Configure matching HeaderNames for every route to this queue.");
+        await Assert.That(client.Lookups).IsEqualTo(0);
+        await Assert.That(client.Sent.Count).IsEqualTo(0);
+    }
+
+    [Test]
     public async Task Named_registration_preserves_options_and_caller_owned_clients()
     {
         using var first = new SqsTestClient();

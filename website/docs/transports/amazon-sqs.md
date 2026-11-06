@@ -3,7 +3,7 @@ title: Amazon SQS
 description: "Named native SQS sending, FIFO groups, timers, batch failures and queue topology."
 ---
 
-`Relayer.AmazonSqs` implements native SQS queue sending with AWS SDK v4. Receiver composition and full LocalStack transport conformance remain planned in [#224](https://github.com/thomhurst/Relayer/issues/224), SNS topics/subscriptions in [#225](https://github.com/thomhurst/Relayer/issues/225), and connectivity/liveness health adapters in [#226](https://github.com/thomhurst/Relayer/issues/226). Consumer declarations fail at startup until receivers are implemented.
+`Relayer.AmazonSqs` implements native SQS queue sending with AWS SDK v4. Receiver composition and full LocalStack transport conformance remain planned in [#224](https://github.com/thomhurst/Relayer/issues/224), SNS topics/subscriptions in [#225](https://github.com/thomhurst/Relayer/issues/225), and connectivity/liveness health adapters with receivers in [#224](https://github.com/thomhurst/Relayer/issues/224). Consumer declarations fail at startup until receivers are implemented.
 
 ## Register sending
 
@@ -55,13 +55,13 @@ options.Queues.Add(new CreateQueueRequest("orders.fifo")
 sqs.Send<OrderPlaced>("orders.fifo", route => route.OrderingKey(order => order.CustomerId));
 ```
 
-The resolved ordering key becomes native `MessageGroupId`. CloudEvents `ce_id` becomes `MessageDeduplicationId`, preserving native FIFO deduplication across retries. Low-level sends without an event ID need native deduplication configuration or an explicit native deduplication ID. FIFO sends require a message group; standard queues reject portable ordering requirements. Relayer adds no ordering layer.
+The resolved ordering key becomes native `MessageGroupId`. The CloudEvents identity header selected by `SendRouteOptions.HeaderNames` (default `ce_id`) becomes `MessageDeduplicationId`, preserving native FIFO deduplication across retries and stored-message replay. Custom prefixes such as `new HeaderNames("event_")` are supported. All CloudEvents routes to the same FIFO queue must use the same identity header; conflicting bindings fail startup with an actionable error. Low-level replay uses that queue's configured identity header, or `ce_id` when no CloudEvents route declares one. Low-level sends without an event ID need native deduplication configuration or an explicit native deduplication ID. FIFO sends require a message group; standard queues reject portable ordering requirements. Relayer adds no ordering layer.
 
 For standard queues, a future `SendOptions.DeliverAt` becomes native `DelaySeconds`, rounded up to the next second so delivery is not early. Timers support at most 15 minutes. FIFO queues do not support per-message timers. Longer delays and FIFO scheduling require a configured [durable outbox](../guides/sending.md); unsupported low-level scheduled sends fail explicitly. Unscheduled sends leave `DelaySeconds` unset, preserving the queue's native default delay.
 
 ## Wire format and native callbacks
 
-CloudEvents attributes use string message attributes with the `ce_` prefix. `content-type`, `traceparent` and `tracestate` remain native message attributes. SQS allows at most **10 attributes total**, including CloudEvents, tracing and application headers; exceeding the limit fails without discarding metadata. Serialized bodies must be valid UTF-8 text allowed by SQS. Invalid UTF-8 fails rather than replacing bytes. Binary serializers must supply an SQS-compatible text encoding themselves; Relayer does not silently base64-encode bodies.
+CloudEvents attributes use string message attributes with the configured prefix (`ce_` by default). `content-type`, `traceparent` and `tracestate` remain native message attributes. SQS allows at most **10 attributes total**, including CloudEvents, tracing and application headers; exceeding the limit fails without discarding metadata. Serialized bodies must be valid UTF-8 text allowed by SQS. Invalid UTF-8 fails rather than replacing bytes. Binary serializers must supply an SQS-compatible text encoding themselves; Relayer does not silently base64-encode bodies.
 
 ```csharp
 await sender.SendAsync(order, options => options.AmazonSqs(request =>

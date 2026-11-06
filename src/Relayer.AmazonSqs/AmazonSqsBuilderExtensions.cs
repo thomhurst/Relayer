@@ -25,9 +25,10 @@ public static class AmazonSqsBuilderExtensions
                 throw new NotSupportedException($"SQS transport '{name}': receiver composition is not implemented yet.");
             var options = provider.GetRequiredService<IOptionsMonitor<AmazonSqsTransportOptions>>().Get(name);
             SqsSendTransport.ValidateDeclarations(name, options, declaration.Routes.Select(route => route.Destination));
+            var identityHeaders = SqsSendTransport.ResolveIdentityHeaders(declaration.Routes);
             var client = options.SqsClient ?? new AmazonSQSClient(options.Sqs);
             return new SqsSendTransport(name, client, options.SqsClient is null, options,
-                provider.GetRequiredService<MessageTracing>(), provider.GetService<ILoggerFactory>());
+                provider.GetRequiredService<MessageTracing>(), provider.GetService<ILoggerFactory>(), identityHeaders);
         });
         builder.Services.AddSingleton<IHostedService>(provider => new SqsSendHostedService(provider, name));
         return builder;
