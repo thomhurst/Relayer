@@ -28,8 +28,8 @@
     <PackageVersion Include="Dekaf" Version="1.26.0" />
     <PackageVersion Include="Dekaf.SchemaRegistry" Version="1.26.0" />
     <PackageVersion Include="Azure.Messaging.ServiceBus" Version="7.21.0" />
-    <PackageVersion Include="AWSSDK.SQS" Version="4.0.100.24" />
-    <PackageVersion Include="AWSSDK.SimpleNotificationService" Version="4.0.100.24" />
+    <PackageVersion Include="AWSSDK.SQS" Version="4.0.100.25" />
+    <PackageVersion Include="AWSSDK.SimpleNotificationService" Version="4.0.100.25" />
     <PackageVersion Include="RabbitMQ.Client" Version="7.2.2" />
     <PackageVersion Include="RabbitMQ.Stream.Client" Version="1.12.2" />
     <PackageVersion Include="NATS.Client.JetStream" Version="3.3.2" />
@@ -59,7 +59,7 @@
     <PackageVersion Include="Testcontainers.Redpanda" Version="4.16.0" />
     <PackageVersion Include="Testcontainers.ServiceBus" Version="4.16.0" />
     <PackageVersion Include="Testcontainers" Version="4.16.0" />
-    <PackageVersion Include="TUnit" Version="1.81.5" />
+    <PackageVersion Include="TUnit" Version="1.81.10" />
     <PackageVersion Include="BenchmarkDotNet" Version="0.15.8" />
   </ItemGroup>
 </Project>
