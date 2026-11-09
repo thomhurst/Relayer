@@ -23,19 +23,19 @@ internal sealed class RabbitMqSendEndpoint
         Exchange = separator < 0 ? "" : destination[..separator];
         RoutingKey = separator < 0 ? destination : destination[(separator + 1)..];
         _tracing = tracing;
-        if (tracing is null) return;
         var name = Exchange + ":" + RoutingKey;
+        Telemetry = instrumentation?.CreateEndpoint(new()
+        {
+            System = "rabbitmq", Destination = name, OperationName = "send", ServerAddress = factory.HostName,
+            ServerPort = factory.Port == -1 ? (factory.Ssl.Enabled ? 5671 : 5672) : factory.Port,
+        });
+        if (tracing is null) return;
         Tracing = new(tracing, new()
         {
             System = "rabbitmq", Destination = name, ServerAddress = factory.HostName,
             ServerPort = factory.Port == -1 ? (factory.Ssl.Enabled ? 5671 : 5672) : factory.Port,
             Attributes = RoutingKey.Length == 0 ? default : new KeyValuePair<string, object?>[] { new("messaging.rabbitmq.destination.routing_key", RoutingKey) },
         }, send, batch, headerNames: new("cloudEvents:"));
-        Telemetry = instrumentation?.CreateEndpoint(new()
-        {
-            System = "rabbitmq", Destination = name, OperationName = "send", ServerAddress = factory.HostName,
-            ServerPort = factory.Port == -1 ? (factory.Ssl.Enabled ? 5671 : 5672) : factory.Port,
-        });
     }
 
     internal async ValueTask InitializeAsync(IConnection connection, RabbitMqTransportOptions options,

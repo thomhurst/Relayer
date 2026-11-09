@@ -9,8 +9,12 @@ internal sealed class RabbitMqPublisher(IChannel channel)
     internal IChannel Channel { get; set; } = channel;
     internal readonly BasicProperties Properties = new();
     private readonly RabbitMqHeaders _headers = new();
-    private readonly List<Dictionary<int, byte[]>> _buffers = [];
-    private readonly List<(byte[] Utf8, string Text)> _contentTypes = [];
+    internal const int CacheCapacity = 256;
+    private readonly Dictionary<(int Index, int Length), byte[]> _buffers = new(CacheCapacity);
+    private readonly (int Index, int Length)[] _bufferOrder = new (int, int)[CacheCapacity];
+    private int _nextBuffer;
+    private int _nextContentType;
+    private readonly List<(byte[] Utf8, string Text)> _contentTypes = new(CacheCapacity);
     // The native field-table API requires a boxed integer. This publisher exclusively owns and reuses its box.
     private readonly object _delay = 0L;
 
@@ -45,11 +49,16 @@ internal sealed class RabbitMqPublisher(IChannel channel)
         if (MemoryMarshal.TryGetArray(value.Utf8, out var array) && array.Offset == 0 && array.Count == array.Array!.Length)
             return array.Array;
         // RabbitMQ.Client 7.2.2 accepts byte[] and string, not UTF-8 slices (upstream #2144).
-        // Retain exact-length storage per header position/observed length across sends.
-        while (_buffers.Count <= index) _buffers.Add([]);
-        var buffers = _buffers[index];
-        if (!buffers.TryGetValue(value.Utf8.Length, out var buffer))
-            buffers.Add(value.Utf8.Length, buffer = new byte[value.Utf8.Length]);
+        // One bounded FIFO across all header positions; hits do not update recency (D35/D52).
+        var key = (index, value.Utf8.Length);
+        if (!_buffers.TryGetValue(key, out var buffer))
+        {
+            buffer = new byte[value.Utf8.Length];
+            if (_buffers.Count == CacheCapacity) _buffers.Remove(_bufferOrder[_nextBuffer]);
+            _buffers.Add(key, buffer);
+            _bufferOrder[_nextBuffer] = key;
+            _nextBuffer = (_nextBuffer + 1) % CacheCapacity;
+        }
         value.Utf8.Span.CopyTo(buffer);
         return buffer;
     }
@@ -60,7 +69,10 @@ internal sealed class RabbitMqPublisher(IChannel channel)
         foreach (var cached in _contentTypes)
             if (value.Utf8.Span.SequenceEqual(cached.Utf8)) return cached.Text;
         var decoded = value.ToString();
-        _contentTypes.Add((value.Utf8.ToArray(), decoded));
+        var entry = (value.Utf8.ToArray(), decoded);
+        if (_contentTypes.Count < CacheCapacity) _contentTypes.Add(entry);
+        else _contentTypes[_nextContentType] = entry;
+        _nextContentType = (_nextContentType + 1) % CacheCapacity;
         return decoded;
     }
 
