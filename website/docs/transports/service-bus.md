@@ -154,19 +154,30 @@ Set `RELAYER_SERVICEBUS_CONNECTION_STRING` to a test namespace with Manage right
 dotnet run -c Release --project benchmarks/Relayer.Benchmarks -- --filter "*ServiceBusSendBenchmarks*"
 ```
 
-Native message containers and batch lease lists are pooled. Serialized body memory is borrowed without a body copy, and batch leases remain live through native send completion and batch disposal. Text application properties and session IDs require SDK strings. Relayer materializes a string for every nonempty UTF-8 `WireString` value before calling the SDK. The default send envelope stores its ID, type, source, timestamp and specification version as UTF-8, so all five conversions allocate even after warming the message pool. Tracing can add further conversions. These allocations belong to Relayer; they are not excluded as native SDK or serializer allocations. This adapter does not currently meet the zero-allocation target.
+Native message containers and batch lease lists are pooled. Serialized body memory is borrowed without a body copy, and batch leases remain live through native send completion and batch disposal. Text application properties and session IDs require SDK strings. Relayer materializes a string for every nonempty UTF-8 `WireString` value before calling the SDK. The default send envelope stores its ID, type, source, timestamp and specification version as UTF-8, so all five conversions allocate even after warming the message pool. Tracing can add further conversions. D52 classifies strings required by the native SDK as native-client cost when the raw-client comparison allocates at least as much. Relayer must still add zero pipeline allocations beyond native-required objects and application lifetime costs.
 
 The registered serializer's content type is already a string, so the normal `content-type` mapping reuses that string. Explicit UTF-8 content types require conversion. [The upstream API request](https://github.com/Azure/azure-sdk-for-net/issues/64450) tracks borrowed UTF-8 **text** support: passing bytes as application-property values currently produces AMQP binary values, which would change the CloudEvents wire types. Relayer keeps the supported string conversion and native AMQP encoder until a compatible native API exists; it does not cache changing IDs or mutate immutable strings.
 
-`ServiceBusSendAllocationTests` limits warmed preparation allocations to the existing string conversions, with changing IDs/timestamps, stored creation context and alternating registered serializer content types. It also checks that reusing caller buffers after lease release cannot change native snapshots and that clearing a pooled message detaches the borrowed body. This regression ceiling records the current limitation; it does not waive the zero-allocation target tracked in [#295](https://github.com/thomhurst/Relayer/issues/295).
+`ServiceBusSendAllocationTests` limits warmed preparation allocations to the existing string conversions, with changing IDs/timestamps, stored creation context and alternating registered serializer content types. It also checks that reusing caller buffers after lease release cannot change native snapshots and that clearing a pooled message detaches the borrowed body. This regression ceiling pins the native-required conversions tracked in [#295](https://github.com/thomhurst/Relayer/issues/295) under D52.
 
-`ServiceBusHeaderBenchmarks` isolates these conversions from SDK/network and serializer allocations. It writes the actual envelope with changing IDs and timestamps on every invocation, for both a single route and alternating routes, and compares direct native property assignment with the adapter. The raw baseline performs the same string conversions; matching that baseline does not waive Relayer's own allocation budget. The `DefaultJson` acknowledged comparison can measure the full pipeline's overhead, but adding a benchmark does not establish the 5% throughput budget: that requires measurements against the same native client and environment. Receive performance and full transport conformance remain planned.
+`ServiceBusHeaderBenchmarks` isolates these conversions from SDK/network and serializer allocations. It writes the actual envelope with changing IDs and timestamps on every invocation, for both a single route and alternating routes, and compares direct native property assignment with the adapter. The raw baseline performs the same string conversions; D52 uses that comparison to attribute native-required objects while retaining the pipeline budget. The `DefaultJson` acknowledged comparison can measure the full pipeline's overhead, but adding a benchmark does not establish the 5% throughput budget: that requires measurements against the same native client and environment. Receive benchmarks and transport conformance tests also cover native processors.
 
 `ServiceBusReceiveBenchmarks` compares raw SDK processor callbacks with the composed Relayer receive pipeline, using the same source-generated default JSON and native completion. Each iteration seeds 128 messages outside the timed region, then measures processor start and handler progress for both cases. Both signal progress before native completion; iteration cleanup drains the final settlement and stops the processor outside timing. This excludes at most the last settlement from each measured workload. Both clients use the same three-second native try timeout. It uses `MemoryDiagnoser` and the same namespace environment variables as sending. Run `--filter "*ServiceBusReceiveBenchmarks*"`; use an isolated test namespace. Startup, the final settlement boundary and emulator latency limit its use as a steady-state comparison; these numbers do not establish the production budget.
 
-The SDK's processor callback must return a `Task`, and a `Task` cannot be reused. When the pipeline suspends,
-the adapter therefore allocates one small one-shot `Task` from `ValueTask.AsTask`, which is smaller than the
-state machine of an equivalent raw `async` callback. Optional liveness tracking runs in a pooled frame, so it adds
-no allocation; it reads the clock and reserves an active worker slot per callback. This `Task`, DI scopes,
-serializer allocations and native SDK allocations must be attributed separately before declaring the receive
-budget met. No allocation-budget exception is implied by the raw-client comparison.
+## Receive allocations
+
+The native processor callback must return a single-use `Task`. When processing suspends, Relayer's
+`ValueTask.AsTask()` bridge allocates 80 B per delivery in the measured .NET 10 arm64 configuration;
+a raw asynchronous SDK callback allocates 128 B. D52 counts this required object as native-client cost.
+Health tracking uses a pooled frame and adds no allocation.
+
+Default scoped handlers also allocate their Microsoft DI scope, service cache and handler instance
+(measured at 336 B + 24 B). These are application lifetime costs under D52. Singleton-only consumers
+open a delivery scope only when `context.Services` is read, so handlers that do not need that scope
+avoid its allocation.
+
+The retained measurements show Relayer adds 288 B per delivery over the raw SDK callback for a scoped
+handler, 305 B with eight concurrent workers, and -48 B for a singleton handler. These totals include
+the native-required Task and application lifetime costs above; they are diagnostic measurements,
+not universal runtime sizes. `ServiceBusReceiveBenchmarks` pins the raw-client comparison, and
+`FailureConsumerScopeBenchmarks` and the consume-pipeline allocation tests pin scope behavior.
