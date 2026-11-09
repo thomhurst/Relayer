@@ -142,8 +142,16 @@ internal sealed class SqsSendTransport : ITransport, ITransportSendTracing
         {
             var size = state.Messages[0].Prepare(message, endpoint.Url!, endpoint.Fifo, endpoint.IdentityHeader);
             ValidateSize(endpoint, size);
-            var response = await _client.SendMessageAsync(state.Messages[0].Request, cancellationToken).ConfigureAwait(false);
-            Enrich(activity, endpoint.Url!, response.ResponseMetadata?.RequestId);
+            endpoint.Tracing?.RecordNativeSend();
+            var duration = endpoint.Tracing?.StartNativeSend() ?? default;
+            var failed = true;
+            try
+            {
+                var response = await _client.SendMessageAsync(state.Messages[0].Request, cancellationToken).ConfigureAwait(false);
+                failed = false;
+                Enrich(activity, endpoint.Url!, response.ResponseMetadata?.RequestId);
+            }
+            finally { duration.Complete(failed); }
         }
         catch (AmazonSQSException error)
         {
@@ -189,7 +197,7 @@ internal sealed class SqsSendTransport : ITransport, ITransportSendTracing
                 Validate(messages.Span[i], cancellationToken);
                 if (count == 10)
                 {
-                    await FlushAsync(state, batchStart, cancellationToken).ConfigureAwait(false);
+                    await FlushAsync(state, endpoint, batchStart, cancellationToken).ConfigureAwait(false);
                     for (var j = 0; j < count; j++) state.Messages[j].Clear();
                     state.Batch.Entries.Clear();
                     state.Used = 0;
@@ -202,7 +210,7 @@ internal sealed class SqsSendTransport : ITransport, ITransportSendTracing
                 ValidateSize(endpoint, size);
                 if (count > 0 && bytes + size > 1_048_576)
                 {
-                    await FlushAsync(state, batchStart, cancellationToken).ConfigureAwait(false);
+                    await FlushAsync(state, endpoint, batchStart, cancellationToken).ConfigureAwait(false);
                     for (var j = 0; j < count; j++) state.Messages[j].Clear();
                     state.Batch.Entries.Clear();
                     // Carry the already prepared request across a byte boundary without repeating its callback.
@@ -217,27 +225,32 @@ internal sealed class SqsSendTransport : ITransport, ITransportSendTracing
                 count++;
                 bytes += size;
             }
-            if (count > 0) await FlushAsync(state, batchStart, cancellationToken).ConfigureAwait(false);
+            if (count > 0) await FlushAsync(state, endpoint, batchStart, cancellationToken).ConfigureAwait(false);
         }
         finally { _operations.Return(state); }
     }
 
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
-    private async ValueTask FlushAsync(SqsOperationState state, int offset, CancellationToken cancellationToken)
+    private async ValueTask FlushAsync(SqsOperationState state, Endpoint endpoint, int offset, CancellationToken cancellationToken)
     {
         var activity = CurrentActivity();
         Enrich(activity, state.Batch.QueueUrl, null);
+        endpoint.Tracing?.RecordNativeSend(state.Batch.Entries.Count);
+        var duration = endpoint.Tracing?.StartNativeSend() ?? default;
+        var failed = true;
         try
         {
             var response = await _client.SendMessageBatchAsync(state.Batch, cancellationToken).ConfigureAwait(false);
             Enrich(activity, state.Batch.QueueUrl, response.ResponseMetadata?.RequestId);
             if (response.Failed is { Count: > 0 }) throw new AmazonSqsBatchException(response, offset);
+            failed = false;
         }
         catch (AmazonSQSException error)
         {
             Enrich(activity, state.Batch.QueueUrl, error.RequestId);
             throw;
         }
+        finally { duration.Complete(failed); }
     }
 
     private Activity? CurrentActivity() => Activity.Current is { } activity && ReferenceEquals(activity.Source, _tracing?.Source) ? activity : null;

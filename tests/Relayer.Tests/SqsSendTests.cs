@@ -382,6 +382,67 @@ public class SqsSendTests
         await Assert.That(failed.Status).IsEqualTo(ActivityStatusCode.Error);
     }
 
+    [Test]
+    [Arguments(false, false)]
+    [Arguments(false, true)]
+    [Arguments(true, false)]
+    [Arguments(true, true)]
+    public async Task Native_metrics_wait_for_completion_and_include_failures(bool batch, bool fail)
+    {
+        using var instrumentation = new RelayerInstrumentation();
+        using var durations = new SendDurationCapture(instrumentation);
+        long sent = 0;
+        using var meter = new System.Diagnostics.Metrics.MeterListener
+        {
+            InstrumentPublished = (instrument, observer) =>
+            {
+                if (ReferenceEquals(instrument.Meter.Scope, instrumentation) && instrument.Name == "messaging.client.sent.messages")
+                    observer.EnableMeasurementEvents(instrument);
+            },
+        };
+        meter.SetMeasurementEventCallback<long>((_, value, _, _) => sent += value);
+        meter.Start();
+        using var tracing = new MessageTracing(Microsoft.Extensions.Options.Options.Create(new TracingOptions()), [], instrumentation: instrumentation);
+        using var client = new SqsTestClient { Gate = new(TaskCreationOptions.RunContinuationsAsynchronously) };
+        await using var transport = new SqsSendTransport("test", client, false, Options(client), tracing);
+        await transport.StartAsync(default);
+        var message = new OutgoingMessage("orders", "{}"u8.ToArray());
+        var pending = batch ? transport.SendBatchAsync(new[] { message, message }, default) : transport.SendAsync(message, default);
+        await Assert.That(pending.IsCompleted).IsFalse();
+        await Assert.That(sent).IsEqualTo(batch ? 2L : 1L);
+        await Assert.That(durations.Values.Count).IsEqualTo(0);
+        if (fail) client.Gate.SetException(new AmazonSQSException("failure"));
+        else client.Gate.SetResult();
+        if (fail) await Assert.That(async () => await pending).Throws<AmazonSQSException>();
+        else await pending;
+        var duration = durations.Values.Single();
+        await Assert.That(duration.Tags["messaging.system"]).IsEqualTo("aws_sqs");
+        await Assert.That(duration.Tags["messaging.destination.name"]).IsEqualTo("orders");
+        await Assert.That(duration.Tags.ContainsKey("error.type")).IsEqualTo(fail);
+    }
+
+    [Test]
+    public async Task Split_batches_count_native_attempts_and_partial_failure_stops_later_batches()
+    {
+        using var instrumentation = new RelayerInstrumentation();
+        using var durations = new SendDurationCapture(instrumentation);
+        using var tracing = new MessageTracing(Microsoft.Extensions.Options.Options.Create(new TracingOptions()), [], instrumentation: instrumentation);
+        using var client = new SqsTestClient();
+        await using var transport = new SqsSendTransport("test", client, false, Options(client), tracing);
+        await transport.StartAsync(default);
+        var messages = Enumerable.Repeat(new OutgoingMessage("orders", "{}"u8.ToArray()), 11).ToArray();
+        await transport.SendBatchAsync(messages, default);
+        await Assert.That(durations.Values.Count).IsEqualTo(2);
+        durations.Values.Clear();
+        client.FailBatch = true;
+        await Assert.That(async () => await transport.SendBatchAsync(messages, default)).Throws<AmazonSqsBatchException>();
+        await Assert.That(durations.Values.Single().Tags["error.type"]).IsEqualTo("_OTHER");
+        durations.Values.Clear();
+        await transport.SendBatchAsync(Array.Empty<OutgoingMessage>(), default);
+        await Assert.That(async () => await transport.SendAsync(new("orders", new byte[] { 0xff }), default)).Throws<DecoderFallbackException>();
+        await Assert.That(durations.Values.Count).IsEqualTo(0);
+    }
+
     internal static AmazonSqsTransportOptions Options(IAmazonSQS client)
     {
         var options = new AmazonSqsTransportOptions { SqsClient = client };
@@ -424,19 +485,20 @@ internal sealed class SqsTestClient() : AmazonSQSClient(new AnonymousAWSCredenti
         return new() { ResponseMetadata = new() { RequestId = "request-1" } };
     }
 
-    public override Task<SendMessageBatchResponse> SendMessageBatchAsync(SendMessageBatchRequest request, CancellationToken cancellationToken = default)
+    public override async Task<SendMessageBatchResponse> SendMessageBatchAsync(SendMessageBatchRequest request, CancellationToken cancellationToken = default)
     {
         Batches.Add(request.Entries.Select(entry => (entry.Id, Snapshot(new()
         {
             QueueUrl = request.QueueUrl, MessageBody = entry.MessageBody, MessageGroupId = entry.MessageGroupId,
             MessageDeduplicationId = entry.MessageDeduplicationId, DelaySeconds = entry.DelaySeconds, MessageAttributes = entry.MessageAttributes,
         }))).ToArray());
-        return Task.FromResult(new SendMessageBatchResponse
+        if (Gate is not null) await Gate.Task.WaitAsync(cancellationToken);
+        return new SendMessageBatchResponse
         {
             Successful = [new() { Id = "0" }],
             Failed = FailBatch ? [new() { Id = "1", Code = "InvalidMessageContents", SenderFault = true }] : [],
             ResponseMetadata = new() { RequestId = "batch-request" },
-        });
+        };
     }
 
     public override Task<GetQueueUrlResponse> GetQueueUrlAsync(string queueName, CancellationToken cancellationToken = default)
