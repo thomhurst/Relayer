@@ -60,6 +60,8 @@ To change a decision, add a new entry that supersedes it rather than editing his
 | [D47](#d47-sql-server-outbox-transactions-reuse-native-bulk-copy) | SQL Server outbox transactions reuse native bulk copy | Accepted |
 | [D48](#d48-mysql-enqueue-owns-native-transactions-and-reuses-mysqlbatch) | MySQL enqueue owns native transactions and reuses MySqlBatch | Accepted |
 | [D49](#d49-sql-server-commit-dispatch-reuses-native-rpc-batches) | SQL Server commit dispatch reuses native RPC batches | Accepted |
+| [D50](#d50-ordered-lanes-follow-a-database-assigned-insert-sequence) | Ordered lanes follow a database-assigned insert sequence | Proposed |
+| [D51](#d51-the-ef-core-consumer-boundary-takes-an-isolation-level-and-replays-conflicts) | The EF Core consumer boundary takes an isolation level and replays conflicts | Proposed |
 
 ---
 
@@ -978,3 +980,62 @@ retention remain separate work. Full queues, shutdown, future rows and unknown s
 Native failures update attempts under the live token; successful sends followed by failed or expired completion do
 not consume another send attempt. D46's unsupported trimming/AOT boundary remains explicit. Buffer-transfer
 benchmarks isolate Relayer's reusable copy/swap/group work; database and native transport costs remain separate.
+
+## D50. Ordered lanes follow a database-assigned insert sequence
+
+**Status.** Proposed; not implemented. Tracked by [#353](https://github.com/thomhurst/Relayer/issues/353).
+
+**Context.** D34 reads each lane in ascending `id` order. The `id` is a UUIDv7 created on the application
+host when the message is sent, while its row is inserted at flush, immediately before commit (D31, D32).
+Two instances whose clocks differ can therefore give the later of two strictly sequential commits the
+smaller `id`. When both rows are pending in one scan, the lane sends them in the wrong order for the same
+ordering key. A handler that sends early and commits late has the same effect on one instance. D34 excludes
+only concurrent writers from its ordering guarantee; these transactions are not concurrent.
+
+**Decision.** Refine D34's read order while retaining its lane leases, locks, deadlines and fencing.
+- The outbox table gains `seq`, a database-assigned identity value set when the row is inserted.
+- Ordered lanes read and index pending rows by `(lane, seq)`. The parked-key anti-join compares `seq`.
+- One transaction's rows are inserted in send order, so their `seq` values keep that order.
+- `id` remains the stable message identity for the inbox, native message IDs and fenced claims.
+- Other database stores adopt the same rule with their native identity or sequence feature.
+
+**Consequences.** Sequential transactions are dispatched in commit order whatever the host clocks say.
+Transactions whose business writes conflict already commit one after the other before they flush, so
+their `seq` values also follow commit order. A sequence is non-transactional: it takes no lock that a
+business transaction can wait on, and it cannot raise a serialization failure. Transactions that are
+genuinely concurrent still have no defined order, and a row committed late can still be dispatched after
+a higher `seq`; idempotent, version-guarded consumers remain necessary. Existing tables need an explicit
+SQL migration (D30). Identity values can have gaps.
+
+**Alternatives rejected.**
+- A per-key advisory lock held from flush to commit gives strict commit order, but makes same-key writers queue
+  on a lock Relayer introduced.
+- Ordering by `created_at` or a database timestamp has the same race as `id` at lower resolution.
+- Dispatching only rows older than the oldest in-flight transaction removes late arrivals but orders by
+  transaction start, which is wrong for writers that waited on each other.
+
+## D51. The EF Core consumer boundary takes an isolation level and replays conflicts
+
+**Status.** Proposed; not implemented. Tracked by [#354](https://github.com/thomhurst/Relayer/issues/354).
+
+**Context.** D36's consumer boundary owns the transaction around the handler and opens it at the provider
+default. The handler must not end or replace it, so an application that needs Repeatable Read or
+Serializable for a multi-row invariant cannot use the boundary. Under those levels a conflict is an
+expected outcome, not a poison message, and PostgreSQL reports a duplicate inbox key committed after the
+snapshot as a serialization failure rather than as zero inserted rows.
+
+**Decision.** Refine D36.
+- The boundary accepts an optional isolation level and passes it to the native transaction. The default
+  stays the provider default.
+- The database package classifies native serialization failures and deadlocks from the handler or the
+  commit as conflicts. A conflict replays the complete handler in a fresh scope within a bounded budget
+  and does not count toward dead-lettering. Exhaustion follows ordinary failure handling.
+- The core stays free of database dependencies; classification lives beside the provider.
+
+**Consequences.** Handlers can rely on database isolation instead of hand-written locks. A replay after an
+inbox conflict sees the committed key and skips the handler. Retrying EF execution strategies stay
+rejected: the boundary, not the strategy, owns replay. The default path gains no per-message work.
+
+**Alternatives rejected.**
+- Letting the handler open its own transaction breaks the atomic inbox, business and outbox commit.
+- Sending conflicts through broker redelivery spends the delivery count on expected contention.

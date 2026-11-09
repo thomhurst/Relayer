@@ -451,7 +451,7 @@ The outbox is the area where every existing library has had correctness bugs, so
 
 - A message is written in the **same database transaction** as your business data. It is dispatched if and only if that transaction commits.
 - Delivery is at-least-once. The message ID (UUIDv7) is stable across retries and dispatches, so the consumer-side inbox deduplicates.
-- Ordering is preserved per ordering key when the route declares it (Kafka key, ASB session, SQS FIFO message group).
+- Ordering is preserved per ordering key when the route declares it (Kafka key, ASB session, SQS FIFO message group). Lanes currently follow send-time UUIDv7 order, so instances with different clocks can reorder sequential commits; D50 proposes a database-assigned insert sequence ([#353](https://github.com/thomhurst/Relayer/issues/353)).
 - A poison outbox row never blocks unrelated messages.
 - The design is safe with any number of instances. There is no double dispatch under normal operation, no cleanup race between instances, and no per-replica background-job storms.
 
@@ -513,7 +513,7 @@ live token, so a stale dispatcher cannot mutate a reclaimed row. PostgreSQL sche
 There are two paths, each chosen per message based on whether its route is ordered:
 
 1. **Unordered messages — direct dispatch.** After commit, the instance that committed dispatches immediately, in the background, without waiting for a poll. It claims an eligible row with a conditional update that sets a fresh claim token and expiry only when no live claim exists. Completion, renewal and failure updates require that token and an unexpired claim. This prevents concurrent claims and stale database mutations; a crash or a broker send that outlives its claim can still duplicate delivery, as allowed by the at-least-once guarantee. Latency equals the broker round trip (fixes the latency of polling designs, SlimMessageBus #275).
-2. **Ordered messages — lane leases.** Rows are hashed into N lanes (default 32). Instances lease lanes through `relayer_leases` with heartbeats and fair-share rebalancing as instances join and leave. A lane owner reads its lane in `id` order with a simple indexed range scan. There are no `SKIP LOCKED` scans across the whole table, and connected owners do not overlap. D34 specifies transaction locks, deadlines and the at-least-once/native-send failure boundary; ordering follows visible UUID order rather than concurrent transaction commit order. Each ordered worker retains at most 256 successful endpoint capability lookups with FIFO eviction. An evicted endpoint is resolved and validated again before its next native send; failed lookups never displace valid entries.
+2. **Ordered messages — lane leases.** Rows are hashed into N lanes (default 32). Instances lease lanes through `relayer_leases` with heartbeats and fair-share rebalancing as instances join and leave. A lane owner reads its lane in `id` order with a simple indexed range scan. There are no `SKIP LOCKED` scans across the whole table, and connected owners do not overlap. D34 specifies transaction locks, deadlines and the at-least-once/native-send failure boundary; ordering follows visible UUID order rather than concurrent transaction commit order. D50 (proposed) replaces UUID order with an insert sequence. Each ordered worker retains at most 256 successful endpoint capability lookups with FIFO eviction. An evicted endpoint is resolved and validated again before its next native send; failed lookups never displace valid entries.
 
 The implemented PostgreSQL direct path transfers reusable buffers after EF commit to an explicitly named
 hosted worker (D33). It claims each native group of due unordered rows with one conditional statement,
@@ -544,6 +544,7 @@ composition time, validates its provider and owns the transaction around the com
 It inserts the inbox key before dispatch with `ON CONFLICT DO NOTHING`; the database unique constraint
 coordinates overlapping instances and permits a waiting delivery to run if the first rolls back.
 Outbox configuration on the selected context enables inbox deduplication automatically (D36).
+The transaction uses the provider's default isolation level; D51 proposes an optional level with conflict replay ([#354](https://github.com/thomhurst/Relayer/issues/354)).
 Before commit the boundary requests completion if no settlement outcome is pending. The existing
 one-request rule rejects settlement changes during scope disposal after the work is durable.
 See [consumer configuration and failure boundaries](https://relayer.tomlonghurst.dev/docs/reference/ef-core-inbox).
