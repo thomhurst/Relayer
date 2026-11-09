@@ -62,6 +62,7 @@ To change a decision, add a new entry that supersedes it rather than editing his
 | [D49](#d49-sql-server-commit-dispatch-reuses-native-rpc-batches) | SQL Server commit dispatch reuses native RPC batches | Accepted |
 | [D50](#d50-ordered-lanes-follow-a-database-assigned-insert-sequence) | Ordered lanes follow a database-assigned insert sequence | Proposed |
 | [D51](#d51-the-ef-core-consumer-boundary-takes-an-isolation-level-and-replays-conflicts) | The EF Core consumer boundary takes an isolation level and replays conflicts | Proposed |
+| [D52](#d52-allocations-a-native-api-requires-count-as-native-client-cost) | Allocations a native API requires count as native-client cost | Accepted |
 
 ---
 
@@ -1039,3 +1040,39 @@ rejected: the boundary, not the strategy, owns replay. The default path gains no
 **Alternatives rejected.**
 - Letting the handler open its own transaction breaks the atomic inbox, business and outbox commit.
 - Sending conflicts through broker redelivery spends the delivery count on expected contention.
+
+## D52. Allocations a native API requires count as native-client cost
+
+**Context.** D18 budgets zero allocations per message from Relayer's own pipeline and excludes the serializer
+and the native client. Three transports stalled on allocations that sit exactly on that line: the Service Bus
+processor callback must return a `Task` ([#24](https://github.com/thomhurst/Relayer/issues/24)), the AWS SDK
+takes the SQS body and attributes as `string` ([#223](https://github.com/thomhurst/Relayer/issues/223)), and
+RabbitMQ.Client accepts header values only as exact-length arrays or strings
+([#273](https://github.com/thomhurst/Relayer/issues/273)). Relayer's code performs each allocation, but any
+caller of that client pays it. D1 wraps native clients; a budget that blocks a transport because of its
+client's signature contradicts that. Per-message DI scopes for scoped handlers raised the same question.
+
+**Decision.** Refine D18's exclusion; its 5% throughput and startup budgets are unchanged.
+- An allocation counts as native-client cost when the native API's signature requires that object and a
+  raw-client benchmark doing the same work allocates at least as much. The measured comparison against the
+  raw client, not absolute zero, is the test at the native boundary.
+- Each such allocation is named in the transport's site page and pinned by a benchmark or allocation test, so
+  it cannot grow unnoticed.
+- Where the client could plausibly accept a non-allocating form, file the request upstream and remove the
+  conversion when it ships. Do not build a replacement for the client call (D42).
+- Retained memory is bounded. A cache that removes a recurring boundary allocation has a fixed capacity and
+  allocates on a miss; unbounded retention is never an acceptable way to reach zero.
+- A scoped handler's DI scope, its service cache and the handler instance are application lifetime cost, not
+  pipeline cost. Singleton handlers keep the zero-allocation path.
+- Everything else Relayer adds per message stays at zero, and still needs maintainer approval to change.
+
+**Consequences.** Service Bus receive, SQS send and RabbitMQ send can ship on their native clients. Budgets are
+stated per transport as "Relayer adds N B over the raw client" with the native-required objects listed.
+Reviewers check the raw-client comparison and the pin instead of asking for a maintainer exception each time.
+The RabbitMQ header cache is temporary: the client accepted a request for memory-backed header values
+(rabbitmq/rabbitmq-dotnet-client#2144).
+
+**Alternatives rejected.**
+- Strict absolute zero: blocks every client whose API takes strings or returns `Task`.
+- Per-transport exceptions granted one at a time: the same question, re-argued for each adapter.
+- Bypassing the client (direct HTTP or AMQP framing) to avoid its allocations: replaces what D1 wraps.
