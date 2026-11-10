@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import statistics
 import subprocess
 
@@ -72,13 +73,27 @@ def main():
                         help="Diagnostic runtime control; uses native DOTNET_ReadyToRun=1/0")
     parser.add_argument("--single-image", choices=("baseline", "candidate"),
                         help="Negative control: execute one original image in every A/B slot")
-    parser.add_argument("--counterbalanced", action="store_true",
+    plans = parser.add_mutually_exclusive_group()
+    plans.add_argument("--affinity-control", action="store_true",
+                       help="Scoped default/pinned/pinned/default blocks, balanced image positions")
+    plans.add_argument("--counterbalanced", action="store_true",
                         help="Scoped-only fixed ABBA/BAAB/BAAB/ABBA blocks (16 processes)")
     args = parser.parse_args()
     if args.jit_method != "*" and not args.jit_disassembly:
         parser.error("--jit-method requires --jit-disassembly")
     if not args.jit_method.strip():
         parser.error("--jit-method must not be empty")
+    allowed_cpus = None
+    taskset = None
+    if args.affinity_control:
+        if args.jit_disassembly or args.tiered_compilation != "default" or args.ready_to_run != "default":
+            parser.error("--affinity-control requires uninstrumented default runtime settings")
+        taskset = shutil.which("taskset")
+        if not hasattr(os, "sched_getaffinity") or taskset is None:
+            parser.error("--affinity-control requires Linux sched_getaffinity and native taskset")
+        allowed_cpus = sorted(os.sched_getaffinity(0))
+        if len(allowed_cpus) < 2:
+            parser.error("--affinity-control requires at least two allowed CPUs")
     benchmark = BENCHMARK.rsplit(".", 1)[0] + "." + args.method
     builds = args.artifact.resolve() / "performance-builds"
     commits = {side: verify(builds / side) for side in SIDES}
@@ -86,11 +101,16 @@ def main():
                for side in SIDES for scoped in (True, False)}
     args.output.mkdir(parents=True, exist_ok=False)
     protocol = {"commits": commits, "benchmark": benchmark,
-                "plan": ("Scoped-only ABBA/BAAB/BAAB/ABBA; 4 fixed blocks, no adaptive stopping"
+                "plan": ("Scoped default ABBA / pinned BAAB / pinned ABBA / default BAAB; no adaptive stopping"
+                         if args.affinity_control else "Scoped-only ABBA/BAAB/BAAB/ABBA; 4 fixed blocks, no adaptive stopping"
                          if args.counterbalanced else "Scoped ABBA, then unscoped ABBA; A2 reuses first baseline image"),
                 "analysisPlan": "Compare process means within each block by actual image; retain every block difference and process. Counterbalancing addresses fixed launch-position effects, not arbitrary host drift or historical causality. No gate decision or equivalence claim.",
                 "engine": "Original Default job, native NoAcknowledgementConsoleHost without anonymous-pipe parent",
                 "limits": "New host/process executions, not historical reconstruction. Image-associated differences do not identify a production defect; absent differences do not prove equivalence. No threshold changes or gate pass claim.",
+                "affinityControl": args.affinity_control,
+                "allowedCpus": allowed_cpus,
+                "pinnedCpu": allowed_cpus[0] if allowed_cpus else None,
+                "affinityLimits": "Compare image differences within each block and retain both blocks per condition. Pinning changes placement and available parallelism for the whole process, including runtime threads; it does not isolate migration, frequency, contention or historical cause. Default blocks bracket pinned blocks, but nonlinear host drift remains a confound. No cross-run causal comparison or gate decision.",
                 "jitDisassembly": args.jit_disassembly,
                 "jitMethod": args.jit_method if args.jit_disassembly else None,
                 "captureLimits": "Method filtering reduces concurrent listing output; it does not serialize JIT compilation. Missing, interleaved or precompiled methods remain limitations, not evidence of equality.",
@@ -102,24 +122,29 @@ def main():
                 "timingUse": "Excluded: JIT diagnostics perturb execution" if args.jit_disassembly else "New fixed-plan experiment only",
                 "launches": []}
     # ABBA is a palindrome: swap A/B, rather than reversing it, for BAAB.
-    if args.counterbalanced:
+    if args.counterbalanced or args.affinity_control:
         baab = tuple("candidate" if side == "baseline" else "baseline" for side in LAUNCHES)
-        blocks = (LAUNCHES, baab, baab, LAUNCHES)
+        blocks = ((LAUNCHES, baab, LAUNCHES, baab) if args.affinity_control
+                  else (LAUNCHES, baab, baab, LAUNCHES))
     else:
         blocks = (LAUNCHES,)
-    for scoped in ((True,) if args.counterbalanced else (True, False)):
+    for scoped in ((True,) if args.counterbalanced or args.affinity_control else (True, False)):
         for block, sides in enumerate(blocks, 1):
             for position, side in enumerate(sides, 1):
                 image_side = args.single_image or side
                 image, identity = runners[image_side, scoped]
-                protocol["launches"].append({"side": side, "imageSide": image_side, "scoped": scoped,
+                affinity = "pinned" if args.affinity_control and block in (2, 3) else "default"
+                command = ["dotnet", str(image), "--benchmarkName", benchmark,
+                           "--job", "Default", "--benchmarkId", identity]
+                if affinity == "pinned":
+                    command = [taskset, "--cpu-list", str(allowed_cpus[0]), *command]
+                protocol["launches"].append({"affinity": affinity, "cwd": str(image.parent), "side": side, "imageSide": image_side, "scoped": scoped,
                     "block": block, "position": position,
-                    "command": ["dotnet", str(image), "--benchmarkName", benchmark,
-                                "--job", "Default", "--benchmarkId", identity]})
+                    "command": command})
     (args.output / "protocol.json").write_text(json.dumps(protocol, indent=2) + "\n")
     outcomes = []
     for index, launch in enumerate(protocol["launches"], 1):
-        outcome = {"launch": index, "side": launch["side"], "imageSide": launch["imageSide"], "scoped": launch["scoped"],
+        outcome = {"affinity": launch["affinity"], "launch": index, "side": launch["side"], "imageSide": launch["imageSide"], "scoped": launch["scoped"],
                    "block": launch["block"], "position": launch["position"]}
         log_path = args.output / f"{index}-{launch['side']}-{launch['scoped']}.log"
         environment = os.environ.copy()
@@ -139,7 +164,7 @@ def main():
                 ("DOTNET_JitDisasm", "DOTNET_JitDisasmDiffable", "DOTNET_JitStdOutFile")}
         with log_path.open("w") as log:
             try:
-                subprocess.run(launch["command"], cwd=Path(launch["command"][1]).parent,
+                subprocess.run(launch["command"], cwd=Path(launch["cwd"]),
                                stdout=log, stderr=subprocess.STDOUT, check=True, timeout=600,
                                env=environment)
             except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as error:

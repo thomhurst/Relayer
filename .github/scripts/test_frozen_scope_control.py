@@ -336,6 +336,70 @@ class ScopeControlTests(unittest.TestCase):
                 self.assertEqual([item['block'] for item in protocol['launches']], [item['block'] for item in outcomes])
                 self.assertIn('no adaptive stopping', protocol['plan'])
 
+    def test_affinity_control_balances_images_and_retains_failed_pinned_launch(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            calls = []
+
+            def execute(command, **kwargs):
+                calls.append(command)
+                self.assertEqual(kwargs['cwd'], Path(command[4] if command[0] == '/usr/bin/taskset' else command[1]).parent)
+                self.assertEqual(kwargs['env'], {})
+                if len(calls) == 5:
+                    raise subprocess.CalledProcessError(1, command)
+                kwargs['stdout'].write(COMPLETE.replace('27 ns/op', '40 ns/op')
+                                       if len(calls) == 6 else COMPLETE)
+
+            with patch('sys.argv', ['control', directory, str(root / 'output'), '--affinity-control']), \
+                 patch('frozen_scope_control.os.environ', {}), \
+                 patch('frozen_scope_control.os.sched_getaffinity', return_value={7, 3}, create=True), \
+                 patch('frozen_scope_control.shutil.which', return_value='/usr/bin/taskset'), \
+                 patch('frozen_scope_control.verify', return_value='commit') as verify, \
+                 patch('frozen_scope_control.executable', side_effect=lambda path, scoped, method: (path / 'runner.dll', '4' if scoped else '0')), \
+                 patch('frozen_scope_control.subprocess.run', side_effect=execute):
+                with self.assertRaises(SystemExit):
+                    main()
+            self.assertEqual(verify.call_count, 6)
+            self.assertEqual(len(calls), 16)
+            protocol = json.loads((root / 'output/protocol.json').read_text())
+            outcomes = json.loads((root / 'output/outcomes.json').read_text())
+            self.assertEqual(protocol['allowedCpus'], [3, 7])
+            self.assertEqual(protocol['pinnedCpu'], 3)
+            self.assertEqual([item['affinity'] for item in outcomes], ['default']*4 + ['pinned']*8 + ['default']*4)
+            abba = ['baseline', 'candidate', 'candidate', 'baseline']
+            baab = ['candidate', 'baseline', 'baseline', 'candidate']
+            expected = abba + baab + abba + baab
+            self.assertEqual([item['imageSide'] for item in outcomes], expected)
+            self.assertTrue(all(item['scoped'] for item in outcomes))
+            for index, command in enumerate(calls):
+                if 4 <= index < 12:
+                    self.assertEqual(command[:4], ['/usr/bin/taskset', '--cpu-list', '3', 'dotnet'])
+                else:
+                    self.assertEqual(command[0], 'dotnet')
+                self.assertEqual(command[-1], '4')
+            self.assertIn('error', outcomes[4])
+            self.assertEqual(outcomes[5]['meanNs'], 40)
+            self.assertEqual(outcomes[-1]['meanNs'], 27)
+            self.assertEqual(len(list((root / 'output').glob('*.log'))), 16)
+
+    def test_invalid_affinity_control_never_verifies_or_launches(self):
+        for cpus, taskset, options in (({3}, '/usr/bin/taskset', []),
+                                      ({3, 7}, None, []),
+                                      ({3, 7}, '/usr/bin/taskset', ['--counterbalanced']),
+                                      ({3, 7}, '/usr/bin/taskset', ['--jit-disassembly']),
+                                      ({3, 7}, '/usr/bin/taskset', ['--tiered-compilation', 'off']),
+                                      ({3, 7}, '/usr/bin/taskset', ['--ready-to-run', 'off'])):
+            with self.subTest(cpus=cpus, taskset=taskset, options=options), \
+                 patch('sys.argv', ['control', 'inputs', 'output', '--affinity-control'] + options), \
+                 patch('frozen_scope_control.os.sched_getaffinity', return_value=cpus, create=True), \
+                 patch('frozen_scope_control.shutil.which', return_value=taskset), \
+                 patch('frozen_scope_control.verify') as verify, \
+                 patch('frozen_scope_control.subprocess.run') as execute:
+                with self.assertRaises(SystemExit):
+                    main()
+                verify.assert_not_called()
+                execute.assert_not_called()
+
     def test_invalid_archive_never_launches(self):
         with tempfile.TemporaryDirectory() as directory, \
              patch('sys.argv', ['control', directory, str(Path(directory) / 'output')]), \
