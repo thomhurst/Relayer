@@ -87,7 +87,7 @@ internal sealed class SqsConformanceFixture : ITransportConformanceFixture<SqsDe
         _broker = broker;
         _client = broker.Client();
         _logs = LoggerFactory.Create(builder => builder.AddProvider(Logs));
-        Destination = "conformance-" + Guid.NewGuid().ToString("N") + (fifo ? ".fifo" : "");
+        Destination = TestContext.Current!.Isolation.GetIsolatedName("conformance-" + Guid.NewGuid().ToString("N")[..8]) + (fifo ? ".fifo" : "");
         var options = new AmazonSqsTransportOptions { SqsClient = _client };
         options.Queues.Add(new(Destination) { Attributes = fifo ? new() { ["FifoQueue"] = "true" } : [] });
         _transport = new("sqs", _client, false, options, tracing, _logs);

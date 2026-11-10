@@ -72,14 +72,19 @@ internal sealed class SqsHostedService(IServiceProvider provider, string name) :
             deadIdentity.DataType == "String" && !string.IsNullOrWhiteSpace(deadIdentity.StringValue);
         var deduplication = hasSourceIdentity && hasDeadIdentity ? null :
             delivery.Message.Attributes?.GetValueOrDefault("MessageDeduplicationId");
-        if (native is not null || deduplication is not null)
+        var groupId = delivery.Message.Attributes?.GetValueOrDefault("MessageGroupId");
+        var fifo = delivery.QueueUrl.EndsWith(".fifo", StringComparison.Ordinal);
+        // Standard queues use native groups for fairness, not portable ordering.
+        var fairGroup = fifo ? null : groupId;
+        if (native is not null || deduplication is not null || fairGroup is not null)
             options = new SendOptions().ConfigureNative<SendMessageRequest>(request =>
             {
                 if (native is not null)
                     foreach (var attribute in native) request.MessageAttributes[attribute.Key] = attribute.Value;
                 request.MessageDeduplicationId = deduplication;
+                if (fairGroup is not null) request.MessageGroupId = fairGroup;
             });
-        WireString? group = delivery.Message.Attributes?.TryGetValue("MessageGroupId", out var key) == true ? new(key) : null;
+        WireString? group = fifo && groupId is not null ? new(groupId) : null;
         return new(delivery.QueueUrl, delivery.Body, headers.ToArray(), group, options: options);
     }
 

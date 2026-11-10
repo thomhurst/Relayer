@@ -24,8 +24,8 @@ public sealed class SqsReceiveLocalStackTests
         var token = deadline.Token;
         await using var broker = await SqsBroker.StartAsync(token);
         using var client = broker.Client();
-        var source = "receiver-" + Guid.NewGuid().ToString("N") + (fifo ? ".fifo" : "");
-        var dead = "dead-" + Guid.NewGuid().ToString("N") + (fifo ? ".fifo" : "");
+        var source = TestContext.Current!.Isolation.GetIsolatedName("receiver") + (fifo ? ".fifo" : "");
+        var dead = TestContext.Current!.Isolation.GetIsolatedName("dead") + (fifo ? ".fifo" : "");
         var names = new HeaderNames(prefix);
         var control = new Control();
         var builder = Host.CreateApplicationBuilder();
@@ -73,6 +73,7 @@ public sealed class SqsReceiveLocalStackTests
                     fifo ? new WireString("group") : null,
                     options: new SendOptions().AmazonSqs(request =>
                     {
+                        request.MessageGroupId = "group";
                         request.MessageDeduplicationId = fifo ? "event-" + value : null;
                         request.MessageAttributes["native-binary"] = new() { DataType = "Binary", BinaryValue = new MemoryStream(new byte[] { 1, 2, 3 }) };
                         request.MessageAttributes["native-number"] = new() { DataType = "Number", StringValue = "42" };
@@ -81,8 +82,9 @@ public sealed class SqsReceiveLocalStackTests
             await Send(1);
             var deadUrl = (await client.GetQueueUrlAsync(dead, token)).QueueUrl;
             var poisoned = await client.ReceiveMessageAsync(new ReceiveMessageRequest
-            { QueueUrl = deadUrl, WaitTimeSeconds = 10, MessageAttributeNames = ["All"] }, token);
+            { QueueUrl = deadUrl, WaitTimeSeconds = 10, MessageAttributeNames = ["All"], MessageSystemAttributeNames = ["All"] }, token);
             var copy = poisoned.Messages.Single();
+            await Assert.That(copy.Attributes["MessageGroupId"]).IsEqualTo("group");
             await Assert.That(copy.Body).IsEqualTo("{\"Value\":1}");
             await Assert.That(copy.MessageAttributes[names.Id].StringValue).IsEqualTo("event-1");
             await Assert.That(copy.MessageAttributes["native-binary"].BinaryValue.ToArray()).IsEquivalentTo(new byte[] { 1, 2, 3 });

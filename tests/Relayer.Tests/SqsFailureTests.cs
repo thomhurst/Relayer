@@ -13,7 +13,7 @@ public sealed class SqsFailureTests
     public async Task Fifo_copy_uses_native_fallback_only_when_a_bound_identity_is_missing(string sourceHeader, string deadHeader, bool needsFallback)
     {
         using var client = new SqsReceiveTests.ReceiveClient();
-        using var delivery = new SqsDelivery(client, "url");
+        using var delivery = new SqsDelivery(client, "url.fifo");
         var message = SqsReceiveTests.Message("body", 1);
         message.Attributes["MessageDeduplicationId"] = "native-id";
         message.Attributes["MessageGroupId"] = "group";
@@ -37,7 +37,7 @@ public sealed class SqsFailureTests
     public async Task Fifo_copy_preserves_native_deduplication_for_typed_identity_attributes(string dataType, string sourceHeader, string deadHeader)
     {
         using var client = new SqsReceiveTests.ReceiveClient();
-        using var delivery = new SqsDelivery(client, "url");
+        using var delivery = new SqsDelivery(client, "url.fifo");
         var message = SqsReceiveTests.Message("body", 1);
         message.MessageAttributes[sourceHeader] = new() { DataType = dataType, StringValue = "42" };
         message.MessageAttributes[deadHeader] = new() { DataType = dataType, StringValue = "42" };
@@ -52,6 +52,24 @@ public sealed class SqsFailureTests
         await Assert.That(state.Request.MessageDeduplicationId).IsEqualTo("native-id");
         await Assert.That(state.Request.MessageAttributes[deadHeader].DataType).IsEqualTo(dataType);
         await Assert.That(state.Request.MessageAttributes[deadHeader].StringValue).IsEqualTo("42");
+        await Assert.That(() => copy.ValidateForOutbox()).Throws<InvalidOperationException>();
+    }
+
+    [Test]
+    public async Task Standard_fair_queue_copy_preserves_native_group_without_portable_ordering()
+    {
+        using var client = new SqsReceiveTests.ReceiveClient();
+        using var delivery = new SqsDelivery(client, "https://sqs.test/123/orders");
+        var message = SqsReceiveTests.Message("body", 1);
+        message.Attributes["MessageGroupId"] = "tenant";
+        delivery.Prepare(message, TimeProvider.System.GetTimestamp(), null);
+        var context = new CopyContext();
+        context.Features.Set(new NativeMessage<SqsDelivery> { Message = delivery });
+        var copy = SqsHostedService.Copy(context);
+        await Assert.That(copy.OrderingKey).IsNull();
+        var state = new SqsSendState("0");
+        state.Prepare(copy, "dead", false);
+        await Assert.That(state.Request.MessageGroupId).IsEqualTo("tenant");
         await Assert.That(() => copy.ValidateForOutbox()).Throws<InvalidOperationException>();
     }
 
