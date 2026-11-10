@@ -1,6 +1,7 @@
 using System.Buffers;
 using System.Diagnostics;
 using Azure.Core.Amqp;
+using Azure.Messaging.ServiceBus;
 using Microsoft.Extensions.DependencyInjection;
 using Relayer.AzureServiceBus;
 using Relayer.Serialization;
@@ -14,21 +15,22 @@ public class ServiceBusSendAllocationTests
     [Arguments(false, true)]
     [Arguments(true, false)]
     [Arguments(true, true)]
-    public async Task Preparation_allocates_no_more_than_the_required_UTF8_string_conversions(bool utf8ContentType, bool tracing)
+    public async Task Preparation_adds_zero_allocations_over_equivalent_native_message_preparation(bool utf8ContentType, bool tracing)
     {
         using var fixture = new Fixture(utf8ContentType, tracing);
         var state = new ServiceBusSendState();
-        Measure(fixture, state, prepare: false, 1000);
-        Measure(fixture, state, prepare: true, 1000);
+        var nativeData = new ReadOnlyMemory<byte>[1];
+        var native = new ServiceBusMessage(new AmqpAnnotatedMessage(AmqpMessageBody.FromData(nativeData)));
+        Measure(fixture, state, native, nativeData, prepare: false, 1000);
+        Measure(fixture, state, native, nativeData, prepare: true, 1000);
 
-        var conversions = Measure(fixture, state, prepare: false, 1000);
-        var preparation = Measure(fixture, state, prepare: true, 1000);
-        Console.WriteLine($"Preparation: {preparation / 1000.0} B/send; string conversions: {conversions / 1000.0} B/send.");
+        var nativePreparation = Measure(fixture, state, native, nativeData, prepare: false, 1000);
+        var preparation = Measure(fixture, state, native, nativeData, prepare: true, 1000);
+        Console.WriteLine($"Preparation: {preparation / 1000.0} B/send; raw SDK preparation: {nativePreparation / 1000.0} B/send; additional: {(preparation - nativePreparation) / 1000.0} B/send.");
 
-        // This ceiling records the current SDK string requirement, not D18 compliance.
-        // A native UTF-8 text API must remove these allocations before the target can be zero.
-        await Assert.That(conversions).IsGreaterThan(0L);
-        await Assert.That(preparation).IsLessThanOrEqualTo(conversions);
+        // D52 attributes SDK-required strings to native-client cost; everything added must stay at zero.
+        await Assert.That(nativePreparation).IsGreaterThan(0L);
+        await Assert.That(preparation).IsEqualTo(nativePreparation);
     }
 
     [Test]
@@ -76,7 +78,7 @@ public class ServiceBusSendAllocationTests
         }
     }
 
-    private static long Measure(Fixture fixture, ServiceBusSendState state, bool prepare, int count)
+    private static long Measure(Fixture fixture, ServiceBusSendState state, ServiceBusMessage native, ReadOnlyMemory<byte>[] nativeData, bool prepare, int count)
     {
         var before = GC.GetAllocatedBytesForCurrentThread();
         for (var i = 0; i < count; i++)
@@ -89,8 +91,15 @@ public class ServiceBusSendAllocationTests
             }
             else
             {
+                nativeData[0] = outgoing.Body;
                 foreach (var header in outgoing.Headers.Span)
-                    GC.KeepAlive(header.Value.ToString());
+                {
+                    if (header.Key == "content-type") native.ContentType = header.Value.ToString();
+                    else native.ApplicationProperties[header.Key] = header.Value.ToString();
+                }
+                nativeData[0] = default;
+                native.ApplicationProperties.Clear();
+                native.ContentType = null;
             }
         }
         return GC.GetAllocatedBytesForCurrentThread() - before;
