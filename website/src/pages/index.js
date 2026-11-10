@@ -289,6 +289,7 @@ const status = [
   ['Manual settlement requests with exception precedence', 'Implemented', true],
   ['Request/response with bounded state and mandatory timeouts', 'Implemented', true],
   ['Declared topology and JSON export', 'Implemented', true],
+  ['Service Bus Bicep and Terraform infrastructure export', 'Implemented API; CLI and AWS export planned', true],
   ['In-memory transport for tests and samples', 'Implemented', true],
   ['Runnable samples and migration guides', 'Implemented', true],
     ['Service Bus receive binding and manual settlement', 'Implemented', true],

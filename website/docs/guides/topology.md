@@ -1,6 +1,6 @@
 ---
 title: Topology
-description: "Declared topology: validate or provision broker entities at startup, and export JSON or AsyncAPI documents."
+description: "Declared topology: validate or provision broker entities at startup, and export JSON, AsyncAPI or Service Bus infrastructure."
 ---
 
 Declare routes and consumers normally. Relayer builds an inspectable topology from those declarations; it never infers broker entities from CLR names.
@@ -43,7 +43,109 @@ Adapters implement `ITransport.ApplyTopologyAsync(mode, cancellationToken)`. The
 
 ## JSON export
 
-JSON export uses schema version 1, transport declaration order, effective modes, destinations, sources, stable message names/versions, ordering requirements, concurrency and batch size. Consumer messages come from explicitly registered handler descriptors. Native option objects and credentials are deliberately excluded from JSON; inspect the typed declarations for native settings. The writer uses explicit JSON operations and works with reflection disabled under Native AOT. The output stream remains open. CLI, Bicep and Terraform exports belong to later tooling work.
+JSON export uses schema version 1, transport declaration order, effective modes, destinations, sources, stable message names/versions, ordering requirements, concurrency and batch size. Consumer messages come from explicitly registered handler descriptors. Native option objects and credentials are deliberately excluded from JSON; inspect the typed declarations for native settings. The writer uses explicit JSON operations and works with reflection disabled under Native AOT. The output stream remains open.
+
+## Service Bus infrastructure export
+
+`Relayer.AzureServiceBus` provides `ServiceBusTopologyExporter` for **one explicitly selected named Service Bus transport**. It reads `ITopology` and the same named `AzureServiceBusTransportOptions` used by the application, including native `CreateQueueOptions`, `CreateTopicOptions` and `CreateSubscriptionOptions`. It does not create clients, resolve runtime adapters, start the host, connect to Azure or provision anything. Other named transports are outside this selection; exporting one of them through this exporter fails.
+
+Here is a standalone export application. Create a .NET 10 console project, add `Relayer.AzureServiceBus` and `Microsoft.Extensions.DependencyInjection`, and replace `Program.cs` with:
+
+```csharp
+using Azure.Messaging.ServiceBus.Administration;
+using Microsoft.Extensions.DependencyInjection;
+using Relayer;
+using Relayer.AzureServiceBus;
+
+if (args.Length != 2 || args[0] is not ("bicep" or "terraform"))
+    throw new ArgumentException("Usage: <bicep|terraform> <output-path>");
+
+var services = new ServiceCollection();
+services.AddRelayer(relayer => relayer.ServiceBus("events", transport =>
+{
+    transport.Options.Configure(options =>
+    {
+        // Share this registration with the application's actual declarations.
+        // No connection string or Azure credentials are needed for export.
+        options.Queues.Add(new CreateQueueOptions("orders"));
+        options.Topics.Add(new CreateTopicOptions("order-events"));
+        options.Subscriptions.Add(new CreateSubscriptionOptions("order-events", "billing")
+        {
+            MaxDeliveryCount = 5
+        });
+    });
+}));
+
+using var provider = services.BuildServiceProvider();
+using var output = new MemoryStream();
+provider.GetRequiredService<ServiceBusTopologyExporter>().Export("events", output,
+    args[0] == "bicep" ? ServiceBusTopologyFormat.Bicep : ServiceBusTopologyFormat.Terraform);
+// Publish the file only after validation succeeds; the exporter leaves output open.
+File.WriteAllBytes(args[1], output.ToArray());
+```
+
+Run it from your console project's directory:
+
+```bash
+dotnet run -- bicep topology.bicep
+dotnet run -- terraform topology.tf
+```
+
+The Bicep artifact targets an existing namespace in the deployment's resource group through `param serviceBusNamespaceName string`. For example, the generated topic/subscription declarations include the following (property lists abbreviated):
+
+```bicep
+param serviceBusNamespaceName string
+
+resource serviceBusNamespace 'Microsoft.ServiceBus/namespaces@2024-01-01' existing = {
+  name: serviceBusNamespaceName
+}
+
+resource topic1 'Microsoft.ServiceBus/namespaces/topics@2024-01-01' = {
+  parent: serviceBusNamespace
+  name: 'order-events'
+  properties: {
+    enableBatchedOperations: true
+    requiresDuplicateDetection: false
+    status: 'Active'
+    supportOrdering: false
+  }
+}
+
+resource subscription2 'Microsoft.ServiceBus/namespaces/topics/subscriptions@2024-01-01' = {
+  parent: topic1
+  name: 'billing'
+  properties: {
+    maxDeliveryCount: 5
+    requiresSession: false
+    deadLetteringOnFilterEvaluationExceptions: true
+  }
+}
+```
+
+Terraform output is HCL (`.tf`) using the **Azure/AzAPI v2** provider and the same ARM 2024-01-01 resource properties. The artifact includes the provider requirement, an empty provider configuration and a required `servicebus_namespace_id` string variable. Configure provider authentication externally. The corresponding subscription excerpt is:
+
+```hcl
+resource "azapi_resource" "subscription2" {
+  type      = "Microsoft.ServiceBus/namespaces/topics/subscriptions@2024-01-01"
+  name      = "billing"
+  parent_id = azapi_resource.topic1.id
+  body = {
+    properties = {
+      maxDeliveryCount = 5
+      requiresSession = false
+      deadLetteringOnFilterEvaluationExceptions = true
+    }
+  }
+}
+```
+
+The exporter preserves all native public entity settings supported by these ARM schemas: idle/TTL/duplicate-detection durations, batching, partitioning, duplicate detection, sessions, size limits, locks, delivery counts, dead-letter settings, forwarding, topic ordering and entity status. Durations use ISO 8601. Idle/TTL values of `TimeSpan.MaxValue` are omitted to use the service defaults, matching the native SDK's serialization. Optional message sizes are omitted when unset. Declaration order fixes resource symbols and output order; repeated exports of unchanged declarations are identical UTF-8 without a BOM or timestamps. Resource names are escaped as literals, including interpolation syntax and Unicode.
+
+Subscriptions reference their declared topic. Forwarding to another exported queue/topic adds a deployment dependency while preserving the native forwarding address; undeclared forwarding targets are treated as externally managed entities and must already exist. Cyclic forwarding/parent dependencies fail before output is written. No deployment is performed or validated against an Azure account, and namespace SKU/service restrictions still apply when you deploy.
+
+The exporter rejects nonempty `UserMetadata` (absent from these ARM schemas), entity `AuthorizationRules` (manage credentials separately), slash-containing entity names (unsupported ARM child names), unknown entity statuses, duplicate entities/subscriptions, missing subscription parents, and missing native route/consumer entities with actionable errors before touching the output stream. It never exports connection strings, credentials, processor settings or trusted-session assertions as infrastructure. Processor options and trusted assertions are application settings; the native `RequiresSession` entity property is exported.
+
+The `dotnet relayer topology export --format json|bicep|terraform` tool entry point and SQS/SNS Terraform export remain **planned** ([#502](https://github.com/thomhurst/Relayer/issues/502), [#501](https://github.com/thomhurst/Relayer/issues/501)). Use the runnable application above for Service Bus exports today. Existing `ITopology.ExportJson` behavior is unchanged.
 
 ## AsyncAPI export
 

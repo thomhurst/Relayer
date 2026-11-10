@@ -1,6 +1,7 @@
 using Azure.Messaging.ServiceBus;
 using Azure.Messaging.ServiceBus.Administration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -18,6 +19,7 @@ public static class ServiceBusBuilderExtensions
     {
         ArgumentNullException.ThrowIfNull(builder);
         ArgumentNullException.ThrowIfNull(configure);
+        builder.Services.TryAddSingleton<ServiceBusTopologyExporter>();
         builder.AddTransport<AzureServiceBusTransportOptions, ServiceBusRouteOptions, ServiceBusConsumerOptions>(name, transport =>
         {
             transport.SendDefaults = new() { HeaderNames = new("cloudEvents:") };
