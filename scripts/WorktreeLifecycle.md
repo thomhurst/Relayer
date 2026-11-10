@@ -2,6 +2,8 @@
 
 `AgentLocks.ps1 release` removes its recorded checkout before releasing ownership. Register the path once after checkout with `renew -LockName <name> -Worktree <absolute-path>`. Use the shared checkout's current script, and release in `finally` after stopping owned processes and saving evidence under the evidence root defined in the [issue-pr-loop repository guidance](../.agents/skills/issue-pr-loop/references/repository.md#worktrees-and-evidence). `Remove-MergedWorktrees.ps1` deletes the evidence of a closed item once no registered worktree uses it, under a temporary lease on the item, and deletes other entries after the retention window. Release keeps the evidence of an open item, because the merge gate cites archives across units.
 
+`AgentLocks.ps1` bounds each Docker subprocess to 30 seconds, including backend inspection, setup, and Redis commands. Override the deadline with `-DockerTimeoutSeconds` (1–600). A timeout or command failure reports the attempted action and lock and returns exit 1. Release retains its cached token on failure; after Docker recovers, retry status/release with the same owner identity so Redis can verify ownership. A command can have reached Redis before timing out, so a retained token alone does not prove ownership.
+
 Local branches remain available for `git worktree add <path> <branch>`. Detached commits are retained as `retained-worktrees/<SHA>`. Uncommitted source, unknown ignored files, Git-locked worktrees, the main checkout and foreign repositories are preserved. Known generated output is disposable under `WorktreeCleanup.ps1`. Release prints why a checkout was retained.
 
 Run release with the shared checkout as the working directory. On Windows a process whose current directory is inside the worktree blocks deletion, and so can a build or test process that still holds a file. Git then deletes most of the tree, including its `.git` file, and fails. Cleanup therefore records each vetted checkout under `<git-common-dir>/agent-pending-removals` before deleting it, and removes the record on success. Each `Remove-MergedWorktrees.ps1` sweep retries recorded removals under temporary Redis leases for the recorded work items. It drops a record when a new checkout reuses the path, and preserves the directory when files outside known generated output changed after removal began.
@@ -26,5 +28,6 @@ pwsh scripts/Test-MergePr.ps1
 pwsh scripts/Test-WorktreeCleanup.ps1
 pwsh scripts/Test-RemoveMergedWorktrees.ps1
 pwsh scripts/Test-AgentEvidenceCleanup.ps1
+pwsh scripts/Test-AgentLocksDocker.ps1
 pwsh scripts/Test-DockerCleanup.ps1
 ```
