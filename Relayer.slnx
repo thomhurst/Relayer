@@ -61,6 +61,9 @@
     <File Path="docs/decisions.md" />
   </Folder>
   <Folder Name="/samples/">
+    <Project Path="samples/ModularMonolith/ModularMonolith.csproj" />
+    <Project Path="samples/KafkaEfOutbox/KafkaEfOutbox.csproj" />
+    <Project Path="samples/ServiceBusWebApi/ServiceBusWebApi.csproj" />
     <Project Path="samples/RelayerSample.Api/RelayerSample.Api.csproj" />
     <Project Path="samples/RelayerSample.AppHost/RelayerSample.AppHost.csproj" />
   </Folder>

@@ -7,6 +7,8 @@ Relayer is in early development. Track progress in [GitHub issues](https://githu
 
 ## Implemented
 
+- [Runnable samples](guides/samples.md) and migration guides from [MassTransit](migration/masstransit.md), [Rebus](migration/rebus.md) and [CAP](migration/cap.md).
+
 - [Aspire integration](guides/aspire.md): explicit Kafka and Service Bus connection wiring, existing health probes and OpenTelemetry dashboard export, with a runnable AppHost sample. Outbox resources use the existing store adapters.
 
 - [Kafka and Service Bus consumer failure circuits](guides/failure-handling.md#consumer-circuit-breaking): native Kafka pause/resume and Service Bus processor stop/drain/restart, retained failures, one half-open probe and endpoint state metrics. SQS and RabbitMQ integrations remain planned.

@@ -290,6 +290,7 @@ const status = [
   ['Request/response with bounded state and mandatory timeouts', 'Implemented', true],
   ['Declared topology and JSON export', 'Implemented', true],
   ['In-memory transport for tests and samples', 'Implemented', true],
+  ['Runnable samples and migration guides', 'Implemented', true],
     ['Service Bus receive binding and manual settlement', 'Implemented', true],
     ['Service Bus sending, client ownership and topology', 'Implemented', true],
     ['Service Bus processors, sessions, telemetry and health', 'Implemented', true],

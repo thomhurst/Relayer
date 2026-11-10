@@ -12,6 +12,7 @@ const sidebars = {
       type: 'category',
       label: 'Guides',
       items: [
+        'guides/samples',
         'guides/messages',
         'guides/handlers',
         'guides/sagas',
@@ -57,6 +58,11 @@ const sidebars = {
       type: 'category',
       label: 'Reference',
       items: ['reference/diagnostics', 'reference/outbox-stores', 'reference/postgres-schema', 'reference/postgres-store', 'reference/sqlserver-store', 'reference/mysql-store', 'reference/postgres-outbox', 'reference/ef-core-outbox', 'reference/tenant-stores', 'reference/direct-dispatch', 'reference/ordered-dispatch', 'reference/ef-core-inbox', 'reference/postgres-maintenance', 'reference/postgres-cdc'],
+    },
+    {
+      type: 'category',
+      label: 'Migration',
+      items: ['migration/masstransit', 'migration/rebus', 'migration/cap'],
     },
     'roadmap',
     'contributing/documentation',
