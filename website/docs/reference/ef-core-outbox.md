@@ -35,6 +35,16 @@ participating DbContext. Context pooling, concurrent use of one service scope an
 `TransactionScope` enlistment are not supported. Other EF database providers fail on first use;
 [SQL Server schema tooling and ADO.NET enlistment](sqlserver-store.md) and [MySQL schema tooling](mysql-store.md) are implemented separately. EF Core integration for those providers remains planned.
 
+`AddDbContextPool` and `AddPooledDbContextFactory` reuse options and interceptors across application
+scopes. Relayer's interceptors must share the current `ISender` scope's outbox coordinator so sends,
+context selection and shared transactions have the same owner. Resetting a pooled context cannot
+rebind those interceptors to the next scope. With DI scope validation enabled, pooled registration may
+therefore fail while resolving scoped services from the root provider; otherwise Relayer rejects the
+root-bound interceptors during the options callback, including when an unpooled context has already
+initialized EF's shared internal service provider. Manually configuring outbox options also requires
+an application scope's provider. Use `AddDbContext` for both outbox and EF consumer
+contexts. Npgsql connection pooling is independent and remains supported.
+
 Application-owned scoped factories can select native stores for manually initiated units and explicitly
 composed tenant endpoints. See [native tenant store selection](tenant-stores.md) for database/schema
 isolation, ownership and the current dynamic-consumer limitation.

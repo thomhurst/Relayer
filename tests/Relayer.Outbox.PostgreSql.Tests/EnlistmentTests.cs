@@ -16,6 +16,57 @@ namespace Relayer.Outbox.PostgreSql.Tests;
 public class EnlistmentTests
 {
     [Test]
+    [Arguments(false, false)]
+    [Arguments(true, false)]
+    [Arguments(false, true)]
+    [Arguments(true, true)]
+    public async Task Pooled_outbox_options_reject_root_captured_interceptors(bool factory, bool warmCache)
+    {
+        if (warmCache)
+        {
+            var unpooledServices = new ServiceCollection().AddRelayerEntityFrameworkCoreOutbox();
+            unpooledServices.AddDbContext<OrdersContext>((sp, options) =>
+                options.UseNpgsql("Host=unused").AddRelayerOutbox(sp));
+            await using var unpooledProvider = unpooledServices.BuildServiceProvider();
+            await using var unpooledScope = unpooledProvider.CreateAsyncScope();
+            using var unpooled = unpooledScope.ServiceProvider.GetRequiredService<OrdersContext>();
+            // Warm EF's shared internal provider before checking pooled options. Extension.Validate
+            // alone does not run again on a cache hit. Neither initialization opens a connection.
+            _ = unpooled.Model;
+        }
+
+        var services = new ServiceCollection().AddRelayerEntityFrameworkCoreOutbox();
+        if (factory)
+            services.AddPooledDbContextFactory<OrdersContext>((sp, options) =>
+                options.UseNpgsql("Host=unused").AddRelayerOutbox(sp));
+        else
+            services.AddDbContextPool<OrdersContext>((sp, options) =>
+                options.UseNpgsql("Host=unused").AddRelayerOutbox(sp));
+        // Without scope validation EF can build the options, but must not silently capture a root coordinator.
+        await using var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = false });
+        await using var scope = provider.CreateAsyncScope();
+        await Assert.That(() =>
+        {
+            using var context = scope.ServiceProvider.GetRequiredService<OrdersContext>();
+            _ = context.Model;
+        }).Throws<InvalidOperationException>().WithMessageContaining("current ISender scope");
+    }
+
+    [Test]
+    public async Task Root_provider_cannot_configure_outbox_interceptors_without_scope_validation()
+    {
+        var services = new ServiceCollection().AddRelayerEntityFrameworkCoreOutbox();
+        await using var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = false });
+        await Assert.That(() => new DbContextOptionsBuilder().UseNpgsql("Host=unused").AddRelayerOutbox(provider))
+            .Throws<InvalidOperationException>().WithMessageContaining("current ISender scope");
+        await using var scope = provider.CreateAsyncScope();
+        var options = new DbContextOptionsBuilder<OrdersContext>().UseNpgsql("Host=unused")
+            .AddRelayerOutbox(scope.ServiceProvider);
+        using var context = new OrdersContext(options.Options);
+        _ = context.Model;
+    }
+
+    [Test]
     [Arguments(false)]
     [Arguments(true)]
     public async Task Implicit_saves_and_explicit_commits_are_atomic_and_batched(bool synchronous)
