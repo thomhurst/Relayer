@@ -16,13 +16,17 @@ public class SqsBindingBenchmarks
     private readonly byte[] _body = Encoding.UTF8.GetBytes(new string('x', 256));
     private readonly DateTimeOffset _time = DateTimeOffset.UtcNow;
     private long _sequence;
+    private readonly byte[] _group = "customer-123"u8.ToArray();
+
+    [Params(false, true)]
+    public bool Fifo { get; set; }
 
     [GlobalSetup]
     public void Setup()
     {
         var message = Next();
         foreach (var header in message.Headers.Span) _raw.MessageAttributes.Add(header.Key, new() { DataType = "String" });
-        _relayer.Prepare(message, "https://sqs.us-east-1.amazonaws.com/123456789012/orders", false);
+        _relayer.Prepare(message, "https://sqs.us-east-1.amazonaws.com/123456789012/orders", Fifo);
         _relayer.Clear();
         RawBinding();
     }
@@ -32,14 +36,21 @@ public class SqsBindingBenchmarks
     {
         var message = Next();
         _raw.MessageBody = Encoding.UTF8.GetString(message.Body.Span);
-        foreach (var header in message.Headers.Span) _raw.MessageAttributes[header.Key].StringValue = header.Value.ToString();
+        _raw.MessageGroupId = message.OrderingKey?.ToString();
+        _raw.MessageDeduplicationId = null;
+        foreach (var header in message.Headers.Span)
+        {
+            var value = header.Value.ToString();
+            _raw.MessageAttributes[header.Key].StringValue = value;
+            if (Fifo && header.Key == "ce_id") _raw.MessageDeduplicationId = value;
+        }
         return _raw.MessageBody.Length + _raw.MessageAttributes.Count;
     }
 
     [Benchmark]
     public int RelayerBinding()
     {
-        var size = _relayer.Prepare(Next(), "https://sqs.us-east-1.amazonaws.com/123456789012/orders", false);
+        var size = _relayer.Prepare(Next(), "https://sqs.us-east-1.amazonaws.com/123456789012/orders", Fifo);
         _relayer.Clear();
         return size;
     }
@@ -47,7 +58,7 @@ public class SqsBindingBenchmarks
     private OutgoingMessage Next()
     {
         _envelope.Write<HeaderBuffer, HeaderBuffer>(_headers, new(Guid.CreateVersion7(), _time.AddTicks(++_sequence), default));
-        return new("orders", _body, _headers.Entries);
+        return new("orders", _body, _headers.Entries, Fifo ? new WireString(_group) : null);
     }
 
     private sealed class HeaderBuffer : IMessageHeaderWriter<HeaderBuffer>

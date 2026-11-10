@@ -179,6 +179,27 @@ public class SqsSendTests
     }
 
     [Test]
+    public async Task Utf8_fifo_group_reuses_the_string_seen_by_the_native_callback()
+    {
+        var state = new SqsSendState("0");
+        string? decodedGroup = null;
+        var options = new SendOptions().AmazonSqs(request =>
+        {
+            decodedGroup = request.MessageGroupId;
+            request.MessageGroupId = "callback-override";
+        });
+        var message = new OutgoingMessage("ordered.fifo", "{}"u8.ToArray(),
+            orderingKey: new WireString("customer-123"u8.ToArray()), options: options);
+
+        state.Prepare(message, "https://sqs.example/ordered.fifo", true);
+        state.CopyToEntry();
+
+        await Assert.That(decodedGroup).IsEqualTo("customer-123");
+        await Assert.That(state.Request.MessageGroupId).IsSameReferenceAs(decodedGroup);
+        await Assert.That(state.Entry.MessageGroupId).IsSameReferenceAs(decodedGroup);
+    }
+
+    [Test]
     public async Task Native_replacement_dictionaries_remain_caller_owned()
     {
         using var client = new SqsTestClient();

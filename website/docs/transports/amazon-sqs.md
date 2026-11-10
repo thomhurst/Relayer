@@ -74,7 +74,7 @@ await sender.SendAsync(order, options => options.AmazonSqs(request =>
 }));
 ```
 
-Callbacks receive native `SendMessageRequest` for both single and batch sends. They run once per message before native admission. Original envelope headers, resolved destination, portable group key and scheduled time take precedence over conflicting callback values. Do not retain borrowed request objects. Native callbacks cannot be persisted in the outbox.
+Callbacks receive native `SendMessageRequest` for both single and batch sends. They run once per message before native admission. Original envelope headers, resolved destination, portable group key and scheduled time take precedence over conflicting callback values. The portable group key is decoded once and the same native string is restored after the callback. Do not retain borrowed request objects. Native callbacks cannot be persisted in the outbox.
 
 ## Batching and telemetry
 
@@ -96,4 +96,4 @@ dotnet run -c Release --project benchmarks/Relayer.Benchmarks -- --filter "*SqsS
 
 Native request, entry and attribute containers are pooled per concurrent operation. SQS requires a text body, so decoding serialized UTF-8 bytes allocates a native-body string on each send. Nonempty UTF-8 header values and group keys also allocate strings. Under the approved native-boundary allocation policy (D52), these required `SendMessageRequest.MessageBody`, `MessageAttributeValue.StringValue`, and `MessageGroupId` strings count as native-client cost when the equivalent raw-client preparation allocates at least as much. All other pipeline allocations remain subject to the zero-allocation requirement. The 5% throughput budget is unchanged; the serialized-send benchmark does not establish the full default-JSON pipeline budget.
 
-`SqsBindingBenchmarks` isolates these conversions without network, SDK response, or serializer allocations. It writes the default binary-mode envelope with changing IDs/timestamps and a 256-byte body on each invocation. Run it with `--filter "*SqsBindingBenchmarks*"` to pin Relayer's additional allocation cost against equivalent raw-client preparation, independently of native request overhead. The earlier default-envelope probe reported 856 B/message on each path (0 additional B); that historical report is not a measurement of every payload or configuration.
+`SqsBindingBenchmarks` isolates these conversions without network, SDK response, or serializer allocations. It writes the default binary-mode envelope with changing IDs/timestamps and a 256-byte body on each invocation, for both standard messages and FIFO messages with a UTF-8 group key. Run it with `--filter "*SqsBindingBenchmarks*"` to pin Relayer's additional allocation cost against equivalent raw-client preparation, independently of native request overhead. The earlier default-envelope probe reported 856 B/message on each path (0 additional B); that historical report is not a measurement of every payload or configuration.

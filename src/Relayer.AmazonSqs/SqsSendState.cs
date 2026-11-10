@@ -23,7 +23,8 @@ internal sealed class SqsSendState
         Request.QueueUrl = queueUrl;
         // SQS has a native text body. Reject invalid UTF-8 rather than silently replacing serializer bytes.
         Request.MessageBody = Utf8.GetString(outgoing.Body.Span);
-        if (outgoing.OrderingKey is { } orderingKey) Request.MessageGroupId = orderingKey.ToString();
+        var groupId = outgoing.OrderingKey?.ToString();
+        if (groupId is not null) Request.MessageGroupId = groupId;
         Request.MessageAttributes = _attributes;
         outgoing.ApplyNative(Request);
         // Keep caller-supplied attribute dictionaries caller-owned, while retaining reusable transport storage.
@@ -46,7 +47,7 @@ internal sealed class SqsSendState
         if (_attributes.Count > 10)
             throw new InvalidOperationException("SQS supports at most 10 message attributes, including CloudEvents and tracing headers.");
         Request.QueueUrl = queueUrl;
-        if (outgoing.OrderingKey is { } key) Request.MessageGroupId = key.ToString();
+        if (groupId is not null) Request.MessageGroupId = groupId;
         if (outgoing.DeliverAt is { } deliverAt)
         {
             var delay = deliverAt - DateTimeOffset.UtcNow;
