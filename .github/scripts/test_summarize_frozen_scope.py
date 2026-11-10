@@ -45,6 +45,42 @@ class ScopeListingTests(unittest.TestCase):
             self.assertEqual(len(actual['captures'][1]['methods']['Repeated()']), 2)
             self.assertNotEqual(original['captures'][1]['sha256'], actual['captures'][1]['sha256'])
 
+    def test_resolution_capture_keeps_benchmark_identity_and_rejects_other_methods(self):
+        with tempfile.TemporaryDirectory() as root:
+            directory = Path(root)
+            protocol, _ = self.fixture(directory)
+            for method in ('ScopeOnly', 'ScopeAndHandlerResolution'):
+                protocol['benchmark'] = 'Relayer.Benchmarks.ConsumePipelineBenchmarks.' + method
+                (directory / 'protocol.json').write_text(json.dumps(protocol))
+                actual = summarize(directory)
+                self.assertEqual(actual['benchmark'], protocol['benchmark'])
+                self.assertEqual([group['identicalAcrossAllFour'] for group in actual['groups']], [2, 2])
+            protocol['benchmark'] = 'Relayer.Benchmarks.ConsumePipelineBenchmarks.DirectDispatch'
+            (directory / 'protocol.json').write_text(json.dumps(protocol))
+            with self.assertRaises(ValueError):
+                summarize(directory)
+
+    def test_audit_reports_invalid_capture_without_comparing_partial_group(self):
+        with tempfile.TemporaryDirectory() as root:
+            directory = Path(root)
+            self.fixture(directory)
+            path = directory / '2-candidate-True.asm'
+            path.write_bytes(path.read_bytes() + b'; Assembly listing for method Partial()\n')
+            with self.assertRaises(ValueError):
+                summarize(directory)
+            actual = summarize(directory, audit=True)
+            self.assertIn('listingError', actual['captures'][1])
+            self.assertNotIn('methods', actual['captures'][1])
+            self.assertFalse(actual['groups'][0]['comparable'])
+            self.assertNotIn('differences', actual['groups'][0])
+            self.assertEqual(actual['groups'][1]['identicalAcrossAllFour'], 2)
+            # Audit never relaxes launch/runtime validation.
+            outcomes = json.loads((directory / 'outcomes.json').read_text())
+            outcomes[0]['error'] = 'failed launch'
+            (directory / 'outcomes.json').write_text(json.dumps(outcomes))
+            with self.assertRaises(ValueError):
+                summarize(directory, audit=True)
+
     def test_rejects_partial_or_unexpected_listings(self):
         for invalid in (b'', b'warning\n' + listing(), listing().replace(b'; Total bytes of code 10', b''),
                         listing() + b'; Assembly listing for method Partial()\n'):
