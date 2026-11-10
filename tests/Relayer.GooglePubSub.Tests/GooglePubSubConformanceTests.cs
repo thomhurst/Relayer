@@ -1,3 +1,6 @@
+using Google.Api.Gax;
+using Google.Api.Gax.Grpc;
+using Grpc.Core;
 using Google.Cloud.PubSub.V1;
 using Microsoft.Extensions.DependencyInjection;
 using Relayer.Testing;
@@ -18,6 +21,7 @@ public class GooglePubSubConformanceTests
     [Arguments(TransportConformanceCase.TracePropagation)]
     [Arguments(TransportConformanceCase.CreationContextCopies)]
     [Arguments(TransportConformanceCase.Reconnect)]
+    [Arguments(TransportConformanceCase.SendDuringOutage)]
     public async Task PubSub_passes_or_explicitly_skips_unsupported_capability(TransportConformanceCase scenario)
     {
         var suite = new TransportConformanceSuite<GooglePubSubDelivery, GooglePubSubBinding>(PubSubFixture.CreateAsync, TimeSpan.FromMinutes(2));
@@ -34,6 +38,8 @@ internal sealed class PubSubFixture : ITransportConformanceFixture<GooglePubSubD
     private readonly ServiceProvider _provider;
     internal GooglePubSubTransport Adapter { get; }
     private GooglePubSubConsumer? _worker;
+    public TimeSpan? OutageSendTimeout => TimeSpan.FromSeconds(10);
+    public bool IsExpectedOutageFailure(Exception error) => error is RpcException { StatusCode: StatusCode.Unavailable or StatusCode.DeadlineExceeded };
     public string Destination { get; } = TopicName.FromProjectTopic("relayer-test", "conformance-" + Guid.NewGuid().ToString("N")).ToString();
     internal string Subscription => Destination.Replace("/topics/", "/subscriptions/", StringComparison.Ordinal);
     public ITransport Transport => Adapter;
@@ -50,7 +56,10 @@ internal sealed class PubSubFixture : ITransportConformanceFixture<GooglePubSubD
             transport.TopologyMode = TopologyMode.Provision;
             transport.Options.Configure(options =>
             {
-                options.Publisher = broker.Publisher;
+                // PublishAsync has no caller cancellation parameter. Bound retries in the native API client.
+                var publisherSettings = new PublisherServiceApiSettings();
+                publisherSettings.PublishSettings = publisherSettings.PublishSettings.WithExpiration(Expiration.FromTimeout(TimeSpan.FromSeconds(5)));
+                options.Publisher = new PublisherServiceApiClientImpl(broker.Publisher.GrpcClient, publisherSettings, null);
                 options.Subscriber = broker.Subscriber;
                 options.PublisherSettings = new() { EnableMessageOrdering = true };
                 options.Topics.Add(TopicName.Parse(Destination));
