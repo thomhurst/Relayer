@@ -114,7 +114,13 @@ public sealed class ServiceBusTopologyExporter
         }
         // Native forwarding requires its destination to exist first. Keep external names literal;
         // dependencies on declared destinations are emitted without changing the native address.
-        var endpoints = resources.Where(item => item.Parent is null).ToDictionary(item => item.Name, StringComparer.OrdinalIgnoreCase);
+        var endpoints = new Dictionary<string, Resource>(StringComparer.OrdinalIgnoreCase);
+        foreach (var resource in resources)
+        {
+            if (resource.Parent is not null) continue;
+            if (!endpoints.TryAdd(resource.Name, resource))
+                throw new InvalidOperationException($"Entities '{endpoints[resource.Name].Name}' and '{resource.Name}' have the same case-insensitive Service Bus name. Use distinct queue and topic names before exporting.");
+        }
         foreach (var resource in resources)
         foreach (var forward in resource.Forwards)
             if (endpoints.TryGetValue(forward, out var target)) resource.Dependencies.Add(target.Symbol);

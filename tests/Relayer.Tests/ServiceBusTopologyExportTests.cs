@@ -149,6 +149,9 @@ public sealed class ServiceBusTopologyExportTests
     [Arguments("missing-parent")]
     [Arguments("duplicate")]
     [Arguments("duplicate-subscription")]
+    [Arguments("case-queues")]
+    [Arguments("case-topics")]
+    [Arguments("case-queue-topic")]
     [Arguments("slash")]
     [Arguments("cycle")]
     [Arguments("case-cycle")]
@@ -170,6 +173,9 @@ public sealed class ServiceBusTopologyExportTests
                 case "topic-authorization": options.Topics[0].AuthorizationRules.Add(new SharedAccessAuthorizationRule("send", [AccessRights.Send])); break;
                 case "missing-parent": options.Topics.Clear(); break;
                 case "duplicate": options.Topics.Add(new("queue")); break;
+                case "case-queues": options.Queues.Add(new("QUEUE")); break;
+                case "case-topics": options.Topics.Add(new("TOPIC")); break;
+                case "case-queue-topic": options.Topics.Add(new("QUEUE")); break;
                 case "duplicate-subscription": options.Subscriptions.Add(new("topic", "subscription")); break;
                 case "slash": options.Queues.Add(new("path/queue")); break;
                 case "case-cycle": options.Queues[0].ForwardDeadLetteredMessagesTo = "QUEUE"; break;
