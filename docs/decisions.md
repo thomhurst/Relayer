@@ -75,6 +75,7 @@ To change a decision, add a new entry that supersedes it rather than editing his
 | [D62](#d62-sql-server-maintenance-reuses-direct-dispatch-and-native-transaction-locks) | SQL Server maintenance reuses direct dispatch and native transaction locks | Accepted |
 | [D63](#d63-mysql-ordered-dispatch-uses-innodb-lease-rows-and-native-identity) | MySQL ordered dispatch uses InnoDB lease rows and native identity | Accepted |
 | [D64](#d64-sql-server-ordered-dispatch-reuses-native-locks-and-sequence-ranges) | SQL Server ordered dispatch reuses native locks and sequence ranges | Accepted |
+| [D65](#d65-mysql-maintenance-uses-native-session-admission-and-existing-dispatch) | MySQL maintenance uses native session admission and existing dispatch | Accepted |
 
 ---
 
