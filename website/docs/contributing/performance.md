@@ -410,3 +410,9 @@ Relayer throughput must be at least `0.95 * raw throughput`. Add these cases to
 the CI gate with their adapter and retain raw results for both paths. Never use
 an in-memory result as a substitute for any of Kafka, Azure Service Bus, Amazon
 SQS/SNS or RabbitMQ.
+
+### Frozen concurrent investigation
+
+`Frozen concurrent allocation investigation` runs a separate diagnostic on native Ubuntu x64 against the retained executables from runs 42306276036 and 42312305889. It verifies every retained build inventory before executing an external cached-delegate probe. Each run uses separate baseline/candidate/candidate/baseline processes, 4096 warmup batches and exactly 32768 measured batches of eight messages. All outcomes, runtime identity, probe and original inputs are uploaded for 90 days, including failed launches. The workflow runs when its tooling changes in a pull request and can also be dispatched deliberately. It requires the original artifacts to remain available.
+
+The process-wide allocation counter includes fixture, serializer, dependency-injection and transport work. These controls can reveal repeatable image-dependent behavior or variation within one frozen image; they do not identify an allocation owner, replay the original BenchmarkDotNet driver, establish throughput equivalence, or demonstrate the native-client performance budget. An unfavorable result remains evidence to investigate. This workflow does not change the strict regression gate or rerun it for green.
