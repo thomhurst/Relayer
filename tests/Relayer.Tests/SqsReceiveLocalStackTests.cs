@@ -116,10 +116,9 @@ public sealed class SqsReceiveLocalStackTests
             if (fifo)
             {
                 var sourceUrlForTyped = (await client.GetQueueUrlAsync(source, token)).QueueUrl;
-                foreach (var dataType in new[] { "Number", "String.eventId", "String" })
+                foreach (var (dataType, identity) in new[] { ("Number", "42"), ("String.eventId", "42"), ("String", " "), ("String", "event 1"), ("String", new string('a', 129)), ("String", "évent") })
                 {
-                    var nativeId = "native-typed-" + dataType;
-                    var identity = dataType == "String" ? " " : "42";
+                    var nativeId = "native-typed-" + Guid.NewGuid().ToString("N");
                     await client.SendMessageAsync(new SendMessageRequest
                     {
                         QueueUrl = sourceUrlForTyped, MessageBody = "malformed", MessageGroupId = "typed-group",

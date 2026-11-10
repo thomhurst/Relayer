@@ -62,7 +62,7 @@ internal sealed class SqsHostedService(IServiceProvider provider, string name) :
                 // Keep unusable destination identities native so portable header binding cannot
                 // overwrite the original FIFO deduplication fallback after the callback.
                 if (attribute.Value.DataType == "String" && attribute.Value.StringValue is { } text &&
-                    (!fifo || attribute.Key != deadIdentityHeader || !string.IsNullOrWhiteSpace(text)))
+                    (!fifo || attribute.Key != deadIdentityHeader || IsDeduplicationId(text)))
                     headers.Add(new(attribute.Key, new(text)));
                 else (native ??= new(StringComparer.Ordinal)).Add(attribute.Key, attribute.Value);
             }
@@ -71,9 +71,9 @@ internal sealed class SqsHostedService(IServiceProvider provider, string name) :
         // identity (including native typed attributes) needs the original native fallback,
         // which cannot be stored by an outbox.
         var hasSourceIdentity = attributes?.TryGetValue(sourceIdentityHeader, out var sourceIdentity) == true &&
-            sourceIdentity.DataType == "String" && !string.IsNullOrWhiteSpace(sourceIdentity.StringValue);
+            sourceIdentity.DataType == "String" && IsDeduplicationId(sourceIdentity.StringValue);
         var hasDeadIdentity = attributes?.TryGetValue(deadIdentityHeader, out var deadIdentity) == true &&
-            deadIdentity.DataType == "String" && !string.IsNullOrWhiteSpace(deadIdentity.StringValue);
+            deadIdentity.DataType == "String" && IsDeduplicationId(deadIdentity.StringValue);
         var deduplication = hasSourceIdentity && hasDeadIdentity ? null :
             delivery.Message.Attributes?.GetValueOrDefault("MessageDeduplicationId");
         var groupId = delivery.Message.Attributes?.GetValueOrDefault("MessageGroupId");
@@ -89,6 +89,15 @@ internal sealed class SqsHostedService(IServiceProvider provider, string name) :
             });
         WireString? group = fifo && groupId is not null ? new(groupId) : null;
         return new(delivery.QueueUrl, delivery.Body, headers.ToArray(), group, options: options);
+    }
+
+    private static bool IsDeduplicationId(string? value)
+    {
+        // SQS accepts 1–128 ASCII alphanumeric/punctuation characters, excluding space.
+        if (value is null || value.Length is < 1 or > 128) return false;
+        foreach (var character in value)
+            if (character is < '!' or > '~') return false;
+        return true;
     }
 
     public Task StopAsync(CancellationToken cancellationToken) => _transport?.StopAsync(cancellationToken) ?? Task.CompletedTask;

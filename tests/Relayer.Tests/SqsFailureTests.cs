@@ -58,8 +58,11 @@ public sealed class SqsFailureTests
     [Test]
     [Arguments(" ", "ce_id")]
     [Arguments("\t", "ce_id")]
+    [Arguments("event 1", "ce_id")]
+    [Arguments("évent", "custom_id")]
+    [Arguments("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "ce_id")]
     [Arguments(" ", "custom_id")]
-    public async Task Fifo_copy_preserves_native_fallback_and_whitespace_identity(string identity, string identityHeader)
+    public async Task Fifo_copy_preserves_native_fallback_and_unusable_identity(string identity, string identityHeader)
     {
         using var client = new SqsReceiveTests.ReceiveClient();
         using var delivery = new SqsDelivery(client, "url.fifo");
@@ -77,6 +80,28 @@ public sealed class SqsFailureTests
         await Assert.That(state.Request.MessageAttributes[identityHeader].DataType).IsEqualTo("String");
         await Assert.That(state.Request.MessageAttributes[identityHeader].StringValue).IsEqualTo(identity);
         await Assert.That(() => copy.ValidateForOutbox()).Throws<InvalidOperationException>();
+    }
+
+    [Test]
+    [Arguments(1)]
+    [Arguments(128)]
+    public async Task Fifo_copy_keeps_valid_deduplication_boundaries_persistable(int length)
+    {
+        using var client = new SqsReceiveTests.ReceiveClient();
+        using var delivery = new SqsDelivery(client, "url.fifo");
+        var identity = new string('~', length);
+        var message = SqsReceiveTests.Message("body", 1);
+        message.MessageAttributes["ce_id"].StringValue = identity;
+        message.Attributes["MessageDeduplicationId"] = "native-id";
+        message.Attributes["MessageGroupId"] = "group";
+        delivery.Prepare(message, TimeProvider.System.GetTimestamp(), null);
+        var context = new CopyContext();
+        context.Features.Set(new NativeMessage<SqsDelivery> { Message = delivery });
+        var copy = SqsHostedService.Copy(context);
+        var state = new SqsSendState("0");
+        state.Prepare(copy, "dead.fifo", true);
+        await Assert.That(state.Request.MessageDeduplicationId).IsEqualTo(identity);
+        copy.ValidateForOutbox();
     }
 
     [Test]
