@@ -121,3 +121,55 @@ Dead retention excludes rows with an active parked barrier, retaining their insp
 until explicit redrive or purge. Unordered dead rows remain subject to configured retention.
 `relayer.outbox.dead_lettered` increments after a poison transition commits. A crash around commit
 can lose a measurement; durable management queries remain the source of truth.
+
+## Find a missing message
+
+Use the stable message UUID to inspect durable metadata without changing rows:
+
+```csharp
+var lookup = new PostgreSqlMessageLookup(dataSource, new PostgreSqlOutboxOptions
+{
+    Schema = "public",
+    TablePrefix = "relayer_"
+});
+var location = await lookup.FindAsync(messageId, cancellationToken);
+Console.WriteLine(location.State);
+foreach (var receipt in location.InboxReceipts)
+    Console.WriteLine($"{receipt.Consumer}: {receipt.ProcessedAt:O}");
+```
+
+The `dotnet-relayer` tool provides the same lookup:
+
+```bash
+export RELAYER_POSTGRES_CONNECTION_STRING='Host=localhost;Database=app;Username=app;Password=...'
+dotnet relayer message locate --id 01900000-0000-7000-8000-000000000001
+```
+
+Optional `--schema` and `--prefix` select the writer's tables. Credentials stay in
+the environment. Failures return exit code 1; successful lookups return 0 even
+when the ID is absent. Authorize database/schema access before exposing the API:
+results include destinations, consumer names, claim tokens and error text.
+
+The state is `pending`, `scheduled`, `claimed`, `parked`, `dead`, or `not present`.
+A live claim takes precedence over scheduling. An expired claim is pending or
+scheduled, with its old claim metadata still visible. Parked rows take precedence
+over their dead-table copy; later rows of that ordered key also report `parked`. Scheduled rows include the due time, claimed rows the
+claim token and expiry, and dead rows the error and failure time. Active rows also
+include attempts and last error.
+
+Ordered rows include the lane, recorded lease owner and expiry, and count of all
+earlier active rows in that lane, including scheduled and parked rows. Dead rows
+have no insertion sequence and report an unknown (`null`) earlier-row count. This count shows
+backlog rather than predicting delivery: other keys can still proceed past a
+parked key. An expired lease is historical evidence, not proof of a live worker.
+
+For example, a `scheduled` result with a future due time is waiting for that time;
+a `parked` result needs poison-key recovery. Inbox receipts identify consumers that
+committed a durable inbox entry. Receipts are returned even without an outbox row
+and remain subject to inbox retention.
+
+`not present` is ambiguous between never committed and sent and deleted.
+Sent-metadata retention is planned separately. Absence proves neither delivery
+nor non-delivery. The lookup observes this PostgreSQL store, not the broker. It
+uses a read-only, repeatable-read snapshot, never claims or releases rows, and
+never reads message bodies. It adds no work to dispatch.

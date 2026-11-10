@@ -1,1 +1,1 @@
-return Relayer.Tool.RelayerCommand.Run(args, Console.Out, Console.Error);
+return await Relayer.Tool.RelayerCommand.RunAsync(args, Console.Out, Console.Error).ConfigureAwait(false);
