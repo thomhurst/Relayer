@@ -57,7 +57,12 @@ public sealed class TransportConformanceSuite<TIncoming, TBinding>
         catch (Exception error) { failure = error; throw; }
         finally
         {
-            try { await fixture.DisposeAsync().ConfigureAwait(false); }
+            try
+            {
+                await fixture.DisposeAsync().ConfigureAwait(false);
+                if (scenario == TransportConformanceCase.CleanShutdown && fixture is ITransportShutdownConformanceFixture shutdown)
+                    shutdown.Logs.AssertClean();
+            }
             catch (Exception cleanup) when (failure is not null)
             {
                 throw new AggregateException("Transport conformance and fixture disposal both failed.", failure, cleanup);
@@ -68,6 +73,8 @@ public sealed class TransportConformanceSuite<TIncoming, TBinding>
     private static async Task<TransportConformanceResult> RunFixtureAsync(TransportConformanceCase scenario,
         ITransportConformanceFixture<TIncoming> fixture, MessageTracing tracing, ConcurrentQueue<Activity> spans, CancellationToken token)
     {
+        if (scenario == TransportConformanceCase.CleanShutdown && fixture is not ITransportShutdownConformanceFixture)
+            throw new InvalidOperationException("CleanShutdown requires ITransportShutdownConformanceFixture with native lifecycle evidence and fixture-local logging.");
         var capabilities = fixture.Transport.GetCapabilities(fixture.Destination);
         var skip = SkipReason(scenario, capabilities);
         if (skip is not null) return new(scenario, skip);
@@ -114,7 +121,7 @@ public sealed class TransportConformanceSuite<TIncoming, TBinding>
             }
             if (scenario == TransportConformanceCase.DeadLetter && Encoding.UTF8.GetString(body) == "{\"Value\":1}")
                 return new(Disposition.DeadLettered(new("conformance_poison", "expected failure")));
-            if (scenario == TransportConformanceCase.OrderingByKey)
+            if (scenario is TransportConformanceCase.OrderingByKey or TransportConformanceCase.CleanShutdown)
                 return WaitForOrderAsync(orderRelease.Task, token);
             return new(Disposition.Complete);
         };
@@ -187,6 +194,24 @@ public sealed class TransportConformanceSuite<TIncoming, TBinding>
 
         switch (scenario)
         {
+            case TransportConformanceCase.CleanShutdown:
+                await Send(1).ConfigureAwait(false);
+                CheckBody(await Next().ConfigureAwait(false), 1);
+                progress.Phase = "in-flight transport shutdown";
+                var stopping = Stop();
+                try
+                {
+                    if (stopping.IsCompleted)
+                    {
+                        await stopping.ConfigureAwait(false);
+                        Require(false, "Stop completed while the handler was still executing.");
+                    }
+                }
+                finally { orderRelease.TrySetResult(); }
+                await stopping.ConfigureAwait(false);
+                progress.Phase = "native shutdown verification";
+                await ((ITransportShutdownConformanceFixture)fixture).VerifyShutdownAsync(token).ConfigureAwait(false);
+                break;
             case TransportConformanceCase.SendReceiveSettle:
                 await Send(1).ConfigureAwait(false);
                 CheckBody(await Next().ConfigureAwait(false), 1);

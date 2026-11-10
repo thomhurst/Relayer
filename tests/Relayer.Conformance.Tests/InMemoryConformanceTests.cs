@@ -17,6 +17,7 @@ public class InMemoryConformanceTests
     [Arguments(TransportConformanceCase.TracePropagation)]
     [Arguments(TransportConformanceCase.CreationContextCopies)]
     [Arguments(TransportConformanceCase.Reconnect)]
+    [Arguments(TransportConformanceCase.CleanShutdown)]
     public async Task Queue_passes(TransportConformanceCase scenario)
     {
         var result = await Suite(log: false).RunAsync(scenario);
@@ -33,6 +34,7 @@ public class InMemoryConformanceTests
     [Arguments(TransportConformanceCase.TracePropagation)]
     [Arguments(TransportConformanceCase.CreationContextCopies)]
     [Arguments(TransportConformanceCase.Reconnect)]
+    [Arguments(TransportConformanceCase.CleanShutdown)]
     public async Task Log_passes(TransportConformanceCase scenario)
     {
         var result = await Suite(log: true).RunAsync(scenario);
@@ -102,10 +104,12 @@ public class InMemoryConformanceTests
     }
 }
 
-internal sealed class InMemoryFixture : ITransportConformanceFixture<InMemoryDelivery>
+internal sealed class InMemoryFixture : ITransportConformanceFixture<InMemoryDelivery>, ITransportShutdownConformanceFixture
 {
     private readonly InMemoryTransport _transport;
     private readonly bool _log;
+    private int _completed;
+    public ConformanceLogCapture Logs { get; } = new();
 
     internal InMemoryFixture(MessageTracing? tracing, bool log = false, TransportCapabilities? capabilities = null)
     {
@@ -138,7 +142,7 @@ internal sealed class InMemoryFixture : ITransportConformanceFixture<InMemoryDel
     {
         switch (disposition.Kind)
         {
-            case DispositionKind.Complete: incoming.Complete(); break;
+            case DispositionKind.Complete: incoming.Complete(); Interlocked.Increment(ref _completed); break;
             case DispositionKind.Redeliver: incoming.Redeliver(disposition.Delay); break;
             case DispositionKind.DeadLetter: incoming.DeadLetter(disposition.DeadLetter); break;
             default: throw new InvalidOperationException("Unexpected conformance disposition.");
@@ -153,5 +157,13 @@ internal sealed class InMemoryFixture : ITransportConformanceFixture<InMemoryDel
     }
     public Task DisconnectAsync(CancellationToken cancellationToken) => _transport.StopAsync(cancellationToken);
     public Task ReconnectAsync(CancellationToken cancellationToken) => _transport.StartAsync(cancellationToken);
+    public ValueTask VerifyShutdownAsync(CancellationToken cancellationToken)
+    {
+        // Completion is the production native-loop task; it includes handler execution and settlement.
+        if (!_transport.Completion.IsCompletedSuccessfully || Volatile.Read(ref _completed) != 1)
+            throw new InvalidOperationException("In-memory shutdown did not drain and complete the in-flight delivery.");
+        return ValueTask.CompletedTask;
+    }
+    // InMemoryTransport has no logger or external native receiver. Its completed loop is its closure boundary.
     public ValueTask DisposeAsync() => _transport.DisposeAsync();
 }

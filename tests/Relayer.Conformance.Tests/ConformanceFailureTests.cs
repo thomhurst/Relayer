@@ -48,6 +48,15 @@ public class ConformanceFailureTests
         await Assert.That(fixture.Disposed).IsTrue();
     }
 
+    [Test]
+    public async Task Clean_shutdown_requires_explicit_native_lifecycle_evidence()
+    {
+        var fixture = new FailingFixture();
+        var error = await CaptureAsync(Suite(fixture).RunAsync(TransportConformanceCase.CleanShutdown));
+        await Assert.That(error.Message).Contains("ITransportShutdownConformanceFixture");
+        await Assert.That(fixture.Disposed).IsTrue();
+    }
+
     private static TransportConformanceSuite<InMemoryDelivery, InMemoryMessageBinding> Suite(FailingFixture fixture) =>
         new((_, _) => new ValueTask<ITransportConformanceFixture<InMemoryDelivery>>(fixture));
 
