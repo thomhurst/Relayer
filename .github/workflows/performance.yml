@@ -16,7 +16,7 @@ on:
         type: boolean
         default: false
       nats_allocations:
-        description: Capture separate NATS receive allocation traces (requires nats_native)
+        description: Capture separate NATS send/receive allocation traces (requires nats_native)
         type: boolean
         default: false
 
@@ -255,13 +255,13 @@ jobs:
 
       # Allocation profiling runs separately so instrumentation cannot change the
       # unprofiled comparisons above. BDN attaches to its measured child processes.
-      - name: Attribute native and Relayer receive allocations
+      - name: Attribute native and Relayer send/receive allocations
         if: inputs.nats_allocations == true
         env:
           RELAYER_NATS_ALLOCATION_PROFILE: '1'
         run: |
           dotnet run -c Release --project benchmarks/Relayer.Benchmarks -- \
-            --filter '*NatsWireReceiveBenchmarks*' \
+            --filter '*NatsSendBenchmarks*' '*NatsWireReceiveBenchmarks*' \
             --warmupCount 3 --iterationCount 3 --launchCount 1 \
             --exporters fulljson --keepFiles --artifacts nats-allocations \
             > nats-allocation-profile.log 2>&1 \
