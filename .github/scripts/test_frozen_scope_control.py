@@ -126,6 +126,41 @@ class ScopeControlTests(unittest.TestCase):
                 protocol = json.loads((root / 'output/protocol.json').read_text())
                 self.assertEqual(protocol['tieredCompilation'], setting)
 
+    def test_tiering_off_code_capture_keeps_both_controls_and_excludes_timings(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            environments = []
+
+            def execute(command, **kwargs):
+                environment = kwargs['env']
+                environments.append(environment)
+                kwargs['stdout'].write(COMPLETE)
+                Path(environment['DOTNET_JitStdOutFile']).write_text(
+                    '; Assembly listing for method Example:ScopeOnly()\n')
+
+            parent = {'DOTNET_TieredCompilation': '1'}
+            with patch('sys.argv', ['control', directory, str(root / 'output'),
+                                    '--tiered-compilation', 'off', '--jit-disassembly']), \
+                 patch('frozen_scope_control.os.environ', parent), \
+                 patch('frozen_scope_control.verify', return_value='commit') as verify, \
+                 patch('frozen_scope_control.executable', side_effect=lambda path, scoped: (path / 'runner.dll', '4')), \
+                 patch('frozen_scope_control.subprocess.run', side_effect=execute):
+                main()
+            self.assertEqual(verify.call_count, 6)
+            self.assertEqual(len(environments), 8)
+            self.assertTrue(all(env['DOTNET_TieredCompilation'] == '0' for env in environments))
+            self.assertTrue(all(env['DOTNET_JitDisasm'] == '*' for env in environments))
+            self.assertEqual(parent, {'DOTNET_TieredCompilation': '1'})
+            outcomes = json.loads((root / 'output/outcomes.json').read_text())
+            self.assertEqual([item['side'] for item in outcomes], ['baseline', 'candidate', 'candidate', 'baseline'] * 2)
+            self.assertTrue(all(item['runtimeEnvironment'] == {'DOTNET_TieredCompilation': '0'} for item in outcomes))
+            self.assertTrue(all('disassembly' in item and 'error' not in item for item in outcomes))
+            self.assertTrue(all('meanNs' not in item and 'bytesPerOperation' not in item for item in outcomes))
+            self.assertTrue(all('WorkloadResult' in path.read_text() for path in (root / 'output').glob('*.log')))
+            protocol = json.loads((root / 'output/protocol.json').read_text())
+            self.assertEqual(protocol['tieredCompilation'], 'off')
+            self.assertTrue(protocol['jitDisassembly'])
+
     def test_invalid_archive_never_launches(self):
         with tempfile.TemporaryDirectory() as directory, \
              patch('sys.argv', ['control', directory, str(Path(directory) / 'output')]), \
