@@ -34,9 +34,16 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh run download 42772012652 --name performance-42772012652-1 --dir inputs
-      - name: Capture native JIT code separately from timing experiment
+      # Same hosted job and original images; no cross-host comparison or gate retry.
+      - name: Observe default-tiering ABBA before runtime control
         if: success() || failure()
-        run: python3 .github/scripts/frozen_scope_control.py inputs results/jit-code --jit-disassembly
+        run: python3 .github/scripts/frozen_scope_control.py inputs results/default-before
+      - name: Observe ABBA with native tiered compilation disabled
+        if: success() || failure()
+        run: python3 .github/scripts/frozen_scope_control.py inputs results/tiering-off --tiered-compilation off
+      - name: Observe default-tiering ABBA after runtime control
+        if: success() || failure()
+        run: python3 .github/scripts/frozen_scope_control.py inputs results/default-after
       - name: Retain all outcomes and executable inputs
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

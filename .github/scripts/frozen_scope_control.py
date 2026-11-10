@@ -60,6 +60,8 @@ def main():
     parser.add_argument("output", type=Path)
     parser.add_argument("--jit-disassembly", action="store_true",
                         help="Separate code-capture experiment; its timings are not performance evidence")
+    parser.add_argument("--tiered-compilation", choices=("default", "off"), default="default",
+                        help="Diagnostic runtime control; off uses native DOTNET_TieredCompilation=0")
     args = parser.parse_args()
     builds = args.artifact.resolve() / "performance-builds"
     commits = {side: verify(builds / side) for side in SIDES}
@@ -71,6 +73,8 @@ def main():
                 "engine": "Original Default job, native NoAcknowledgementConsoleHost without anonymous-pipe parent",
                 "limits": "New host/process executions, not historical reconstruction. Image-associated differences do not identify a production defect; absent differences do not prove equivalence. No threshold changes or gate pass claim.",
                 "jitDisassembly": args.jit_disassembly,
+                "tieredCompilation": args.tiered_compilation,
+                "runtimeControlLimits": "Disabling tiering changes execution, not production configuration. Cross-condition timing is diagnostic only; host/process order remains a confound.",
                 "timingUse": "Excluded: JIT diagnostics perturb execution" if args.jit_disassembly else "New ABBA experiment only",
                 "launches": []}
     for scoped in (True, False):
@@ -85,6 +89,12 @@ def main():
         outcome = {"launch": index, "side": launch["side"], "scoped": launch["scoped"]}
         log_path = args.output / f"{index}-{launch['side']}-{launch['scoped']}.log"
         environment = os.environ.copy()
+        if args.tiered_compilation == "off":
+            environment["DOTNET_TieredCompilation"] = "0"
+        outcome["runtimeEnvironment"] = {key: environment[key] for key in
+            ("DOTNET_TieredCompilation", "COMPlus_TieredCompilation",
+             "DOTNET_TieredPGO", "COMPlus_TieredPGO", "DOTNET_ReadyToRun", "COMPlus_ReadyToRun")
+            if key in environment}
         disassembly = (args.output / f"{index}-{launch['side']}-{launch['scoped']}.asm").resolve()
         if args.jit_disassembly:
             environment.update(DOTNET_JitDisasm="*", DOTNET_JitDisasmDiffable="1",

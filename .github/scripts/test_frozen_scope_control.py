@@ -99,6 +99,33 @@ class ScopeControlTests(unittest.TestCase):
                 else:
                     self.assertTrue(all('error' in item for item in outcomes))
 
+    def test_tiering_control_is_explicit_recorded_and_does_not_mutate_parent(self):
+        for setting in ("default", "off"):
+            with self.subTest(setting=setting), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                environments = []
+
+                def execute(command, **kwargs):
+                    environments.append(kwargs['env'])
+                    kwargs['stdout'].write(COMPLETE)
+
+                parent = {'DOTNET_TieredCompilation': '1', 'DOTNET_PRIVATE_FEED_TOKEN': 'secret'}
+                with patch('sys.argv', ['control', directory, str(root / 'output'), '--tiered-compilation', setting]), \
+                     patch('frozen_scope_control.os.environ', parent), \
+                     patch('frozen_scope_control.verify', return_value='commit'), \
+                     patch('frozen_scope_control.executable', side_effect=lambda path, scoped: (path / 'runner.dll', '4')), \
+                     patch('frozen_scope_control.subprocess.run', side_effect=execute):
+                    main()
+                expected = '0' if setting == 'off' else '1'
+                self.assertEqual(len(environments), 8)
+                self.assertTrue(all(env['DOTNET_TieredCompilation'] == expected for env in environments))
+                self.assertEqual(parent['DOTNET_TieredCompilation'], '1')
+                outcomes = json.loads((root / 'output/outcomes.json').read_text())
+                self.assertTrue(all(item['runtimeEnvironment'] == {'DOTNET_TieredCompilation': expected} for item in outcomes))
+                self.assertTrue(all(item['meanNs'] == 27 for item in outcomes))
+                protocol = json.loads((root / 'output/protocol.json').read_text())
+                self.assertEqual(protocol['tieredCompilation'], setting)
+
     def test_invalid_archive_never_launches(self):
         with tempfile.TemporaryDirectory() as directory, \
              patch('sys.argv', ['control', directory, str(Path(directory) / 'output')]), \
