@@ -57,6 +57,34 @@ starting another on the same store, and finish using borrowed rows before anothe
 cancellation propagate; they never become an empty backlog. A cancelled mutation might already have committed.
 The store does not establish native broker delivery guarantees or ordered lane ownership.
 
+## Complete inside a native transaction
+
+Application-owned workers can complete a claimed row in the same `NpgsqlTransaction` as their database work:
+
+```csharp
+var store = new PostgreSqlOutboxStore(dataSource, storeOptions);
+await using var connection = await dataSource.OpenConnectionAsync(cancellationToken);
+await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+// Execute business commands with this connection and transaction.
+if (!await store.CompleteAsync(claim, transaction, cancellationToken))
+{
+    await transaction.RollbackAsync(cancellationToken);
+    throw new InvalidOperationException("The outbox claim was lost; business work was rolled back.");
+}
+await transaction.CommitAsync(cancellationToken);
+```
+
+The transaction selects the database; the store's configured schema and prefix select the table within it.
+The store never commits, rolls back, disposes or retains your transaction. A successful deletion is provisional
+until commit; rollback restores the row together with the business changes. A missing row, replaced token or
+expired claim returns `false`: **roll back the whole business transaction**. Expiry uses the database wall clock
+at deletion, including time spent handling the message. Keep your claim valid for the work's duration.
+Errors and cancellation require the same rollback/disposal discipline as other native commands; an uncertain
+commit still requires application recovery. Ordered workers also need the existing lane ownership protocol.
+
+This is a store primitive for application-owned workers. A named durable local transport and automatic consume
+transaction integration remain planned. It does not make external effects, such as HTTP calls, transactional.
+
 ## Header storage
 
 The `headers` column contains the provider's versioned binary format, shared with its EF Core transactional writer.

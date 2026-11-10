@@ -76,6 +76,7 @@ To change a decision, add a new entry that supersedes it rather than editing his
 | [D63](#d63-mysql-ordered-dispatch-uses-innodb-lease-rows-and-native-identity) | MySQL ordered dispatch uses InnoDB lease rows and native identity | Accepted |
 | [D64](#d64-sql-server-ordered-dispatch-reuses-native-locks-and-sequence-ranges) | SQL Server ordered dispatch reuses native locks and sequence ranges | Accepted |
 | [D65](#d65-mysql-maintenance-uses-native-session-admission-and-existing-dispatch) | MySQL maintenance uses native session admission and existing dispatch | Accepted |
+| [D66](#d66-durable-local-work-reuses-outbox-rows-and-native-postgresql-transactions) | Durable local work reuses outbox rows and native PostgreSQL transactions | Accepted |
 
 ---
 
@@ -1544,3 +1545,34 @@ pooled connections. No Event Scheduler privilege or server change is required. N
 still own broker retry, ordering and settlement. Deployment adds dead/lease tables without changing
 existing definitions. Registration alone does not advertise new writer scheduling capabilities.
 
+## D66. Durable local work reuses outbox rows and native PostgreSQL transactions
+
+**Context.** #361 proposes process-local consumption of durable work without a broker round trip.
+The existing PostgreSQL outbox already owns transactional enqueue, fenced row claims, ordered lane leases,
+scheduling, recovery and poison-row parking. A local handler invoked from `ITransport.SendAsync` alone
+cannot atomically commit its business work and the dispatcher's later deletion on another connection.
+
+Native-first assessment: Npgsql [10.0.3 transaction source](https://github.com/npgsql/npgsql/blob/v10.0.3/src/Npgsql/NpgsqlTransaction.cs)
+provides the active connection, commit, rollback and disposal. PostgreSQL 18
+[notification source](https://github.com/postgres/postgres/blob/REL_18_0/src/backend/commands/async.c)
+explicitly discards the notification queue at reboot; LISTEN/NOTIFY is a wake-up mechanism, not a durable
+work queue. Native row locks, conditional DELETE and transactions already supply the storage primitives.
+No database extension is required; introducing an extension-owned queue would add deployment requirements
+and a second durable store alongside rows that already enlist in the business transaction.
+
+**Decision.** Permit a narrow D1/D42 exception for the planned PostgreSQL local transport: reuse the outbox
+as its durable queue, rather than emulating an existing broker's features. Do not build another table,
+claim protocol, retry scheduler, ordering mechanism or dead-letter store. Reuse D50 lanes and the existing
+poison transitions. Notifications may only accelerate discovery; durable rows remain authoritative.
+
+First expose `PostgreSqlOutboxStore.CompleteAsync(claim, transaction, cancellationToken)` for independently
+useful application-owned workers. It executes the existing fenced deletion against the supplied native
+transaction's database and this store's schema/prefix. Expiry uses `clock_timestamp()` at deletion, not a
+caller timestamp or the start of a potentially long transaction. The caller commits or rolls back; false
+means it must roll back all associated business work. No transaction is retained or rebound to the store.
+
+**Consequences.** #458 supplies the primitive; the transport and consume-boundary integration remain planned
+in #459. They must carry row identity and claim token into each attempt and roll back on a lost fence.
+Native row locks serialize deletion with competing claims. Rollback restores both business work and the row;
+a successful deletion remains provisional until commit. This permits atomic completion only for work in
+that same transaction, not exactly-once external effects. Existing broker dispatch and settlement are unchanged.

@@ -19,6 +19,7 @@ public sealed class PostgreSqlOutboxStore : IOutboxStore
     private readonly string _claimBatch;
     private readonly string _renew;
     private readonly string _complete;
+    private readonly string _completeInTransaction;
     private readonly string _completeBatch;
     private readonly string _fail;
     private readonly string _count;
@@ -49,6 +50,7 @@ public sealed class PostgreSqlOutboxStore : IOutboxStore
         _claimBatch = $"UPDATE {table} AS row SET claim_token = claims.token, claim_expires_at = @expires FROM unnest(@ids, @tokens) WITH ORDINALITY AS claims(id, token, ordinal) WHERE row.id = claims.id AND {eligible} AND lane IS NULL RETURNING claims.ordinal";
         _renew = $"UPDATE {table} SET claim_expires_at = GREATEST(claim_expires_at, @expires) WHERE {fenced} RETURNING true";
         _complete = $"DELETE FROM {table} WHERE {fenced} RETURNING true";
+        _completeInTransaction = $"DELETE FROM {table} WHERE id = @id AND claim_token = @token AND claim_expires_at > clock_timestamp() RETURNING true";
         _completeBatch = $"WITH deleted AS (DELETE FROM {table} AS row USING unnest(@ids, @tokens) AS claims(id, token) WHERE row.id = claims.id AND row.claim_token = claims.token AND row.claim_expires_at > @now RETURNING row.id) SELECT count(*) FROM deleted";
         _fail = PostgreSqlPoisonSql.Failure(table, dead, fenced, options.MaxDispatchAttempts);
         _count = $"SELECT count(*) FROM {table} WHERE {eligible}";
@@ -136,6 +138,28 @@ public sealed class PostgreSqlOutboxStore : IOutboxStore
     {
         Validate(claim);
         return _mutation.Start(CreateMutation(_complete, claim, now), cancellationToken);
+    }
+
+    /// <summary>Deletes a claimed row inside the caller's native transaction, using the database wall clock for expiry.</summary>
+    /// <remarks>
+    /// Returns false for an absent row, expired claim or replaced token. The caller must roll back its business
+    /// work when false is returned. Success is provisional until the caller commits; rollback restores the row.
+    /// The transaction selects the database; this store's configured schema and prefix select the table in it.
+    /// This method never commits, rolls back, disposes or retains the supplied transaction or connection.
+    /// It does not establish ordered lane ownership. Await completion before reusing this store or transaction.
+    /// </remarks>
+    public ValueTask<bool> CompleteAsync(OutboxClaim claim, NpgsqlTransaction transaction,
+        CancellationToken cancellationToken)
+    {
+        Validate(claim);
+        ArgumentNullException.ThrowIfNull(transaction);
+        cancellationToken.ThrowIfCancellationRequested();
+        var connection = transaction.Connection
+            ?? throw new InvalidOperationException("Outbox completion requires an active PostgreSQL transaction. Begin a new transaction before completing the row.");
+        var command = new NpgsqlCommand(_completeInTransaction, connection, transaction);
+        Add(command, "id", NpgsqlDbType.Uuid, claim.MessageId);
+        Add(command, "token", NpgsqlDbType.Uuid, claim.Token);
+        return _mutation.Start(command, cancellationToken);
     }
 
     /// <summary>Deletes sent rows in one statement, fencing each row by its matching, live claim.</summary>
