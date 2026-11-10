@@ -240,10 +240,10 @@ jobs:
 
       # Compare native and Relayer in the same build. This transport did not execute
       # messages on main, so copying these classes onto main cannot form a baseline.
-      - name: Measure confirmed JSON sends and pull receive with confirmed ACK
+      - name: Measure JSON sends, buffered dispatch and pull receive with confirmed ACK
         run: |
           dotnet run -c Release --project benchmarks/Relayer.Benchmarks -- \
-            --filter '*NatsSendBenchmarks*' '*NatsWireReceiveBenchmarks*' \
+            --filter '*NatsSendBenchmarks*' '*NatsReceiveBenchmarks*' '*NatsWireReceiveBenchmarks*' \
             --warmupCount 5 --iterationCount 15 --launchCount 2 \
             --exporters fulljson --keepFiles --artifacts nats-results \
             > nats-benchmarks.log 2>&1 \

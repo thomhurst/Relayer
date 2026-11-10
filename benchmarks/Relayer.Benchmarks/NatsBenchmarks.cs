@@ -180,7 +180,12 @@ internal partial class NatsBenchmarkJson : JsonSerializerContext;
 [MemoryDiagnoser]
 public class NatsWireReceiveBenchmarks
 {
-    private const int Count = 128;
+    // IterationSetup disables BenchmarkDotNet's automatic invocation-count calibration.
+    // 128 confirmed ACKs took only ~35 ms on the hosted runner, below its 100 ms
+    // minimum recommendation. Keep enough work in each sample to amortize scheduling noise.
+    private const int Count = 4096;
+    // Keep native pull flow control independent of measurement length.
+    private const int PullBatchSize = 128;
     private NatsConnection _connection = null!;
     private NatsJSContext _js = null!;
     private INatsJSConsumer _consumer = null!;
@@ -205,7 +210,7 @@ public class NatsWireReceiveBenchmarks
         await _js.CreateStreamAsync(new(_stream, [_stream]) { Storage = StreamConfigStorage.Memory });
         _consumer = await _js.CreateConsumerAsync(_stream, new ConsumerConfig("worker"));
         _messages = _consumer.ConsumeAsync(NatsRawSerializer<ReadOnlyMemory<byte>>.Default,
-            new NatsJSConsumeOpts { MaxMsgs = Count }).GetAsyncEnumerator();
+            new NatsJSConsumeOpts { MaxMsgs = PullBatchSize }).GetAsyncEnumerator();
         var services = new ServiceCollection();
         services.AddRelayer(relayer =>
         {
