@@ -1,0 +1,9 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="TUnit" />
+    <Compile Include="../../tests/Relayer.Tests/Parallelism.cs" Link="Parallelism.cs" />
+  </ItemGroup>
+</Project>
