@@ -53,6 +53,24 @@ public class AmazonTerraformTests
     }
 
     [Test]
+    [Arguments(null, 1_048_576)]
+    [Arguments("262144", 262_144)]
+    [Arguments("1048576", 1_048_576)]
+    public async Task Queue_message_size_preserves_native_default_and_explicit_values(string? maximumMessageSize, int expected)
+    {
+        using var provider = Create(options =>
+        {
+            var queue = new CreateQueueRequest("queue");
+            if (maximumMessageSize is not null)
+                queue.Attributes = new() { ["MaximumMessageSize"] = maximumMessageSize };
+            options.QueueTopology.Queues.Add(queue);
+        });
+        using var document = JsonDocument.Parse(Export(provider));
+        var queue = document.RootElement.GetProperty("resource").GetProperty("aws_sqs_queue").EnumerateObject().Single().Value;
+        await Assert.That(queue.GetProperty("max_message_size").GetInt32()).IsEqualTo(expected);
+    }
+
+    [Test]
     public async Task Output_is_independent_of_declaration_and_dictionary_order_and_preserves_json_export()
     {
         using var first = Create(options =>

@@ -242,7 +242,7 @@ Both `AmazonSqsTransportOptions.Queues` and SNS `QueueTopology.Queues` contribut
 | Topic | `DisplayName`, `Policy`, `DeliveryPolicy`, `FifoTopic`, `ContentBasedDeduplication`, `KmsMasterKeyId`, `SignatureVersion`, `TracingConfig`, `FifoThroughputScope`; native tags |
 | SQS subscription | `RawMessageDelivery`, `FilterPolicy`, `FilterPolicyScope`, `RedrivePolicy`, `DeliveryPolicy`, `SubscriptionRoleArn`; explicit topic and queue ARNs |
 
-FIFO names and flags are preserved; the exporter does not infer them or add defaults. Boolean values must be `true` or `false`, numeric settings must be nonnegative integers, and policy settings must be JSON objects. AWS/provider semantic validation still applies during `plan`/`apply`. `ReturnSubscriptionArn` controls only the native API response and has no Terraform setting.
+FIFO names and flags are preserved; the exporter does not infer them. When `MaximumMessageSize` is omitted, the exporter writes `max_message_size = 1048576` to preserve the native SQS 1 MiB default rather than inheriting a Terraform provider's smaller default. Explicit message size limits are preserved. Boolean values must be `true` or `false`, numeric settings must be nonnegative integers, and policy settings must be JSON objects. AWS/provider semantic validation still applies during `plan`/`apply`. `ReturnSubscriptionArn` controls only the native API response and has no Terraform setting.
 
 ### SNS relationships and access policies
 

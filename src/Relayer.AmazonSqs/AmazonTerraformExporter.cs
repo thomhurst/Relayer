@@ -68,6 +68,8 @@ public static class AmazonTerraformExporter
         {
             var body = new JsonObject { ["name"] = Literal(name) };
             Attributes(body, queue.Attributes, "queue", name);
+            // SQS defaults to 1 MiB; Terraform providers can still default to 256 KiB.
+            if (!body.ContainsKey("max_message_size")) body.Add("max_message_size", 1_048_576);
             Tags(body, queue.Tags);
             if (queue.Attributes?.TryGetValue("RedrivePolicy", out var redrive) == true)
             {
