@@ -293,6 +293,49 @@ class ScopeControlTests(unittest.TestCase):
                 self.assertEqual([command[-1] for command in commands], ['4'] * 4 + ['0'] * 4)
                 self.assertTrue(all(item['meanNs'] == 27 for item in outcomes))
 
+    def test_counterbalanced_blocks_keep_every_process_and_failure_with_image_provenance(self):
+        for selected in (None, "candidate"):
+            with self.subTest(selected=selected), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                calls = []
+
+                def execute(command, **kwargs):
+                    calls.append(command)
+                    if len(calls) == 2:
+                        raise subprocess.CalledProcessError(1, command)
+                    # Keep the unfavorable observation; never stop or filter on timing.
+                    kwargs['stdout'].write(COMPLETE.replace('27 ns/op', '40 ns/op')
+                                           if len(calls) == 3 else COMPLETE)
+                    self.assertEqual(kwargs['env'], {})
+
+                options = ['--single-image', selected] if selected else []
+                with patch('sys.argv', ['control', directory, str(root / 'output'), '--counterbalanced'] + options), \
+                     patch('frozen_scope_control.os.environ', {}), \
+                     patch('frozen_scope_control.verify', return_value='commit') as verify, \
+                     patch('frozen_scope_control.executable', side_effect=lambda path, scoped, method: (path / 'runner.dll', '4' if scoped else '0')), \
+                     patch('frozen_scope_control.subprocess.run', side_effect=execute):
+                    with self.assertRaises(SystemExit):
+                        main()
+                self.assertEqual(verify.call_count, 6)
+                protocol = json.loads((root / 'output/protocol.json').read_text())
+                outcomes = json.loads((root / 'output/outcomes.json').read_text())
+                abba = ['baseline', 'candidate', 'candidate', 'baseline']
+                baab = ['candidate', 'baseline', 'baseline', 'candidate']
+                expected = abba + baab + baab + abba
+                self.assertEqual([item['side'] for item in outcomes], expected)
+                self.assertEqual([item['block'] for item in outcomes], [1]*4 + [2]*4 + [3]*4 + [4]*4)
+                self.assertEqual([item['position'] for item in outcomes], [1, 2, 3, 4]*4)
+                self.assertEqual([item['imageSide'] for item in outcomes], [selected or side for side in expected])
+                self.assertEqual([Path(command[1]).parent.name for command in calls], [selected or side for side in expected])
+                self.assertEqual([command[-1] for command in calls], ['4']*16)
+                self.assertTrue(all(item['scoped'] for item in outcomes))
+                self.assertIn('error', outcomes[1])
+                self.assertEqual(outcomes[2]['meanNs'], 40)
+                self.assertEqual(outcomes[-1]['meanNs'], 27)
+                self.assertEqual(len(list((root / 'output').glob('*.log'))), 16)
+                self.assertEqual([item['block'] for item in protocol['launches']], [item['block'] for item in outcomes])
+                self.assertIn('no adaptive stopping', protocol['plan'])
+
     def test_invalid_archive_never_launches(self):
         with tempfile.TemporaryDirectory() as directory, \
              patch('sys.argv', ['control', directory, str(Path(directory) / 'output')]), \
