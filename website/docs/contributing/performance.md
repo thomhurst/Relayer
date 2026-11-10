@@ -509,3 +509,15 @@ mode, **not messages**. No await occurs inside the counter boundary. Other
 threads and later continuations remain excluded, and byte counts do not identify
 object types. This instrumented comparison neither attributes the historical
 excess nor permits subtraction from the other controls' totals.
+
+The separate native exact-invocation ABBA for #357 completed in
+[run 42748223325](https://github.com/thomhurst/Relayer/actions/runs/42748223325).
+All four histograms contain exactly 262144 measured calls, with verified weighted
+byte sums. Synchronous handler-call bytes per invocation were
+192.003052 / 192.000122 / 192.000122 / 192.004517 (A/B/B/A). Both
+candidates fall below both baselines in this instrumented region. This does not
+explain the earlier unfavorable untraced fixture comparison or identify historical
+end-to-end allocation owners. Histogram sizes do not identify allocated types.
+The separate exact release-batch ABBA also includes this input set, testing
+calling-thread channel completion scheduling outside the handler-call boundary.
+Its measurements must remain separate from handler-call and inclusive totals.
