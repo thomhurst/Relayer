@@ -70,6 +70,8 @@ def main():
                         help="Native DOTNET_JitDisasm method filter; requires --jit-disassembly")
     parser.add_argument("--ready-to-run", choices=("default", "on", "off"), default="default",
                         help="Diagnostic runtime control; uses native DOTNET_ReadyToRun=1/0")
+    parser.add_argument("--single-image", choices=("baseline", "candidate"),
+                        help="Negative control: execute one original image in every A/B slot")
     args = parser.parse_args()
     if args.jit_method != "*" and not args.jit_disassembly:
         parser.error("--jit-method requires --jit-disassembly")
@@ -89,20 +91,23 @@ def main():
                 "jitMethod": args.jit_method if args.jit_disassembly else None,
                 "captureLimits": "Method filtering reduces concurrent listing output; it does not serialize JIT compilation. Missing, interleaved or precompiled methods remain limitations, not evidence of equality.",
                 "tieredCompilation": args.tiered_compilation,
+                "singleImage": args.single_image,
+                "slotMeaning": "side is the ABBA slot label; imageSide identifies the executed original image",
                 "readyToRun": args.ready_to_run,
                 "runtimeControlLimits": "Changing tiering or ReadyToRun changes execution, not production configuration. Cross-condition timing is diagnostic only; host/process order remains a confound.",
                 "timingUse": "Excluded: JIT diagnostics perturb execution" if args.jit_disassembly else "New ABBA experiment only",
                 "launches": []}
     for scoped in (True, False):
         for side in LAUNCHES:
-            image, identity = runners[side, scoped]
-            protocol["launches"].append({"side": side, "scoped": scoped,
+            image_side = args.single_image or side
+            image, identity = runners[image_side, scoped]
+            protocol["launches"].append({"side": side, "imageSide": image_side, "scoped": scoped,
                 "command": ["dotnet", str(image), "--benchmarkName", benchmark,
                             "--job", "Default", "--benchmarkId", identity]})
     (args.output / "protocol.json").write_text(json.dumps(protocol, indent=2) + "\n")
     outcomes = []
     for index, launch in enumerate(protocol["launches"], 1):
-        outcome = {"launch": index, "side": launch["side"], "scoped": launch["scoped"]}
+        outcome = {"launch": index, "side": launch["side"], "imageSide": launch["imageSide"], "scoped": launch["scoped"]}
         log_path = args.output / f"{index}-{launch['side']}-{launch['scoped']}.log"
         environment = os.environ.copy()
         if args.tiered_compilation == "off":

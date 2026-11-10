@@ -264,6 +264,35 @@ class ScopeControlTests(unittest.TestCase):
                 self.assertEqual(protocol['readyToRun'], setting)
                 self.assertEqual(protocol['tieredCompilation'], 'off')
 
+    def test_single_image_controls_preserve_slot_labels_and_actual_provenance(self):
+        for selected in (None, "baseline", "candidate"):
+            with self.subTest(selected=selected), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                commands = []
+
+                def execute(command, **kwargs):
+                    commands.append(command)
+                    kwargs['stdout'].write(COMPLETE)
+
+                options = ['--single-image', selected] if selected else []
+                with patch('sys.argv', ['control', directory, str(root / 'output')] + options), \
+                     patch('frozen_scope_control.verify', return_value='commit') as verify, \
+                     patch('frozen_scope_control.executable', side_effect=lambda path, scoped, method: (path / 'runner.dll', '4' if scoped else '0')), \
+                     patch('frozen_scope_control.subprocess.run', side_effect=execute):
+                    main()
+                self.assertEqual(verify.call_count, 6)
+                protocol = json.loads((root / 'output/protocol.json').read_text())
+                outcomes = json.loads((root / 'output/outcomes.json').read_text())
+                slots = ['baseline', 'candidate', 'candidate', 'baseline'] * 2
+                actual = [selected or side for side in slots]
+                self.assertEqual(protocol['singleImage'], selected)
+                self.assertEqual([item['side'] for item in outcomes], slots)
+                self.assertEqual([item['imageSide'] for item in outcomes], actual)
+                self.assertEqual([item['imageSide'] for item in protocol['launches']], actual)
+                self.assertEqual([Path(command[1]).parent.name for command in commands], actual)
+                self.assertEqual([command[-1] for command in commands], ['4'] * 4 + ['0'] * 4)
+                self.assertTrue(all(item['meanNs'] == 27 for item in outcomes))
+
     def test_invalid_archive_never_launches(self):
         with tempfile.TemporaryDirectory() as directory, \
              patch('sys.argv', ['control', directory, str(Path(directory) / 'output')]), \

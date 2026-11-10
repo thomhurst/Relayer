@@ -1,4 +1,4 @@
-name: Frozen scope ReadyToRun control
+name: Frozen scope identical-image controls
 
 # New historical-input experiment, never a rerun of the performance gate.
 on:
@@ -34,24 +34,23 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh run download 42772012652 --name performance-42772012652-1 --dir inputs
-      # #442: bracket the precompiled-code control on one host. Tiering stays
-      # disabled in all three conditions; retain every scoped/unscoped ABBA.
-      # https://learn.microsoft.com/dotnet/core/runtime-config/compilation#readytorun
-      # New diagnostic executions, never a gate retry or pass claim.
-      - name: ReadyToRun enabled before
+      # Negative controls retain A/B slot labels while all four processes execute
+      # exactly one image. Compare their slot effects with true ABBA on this host.
+      # Default runtime settings preserve the original job's execution policy.
+      - name: Baseline image in every slot
         if: success() || failure()
-        run: python3 .github/scripts/frozen_scope_control.py inputs results/r2r-on-before --tiered-compilation off --ready-to-run on
-      - name: ReadyToRun disabled
+        run: python3 .github/scripts/frozen_scope_control.py inputs results/baseline-only --single-image baseline
+      - name: Original baseline and candidate images
         if: success() || failure()
-        run: python3 .github/scripts/frozen_scope_control.py inputs results/r2r-off --tiered-compilation off --ready-to-run off
-      - name: ReadyToRun enabled after
+        run: python3 .github/scripts/frozen_scope_control.py inputs results/original-images
+      - name: Candidate image in every slot
         if: success() || failure()
-        run: python3 .github/scripts/frozen_scope_control.py inputs results/r2r-on-after --tiered-compilation off --ready-to-run on
+        run: python3 .github/scripts/frozen_scope_control.py inputs results/candidate-only --single-image candidate
       - name: Retain all outcomes and executable inputs
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: frozen-scope-readytorun-${{ github.run_id }}-${{ github.run_attempt }}
+          name: frozen-scope-identity-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             .github/workflows/frozen-scope-control.yml
             results/
