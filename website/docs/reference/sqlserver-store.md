@@ -6,7 +6,7 @@ description: "SQL Server ADO.NET/Dapper transactions, commit-triggered dispatch,
 `Relayer.Outbox.SqlServer` implements the [durable store contract](outbox-stores.md) using
 `Microsoft.Data.SqlClient` and SQL Server's native connection pooling. It supplies reads, atomic claims,
 renewal, completion, failure persistence, eligible backlog counts and scoped ADO.NET/Dapper transaction
-enlistment and opt-in commit-triggered unordered dispatch. **EF Core, inbox deduplication, ordered workers, lane leases, poison-row movement and
+enlistment, opt-in consumer inbox deduplication and commit-triggered unordered dispatch. **EF Core, ordered workers, lane leases, poison-row movement and
 maintenance remain planned for SQL Server.** PostgreSQL's worker registrations do not accept this provider.
 Registering a durable store alone does not make `ISender` transactional.
 
@@ -20,7 +20,8 @@ Schema SQL/options remain AOT safe. This restriction is specific to this optiona
 
 Write the initial schema with your application's deployment tooling. Initial creation is idempotent and
 does not validate or upgrade an existing table. Schema evolution and rollback remain application-owned.
-This script creates only an outbox table and its pending index; it does not create inbox, dead or lease tables.
+This script creates the outbox table, pending index and inbox table. Re-run it when upgrading from
+a version without the inbox table; existing outbox definitions are unchanged. It does not create dead or lease tables.
 
 ```csharp
 using Microsoft.Extensions.DependencyInjection;
@@ -100,6 +101,51 @@ scheduling worker exists. Low-level `IOutboxEnlistment.EnlistAsync` can preserve
 for a future dispatcher. Cancellation is passed to SqlClient; some server-side bulk-copy waits can end
 only when the server responds or the native timeout expires ([SqlClient #4965](https://github.com/dotnet/SqlClient/issues/4965)). Cancellation before native commit still
 rolls back the complete unit.
+
+## Atomic consumer inbox
+
+Register the scoped outbox above, deploy its schema, then register the SQL Server consumer boundary
+first in the single-message consume pipeline:
+
+```csharp
+pipeline.SqlServer("orders-v1", connectionString, inbox: true);
+
+// Inside a handler, inject SqlServerOutbox and ISender:
+var transaction = outbox.CurrentTransaction!;
+await transaction.Connection!.ExecuteAsync(
+    "INSERT INTO orders (id) VALUES (@Id)", new { Id = order.Id }, transaction);
+await sender.SendAsync(new OrderPlaced(order.Id));
+// Relayer owns commit, rollback and disposal.
+```
+
+`inbox` defaults to `false`; enable it explicitly to deduplicate. Use a stable consumer name across
+replicas and restarts, at most 256 UTF-16 code units with no trailing space. Names are case-sensitive.
+Deduplication requires the original nonempty UUIDv7 message ID and keys it by consumer. The inbox uses
+`uniqueidentifier` for equality only; the outbox's RFC byte ordering remains unchanged.
+
+The boundary opens one native read-committed transaction. SQL Server's `UPDLOCK, HOLDLOCK` key-range
+locks and primary-key uniqueness serialize competing deliveries of the same identity. A committed key
+skips handling and increments `relayer.inbox.duplicates`; rollback permits redelivery to run the handler.
+Business writes through `CurrentTransaction.Connection`, inbox identity and outgoing rows commit
+atomically before broker settlement. An acknowledgement failure can redeliver committed work safely.
+Handler failures, cancellation and requested retry/dead-letter outcomes roll back before existing failure
+handling and settlement. Cancellation during an inbox lock wait can surface SqlClient’s native
+`SqlException` server-attention error instead of `OperationCanceledException`; rollback still completes
+before the failure leaves the boundary. Completion is requested before commit when none is pending; scope disposal
+cannot change an already durable outcome.
+
+Do not commit, roll back, dispose or replace the consumer transaction inside the handler. Commit and
+rollback calls are rejected, while premature disposal rolls back and causes handling to fail. Business
+commands must use the borrowed connection, and must not issue SQL transaction-control commands or
+close its native connection. Nested boundaries and ambient transactions are unsupported. This integration
+supports ADO.NET/Dapper only, not SQL Server EF Core, saga persistence or batch consumers. There is no
+provider retry strategy or automatic conflict replay: existing failure handling receives native failures.
+The connection string selects one fixed database per pipeline; outbox options select its deployed schema and prefix at composition.
+Changing schema or prefix requires rebuilding the pipeline; a mismatching scope fails before opening its transaction. Native AOT/trimming restrictions above apply to this boundary too.
+
+Retain inbox keys for as long as messages can be redelivered. SQL Server inbox cleanup is application-owned;
+deleting a key allows that identity to execute again. Outgoing messages still require the separately registered
+dispatcher and recovery described below.
 
 ## Commit-triggered unordered dispatch
 
@@ -202,6 +248,10 @@ Set `RELAYER_SQLSERVER_BENCHMARK_CONNECTION` to an isolated database with schema
 ```shell
 dotnet run -c Release --project benchmarks/Relayer.Benchmarks -- --filter '*SqlServerOutboxReadBenchmarks*'
 ```
+
+`SqlServerConsumerBenchmarks` compares native inbox transactions with the consume pipeline, including
+scoped enlistment, UUID parsing, native key-range locking and commit. It covers fresh and duplicate identities
+with `[MemoryDiagnoser]`; select it with the same connection variable and `--filter`.
 
 `SqlServerOutboxBufferBenchmarks` attributes reusable copy/header/lane work at 256 and 4096 bytes without database I/O.
 `SqlServerOutboxCommitBenchmarks` compares native bulk-copy commits with buffered commits at 1 and 64 rows.

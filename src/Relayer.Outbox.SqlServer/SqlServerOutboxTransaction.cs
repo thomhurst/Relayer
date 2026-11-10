@@ -11,6 +11,7 @@ internal sealed class SqlServerOutboxTransaction : DbTransaction
     private readonly SqlConnection? _ownedConnection;
     private readonly SqlServerOutboxConnection _connection;
     private readonly IsolationLevel _isolationLevel;
+    internal bool ConsumerOwned { get; set; }
     private bool _finished;
     private bool _completing;
 
@@ -49,8 +50,14 @@ internal sealed class SqlServerOutboxTransaction : DbTransaction
         if (!IsActive) throw new InvalidOperationException("The SQL Server outbox transaction has completed or is completing.");
     }
 
+    private void EnsureCompletionAllowed()
+    {
+        if (ConsumerOwned) throw new InvalidOperationException("The SQL Server consumer owns transaction completion. Let Relayer commit or roll back after handling.");
+    }
+
     public override void Commit()
     {
+        EnsureCompletionAllowed();
         EnsureActive();
         _completing = true;
         try
@@ -64,6 +71,7 @@ internal sealed class SqlServerOutboxTransaction : DbTransaction
 
     public override async Task CommitAsync(CancellationToken cancellationToken = default)
     {
+        EnsureCompletionAllowed();
         EnsureActive();
         _completing = true;
         try
@@ -79,6 +87,7 @@ internal sealed class SqlServerOutboxTransaction : DbTransaction
 
     public override void Rollback()
     {
+        EnsureCompletionAllowed();
         EnsureActive();
         _completing = true;
         try { _native.Rollback(); }
@@ -87,6 +96,7 @@ internal sealed class SqlServerOutboxTransaction : DbTransaction
 
     public override async Task RollbackAsync(CancellationToken cancellationToken = default)
     {
+        EnsureCompletionAllowed();
         EnsureActive();
         _completing = true;
         try { await _native.RollbackAsync(cancellationToken).ConfigureAwait(false); }

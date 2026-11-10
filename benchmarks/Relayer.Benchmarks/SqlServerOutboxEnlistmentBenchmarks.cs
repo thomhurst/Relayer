@@ -124,7 +124,7 @@ public class SqlServerOutboxCommitBenchmarks
     {
         await using var connection = new SqlConnection(_connectionString);
         await connection.OpenAsync();
-        await using var drop = new SqlCommand($"DROP TABLE IF EXISTS {_table}", connection);
+        await using var drop = new SqlCommand($"DROP TABLE IF EXISTS {_table}, [dbo].[{_options.TablePrefix}inbox]", connection);
         await drop.ExecuteNonQueryAsync();
         _nativeRows.Dispose();
         _scope.Dispose();

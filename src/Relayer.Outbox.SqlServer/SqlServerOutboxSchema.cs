@@ -10,11 +10,19 @@ public static class SqlServerOutboxSchema
         var schema = options.Schema ?? "dbo";
         var quotedSchema = QuoteIdentifier(schema);
         var table = Table(options);
+        var inbox = InboxTable(options);
         var index = QuoteIdentifier(options.TablePrefix + "outbox_pending_idx");
         // Dynamic DDL is needed for CREATE SCHEMA. Escape both identifier and SQL literal contexts.
         return $"""
             IF SCHEMA_ID(N'{Literal(schema)}') IS NULL
                 EXEC(N'CREATE SCHEMA {Literal(quotedSchema)}');
+            IF OBJECT_ID(N'{Literal(inbox)}', N'U') IS NULL
+                CREATE TABLE {inbox} (
+                    consumer nvarchar(256) COLLATE Latin1_General_100_BIN2 NOT NULL,
+                    message_id uniqueidentifier NOT NULL,
+                    processed_at datetimeoffset(7) NOT NULL DEFAULT SYSUTCDATETIME(),
+                    PRIMARY KEY (consumer, message_id)
+                );
             IF OBJECT_ID(N'{Literal(table)}', N'U') IS NULL
             BEGIN
                 CREATE TABLE {table} (
@@ -43,6 +51,9 @@ public static class SqlServerOutboxSchema
             END;
             """;
     }
+
+    internal static string InboxTable(SqlServerOutboxOptions options) =>
+        QuoteIdentifier(options.Schema ?? "dbo") + "." + QuoteIdentifier(options.TablePrefix + "inbox");
 
     internal static string Table(SqlServerOutboxOptions options)
     {

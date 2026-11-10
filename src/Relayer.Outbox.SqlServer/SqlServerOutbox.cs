@@ -42,6 +42,11 @@ public sealed class SqlServerOutbox : IOutboxEnlistment, IDisposable, IAsyncDisp
         _table = SqlServerOutboxSchema.Table(options.Value);
     }
 
+    /// <summary>The active borrowed transaction. Create business commands through its Connection; consumer middleware owns completion.</summary>
+    public DbTransaction? CurrentTransaction => _transaction is { IsActive: true } ? _transaction : null;
+
+    internal string Table => _table;
+
     /// <inheritdoc />
     public bool IsActive => _transaction is { IsActive: true };
 
