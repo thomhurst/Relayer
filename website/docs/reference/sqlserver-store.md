@@ -89,6 +89,14 @@ buffered rows and roll back uncommitted business writes. Start another unit afte
 commands cannot attach to it. A lost commit acknowledgement can still have committed, so use application
 idempotency for unknown outcomes.
 
+Bulk writes retain SqlClient's independent `BulkCopyTimeout` default of **30 seconds**.
+A business command's `CommandTimeout` (including Dapper's timeout) and the connection string's
+`Command Timeout` do not change that limit. Relayer does not infer a bulk-copy timeout from a business
+command: several commands in the same transaction can have different timeouts. This preserves
+[native SqlClient bulk-copy behavior](https://github.com/dotnet/SqlClient/blob/v7.1.1/src/Microsoft.Data.SqlClient/src/Microsoft/Data/SqlClient/SqlBulkCopy.cs#L174).
+Size application transactions so their bulk write fits this limit under expected database contention;
+if a timeout occurs, the unit rolls back rather than committing business writes alone.
+
 Options are init-only. `AddRelayerSqlServerOutbox(configurationSection)` binds `Schema`, `TablePrefix`
 and positive `Lanes` without runtime reflection, validates at host startup, and reloads for new scopes.
 Keep the lane count identical across writers. Lanes use the UTF-8 ordering key's FNV-1a hash modulo
@@ -374,12 +382,20 @@ scoped enlistment, UUID parsing, native key-range locking and commit. It covers 
 with `[MemoryDiagnoser]`; select it with the same connection variable and `--filter`.
 
 `SqlServerOutboxBufferBenchmarks` attributes reusable copy/header/lane work at 256 and 4096 bytes without database I/O.
-`SqlServerOutboxCommitBenchmarks` covers unordered and ordered bulk commits at 1 and 64 rows, including native range allocation for ordered buffers.
+`SqlServerOutboxCommitBenchmarks` covers unordered and ordered bulk commits at 1, 64 and 7,000 rows,
+with and without an `AFTER INSERT` row-count trigger. It compares raw `SqlBulkCopy` from a `DataTable`,
+raw streaming copy from a `DataTableReader`, and Relayer's buffered commit with the same 1 KiB bodies
+and headers. Ordered Relayer commits additionally reserve native sequence ranges; raw copies use the
+table's sequence default. Use unordered cases to isolate bulk-copy cost.
 `SqlServerOrderedDispatchBenchmarks` measures complete owned-lane batches, including SQL reads, reusable decoding and fenced outcomes; `OrderedDispatchBenchmarks` isolates managed preparation.
 `SqlServerOutboxDispatchBenchmarks` compares reusable envelope buffers with commit-to-worker ownership
 transfer and destination grouping at 1 and 64 rows, excluding database I/O and native allocations.
-Use the same connection variable and select either class with `--filter`. Each commit invocation deletes
-its previous batch in the same transaction to keep table size stable.
+Use the same connection variable and select either class with `--filter`. Each commit invocation truncates
+its previous batch in the same transaction to keep table size stable without measuring per-row deletion.
+Iteration cleanup verifies the persisted row count and the trigger's batch size outside the measurement.
+For the large-batch investigation alone, use `--filter '*SqlServerOutboxCommitBenchmarks*Rows: 7000*Ordered: False*'`.
+Compare both raw paths before attributing streaming or server costs to Relayer; timings on emulated
+SQL Server images are diagnostic, not production capacity estimates.
 
 The database benchmarks create and remove their own tables. Results include SqlClient's allocations and I/O;
 they are diagnostic and do not establish the direct-send/receive throughput budget. Relayer reuses

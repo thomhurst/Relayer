@@ -37,7 +37,7 @@ public class SqlServerOutboxBufferBenchmarks
 }
 
 /// <summary>Compares native bulk-copy commits with scoped buffered commits at realistic batch sizes.</summary>
-/// <remarks>Results include SqlClient I/O and allocations. One invocation is a complete batch, including deletion of the previous batch.</remarks>
+/// <remarks>Results include SqlClient I/O and allocations. One invocation is a complete batch, including truncation of the previous batch.</remarks>
 [MemoryDiagnoser]
 public class SqlServerOutboxCommitBenchmarks
 {
@@ -50,11 +50,14 @@ public class SqlServerOutboxCommitBenchmarks
     private IServiceScope _scope = null!;
     private SqlServerOutbox _outbox = null!;
 
-    [Params(1, 64)]
+    [Params(1, 64, 7000)]
     public int Rows { get; set; }
 
     [Params(false, true)]
     public bool Ordered { get; set; }
+
+    [Params(false, true)]
+    public bool InsertTrigger { get; set; }
 
     [GlobalSetup]
     public async Task Setup()
@@ -89,6 +92,16 @@ public class SqlServerOutboxCommitBenchmarks
         await connection.OpenAsync();
         await using var schema = new SqlCommand(SqlServerOutboxSchema.CreateScript(_options), connection);
         await schema.ExecuteNonQueryAsync();
+        if (InsertTrigger)
+        {
+            await using var trigger = new SqlCommand($"""
+                CREATE TABLE [dbo].[{_options.TablePrefix}batch_log] (rows_inserted bigint NOT NULL);
+                EXEC(N'CREATE TRIGGER [dbo].[{_options.TablePrefix}insert_log] ON {_table}
+                    AFTER INSERT AS BEGIN SET NOCOUNT ON;
+                    INSERT INTO [dbo].[{_options.TablePrefix}batch_log] SELECT COUNT_BIG(*) FROM inserted; END');
+                """, connection);
+            await trigger.ExecuteNonQueryAsync();
+        }
         // Warm reusable buffers and verify both writers produce the complete batch.
         await NativeBulkCopy();
         await BufferedCommit();
@@ -97,17 +110,27 @@ public class SqlServerOutboxCommitBenchmarks
     }
 
     [Benchmark(Baseline = true)]
-    public async Task NativeBulkCopy()
+    public Task NativeBulkCopy() => NativeBulkCopyCore(streaming: false);
+
+    [Benchmark]
+    public Task NativeStreamingBulkCopy() => NativeBulkCopyCore(streaming: true);
+
+    private async Task NativeBulkCopyCore(bool streaming)
     {
         await using var connection = new SqlConnection(_connectionString);
         await connection.OpenAsync();
         await using var transaction = (SqlTransaction)await connection.BeginTransactionAsync();
-        await using (var delete = new SqlCommand($"DELETE FROM {_table}", connection, transaction))
+        await using (var delete = new SqlCommand($"TRUNCATE TABLE {_table}", connection, transaction))
             await delete.ExecuteNonQueryAsync();
         using var copy = new SqlBulkCopy(connection, SqlBulkCopyOptions.CheckConstraints | SqlBulkCopyOptions.FireTriggers, transaction)
-        { DestinationTableName = _table };
+        { DestinationTableName = _table, EnableStreaming = streaming };
         foreach (DataColumn column in _nativeRows.Columns) copy.ColumnMappings.Add(column.ColumnName, column.ColumnName);
-        await copy.WriteToServerAsync(_nativeRows);
+        if (streaming)
+        {
+            using var reader = _nativeRows.CreateDataReader();
+            await copy.WriteToServerAsync(reader);
+        }
+        else await copy.WriteToServerAsync(_nativeRows);
         await transaction.CommitAsync();
     }
 
@@ -117,11 +140,27 @@ public class SqlServerOutboxCommitBenchmarks
         await using var transaction = await _outbox.BeginTransactionAsync(_connectionString);
         await using (var delete = transaction.Connection!.CreateCommand())
         {
-            delete.CommandText = $"DELETE FROM {_table}";
+            delete.CommandText = $"TRUNCATE TABLE {_table}";
             await delete.ExecuteNonQueryAsync();
         }
         for (var i = 0; i < _records.Length; i++) await _outbox.EnlistAsync(_records[i], default);
         await transaction.CommitAsync();
+    }
+
+    [IterationCleanup]
+    public void VerifyBatch()
+    {
+        using var connection = new SqlConnection(_connectionString);
+        connection.Open();
+        using var count = new SqlCommand($"SELECT COUNT_BIG(*) FROM {_table}", connection);
+        if ((long)count.ExecuteScalar()! != Rows) throw new InvalidOperationException("Incomplete benchmark batch.");
+        if (InsertTrigger)
+        {
+            using var log = new SqlCommand($"SELECT MIN(rows_inserted) FROM [dbo].[{_options.TablePrefix}batch_log]", connection);
+            if ((long)log.ExecuteScalar()! != Rows) throw new InvalidOperationException("Trigger did not receive a complete batch.");
+            using var clear = new SqlCommand($"TRUNCATE TABLE [dbo].[{_options.TablePrefix}batch_log]", connection);
+            clear.ExecuteNonQuery();
+        }
     }
 
     [GlobalCleanup]
@@ -129,7 +168,7 @@ public class SqlServerOutboxCommitBenchmarks
     {
         await using var connection = new SqlConnection(_connectionString);
         await connection.OpenAsync();
-        await using var drop = new SqlCommand($"DROP TABLE IF EXISTS {_table}, [dbo].[{_options.TablePrefix}inbox], [dbo].[{_options.TablePrefix}leases], [dbo].[{_options.TablePrefix}ordered_leases], [dbo].[{_options.TablePrefix}outbox_dead]; DROP SEQUENCE IF EXISTS [dbo].[{_options.TablePrefix}outbox_sequence]", connection);
+        await using var drop = new SqlCommand($"DROP TABLE IF EXISTS [dbo].[{_options.TablePrefix}batch_log], {_table}, [dbo].[{_options.TablePrefix}inbox], [dbo].[{_options.TablePrefix}leases], [dbo].[{_options.TablePrefix}ordered_leases], [dbo].[{_options.TablePrefix}outbox_dead]; DROP SEQUENCE IF EXISTS [dbo].[{_options.TablePrefix}outbox_sequence]", connection);
         await drop.ExecuteNonQueryAsync();
         _nativeRows.Dispose();
         _scope.Dispose();
