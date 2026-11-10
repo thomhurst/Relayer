@@ -61,8 +61,13 @@ internal sealed class SessionResource<T>(Func<Task<T>> start) where T : IAsyncDi
     internal async Task ResetAsync()
     {
         var value = Interlocked.Exchange(ref _value, new(start));
+        if (!value.IsValueCreated) return;
+        // Wait for a startup still in flight (every test may have given up on it) so its containers are not left behind.
+        T resource;
+        try { resource = await value.Value; }
         // A failed startup already cleaned up and failed the tests that needed it.
-        if (value.IsValueCreated && value.Value.IsCompletedSuccessfully) await value.Value.Result.DisposeAsync();
+        catch { return; }
+        await resource.DisposeAsync();
     }
 }
 
