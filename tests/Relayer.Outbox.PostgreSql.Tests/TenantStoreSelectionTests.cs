@@ -1,5 +1,6 @@
 using System.Buffers;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.Extensions.DependencyInjection;
 using Npgsql;
 using Relayer.Outbox.EntityFrameworkCore;
@@ -154,17 +155,17 @@ public class TenantStoreSelectionTests
         for (var i = 0; i < stores.Count; i++)
         {
             await Deliver(pipeline, id, stores[i].Id);
-            await Verify(stores[i], 1, 1, 1);
+            await Verify(stores[i], 1, 1, 1, tenantBound: true);
         }
         await Assert.That(control.Calls).IsEqualTo(3);
         var rollback = Guid.CreateVersion7().ToString("D");
         control.Fail = true;
         await Assert.That(async () => await Deliver(pipeline, rollback, stores[0].Id)).Throws<InvalidOperationException>();
-        for (var i = 0; i < stores.Count; i++) await Verify(stores[i], 1, 1, 1);
+        for (var i = 0; i < stores.Count; i++) await Verify(stores[i], 1, 1, 1, tenantBound: true);
         control.Fail = false;
         await Deliver(pipeline, rollback, stores[0].Id);
-        await Verify(stores[0], 2, 2, 2);
-        for (var i = 1; i < stores.Count; i++) await Verify(stores[i], 1, 1, 1);
+        await Verify(stores[0], 2, 2, 2, tenantBound: true);
+        for (var i = 1; i < stores.Count; i++) await Verify(stores[i], 1, 1, 1, tenantBound: true);
     }
 
     [Test]
@@ -190,7 +191,7 @@ public class TenantStoreSelectionTests
         // Strategy context, two transaction/handler scopes, and native unknown-outcome verification.
         await Assert.That(control.Authorizations).IsEqualTo(4);
         await Verify(stores[0], 0, 0, 0);
-        await Verify(stores[1], 1, 1, 1);
+        await Verify(stores[1], 1, 1, 1, tenantBound: true);
         await Verify(stores[2], 0, 0, 0);
     }
 
@@ -219,6 +220,92 @@ public class TenantStoreSelectionTests
             .Throws<InvalidOperationException>().WithMessageContaining("Configure schema and prefix on AddRelayerOutbox");
         await Assert.That(provider.GetRequiredService<Control>().Calls).IsEqualTo(0);
         for (var i = 0; i < stores.Count; i++) await Verify(stores[i], 0, 0, 0);
+    }
+
+    [Test]
+    [Arguments(false, false)]
+    [Arguments(false, true)]
+    [Arguments(true, false)]
+    [Arguments(true, true)]
+    public async Task Authorized_metadata_is_atomic_and_mismatches_poison_native_and_EF_units(bool ef, bool synchronous)
+    {
+        await using var stores = new TenantStores();
+        await stores.Start(false);
+        await using var provider = Services(stores, incomingTenants: true);
+        var sharedId = Guid.CreateVersion7();
+        await Task.WhenAll(Enumerable.Range(0, stores.Count).Select(index => Run(stores[index])));
+        for (var i = 0; i < stores.Count; i++) await Verify(stores[i], 1, 1, 0, tenantBound: true);
+
+        async Task Run(TenantStore store)
+        {
+            // Each rejected unit rolls back business work. A fresh scope retries the same message ID.
+            foreach (var mismatch in new[] { "metadata", "header", "missing", "scope", "commit", "empty", "none" })
+            {
+                await using var scope = provider.CreateAsyncScope();
+                var tenant = scope.ServiceProvider.GetRequiredService<TenantContext>();
+                tenant.Id = new(store.Id);
+                var binding = new OutboxTenantBinding(tenant, store.Id);
+                await using var native = new PostgreSqlOutbox(new Snapshot(new() { Schema = store.Schema, TenantBinding = binding }));
+                var db = ef ? scope.ServiceProvider.GetRequiredService<OrdersContext>() : null;
+                var efTransaction = db is null ? null : synchronous ? db.Database.BeginTransaction() : await db.Database.BeginTransactionAsync();
+                await using var transaction = db is null
+                    ? await native.BeginTransactionAsync(store.Source) : efTransaction!.GetDbTransaction();
+                try
+                {
+                    if (db is not null) await db.Database.ExecuteSqlRawAsync("INSERT INTO orders VALUES (1)");
+                    else
+                    {
+                        await using var command = transaction.Connection!.CreateCommand();
+                        command.Transaction = transaction;
+                        command.CommandText = "INSERT INTO orders VALUES (1)";
+                        await command.ExecuteNonQueryAsync();
+                    }
+                    var enlistment = ef ? scope.ServiceProvider.GetRequiredService<IOutboxEnlistment>() : native;
+                    var headers = mismatch == "missing" ? Array.Empty<KeyValuePair<string, WireString>>() :
+                        new[] { new KeyValuePair<string, WireString>(TenantContext.HeaderName,
+                            mismatch == "header" ? new("wrong") : new(store.Id)) };
+                    var record = new OutboxRecord(sharedId, "events", "tenant.store.probe;v=1",
+                        new OutgoingMessage("orders", new byte[] { 1 }, headers), DateTimeOffset.UtcNow,
+                        TenantId: mismatch == "metadata" ? "wrong" : null);
+                    if (mismatch == "scope") tenant.Id = new("wrong");
+                    if (mismatch is not ("none" or "commit" or "empty"))
+                    {
+                        await Assert.That(async () => await enlistment.EnlistAsync(record, default)).Throws<InvalidOperationException>();
+                        // Restoring the tenant after an error cannot make a failed unit committable.
+                        tenant.Id = new(store.Id);
+                        await Assert.That(Commit).Throws<InvalidOperationException>();
+                    }
+                    else
+                    {
+                        if (mismatch != "empty") await enlistment.EnlistAsync(record, default);
+                        if (mismatch is "commit" or "empty")
+                        {
+                            tenant.Id = new("wrong");
+                            await Assert.That(Commit).Throws<InvalidOperationException>();
+                        }
+                        else await Commit();
+                    }
+                }
+                finally
+                {
+                    if (efTransaction is not null) await efTransaction.DisposeAsync();
+                }
+                async Task Commit()
+                {
+                    if (efTransaction is not null)
+                    {
+                        if (synchronous) efTransaction.Commit(); else await efTransaction.CommitAsync();
+                    }
+                    else if (synchronous) transaction.Commit(); else await transaction.CommitAsync();
+                }
+            }
+        }
+    }
+
+    private sealed class Snapshot(PostgreSqlOutboxOptions value) : Microsoft.Extensions.Options.IOptionsSnapshot<PostgreSqlOutboxOptions>
+    {
+        public PostgreSqlOutboxOptions Value => value;
+        public PostgreSqlOutboxOptions Get(string? name) => value;
     }
 
     private static ServiceProvider Services(TenantStores stores, string? fixedTenant = null,
@@ -250,7 +337,8 @@ public class TenantStoreSelectionTests
             options.UseNpgsql(store.Source, native =>
             {
                 if (nativeRetries) native.EnableRetryOnFailure(3, TimeSpan.Zero, null);
-            }).AddRelayerOutbox(provider, new() { Schema = store.Schema });
+            }).AddRelayerOutbox(provider, new() { Schema = store.Schema,
+                TenantBinding = incomingTenants ? new(provider.GetRequiredService<TenantContext>(), store.Id) : null });
         });
         services.AddRelayer(relayer =>
         {
@@ -280,12 +368,27 @@ public class TenantStoreSelectionTests
         await pipeline.ProcessAsync(context);
     }
 
-    private static async Task Verify(TenantStore store, long business, long outbox, long inbox)
+    private static async Task Verify(TenantStore store, long business, long outbox, long inbox, bool tenantBound = false)
     {
         await using var connection = await store.Source.OpenConnectionAsync();
         await Assert.That(await Count("orders")).IsEqualTo(business);
         await Assert.That(await Count("relayer_outbox")).IsEqualTo(outbox);
         await Assert.That(await Count("relayer_inbox")).IsEqualTo(inbox);
+        if (tenantBound)
+        {
+            await using var bound = new NpgsqlCommand("SELECT count(*) FROM relayer_outbox WHERE tenant_id = @tenant", connection);
+            bound.Parameters.AddWithValue("tenant", store.Id);
+            await Assert.That((long)(await bound.ExecuteScalarAsync())!).IsEqualTo(outbox);
+        }
+        await using var metadata = new NpgsqlCommand("SELECT tenant_id, headers FROM relayer_outbox WHERE tenant_id IS NOT NULL", connection);
+        await using var reader = await metadata.ExecuteReaderAsync();
+        while (await reader.ReadAsync())
+        {
+            await Assert.That(reader.GetString(0)).IsEqualTo(store.Id);
+            KeyValuePair<string, WireString>[] entries = [];
+            var headers = DurableOutboxHeaderCodec.Read(reader.GetFieldValue<byte[]>(1), ref entries).ToArray();
+            await Assert.That(headers.Single(header => header.Key == TenantContext.HeaderName).Value.ToString()).IsEqualTo(store.Id);
+        }
         async Task<long> Count(string table)
         {
             await using var command = new NpgsqlCommand($"SELECT count(*) FROM {table}", connection);

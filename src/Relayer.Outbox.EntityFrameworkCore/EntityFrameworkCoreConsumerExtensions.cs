@@ -65,6 +65,7 @@ public static class EntityFrameworkCoreConsumerExtensions
             throw new InvalidOperationException("Configure schema and prefix on AddRelayerOutbox; the consumer inbox uses that same configuration.");
         if (requireOutbox && outbox is null)
             throw new InvalidOperationException("Saga consumers require AddRelayerOutbox on the selected scoped DbContext. State, inbox and outgoing messages must share one transaction.");
+        outbox?.TenantBinding?.Validate();
         return new(inbox || outbox is not null, outbox is not null, outbox ?? fallback);
     }
 }

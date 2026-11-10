@@ -15,6 +15,8 @@ public sealed class PostgreSqlOutbox : IOutboxEnlistment, IDisposable, IAsyncDis
     private readonly int _lanes;
     private readonly RelayerInstrumentation? _instrumentation;
     private PostgreSqlOutboxTransaction? _transaction;
+    private readonly OutboxTenantBinding? _tenant;
+    private bool _failed;
     private int _count;
     private bool _disposed;
 
@@ -28,6 +30,8 @@ public sealed class PostgreSqlOutbox : IOutboxEnlistment, IDisposable, IAsyncDis
         ArgumentNullException.ThrowIfNull(options);
         var value = options.Value;
         ValidateOptions(value);
+        _tenant = value.TenantBinding;
+        _tenant?.Validate();
         _lanes = value.Lanes;
         SupportsScheduling = PostgreSqlSchedulingRegistration.Supports(workers, value.Schema, value.TablePrefix);
         SupportsOrderedScheduling = PostgreSqlSchedulingRegistration.Supports(workers, value.Schema, value.TablePrefix, value.Lanes);
@@ -79,6 +83,7 @@ public sealed class PostgreSqlOutbox : IOutboxEnlistment, IDisposable, IAsyncDis
     private void EnsureAvailable()
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
+        _tenant?.Validate();
         if (_transaction is not null)
             throw new InvalidOperationException("Complete or dispose the current PostgreSQL outbox transaction before beginning another.");
     }
@@ -89,6 +94,12 @@ public sealed class PostgreSqlOutbox : IOutboxEnlistment, IDisposable, IAsyncDis
         ObjectDisposedException.ThrowIf(_disposed, this);
         cancellationToken.ThrowIfCancellationRequested();
         if (!IsActive) throw new InvalidOperationException("Begin a PostgreSQL outbox transaction before sending via the outbox.");
+        if (_failed) throw new InvalidOperationException("Roll back the failed outbox transaction before sending again.");
+        if (_tenant is not null)
+        {
+            try { record = _tenant.Bind(record); }
+            catch { _failed = true; throw; }
+        }
         BufferedOutboxMessage.Validate(record);
         if (_count == _rows.Count) _rows.Add(new());
         _rows[_count].Copy(record, _lanes);
@@ -98,6 +109,8 @@ public sealed class PostgreSqlOutbox : IOutboxEnlistment, IDisposable, IAsyncDis
 
     internal PostgreSqlOutboxBatch? Prepare(NpgsqlTransaction transaction)
     {
+        if (_failed) throw new InvalidOperationException("This outbox unit failed. Roll back and retry the complete unit of work.");
+        _tenant?.Validate();
         if (_count == 0) return null;
         _batch.Prepare(transaction, _insertSql);
         for (var i = 0; i < _count; i++) _batch.Add(_rows[i]);
@@ -111,6 +124,7 @@ public sealed class PostgreSqlOutbox : IOutboxEnlistment, IDisposable, IAsyncDis
         if (!ReferenceEquals(_transaction, transaction)) return;
         for (var i = 0; i < _count; i++) _rows[i].Clear();
         _count = 0;
+        _failed = false;
         _transaction = null;
     }
 

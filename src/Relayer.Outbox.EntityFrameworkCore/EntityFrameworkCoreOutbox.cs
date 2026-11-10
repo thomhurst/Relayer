@@ -53,6 +53,7 @@ internal sealed class EntityFrameworkCoreOutbox(bool supportsScheduling = false,
 
     internal IDisposable Select(DbContext context, OutboxConfiguration configuration)
     {
+        configuration.TenantBinding?.Validate();
         var state = Get(context, configuration);
         state.CheckTransaction();
         state.EnsureTransactionAvailable();
@@ -86,6 +87,7 @@ internal sealed class EntityFrameworkCoreOutbox(bool supportsScheduling = false,
     {
         // Npgsql can reuse the same native object after disposal. A new EF transaction is a new unit.
         if (newTransaction) Ended(transaction);
+        configuration.TenantBinding?.Validate();
         var state = Get(context, configuration);
         state.CheckTransaction();
         if (state.Transaction is not null && !ReferenceEquals(state.Transaction, transaction))
@@ -128,9 +130,11 @@ internal sealed class EntityFrameworkCoreOutbox(bool supportsScheduling = false,
         foreach (var state in _contexts)
         {
             if (!ReferenceEquals(state.Transaction, transaction)) continue;
+            state.Configuration.TenantBinding?.Validate();
             if (state.Failed) throw new InvalidOperationException("This outbox unit failed. Roll back the transaction and retry the complete unit of work.");
-            if (configuration is not null && (configuration.Table != state.Configuration.Table || configuration.Lanes != state.Configuration.Lanes))
-                throw new InvalidOperationException("DbContexts sharing a transaction must use identical outbox schema, prefix and lane settings.");
+            if (configuration is not null && (configuration.Table != state.Configuration.Table || configuration.Lanes != state.Configuration.Lanes ||
+                configuration.TenantBinding?.TenantId != state.Configuration.TenantBinding?.TenantId))
+                throw new InvalidOperationException("DbContexts sharing a transaction must use identical outbox schema, prefix, lane and authorized tenant settings.");
             configuration = state.Configuration;
             count = checked(count + state.Count);
             if (state.Count != 0) participants++;
@@ -231,6 +235,11 @@ internal sealed class OutboxContext(DbContext context, OutboxConfiguration confi
         if (record.Message.DeliverAt is not null && !(record.Message.OrderingKey is not null
                 ? Configuration.SupportsOrderedScheduling : Configuration.SupportsScheduling))
             throw new InvalidOperationException("Scheduled EF Core outbox sends require a matching due-row dispatch worker for the selected DbContext schema, table prefix and ordered lane count. Register PostgreSQL maintenance or ordered dispatch for that store.");
+        if (Configuration.TenantBinding is { } tenant)
+        {
+            try { record = tenant.Bind(record); }
+            catch { Failed = true; throw; }
+        }
         BufferedOutboxMessage.Validate(record);
         if (Count == Rows.Count) Rows.Add(new());
         Rows[Count].Copy(record, Configuration.Lanes);

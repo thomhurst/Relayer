@@ -61,4 +61,5 @@ boundary validates the selected context before its transaction, including each n
 
 `ITenantSource` dispatch enumeration and a shared tenant connection budget remain planned under
 [#38](https://github.com/thomhurst/Relayer/issues/38). The wire header is preserved in outbox payloads;
-automatic population and validation of the separate durable `tenant_id` column remain planned.
+the separate durable `tenant_id` column is populated and validated through an application-authorized
+[scoped tenant binding](../reference/tenant-stores.md#durable-tenant-binding).

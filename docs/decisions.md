@@ -556,7 +556,7 @@ unit until their pending transaction ends. Retrying EF execution strategies requ
 transaction around the complete unit, with clean tracked state on each attempt; implicit saves
 with buffered rows reject retrying strategies with an actionable error before opening a transaction.
 PostgreSQL is implemented first. Its versioned header codec retains all name/value pairs; deterministic
-FNV-1a lane hashing uses UTF-8 ordering keys. Tenant metadata is preserved when explicitly supplied.
+FNV-1a lane hashing uses UTF-8 ordering keys. Tenant metadata is preserved when explicitly supplied; an application-authorized scoped binding supplies and validates it for tenant stores (D45).
 
 **Consequences.** No SaveChanges override, entity mapping, header scanning, or process-wide mutable
 state is required. Native transaction rollback/disposal abandons buffered sends. Failed explicit units and savepoint rollback
@@ -924,8 +924,18 @@ outbox options before transactions in delivery/retry scopes; native execution st
 authoritative. The existing immutable outbox configuration is attached through EF's native options
 extension facility, so delivery validation does not enumerate interceptor sequences or retain a
 worker-lifetime tenant cache. Providers without tenancy retain startup validation. Saga state model
-validation still requires a startup context. Durable tenant/store/header binding, tenant enumeration
-and a shared dispatch connection budget remain separate work.
+validation still requires a startup context.
+
+For durable tenant/store/header binding, the same native scoped factory supplies an
+`OutboxTenantBinding` alongside the existing store options after authorizing the tenant and selecting
+the native resource. It is an application assertion about store ownership, not another store resolver
+or an authentication mechanism. Tenant-enabled PostgreSQL and EF outbox registrations require it.
+The immutable binding validates the current scoped tenant, exactly one matching outgoing tenant header,
+and any supplied durable metadata; it fills missing durable metadata with the authorized ID. Rejected
+enlistments invalidate the unit. Transaction commit revalidates the scope, while EF also validates
+before transaction start and SaveChanges. Native transaction and retry semantics remain authoritative;
+applications create a fresh authorized scope per retry. Tenant enumeration and a shared dispatch
+connection budget remain separate work.
 
 ## D46. SQL Server primitives use native SqlClient with an explicit AOT boundary
 

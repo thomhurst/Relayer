@@ -33,6 +33,7 @@ internal sealed class OutboxConfiguration : IDbContextOptionsExtension
         public override bool ShouldUseSameServiceProvider(DbContextOptionsExtensionInfo other) => other is ConfigurationInfo;
     }
 
+    internal OutboxTenantBinding? TenantBinding { get; }
     internal string Table { get; }
     internal int Lanes { get; }
     internal string InsertSql { get; }
@@ -44,6 +45,8 @@ internal sealed class OutboxConfiguration : IDbContextOptionsExtension
 
     internal OutboxConfiguration(EntityFrameworkCoreOutboxOptions options, PostgreSqlDirectDispatcher? dispatcher = null, IEnumerable<PostgreSqlSchedulingRegistration>? workers = null)
     {
+        TenantBinding = options.TenantBinding;
+        TenantBinding?.Validate();
         // Reuse the schema's validation, including generated identifier lengths, at registration time.
         _ = PostgreSqlOutboxSchema.CreateScript(new() { Schema = options.Schema, TablePrefix = options.TablePrefix });
         if (options.Lanes <= 0) throw new ArgumentOutOfRangeException(nameof(options), "Lanes must be positive.");

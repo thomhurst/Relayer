@@ -12,6 +12,7 @@ internal sealed class OutboxSaveChangesInterceptor(EntityFrameworkCoreOutbox out
 
     public override InterceptionResult<int> SavingChanges(DbContextEventData eventData, InterceptionResult<int> result)
     {
+        Configuration.TenantBinding?.Validate();
         var state = Outbox.Get(eventData.Context!, Configuration);
         state.CheckTransaction();
         state.EnsureTransactionAvailable();
@@ -31,6 +32,7 @@ internal sealed class OutboxSaveChangesInterceptor(EntityFrameworkCoreOutbox out
     public override async ValueTask<InterceptionResult<int>> SavingChangesAsync(DbContextEventData eventData,
         InterceptionResult<int> result, CancellationToken cancellationToken = default)
     {
+        Configuration.TenantBinding?.Validate();
         var state = Outbox.Get(eventData.Context!, Configuration);
         state.CheckTransaction();
         state.EnsureTransactionAvailable();

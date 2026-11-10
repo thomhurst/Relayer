@@ -210,8 +210,9 @@ detached context for another unit; Relayer rejects reuse that could discard its 
 stable wire type and creation time directly from the send pipeline. This also works with raw envelopes
 and custom native header names; Relayer does not infer identity by scanning headers.
 The serialized body, all headers, ordering key and delivery time survive buffer reuse. New sends have
-zero attempts and no dispatch error; callers cannot supply a lane. Tenant ID is preserved when supplied
-through the low-level record contract; automatic durable tenant metadata binding remains planned.
+zero attempts and no dispatch error; callers cannot supply a lane. Tenant ID is populated and validated against the scoped application-authorized
+[tenant binding](tenant-stores.md#durable-tenant-binding). Fixed stores without tenancy retain optional
+caller-supplied metadata.
 [Native scoped store selection](tenant-stores.md) also supports incoming single-message EF consumers
 when tenancy is registered.
 

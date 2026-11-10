@@ -9,8 +9,9 @@ connection and transaction. There is no separate Relayer `IOutboxStoreResolver` 
 
 This supports manually initiated outbox units and incoming single-message EF Core consumers registered
 with `AddRelayerTenancy`. The application authorizes the tenant before resolving its native store.
-Automatic durable `tenant_id` population, tenant enumeration and a shared dispatch connection budget
-remain planned.
+A scoped `OutboxTenantBinding` supplied by that factory binds the store's durable tenant metadata to
+its application-authorized tenant and the propagated header. Tenant enumeration and a shared dispatch
+connection budget remain planned.
 
 ## Select before resolving database services
 
@@ -49,13 +50,18 @@ using Relayer.Outbox.EntityFrameworkCore;
 
 services.AddSingleton(new TenantStoreCatalog(tenantStores));
 services.AddScoped<AuthorizedTenant>();
+services.AddRelayerTenancy();
 services.AddRelayerEntityFrameworkCoreOutbox();
 services.AddDbContext<OrdersDbContext>((provider, options) =>
 {
     var tenant = provider.GetRequiredService<AuthorizedTenant>();
     var store = provider.GetRequiredService<TenantStoreCatalog>().Resolve(tenant.Id);
     options.UseNpgsql(store.DataSource).AddRelayerOutbox(provider,
-        new EntityFrameworkCoreOutboxOptions { Schema = store.Schema });
+        new EntityFrameworkCoreOutboxOptions
+        {
+            Schema = store.Schema,
+            TenantBinding = new OutboxTenantBinding(provider.GetRequiredService<TenantContext>(), tenant.Id!)
+        });
 });
 ```
 
@@ -66,6 +72,7 @@ request, select its tenant **before** resolving the DbContext or any dependency 
 await using var scope = serviceScopeFactory.CreateAsyncScope();
 var provider = scope.ServiceProvider;
 provider.GetRequiredService<AuthorizedTenant>().Id = authorizedTenantId;
+provider.GetRequiredService<TenantContext>().Id = new WireString(authorizedTenantId);
 var db = provider.GetRequiredService<OrdersDbContext>();
 var sender = provider.GetRequiredService<ISender>();
 
@@ -115,7 +122,11 @@ shared connection budget across tenants.
 
 For [ADO.NET or Dapper](postgres-outbox.md), select the authorized native data source first and pass it
 to `PostgreSqlOutbox.BeginTransactionAsync`. Configure the scoped outbox's schema/prefix to match the
-selected store. The transaction owns only the connection it opens, not the application data source.
+selected store, including `PostgreSqlOutboxOptions.TenantBinding` created with the same scoped
+`TenantContext` and authorized tenant ID. Supply these scope-specific options through your scoped
+`IOptionsSnapshot<PostgreSqlOutboxOptions>` factory or your scoped `PostgreSqlOutbox` factory; do not
+put a binding in singleton options or configuration files. The transaction owns only the connection
+it opens, not the application data source.
 
 ## Consumer and dispatch boundary
 
@@ -157,6 +168,27 @@ enumeration, dynamic store addition/removal, isolated tenant lane/lease coordina
 budget spanning all tenant workers remain planned. Avoid creating permanent workers and unbounded
 pools per tenant as a substitute.
 
-The optional low-level `OutboxRecord.TenantId` remains caller-supplied metadata. Store selection neither
-infers it from headers nor validates it against an authorized tenant. Applications must maintain that
-consistency themselves until automatic tenant binding is implemented.
+## Durable tenant binding
+
+Create `OutboxTenantBinding` after authorization, in the same scoped factory that selects the native
+store. Attach it to `EntityFrameworkCoreOutboxOptions.TenantBinding` or
+`PostgreSqlOutboxOptions.TenantBinding`. With `AddRelayerTenancy`, these outbox registrations require
+a binding; missing bindings fail when the scoped outbox or DbContext options are resolved.
+
+The binding is an explicit application assertion about the selected connection, database and schema.
+Relayer cannot authenticate tenants or infer resource ownership from a connection string. The factory
+must choose the authorized store; the binding verifies that the scope and messages agree with that
+choice. Never reuse the binding across scopes or mutate the tenant during a unit of work.
+
+Scoped sends already carry the header. For low-level `IOutboxEnlistment.EnlistAsync` calls, supply
+exactly one `relayer.tenant_id` header matching the authorized ID. Relayer fills a missing
+`OutboxRecord.TenantId` with that ID and accepts an explicitly matching value. Missing, duplicate or
+conflicting headers, conflicting durable metadata, and a changed scoped tenant fail before enqueueing.
+A rejected enlistment invalidates the unit: roll back and retry in a fresh authorized scope, even if
+your code caught the exception. Commit validates the current tenant again, including units with no
+outgoing messages. EF also validates before starting transactions and saving business changes.
+
+Comparisons are ordinal and preserve UTF-8 values without per-message decoding. IDs are not case-folded
+or normalized. The binding snapshots the authorized ID once per scoped store. It does not change native
+transaction, retry, rollback or inbox uniqueness semantics. Without tenancy and a binding, existing
+fixed-store callers retain their optional caller-supplied `OutboxRecord.TenantId` behavior.
