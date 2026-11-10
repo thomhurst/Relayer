@@ -17,6 +17,8 @@ public sealed class MessagingEndpoint
     public string? ConsumerGroup { get; init; }
     /// <summary>The native subscription, when applicable.</summary>
     public string? Subscription { get; init; }
+    /// <summary>Additional convention-defined native endpoint attributes, precomputed by the adapter.</summary>
+    public ReadOnlyMemory<KeyValuePair<string, object?>> Attributes { get; init; }
     /// <summary>The native client identifier.</summary>
     public string? ClientId { get; init; }
     /// <summary>The broker host.</summary>

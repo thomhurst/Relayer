@@ -1,9 +1,9 @@
 ---
 title: RabbitMQ
-description: "Native RabbitMQ connection and topology management, with explicit validation limits."
+description: "Confirmed RabbitMQ publishing, optional native delays and explicit topology validation."
 ---
 
-`Relayer.RabbitMQ` wraps RabbitMQ.Client 7. Named connection lifecycle and exchange, queue and queue-binding declarations are implemented. **Sending, consuming, publisher confirms, delayed-plugin detection, telemetry and native health adapters remain planned.** The complete transport conformance suite will run when those adapters are available.
+`Relayer.RabbitMQ` wraps RabbitMQ.Client 7. Named connection lifecycle and exchange, queue and queue-binding declarations are implemented. Confirmed outgoing sends, binary CloudEvents headers, send telemetry and verified delayed-exchange scheduling are implemented. **Consuming and native health adapters remain planned.** The complete transport conformance suite will run when those adapters are available.
 
 ## Provision native topology
 
@@ -72,4 +72,69 @@ Each named registration owns one connection, created lazily during topology appl
 
 `ConnectionFactory` is passed through unchanged. Configure TLS, endpoints, heartbeats, native automatic recovery, topology recovery and `ICredentialsProvider` on that factory. Relayer does not implement another credential-refresh or recovery loop. Configure options before startup; live connection reconfiguration is not implemented.
 
-`Send` and `Consume` declarations currently fail before opening a connection, with a message explaining that execution is not implemented. The conservative capability declaration continues to advertise immediate requeue, with no verified delayed delivery or error-metadata dead-letter support. Full outgoing and receive composition are tracked under [RabbitMQ transport #40](https://github.com/thomhurst/Relayer/issues/40).
+`Consume` declarations fail before opening a connection until the receive adapter is implemented. Error-metadata dead-letter support remains unavailable. Full transport composition is tracked under [RabbitMQ transport #40](https://github.com/thomhurst/Relayer/issues/40).
+
+## Confirmed sends
+
+Declare a route to a queue by name, or use `exchange:routing-key` to publish through an exchange. The first colon separates the exchange from the routing key; use an empty exchange (`:queue`) for the default exchange. An exchange name in this notation cannot contain a colon. Empty routing keys are supported.
+
+```csharp
+services.AddRelayer(relayer =>
+{
+    relayer.AddMessageTypesFromThisAssembly();
+    relayer.RabbitMQ("orders", rabbit =>
+    {
+        rabbit.Options.Configure(options => options.ConnectionFactory = nativeConnectionFactory);
+        rabbit.Send<OrderPlaced>("orders:placed.eu");
+    });
+});
+
+await sender.SendAsync(new OrderPlaced(orderId), options => options.RabbitMQ(properties =>
+{
+    properties.Priority = 3;
+    properties.AppId = "billing";
+}));
+```
+
+Register the message with a stable `[Message]` identity and a source-generated JSON serializer as in the [sending guide](../guides/sending.md). Topology declarations remain independent: sending does not implicitly create queues or bindings.
+
+Relayer leases one native channel exclusively for each publish and holds it until RabbitMQ.Client completes confirmation tracking. `PublisherCount` defaults to 16. A concurrent sender waits for an available channel with its cancellation token. Relayer does not share a publishing channel between concurrent sends. Sequential batches use ordinary confirmed publishes and can partially succeed; they are not atomic. Each native publish has its own send span and operation duration. Concurrent callers have RabbitMQ's native ordering semantics, with no ordering-by-key guarantee.
+
+Immediate publishes use `mandatory: true` and persistent basic properties. RabbitMQ.Client propagates nacks, unroutable `basic.return` responses, protocol errors and connection failures. Confirmation is the broker's durability boundary, not proof of consumer processing. Queue/exchange durability and queue type still determine the native durability guarantees. Cancellation or a connection failure can leave delivery uncertain; Relayer does not retry a publish automatically. Native automatic recovery remains owned by RabbitMQ.Client. A channel closed by a protocol error is replaced before the next send.
+
+Set native channel settings through `PublisherChannelOptions` (`CreateChannelOptions`), passed unchanged. Both confirmation flags must be enabled; startup rejects disabling either. `SendOptions.RabbitMQ` exposes borrowed native `BasicProperties`. Do not retain that pooled object after the callback/send. The portable headers, serializer content type, delivery time and persistent delivery mode take precedence over conflicting native callbacks. Other native properties pass through.
+
+CloudEvents attributes use AMQP `cloudEvents:` headers. The serializer's `content-type` becomes native `BasicProperties.ContentType`. Existing creation `traceparent` and `tracestate` are preserved even when the native publisher instrumentation is enabled. The pinned client only accepts strings or exact byte arrays for textual field-table values; Relayer reuses exact-length buffers for borrowed UTF-8 slices. Each publisher keeps at most 256 header position/length buffers and 256 decoded content types in FIFO caches. Cache hits allocate 0 B. A UTF-8 slice miss allocates one exact-length byte array; a content-type miss allocates a decoded string and a UTF-8 key array. Evicted shapes allocate again when reused. These conversions are native-client boundary costs under D52: the pinned client requires arrays or strings. Retention is bounded by entry count, not bytes; large values still retain large buffers. The temporary header cache will be removed when native memory-backed headers ship (rabbitmq/rabbitmq-dotnet-client#2144). Send metrics remain available when message tracing is absent. The sent-message counter records each native publish attempt, including failed publishes, regardless of tracing; validation and preparation failures do not count. Send duration starts after acquiring a publisher channel, so it includes channel recovery and confirmation but excludes waiting for a free publisher. Send completion sources are retained at the observed concurrency high-water mark, including when continuations complete on another thread.
+
+Host shutdown stops new admission and drains publishers before closing their connection. A cancellation during shutdown closes the connection to release native operations. Always start the application host before sending.
+
+## Native delays and the outbox fallback
+
+Native delays require the delayed-message plugin **and a successfully verified delayed exchange**. Configure an alternate delayed exchange for each ordinary exchange that needs scheduling. An empty key selects routes through the default exchange:
+
+```csharp
+rabbit.TopologyMode = TopologyMode.Provision;
+rabbit.Options.Configure(options =>
+{
+    options.DelayedExchanges.Add("", new("orders.delayed")
+    {
+        Type = "x-delayed-message",
+        Arguments = new Dictionary<string, object?> { ["x-delayed-type"] = "direct" },
+    });
+});
+rabbit.Send<OrderPlaced>("orders");
+```
+
+Bind `orders.delayed` to `orders` with routing key `orders` through infrastructure tooling or native APIs before scheduling. Delayed exchange declarations pass their native durability, auto-delete and argument settings through unchanged. They do not create bindings or change the immediate destination. Do not also declare an optional delayed exchange in `Exchanges`: regular topology declarations are required and a missing plugin makes those declarations fail.
+
+During hosted startup, explicit `Provision` verifies the alternate exchange with native `ExchangeDeclareAsync`. Only the broker's specific unknown-exchange-type response selects fallback. Permission failures, incompatible declarations and other errors fail startup. A successful declaration enables delays less than `2^32` milliseconds, rounded up to the next millisecond; immediate sends continue using the ordinary exchange. Relayer recomputes the remaining delay after waiting for a publisher and replacing a closed channel, so those waits do not extend `DeliverAt`. Expired delivery times publish immediately through the ordinary exchange with mandatory routing.
+
+AMQP has no read-only API to inspect installed plugins or exchange types. `None` and `Validate` therefore do not probe, create or advertise delayed exchanges, even when a plugin is installed. These modes use conservative capabilities and the existing [outbox scheduling](../guides/sending.md) fallback. When the plugin is absent in `Provision`, the alternate exchange is not created and scheduling also uses that fallback. The core requires an active outbox transaction and a due-row dispatch worker; direct future sends fail clearly when no verified native delay is available. Dispatch of a due outbox row publishes immediately through the ordinary destination.
+
+The plugin stores delayed messages using its own native durability and routing guarantees. It cannot report eventual routability at enqueue time: delayed publishes use native confirms with `mandatory: false`. A confirm does not guarantee that a binding will exist when the delay expires, or replication of the plugin's local message store. Choose the outbox fallback when those native plugin guarantees do not meet the application's requirements.
+
+## Send telemetry
+
+Enable source `Relayer` and meter `Relayer`. Send destinations use `{exchange}:{routing key}`, including `:orders` for a default-exchange queue. Routing key, system, destination and configured server address/port are available to samplers when spans start. Single sends preserve message creation links and use the common CloudEvents attributes. Sends record attempt counts and client operation duration, including native confirmation time; failures carry the bounded `_OTHER` error type.
+
+RabbitMQ.Client 7.2.2 already owns transport-level publisher instrumentation. Enable `RabbitMQ.Client.Publisher` for those additional child spans; Relayer neither replaces it nor changes `RabbitMQActivitySource`'s process-wide configuration. Receive instrumentation (`RabbitMQ.Client.Subscriber`) belongs to the native client; Relayer's receive adapter remains planned.

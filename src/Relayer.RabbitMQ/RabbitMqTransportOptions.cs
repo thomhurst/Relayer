@@ -8,6 +8,16 @@ public sealed class RabbitMqTransportOptions
     /// <summary>Native connection factory, passed straight to RabbitMQ.Client.</summary>
     public ConnectionFactory ConnectionFactory { get; set; } = new();
 
+    /// <summary>Number of exclusively leased native publisher channels. Defaults to 16.</summary>
+    public int PublisherCount { get; set; } = 16;
+
+    /// <summary>Native channel options. Both publisher confirmation flags must remain enabled.</summary>
+    public CreateChannelOptions PublisherChannelOptions { get; set; } = new(true, true);
+
+    /// <summary>Optional delayed exchange declarations keyed by the ordinary exchange name (empty for the default exchange).</summary>
+    /// <remarks>Only Provision verifies these through native x-delayed-message declarations. Configure bindings externally.</remarks>
+    public IDictionary<string, RabbitMqExchange> DelayedExchanges { get; } = new Dictionary<string, RabbitMqExchange>(StringComparer.Ordinal);
+
     /// <summary>Native exchange declarations. Unspecified properties mean existence-only validation.</summary>
     public IList<RabbitMqExchange> Exchanges { get; } = [];
 

@@ -49,13 +49,12 @@ public class RabbitMqConfigurationTests
     }
 
     [Test]
-    public async Task Send_and_consumer_declarations_fail_before_connecting()
+    public async Task Send_declarations_resolve_without_connecting_and_consumers_fail_early()
     {
         var services = new ServiceCollection();
         services.AddRelayer(builder => builder.RabbitMQ("rabbit", rabbit => rabbit.Send<Sample>("orders")));
         await using var provider = services.BuildServiceProvider();
-        var error = await Assert.That(() => provider.GetRequiredService<ITransport>()).Throws<NotSupportedException>();
-        await Assert.That(error!.Message).Contains("send and receive");
+        await Assert.That(provider.GetRequiredService<ITransport>().GetCapabilities("orders").MaxDeliveryDelay).IsNull();
 
         var consumers = new ServiceCollection();
         consumers.AddRelayer(builder => builder.RabbitMQ("rabbit", rabbit => rabbit.Consume("orders", consumer => consumer.Handler<SampleHandler>())));
@@ -64,12 +63,12 @@ public class RabbitMqConfigurationTests
     }
 
     [Test]
-    public async Task Direct_send_methods_fail_explicitly()
+    public async Task Direct_send_requires_a_declared_destination()
     {
         await using var provider = Provider(_ => { });
         var transport = provider.GetRequiredService<ITransport>();
-        await Assert.That(async () => await transport.SendAsync(new("orders", default), default)).Throws<NotSupportedException>();
-        await Assert.That(async () => await transport.SendBatchAsync(ReadOnlyMemory<OutgoingMessage>.Empty, default)).Throws<NotSupportedException>();
+        await Assert.That(async () => await transport.SendAsync(new("orders", default), default)).Throws<InvalidOperationException>();
+        await transport.SendBatchAsync(ReadOnlyMemory<OutgoingMessage>.Empty, default);
     }
 
     [Test]
@@ -79,6 +78,10 @@ public class RabbitMqConfigurationTests
     [Arguments(3)]
     [Arguments(4)]
     [Arguments(5)]
+    [Arguments(6)]
+    [Arguments(7)]
+    [Arguments(8)]
+    [Arguments(9)]
     public async Task Invalid_native_declarations_fail_before_connecting(int scenario)
     {
         await using var provider = Provider(options =>
@@ -91,6 +94,10 @@ public class RabbitMqConfigurationTests
                 case 3: options.Bindings.Add(new("orders", "", "")); break;
                 case 4: options.Queues.Add(new("orders")); options.Queues.Add(new("orders")); break;
                 case 5: options.Exchanges.Add(new("orders") { Type = "" }); break;
+                case 6: options.PublisherCount = 0; break;
+                case 7: options.PublisherChannelOptions = new(false, true); break;
+                case 8: options.PublisherChannelOptions = new(true, false); break;
+                case 9: options.DelayedExchanges.Add("", new("delayed") { Type = "direct" }); break;
             }
         });
         await Assert.That(() => provider.GetRequiredService<ITransport>()).Throws<ArgumentException>();
