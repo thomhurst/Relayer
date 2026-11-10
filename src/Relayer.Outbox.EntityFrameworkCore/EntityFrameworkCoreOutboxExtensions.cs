@@ -67,6 +67,12 @@ public static class EntityFrameworkCoreOutboxExtensions
                 if (interceptor is OutboxSaveChangesInterceptor)
                     throw new InvalidOperationException("AddRelayerOutbox is already configured on these DbContext options.");
         options ??= services.GetRequiredService<IOptionsSnapshot<EntityFrameworkCoreOutboxOptions>>().Value;
+        if (services.GetService<TenantContext>() is { } tenant)
+        {
+            if (options.TenantBinding is null)
+                throw new InvalidOperationException("Configure TenantBinding on AddRelayerOutbox in the authorized native DbContext factory when using AddRelayerTenancy.");
+            options.TenantBinding.ValidateContext(tenant);
+        }
         var outbox = services.GetRequiredService<EntityFrameworkCoreOutbox>();
         var dispatcher = options.DispatchStoreName is { } name
             ? services.GetRequiredKeyedService<PostgreSqlDirectDispatcher>(name) : null;

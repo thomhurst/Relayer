@@ -22,7 +22,14 @@ public sealed class TenantContext : IDisposable
         set { ObjectDisposedException.ThrowIf(!_active, this); _id = value; }
     }
 
-    internal void Activate() => _active = true;
+    // A binding must not become valid again when this pooled object is rented by another scope.
+    internal long LeaseVersion { get; private set; }
+
+    internal void Activate()
+    {
+        LeaseVersion = unchecked(LeaseVersion + 1);
+        _active = true;
+    }
 
     /// <summary>Returns this service to its provider-owned pool. DI owns disposal.</summary>
     public void Dispose()

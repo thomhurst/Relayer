@@ -109,3 +109,7 @@ The buffers retain their peak capacity for reuse within the scope. Bound the siz
 memory usage. The default Npgsql data source includes array mappings; with `NpgsqlSlimDataSourceBuilder`, call
 `EnableArrays()` before building the data source. Native AOT applications must use Npgsql's AOT-compatible
 data source configuration and source-generated message serializers.
+
+With `AddRelayerTenancy`, provide a scoped `PostgreSqlOutboxOptions.TenantBinding` from your authorized
+native store factory. Relayer validates scope/header agreement and populates durable tenant metadata;
+see [durable tenant binding](tenant-stores.md#durable-tenant-binding).

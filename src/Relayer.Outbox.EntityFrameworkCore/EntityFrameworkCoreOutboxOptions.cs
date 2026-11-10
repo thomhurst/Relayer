@@ -3,6 +3,10 @@ namespace Relayer.Outbox.EntityFrameworkCore;
 /// <summary>Options for the EntityFrameworkCore outbox and inbox (docs/design.md section 6).</summary>
 public sealed class EntityFrameworkCoreOutboxOptions
 {
+    /// <summary>Application-authorized tenant binding for this scoped native store. Required with AddRelayerTenancy.</summary>
+    /// <remarks>Create in the application-owned native store factory after authorization; never share across scopes.</remarks>
+    public OutboxTenantBinding? TenantBinding { get; init; }
+
     /// <summary>The database schema for Relayer tables. <see langword="null"/> uses the default schema.</summary>
     public string? Schema { get; init; }
 

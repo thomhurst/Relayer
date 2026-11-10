@@ -17,8 +17,17 @@ public static class PostgreSqlOutboxRegistration
             !services.Any(static descriptor => descriptor.ServiceType == typeof(PostgreSqlOutbox)))
             throw new InvalidOperationException("A different IOutboxEnlistment is already registered. Configure one scoped outbox integration.");
         if (options is not null) PostgreSqlOutbox.ValidateOptions(options);
-        services.TryAddScoped<PostgreSqlOutbox>(provider => new(provider.GetRequiredService<IOptionsSnapshot<PostgreSqlOutboxOptions>>(),
-            provider.GetServices<PostgreSqlSchedulingRegistration>(), provider.GetService<RelayerInstrumentation>()));
+        services.TryAddScoped<PostgreSqlOutbox>(provider =>
+        {
+            var snapshot = provider.GetRequiredService<IOptionsSnapshot<PostgreSqlOutboxOptions>>();
+            if (provider.GetService<TenantContext>() is { } tenant)
+            {
+                if (snapshot.Value.TenantBinding is null)
+                    throw new InvalidOperationException("Configure TenantBinding in the authorized native store factory when using AddRelayerTenancy with the PostgreSQL outbox.");
+                snapshot.Value.TenantBinding.ValidateContext(tenant);
+            }
+            return new(snapshot, provider.GetServices<PostgreSqlSchedulingRegistration>(), provider.GetService<RelayerInstrumentation>());
+        });
         services.TryAddScoped<IOutboxEnlistment>(static provider => provider.GetRequiredService<PostgreSqlOutbox>());
         services.TryAddSingleton<IValidateOptions<PostgreSqlOutboxOptions>, Validator>();
         services.AddOptions<PostgreSqlOutboxOptions>().ValidateOnStart();
@@ -61,6 +70,7 @@ public static class PostgreSqlOutboxRegistration
     {
         protected override PostgreSqlOutboxOptions CreateInstance(string name) => new()
         {
+            TenantBinding = defaults.TenantBinding,
             Schema = configuration?[nameof(defaults.Schema)] ?? defaults.Schema,
             TablePrefix = configuration?[nameof(defaults.TablePrefix)] ?? defaults.TablePrefix,
             Lanes = Read(nameof(defaults.Lanes), defaults.Lanes),

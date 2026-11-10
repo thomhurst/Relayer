@@ -3,6 +3,10 @@ namespace Relayer.Outbox.PostgreSql;
 /// <summary>Options for the PostgreSql outbox and inbox (docs/design.md section 6).</summary>
 public sealed class PostgreSqlOutboxOptions
 {
+    /// <summary>Application-authorized tenant binding for this scoped native store. Required with AddRelayerTenancy.</summary>
+    /// <remarks>Create in the application-owned native store factory after authorization; never share across scopes.</remarks>
+    public OutboxTenantBinding? TenantBinding { get; init; }
+
     /// <summary>The database schema for Relayer tables. <see langword="null"/> uses public.</summary>
     public string? Schema { get; init; }
 

@@ -7,6 +7,17 @@ namespace Relayer.Outbox.EntityFrameworkCore;
 internal sealed class OutboxTransactionInterceptor(EntityFrameworkCoreOutbox outbox, OutboxConfiguration configuration)
     : DbTransactionInterceptor
 {
+    public override InterceptionResult<DbTransaction> TransactionStarting(DbConnection connection,
+        TransactionStartingEventData eventData, InterceptionResult<DbTransaction> result)
+    {
+        configuration.TenantBinding?.Validate();
+        return result;
+    }
+
+    public override ValueTask<InterceptionResult<DbTransaction>> TransactionStartingAsync(DbConnection connection,
+        TransactionStartingEventData eventData, InterceptionResult<DbTransaction> result, CancellationToken cancellationToken = default) =>
+        new(TransactionStarting(connection, eventData, result));
+
     public override DbTransaction TransactionStarted(DbConnection connection, TransactionEndEventData eventData, DbTransaction result)
     {
         outbox.Started(eventData.Context!, configuration, result, newTransaction: true);
