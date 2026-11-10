@@ -457,13 +457,23 @@ public class AdoNetEnlistmentTests(SqlServerFixture fixture)
 
     private sealed class Database(SqlServerFixture fixture) : IAsyncDisposable
     {
+        private readonly string _name = TestContext.Current!.Isolation.GetIsolatedName("ado");
+        private bool _created;
         internal SqlServerOutboxOptions Options { get; } = new() { Schema = "ADO]" + Guid.NewGuid().ToString("N"), TablePrefix = "t_" + Guid.NewGuid().ToString("N") + "_", Lanes = 8 };
         internal string Table => "[" + Options.Schema!.Replace("]", "]]") + "].[" + Options.TablePrefix + "outbox]";
         internal string BatchLog => "[" + Options.Schema!.Replace("]", "]]") + "].[" + Options.TablePrefix + "batch_log]";
         internal string Business => "[" + Options.Schema!.Replace("]", "]]") + "].[" + Options.TablePrefix + "business]";
-        internal string ConnectionString => fixture.ConnectionString;
+        internal string ConnectionString => new SqlConnectionStringBuilder(fixture.ConnectionString) { InitialCatalog = _name }.ConnectionString;
         internal async Task Start()
         {
+            // Bulk copy and concurrent schema creation must not contend in the shared master database.
+            await using (var admin = new SqlConnection(fixture.ConnectionString))
+            {
+                await admin.OpenAsync();
+                await using var create = new SqlCommand($"CREATE DATABASE [{_name.Replace("]", "]]")}]", admin);
+                await create.ExecuteNonQueryAsync();
+                _created = true;
+            }
             await using var connection = await Open();
             await using var command = new SqlCommand(SqlServerOutboxSchema.CreateScript(Options) +
                 $"CREATE TABLE {Business} (id int PRIMARY KEY);", connection);
@@ -496,7 +506,15 @@ public class AdoNetEnlistmentTests(SqlServerFixture fixture)
             await using var command = new SqlCommand(sql, connection);
             return (long)(await command.ExecuteScalarAsync())!;
         }
-        public ValueTask DisposeAsync() => default;
+        public async ValueTask DisposeAsync()
+        {
+            if (!_created) return;
+            using (var pool = new SqlConnection(ConnectionString)) SqlConnection.ClearPool(pool);
+            await using var admin = new SqlConnection(fixture.ConnectionString);
+            await admin.OpenAsync();
+            await using var drop = new SqlCommand($"DROP DATABASE [{_name.Replace("]", "]]")}]", admin);
+            await drop.ExecuteNonQueryAsync();
+        }
     }
 
     [Message("ado.probe")]
