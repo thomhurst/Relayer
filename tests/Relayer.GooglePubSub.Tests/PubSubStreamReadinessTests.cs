@@ -26,6 +26,40 @@ public class PubSubStreamReadinessTests
         await interceptor.InitialWriteCompleted.Task;
     }
 
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Restart_waits_for_its_own_write_even_when_previous_stream_completes(bool completePreviousBeforeRestart)
+    {
+        var interceptor = new PubSubShutdownInterceptor();
+        interceptor.ReceiverStarting();
+        var previous = new PendingWriter();
+        using var previousCall = interceptor.AsyncDuplexStreamingCall<StreamingPullRequest, StreamingPullResponse>(
+            new ClientInterceptorContext<StreamingPullRequest, StreamingPullResponse>(null!, null!, default),
+            _ => new(previous, null!, Task.FromResult(new Metadata()), () => Status.DefaultSuccess, () => new(), () => { }));
+        var previousWrite = previousCall.RequestStream.WriteAsync(new() { Subscription = "projects/test/subscriptions/test" });
+        if (completePreviousBeforeRestart)
+        {
+            previous.Completion.SetResult();
+            await previousWrite;
+        }
+        interceptor.ReceiverStarting();
+        var current = new PendingWriter();
+        using var currentCall = interceptor.AsyncDuplexStreamingCall<StreamingPullRequest, StreamingPullResponse>(
+            new ClientInterceptorContext<StreamingPullRequest, StreamingPullResponse>(null!, null!, default),
+            _ => new(current, null!, Task.FromResult(new Metadata()), () => Status.DefaultSuccess, () => new(), () => { }));
+        var currentWrite = currentCall.RequestStream.WriteAsync(new() { Subscription = "projects/test/subscriptions/test" });
+        if (!completePreviousBeforeRestart)
+        {
+            previous.Completion.SetResult();
+            await previousWrite;
+        }
+        await Assert.That(interceptor.InitialWriteCompleted.Task.IsCompleted).IsFalse();
+        current.Completion.SetResult();
+        await currentWrite;
+        await Assert.That(interceptor.InitialWriteCompleted.Task.IsCompleted).IsTrue();
+    }
+
     private sealed class PendingWriter : IClientStreamWriter<StreamingPullRequest>
     {
         internal TaskCompletionSource Completion { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);

@@ -11,7 +11,7 @@ internal sealed class PubSubShutdownInterceptor : Interceptor
     private readonly ConcurrentQueue<string> _violations = new();
     private readonly ConcurrentDictionary<string, byte> _acks = new();
     internal IOException? InitialWriteFailure;
-    internal TaskCompletionSource InitialWriteCompleted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    internal TaskCompletionSource InitialWriteCompleted { get; private set; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private int _streams;
     private int _closedStreams;
     private int _publisherClosed;
@@ -61,6 +61,12 @@ internal sealed class PubSubShutdownInterceptor : Interceptor
         finally { Interlocked.Decrement(ref _settling); }
     }
 
+    internal void ReceiverStarting()
+    {
+        InitialWriteCompleted = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        Interlocked.Exchange(ref _receiverClosed, 0);
+    }
+
     internal void ReceiverClosed()
     {
         Interlocked.Exchange(ref _receiverClosed, 1);
@@ -73,7 +79,7 @@ internal sealed class PubSubShutdownInterceptor : Interceptor
         var call = continuation(context);
         if (typeof(TRequest) != typeof(StreamingPullRequest)) return call;
         Interlocked.Increment(ref _streams);
-        var writer = new Writer<TRequest>(call.RequestStream, this);
+        var writer = new Writer<TRequest>(call.RequestStream, this, InitialWriteCompleted);
         return new(writer, call.ResponseStream, call.ResponseHeadersAsync, call.GetStatus, call.GetTrailers, () =>
         {
             writer.Close();
@@ -104,7 +110,7 @@ internal sealed class PubSubShutdownInterceptor : Interceptor
             throw new InvalidOperationException("Native Pub/Sub publisher remained open after disposal.");
     }
 
-    private sealed class Writer<T>(IClientStreamWriter<T> native, PubSubShutdownInterceptor owner) : IClientStreamWriter<T>
+    private sealed class Writer<T>(IClientStreamWriter<T> native, PubSubShutdownInterceptor owner, TaskCompletionSource initialWriteCompleted) : IClientStreamWriter<T>
     {
         private int _closed;
         public WriteOptions? WriteOptions { get => native.WriteOptions; set => native.WriteOptions = value; }
@@ -119,7 +125,7 @@ internal sealed class PubSubShutdownInterceptor : Interceptor
             }
             finally
             {
-                if (initial) owner.InitialWriteCompleted.TrySetResult();
+                if (initial) initialWriteCompleted.TrySetResult();
             }
             if (message is StreamingPullRequest pull)
                 foreach (var ack in pull.AckIds) owner._acks.TryAdd(ack, 0);
