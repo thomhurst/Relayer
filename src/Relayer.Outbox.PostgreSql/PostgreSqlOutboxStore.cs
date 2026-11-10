@@ -82,7 +82,7 @@ public sealed class PostgreSqlOutboxStore : IOutboxStore
             var headers = OutboxHeaderCodec.Read(reader.GetFieldValue<byte[]>(5), ref slot.Entries);
             var sequence = reader.GetInt64(13);
             if (includeOrderedSequence && !reader.IsDBNull(9))
-                headers = OrderedSequenceHeader.Add(ref slot.Entries, headers.Length, slot.Sequence, sequence);
+                headers = OrderedSequenceHeader.Add(headers.Span, ref slot.OrderedEntries, slot.Sequence, sequence);
             var message = new OutgoingMessage(reader.GetString(3), reader.GetFieldValue<byte[]>(4), headers,
                 reader.IsDBNull(6) ? null : new WireString(reader.GetString(6)),
                 reader.IsDBNull(7) ? null : reader.GetFieldValue<DateTimeOffset>(7));
@@ -222,6 +222,7 @@ public sealed class PostgreSqlOutboxStore : IOutboxStore
     private sealed class HeaderSlot
     {
         internal KeyValuePair<string, WireString>[] Entries = [];
+        internal KeyValuePair<string, WireString>[] OrderedEntries = [];
         internal readonly byte[] Sequence = new byte[20];
     }
 }
