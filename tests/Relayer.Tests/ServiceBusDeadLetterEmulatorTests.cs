@@ -10,7 +10,7 @@ public sealed class ServiceBusDeadLetterEmulatorTests
     {
         using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(5));
         var token = timeout.Token;
-        await using var broker = await ServiceBusReceiveBroker.StartAsync(token, ["dlq-orders"], ["dlq-sessions"], includeTopic: true);
+        await using var broker = await ServiceBusReceiveBroker.StartAsync(["dlq-orders"], ["dlq-sessions"], includeTopic: true);
         await using var client = new ServiceBusClient(broker.ConnectionString);
         foreach (var (entity, subscription, session) in new[]
         {
