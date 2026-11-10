@@ -12,7 +12,9 @@ public sealed class ServiceBusConformanceTests
     [Test]
     public async Task Service_bus_emulator_passes_queue_and_session_transport_contracts()
     {
-        var destinations = Enum.GetValues<TransportConformanceCase>().Where(scenario => scenario != TransportConformanceCase.OrderingByKey)
+        // Session ordering runs separately; native shutdown evidence is tracked in #384.
+        var destinations = Enum.GetValues<TransportConformanceCase>()
+            .Where(scenario => scenario is not (TransportConformanceCase.OrderingByKey or TransportConformanceCase.CleanShutdown))
             .ToDictionary(scenario => scenario, _ => "conformance-" + Guid.NewGuid().ToString("N"));
         var sessionDestination = "conformance-session-" + Guid.NewGuid().ToString("N");
         // Provisioning owns its deadline; broker assertions get their full operation budget.
@@ -23,9 +25,8 @@ public sealed class ServiceBusConformanceTests
         var queues = new TransportConformanceSuite<ProcessMessageEventArgs, ServiceBusBinding>(
             (tracing, cancellation) => ServiceBusConformanceFixture<ProcessMessageEventArgs>.CreateAsync(broker, tracing, false, destination, cancellation),
             TimeSpan.FromMinutes(2));
-        foreach (var scenario in Enum.GetValues<TransportConformanceCase>())
+        foreach (var scenario in destinations.Keys)
         {
-            if (scenario == TransportConformanceCase.OrderingByKey) continue;
             destination = destinations[scenario];
             var result = await queues.RunAsync(scenario, token);
             if (scenario == TransportConformanceCase.RedeliveryDelay)

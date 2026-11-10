@@ -57,6 +57,8 @@ public enum TransportConformanceCase
     CreationContextCopies,
     /// <summary>Delivery resumes after the native connection is restored.</summary>
     Reconnect,
+    /// <summary>Graceful stop drains in-flight processing without failure logs or native lifecycle violations.</summary>
+    CleanShutdown,
 }
 
 /// <summary>A successful scenario, or an explicit capability-based skip. Contract failures throw.</summary>
@@ -64,4 +66,18 @@ public sealed record TransportConformanceResult(TransportConformanceCase Case, s
 {
     /// <summary>Whether the endpoint lacks the native capability required by this scenario.</summary>
     public bool Skipped => SkipReason is not null;
+}
+
+/// <summary>Required native lifecycle evidence for the clean-shutdown case.</summary>
+/// <remarks>Wire Logs to all adapter and native-client logging before starting the fixture.</remarks>
+public interface ITransportShutdownConformanceFixture
+{
+    /// <summary>Capture owned by this fixture, kept alive through disposal.</summary>
+    ConformanceLogCapture Logs { get; }
+    /// <summary>
+    /// Verifies native lifecycle instrumentation saw no settlement, renewal or send after closure,
+    /// and that the in-flight delivery completed durably or remains available for native redelivery.
+    /// Must use real adapter/native state, never assume StopAsync implies these guarantees.
+    /// </summary>
+    ValueTask VerifyShutdownAsync(CancellationToken cancellationToken);
 }
