@@ -71,7 +71,6 @@ internal sealed partial class RabbitMqNativeTransport : ITransportSendTracing, I
     {
         var endpoint = Endpoint(message.Destination);
         if (endpoint.TraceEnabled) return endpoint.Tracing!.SendAsync(message, cancellationToken);
-        endpoint.Telemetry?.RecordSent();
         return SendCoreAsync(message, cancellationToken);
     }
 

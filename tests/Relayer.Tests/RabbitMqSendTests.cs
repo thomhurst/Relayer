@@ -228,6 +228,52 @@ public class RabbitMqSendTests
     }
 
     [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Sent_counter_counts_native_attempts_with_and_without_tracing(bool trace)
+    {
+        using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(3));
+        var token = timeout.Token;
+        await using var broker = await RabbitMqTopologyTests.Broker.StartAsync(token);
+        await using var native = await broker.Factory().CreateConnectionAsync(token);
+        await using var channel = await native.CreateChannelAsync(cancellationToken: token);
+        await channel.QueueDeclareAsync("orders", true, false, false, cancellationToken: token);
+        await using var provider = Provider(broker.Factory(), ["orders", "missing"]);
+        var instrumentation = provider.GetRequiredService<RelayerInstrumentation>();
+        long attempts = 0;
+        using var meter = new MeterListener
+        {
+            InstrumentPublished = (instrument, listener) =>
+            {
+                if (ReferenceEquals(instrument.Meter.Scope, instrumentation) && instrument.Name == "messaging.client.sent.messages")
+                    listener.EnableMeasurementEvents(instrument);
+            },
+        };
+        meter.SetMeasurementEventCallback<long>((_, value, _, _) => Interlocked.Add(ref attempts, value));
+        meter.Start();
+        var tracing = provider.GetRequiredService<MessageTracing>();
+        using var listener = new ActivityListener
+        {
+            ShouldListenTo = source => trace && ReferenceEquals(source, tracing.Source),
+            Sample = (ref ActivityCreationOptions<ActivityContext> _) => ActivitySamplingResult.AllDataAndRecorded,
+        };
+        ActivitySource.AddActivityListener(listener);
+        var transport = provider.GetRequiredService<ITransport>();
+        await transport.StartAsync(token);
+        await transport.SendAsync(new("orders", new byte[] { 1 }), token);
+        await transport.SendBatchAsync(new[] { new OutgoingMessage("orders", new byte[] { 2 }), new OutgoingMessage("orders", new byte[] { 3 }) }, token);
+        await Assert.That(async () => await transport.SendAsync(new("missing", new byte[] { 4 }), token)).Throws<PublishException>();
+        await Assert.That(attempts).IsEqualTo(4L);
+        await Assert.That(async () => await transport.SendAsync(new("orders", default, orderingKey: new WireString("unsupported")), token)).Throws<NotSupportedException>();
+        using var cancelled = new CancellationTokenSource();
+        cancelled.Cancel();
+        await Assert.That(async () => await transport.SendAsync(new("orders", default), cancelled.Token)).Throws<OperationCanceledException>();
+        await Assert.That(async () => await transport.SendAsync(new("orders", default, options:
+            new SendOptions().RabbitMQ(_ => throw new InvalidOperationException("Rejected before publish"))), token)).Throws<InvalidOperationException>();
+        await Assert.That(attempts).IsEqualTo(4L);
+    }
+
+    [Test]
     public async Task Telemetry_uses_rabbitmq_destination_routing_tags_and_preserves_creation_context()
     {
         using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(3));
