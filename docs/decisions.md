@@ -551,14 +551,18 @@ Contexts joining the same native transaction share one insert and identical sche
 Buffered rows belong to the native transaction even after a joined context or borrowed EF wrapper is
 disposed. Detached participants are excluded from automatic send selection and cannot start another
 unit until their pending transaction ends. Retrying EF execution strategies require an explicit
-transaction around the complete unit, with a fresh scoped context on each attempt; implicit saves
+transaction around the complete unit, with clean tracked state on each attempt; implicit saves
 with buffered rows reject retrying strategies with an actionable error before opening a transaction.
 PostgreSQL is implemented first. Its versioned header codec retains all name/value pairs; deterministic
 FNV-1a lane hashing uses UTF-8 ordering keys. Tenant metadata is preserved when explicitly supplied.
 
 **Consequences.** No SaveChanges override, entity mapping, header scanning, or process-wide mutable
 state is required. Native transaction rollback/disposal abandons buffered sends. Failed explicit units and savepoint rollback
-invalidate commit until the whole transaction is rolled back; callers retry complete units with fresh contexts.
+invalidate commit until the whole transaction ends. Callers retry complete units with either a fresh context
+or the same context after full rollback (or server abort), disposal of the EF transaction wrapper and any
+outbox selections, and clearing/reloading tracked entities. Relayer clears buffered sends and failure/transaction
+ownership state when the transaction ends; a new EF transaction selects its context automatically.
+Lexical outbox selections still require disposal by the caller.
 Commit goes through IDbContextTransaction, including UseTransaction wrappers. Direct provider commits,
 ambient TransactionScope, pooled contexts and concurrent use of a scope are outside this integration.
 Schema deployment, dispatch, inbox, leases and health polling remain separate concerns.
