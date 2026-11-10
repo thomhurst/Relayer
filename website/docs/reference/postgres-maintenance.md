@@ -118,7 +118,9 @@ commit or roll back both changes together. Native acceptance followed by a crash
 completion can still redeliver the message.
 
 Maintenance deletes at most `BatchSize` history rows per cleanup pass, oldest first,
-using the existing `cleanup` lease. `SentRetention` defaults to seven days and must be
+using the existing `cleanup` lease. If completion refreshes history for a reused message ID
+while cleanup waits on its row lock, cleanup rechecks the refreshed timestamp and keeps
+the entry until it is old enough. `SentRetention` defaults to seven days and must be
 positive and finite; configuration uses the same property names. Tenant dispatch exposes
 `SentRetention` on `PostgreSqlTenantDispatchOptions`. Keep maintenance running and
 `RetainSentMessages` enabled there while history exists: stopping cleanup or disabling

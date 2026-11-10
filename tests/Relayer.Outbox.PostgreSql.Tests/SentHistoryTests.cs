@@ -250,6 +250,55 @@ public class SentHistoryTests
     }
 
     [Test]
+    public async Task Cleanup_preserves_history_refreshed_while_waiting_for_completion()
+    {
+        await using var fixture = new PostgreSqlFixture();
+        await fixture.StartAsync();
+        await using var source = NpgsqlDataSource.Create(fixture.ConnectionString);
+        var options = new PostgreSqlOutboxOptions { RetainSentMessages = true };
+        await PostgreSqlOutboxStoreTests.CreateSchema(source, options);
+        var id = Guid.NewGuid();
+        await using (var insert = source.CreateCommand("INSERT INTO relayer_outbox_sent VALUES (@id, 'old', clock_timestamp() - interval '10 days')"))
+        { insert.Parameters.AddWithValue("id", id); await insert.ExecuteNonQueryAsync(); }
+        var now = DateTimeOffset.UtcNow;
+        await PostgreSqlOutboxStoreTests.Insert(source, options, id, now);
+        var store = new PostgreSqlOutboxStore(source, options);
+        var claim = new OutboxClaim(id, Guid.NewGuid());
+        await Assert.That(await store.TryClaimAsync(claim, now, now.AddMinutes(1), default)).IsTrue();
+        await using var completion = await source.OpenConnectionAsync();
+        await using var transaction = await completion.BeginTransactionAsync();
+        store.UseDispatchTransaction(completion, transaction);
+        await Assert.That(await store.CompleteAsync(claim, now, default)).IsTrue();
+        using var worker = new PostgreSqlMaintenanceWorker(source,
+            new() { RetainSentMessages = true, DeadRetention = null, InboxRetention = null },
+            [], NullLogger<PostgreSqlMaintenanceWorker>.Instance);
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        var cleanup = worker.CleanupAsync(timeout.Token).AsTask();
+        var committed = false;
+        try
+        {
+            // Wait for the DELETE's actual lock wait, rather than guessing when its snapshot was taken.
+            await using var blocked = source.CreateCommand("SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE @pid = ANY(pg_blocking_pids(pid)))");
+            blocked.Parameters.AddWithValue("pid", completion.ProcessID);
+            while (await blocked.ExecuteScalarAsync(timeout.Token) is not true)
+                await Task.Delay(10, timeout.Token);
+            await transaction.CommitAsync(timeout.Token);
+            committed = true;
+            await Assert.That(await cleanup).IsEqualTo(0);
+            var location = await new PostgreSqlMessageLookup(source, options).FindAsync(id);
+            await Assert.That(location.State).IsEqualTo("sent");
+            await Assert.That(location.SentAt).IsEqualTo(now);
+        }
+        finally
+        {
+            // Release the row lock even if observing the wait fails; never strand the cleanup task.
+            if (!committed) await transaction.RollbackAsync();
+            try { await cleanup; }
+            finally { await worker.ReleaseAsync(default); }
+        }
+    }
+
+    [Test]
     public async Task Configuration_preserves_opt_in_and_requires_finite_positive_retention()
     {
         await using var source = NpgsqlDataSource.Create("Host=unused");
