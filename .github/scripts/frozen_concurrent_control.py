@@ -32,12 +32,14 @@ def main():
                         help="Separate exact calling-thread counts around each eight-write release batch.")
     parser.add_argument("--exact-roundtrips", action="store_true",
                         help="Separate exact synchronous full-delivery delegate-call counts, eight messages per record.")
+    parser.add_argument("--exact-driver", action="store_true",
+                        help="Separate full-delivery calling-thread invocation and original BDN completion counts.")
     args = parser.parse_args()
-    if sum((args.exact_invocations, args.exact_releases, args.exact_roundtrips)) > 1:
+    if sum((args.exact_invocations, args.exact_releases, args.exact_roundtrips, args.exact_driver)) > 1:
         parser.error("Exact regions require separate ABBAs")
     if bool(args.trace_tool) != bool(args.profile_reader):
         parser.error("--trace-tool and --profile-reader must be supplied together")
-    if (args.exact_invocations or args.exact_releases or args.exact_roundtrips) and args.trace_tool:
+    if (args.exact_invocations or args.exact_releases or args.exact_roundtrips or args.exact_driver) and args.trace_tool:
         parser.error("Exact invocation counters and sampled profiles require separate ABBAs")
     args.output.mkdir(parents=True, exist_ok=False)
     builds = args.artifact / "performance-builds"
@@ -46,12 +48,15 @@ def main():
                 "warmup_batches": 4096, "measured_batches": 32768, "messages_per_batch": 8,
                 "counter": "GC.GetTotalAllocatedBytes(true)",
                 "limits": "Inclusive fixed-count control; not original BDN replay, allocation-owner attribution, throughput equivalence or native-client budget evidence."}
-    protocol["instrumented"] = args.trace_tool is not None or args.exact_invocations or args.exact_releases or args.exact_roundtrips
+    protocol["instrumented"] = args.trace_tool is not None or args.exact_invocations or args.exact_releases or args.exact_roundtrips or args.exact_driver
     protocol["exact_invocations"] = args.exact_invocations
     protocol["exact_releases"] = args.exact_releases
     protocol["exact_roundtrips"] = args.exact_roundtrips
+    protocol["exact_driver"] = args.exact_driver
     if args.exact_roundtrips:
         protocol["roundtrip_boundary"] = "One synchronous original ConcurrentRoundTrip call (eight messages); no await. Calling-thread work only, excluding later continuations and other threads. No historical allocation attribution."
+    if args.exact_driver:
+        protocol["driver_boundary"] = "Separate synchronous workload invocation and original BDN GetResult calls; exact calling-thread bytes only. Includes inline continuations, excludes other threads. No await between counters. Not exact object types or historical attribution."
     if args.exact_releases:
         protocol["release_boundary"] = "Eight synchronous Release.Writer.TryWrite calls per record; no await. Calling-thread work only, not historical allocation attribution."
     if args.exact_invocations:
@@ -67,6 +72,8 @@ def main():
         if len(images) != 1:
             raise ValueError(f"Expected one frozen image for {side}, found {len(images)}")
         command = ["dotnet", str(args.probe.resolve()), str(images[0].parent.resolve())]
+        if args.exact_driver:
+            command.append("--exact-driver")
         if args.exact_invocations:
             command.append("--exact-invocations")
         if args.exact_releases:

@@ -421,6 +421,26 @@ The investigation also records a **separate instrumented ABBA** with `dotnet-tra
 
 These are weighted allocation samples, not exact object counts. A tick can include bytes from before a measurement boundary, and instrumentation changes scheduling. The separate profiled results must not be mixed into the untraced ABBA, subtracted as exact per-component bytes, or used alone to assign the historical excess. Use the stacks to choose a component-specific controlled experiment before proposing a production fix. Missing markers or an empty measured sample set fail visibly.
 
+### Exact full-delivery driver control
+
+`Frozen full-delivery driver allocation control` runs a separate instrumented
+ABBA against each retained input set using `tools/FrozenDriverProbe`. It keeps
+DI, JSON, native in-memory transport and the core receive pipeline in the original
+full-delivery workload. Two preallocated recorders count calling-thread bytes
+around the synchronous `ConcurrentRoundTrip()` invocation and the original
+BenchmarkDotNet `AwaitHelper.GetResult` consumption separately. The helper is
+bound once from each retained dependency directory; historical images are never
+rebuilt. Each process uses 4096 warmup and 32768 measured eight-message batches,
+validates the delivery sum and both record counts, and reports exact histograms.
+
+Neither counter spans an await. A blocked waiter includes any inline continuation
+work on its calling thread, but excludes allocation on other threads. These
+regional byte counts do not identify object types or the historical excess.
+Recording changes scheduling: compare within this separate ABBA and never
+subtract it from an uninstrumented or isolated-fixture experiment. The workflow
+verifies every image inventory before launching, fails visibly on missing inputs,
+and retains all outcomes, original inputs and probe binaries for 90 days.
+
 ### Frozen handler fixture control
 
 `tools/FrozenFixtureProbe` loads the retained executable's original `ConcurrentHandler`

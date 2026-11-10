@@ -93,6 +93,36 @@ public class FrozenInvocationAllocationTests
         GC.KeepAlive(retained);
     }
 
+    [Test]
+    public async Task Generic_driver_regions_preserve_pending_result_and_count_only_synchronous_callback()
+    {
+        var completion = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var state = (Completion: completion, Keep: new byte[1][]);
+        Func<(TaskCompletionSource<int> Completion, byte[][] Keep), ValueTask<int>> invoke = static value =>
+        {
+            value.Keep[0] = new byte[64];
+            return new ValueTask<int>(value.Completion.Task);
+        };
+        var recorder = new InvocationAllocations(2);
+        for (var i = 0; i < 100; i++) _ = recorder.Invoke(invoke, state);
+        var before = GC.GetAllocatedBytesForCurrentThread();
+        _ = invoke(state);
+        var expected = GC.GetAllocatedBytesForCurrentThread() - before;
+        recorder.Enabled = true;
+        var pending = recorder.Invoke(invoke, state);
+        _ = recorder.Invoke(invoke, state);
+        recorder.Enabled = false;
+        var report = recorder.Report();
+        await Assert.That(pending.IsCompleted).IsFalse();
+        await Assert.That(expected).IsGreaterThan(0);
+        await Assert.That(report.Invocations).IsEqualTo(2);
+        await Assert.That(report.Bytes).IsEqualTo(expected * 2);
+        await Assert.That(report.Histogram[0].Invocations).IsEqualTo(2);
+        completion.SetResult(42);
+        await Assert.That(await pending).IsEqualTo(42);
+        GC.KeepAlive(state.Keep);
+    }
+
     private sealed class AllocatingHandler
     {
         private readonly TaskCompletionSource _completion = new(TaskCreationOptions.RunContinuationsAsynchronously);
