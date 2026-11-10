@@ -577,3 +577,47 @@ remain unresolved. Native exact release-batch run
 0/0/0/0 calling-thread bytes per eight-write record for the original #357 inputs;
 this excludes excess only in that instrumented release region. PR #409 has merged
 and its required CI run 42752233964 passed. Historical attribution remains open.
+
+Native exact synchronous round-trip run
+[42754519395](https://github.com/thomhurst/Relayer/actions/runs/42754519395)
+reported 96 / 96.05078125 / 96.0029296875 / 96.02490234375 calling-thread
+bytes per eight-message call (A/B/B/A). Each histogram has 32768 records with
+verified weighted sums. One candidate exceeds both baselines; the other lies
+between them. This does not identify an allocation type or settle the original
+end-to-end comparison. #418 merged and its required CI run 42754917916 passed.
+
+### Original BenchmarkDotNet engine control for #357
+
+The **Frozen original BenchmarkDotNet engine control** workflow uses
+`.github/scripts/frozen_bdn_control.py` to run a separate A/B/B/A against the
+retained generated BenchmarkDotNet executable from run 42310409459. Unlike the
+external fixed-count probes, this executes the original generated runner,
+`AwaitHelper`, Default job, pilot, warmup, workload and extra GC-statistics pass.
+No workload or generated executable is rebuilt; no iteration counts, allocation
+thresholds or historical reports change. All three input inventories verify
+before launch and again afterwards. A2 deliberately repeats the first baseline
+image, as in the earlier controls.
+
+The launcher discovers the `ConcurrentRoundTrip` runner from the inventoried
+generated source and requires eight operations per invocation and enabled GC
+statistics. It uses BenchmarkDotNet's existing `NoAcknowledgementConsoleHost`
+entry point instead of the original parent's anonymous pipes. The workflow runs
+on Ubuntu x64 with SDK 10.0.403; the generated x64 executable cannot run under an
+ARM64 .NET process. Every process log and unsuccessful outcome is retained;
+failed launches are not retried or presented as measurements.
+
+`outcomes.json` records the native `// GC:` bytes and operation count, their
+unrounded ratio and BenchmarkDotNet's nearest-even rounded B/message value.
+The operation count already includes the eight messages per invocation; it is
+not divided by eight again. The parser rejects missing, ambiguous or incomplete
+GC results. The native format and rounding come from
+[BenchmarkDotNet 0.15.8 GcStats](https://github.com/dotnet/BenchmarkDotNet/blob/v0.15.8/src/BenchmarkDotNet/Engines/GcStats.cs).
+
+These are new original-engine executions on another host, with the console host
+replacing the parent pipe protocol. They do not reconstruct the historical
+execution, identify object types or prove the raw-native 5% budget. Native job
+calibration can choose different operation counts for each launch; the raw logs
+preserve those choices. Keep these results separate from external-driver totals,
+regional exact counters and sampled profiles. Unfavorable historical and control
+measurements remain open until an allocation owner or execution-dependent cause
+is demonstrated.
