@@ -158,17 +158,28 @@ public sealed class SqsReceiveTests
         await Assert.That(client.Polls).IsEqualTo(0);
         var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var canceled = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         await using var consumer = new SqsConsumer(Declaration(), client, "url", async (_, token) =>
         {
             entered.SetResult();
             try { await Task.Delay(Timeout.InfiniteTimeSpan, token); }
-            finally { canceled.SetResult(); }
+            finally
+            {
+                canceled.SetResult();
+                // Keep the drain incomplete: WaitAsync may return success when workers
+                // finish before it observes an already-canceled deadline.
+                await release.Task;
+            }
         });
         await consumer.StartAsync(default);
         await client.Deliveries.Writer.WriteAsync(Message("body", 1));
         await entered.Task.WaitAsync(TimeSpan.FromSeconds(10));
         using var deadline = new CancellationTokenSource(); deadline.Cancel();
-        await Assert.That(async () => await consumer.StopAsync(deadline.Token)).Throws<OperationCanceledException>();
+        try
+        {
+            await Assert.That(async () => await consumer.StopAsync(deadline.Token)).Throws<OperationCanceledException>();
+        }
+        finally { release.SetResult(); }
         await canceled.Task.WaitAsync(TimeSpan.FromSeconds(10));
         await Assert.That(async () => await consumer.StartAsync(default)).Throws<InvalidOperationException>();
         await Assert.That(client.Deletes).IsEqualTo(0);
