@@ -18,6 +18,34 @@ internal sealed class SqsSendTransport : ITransport, ITransportSendTracing
     private readonly MessageTracing? _tracing;
     private readonly SqsOperationPool _operations = new();
     private int _disposed;
+    internal IAmazonSQS Client => _client;
+    internal List<SqsConsumer> Consumers { get; } = [];
+    internal bool HealthTracking { get; private set; }
+    internal string GetUrl(string endpoint) => GetEndpoint(endpoint).Url ?? throw new InvalidOperationException("Resolve SQS queue URLs before receiving.");
+    internal void EnableHealthTracking()
+    {
+        HealthTracking = true;
+        foreach (var consumer in Consumers) consumer.TrackHealth = true;
+    }
+    internal async Task CheckConnectivityAsync(CancellationToken token)
+    {
+        foreach (var endpoint in _endpoints.Values)
+        {
+            var url = endpoint.Url ?? (await _client.GetQueueUrlAsync(endpoint.Declaration.QueueName, token).ConfigureAwait(false)).QueueUrl;
+            await _client.GetQueueAttributesAsync(new GetQueueAttributesRequest { QueueUrl = url, AttributeNames = ["QueueArn"] }, token).ConfigureAwait(false);
+        }
+    }
+    internal async Task ValidateRedriveAsync(ConsumerDefinition<AmazonSqsConsumerOptions> consumer, CancellationToken token)
+    {
+        var actual = await _client.GetQueueAttributesAsync(new GetQueueAttributesRequest
+            { QueueUrl = GetUrl(consumer.Source), AttributeNames = ["RedrivePolicy"] }, token).ConfigureAwait(false);
+        if (actual.Attributes?.TryGetValue("RedrivePolicy", out var policy) != true || string.IsNullOrWhiteSpace(policy)) return;
+        using var json = JsonDocument.Parse(policy);
+        var count = json.RootElement.GetProperty("maxReceiveCount");
+        var maximum = count.ValueKind == JsonValueKind.String ? int.Parse(count.GetString()!, CultureInfo.InvariantCulture) : count.GetInt32();
+        if (maximum <= consumer.Options.Failure.RedeliveryDelays.Length)
+            throw new InvalidOperationException($"SQS consumer '{consumer.Source}': native RedrivePolicy.maxReceiveCount must exceed the configured redelivery count so Relayer can attach failure metadata before native redrive. Disable redrive or increase maxReceiveCount.");
+    }
 
     internal static void ValidateDeclarations(string name, AmazonSqsTransportOptions options, IEnumerable<string> destinations)
     {
@@ -283,7 +311,7 @@ internal sealed class SqsSendTransport : ITransport, ITransportSendTracing
         cancellationToken.ThrowIfCancellationRequested();
     }
 
-    public async Task StartAsync(CancellationToken cancellationToken)
+    internal async Task ResolveUrlsAsync(CancellationToken cancellationToken)
     {
         Check(cancellationToken);
         // None skips topology validation/provisioning, but the native send API still requires queue URLs.
@@ -291,11 +319,21 @@ internal sealed class SqsSendTransport : ITransport, ITransportSendTracing
             if (endpoint.Url is null)
                 endpoint.Url = (await _client.GetQueueUrlAsync(endpoint.Declaration.QueueName, cancellationToken).ConfigureAwait(false)).QueueUrl;
     }
-    public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
-    public ValueTask DisposeAsync()
+    public async Task StartAsync(CancellationToken cancellationToken)
     {
-        if (Interlocked.Exchange(ref _disposed, 1) == 0 && _ownsClient) _client.Dispose();
-        return ValueTask.CompletedTask;
+        await ResolveUrlsAsync(cancellationToken).ConfigureAwait(false);
+        try { foreach (var consumer in Consumers) await consumer.StartAsync(cancellationToken).ConfigureAwait(false); }
+        catch { await StopAsync(CancellationToken.None).ConfigureAwait(false); throw; }
+    }
+    public async Task StopAsync(CancellationToken cancellationToken)
+    {
+        await Task.WhenAll(Consumers.Select(consumer => consumer.StopAsync(cancellationToken))).ConfigureAwait(false);
+    }
+    public async ValueTask DisposeAsync()
+    {
+        if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
+        try { await Task.WhenAll(Consumers.Select(static consumer => consumer.DisposeAsync().AsTask())).ConfigureAwait(false); }
+        finally { if (_ownsClient) _client.Dispose(); }
     }
 
     private sealed class Endpoint
@@ -305,7 +343,7 @@ internal sealed class SqsSendTransport : ITransport, ITransportSendTracing
             Declaration = declaration;
             IdentityHeader = identityHeader;
             Fifo = declaration.QueueName.EndsWith(".fifo", StringComparison.Ordinal);
-            Capabilities = new() { OrderedByKey = Fifo, MaxBatchSize = 10, MaxDeliveryDelay = Fifo ? null : TimeSpan.FromMinutes(15) };
+            Capabilities = new() { OrderedByKey = Fifo, MaxBatchSize = 10, MaxRedeliveryDelay = TimeSpan.FromHours(12), MaxDeliveryDelay = Fifo ? null : TimeSpan.FromMinutes(15) };
             if (declaration.Attributes?.TryGetValue("MaximumMessageSize", out var maximum) == true)
                 Capabilities = Capabilities with { MaxMessageBytes = long.Parse(maximum, CultureInfo.InvariantCulture) };
         }

@@ -15,6 +15,7 @@
 
   <ItemGroup>
     <InternalsVisibleTo Include="Relayer.Tests" />
+    <InternalsVisibleTo Include="Relayer.AmazonSqs.HealthChecks" />
     <InternalsVisibleTo Include="Relayer.Benchmarks" />
   </ItemGroup>
 

@@ -1,9 +1,9 @@
 ---
 title: Amazon SQS and SNS
-description: "Native SQS and SNS sending, FIFO groups, batches and create-only topology."
+description: "Native SQS receiving, settlement, health and SNS publishing with AWS SDK v4."
 ---
 
-`Relayer.AmazonSqs` implements native SQS queue sending and SNS topic publishing with AWS SDK v4. Receiver composition and full LocalStack transport conformance remain planned in [#224](https://github.com/thomhurst/Relayer/issues/224), and connectivity/liveness health adapters with receivers in [#224](https://github.com/thomhurst/Relayer/issues/224). Consumer declarations fail at startup until receivers are implemented.
+`Relayer.AmazonSqs` implements native SQS sending and standard/FIFO receivers, and SNS topic publishing with AWS SDK v4. Receivers use native long polling, visibility changes and deletion after durable handling. LocalStack tests cover the transport contracts and production poison-message fallback.
 
 ## Register sending
 
@@ -40,7 +40,62 @@ The native `AmazonSQSConfig` passes unchanged to an owned client, which uses the
 
 Declare queues with native `CreateQueueRequest` objects in `Queues`, including native attributes and tags. The default `Validate` mode calls only read APIs: `GetQueueUrl`, `GetQueueAttributes`, and, when tags are declared, `ListQueueTags`. It sends no probe message and requires no create, update or delete permission. Missing queues and mismatched declared settings fail startup with a topology report.
 
-`Provision` creates missing queues with the original request and reports drift on existing queues. It never modifies or deletes existing queues. Declare native `RedrivePolicy` and related queue settings in `Attributes`; receiver-driven dead-letter handling remains planned. Policy JSON is compared structurally rather than by whitespace or property order. Additional undeclared attributes/tags are allowed. `None` skips topology validation and provisioning, but startup still resolves queue names through `GetQueueUrl` because native sending needs URLs. Message-size limits are read during topology validation; without validation the SDK enforces the queue's configured limit.
+`Provision` creates missing queues with the original request and reports drift on existing queues. It never modifies or deletes existing queues. Declare native `RedrivePolicy` and related queue settings in `Attributes`; receivers validate that `maxReceiveCount` exceeds the configured redelivery count, so the final attempt can copy failure metadata before native redrive intervenes. Policy JSON is compared structurally rather than by whitespace or property order. Additional undeclared attributes/tags are allowed. `None` skips topology validation and provisioning, but startup still resolves queue names through `GetQueueUrl` because native sending needs URLs. Message-size limits are read during topology validation; without validation the SDK enforces the queue's configured limit.
+
+## Receiving and durable settlement
+
+Declare both source and dead-letter queues, then register a single-message handler:
+
+```csharp
+relayer.AmazonSqs("orders", sqs =>
+{
+    sqs.Options.Configure(options =>
+    {
+        options.Queues.Add(new CreateQueueRequest("orders"));
+        options.Queues.Add(new CreateQueueRequest("orders-errors"));
+    });
+    sqs.Consume("orders", consumer =>
+    {
+        consumer.Handler<OrderHandler>();
+        consumer.Concurrency(4);
+        consumer.Options.ConfigureReceive = request =>
+        {
+            request.WaitTimeSeconds = 20;
+            request.VisibilityTimeout = 120;
+        };
+        consumer.Options.Failure = new FailureOptions
+        {
+            RedeliveryDelays = new[] { TimeSpan.FromSeconds(5) },
+            DeadLetterEndpoint = "orders-errors",
+        };
+    });
+});
+```
+
+Each worker owns one reusable native `ReceiveMessageRequest`, receives one message per long poll, and retains pooled UTF-8 body storage at its high-water mark. Native request configuration runs once per worker. `QueueUrl`, `MaxNumberOfMessages = 1`, all message/system attributes and a long poll of 1–20 seconds are required; invalid customization fails before receives start. A fixed `ReceiveRequestAttemptId` is rejected because it would replay old requests. `Concurrency` sets the worker count. Batch handlers are not supported.
+
+FIFO ordering comes from SQS's invisible-message-group semantics, including across application instances. No group dispatcher is added. Set native visibility long enough for all durable work and in-process retries: this adapter does not renew visibility automatically, and native expiration can cause duplicate delivery and release the group. Graceful stop cancels polls while draining active work; the host's drain deadline cancels processing. An aborted drain requires a new host. The SDK owns request retries. Workers issue another poll after exhausted transient connectivity failures; authorization or invalid-request failures stop the worker and require correcting configuration and recreating the host.
+
+`context.AmazonSqs()` exposes the borrowed native `Message`, `IAmazonSQS`, queue URL and receive request ID. Keep these references within the handler lifetime. Use the portable settlement feature for completion, retry or dead-letter decisions so settlement follows durable work.
+
+Visibility retries round positive delays up to whole seconds. Their ceiling is the original receive request's remaining twelve-hour budget, measured with monotonic time, including polling and SDK retries; changing visibility never restarts it. A delay that no longer fits fails without deletion. Configured delays beyond native support require the existing durable `IFailureScheduler` outbox fallback and fail startup without one.
+
+SQS visibility changes cannot update attributes. The binding combines `ApproximateReceiveCount - 1` with any redelivery count on a previous durable copy, so retry policies terminate without a process-local retry cache. Previously stored history is preserved; the eventual copy adds the current delivery's in-process failure history. Errors from earlier visibility deliveries cannot be reconstructed from SQS (contributor decision D67).
+
+SQS redrive cannot attach application failure metadata. `Failure.DeadLetterEndpoint` is required and must name a separately declared queue of the same standard/FIFO kind. The existing failure pipeline sends a copy with original identity, body, attributes, trace context and group key, then deletes the source only after that send succeeds. Copy or settlement failures leave the source available for native redelivery; duplicates are possible. Reserve room within SQS's ten-attribute limit for up to four failure attributes. Native binary/typed attributes are preserved in direct failure copies with a native callback; these callbacks cannot be persisted by the outbox scheduler, which rejects such copies without deleting the original.
+
+## Health
+
+Reference `Relayer.AmazonSqs.HealthChecks` and register before host startup:
+
+```csharp
+services.AddRelayerAmazonSqsHealthProviders("orders");
+services.AddRelayerHealthChecks();
+```
+
+Both optional health contracts use the exact, case-sensitive transport name. Connectivity calls native `GetQueueUrl` and `GetQueueAttributes` without sending, receiving or settling probe messages. Receiver snapshots distinguish idle pollers from active handlers and report the oldest active worker's activation time; a busy healthy worker cannot hide a stalled one. Stopped receivers report unavailable state and a faulted worker reports failure. Tracking is enabled only with this companion and adds no per-message allocation.
+
+`SqsReceiveBindingBenchmarks` compares pooled receive-body preparation with raw-client UTF-8 preparation using `MemoryDiagnoser`. This isolates adapter work; it does not establish the end-to-end 5% default-JSON throughput budget.
 
 ## FIFO ordering and timers
 
@@ -84,7 +139,7 @@ Even HTTP 200 responses can contain failed entries. `AmazonSqsBatchException.Res
 
 Native send attempts count actual entries in `messaging.client.sent.messages`; each SDK call records `messaging.client.operation.duration` through acknowledgement or failure, including partial batch failure. Preparation failures and empty batches record neither metric.
 
-Send spans use `messaging.system = aws_sqs`, `aws.sqs.queue.url`, and the native response's `aws.request_id`. Native AWS exceptions retain their request IDs. Creation context stays in message attributes. SNS spans use `aws.sns`; SQS `delete` settlement spans remain planned with receivers.
+Send spans use `messaging.system = aws_sqs`, `aws.sqs.queue.url`, and the native response's `aws.request_id`. Native AWS exceptions retain their request IDs. Creation context stays in message attributes. SNS spans use `aws.sns`; receive/process spans use `aws_sqs`, `aws.sqs.queue.url` and the receive request ID. Successful completion uses `delete` settlement spans with the native delete request ID.
 
 ## Performance validation
 
@@ -161,7 +216,7 @@ options.Subscriptions.Add(new Amazon.SimpleNotificationService.Model.SubscribeRe
 
 `QueueTopology` reuses SQS declarations and policy validation described above. Its optional `SqsClient` is caller-owned. Set its region/configuration independently from SNS. Policies are explicit infrastructure input; Relayer does not infer or broaden permissions. Queues managed elsewhere can omit `QueueTopology` and supply only the subscription ARNs, with the required queue permissions already provisioned.
 
-Default `Validate` uses read APIs for topics, tags, subscriptions and optional queues, and reports missing resources or declared attribute drift. `Provision` creates only missing topics, queues and subscriptions with the native declarations. It never updates policies, subscription attributes, tags or existing resources; reconcile reported differences through infrastructure configuration. `None` skips topology checks; startup still resolves declared topics. Unconfirmed subscriptions are reported rather than treated as ready. There is no SNS receiver: consume from the subscribed SQS queue using its native client until Relayer's SQS receiver ships.
+Default `Validate` uses read APIs for topics, tags, subscriptions and optional queues, and reports missing resources or declared attribute drift. `Provision` creates only missing topics, queues and subscriptions with the native declarations. It never updates policies, subscription attributes, tags or existing resources; reconcile reported differences through infrastructure configuration. `None` skips topology checks; startup still resolves declared topics. Unconfirmed subscriptions are reported rather than treated as ready. There is no SNS receiver: consume from the subscribed queue with the SQS receiver above.
 
 SNS send spans and native metrics use `messaging.system = aws.sns`, with `aws.sns.topic.arn` and native `aws.request_id` on sends. Duration covers each native request through acknowledgement or failure; partial batch failures remain failures, and native attempt counts include each submitted entry.
 

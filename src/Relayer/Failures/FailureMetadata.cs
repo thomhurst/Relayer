@@ -5,7 +5,7 @@ using System.Text.Json.Serialization;
 
 namespace Relayer;
 
-/// <summary>Stable headers owned by the failure pipeline. Native redelivery must persist these headers.</summary>
+/// <summary>Stable headers owned by the failure pipeline. Native redelivery preserves them where the broker can update attributes; SQS visibility retries retain native attributes and count receives (D67).</summary>
 public static class FailureHeaders
 {
     /// <summary>Number of failed processing attempts, including immediate retries.</summary>

@@ -77,6 +77,7 @@ To change a decision, add a new entry that supersedes it rather than editing his
 | [D64](#d64-sql-server-ordered-dispatch-reuses-native-locks-and-sequence-ranges) | SQL Server ordered dispatch reuses native locks and sequence ranges | Accepted |
 | [D65](#d65-mysql-maintenance-uses-native-session-admission-and-existing-dispatch) | MySQL maintenance uses native session admission and existing dispatch | Accepted |
 | [D66](#d66-durable-local-work-reuses-outbox-rows-and-native-postgresql-transactions) | Durable local work reuses outbox rows and native PostgreSQL transactions | Accepted |
+| [D67](#d67-sqs-visibility-retries-retain-native-receive-semantics) | SQS visibility retries retain native receive semantics | Accepted |
 
 ---
 
@@ -1595,3 +1596,14 @@ in #459. They must carry row identity and claim token into each attempt and roll
 Native row locks serialize deletion with competing claims. Rollback restores both business work and the row;
 a successful deletion remains provisional until commit. This permits atomic completion only for work in
 that same transaction, not exactly-once external effects. Existing broker dispatch and settlement are unchanged.
+
+
+## D67. SQS visibility retries retain native receive semantics
+
+**Status:** Accepted.
+
+**Context.** AWSSDK.SQS 4.0.100.25 exposes native ReceiveMessage, ChangeMessageVisibility and DeleteMessage requests, not a consumer processor. Its [receive request](https://github.com/aws/aws-sdk-net/blob/fc1467e31596c357719f389b56100a5e7fcf8d73/sdk/src/Services/SQS/Generated/Model/ReceiveMessageRequest.g.cs) documents invisible FIFO groups; its [visibility request](https://github.com/aws/aws-sdk-net/blob/fc1467e31596c357719f389b56100a5e7fcf8d73/sdk/src/Services/SQS/Generated/Model/ChangeMessageVisibilityRequest.g.cs) cannot replace message attributes and cannot extend the original receive's twelve-hour ceiling. A replacement FIFO dispatcher, visibility renewal runtime or retry-history cache would duplicate native behavior or introduce non-durable state.
+
+**Decision.** Thin bounded workers issue one-message native long polls and use the existing ReceivePipeline and FailurePipeline. Bodies are encoded into retained pooled UTF-8 storage; headers remain lazy native strings. SQS owns group ordering and delivery attempts; the binding derives redeliveries from native receive count plus any count on a durable copy. Visibility changes preserve existing native attributes, so history includes previously persisted errors and the current delivery's in-process errors, not exceptions from earlier visibility deliveries. This qualifies the every-attempt history guarantee for this immutable native operation. Durable poison copies reuse the existing failure pipeline before native deletion; unsupported configured delays reuse IFailureScheduler. The adapter adds no parallel broker capability.
+
+**Consequences.** Applications must configure visibility to cover durable work. Expiration retains native duplicate-delivery semantics. Remaining visibility is checked against monotonic time captured before the receive request; repeated visibility changes do not restart the deadline. The optional health companion uses read-only queue APIs and oldest active worker timestamps. No throughput/allocation budget is relaxed.

@@ -134,7 +134,7 @@ If a native circuit stop or recovery start fails, consumption stops and the fail
 
 ## Error history
 
-Copies keep the original message ID and trace context. Dead-lettered and redelivered messages carry their failure history: the original ID, total failed attempts, first and last failure times, and for every attempt the consumer, host, exception type, message and stack trace. The history is serialized with generated JSON, so it works under Native AOT.
+Copies keep the original message ID and trace context. Dead-lettered and redelivered messages carry their failure history: the original ID, total failed attempts, first and last failure times, and for every attempt the consumer, host, exception type, message and stack trace. The history is serialized with generated JSON, so it works under Native AOT. SQS visibility retries cannot update native attributes: their retry budget uses the native receive count, and the final copy preserves stored history plus the current delivery’s in-process failures. Earlier visibility-delivery errors are unavailable from SQS; see [SQS receiving](../transports/amazon-sqs.md#receiving-and-durable-settlement).
 
 Delivery remains at-least-once: a crash between sending a copy and completing the original can duplicate it.
 

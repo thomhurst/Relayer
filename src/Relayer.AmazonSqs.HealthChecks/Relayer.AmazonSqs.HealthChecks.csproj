@@ -1,0 +1,9 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <Description>Optional native connectivity and receiver liveness health adapters for Relayer.AmazonSqs.</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../Relayer.AmazonSqs/Relayer.AmazonSqs.csproj" />
+    <ProjectReference Include="../Relayer.HealthChecks/Relayer.HealthChecks.csproj" />
+  </ItemGroup>
+</Project>

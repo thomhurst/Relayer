@@ -52,10 +52,13 @@ For RabbitMQ, reference `Relayer.RabbitMQ.HealthChecks` and call
 connection state without probe messages and reports the oldest active callback or explicit idle state.
 See [RabbitMQ health](../transports/rabbitmq.md#health).
 
+For SQS, reference `Relayer.AmazonSqs.HealthChecks` and call
+`services.AddRelayerAmazonSqsHealthProviders("orders-broker")` before host startup.
+Native queue-attribute queries establish connectivity without probe messages. Receiver-owned snapshots
+report idle state or the oldest active worker. See [SQS health](../transports/amazon-sqs.md#health).
+
 Without adapters, configured transports, consumers and stores report unhealthy.
-Remaining native broker adapter work is tracked with the
-[SQS/SNS](https://github.com/thomhurst/Relayer/issues/39),
-[outbox foundation](https://github.com/thomhurst/Relayer/issues/28) implementations:
+Applications can also supply their own providers, including an outbox store:
 
 ```csharp
 // Adapter types implement the contracts below and use the application's existing clients/state.

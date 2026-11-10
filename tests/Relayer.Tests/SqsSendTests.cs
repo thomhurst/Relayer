@@ -339,7 +339,7 @@ public class SqsSendTests
     }
 
     [Test]
-    public async Task Declarations_and_unsupported_receivers_fail_early()
+    public async Task Invalid_queue_and_receiver_declarations_fail_early()
     {
         var options = new AmazonSqsTransportOptions();
         options.Queues.Add(new("wrong.fifo"));
@@ -349,7 +349,7 @@ public class SqsSendTests
         var services = new ServiceCollection();
         services.AddRelayer(builder => builder.AmazonSqs("test", sqs => sqs.Consume("orders", consumer => consumer.Handler<OrderHandler>())));
         await using var provider = services.BuildServiceProvider();
-        await Assert.That(() => provider.GetServices<ITransport>().ToArray()).Throws<NotSupportedException>();
+        await Assert.That(() => provider.GetServices<ITransport>().ToArray()).Throws<InvalidOperationException>().WithMessageContaining("CreateQueueRequest");
     }
 
     [Test]

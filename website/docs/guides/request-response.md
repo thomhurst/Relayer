@@ -67,7 +67,7 @@ kafka.Request<GetPrice, Price>("prices", "price-replies-instance-1",
 
 Kafka keeps Dekaf's native offset-reset setting. For a new request or reply consumer group, configure `KafkaTransportOptions.ConfigureConsumer` with `native => native.WithAutoOffsetReset(AutoOffsetReset.Earliest)` if messages may be sent before the initial partition assignment completes. `Latest` can skip those messages; host startup alone does not establish a committed group offset. Relayer does not override this native choice. `configureRequest` also exposes the ordinary typed route builder for native route options and ordering keys.
 
-Batch reply handlers are unsupported and fail startup validation. Existing transport limitations still apply: hosted Kafka and in-memory consumers work; Service Bus hosted receive, SQS and RabbitMQ execution remain planned. Service Bus's existing receive primitives can compose the registered typed descriptor with the normal receive pipeline. Native ordering, retries, delivery and settlement semantics stay unchanged.
+Batch reply handlers are unsupported and fail startup validation. Hosted Kafka, Service Bus, SQS, RabbitMQ and in-memory consumers compose the registered typed descriptor with the normal receive pipeline. Existing transport limits, including SQS attribute counts, still apply. Native ordering, retries, delivery and settlement semantics stay unchanged.
 
 ## Metadata and durability
 
