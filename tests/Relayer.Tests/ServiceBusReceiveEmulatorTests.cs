@@ -283,13 +283,31 @@ internal sealed class ServiceBusReceiveBroker : IAsyncDisposable
         var emulator = emulatorBuilder.WithMsSqlContainer(network, database, ServiceBusBuilder.DatabaseNetworkAlias).Build();
         var proxy = proxyBuilder.Build();
         var broker = new ServiceBusReceiveBroker(network, database, emulator, proxy, configurationPath);
-        try { await emulator.StartAsync(token); await proxy.StartAsync(token); return broker; }
+        try
+        {
+            await ServiceBusStartupDiagnostics.StartAsync(async ct =>
+            {
+                await emulator.StartAsync(ct);
+                await proxy.StartAsync(ct);
+            }, database, emulator, token);
+            return broker;
+        }
         catch (OperationCanceledException error) when (provisioning.IsCancellationRequested)
         {
-            await broker.DisposeAsync();
+            await CleanupFailedStartupAsync();
             throw new TimeoutException("Service Bus emulator provisioning exceeded 15 minutes (image pulls and container readiness).", error);
         }
-        catch { await broker.DisposeAsync(); throw; }
+        catch { await CleanupFailedStartupAsync(); throw; }
+
+        async Task CleanupFailedStartupAsync()
+        {
+            try { await broker.DisposeAsync(); }
+            catch (Exception cleanupError)
+            {
+                try { Console.Error.WriteLine($"Service Bus startup cleanup failed: {cleanupError}"); }
+                catch (Exception) { /* Preserve the startup failure even if output is unavailable. */ }
+            }
+        }
 
         void AddQueue(string name, bool session)
         {
