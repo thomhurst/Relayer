@@ -284,7 +284,7 @@ const status = [
   ['Message upcaster chains for single and batch handlers', 'Implemented', true],
   ['Failure classification, retries and dead-letter copies', 'Implemented', true],
   ['Service Bus dead-letter management and optional authorized HTTP endpoints', 'Implemented', true],
-  ['Service Bus DLQ inspection, filtered redrive and purge', 'Implemented', true],
+  ['Service Bus DLQ and Kafka dead-letter inspection, filtered redrive and native purge', 'Implemented', true],
   ['Manual settlement requests with exception precedence', 'Implemented', true],
   ['Request/response with bounded state and mandatory timeouts', 'Implemented', true],
   ['Declared topology and JSON export', 'Implemented', true],

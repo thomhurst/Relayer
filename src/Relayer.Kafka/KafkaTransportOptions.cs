@@ -1,4 +1,5 @@
 using Dekaf;
+using Dekaf.Admin;
 
 namespace Relayer.Kafka;
 
@@ -14,6 +15,9 @@ public sealed class KafkaTransportOptions
     /// <summary>Customises the Dekaf producer builder before the producer is built.</summary>
     /// <remarks>Keep the supplied key and record-header serializers to preserve wire bodies and creation headers.</remarks>
     public Action<ProducerBuilder<WireString?, (ReadOnlyMemory<byte> Body, Dekaf.Serialization.Headers Headers)?>>? ConfigureProducer { get; set; }
+
+    /// <summary>Customises the native admin client used by dead-letter management, including authentication.</summary>
+    public Action<AdminClientBuilder>? ConfigureAdmin { get; set; }
 
     /// <summary>Customises each Dekaf consumer builder. Keep raw byte deserializers; Relayer disables automatic commits and offset storage afterward.</summary>
     public Action<ConsumerBuilder<byte[], byte[]>>? ConfigureConsumer { get; set; }

@@ -270,3 +270,43 @@ public sealed class CustomerDeletedHandler(ICustomerCache cache) : IHandler<Tomb
 Register `Customer` with `AddMessageTypesFromThisAssembly()` or `MessageTypes.Add<Customer>(...)`; do not register a separate identity or route for `Tombstone<Customer>`. A consumer can register both its regular handler and its tombstone handler. Tombstones never enter the JSON deserializer or upcaster chain. Native null records require a non-null key for typed dispatch; unkeyed null records follow the failure policy. The Kafka feature remains available and offsets commit only after durable handling.
 
 This API requires a transport whose `TransportCapabilities.Tombstones` is true (currently Kafka). It does not enable broker log compaction; configure the topic's native cleanup policy separately. Tombstones can be buffered by a handler's send pipeline and retained in dead-letter copies. Database outbox persistence and durable redelivery of native null values remain unsupported: sends through an active outbox fail before enlistment. Use `SendNowAsync` for a direct native send when an outbox transaction is active.
+
+
+## Inspect and redrive dead letters
+
+Resolve the management service for a named Kafka transport. It lists only configured consumer dead-letter topics (including the default `<source>.dead-letter`), rather than discovering broker-wide topics:
+
+```csharp
+var manager = services.GetRequiredKeyedService<IDeadLetterManager>("events");
+var sources = manager.List();
+var page = await manager.PeekAsync("orders.dead-letter", maxMessages: 20,
+    cancellationToken: cancellationToken);
+if (page.NextCursor is { } cursor)
+{
+    var next = await manager.PeekAsync("orders.dead-letter", maxMessages: 20,
+        cursor: cursor, cancellationToken: cancellationToken);
+}
+var redriven = await manager.RedriveAsync("orders.dead-letter",
+    filter: message => message.Features.GetRequired<KafkaDeadLetterFeature>()
+        .Record.Headers.Any(header => header.Key == "ce_id"),
+    maxMessages: 20, cancellationToken: cancellationToken);
+```
+
+All operations accept cancellation and a limit from 1 through 100. Peek does not commit or delete records. Each page reads one partition; a continuation can lead to an empty page before advancing to the next partition. Continue while `NextCursor` is non-null, and keep cursors scoped to their source. Broker retention, compaction and concurrent purge can change what a continuation returns. Snapshots own their storage: `KafkaDeadLetterFeature.Record` exposes the native key, offset, timestamp and ordered headers after the call returns. Its null `Value` denotes a tombstone, distinct from empty bytes; null keys and null header values are retained too.
+
+Redrive sends to the configured original source topic using Dekaf and waits for a broker acknowledgment before committing the next offset in a dedicated native consumer group. The group is `relayer.deadletters.<name length>.<transport name>.<dead-letter topic>`; keep transport names stable across restarts to resume progress. Concurrent redrive calls use Kafka's native group partition ownership. Do not run unrelated consumers in that group. Resetting or deleting the group replays retained dead letters. Native group-offset expiration can also cause replay. Redrive preserves serialized bodies, binary keys, tombstones, duplicate/null headers and the original message identity; Kafka chooses the destination partition using the native producer configuration. It does not preserve the original offset or append timestamp.
+
+Redrive is at-least-once: a crash, rebalance, cancellation or commit failure after an acknowledged send can produce another copy. It does **not** delete originals from the topic. Other groups can still read them until native retention, compaction or purge removes them. A filter scans at most the supplied limit. An unmatched record pauses its partition for that call, because Kafka cannot commit past it without losing it from future redrive. Later records in that partition remain behind the unmatched record; change the filter or redrive that prefix to reach them. Filter exceptions and failed sends do not advance progress for the failing record. Redriving to an actively consumed source can send a persistently failing record back to the dead-letter topic; fix the failure first.
+
+`PurgeAsync(topic, maxMessages, cancellationToken)` scans bounded earliest partition prefixes and uses Dekaf's native `DeleteRecordsAsync` to advance their log-start offsets. This is permanent for **all** consumer groups, including ordinary inspectors and redrive. Kafka deletes every offset below each requested boundary, not selected records; the limit counts delivered records rather than offsets. Offset gaps, compacted records and records hidden by the configured isolation level do not count as scanned messages, but deletion still affects the entire prefix. Concurrent purge/retention may remove data while redrive runs. Purge can partially succeed across partitions before an error. No per-record deletion is emulated, and redrive never uses purge for settlement.
+
+Management reuses `ConfigureConsumer` and `ConfigureProducer` for native authentication and connection configuration, while enforcing raw byte reads, manual commits, earliest reset and acknowledged redrive sends. Configure the admin client separately for metadata and purge:
+
+```csharp
+kafka.Options.Configure(options =>
+{
+    options.ConfigureAdmin = native => native.WithClientId("dead-letter-admin");
+});
+```
+
+Use the same native TLS/SASL settings on all three builders when the cluster requires them. Provision topics externally and grant the native read, group-offset, produce, metadata and DeleteRecords permissions needed by the operations you expose. A dead-letter topic shared by different source topics has an ambiguous redrive destination, so resolving its manager fails with an actionable error; configure separate dead-letter topics for those consumers.

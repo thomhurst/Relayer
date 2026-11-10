@@ -45,6 +45,11 @@ public static class KafkaBuilderExtensions
             return new KafkaProducerTransport(name, native.Build(), endpoints,
                 provider.GetRequiredService<MessageTracing>(), loggerFactory);
         });
+        builder.Services.AddKeyedSingleton<IDeadLetterManager>(name, (provider, _) =>
+        {
+            var definition = provider.GetRequiredService<RelayerConfiguration>().Transports.Single(item => item.Name == name);
+            return new KafkaDeadLetterManager(name, provider.GetRequiredService<IOptionsMonitor<KafkaTransportOptions>>().Get(name), definition.Consumers);
+        });
         builder.Services.AddSingleton<ITransport>(provider => provider.GetRequiredKeyedService<KafkaProducerTransport>(name));
         builder.Services.AddKeyedSingleton<IKafkaConsumerControl>(name, (provider, _) => new KafkaConsumerControl(provider, name));
         builder.Services.AddSingleton<IHostedService>(provider => new KafkaHostedService(provider, name));

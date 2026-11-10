@@ -10,12 +10,12 @@ public interface IDeadLetterManager
     ValueTask<DeadLetterPage> PeekAsync(string source, int maxMessages = 20, string? cursor = null,
         CancellationToken cancellationToken = default);
 
-    /// <summary>Scans at most maxMessages deliveries, sending matches before removing their originals.
-    /// Redrive is at-least-once. Filter exceptions and send failures leave the original unsettled.</summary>
+    /// <summary>Scans at most maxMessages deliveries, sending matches before native settlement or durable redrive progress.
+    /// Redrive is at-least-once. Filter exceptions and send failures leave the original available. Log transports retain originals until native retention or purge.</summary>
     ValueTask<int> RedriveAsync(string source, Func<DeadLetterMessage, bool>? filter = null,
         int maxMessages = 20, CancellationToken cancellationToken = default);
 
-    /// <summary>Permanently removes up to maxMessages available messages using native settlement.</summary>
+    /// <summary>Permanently removes a bounded batch using native settlement or partition-prefix deletion. Log transports cannot delete arbitrary individual records.</summary>
     ValueTask<int> PurgeAsync(string source, int maxMessages = 20, CancellationToken cancellationToken = default);
 }
 
