@@ -104,7 +104,11 @@ internal sealed class KafkaDeadLetterManager : IDeadLetterManager
             foreach (var header in owned.Headers) headers.Add(header);
             var key = owned.IsKeyNull ? (WireString?)null : new WireString(owned.Key!);
             (ReadOnlyMemory<byte> Body, Headers Headers)? body = owned.Value is null ? null : (owned.Value, headers);
-            await producer.ForTopic(destination).ProduceAsync(key, body, headers, cancellationToken).ConfigureAwait(false);
+            // Only tombstones bypass the value serializer and need explicit native headers.
+            if (body is null)
+                await producer.ForTopic(destination).ProduceAsync(key, null, headers, cancellationToken).ConfigureAwait(false);
+            else
+                await producer.ProduceAsync(destination, key, body, cancellationToken).ConfigureAwait(false);
             if (version != ownership.Version || !reader.Assignment.Contains(partition))
                 throw new InvalidOperationException("Kafka dead-letter assignment changed after redrive. The acknowledged copy may be delivered again; retry the operation.");
             await reader.CommitAsync([new(source, value.Partition, checked(value.Offset + 1))], cancellationToken).ConfigureAwait(false);

@@ -53,7 +53,7 @@ public class KafkaDeadLetterTests
         var headers = new Headers().Add(new Header("duplicate", new byte[] { 1 })).Add(new Header("duplicate", (byte[]?)null))
             .Add("ce_id", "original");
         await producer.ForTopic(source).ProduceAsync(new byte[] { 0, 255 }, null!, headers, token);
-        await producer.ForTopic(source).ProduceAsync(null!, [], new Headers().Add("ce_id", "empty"), token);
+        await producer.ForTopic(source).ProduceAsync(null!, [], new Headers().Add("ce_id", "empty").Add("duplicate", "first").Add(new Header("duplicate", (byte[]?)null)), token);
         await producer.ForTopic(source).ProduceAsync("last"u8.ToArray(), "last"u8.ToArray(), new Headers(), token);
         var first = await manager.PeekAsync(source, 1, cancellationToken: token);
         var native = first.Messages.Single().Features.GetRequired<KafkaDeadLetterFeature>().Record;
@@ -83,6 +83,14 @@ public class KafkaDeadLetterTests
         await Assert.That(deleted.Headers[1].IsValueNull).IsTrue();
         await Assert.That(empty.Value.Length).IsEqualTo(0);
         await Assert.That(empty.IsKeyNull).IsTrue();
+        // Native tracing may add its own header; assert the original application prefix in order.
+        var emptyHeaders = empty.Headers.Where(header => header.Key is "ce_id" or "duplicate").ToArray();
+        await Assert.That(emptyHeaders.Length).IsEqualTo(3);
+        await Assert.That(emptyHeaders[0].Key).IsEqualTo("ce_id");
+        await Assert.That(emptyHeaders[0].GetValueAsString()).IsEqualTo("empty");
+        await Assert.That(emptyHeaders[1].GetValueAsString()).IsEqualTo("first");
+        await Assert.That(emptyHeaders[2].Key).IsEqualTo("duplicate");
+        await Assert.That(emptyHeaders[2].IsValueNull).IsTrue();
         await Assert.That(Encoding.UTF8.GetString(deleted.Headers[2].Value.Span)).IsEqualTo("original");
         // Redrive advances a group, not retention: originals still peek until native deletion.
         await Assert.That((await manager.PeekAsync(source, 3, cancellationToken: token)).Messages.Count).IsEqualTo(3);
