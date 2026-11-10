@@ -19,6 +19,7 @@ public sealed class RelayerInstrumentation : IDisposable
     internal Counter<long> DeadLettered { get; }
     internal UpDownCounter<long> OutboxPending { get; }
     internal Histogram<double> DispatchLag { get; }
+    internal Counter<long> OutboxPoison { get; }
     internal Counter<long> Duplicates { get; }
     internal Gauge<long> ConsumerLag { get; }
     internal Gauge<int> CircuitState { get; }
@@ -46,6 +47,7 @@ public sealed class RelayerInstrumentation : IDisposable
         DeadLettered = _meter.CreateCounter<long>("relayer.dead_lettered", "{message}");
         OutboxPending = _meter.CreateUpDownCounter<long>("relayer.outbox.pending", "{message}");
         DispatchLag = _meter.CreateHistogram<double>("relayer.outbox.dispatch_lag", "s");
+        OutboxPoison = _meter.CreateCounter<long>("relayer.outbox.dead_lettered", "{message}");
         Duplicates = _meter.CreateCounter<long>("relayer.inbox.duplicates", "{message}");
         ConsumerLag = _meter.CreateGauge<long>("relayer.consumer.lag", "{message}");
         CircuitState = _meter.CreateGauge<int>("relayer.circuit.state");
@@ -71,6 +73,9 @@ public sealed class RelayerInstrumentation : IDisposable
 
     /// <summary>Records an outbox send attempt's start time minus its durable enqueue time, in seconds.</summary>
     public void RecordOutboxDispatchLag(TimeSpan elapsed) => DispatchLag.Record(elapsed.TotalSeconds);
+
+    /// <summary>Alerts that an outbox row exhausted its dispatch attempts.</summary>
+    public void RecordOutboxPoison() => OutboxPoison.Add(1);
 
     /// <summary>Stops publishing every instrument owned by this instance.</summary>
     public void Dispose() => _meter.Dispose();

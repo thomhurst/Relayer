@@ -13,11 +13,14 @@ public sealed class PostgreSqlOrderedDispatchOptions
     public TimeSpan LeaseDuration { get; init; } = TimeSpan.FromSeconds(30);
     /// <summary>Delay between scans, less than one third of the lease duration.</summary>
     public TimeSpan PollInterval { get; init; } = TimeSpan.FromSeconds(1);
+    /// <summary>Failed sends before a row is dead-lettered. Must match other dispatchers for this store.</summary>
+    public int MaxDispatchAttempts { get; init; } = 10;
     /// <summary>Maximum sequential sends in one bounded lane transaction.</summary>
     public int BatchSize { get; init; } = 100;
 
     internal PostgreSqlOutboxOptions Validate()
     {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(MaxDispatchAttempts);
         ArgumentNullException.ThrowIfNull(TablePrefix);
         if (Lanes is < 1 or > 65536) throw new ArgumentOutOfRangeException(nameof(Lanes));
         if (BatchSize is < 1 or > 10000) throw new ArgumentOutOfRangeException(nameof(BatchSize));
@@ -25,7 +28,7 @@ public sealed class PostgreSqlOrderedDispatchOptions
             throw new ArgumentOutOfRangeException(nameof(LeaseDuration));
         if (PollInterval <= TimeSpan.Zero || PollInterval >= LeaseDuration / 3)
             throw new ArgumentOutOfRangeException(nameof(PollInterval), "PollInterval must be positive and less than LeaseDuration / 3.");
-        var store = new PostgreSqlOutboxOptions { Schema = Schema, TablePrefix = TablePrefix, Lanes = Lanes };
+        var store = new PostgreSqlOutboxOptions { Schema = Schema, TablePrefix = TablePrefix, Lanes = Lanes, MaxDispatchAttempts = MaxDispatchAttempts };
         _ = PostgreSqlOutboxSchema.CreateScript(store);
         return store;
     }

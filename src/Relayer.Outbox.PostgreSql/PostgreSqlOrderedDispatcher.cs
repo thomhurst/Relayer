@@ -120,6 +120,7 @@ internal sealed partial class PostgreSqlOrderedDispatcher : BackgroundService
         if (!await _coordinator.AcquireAsync(connection, transaction, lane, cancellationToken).ConfigureAwait(false)) return 0;
         var count = 0;
         var sent = 0;
+        var poisoned = false;
         try
         {
             count = await _lane.ReadAsync(connection, transaction, lane, _rows, cancellationToken).ConfigureAwait(false);
@@ -140,6 +141,7 @@ internal sealed partial class PostgreSqlOrderedDispatcher : BackgroundService
                 {
                     if (!await _lane.FailAsync(connection, transaction, claim, error.Message, cancellationToken).ConfigureAwait(false))
                         throw new InvalidOperationException("Ordered outbox claim expired while recording a dispatch failure.", error);
+                    poisoned = row.Attempts + 1 >= _options.MaxDispatchAttempts;
                     DispatchFailed(_logger, error);
                     break;
                 }
@@ -150,6 +152,7 @@ internal sealed partial class PostgreSqlOrderedDispatcher : BackgroundService
             }
             await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
             _instrumentation?.AddOutboxPending(-sent);
+            if (poisoned) _instrumentation?.RecordOutboxPoison();
             return sent;
         }
         finally { Array.Clear(_rows); }
@@ -169,7 +172,7 @@ internal sealed partial class PostgreSqlOrderedDispatcher : BackgroundService
         return (transport, new OutgoingMessage(message.Destination, message.Body, message.Headers, message.OrderingKey).ForOutboxDispatch());
     }
 
-    [LoggerMessage(Level = LogLevel.Error, Message = "Ordered outbox dispatch failed; durable rows remain available for retry.")]
+    [LoggerMessage(Level = LogLevel.Error, Message = "Ordered outbox dispatch failed; durable rows remain available for retry or, after attempt exhaustion, dead-letter management.")]
     private static partial void DispatchFailed(ILogger logger, Exception error);
     [LoggerMessage(Level = LogLevel.Warning, Message = "Could not release ordered outbox leases; they expire automatically.")]
     private static partial void ReleaseFailed(ILogger logger, Exception error);

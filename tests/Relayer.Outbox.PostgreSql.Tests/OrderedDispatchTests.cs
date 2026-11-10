@@ -1,5 +1,6 @@
 using System.Buffers;
 using System.Collections.Concurrent;
+using System.Diagnostics.Metrics;
 using System.Threading.Channels;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -14,6 +15,60 @@ namespace Relayer.Outbox.PostgreSql.Tests;
 
 public class OrderedDispatchTests
 {
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Poison_parks_only_its_key_until_redrive_or_purge(bool purge)
+    {
+        await using var fixture = new PostgreSqlFixture();
+        await fixture.StartAsync();
+        await using var source = NpgsqlDataSource.Create(fixture.ConnectionString);
+        await PostgreSqlOutboxStoreTests.CreateSchema(source);
+        await Insert(source, Id(1), 0);
+        await Insert(source, Id(2), 0);
+        await Insert(source, Id(3), 0);
+        await using (var unrelated = source.CreateCommand("UPDATE relayer_outbox SET ordering_key = 'other' WHERE id = @id"))
+        {
+            unrelated.Parameters.AddWithValue("id", Id(3));
+            await unrelated.ExecuteNonQueryAsync();
+        }
+        using var instrumentation = new RelayerInstrumentation();
+        long poisonCount = 0;
+        using var listener = new MeterListener();
+        listener.InstrumentPublished = (instrument, meterListener) =>
+        {
+            if (instrument == instrumentation.OutboxPoison) meterListener.EnableMeasurementEvents(instrument);
+        };
+        listener.SetMeasurementEventCallback<long>((_, count, _, _) => Interlocked.Add(ref poisonCount, count));
+        listener.Start();
+        var failing = new RecordingTransport((_, _) => throw new InvalidOperationException("poison"));
+        using (var worker = new PostgreSqlOrderedDispatcher(source, new() { Lanes = 1, MaxDispatchAttempts = 1 },
+            [failing], NullLogger<PostgreSqlOrderedDispatcher>.Instance, instrumentation: instrumentation))
+            await Assert.That(await worker.DispatchLaneAsync(0, default)).IsEqualTo(0);
+        await Assert.That(poisonCount).IsEqualTo(1L);
+        await using (var expire = source.CreateCommand("UPDATE relayer_leases SET expires_at = clock_timestamp() - interval '1 second'"))
+            await expire.ExecuteNonQueryAsync();
+        // A new owner after the poison transaction committed must observe the same durable key barrier.
+        var healthy = new RecordingTransport();
+        using var restarted = Worker(source, healthy);
+        await Assert.That(await restarted.DispatchLaneAsync(0, default)).IsEqualTo(1);
+        await Assert.That(healthy.Ids.SequenceEqual([Id(3)])).IsTrue();
+        var manager = new PostgreSqlDeadLetterManager("store", source, new());
+        var dead = (await manager.PeekAsync("store")).Messages.Single().Features.GetRequired<PostgreSqlDeadLetterDetails>();
+        await Assert.That(dead.Record.Attempts).IsEqualTo(1);
+        await Assert.That(dead.Record.LastError).IsEqualTo("poison");
+        await using (var age = source.CreateCommand("UPDATE relayer_outbox_dead SET failed_at = clock_timestamp() - interval '1 day'"))
+            await age.ExecuteNonQueryAsync();
+        using (var cleanup = new PostgreSqlMaintenanceWorker(source, new() { DeadRetention = TimeSpan.FromSeconds(1), InboxRetention = null },
+            [healthy], NullLogger<PostgreSqlMaintenanceWorker>.Instance))
+            await Assert.That(await cleanup.CleanupAsync(default)).IsEqualTo(0);
+        await Assert.That((await manager.PeekAsync("store")).Messages.Count).IsEqualTo(1);
+        if (purge) await manager.PurgeAsync("store");
+        else await manager.RedriveAsync("store");
+        await Assert.That(await restarted.DispatchLaneAsync(0, default)).IsEqualTo(purge ? 1 : 2);
+        await Assert.That(healthy.Ids.SequenceEqual(purge ? [Id(3), Id(2)] : new[] { Id(3), Id(1), Id(2) })).IsTrue();
+    }
+
     [Test]
     public async Task Sequential_commits_dispatch_in_insert_order_even_when_later_UUID_is_smaller()
     {

@@ -47,7 +47,7 @@ internal sealed partial class PostgreSqlMaintenanceWorker : BackgroundService
         _release = $"DELETE FROM {leases} WHERE name IN ('sweeper', 'cleanup') AND owner = @owner";
         _highWaterMark = $"SELECT id FROM {Table("outbox")} WHERE lane IS NULL AND status = 'pending' ORDER BY id DESC LIMIT 1";
         _read = $"SELECT id, transport, message_type, destination, body, headers, ordering_key, deliver_at, created_at, lane, attempts, last_error, tenant_id FROM {Table("outbox")} WHERE lane IS NULL AND status = 'pending' AND created_at <= clock_timestamp() - @age AND (deliver_at IS NULL OR deliver_at <= clock_timestamp()) AND (claim_expires_at IS NULL OR claim_expires_at <= clock_timestamp()) AND (@after IS NULL OR id > @after) AND id <= @through ORDER BY id LIMIT @limit";
-        _dead = $"DELETE FROM {Table("outbox_dead")} WHERE id IN (SELECT id FROM {Table("outbox_dead")} WHERE failed_at <= clock_timestamp() - @retention ORDER BY failed_at, id LIMIT @limit)";
+        _dead = $"DELETE FROM {Table("outbox_dead")} WHERE id IN (SELECT id FROM {Table("outbox_dead")} WHERE failed_at <= clock_timestamp() - @retention AND NOT EXISTS (SELECT 1 FROM {Table("outbox")} AS parked WHERE parked.id = {Table("outbox_dead")}.id AND parked.status = 'parked') ORDER BY failed_at, id LIMIT @limit)";
         _inbox = $"DELETE FROM {Table("inbox")} WHERE (consumer, message_id) IN (SELECT consumer, message_id FROM {Table("inbox")} WHERE processed_at <= clock_timestamp() - @retention ORDER BY processed_at, consumer, message_id LIMIT @limit)";
     }
 
@@ -96,6 +96,7 @@ internal sealed partial class PostgreSqlMaintenanceWorker : BackgroundService
             await using var transaction = await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
             await DispatchAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
             await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+            _dispatcher.RecoveryCommitted();
         } while (_through is not null);
     }
 
@@ -119,6 +120,7 @@ internal sealed partial class PostgreSqlMaintenanceWorker : BackgroundService
         renew.Parameters.AddWithValue("duration", _options.LeaseDuration);
         await renew.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        if (!cleanup) _dispatcher.RecoveryCommitted();
         return count;
     }
 

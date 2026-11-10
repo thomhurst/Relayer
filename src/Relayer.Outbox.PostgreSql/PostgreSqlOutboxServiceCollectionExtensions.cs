@@ -12,6 +12,21 @@ namespace Relayer.Outbox.PostgreSql;
 /// <summary>Registers explicitly named PostgreSQL durable read/claim stores.</summary>
 public static partial class PostgreSqlOutboxServiceCollectionExtensions
 {
+    /// <summary>Registers a keyed manager for inspecting, redriving and purging one durable outbox store.</summary>
+    /// <remarks>Redrive restores pending rows for existing dispatchers. Purge discards dead rows and releases their key barriers.</remarks>
+    public static IServiceCollection AddRelayerPostgreSqlDeadLetters(this IServiceCollection services,
+        string storeName, Npgsql.NpgsqlDataSource dataSource, PostgreSqlOutboxOptions? options = null)
+    {
+        ArgumentNullException.ThrowIfNull(services);
+        ArgumentException.ThrowIfNullOrWhiteSpace(storeName);
+        ArgumentNullException.ThrowIfNull(dataSource);
+        options ??= new();
+        _ = new PostgreSqlOutboxStore(dataSource, options);
+        var snapshot = options;
+        services.AddKeyedSingleton<IDeadLetterManager>(storeName, (_, _) => new PostgreSqlDeadLetterManager(storeName, dataSource, snapshot));
+        return services;
+    }
+
     /// <summary>Registers a named durable store and a hosted worker for unordered, commit-triggered sends.</summary>
     /// <remarks>
     /// Select this name with EntityFrameworkCoreOutboxOptions.DispatchStoreName on participating contexts.
@@ -30,7 +45,7 @@ public static partial class PostgreSqlOutboxServiceCollectionExtensions
         if (dispatchOptions.QueueCapacity is <= 0 or int.MaxValue || dispatchOptions.BatchSize <= 0 || dispatchOptions.ClaimDuration <= TimeSpan.Zero)
             throw new ArgumentOutOfRangeException(nameof(dispatchOptions), "QueueCapacity and BatchSize must be positive, QueueCapacity must be below Int32.MaxValue, and ClaimDuration must be positive.");
         storeOptions ??= new();
-        var snapshot = new PostgreSqlOutboxOptions { Schema = storeOptions.Schema, TablePrefix = storeOptions.TablePrefix };
+        var snapshot = new PostgreSqlOutboxOptions { Schema = storeOptions.Schema, TablePrefix = storeOptions.TablePrefix, MaxDispatchAttempts = storeOptions.MaxDispatchAttempts };
         _ = PostgreSqlOutboxSchema.CreateScript(snapshot);
         services.AddRelayerPostgreSqlOutboxStore(storeName, dataSource, snapshot);
         services.AddSingleton(new DispatchSettings(storeName, dispatchOptions));
@@ -94,7 +109,7 @@ public static partial class PostgreSqlOutboxServiceCollectionExtensions
         ArgumentNullException.ThrowIfNull(dataSource);
         options ??= new();
         ArgumentNullException.ThrowIfNull(options.TablePrefix);
-        var snapshot = new PostgreSqlOutboxOptions { Schema = options.Schema, TablePrefix = options.TablePrefix };
+        var snapshot = new PostgreSqlOutboxOptions { Schema = options.Schema, TablePrefix = options.TablePrefix, MaxDispatchAttempts = options.MaxDispatchAttempts };
         // Validate identifiers immediately, rather than waiting for the first database operation.
         _ = new PostgreSqlOutboxStore(dataSource, snapshot);
         services.AddKeyedScoped<IOutboxStore>(storeName, (_, _) => new PostgreSqlOutboxStore(dataSource, snapshot));
@@ -148,6 +163,7 @@ public static partial class PostgreSqlOutboxServiceCollectionExtensions
             Lanes = ReadOrdered(configuration, nameof(defaults.Lanes), defaults.Lanes),
             LeaseDuration = ReadOrdered(configuration, nameof(defaults.LeaseDuration), defaults.LeaseDuration),
             PollInterval = ReadOrdered(configuration, nameof(defaults.PollInterval), defaults.PollInterval),
+            MaxDispatchAttempts = ReadOrdered(configuration, nameof(defaults.MaxDispatchAttempts), defaults.MaxDispatchAttempts),
             BatchSize = ReadOrdered(configuration, nameof(defaults.BatchSize), defaults.BatchSize)
         });
     }

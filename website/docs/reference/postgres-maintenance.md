@@ -72,8 +72,7 @@ Choose `ClaimDuration` longer than expected broker and database latency and keep
 Delivery is at-least-once. A crash after native acceptance and before deletion replays the same identity.
 Database fencing cannot retract an accepted native request, and connection loss or a native send that outlives
 its claim can still duplicate delivery. Connected leadership does not provide broker-side fencing.
-Failures are logged and retried on later passes. Poison-row movement, retry backoff and release of parked keys
-remain planned; a permanently failing row remains durable.
+Failures are logged and retried on later passes up to `MaxDispatchAttempts` (default 10), then atomically moved to [dead storage](postgres-store.md#poison-rows-and-key-release). Retry backoff remains planned.
 
 ## Retention
 
@@ -84,7 +83,7 @@ Each cleanup pass deletes at most `BatchSize` dead rows older than `DeadRetentio
 most `BatchSize` inbox records older than `InboxRetention` (from `processed_at`). Recent rows stay intact.
 Cleanup becomes due every `CleanupInterval` and runs after a sweep, so a slow sweep can delay cleanup.
 Retention applies to existing tables. The [EF Core consumer boundary](ef-core-inbox.md) supplies inbox recording;
-poison-row movement remains planned.
+[Poison management](postgres-store.md#poison-rows-and-key-release) supplies inspection, redrive and explicit purge. Dead rows with an active ordered key barrier are retained until management releases them.
 
 **Inbox retention bounds deduplication.** After deletion, an old identity can invoke its consumer again.
 Choose retention longer than your broker replay/redelivery window, or disable it. Dead-row deletion is

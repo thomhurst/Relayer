@@ -25,6 +25,13 @@ internal sealed class PostgreSqlDirectDispatcher : BackgroundService
     private readonly string _prefix;
     private readonly List<BufferedOutboxMessage> _recoveryRows = [];
     private readonly OutboxDispatchBatch _recoveryBatch = new();
+    private int _recoveredPoison;
+
+    internal void RecoveryCommitted()
+    {
+        for (var i = 0; i < _recoveredPoison; i++) _instrumentation?.RecordOutboxPoison();
+        _recoveredPoison = 0;
+    }
 
     internal PostgreSqlDirectDispatcher(Npgsql.NpgsqlDataSource dataSource, PostgreSqlOutboxOptions storeOptions,
         PostgreSqlDirectDispatchOptions options, IEnumerable<ITransport> transports, ILogger<PostgreSqlDirectDispatcher> logger,
@@ -173,7 +180,11 @@ internal sealed class PostgreSqlDirectDispatcher : BackgroundService
                     {
                         try
                         {
-                            await _store.RecordFailureAsync(_claims[i], error.Message, DateTimeOffset.UtcNow, cancellationToken).ConfigureAwait(false);
+                            if (await _store.RecordDispatchFailureAsync(_claims[i], error.Message, DateTimeOffset.UtcNow, cancellationToken).ConfigureAwait(false) == 2)
+                            {
+                                if (propagateDatabaseFailures) _recoveredPoison++;
+                                else _instrumentation?.RecordOutboxPoison();
+                            }
                         }
                         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
                         catch (Exception failure) when (!propagateDatabaseFailures) { DirectDispatchLog.Failed(_logger, failure); }
@@ -205,6 +216,7 @@ internal sealed class PostgreSqlDirectDispatcher : BackgroundService
     internal async ValueTask DispatchRecoveredAsync(ReadOnlyMemory<OutboxRecord> rows, CancellationToken cancellationToken,
         bool propagateDatabaseFailures = false)
     {
+        _recoveredPoison = 0;
         var batch = PrepareRecovered(rows.Span);
         // An aborted PostgreSQL transaction can accept COMMIT as ROLLBACK. Recovery must observe
         // database errors before its caller commits or advances the replication checkpoint.
@@ -250,7 +262,7 @@ internal static partial class DirectDispatchLog
     [LoggerMessage(1, LogLevel.Error, "Direct outbox dispatch queue is full or stopped. {Count} committed rows remain pending; recovery dispatch is required.")]
     internal static partial void NotQueued(ILogger logger, int count);
 
-    [LoggerMessage(2, LogLevel.Error, "Direct outbox dispatch failed. Durable rows remain available for recovery after claim expiry or failure recording.")]
+    [LoggerMessage(2, LogLevel.Error, "Direct outbox dispatch failed. Durable rows remain available for recovery or, after attempt exhaustion, dead-letter management.")]
     internal static partial void Failed(ILogger logger, Exception exception);
 
     [LoggerMessage(3, LogLevel.Error, "Direct outbox completion failed after a successful send. Claims remain held until expiry; recovery may duplicate delivery. Send attempts are unchanged.")]

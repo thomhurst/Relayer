@@ -29,7 +29,9 @@ internal sealed class PostgreSqlOrderedLane : IDisposable
         _claim = CreateMutation($"UPDATE {table} SET claim_token = @token, claim_expires_at = clock_timestamp() + @duration WHERE id = @id AND status = 'pending' AND (deliver_at IS NULL OR deliver_at <= clock_timestamp()) AND (claim_expires_at IS NULL OR claim_expires_at <= clock_timestamp())");
         _claim.Parameters.Add(new NpgsqlParameter<TimeSpan>("duration", NpgsqlDbType.Interval) { TypedValue = duration });
         _complete = CreateMutation($"DELETE FROM {table} WHERE {fenced}");
-        _fail = CreateMutation($"UPDATE {table} SET attempts = attempts + 1, last_error = @error, claim_token = NULL, claim_expires_at = NULL WHERE {fenced}");
+        var dead = PostgreSqlOutboxSchema.QuoteIdentifier(options.Schema ?? "public") + "." +
+            PostgreSqlOutboxSchema.QuoteIdentifier(options.TablePrefix + "outbox_dead");
+        _fail = CreateMutation(PostgreSqlPoisonSql.Failure(table, dead, fenced, options.MaxDispatchAttempts));
         _fail.Parameters.Add(new NpgsqlParameter<string>("error", NpgsqlDbType.Text));
     }
 
@@ -74,7 +76,11 @@ internal sealed class PostgreSqlOrderedLane : IDisposable
         command.Transaction = transaction;
         SetClaim(command, claim);
         if (error is not null) ((NpgsqlParameter<string>)command.Parameters[2]).TypedValue = error;
-        try { return await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) == 1; }
+        try
+        {
+            if (error is not null) return (int)(await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false))! != 0;
+            return await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) == 1;
+        }
         finally
         {
             command.Transaction = null;

@@ -54,6 +54,7 @@ public static partial class PostgreSqlOutboxServiceCollectionExtensions
         {
             Schema = configuration[nameof(defaults.Schema)],
             TablePrefix = configuration[nameof(defaults.TablePrefix)] ?? defaults.TablePrefix,
+            MaxDispatchAttempts = ReadValue(nameof(defaults.MaxDispatchAttempts), defaults.MaxDispatchAttempts),
             BatchSize = ReadValue(nameof(defaults.BatchSize), defaults.BatchSize),
             RecoveryDelay = ReadValue(nameof(defaults.RecoveryDelay), defaults.RecoveryDelay),
             SweepInterval = ReadValue(nameof(defaults.SweepInterval), defaults.SweepInterval),

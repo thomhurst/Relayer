@@ -636,6 +636,11 @@ of the lease duration to reserve time for the final send and commit; healthy slo
 A single native operation must still fit the hard deadline. A connected transaction is never
 forcibly revoked. Reads use the pending lane/ID index and never skip a scheduled or live-claimed head.
 An indexed anti-join excludes later rows of parked keys while allowing other keys to continue.
+On attempt exhaustion, a single fenced statement copies failure metadata into the dead table and retains
+the ordered row as the parked barrier at its original sequence. Unordered exhausted rows are removed.
+Management redrive resets the retained row in place; explicit purge deletes the barrier and dead copy
+in one transaction. Retention excludes dead rows with active barriers so redrive never loses its payload.
+These operations reuse the existing lane runtime; management never sends messages itself.
 After committed progress, the worker immediately starts another fair scan; only scans with no progress wait
 for the polling interval. A busy lane cannot consume another lane's turn by draining without a scan boundary.
 Each scan probes assigned lanes' first non-parked heads in one read-only query. Empty, scheduled and

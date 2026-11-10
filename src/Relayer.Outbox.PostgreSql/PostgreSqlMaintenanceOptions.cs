@@ -7,6 +7,8 @@ public sealed class PostgreSqlMaintenanceOptions
     public string? Schema { get; init; }
     /// <summary>Table prefix, identical to every writer and dispatcher.</summary>
     public string TablePrefix { get; init; } = "relayer_";
+    /// <summary>Failed sends before a row is dead-lettered. Must match other dispatchers for this store.</summary>
+    public int MaxDispatchAttempts { get; init; } = 10;
     /// <summary>Maximum rows scanned or deleted per pass.</summary>
     public int BatchSize { get; init; } = 100;
     /// <summary>Minimum row age before recovery can dispatch it.</summary>
@@ -35,8 +37,9 @@ public sealed class PostgreSqlMaintenanceOptions
         ValidateDelay(CleanupInterval, nameof(CleanupInterval));
         if (DeadRetention is { } dead) ValidateDuration(dead, nameof(DeadRetention));
         if (InboxRetention is { } inbox) ValidateDuration(inbox, nameof(InboxRetention));
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(MaxDispatchAttempts);
         ArgumentNullException.ThrowIfNull(TablePrefix);
-        var store = new PostgreSqlOutboxOptions { Schema = Schema, TablePrefix = TablePrefix };
+        var store = new PostgreSqlOutboxOptions { Schema = Schema, TablePrefix = TablePrefix, MaxDispatchAttempts = MaxDispatchAttempts };
         _ = PostgreSqlOutboxSchema.CreateScript(store);
         return store;
     }
