@@ -34,7 +34,11 @@ def main():
                         help="Separate exact synchronous full-delivery delegate-call counts, eight messages per record.")
     parser.add_argument("--exact-driver", action="store_true",
                         help="Separate full-delivery calling-thread invocation and original BDN completion counts.")
+    parser.add_argument("--bdn-await", action="store_true",
+                        help="Use original BDN synchronous ValueTask waiter in the full-delivery probe.")
     args = parser.parse_args()
+    if args.bdn_await and (args.exact_invocations or args.exact_releases or args.exact_roundtrips or args.exact_driver):
+        parser.error("BDN full-delivery waiter and exact counters are distinct controls")
     if sum((args.exact_invocations, args.exact_releases, args.exact_roundtrips, args.exact_driver)) > 1:
         parser.error("Exact regions require separate ABBAs")
     if bool(args.trace_tool) != bool(args.profile_reader):
@@ -48,6 +52,7 @@ def main():
                 "warmup_batches": 4096, "measured_batches": 32768, "messages_per_batch": 8,
                 "counter": "GC.GetTotalAllocatedBytes(true)",
                 "limits": "Inclusive fixed-count control; not original BDN replay, allocation-owner attribution, throughput equivalence or native-client budget evidence."}
+    protocol["completion_boundary"] = "original-BenchmarkDotNet-AwaitHelper.GetResult" if args.bdn_await or args.exact_driver else "asynchronous-await"
     protocol["instrumented"] = args.trace_tool is not None or args.exact_invocations or args.exact_releases or args.exact_roundtrips or args.exact_driver
     protocol["exact_invocations"] = args.exact_invocations
     protocol["exact_releases"] = args.exact_releases
@@ -72,6 +77,8 @@ def main():
         if len(images) != 1:
             raise ValueError(f"Expected one frozen image for {side}, found {len(images)}")
         command = ["dotnet", str(args.probe.resolve()), str(images[0].parent.resolve())]
+        if args.bdn_await:
+            command.append("--bdn-await")
         if args.exact_driver:
             command.append("--exact-driver")
         if args.exact_invocations:
