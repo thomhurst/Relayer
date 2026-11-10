@@ -19,9 +19,12 @@ env:
   DOTNET_CLI_TELEMETRY_OPTOUT: true
   DOTNET_NOLOGO: true
 
-# A newer commit on the same PR or branch cancels older in-progress runs.
+# A newer validating run cancels older runs for the same PR or branch. Ordinary draft
+# events use a separate group: a delayed draft event must not cancel a ready run,
+# or replace a pending one (even cancel-in-progress: false replaces pending runs).
+# Converting back to draft deliberately shares the validation group to cancel CI.
 concurrency:
-  group: ci-${{ github.event.pull_request.number || github.ref }}
+  group: ci-${{ github.event.pull_request.number || github.ref }}${{ github.event_name == 'pull_request' && github.event.pull_request.draft && github.event.action != 'converted_to_draft' && '-draft' || '' }}
   cancel-in-progress: true
 
 jobs:
