@@ -1,16 +1,16 @@
 ---
 title: Native tenant store selection
-description: "Select application-owned PostgreSQL stores for manual outbox units and explicit tenant endpoints."
+description: "Select application-owned PostgreSQL stores through native scoped factories."
 ---
 
-An application can select a different native PostgreSQL store for each manually created service scope.
+An application can select a different native PostgreSQL store for each application or single-message consumer scope.
 Use the scoped factory already provided by EF Core; Relayer's interceptors use that DbContext's native
 connection and transaction. There is no separate Relayer `IOutboxStoreResolver` API.
 
-This supports manually initiated outbox units and explicitly composed endpoints whose tenant is known
-at startup. Dynamic selection from an incoming tenant header, automatic durable `tenant_id` population,
-tenant enumeration and a shared dispatch connection budget remain planned. This page does not establish
-complete multi-tenant consumer or dispatcher support.
+This supports manually initiated outbox units and incoming single-message EF Core consumers registered
+with `AddRelayerTenancy`. The application authorizes the tenant before resolving its native store.
+Automatic durable `tenant_id` population, tenant enumeration and a shared dispatch connection budget
+remain planned.
 
 ## Select before resolving database services
 
@@ -119,15 +119,37 @@ selected store. The transaction owns only the connection it opens, not the appli
 
 ## Consumer and dispatch boundary
 
-The [EF Core consumer boundary](ef-core-inbox.md) currently resolves a DbContext in a temporary startup
-scope to validate provider and transaction settings. A dynamic scoped factory that requires the current
-delivery's tenant therefore cannot compose this boundary yet. Do not bypass that check by falling back
-to a default tenant or allowing an untrusted header to choose a store.
+With `AddRelayerTenancy`, the [EF Core consumer boundary](ef-core-inbox.md) composes without resolving
+a startup DbContext. The incoming header is restored before the scoped native factory runs. Perform
+authorization in that factory (or a scoped dependency it resolves), before selecting any database:
 
-An explicitly composed endpoint with one known tenant can use its fixed native store in every scope,
-including the startup scope. Such endpoints use the existing consumer boundary, inbox deduplication
-and outbox interceptors unchanged. This is a static endpoint arrangement, not automatic routing of
-mixed-tenant deliveries. Inbox identity remains local to each selected database/schema.
+```csharp
+services.AddRelayerTenancy();
+services.AddScoped<AuthorizedTenant>(provider =>
+{
+    var incoming = provider.GetRequiredService<TenantContext>().Id.ToString();
+    // Application-defined authorization. Throw for missing or unauthorized identifiers.
+    var authorized = tenantAuthorizer.RequireAuthorized(incoming);
+    return new AuthorizedTenant { Id = authorized };
+});
+```
+
+Use this registration in place of the empty `AuthorizedTenant` registration in the manual example.
+The existing native `AddDbContext` factory selects its authorized store. Compose the consumer with
+`.EntityFrameworkCore<OrdersDbContext>("orders")` as usual; no fallback tenant is needed.
+
+The selected context is validated before opening a transaction: the Npgsql provider is required,
+pooled contexts are rejected, and inbox options must match the context's outbox registration.
+Those checks run in each delivery and native retry scope. Native retry strategy selection also uses
+the selected context. Each fresh retry and unknown-commit verification scope restores the original
+header and resolves the application's authorization again. Keep the tenant-to-store mapping stable
+for the delivery and its retries; never switch it while an attempt is in flight.
+Retries must retain the same inbox/outbox capabilities.
+
+Providers without `AddRelayerTenancy` retain startup context validation and can use fixed-store
+endpoints. `Saga<TContext,TState>` still validates its state model with a startup context and does not
+support tenant-required scoped factories. These guarantees apply to the single-message
+`EntityFrameworkCore<TContext>` boundary.
 
 Dispatch and maintenance registrations also have explicit store identities. Register them separately
 and match schema, prefix and lane settings; persistence alone does not dispatch rows. Automatic tenant

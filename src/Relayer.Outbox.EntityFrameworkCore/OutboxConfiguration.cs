@@ -1,9 +1,30 @@
+using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.Extensions.DependencyInjection;
 using Relayer.Outbox.PostgreSql;
 
 namespace Relayer.Outbox.EntityFrameworkCore;
 
-internal sealed class OutboxConfiguration
+internal sealed class OutboxConfiguration : IDbContextOptionsExtension
 {
+    private DbContextOptionsExtensionInfo? _info;
+
+    // Native options carry the already-created configuration. Delivery validation must not enumerate
+    // CoreOptionsExtension.Interceptors: its IEnumerable can allocate an iterator on every attempt.
+    public DbContextOptionsExtensionInfo Info => _info ??= new ConfigurationInfo(this);
+    public void ApplyServices(IServiceCollection services) { }
+    public void Validate(IDbContextOptions options) { }
+
+    private sealed class ConfigurationInfo(IDbContextOptionsExtension extension) : DbContextOptionsExtensionInfo(extension)
+    {
+        public override bool IsDatabaseProvider => false;
+        public override string LogFragment => "";
+        public override int GetServiceProviderHashCode() => 0;
+        public override void PopulateDebugInfo(IDictionary<string, string> debugInfo) { }
+        // Configuration affects commands, not EF's internal service registrations. Do not create an
+        // internal service provider per tenant/schema or retain tenant services in a global cache.
+        public override bool ShouldUseSameServiceProvider(DbContextOptionsExtensionInfo other) => other is ConfigurationInfo;
+    }
+
     internal string Table { get; }
     internal int Lanes { get; }
     internal string InsertSql { get; }

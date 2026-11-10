@@ -8,26 +8,38 @@ using Npgsql;
 namespace Relayer.Outbox.EntityFrameworkCore;
 
 internal sealed class EntityFrameworkCoreConsumer<TContext>(string consumer, bool inbox, bool outbox,
-    OutboxConfiguration configuration, RelayerInstrumentation instrumentation, IsolationLevel? isolationLevel = null) : IConsumeTransactionMiddleware where TContext : DbContext
+    OutboxConfiguration configuration, RelayerInstrumentation instrumentation, IsolationLevel? isolationLevel = null,
+    bool scopedValidation = false, bool explicitOptions = false, bool requireOutbox = false) : IConsumeTransactionMiddleware where TContext : DbContext
 {
     private readonly IsolationLevel _isolationLevel = isolationLevel ?? IsolationLevel.Unspecified;
 
+    internal bool ScopedValidation => scopedValidation;
+
+    internal EntityFrameworkCoreConsumerSettings Resolve(DbContext db) => scopedValidation
+        ? EntityFrameworkCoreConsumerExtensions.Validate(db, inbox, configuration, explicitOptions, requireOutbox)
+        : new(inbox, outbox, configuration);
+
+    public ValueTask InvokeAsync(MessageContext context, ConsumeDelegate next)
+    {
+        var db = context.Services.GetRequiredService<TContext>();
+        return InvokeAsync(context, next, db, Resolve(db));
+    }
+
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
-    public async ValueTask InvokeAsync(MessageContext context, ConsumeDelegate next)
+    internal async ValueTask InvokeAsync(MessageContext context, ConsumeDelegate next, TContext db, EntityFrameworkCoreConsumerSettings settings)
     {
         var cancellation = context.CancellationToken;
-        var messageId = inbox ? ParseMessageId(context.MessageId) : default;
-        var db = context.Services.GetRequiredService<TContext>();
+        var messageId = settings.Inbox ? ParseMessageId(context.MessageId) : default;
         if (db.Database.CurrentTransaction is not null || System.Transactions.Transaction.Current is not null)
             throw new InvalidOperationException("The EF Core consumer must own its transaction. Do not nest database consumer middleware or use an ambient transaction.");
         var transaction = await db.Database.BeginTransactionAsync(_isolationLevel, cancellation).ConfigureAwait(false);
         try
         {
-            if (inbox)
+            if (settings.Inbox)
             {
                 // An outbox context can bind reloaded options in a new scope. Its interceptor has registered
                 // the exact configuration with this transaction; never write the inbox to a different schema.
-                var current = outbox ? context.Services.GetRequiredService<EntityFrameworkCoreOutbox>().Get(db, configuration).Configuration : configuration;
+                var current = settings.Outbox ? context.Services.GetRequiredService<EntityFrameworkCoreOutbox>().Get(db, settings.Configuration).Configuration : settings.Configuration;
                 await using var command = new NpgsqlCommand(current.InboxInsertSql,
                     (NpgsqlConnection)db.Database.GetDbConnection(), (NpgsqlTransaction)transaction.GetDbTransaction());
                 command.Parameters.Add(new NpgsqlParameter<string>("consumer", consumer));

@@ -156,7 +156,10 @@ Relayer does not call `SaveChanges` on your behalf. External HTTP calls and dire
 outside the database transaction and need their own idempotency.
 
 Context pooling, ambient transactions and batch consumers are unsupported. Composition rejects
-pooled contexts and other providers. Both EF Core transient retries and Relayer consumer retries
+pooled contexts and other providers for fixed stores. With `AddRelayerTenancy`, composition does not
+resolve a DbContext; the same validation runs against the selected context in each delivery/retry scope,
+before opening its transaction. Authorize incoming tenants in the scoped factory before selecting resources;
+see [native tenant store selection](tenant-stores.md#consumer-and-dispatch-boundary). Both EF Core transient retries and Relayer consumer retries
 run whole attempts in fresh scopes and DbContexts. Register scoped services for the lifetime of a delivery;
 do not share a scope concurrently. Configure [inbox retention and cleanup](postgres-maintenance.md)
 to bound retained history; deleting a row ends its deduplication protection.

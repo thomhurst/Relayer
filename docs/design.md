@@ -556,9 +556,9 @@ See [consumer configuration and failure boundaries](https://relayer.tomlonghurst
 
 ### 6.6 Multi-tenancy
 
-- Application-owned scoped factories select native connections or DbContexts, supporting a database per tenant or a schema per tenant (CAP #699, Rebus #1218, Wolverine #556). Reuse native `AddDbContext`/Npgsql configuration instead of introducing a library-owned `IOutboxStoreResolver` facade (D45). Manual units and explicitly composed tenant endpoints are validated; dynamic incoming-tenant database binding remains planned. See the [native tenant store contract](../website/docs/reference/tenant-stores.md).
+- Application-owned scoped factories select native connections or DbContexts, supporting a database per tenant or a schema per tenant (CAP #699, Rebus #1218, Wolverine #556). Reuse native `AddDbContext`/Npgsql configuration instead of introducing a library-owned `IOutboxStoreResolver` facade (D45). Manual units, explicit tenant endpoints and incoming single-message EF consumers use native scoped factories. With tenancy registered, the EF boundary validates the selected context per delivery/retry scope without resolving a startup context or requiring a fallback tenant. See the [native tenant store contract](../website/docs/reference/tenant-stores.md).
 - `ITenantSource` enumerates tenants for the dispatcher. Each tenant store gets its own lanes and leases. Dispatchers share a bounded connection budget, which avoids per-tenant connection sprawl (Wolverine #3376).
-- The tenant ID travels in a header and is restored into the consumer's scope. [Scoped propagation](../website/docs/guides/multi-tenancy.md) is implemented for single-message consumers and scoped sends, requests and replies. Tenant-aware store resolution and bounded multi-tenant dispatch remain planned; batch consumers cannot share a tenant scope.
+- The tenant ID travels in a header and is restored into the consumer's scope. [Scoped propagation](../website/docs/guides/multi-tenancy.md) is implemented for single-message consumers and scoped sends, requests and replies. Durable tenant/store/header binding and bounded multi-tenant dispatch remain planned; batch consumers cannot share a tenant scope.
 
 ---
 

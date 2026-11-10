@@ -64,6 +64,7 @@ public static class EntityFrameworkCoreOutboxExtensions
         var dispatcher = options.DispatchStoreName is { } name
             ? services.GetRequiredKeyedService<PostgreSqlDirectDispatcher>(name) : null;
         var configuration = new OutboxConfiguration(options, dispatcher, services.GetServices<PostgreSqlSchedulingRegistration>());
+        ((IDbContextOptionsBuilderInfrastructure)builder).AddOrUpdateExtension(configuration);
         builder.AddInterceptors(new OutboxSaveChangesInterceptor(outbox, configuration),
             new OutboxTransactionInterceptor(outbox, configuration));
         return builder;
