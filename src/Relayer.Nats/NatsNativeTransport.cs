@@ -179,8 +179,7 @@ internal sealed class NatsNativeTransport : ITransport, ITransportSendTracing
 
     public ValueTask SendAsync(OutgoingMessage message, CancellationToken cancellationToken) => EndpointFor(message.Destination).Tracing.SendAsync(message, cancellationToken);
 
-    [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
-    private async ValueTask SendCoreAsync(OutgoingMessage message, CancellationToken token)
+    private ValueTask SendCoreAsync(OutgoingMessage message, CancellationToken token)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         token.ThrowIfCancellationRequested();
@@ -188,27 +187,24 @@ internal sealed class NatsNativeTransport : ITransport, ITransportSendTracing
             throw new NotSupportedException("NATS JetStream does not implement portable keyed ordering, scheduled sends or tombstones. Use native subjects and the durable outbox for scheduling.");
         var context = _context ?? throw new InvalidOperationException("Start the NATS transport before sending.");
         var endpoint = EndpointFor(message.Destination);
-        var headers = endpoint.Rent();
+        var operation = endpoint.Rent();
+        var headers = operation.Headers;
         try
         {
             foreach (var header in message.Headers.Span) headers[header.Key] = header.Value.ToString();
             message.ApplyNative(headers);
             token.ThrowIfCancellationRequested();
             endpoint.Tracing.RecordNativeSend();
-            var duration = endpoint.Tracing.StartNativeSend();
-            var failed = true;
-            try
-            {
-                headers.TryGetValue("traceparent", out headers.TraceParent);
-                headers.TryGetValue("tracestate", out headers.TraceState);
-                var ack = await context.PublishAsync(message.Destination, message.Body,
-                    headers, opts: _publishOptions, headers: headers, cancellationToken: token).ConfigureAwait(false);
-                ack.EnsureSuccess();
-                failed = false;
-            }
-            finally { duration.Complete(failed); }
+            headers.TryGetValue("traceparent", out headers.TraceParent);
+            headers.TryGetValue("tracestate", out headers.TraceState);
+            return operation.Publish(context, message, _publishOptions, token, endpoint.Tracing.StartNativeSend());
         }
-        finally { headers.Reset(); endpoint.Return(headers); }
+        catch
+        {
+            headers.Reset();
+            endpoint.Return(operation);
+            throw;
+        }
     }
 
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
@@ -233,25 +229,25 @@ internal sealed class NatsNativeTransport : ITransport, ITransportSendTracing
             throw new ArgumentException($"NATS publish subject '{subject}' must contain nonempty tokens without whitespace or wildcards.");
     }
 
-    private sealed class Endpoint(SendTracing tracing, bool caseSensitive)
+    internal sealed class Endpoint
     {
-        private readonly NatsPublishHeaders?[] _headers = CreateHeaders(caseSensitive);
-        private readonly bool _caseSensitive = caseSensitive;
-        private static NatsPublishHeaders?[] CreateHeaders(bool caseSensitive)
+        private readonly NatsSendOperation?[] _operations = new NatsSendOperation?[64];
+        private readonly bool _caseSensitive;
+        internal Endpoint(SendTracing tracing, bool caseSensitive)
         {
-            var headers = new NatsPublishHeaders?[64];
-            for (var i = 0; i < headers.Length; i++) headers[i] = new(caseSensitive);
-            return headers;
+            Tracing = tracing;
+            _caseSensitive = caseSensitive;
+            for (var i = 0; i < _operations.Length; i++) _operations[i] = new(this, caseSensitive);
         }
-        internal SendTracing Tracing { get; } = tracing;
-        internal NatsPublishHeaders Rent()
+        internal SendTracing Tracing { get; }
+        internal NatsSendOperation Rent()
         {
-            for (var i = 0; i < _headers.Length; i++) if (Interlocked.Exchange(ref _headers[i], null) is { } headers) return headers;
-            return new(_caseSensitive);
+            for (var i = 0; i < _operations.Length; i++) if (Interlocked.Exchange(ref _operations[i], null) is { } operation) return operation;
+            return new(this, _caseSensitive);
         }
-        internal void Return(NatsPublishHeaders headers)
+        internal void Return(NatsSendOperation operation)
         {
-            for (var i = 0; i < _headers.Length; i++) if (Interlocked.CompareExchange(ref _headers[i], headers, null) is null) return;
+            for (var i = 0; i < _operations.Length; i++) if (Interlocked.CompareExchange(ref _operations[i], operation, null) is null) return;
         }
     }
 }
