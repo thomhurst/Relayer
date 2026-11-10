@@ -43,12 +43,11 @@ public sealed class ServiceBusDeadLetterEmulatorTests
             await Assert.That(first.Messages.Count).IsEqualTo(1);
             var next = await manager.PeekAsync(source, 10, first.NextCursor, token);
             await Assert.That(next.Messages.Count).IsEqualTo(2);
-            var filtered = 0;
-            await Assert.That(async () => await manager.RedriveAsync(source, _ =>
-            {
-                if (++filtered == 2) throw new InvalidOperationException("filter failure");
-                return false;
-            }, 3, token)).Throws<InvalidOperationException>();
+            // Native receives may return fewer than maxMessages, even with three messages queued.
+            // Fail on the first delivery so cleanup is exercised for any nonempty batch.
+            await Assert.That(async () => await manager.RedriveAsync(source,
+                _ => throw new InvalidOperationException("filter failure"), 3, token))
+                .Throws<InvalidOperationException>();
             // A new native receiver must immediately see the entire abandoned batch.
             await using (var retry = subscription is not null
                 ? client.CreateReceiver(entity, subscription, new() { SubQueue = SubQueue.DeadLetter })
