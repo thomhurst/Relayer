@@ -10,7 +10,6 @@ using Relayer.Transports;
 
 namespace Relayer.Outbox.MySql.Tests;
 
-[NotInParallel("MySQL")]
 public sealed class OrderedDispatchTests
 {
     [Test]
@@ -87,7 +86,7 @@ public sealed class OrderedDispatchTests
         try
         {
             // Observe the actual database wait, rather than relying on a scheduling delay.
-            while (await Scalar(database, "SELECT count(*) FROM performance_schema.data_lock_waits") == 0)
+            while (await Scalar(database, "SELECT count(*) FROM performance_schema.data_lock_waits w JOIN performance_schema.data_locks l ON l.ENGINE_LOCK_ID = w.REQUESTING_ENGINE_LOCK_ID WHERE l.OBJECT_SCHEMA = DATABASE()") == 0)
                 await Task.Delay(10, timeout.Token);
             await Assert.That(rival.IsCompleted).IsFalse();
         }
