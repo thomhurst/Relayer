@@ -12,10 +12,10 @@ internal sealed class PostgreSqlFixture : IAsyncDisposable
 
     public async Task StartAsync()
     {
-        var server = await PostgreSqlSession.Server;
-        _admin = PostgreSqlSession.Admin;
+        var session = await PostgreSqlSession.Current;
+        _admin = session.Admin;
         await Execute($"CREATE DATABASE {Database}");
-        ConnectionString = server.ConnectionString.Replace("Database=postgres", "Database=" + Database);
+        ConnectionString = session.Server.ConnectionString.Replace("Database=postgres", "Database=" + Database);
     }
 
     public async ValueTask DisposeAsync()
@@ -52,44 +52,43 @@ internal sealed class PostgreSqlFixture : IAsyncDisposable
 public static class PostgreSqlSession
 {
     // Started by the first test that needs a database, so filtered runs of pure unit tests start no container.
-    private static readonly Lazy<Task<PostgreSqlServer>> Shared = new(StartAsync);
-    private static readonly List<Exception> CleanupFailures = [];
+    private static Lazy<Task<Session>> _shared = new(StartAsync);
 
-    internal static Task<PostgreSqlServer> Server => Shared.Value;
+    internal static Task<Session> Current => Volatile.Read(ref _shared).Value;
 
-    // Pooled, unlike the tests' own connections: creating and dropping databases should not add connection churn.
-    internal static NpgsqlDataSource? Admin { get; private set; }
+    // Admin is pooled, unlike the tests' own connections: creating and dropping databases should not add connection churn.
+    internal sealed record Session(PostgreSqlServer Server, NpgsqlDataSource Admin, List<Exception> CleanupFailures);
 
-    private static async Task<PostgreSqlServer> StartAsync()
+    private static async Task<Session> StartAsync()
     {
+        var failures = new List<Exception>();
         var server = new PostgreSqlServer(new DockerCommand().RunAsync, failure =>
         {
             Console.Error.WriteLine(failure);
-            CleanupFailures.Add(failure);
+            failures.Add(failure);
         });
         try
         {
             await server.StartAsync();
-            Admin = NpgsqlDataSource.Create(server.ConnectionString.Replace("Pooling=false", "Pooling=true"));
+            return new(server, NpgsqlDataSource.Create(server.ConnectionString.Replace("Pooling=false", "Pooling=true")), failures);
         }
         catch
         {
             await server.DisposeAsync();
             throw;
         }
-        return server;
     }
 
     [After(TestSession)]
     public static async Task StopAsync()
     {
-        if (!Shared.IsValueCreated) return;
+        // Like TUnit's own per-session instances, a later session in this process starts afresh.
+        var shared = Interlocked.Exchange(ref _shared, new(StartAsync));
         // A failed startup already removed its container and failed the tests that needed it.
-        if (Shared.Value.IsCompletedSuccessfully)
-        {
-            await Admin!.DisposeAsync();
-            await Shared.Value.Result.DisposeAsync();
-        }
-        if (CleanupFailures.Count > 0) throw new AggregateException("PostgreSQL server cleanup failed.", CleanupFailures);
+        if (!shared.IsValueCreated || !shared.Value.IsCompletedSuccessfully) return;
+        var session = shared.Value.Result;
+        await session.Admin.DisposeAsync();
+        await session.Server.DisposeAsync();
+        if (session.CleanupFailures.Count > 0) throw new AggregateException("PostgreSQL server cleanup failed.", session.CleanupFailures);
     }
 }
