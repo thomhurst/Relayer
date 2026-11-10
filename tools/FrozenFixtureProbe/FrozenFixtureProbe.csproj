@@ -6,4 +6,7 @@
     <IsAotCompatible>false</IsAotCompatible>
     <IsTrimmable>false</IsTrimmable>
   </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../FrozenMeasurementEvents.cs" Link="FrozenMeasurementEvents.cs" />
+  </ItemGroup>
 </Project>
