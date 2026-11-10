@@ -161,6 +161,7 @@ public class InboxTests : InboxContractTests
         control.AfterSave = async context =>
         {
             scopes.Add(context.Services);
+            await context.Services.GetRequiredService<ISender>().SendNowAsync(new Probe(2));
             var db = context.Services.GetRequiredService<OrdersContext>();
             contexts.Add(db);
             if (scopes.Count != 1) return;
@@ -170,7 +171,9 @@ public class InboxTests : InboxContractTests
             command.CommandText = "SELECT 1";
             await command.ExecuteScalarAsync();
         };
-        await Deliver(Pipeline(provider).Build(), Message());
+        var failures = new FailurePipeline(provider, "events", "source", "orders", new());
+        await Deliver(Pipeline(provider, failures: failures).Build(), Message());
+        await Assert.That(provider.GetRequiredService<Transport>().Sends).IsEqualTo(1);
         await Assert.That(control.Invocations).IsEqualTo(2);
         await Assert.That(scopes[0]).IsNotSameReferenceAs(scopes[1]);
         await Assert.That(contexts[0]).IsNotSameReferenceAs(contexts[1]);
@@ -197,6 +200,32 @@ public class InboxTests : InboxContractTests
         await Assert.That(await database.Count("outbox")).IsEqualTo(1L);
     }
 
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Unknown_commit_verification_preserves_buffered_sends(bool outbox)
+    {
+        await using var database = new Database();
+        await database.Start();
+        var fault = new LostCommitResponse();
+        await using var provider = database.Services(outbox, retries: true, interceptor: fault);
+        var control = provider.GetRequiredService<Control>();
+        control.AfterSave = async context =>
+        {
+            var sender = context.Services.GetRequiredService<ISender>();
+            if (outbox) await sender.SendNowAsync(new Probe(2));
+            else await sender.SendAsync(new Probe(2));
+        };
+        var failures = new FailurePipeline(provider, "events", "source", "orders", new());
+        var settled = 0;
+        await Deliver(Pipeline(provider, inbox: !outbox, failures: failures)
+            .Settle(_ => { settled++; return default; }).Build(), Message());
+        await Assert.That(fault.Commits).IsEqualTo(1);
+        await Assert.That(control.Invocations).IsEqualTo(1);
+        await Assert.That(provider.GetRequiredService<Transport>().Sends).IsEqualTo(1);
+        await Assert.That(settled).IsEqualTo(1);
+    }
+
     private sealed class LostCommitResponse : DbTransactionInterceptor
     {
         internal int Transactions;
@@ -218,12 +247,15 @@ public class InboxTests : InboxContractTests
     }
 
     [Test]
-    public async Task Inbox_follows_the_outbox_context_configuration_of_each_delivery_scope()
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Inbox_follows_the_outbox_context_configuration_of_each_delivery_scope(bool nativeRetries)
     {
         await using var database = new Database();
         await database.Start();
         var options = Database.Options;
-        await using var provider = database.Services(outbox: true, contextOptions: () => options);
+        await using var provider = database.Services(outbox: true, retries: nativeRetries, contextOptions: () => options,
+            interceptor: nativeRetries ? new LostCommitResponse() : null);
         var pipeline = Pipeline(provider).Build();
         options = new() { Schema = Database.Options.Schema, TablePrefix = "reloaded_" };
         await database.Execute(PostgreSqlOutboxSchema.CreateScript(new() { Schema = options.Schema, TablePrefix = options.TablePrefix }));

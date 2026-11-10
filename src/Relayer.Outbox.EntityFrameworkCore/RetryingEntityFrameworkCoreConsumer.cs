@@ -34,6 +34,11 @@ internal sealed class RetryingEntityFrameworkCoreConsumer<TContext>(EntityFramew
                 inbox ? static (_, state, cancellation) => state.Owner.VerifyAsync(state.Operation, cancellation) : null,
                 context.CancellationToken).ConfigureAwait(false);
         }
+        catch
+        {
+            incoming.SendBuffer.Clear();
+            throw;
+        }
         finally
         {
             incoming.SetServices(services);
@@ -46,6 +51,8 @@ internal sealed class RetryingEntityFrameworkCoreConsumer<TContext>(EntityFramew
     private async Task<bool> AttemptAsync(Operation operation, CancellationToken cancellation)
     {
         var context = operation.Context;
+        // A new native attempt means verification did not establish a committed result.
+        context.SendBuffer.Clear();
         var scopes = context.Services.GetRequiredService<IServiceScopeFactory>();
         var services = context.Services;
         var scope = scopes.CreateAsyncScope();
@@ -57,15 +64,20 @@ internal sealed class RetryingEntityFrameworkCoreConsumer<TContext>(EntityFramew
                 var buffer = context.ActiveAttemptBuffer;
                 context.SetServices(scope.ServiceProvider);
                 var db = context.Services.GetRequiredService<TContext>();
-                operation.Configuration = outbox
-                    ? context.Services.GetRequiredService<EntityFrameworkCoreOutbox>().Get(db, configuration).Configuration
-                    : configuration;
                 var scopedSender = context.Services.GetService<ISender>();
                 if (scopedSender is not null && scopedSender is not Sender)
                     throw new InvalidOperationException("EF Core consumer retries require Relayer's scoped ISender.");
                 sender = (Sender?)scopedSender;
                 if (sender is not null) sender.AttemptBuffer = buffer;
-                await boundary.InvokeAsync(context, operation.Next).ConfigureAwait(false);
+                try { await boundary.InvokeAsync(context, operation.Next).ConfigureAwait(false); }
+                finally
+                {
+                    // The transaction interceptor registers this scope's configuration first, including
+                    // when commit throws. Verification must query that attempted inbox, not startup options.
+                    operation.Configuration = outbox
+                        ? context.Services.GetRequiredService<EntityFrameworkCoreOutbox>().Get(db, configuration).Configuration
+                        : configuration;
+                }
             }
             finally
             {
@@ -77,7 +89,7 @@ internal sealed class RetryingEntityFrameworkCoreConsumer<TContext>(EntityFramew
         catch
         {
             context.Settlement.Clear();
-            context.SendBuffer.Clear();
+            // Preserve sends until native unknown-commit verification has finished.
             throw;
         }
         finally { context.SetServices(services); }
@@ -103,6 +115,7 @@ internal sealed class RetryingEntityFrameworkCoreConsumer<TContext>(EntityFramew
                 command.Parameters.Add(new NpgsqlParameter<string>("consumer", consumer));
                 command.Parameters.Add(new NpgsqlParameter<Guid>("id", operation.MessageId));
                 var committed = (bool)(await command.ExecuteScalarAsync(cancellation).ConfigureAwait(false))!;
+                // Inbox rows commit only on the completion path.
                 if (committed && context.Settlement.Request is null) context.Settlement.Complete();
                 return new(committed, true);
             }

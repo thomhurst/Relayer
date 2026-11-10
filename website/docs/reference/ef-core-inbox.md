@@ -85,7 +85,9 @@ provider's retry count and delays as usual. Non-transient handler errors still f
 [Relayer's consumer failure policy](../guides/failure-handling.md).
 
 When a transient commit error leaves its outcome unknown, the strategy checks the attempted inbox
-key on a fresh connection. A committed key completes processing without replaying the handler.
+key on a fresh connection. A committed key completes processing without replaying the handler;
+buffered direct sends are retained and flushed by the outer failure pipeline. Each native attempt
+uses the outbox configuration of its fresh scoped DbContext, including reloaded schema and prefix.
 Otherwise the strategy retries the complete unit. This verification requires the inbox, either
 implicit through `AddRelayerOutbox` or explicit through `inbox: true`. Without it, unknown commits can
 replay business work. Keep external side effects idempotent even with an inbox: database rollback
