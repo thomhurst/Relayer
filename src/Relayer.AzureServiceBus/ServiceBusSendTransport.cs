@@ -111,6 +111,7 @@ internal sealed class ServiceBusSendTransport : ITransport, ITransportSendTracin
     public ValueTask SendAsync(OutgoingMessage message, CancellationToken cancellationToken) =>
         GetEndpoint(message.Destination).Tracing is { } tracing ? tracing.SendAsync(message, cancellationToken) : SendCoreAsync(message, cancellationToken);
 
+    [RuntimeAsyncMethodGeneration(false)]
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
     private async ValueTask SendCoreAsync(OutgoingMessage outgoing, CancellationToken cancellationToken)
     {
@@ -142,6 +143,7 @@ internal sealed class ServiceBusSendTransport : ITransport, ITransportSendTracin
         return GetEndpoint(destination).Tracing is { } tracing ? tracing.SendBatchAsync(messages, cancellationToken) : SendBatchCoreAsync(messages, cancellationToken);
     }
 
+    [RuntimeAsyncMethodGeneration(false)]
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
     private async ValueTask SendMixedBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken)
     {
@@ -156,6 +158,7 @@ internal sealed class ServiceBusSendTransport : ITransport, ITransportSendTracin
         }
     }
 
+    [RuntimeAsyncMethodGeneration(false)]
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
     private async ValueTask SendBatchCoreAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken)
     {

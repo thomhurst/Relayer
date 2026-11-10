@@ -65,6 +65,7 @@ internal sealed class ServiceBusSettlement : IConsumeMiddleware
         return properties;
     }
 
+    [RuntimeAsyncMethodGeneration(false)]
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
     internal async ValueTask ExecuteAsync(ServiceBusDelivery delivery, ServiceBusDisposition operation,
         IDictionary<string, object>? properties, string? reason, string? description, CancellationToken cancellationToken)

@@ -363,6 +363,25 @@ public class TracingTests
         await Assert.That(MessageCreationContext.Read<Dictionary<string, WireString>, Binding>(headers, names)).IsEqualTo(default(ActivityContext));
     }
 
+    [Test]
+    [Arguments(0x00)]
+    [Arguments(0x01)]
+    [Arguments(0x02)] // W3C random-trace-id flag, set by .NET 11.
+    [Arguments(0x03)]
+    [Arguments(0xab)]
+    public async Task Creation_context_round_trips_every_trace_flag(int flags)
+    {
+        var names = new HeaderNames("custom:");
+        var original = new ActivityContext(ActivityTraceId.CreateRandom(), ActivitySpanId.CreateRandom(), (ActivityTraceFlags)flags);
+        var text = new Dictionary<string, WireString>();
+        await Assert.That(MessageCreationContext.WriteIfAbsent<Dictionary<string, WireString>, Binding>(text, names, original)).IsTrue();
+        var written = text[names.TraceParent].ToString();
+        await Assert.That(written).IsEqualTo($"00-{original.TraceId}-{original.SpanId}-{flags:x2}");
+        var utf8 = new Dictionary<string, WireString> { [names.TraceParent] = new(Encoding.UTF8.GetBytes(written)) };
+        await Assert.That(MessageCreationContext.Read<Dictionary<string, WireString>, Binding>(text, names).TraceFlags).IsEqualTo(original.TraceFlags);
+        await Assert.That(MessageCreationContext.Read<Dictionary<string, WireString>, Binding>(utf8, names).TraceFlags).IsEqualTo(original.TraceFlags);
+    }
+
     private static ActivityContext RemoteContext() => new(ActivityTraceId.CreateRandom(), ActivitySpanId.CreateRandom(), ActivityTraceFlags.Recorded, "vendor=value", true);
 
     [Test]

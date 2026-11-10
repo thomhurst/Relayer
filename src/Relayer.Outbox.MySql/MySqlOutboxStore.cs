@@ -64,6 +64,7 @@ public sealed class MySqlOutboxStore : IOutboxStore, IDisposable
     }
 
     /// <inheritdoc />
+    [RuntimeAsyncMethodGeneration(false)]
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder<>))]
     public async ValueTask<int> ReadPendingAsync(OutboxReadRequest request, Memory<OutboxRecord> destination,
         CancellationToken cancellationToken)
@@ -84,6 +85,7 @@ public sealed class MySqlOutboxStore : IOutboxStore, IDisposable
         finally { command.Connection = null; }
     }
 
+    [RuntimeAsyncMethodGeneration(false)]
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder<>))]
     internal async ValueTask<int> ReadRecoveryAsync(MySqlCommand command, Memory<OutboxRecord> destination,
         CancellationToken cancellationToken)
@@ -92,6 +94,7 @@ public sealed class MySqlOutboxStore : IOutboxStore, IDisposable
         return await ReadRowsAsync(reader, destination, cancellationToken, isolateMalformed: true).ConfigureAwait(false);
     }
 
+    [RuntimeAsyncMethodGeneration(false)]
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder<>))]
     internal async ValueTask<int> ReadRowsAsync(MySqlDataReader reader, Memory<OutboxRecord> destination,
         CancellationToken cancellationToken, bool includeOrderedSequence = false, bool isolateMalformed = false)
@@ -157,6 +160,7 @@ public sealed class MySqlOutboxStore : IOutboxStore, IDisposable
     }
 
     /// <inheritdoc />
+    [RuntimeAsyncMethodGeneration(false)]
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder<>))]
     public async ValueTask<bool> RecordFailureAsync(OutboxClaim claim, string error, DateTimeOffset now,
         CancellationToken cancellationToken)
@@ -181,6 +185,7 @@ public sealed class MySqlOutboxStore : IOutboxStore, IDisposable
     }
 
     // Native transaction makes the raw dead copy and live-row transition indivisible.
+    [RuntimeAsyncMethodGeneration(false)]
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder<>))]
     private async ValueTask<FailureOutcome> FailAsync(OutboxClaim claim, string error, DateTimeOffset now, int limit,
         CancellationToken cancellationToken)
@@ -214,6 +219,7 @@ public sealed class MySqlOutboxStore : IOutboxStore, IDisposable
         }
     }
 
+    [RuntimeAsyncMethodGeneration(false)]
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder<>))]
     private async ValueTask<bool> MutateAsync(MySqlStoreParameters operation, OutboxClaim claim, DateTimeOffset now,
         CancellationToken cancellationToken)
@@ -238,6 +244,7 @@ public sealed class MySqlOutboxStore : IOutboxStore, IDisposable
     }
 
     /// <inheritdoc />
+    [RuntimeAsyncMethodGeneration(false)]
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder<>))]
     public async ValueTask<long?> GetPendingCountAsync(DateTimeOffset now, CancellationToken cancellationToken)
     {
@@ -250,6 +257,7 @@ public sealed class MySqlOutboxStore : IOutboxStore, IDisposable
         finally { command.Connection = null; }
     }
 
+    [RuntimeAsyncMethodGeneration(false)]
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
     internal async ValueTask ClaimBatchAsync(ReadOnlyMemory<OutboxClaim> claims, Memory<bool> claimed,
         DateTimeOffset now, DateTimeOffset expires, CancellationToken cancellationToken)
@@ -264,6 +272,7 @@ public sealed class MySqlOutboxStore : IOutboxStore, IDisposable
         await _claimBatch.ExecuteAsync(connection, claimed, cancellationToken).ConfigureAwait(false);
     }
 
+    [RuntimeAsyncMethodGeneration(false)]
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder<>))]
     internal async ValueTask<long> CompleteBatchAsync(ReadOnlyMemory<OutboxClaim> claims,
         DateTimeOffset now, CancellationToken cancellationToken)

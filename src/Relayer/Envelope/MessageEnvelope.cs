@@ -84,8 +84,10 @@ public sealed class MessageEnvelope
         context.SpanId.CopyTo(traceBytes[..8]);
         Convert.TryToHexStringLower(traceBytes[..8], buffer[36..52], out _);
         buffer[52] = '-';
-        buffer[53] = '0';
-        buffer[54] = (context.TraceFlags & ActivityTraceFlags.Recorded) != 0 ? '1' : '0';
+        // Write every flag bit: .NET 11 sets the W3C random-trace-id flag (0x02) as well as sampled (0x01).
+        var flags = (int)context.TraceFlags;
+        buffer[53] = "0123456789abcdef"[(flags >> 4) & 0xF];
+        buffer[54] = "0123456789abcdef"[flags & 0xF];
         TWriter.SetHeader(message, names.TraceParent, buffer);
         if (!string.IsNullOrEmpty(context.TraceState))
         {

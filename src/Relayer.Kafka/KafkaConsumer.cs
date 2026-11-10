@@ -114,6 +114,7 @@ internal sealed class KafkaConsumer : IAsyncDisposable
         finally { _replay.Stop(); _health?.Unavailable(); }
     }
 
+    [RuntimeAsyncMethodGeneration(false)]
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder<>))]
     internal async ValueTask<int> ProcessBatchAsync(ConsumeBatch<byte[], byte[]> batch, CancellationToken cancellationToken)
     {
@@ -172,6 +173,7 @@ internal sealed class KafkaConsumer : IAsyncDisposable
         _replay.Wake();
     }
 
+    [RuntimeAsyncMethodGeneration(false)]
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
     internal async ValueTask CommitAsync(TopicPartitionOffset[] offsets, int count, CancellationToken cancellationToken)
     {

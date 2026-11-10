@@ -7,7 +7,7 @@ Start with the runnable [modular monolith sample](https://github.com/thomhurst/R
 
 ## Requirements and run
 
-Use .NET 10 SDK or later and C# 14. Packages are not published yet: clone the repository and run from its root:
+Relayer targets `net10.0` and `net11.0` and needs C# 14 or later. The repository builds with the .NET 11 SDK, and its samples run on the .NET 10 runtime. Packages are not published yet: clone the repository and run from its root:
 
 ```shell
 dotnet run -c Release --project samples/ModularMonolith

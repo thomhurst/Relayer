@@ -44,6 +44,7 @@ internal sealed class MySqlLaneCoordinator : IDisposable
         }
     }
 
+    [RuntimeAsyncMethodGeneration(false)]
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
     internal async ValueTask RebalanceAsync(CancellationToken cancellationToken)
     {
@@ -63,6 +64,7 @@ internal sealed class MySqlLaneCoordinator : IDisposable
         finally { _heartbeat.Connection = null; _members.Connection = null; }
     }
 
+    [RuntimeAsyncMethodGeneration(false)]
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder<>))]
     internal async ValueTask<bool> AcquireAsync(MySqlConnection connection, MySqlTransaction transaction,
         int lane, CancellationToken cancellationToken)
@@ -77,6 +79,7 @@ internal sealed class MySqlLaneCoordinator : IDisposable
         finally { _acquire.Transaction = null; _acquire.Connection = null; }
     }
 
+    [RuntimeAsyncMethodGeneration(false)]
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
     internal async ValueTask ReleaseAsync(CancellationToken cancellationToken)
     {

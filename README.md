@@ -22,7 +22,7 @@ Relayer never changes how the underlying technology sends, receives, orders, or 
 
 ## Building
 
-Requires the .NET 10 SDK.
+Requires the .NET 11 SDK. Running the tests also needs the .NET 10 runtime, because the libraries target `net10.0` and `net11.0`.
 
 ```shell
 dotnet build

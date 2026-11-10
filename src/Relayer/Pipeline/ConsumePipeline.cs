@@ -184,6 +184,7 @@ public sealed partial class ConsumePipeline
 
     private static ValueTask ProcessCoreAsync(DefaultMessageContext context) => context.CoreProcessing.Start();
 
+    [RuntimeAsyncMethodGeneration(false)]
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
     private async ValueTask ProcessWithFailuresAsync(DefaultMessageContext context)
     {

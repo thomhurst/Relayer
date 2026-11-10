@@ -58,6 +58,7 @@ internal sealed class KafkaProducerTransport : ITransport, ITransportSendTracing
     public ValueTask SendAsync(OutgoingMessage message, CancellationToken cancellationToken) =>
         Endpoint(message.Destination) is { } tracing ? tracing.SendAsync(message, cancellationToken) : SendCoreAsync(message, cancellationToken);
 
+    [RuntimeAsyncMethodGeneration(false)]
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
     private async ValueTask SendCoreAsync(OutgoingMessage message, CancellationToken cancellationToken)
     {
@@ -92,6 +93,7 @@ internal sealed class KafkaProducerTransport : ITransport, ITransportSendTracing
         return Endpoint(destination) is { } tracing ? tracing.SendBatchAsync(messages, cancellationToken) : SendBatchCoreAsync(messages, cancellationToken);
     }
 
+    [RuntimeAsyncMethodGeneration(false)]
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
     private async ValueTask SendBatchCoreAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken)
     {
@@ -131,6 +133,7 @@ internal sealed class KafkaProducerTransport : ITransport, ITransportSendTracing
         finally { _operations.Return(operation); }
     }
 
+    [RuntimeAsyncMethodGeneration(false)]
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
     private async ValueTask SendNullBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, KafkaSendOperation operation, CancellationToken token)
     {
@@ -175,6 +178,7 @@ internal sealed class KafkaProducerTransport : ITransport, ITransportSendTracing
         }
     }
 
+    [RuntimeAsyncMethodGeneration(false)]
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
     private async ValueTask SendMixedBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken)
     {

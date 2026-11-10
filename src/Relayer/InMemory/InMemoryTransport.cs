@@ -95,6 +95,7 @@ public sealed class InMemoryTransport : ITransport, ITransportSendTracing
     /// <summary>Returns the last completed log position for one group and partition, or -1 before processing.</summary>
     public long GetCommittedPosition(string endpoint, string group, int partition) => Endpoint(endpoint).GetCommittedPosition(group, partition);
 
+    [RuntimeAsyncMethodGeneration(false)]
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
     private async ValueTask SendCoreAsync(OutgoingMessage message, CancellationToken cancellationToken)
     {
@@ -122,6 +123,7 @@ public sealed class InMemoryTransport : ITransport, ITransportSendTracing
     public ValueTask SendAsync(OutgoingMessage message, CancellationToken cancellationToken) =>
         GetSendTracing(message.Destination) is { } tracing ? tracing.SendAsync(message, cancellationToken) : SendCoreAsync(message, cancellationToken);
 
+    [RuntimeAsyncMethodGeneration(false)]
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
     private async ValueTask SendBatchCoreAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken)
     {
@@ -155,6 +157,7 @@ public sealed class InMemoryTransport : ITransport, ITransportSendTracing
         return tracing.SendBatchAsync(messages, cancellationToken);
     }
 
+    [RuntimeAsyncMethodGeneration(false)]
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
     private async ValueTask SendMixedBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken)
     {

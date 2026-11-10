@@ -60,6 +60,7 @@ public sealed class ReceivePipeline<TIncoming, TBinding>
     /// On failure or cancellation, some earlier deliveries may have completed durable work; native redelivery
     /// remains at-least-once. Both memories must remain valid and unchanged until the call completes.
     /// </remarks>
+    [RuntimeAsyncMethodGeneration(false)]
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
     public async ValueTask ProcessBatchAsync(ReadOnlyMemory<TIncoming> messages, Memory<Disposition> dispositions,
         CancellationToken cancellationToken = default)
@@ -79,6 +80,7 @@ public sealed class ReceivePipeline<TIncoming, TBinding>
         }
     }
 
+    [RuntimeAsyncMethodGeneration(false)]
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
     private async ValueTask ProcessHandlerBatchAsync(ReadOnlyMemory<TIncoming> messages, Memory<Disposition> dispositions,
         CancellationToken cancellationToken)

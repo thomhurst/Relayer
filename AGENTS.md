@@ -36,7 +36,7 @@ Rules for code on the per-message path (pipeline, middleware, dispatch, serializ
 
 ## Library conventions and contracts
 
-- .NET 10 and later (D2). Nullable reference types on, warnings are errors, Central Package Management in `Directory.Packages.props`, shared settings in `Directory.Build.props` (D21).
+- .NET 10 and later (D2): libraries and tests multi-target `net10.0;net11.0`, and `net11.0` builds compile with runtime async (`runtime-async=on` in `Directory.Build.targets`). Runtime async ignores `[AsyncMethodBuilder]`, so every method with a pooled builder also needs `[RuntimeAsyncMethodGeneration(false)]`. Nullable reference types on, warnings are errors, Central Package Management in `Directory.Packages.props`, shared settings in `Directory.Build.props` (D21).
 - Native AOT and trimming safe from day one. Serialization uses System.Text.Json source generation by default (D8).
 - The core depends only on `Microsoft.Extensions.*` abstractions and the BCL. A transport package depends only on its native client and supports only its latest major version (D19).
 - Public APIs expose interfaces and options; implementations are internal or sealed. Use init-only options and fluent builders following existing code. Options also bind from `IConfiguration` through the Options pattern.
@@ -60,6 +60,7 @@ dotnet run -c Release --project benchmarks/Relayer.Benchmarks -- --filter "*Clas
   - Do not run a bare `dotnet test -c Release` locally. Do not rerun tests when nothing they cover has changed since the last pass (docs, comments, PR text, review replies, a rebase without conflicts in the code under test).
   - A fix for a review finding or a CI failure reruns the tests for that fix only.
   - Run a benchmark only when [Performance requirements](#performance-requirements) calls for one, and then only the affected class through `--filter`. Never run the benchmark project without a filter.
+- If `net10.0` projects fail with `CS0117` in `RelayerGeneratedJsonContext` after the source generator was rebuilt, run `dotnet build-server shutdown` and build again (#527).
 - Tests use TUnit. Filter with `--treenode-filter "/*/*/ClassName/TestName"` (`/<Assembly>/<Namespace>/<Class>/<Test>` segments; wildcards and `(A|B)` alternation work within a segment). With MTP, pass test options directly, without an extra `--` or VSTest's `--filter`.
 - Tests run in parallel and must be isolated so they can. Do not add `[ParallelLimiter]`, `[NotInParallel]` or any other concurrency throttle to make a test pass or to reduce load; a test that needs one has a design problem to fix.
   - Share expensive infrastructure (a broker or database container) once per test session, never per test or per class. Use `[ClassDataSource<T>(Shared = SharedType.PerTestSession)]`, or, where tests construct their own fixture, an instance that starts on first use and that an `[After(TestSession)]` hook releases and resets.

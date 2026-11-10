@@ -23,6 +23,7 @@ internal sealed class MySqlDispatchMutations(string sql) : IDisposable
         }
     }
 
+    [RuntimeAsyncMethodGeneration(false)]
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder<>))]
     internal async ValueTask<long> ExecuteAsync(MySqlConnection connection, Memory<bool> outcomes,
         CancellationToken cancellationToken)

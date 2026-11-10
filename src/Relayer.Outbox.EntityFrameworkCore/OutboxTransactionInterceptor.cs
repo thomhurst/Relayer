@@ -45,6 +45,7 @@ internal sealed class OutboxTransactionInterceptor(EntityFrameworkCoreOutbox out
         return result;
     }
 
+    [RuntimeAsyncMethodGeneration(false)]
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder<>))]
     public override async ValueTask<InterceptionResult> TransactionCommittingAsync(DbTransaction transaction, TransactionEventData eventData,
         InterceptionResult result, CancellationToken cancellationToken = default)

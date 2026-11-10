@@ -79,10 +79,17 @@ jobs:
               - '.github/workflows/ci.yml'
 
   build:
-    name: Build & Test
+    # One leg per target framework: both legs build the whole solution, then test and publish the
+    # Native AOT smokes for their framework only. Running both frameworks' test processes on one
+    # runner starts every broker container twice and times their startup out.
+    name: Build & Test (${{ matrix.framework }})
     needs: changes
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        framework: [net10.0, net11.0]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -113,6 +120,7 @@ jobs:
         if: steps.solution.outputs.present == 'true'
         with:
           global-json-file: global.json
+          dotnet-version: '10.0.x' # runtime for the net10.0 target; global.json selects the 11.0 SDK
 
       - name: Restore
         if: steps.solution.outputs.present == 'true'
@@ -133,9 +141,10 @@ jobs:
           docker pull mysql:8.4
           docker pull gcr.io/google.com/cloudsdktool/google-cloud-cli@sha256:112c21f8f6e04b03b393b3c34fb943a1f443e839f18c6492c364ac2e6c3ff935
           docker pull ghcr.io/shopify/toxiproxy@sha256:5d3dae09bc185dcc5ff6cf43abf6062a4a720aff0c4306a471e773acdcd107aa
-          dotnet test --no-build -c Release
+          dotnet test --no-build -c Release -f ${{ matrix.framework }}
 
       - name: Pack and verify NuGet artifacts
+        if: matrix.framework == 'net11.0'
         run: |
           dotnet pack --no-build -c Release -o .artifacts/packages
           python3 .github/scripts/verify_packages.py .artifacts/packages --commit "$GITHUB_SHA"
@@ -143,13 +152,13 @@ jobs:
       - name: Native AOT smoke test
         if: steps.solution.outputs.present == 'true'
         run: |
-          dotnet publish tests/Relayer.AotSmoke -c Release -r linux-x64 -o .artifacts/aot-smoke
+          dotnet publish tests/Relayer.AotSmoke -c Release -f ${{ matrix.framework }} -r linux-x64 -o .artifacts/aot-smoke
           .artifacts/aot-smoke/Relayer.AotSmoke
 
       - name: Native AOT dead-letter HTTP smoke
         if: steps.solution.outputs.present == 'true'
         run: |
-          dotnet publish tests/Relayer.AspNetCore.AotSmoke -c Release -r linux-x64 -o .artifacts/dead-letter-http-aot
+          dotnet publish tests/Relayer.AspNetCore.AotSmoke -c Release -f ${{ matrix.framework }} -r linux-x64 -o .artifacts/dead-letter-http-aot
           .artifacts/dead-letter-http-aot/Relayer.AspNetCore.AotSmoke
 
       - name: Google Pub/Sub Native AOT smoke test
@@ -157,7 +166,7 @@ jobs:
         env:
           PUBSUB_EMULATOR_HOST: 127.0.0.1:8085
         run: |
-          dotnet publish tests/Relayer.GooglePubSub.AotSmoke -c Release -r linux-x64 -o .artifacts/pubsub-aot
+          dotnet publish tests/Relayer.GooglePubSub.AotSmoke -c Release -f ${{ matrix.framework }} -r linux-x64 -o .artifacts/pubsub-aot
           container=$(docker run -d -p 127.0.0.1:8085:8085 \
             gcr.io/google.com/cloudsdktool/google-cloud-cli@sha256:112c21f8f6e04b03b393b3c34fb943a1f443e839f18c6492c364ac2e6c3ff935 \
             gcloud beta emulators pubsub start --project=relayer-test --host-port=0.0.0.0:8085 --quiet)

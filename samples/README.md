@@ -1,6 +1,6 @@
 # Relayer samples
 
-Use .NET 10 from a repository checkout; packages are not published yet. These projects reference the actual library and source generator, and are included in `Relayer.slnx` so the normal Release build checks their call sites.
+Use the .NET 11 SDK and the .NET 10 runtime from a repository checkout (the samples target `net10.0`); packages are not published yet. These projects reference the actual library and source generator, and are included in `Relayer.slnx` so the normal Release build checks their call sites.
 
 | Sample | Demonstrates | Infrastructure |
 | --- | --- | --- |

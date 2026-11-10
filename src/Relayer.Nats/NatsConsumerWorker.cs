@@ -67,6 +67,7 @@ internal sealed partial class NatsConsumerWorker(string stream, string name, Nat
         }
     }
 
+    [RuntimeAsyncMethodGeneration(false)]
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
     internal async ValueTask SettleContextAsync(MessageContext context)
     {
@@ -74,6 +75,7 @@ internal sealed partial class NatsConsumerWorker(string stream, string name, Nat
         await SettleAsync(feature.Message, feature.Disposition, context.CancellationToken).ConfigureAwait(false);
         feature.Disposition = Disposition.SettledByHandler;
     }
+    [RuntimeAsyncMethodGeneration(false)]
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
     internal async ValueTask SettleAsync(NatsDelivery delivery, Disposition disposition, CancellationToken token)
     {

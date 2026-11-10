@@ -70,6 +70,7 @@ public sealed class BatchReceiveExecutor<TIncoming>
     /// using the native client's shutdown/redelivery mechanism; never acknowledge them as successful.
     /// One call is one receive loop. Concurrent calls require independent destination storage.
     /// </remarks>
+    [RuntimeAsyncMethodGeneration(false)]
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder<>))]
     public async ValueTask<int> ReceiveAsync(Memory<TIncoming> destination, CancellationToken cancellationToken = default)
     {

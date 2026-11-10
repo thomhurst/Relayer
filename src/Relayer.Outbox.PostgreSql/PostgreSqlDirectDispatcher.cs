@@ -128,6 +128,7 @@ internal sealed class PostgreSqlDirectDispatcher : BackgroundService
     }
 
     // Catalog scheduling owns execution; it never starts a background task for this store.
+    [RuntimeAsyncMethodGeneration(false)]
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
     internal async ValueTask DispatchQueuedAsync(CancellationToken cancellationToken)
     {
@@ -155,6 +156,7 @@ internal sealed class PostgreSqlDirectDispatcher : BackgroundService
         finally { await base.StopAsync(cancellationToken).ConfigureAwait(false); }
     }
 
+    [RuntimeAsyncMethodGeneration(false)]
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
     private async ValueTask DispatchAsync(OutboxDispatchBatch batch, CancellationToken cancellationToken,
         bool propagateDatabaseFailures = false, TimeSpan? admissionBudget = null, TimeProvider? admissionTimeProvider = null)
@@ -273,6 +275,7 @@ internal sealed class PostgreSqlDirectDispatcher : BackgroundService
     }
 
     // Recovery owns a separate dispatcher instance, so these buffers never overlap the commit queue.
+    [RuntimeAsyncMethodGeneration(false)]
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
     internal async ValueTask DispatchRecoveredAsync(ReadOnlyMemory<OutboxRecord> rows, CancellationToken cancellationToken,
         bool propagateDatabaseFailures = false, TimeSpan? admissionBudget = null, TimeProvider? admissionTimeProvider = null)

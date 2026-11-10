@@ -110,6 +110,7 @@ public sealed class MySqlOutbox : IOutboxEnlistment, IDisposable, IAsyncDisposab
         return ValueTask.CompletedTask;
     }
 
+    [RuntimeAsyncMethodGeneration(false)]
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder<>))]
     internal async ValueTask<bool> TryInsertInboxAsync(MySqlOutboxTransaction transaction, byte[] consumer,
         Guid id, CancellationToken cancellationToken)

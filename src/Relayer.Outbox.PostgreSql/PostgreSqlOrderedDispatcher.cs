@@ -117,6 +117,7 @@ internal sealed partial class PostgreSqlOrderedDispatcher : BackgroundService
     }
 
     // Reuse native membership, readiness probes and fenced lane transactions in one catalog turn.
+    [RuntimeAsyncMethodGeneration(false)]
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
     internal async ValueTask DispatchPassAsync(TimeSpan remainingTurn, CancellationToken cancellationToken)
     {
@@ -173,6 +174,7 @@ internal sealed partial class PostgreSqlOrderedDispatcher : BackgroundService
     }
 
     // One connection and lease-row transaction lock per batch. Never run concurrent sends within a lane.
+    [RuntimeAsyncMethodGeneration(false)]
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder<>))]
     internal async ValueTask<int> DispatchLaneAsync(int lane, CancellationToken cancellationToken, TimeSpan? turnAdmissionBudget = null)
     {

@@ -105,6 +105,7 @@ internal sealed partial class SqlServerOrderedDispatcher : BackgroundService
         }
     }
 
+    [RuntimeAsyncMethodGeneration(false)]
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder<>))]
     private async ValueTask<SqlConnection> OpenConnectionAsync(CancellationToken cancellationToken)
     {
@@ -120,6 +121,7 @@ internal sealed partial class SqlServerOrderedDispatcher : BackgroundService
     }
 
     // One connection and lease-row transaction lock per batch. Never run concurrent sends within a lane.
+    [RuntimeAsyncMethodGeneration(false)]
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder<>))]
     internal async ValueTask<int> DispatchLaneAsync(int lane, CancellationToken cancellationToken)
     {

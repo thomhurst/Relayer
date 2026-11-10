@@ -53,6 +53,7 @@ internal sealed class SqlServerOrderedLane : IDisposable
         }
     }
 
+    [RuntimeAsyncMethodGeneration(false)]
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder<>))]
     internal async ValueTask<int> ReadAsync(SqlConnection connection, SqlTransaction transaction, int lane, Memory<OutboxRecord> rows, CancellationToken cancellationToken)
     {
@@ -66,6 +67,7 @@ internal sealed class SqlServerOrderedLane : IDisposable
     internal ValueTask<bool> CompleteAsync(SqlConnection connection, SqlTransaction transaction, OutboxClaim claim, CancellationToken token) => MutateAsync(connection, transaction, _complete, claim, null, token);
     internal ValueTask<bool> FailAsync(SqlConnection connection, SqlTransaction transaction, OutboxClaim claim, string error, CancellationToken token) => MutateAsync(connection, transaction, _fail, claim, error, token);
 
+    [RuntimeAsyncMethodGeneration(false)]
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder<>))]
     private async ValueTask<bool> MutateAsync(SqlConnection connection, SqlTransaction transaction, SqlCommand command, OutboxClaim claim, string? error, CancellationToken cancellationToken)
     {

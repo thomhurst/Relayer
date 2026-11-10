@@ -30,8 +30,9 @@ The PostgreSQL durable local transport is a scoped exception to broker wrapping:
 
 ### Target platform
 
-- `net10.0` (current LTS) and later. .NET 8 support ends in November 2026, so it is not targeted.
-- C# 14. Source generators are incremental generators.
+- `net10.0` (current LTS) and `net11.0`. .NET 8 is out of support and is not targeted.
+- `net11.0` builds compile with runtime async; `net10.0` builds use compiler-generated state machines.
+- The latest C# version of the pinned SDK. Source generators are incremental generators.
 
 ---
 

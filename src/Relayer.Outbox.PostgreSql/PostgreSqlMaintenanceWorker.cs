@@ -114,6 +114,7 @@ internal sealed partial class PostgreSqlMaintenanceWorker : BackgroundService
 
     // The native replication slot serializes CDC readers. Fenced row claims still arbitrate with
     // direct dispatch and the recovery leader; CDC must not wait for the sweeper's idle lease.
+    [RuntimeAsyncMethodGeneration(false)]
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
     internal async ValueTask DispatchCommittedAsync(CancellationToken cancellationToken)
     {

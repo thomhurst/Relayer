@@ -87,6 +87,7 @@ internal sealed class PostgreSqlLocalTransport : ITransport, ITransportSendTraci
         while (transport is ITransportWrapper wrapper) transport = wrapper.InnerTransport;
         return transport as PostgreSqlLocalTransport;
     }
+    [RuntimeAsyncMethodGeneration(false)]
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
     internal async ValueTask ConsumeAsync(OutgoingMessage message, OutboxClaim claim, int attempt,
         NpgsqlTransaction? transaction, CancellationToken cancellationToken)
@@ -116,6 +117,7 @@ internal sealed class PostgreSqlLocalTransport : ITransport, ITransportSendTraci
         await ProcessAttemptAsync(consumer.Receive, new(message, claim, owned, attempt), cancellationToken).ConfigureAwait(false);
         await owned.CommitAsync(cancellationToken).ConfigureAwait(false);
     }
+    [RuntimeAsyncMethodGeneration(false)]
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
     private async ValueTask ProcessAttemptAsync(Func<PostgreSqlLocalDelivery, CancellationToken, ValueTask<Disposition>> consumer,
         PostgreSqlLocalDelivery delivery, CancellationToken cancellationToken)
@@ -134,6 +136,7 @@ internal sealed class PostgreSqlLocalTransport : ITransport, ITransportSendTraci
             _completionStores.Return(store);
         }
     }
+    [RuntimeAsyncMethodGeneration(false)]
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
     internal static async ValueTask SettleAsync(MessageContext context)
     {
@@ -141,6 +144,7 @@ internal sealed class PostgreSqlLocalTransport : ITransport, ITransportSendTraci
         await native.Message.Owner.SettleAsync(native.Message, native.Disposition, context.CancellationToken).ConfigureAwait(false);
         native.Disposition = Disposition.SettledByHandler;
     }
+    [RuntimeAsyncMethodGeneration(false)]
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
     internal async ValueTask SettleAsync(PostgreSqlLocalDelivery delivery, Disposition disposition, CancellationToken cancellationToken)
     {
@@ -154,6 +158,7 @@ internal sealed class PostgreSqlLocalTransport : ITransport, ITransportSendTraci
         }
         catch { MessageOperationTracing.Fail(activity, "_OTHER"); throw; }
     }
+    [RuntimeAsyncMethodGeneration(false)]
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
     internal static async ValueTask HandleFailureAsync(MessageContext context, Exception error, FailureAction action)
     {
@@ -165,6 +170,7 @@ internal sealed class PostgreSqlLocalTransport : ITransport, ITransportSendTraci
     public SendTracing? GetSendTracing(string destination) => _tracing?.GetValueOrDefault(destination);
     public ValueTask SendAsync(OutgoingMessage message, CancellationToken cancellationToken) =>
         GetSendTracing(message.Destination) is { } tracing ? tracing.SendAsync(message, cancellationToken) : SendCoreAsync(message, cancellationToken);
+    [RuntimeAsyncMethodGeneration(false)]
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
     private async ValueTask SendCoreAsync(OutgoingMessage message, CancellationToken cancellationToken)
     {
@@ -208,6 +214,7 @@ internal sealed class PostgreSqlLocalTransport : ITransport, ITransportSendTraci
         value = default;
         return false;
     }
+    [RuntimeAsyncMethodGeneration(false)]
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
     public async ValueTask SendBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken)
     {

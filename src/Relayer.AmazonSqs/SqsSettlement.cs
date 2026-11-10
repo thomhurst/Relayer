@@ -15,6 +15,7 @@ internal sealed class SqsSettlement(MessageTracing tracing, MessagingEndpoint en
         return SettleAsync(native.Message, native.Disposition, context.CancellationToken);
     }
 
+    [RuntimeAsyncMethodGeneration(false)]
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
     internal async ValueTask SettleAsync(SqsDelivery delivery, Disposition disposition, CancellationToken token)
     {

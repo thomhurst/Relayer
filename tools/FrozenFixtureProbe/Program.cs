@@ -118,6 +118,7 @@ static class FixtureControl
                 limits = "Isolated fixture plus native scheduler and this driver. No DI, JSON, transport or Relayer pipeline. Scheduling differs from full delivery; never subtract this total from end-to-end results or assign the historical delta to it."
             }));
 
+            [RuntimeAsyncMethodGeneration(false)]
             [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder<>))]
             async ValueTask<int> Batch()
             {

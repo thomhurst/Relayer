@@ -32,7 +32,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
         with:
-          dotnet-version: '10.0.403'
+          # The 11.0 SDK builds the net11.0 probes; benchmark images retained from earlier runs need the 10.0 runtime.
+          dotnet-version: |
+            10.0.403
+            11.0.100
       - name: Record host and build external probe
         run: |
           mkdir -p results
@@ -58,7 +61,7 @@ jobs:
               failed=1
               continue
             fi
-            python3 .github/scripts/frozen_concurrent_control.py "inputs/$run" tools/FrozenFixtureProbe/bin/Release/net10.0/FrozenFixtureProbe.dll "results/$run" || failed=1
+            python3 .github/scripts/frozen_concurrent_control.py "inputs/$run" tools/FrozenFixtureProbe/bin/Release/net11.0/FrozenFixtureProbe.dll "results/$run" || failed=1
           done
           exit "$failed"
       - name: Collect separate measured-region fixture profiles
@@ -66,7 +69,7 @@ jobs:
         run: |
           failed=0
           for run in $PERFORMANCE_RUNS; do
-            python3 .github/scripts/frozen_concurrent_control.py "inputs/$run" tools/FrozenFixtureProbe/bin/Release/net10.0/FrozenFixtureProbe.dll "results/$run-profiled" --trace-tool .diagnostic-tools/dotnet-trace --profile-reader tools/FrozenAllocationReader/bin/Release/net10.0/FrozenAllocationReader.dll --keep-traces || failed=1
+            python3 .github/scripts/frozen_concurrent_control.py "inputs/$run" tools/FrozenFixtureProbe/bin/Release/net11.0/FrozenFixtureProbe.dll "results/$run-profiled" --trace-tool .diagnostic-tools/dotnet-trace --profile-reader tools/FrozenAllocationReader/bin/Release/net11.0/FrozenAllocationReader.dll --keep-traces || failed=1
           done
           exit "$failed"
       - name: Run separate exact synchronous invocation ABBA
@@ -74,7 +77,7 @@ jobs:
         run: |
           failed=0
           for run in $PERFORMANCE_RUNS; do
-            python3 .github/scripts/frozen_concurrent_control.py "inputs/$run" tools/FrozenFixtureProbe/bin/Release/net10.0/FrozenFixtureProbe.dll "results/$run-exact-invocations" --exact-invocations || failed=1
+            python3 .github/scripts/frozen_concurrent_control.py "inputs/$run" tools/FrozenFixtureProbe/bin/Release/net11.0/FrozenFixtureProbe.dll "results/$run-exact-invocations" --exact-invocations || failed=1
           done
           exit "$failed"
       - name: Run separate exact release batch ABBA
@@ -82,7 +85,7 @@ jobs:
         run: |
           failed=0
           for run in $PERFORMANCE_RUNS; do
-            python3 .github/scripts/frozen_concurrent_control.py "inputs/$run" tools/FrozenFixtureProbe/bin/Release/net10.0/FrozenFixtureProbe.dll "results/$run-exact-releases" --exact-releases || failed=1
+            python3 .github/scripts/frozen_concurrent_control.py "inputs/$run" tools/FrozenFixtureProbe/bin/Release/net11.0/FrozenFixtureProbe.dll "results/$run-exact-releases" --exact-releases || failed=1
           done
           exit "$failed"
       - name: Retain all outcomes and executable inputs

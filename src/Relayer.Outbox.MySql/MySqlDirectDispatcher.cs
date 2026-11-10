@@ -118,6 +118,7 @@ internal sealed class MySqlDirectDispatcher : BackgroundService
         finally { await base.StopAsync(cancellationToken).ConfigureAwait(false); }
     }
 
+    [RuntimeAsyncMethodGeneration(false)]
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
     private async ValueTask DispatchAsync(OutboxDispatchBatch batch, CancellationToken cancellationToken, bool recordInvalid = false)
     {

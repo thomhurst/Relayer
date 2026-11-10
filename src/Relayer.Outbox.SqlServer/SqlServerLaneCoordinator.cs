@@ -66,6 +66,7 @@ internal sealed class SqlServerLaneCoordinator
             Assigned[lane] = rank >= 0 && lane % _live.Count == rank;
     }
 
+    [RuntimeAsyncMethodGeneration(false)]
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder<>))]
     internal async ValueTask<bool> AcquireAsync(SqlConnection connection, SqlTransaction transaction, int lane, CancellationToken cancellationToken)
     {
