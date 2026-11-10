@@ -74,6 +74,7 @@ To change a decision, add a new entry that supersedes it rather than editing his
 | [D61](#d61-aspire-reuses-native-resource-wiring-and-application-telemetry) | Aspire reuses native resource wiring and application telemetry | Accepted |
 | [D62](#d62-sql-server-maintenance-reuses-direct-dispatch-and-native-transaction-locks) | SQL Server maintenance reuses direct dispatch and native transaction locks | Accepted |
 | [D63](#d63-mysql-ordered-dispatch-uses-innodb-lease-rows-and-native-identity) | MySQL ordered dispatch uses InnoDB lease rows and native identity | Accepted |
+| [D64](#d64-sql-server-ordered-dispatch-reuses-native-locks-and-sequence-ranges) | SQL Server ordered dispatch reuses native locks and sequence ranges | Accepted |
 
 ---
 
@@ -1050,7 +1051,7 @@ benchmarks isolate Relayer's reusable copy/swap/group work; database and native 
 
 ## D50. Ordered lanes follow a database-assigned insert sequence
 
-**Status.** Accepted. Implemented for PostgreSQL and MySQL; SQL Server ordered dispatch must adopt the same rule in #330.
+**Status.** Accepted. Implemented for PostgreSQL, MySQL (D63) and SQL Server (D64).
 
 **Context.** D34 reads each lane in ascending `id` order. The `id` is a UUIDv7 created on the application
 host when the message is sent, while its row is inserted at flush, immediately before commit (D31, D32).
@@ -1441,7 +1442,7 @@ Transfer malformed header rows to a raw dead copy under a live fenced claim. Cou
 failures and native send failures; an atomic update/dead-copy/delete transaction dead-letters exhausted
 unordered rows and parks exhausted ordered rows. Retention preserves dead copies of parked barriers.
 The maximum send-attempt setting must match all dispatchers for a store. Completion failures after native
-success do not consume attempts. Future scheduled ISender registration and ordered lane workers remain separate.
+success do not consume attempts. Future scheduled ISender registration remains separate; D64 adds ordered lane workers.
 
 **Consequences.** Recovery is at least once; rollback after native acceptance replays the original identity.
 A connected pass can delay its own cleanup, while another replica immediately skips its active leadership.
@@ -1465,3 +1466,42 @@ The explicit upgrade preserves former UUID order for old rows and documents impl
 Exhausted rows park in place, preserving their sequence and key barrier. Management and unordered
 recovery remain #345. Ordered polling does not enable writer scheduling until registration can
 validate a matching scheduling worker.
+
+## D64. SQL Server ordered dispatch reuses native locks and sequence ranges
+
+**Status.** Accepted.
+
+**Context.** #330 adds ordered dispatch to the existing SQL Server relational outbox. The pinned
+[SqlClient 7.1.1 bulk-copy source](https://github.com/dotnet/SqlClient/blob/v7.1.1/src/Microsoft.Data.SqlClient/src/Microsoft/Data/SqlClient/SqlBulkCopy.cs)
+provides native streaming and transaction enlistment, but its input order alone is not a database sequence
+assignment contract. SQL Server supplies [native sequence range allocation](https://learn.microsoft.com/en-us/sql/relational-databases/system-stored-procedures/sp-sequence-get-range-transact-sql)
+and conditional SQL updates with transaction/key-range locks. These cover the required primitives.
+[Service Broker conversation-group locks](https://learn.microsoft.com/en-us/sql/database-engine/service-broker/conversation-group-locks)
+serialize readers of Service Broker queues; they do not lease this existing relational outbox. Adopting those
+queues would replace its persistence/write path. SqlClient's
+[SqlDependency source](https://github.com/dotnet/SqlClient/blob/v7.1.1/src/Microsoft.Data.SqlClient/src/Microsoft/Data/SqlClient/SqlDependency.cs)
+uses process-wide listener state and query notifications; this violates D17 and cannot supply due-time or
+expired-lease recovery alone.
+
+**Decision.** Apply D34's bounded sequential lane lifecycle using native conditional SQL and
+`UPDLOCK, HOLDLOCK` on the lease key, retained through the send transaction. Database time controls
+membership, ownership, schedules and fenced message mutations. Do not create a second lock service,
+notification runtime, or custom database retry mechanism. Fair membership and send deadlines follow the
+existing PostgreSQL worker, and both providers reuse the bounded endpoint capability cache and insert-sequence
+header projection. Poll only bounded assigned-lane heads; Service Broker/query notifications are not installed.
+
+Use one native `sp_sequence_get_range` reservation immediately before an ordered `SqlBulkCopy` flush;
+map the returned range to buffered send positions. Mixed batches retain their relative send order as well.
+This uses the database's own sequence allocator instead of relying on bulk insertion order or sorting UUIDs.
+Unordered-only bulk copies keep server-default sequence assignment. UUIDs remain message/claim identities.
+The explicit upgrade preserves legacy UUID order and resumes the native sequence above migrated rows.
+Never restart it during ordinary operation; gaps and unordered concurrent writers are allowed under D50.
+
+**Consequences.** Connected owners cannot knowingly overlap a lane, even if its lease expires during a
+still-locked send transaction. Broken connections and uncertain native sends can still duplicate delivery;
+no broker ordering or settlement is emulated. Exhausted ordered rows park in place with their original
+sequence/error and a key-scoped barrier. SQL Server dead-letter management remains separate work;
+unordered recovery and retention follow D62. Ordered membership uses a separate `ordered_leases` table
+so existing maintenance `leases` rows keep their native uniqueidentifier ownership schema. D46's SqlClient AOT/trimming
+boundary remains explicit. Ordered flushes add one native range RPC per transaction; lane reads/claims
+and header preparation have dedicated managed and real-database benchmark coverage.

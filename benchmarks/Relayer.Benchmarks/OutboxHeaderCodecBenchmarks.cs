@@ -1,6 +1,7 @@
 using System.Buffers;
 using BenchmarkDotNet.Attributes;
 using Relayer.Outbox.PostgreSql;
+using Relayer.Outbox;
 
 namespace Relayer.Benchmarks;
 

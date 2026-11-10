@@ -3,6 +3,8 @@ title: Ordered PostgreSQL dispatch
 description: "Dispatch ordered outbox rows with lane leases, heartbeats and fair instance membership."
 ---
 
+SQL Server users: see [SQL Server ordered dispatch](sqlserver-store.md#ordered-dispatch) for registration, upgrades and its current management limits.
+
 `Relayer.Outbox.PostgreSql` supplies a hosted dispatcher for ordered rows written by
 [EF Core outbox enlistment](ef-core-outbox.md) or [ADO.NET/Dapper transactions](postgres-outbox.md).
 [Unordered direct dispatch](direct-dispatch.md) runs separately after a business transaction commits.
@@ -164,3 +166,5 @@ a successor's sends. The protocol prevents overlapping connected database owners
 exactly-once delivery or fence native broker requests. Consumers needing duplicate suppression must use
 idempotent processing or the [EF Core consumer inbox](ef-core-inbox.md). A transport must observe cancellation for prompt
 shutdown. A stalled connected transaction deliberately delays takeover until it ends.
+
+SQL Server treats malformed stored headers as a dispatch failure for that row. The fenced failure path records attempts and parks the row at `MaxDispatchAttempts`; its original key stays blocked while other keys in the lane can continue. Valid preceding rows can commit even when a later row has malformed headers.
