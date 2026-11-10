@@ -173,6 +173,9 @@ internal sealed partial class SqlServerOrderedDispatcher : BackgroundService
         Dictionary<string, ITransport> transports,
         OrderedDispatchCapabilityCache capabilities)
     {
+        // The shared reader preserves malformed-row identity so the normal fenced failure path can park it.
+        if (row.TransportName.Length == 0)
+            throw new InvalidDataException(row.LastError);
         if (!transports.TryGetValue(row.TransportName, out var transport))
             throw new InvalidOperationException($"Outbox row references unknown transport '{row.TransportName}'. Register its named ITransport adapter.");
         if (row.Message.OrderingKey is null)

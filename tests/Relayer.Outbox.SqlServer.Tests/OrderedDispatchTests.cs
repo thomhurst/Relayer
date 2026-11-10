@@ -14,6 +14,38 @@ namespace Relayer.Outbox.SqlServer.Tests;
 public sealed class OrderedDispatchTests(SqlServerFixture database)
 {
     [Test]
+    [Arguments("headers = 0x00")]
+    [Arguments("destination = N' '")]
+    public async Task Malformed_rows_count_attempts_and_park_only_the_original_key(string corruption)
+    {
+        var data = new StoreData(database);
+        await data.Create();
+        for (var i = 1; i <= 4; i++)
+            await data.Insert(Id(i), DateTimeOffset.UtcNow, 0, orderedHeaders: true);
+        // A valid predecessor must commit even when decoding a later row fails.
+        await data.Execute($"UPDATE {data.Table} SET {corruption} WHERE seq = 2; " +
+            $"UPDATE {data.Table} SET ordering_key = N'other' WHERE seq = 4");
+        var transport = new RecordingTransport();
+        using var worker = Worker(data, transport, maxAttempts: 2);
+        await Assert.That(await worker.DispatchLaneAsync(0, default)).IsEqualTo(1);
+        await Assert.That(await worker.DispatchLaneAsync(0, default)).IsEqualTo(0);
+        await Assert.That(await worker.DispatchLaneAsync(0, default)).IsEqualTo(1);
+        await Assert.That(transport.Ids.SequenceEqual([Id(1), Id(4)])).IsTrue();
+        await using var connection = await Open();
+        await using var query = new SqlCommand($"SELECT attempts, last_error, status, ordering_key FROM {data.Table} WHERE seq = 2", connection);
+        await using var reader = await query.ExecuteReaderAsync();
+        await Assert.That(await reader.ReadAsync()).IsTrue();
+        await Assert.That(reader.GetInt32(0)).IsEqualTo(2);
+        await Assert.That(reader.GetString(1).StartsWith("Malformed outbox row:", StringComparison.Ordinal)).IsTrue();
+        await Assert.That(reader.GetString(2)).IsEqualTo("parked");
+        await Assert.That(reader.GetString(3)).IsEqualTo("customer-é");
+        using var lane = new SqlServerOrderedLane(database.ConnectionString, data.Options, TimeSpan.FromSeconds(30), 2);
+        var ready = new bool[1];
+        await lane.FindReadyAsync([true], ready, default);
+        await Assert.That(ready[0]).IsFalse();
+    }
+
+    [Test]
     [Arguments(false)]
     [Arguments(true)]
     public async Task Bulk_flush_preserves_send_order_and_sequential_commits_despite_reversed_UUIDs(bool synchronous)

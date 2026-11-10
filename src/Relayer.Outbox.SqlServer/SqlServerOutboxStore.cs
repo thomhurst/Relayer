@@ -120,7 +120,8 @@ public sealed class SqlServerOutboxStore : IOutboxStore
         CancellationToken cancellationToken, bool includeOrderedSequence = false)
     {
         await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
-        return await ReadRowsAsync(reader, destination, false, cancellationToken, includeOrderedSequence).ConfigureAwait(false);
+        // Ordered rows must reach fenced per-row failure handling even when stored headers are malformed.
+        return await ReadRowsAsync(reader, destination, includeOrderedSequence, cancellationToken, includeOrderedSequence).ConfigureAwait(false);
     }
 
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder<>))]
@@ -165,7 +166,11 @@ public sealed class SqlServerOutboxStore : IOutboxStore
             }
             catch (InvalidDataException error) when (isolateMalformed)
             {
-                destination.Span[count++] = new(id, "", "", default, default, LastError: "Malformed outbox row: " + error.Message);
+                // Routing stays on the durable row; a malformed projection is never sent.
+                destination.Span[count++] = new(id, "", "", default, reader.GetDateTimeOffset(8),
+                    reader.IsDBNull(9) ? null : reader.GetInt32(9), reader.GetInt32(10),
+                    "Malformed outbox row: " + error.Message,
+                    reader.IsDBNull(12) ? null : reader.GetString(12));
             }
         }
         return count;

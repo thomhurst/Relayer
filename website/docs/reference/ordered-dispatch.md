@@ -166,3 +166,5 @@ a successor's sends. The protocol prevents overlapping connected database owners
 exactly-once delivery or fence native broker requests. Consumers needing duplicate suppression must use
 idempotent processing or the [EF Core consumer inbox](ef-core-inbox.md). A transport must observe cancellation for prompt
 shutdown. A stalled connected transaction deliberately delays takeover until it ends.
+
+SQL Server treats malformed stored headers as a dispatch failure for that row. The fenced failure path records attempts and parks the row at `MaxDispatchAttempts`; its original key stays blocked while other keys in the lane can continue. Valid preceding rows can commit even when a later row has malformed headers.
