@@ -66,23 +66,32 @@ public sealed class MySqlOutboxStore : IOutboxStore, IDisposable
         try
         {
             await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
-            var count = 0;
-            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
-            {
-                if (_headers.Count == count) _headers.Add(new());
-                var slot = _headers[count];
-                var headers = DurableOutboxHeaderCodec.Read(reader.GetFieldValue<byte[]>(5), ref slot.Entries);
-                reader.GetBytes(0, 0, _readId, 0, 16);
-                var message = new OutgoingMessage(reader.GetString(3), reader.GetFieldValue<byte[]>(4), headers,
-                    reader.IsDBNull(6) ? null : new WireString(reader.GetString(6)),
-                    reader.IsDBNull(7) ? null : Utc(reader.GetDateTime(7)));
-                destination.Span[count++] = new(new Guid(_readId, bigEndian: true), reader.GetString(1), reader.GetString(2),
-                    message, Utc(reader.GetDateTime(8)), reader.IsDBNull(9) ? null : reader.GetInt32(9), reader.GetInt32(10),
-                    reader.IsDBNull(11) ? null : reader.GetString(11), reader.IsDBNull(12) ? null : reader.GetString(12));
-            }
-            return count;
+            return await ReadRowsAsync(reader, destination, cancellationToken).ConfigureAwait(false);
         }
         finally { command.Connection = null; }
+    }
+
+    [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder<>))]
+    internal async ValueTask<int> ReadRowsAsync(MySqlDataReader reader, Memory<OutboxRecord> destination,
+        CancellationToken cancellationToken, bool includeOrderedSequence = false)
+    {
+        var count = 0;
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            if (_headers.Count == count) _headers.Add(new());
+            var slot = _headers[count];
+            var headers = DurableOutboxHeaderCodec.Read(reader.GetFieldValue<byte[]>(5), ref slot.Entries);
+            reader.GetBytes(0, 0, _readId, 0, 16);
+            if (includeOrderedSequence)
+                headers = OrderedSequenceHeader.Add(headers.Span, ref slot.OrderedEntries, slot.Sequence, reader.GetInt64(13));
+            var message = new OutgoingMessage(reader.GetString(3), reader.GetFieldValue<byte[]>(4), headers,
+                reader.IsDBNull(6) ? null : new WireString(reader.GetString(6)),
+                reader.IsDBNull(7) ? null : Utc(reader.GetDateTime(7)));
+            destination.Span[count++] = new(new Guid(_readId, bigEndian: true), reader.GetString(1), reader.GetString(2),
+                message, Utc(reader.GetDateTime(8)), reader.IsDBNull(9) ? null : reader.GetInt32(9), reader.GetInt32(10),
+                reader.IsDBNull(11) ? null : reader.GetString(11), reader.IsDBNull(12) ? null : reader.GetString(12));
+        }
+        return count;
     }
 
     /// <inheritdoc />
@@ -223,5 +232,7 @@ public sealed class MySqlOutboxStore : IOutboxStore, IDisposable
     private sealed class HeaderSlot
     {
         internal KeyValuePair<string, WireString>[] Entries = [];
+        internal KeyValuePair<string, WireString>[] OrderedEntries = [];
+        internal byte[] Sequence { get; } = new byte[20];
     }
 }
