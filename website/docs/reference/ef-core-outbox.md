@@ -100,10 +100,19 @@ Use EF's rollback and disposal APIs too. Cancellation or insertion failure preve
 rolling back a transaction discards its buffered rows. Native callbacks cannot be persisted and fail before buffering.
 
 After a failed save, commit, or manual savepoint rollback, roll back the complete explicit transaction
-and retry the whole unit with a fresh DbContext. Relayer rejects commit of an invalidated unit.
-For an implicit save, insertion failure rolls back business data even if EF has already accepted tracked
-changes; reusing that change tracker is not a recovery strategy. Configure EF execution strategies around
-the whole explicit transaction, rather than retrying a final save alone.
+and dispose its EF wrapper before retrying the whole unit. If PostgreSQL has already aborted the transaction
+(for example after a serialization failure), dispose the wrapper. Relayer rejects commit of an invalidated unit.
+
+You can reuse the same DbContext after that transaction ends: clear its change tracker with
+`db.ChangeTracker.Clear()`, reload the business state, start a new EF transaction, and repeat all business
+changes and sends. EF may already have accepted tracked changes before commit fails, so retrying a save
+with the old tracked entities is insufficient. Relayer discards the ended transaction's buffered sends and
+resets its failure and transaction ownership state; the new transaction selects the context automatically.
+Dispose any `EnlistRelayerOutbox()` selections from the failed attempt too, since selections are lexical
+scopes and are restored only when disposed. A fresh DbContext is an alternative to resetting tracked state.
+For an implicit save, insertion failure also rolls back business data even if EF has already accepted tracked
+changes. Configure EF execution strategies around the whole explicit transaction, rather than retrying a
+final save alone.
 
 ### Retrying execution strategies
 
@@ -113,7 +122,8 @@ inbox. The following manual pattern is for units of work outside that consumer b
 
 When Npgsql uses `EnableRetryOnFailure()`, an implicit save with buffered messages fails before opening
 a transaction, with a Relayer error explaining the required explicit transaction. Wrap the entire unit
-in EF's execution strategy and create a fresh DI scope and DbContext on each attempt:
+in EF's execution strategy. Creating a fresh DI scope and DbContext on each attempt avoids carrying
+tracked state between attempts:
 
 ```csharp
 await strategyContext.Database.CreateExecutionStrategy().ExecuteAsync(async () =>

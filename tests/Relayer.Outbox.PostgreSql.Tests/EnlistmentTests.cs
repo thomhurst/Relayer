@@ -1,4 +1,5 @@
 using System.Buffers;
+using System.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.Extensions.Configuration;
@@ -119,6 +120,89 @@ public class EnlistmentTests
             await db.SaveChangesAsync();
         }
         await Assert.That(await database.Count()).IsEqualTo(1L);
+    }
+
+    [Test]
+    [Arguments(false, false)]
+    [Arguments(false, true)]
+    [Arguments(true, false)]
+    [Arguments(true, true)]
+    public async Task Rolled_back_explicit_units_can_replay_on_the_same_context(bool synchronous, bool serializationFailure)
+    {
+        await using var database = new Database();
+        await database.Start();
+        await using var source = NpgsqlDataSource.Create(database.ConnectionString);
+        await using var provider = database.Services(dispatchSource: source);
+        await using var scope = provider.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<OrdersContext>();
+        var sender = scope.ServiceProvider.GetRequiredService<ISender>();
+        var transport = provider.GetRequiredService<Transport>();
+        await using (var transaction = synchronous
+            ? db.Database.BeginTransaction(IsolationLevel.Serializable)
+            : await db.Database.BeginTransactionAsync(IsolationLevel.Serializable))
+        {
+            // Explicit selection must not survive into the retry unit.
+            using (db.EnlistRelayerOutbox()) await sender.SendAsync(new Probe(1));
+            if (serializationFailure)
+            {
+                // Deterministic write skew: both transactions read the same predicate, then
+                // insert different rows. Committing the competitor forces SQLSTATE 40001
+                // from the first unit's Commit (including its outbox flush).
+                await db.Database.SqlQueryRaw<long>("SELECT count(*) AS \"Value\" FROM orders").SingleAsync();
+                await using var competitor = new NpgsqlConnection(database.ConnectionString);
+                await competitor.OpenAsync();
+                await using var competingTransaction = await competitor.BeginTransactionAsync(IsolationLevel.Serializable);
+                await using var read = new NpgsqlCommand("SELECT count(*) FROM orders", competitor, competingTransaction);
+                await read.ExecuteScalarAsync();
+                db.Add(new Order { Id = 1 });
+                if (synchronous) db.SaveChanges(); else await db.SaveChangesAsync();
+                await using var insert = new NpgsqlCommand("INSERT INTO orders VALUES (2)", competitor, competingTransaction);
+                await insert.ExecuteNonQueryAsync();
+                await competingTransaction.CommitAsync();
+                var failure = synchronous
+                    ? await Assert.That(() => transaction.Commit()).Throws<PostgresException>()
+                    : await Assert.That(async () => await transaction.CommitAsync()).Throws<PostgresException>();
+                await Assert.That(failure!.SqlState).IsEqualTo(PostgresErrorCodes.SerializationFailure);
+            }
+            else
+            {
+                db.Add(new Order { Id = -1 });
+                if (synchronous) await Assert.That(() => db.SaveChanges()).Throws<DbUpdateException>();
+                else await Assert.That(async () => await db.SaveChangesAsync()).Throws<DbUpdateException>();
+                if (synchronous) await Assert.That(() => transaction.Commit()).Throws<InvalidOperationException>();
+                else await Assert.That(async () => await transaction.CommitAsync()).Throws<InvalidOperationException>();
+            }
+            // A server-aborted transaction may already be complete. Dispose its EF wrapper
+            // in either case; otherwise perform a full rollback, never just a savepoint.
+            if (transaction.GetDbTransaction().Connection is not null)
+            {
+                if (synchronous) transaction.Rollback(); else await transaction.RollbackAsync();
+            }
+        }
+        await Assert.That(scope.ServiceProvider.GetRequiredService<IOutboxEnlistment>().IsActive).IsFalse();
+        await Assert.That(await database.Count()).IsEqualTo(0L);
+        await Assert.That(transport.Sends).IsEqualTo(0);
+        db.ChangeTracker.Clear();
+        await using (var retry = synchronous ? db.Database.BeginTransaction() : await db.Database.BeginTransactionAsync())
+        {
+            db.Add(new Order { Id = 3 });
+            await sender.SendAsync(new Probe(2)); // Automatic selection of the new unit.
+            if (synchronous) db.SaveChanges(); else await db.SaveChangesAsync();
+            if (synchronous) retry.Commit(); else await retry.CommitAsync();
+        }
+        await Assert.That(scope.ServiceProvider.GetRequiredService<IOutboxEnlistment>().IsActive).IsFalse();
+        await Assert.That(await database.Count()).IsEqualTo(1L);
+        await Assert.That(await database.Scalar($"SELECT get_byte(body, 0)::bigint FROM {Database.Table}")).IsEqualTo(2L);
+        await Assert.That(await database.Scalar("SELECT count(*) FROM orders WHERE \"Id\" = 1")).IsEqualTo(0L);
+        await Assert.That(await database.Scalar("SELECT count(*) FROM orders WHERE \"Id\" = 3")).IsEqualTo(1L);
+        // Drain the actual commit handoff only after inspecting durable content.
+        var worker = provider.GetRequiredKeyedService<PostgreSqlDirectDispatcher>("replay");
+        await worker.StartAsync(default);
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        await worker.StopAsync(timeout.Token);
+        await Assert.That(transport.Sends).IsEqualTo(1);
+        await Assert.That(transport.Bodies.Single()).IsEquivalentTo(new byte[] { 2 });
+        await Assert.That(await database.Count()).IsEqualTo(0L);
     }
 
     [Test]
@@ -455,12 +539,18 @@ public class EnlistmentTests
             await using var command = new NpgsqlCommand(sql, connection);
             await command.ExecuteNonQueryAsync();
         }
-        internal ServiceProvider Services(bool retries = false, NpgsqlDataSource? schedulerSource = null)
+        internal ServiceProvider Services(bool retries = false, NpgsqlDataSource? schedulerSource = null, NpgsqlDataSource? dispatchSource = null)
         {
             var services = new ServiceCollection();
             if (schedulerSource is not null)
                 services.AddRelayerPostgreSqlOrderedDispatch("schedule", schedulerSource,
                     new PostgreSqlOrderedDispatchOptions { Schema = Options.Schema, TablePrefix = Options.TablePrefix, Lanes = Options.Lanes });
+            if (dispatchSource is not null)
+            {
+                services.AddLogging();
+                services.AddRelayerPostgreSqlDirectDispatch("replay", dispatchSource,
+                    new PostgreSqlOutboxOptions { Schema = Options.Schema, TablePrefix = Options.TablePrefix });
+            }
             services.AddSingleton<Transport>();
             services.AddSingleton<ITransport>(static sp => sp.GetRequiredService<Transport>());
             services.AddSingleton<IMessageSerializer, Serializer>();
@@ -468,7 +558,8 @@ public class EnlistmentTests
             services.AddDbContext<OrdersContext>((sp, o) => o.UseNpgsql(ConnectionString, native =>
             {
                 if (retries) native.EnableRetryOnFailure(1, TimeSpan.Zero, null);
-            }).AddRelayerOutbox(sp, Options));
+            }).AddRelayerOutbox(sp, new EntityFrameworkCoreOutboxOptions { Schema = Options.Schema, TablePrefix = Options.TablePrefix,
+                Lanes = Options.Lanes, DispatchStoreName = dispatchSource is null ? null : "replay" }));
             services.AddDbContext<AuditContext>((sp, o) => o.UseNpgsql(ConnectionString).AddRelayerOutbox(sp, Options));
             services.AddRelayer(builder =>
             {
@@ -528,9 +619,10 @@ public class EnlistmentTests
     private sealed class Transport : ITransport
     {
         public int Sends { get; private set; }
+        public List<byte[]> Bodies { get; } = [];
         public string Name => "events";
         public TransportCapabilities GetCapabilities(string endpoint) => new() { OrderedByKey = true };
-        public ValueTask SendAsync(OutgoingMessage message, CancellationToken cancellationToken) { Sends++; return default; }
+        public ValueTask SendAsync(OutgoingMessage message, CancellationToken cancellationToken) { Sends++; Bodies.Add(message.Body.ToArray()); return default; }
         public ValueTask SendBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken) => throw new NotSupportedException();
         public ValueTask<TopologyReport> ApplyTopologyAsync(TopologyMode mode, CancellationToken cancellationToken) => new(new TopologyReport([]));
         public Task StartAsync(CancellationToken cancellationToken) => Task.CompletedTask;

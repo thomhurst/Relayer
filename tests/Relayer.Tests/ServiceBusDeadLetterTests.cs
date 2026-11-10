@@ -81,6 +81,21 @@ public sealed class ServiceBusDeadLetterTests
     }
 
     [Test]
+    public async Task Throwing_filter_releases_failing_delivery_and_unprocessed_suffix()
+    {
+        var client = new Client();
+        client.Receiver.Messages = [Message("rejected", 1), Message("failing", 2), Message("suffix", 3)];
+        await Assert.That(async () => await Manager(client).RedriveAsync("orders", message =>
+        {
+            if (message.MessageId == "failing") throw new InvalidOperationException("filter failure");
+            return false;
+        }, 3)).Throws<InvalidOperationException>();
+        await Assert.That(client.Events.ToArray()).IsEquivalentTo(new[]
+            { "abandon:rejected", "abandon:failing", "abandon:suffix" });
+        await Assert.That(client.Receiver.Disposals).IsEqualTo(1);
+    }
+
+    [Test]
     public async Task Purge_only_completes_bounded_native_batch_and_rejects_invalid_requests()
     {
         var client = new Client();
