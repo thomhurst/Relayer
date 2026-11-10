@@ -101,8 +101,16 @@ public sealed class ServiceBusTopologyExporter
             topics.Add(topic.Name, resource.Symbol);
             resources.Add(resource);
         }
+        var subscriptionNames = new Dictionary<string, Dictionary<string, string>>(StringComparer.Ordinal);
         foreach (var subscription in options.Subscriptions)
         {
+            if (!subscriptionNames.TryGetValue(subscription.TopicName, out var names))
+            {
+                names = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                subscriptionNames.Add(subscription.TopicName, names);
+            }
+            if (!names.TryAdd(subscription.SubscriptionName, subscription.SubscriptionName))
+                throw new InvalidOperationException($"Subscriptions '{names[subscription.SubscriptionName]}' and '{subscription.SubscriptionName}' on topic '{subscription.TopicName}' have the same case-insensitive Service Bus name. Use distinct subscription names within each topic before exporting.");
             ValidateEntity(subscription.SubscriptionName, subscription.UserMetadata, 0);
             var resource = new Resource("subscription" + resources.Count.ToString(CultureInfo.InvariantCulture),
                 "topics/subscriptions", subscription.SubscriptionName, topics[subscription.TopicName]);

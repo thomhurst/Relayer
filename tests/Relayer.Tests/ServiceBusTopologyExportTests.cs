@@ -114,6 +114,23 @@ public sealed class ServiceBusTopologyExportTests
     [Test]
     [Arguments(ServiceBusTopologyFormat.Bicep)]
     [Arguments(ServiceBusTopologyFormat.Terraform)]
+    public async Task Subscription_names_are_scoped_to_their_topic(ServiceBusTopologyFormat format)
+    {
+        using var provider = Provider(options =>
+        {
+            options.Topics.Add(new("first"));
+            options.Topics.Add(new("second"));
+            options.Subscriptions.Add(new("first", "billing"));
+            options.Subscriptions.Add(new("second", "Billing"));
+        });
+        var text = Export(provider.GetRequiredService<ServiceBusTopologyExporter>(), format);
+        await Assert.That(text).Contains("billing");
+        await Assert.That(text).Contains("Billing");
+    }
+
+    [Test]
+    [Arguments(ServiceBusTopologyFormat.Bicep)]
+    [Arguments(ServiceBusTopologyFormat.Terraform)]
     public async Task Escapes_literal_names_and_interpolation_without_changing_identity(ServiceBusTopologyFormat format)
     {
         using var provider = Provider(options => options.Queues.Add(new("o'${name}%{literal}雪🚀")));
@@ -152,6 +169,7 @@ public sealed class ServiceBusTopologyExportTests
     [Arguments("case-queues")]
     [Arguments("case-topics")]
     [Arguments("case-queue-topic")]
+    [Arguments("case-subscriptions")]
     [Arguments("slash")]
     [Arguments("cycle")]
     [Arguments("case-cycle")]
@@ -176,6 +194,7 @@ public sealed class ServiceBusTopologyExportTests
                 case "case-queues": options.Queues.Add(new("QUEUE")); break;
                 case "case-topics": options.Topics.Add(new("TOPIC")); break;
                 case "case-queue-topic": options.Topics.Add(new("QUEUE")); break;
+                case "case-subscriptions": options.Subscriptions.Add(new("topic", "SUBSCRIPTION")); break;
                 case "duplicate-subscription": options.Subscriptions.Add(new("topic", "subscription")); break;
                 case "slash": options.Queues.Add(new("path/queue")); break;
                 case "case-cycle": options.Queues[0].ForwardDeadLetteredMessagesTo = "QUEUE"; break;
