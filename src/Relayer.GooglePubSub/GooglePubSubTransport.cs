@@ -57,6 +57,10 @@ internal sealed class GooglePubSubTransport : ITransport, ITransportSendTracing,
             if (string.IsNullOrWhiteSpace(consumer.Options.Failure.DeadLetterEndpoint))
                 throw new InvalidOperationException($"Pub/Sub consumer '{consumer.Source}': set Failure.DeadLetterEndpoint to a declared topic. Native DeadLetterPolicy cannot dead-letter on demand with error metadata.");
             GetEndpoint(consumer.Options.Failure.DeadLetterEndpoint);
+            // Incoming keys can originate outside Relayer, even on unordered subscriptions.
+            // Failure copies preserve them, and the native publisher rejects keys unless enabled.
+            if (_options.PublisherSettings.EnableMessageOrdering != true)
+                throw new InvalidOperationException($"Pub/Sub consumer '{consumer.Source}': set PublisherSettings.EnableMessageOrdering = true so dead-letter copies can preserve incoming ordering keys.");
         }
     }
 

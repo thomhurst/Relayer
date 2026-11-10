@@ -30,6 +30,7 @@ services.AddRelayer(relayer =>
         {
             options.Publisher = publisher;
             options.Subscriber = subscriber;
+            options.PublisherSettings = new() { EnableMessageOrdering = true };
             options.Topics.Add(topic);
             options.Topics.Add(deadLetter);
             options.Subscriptions.Add(new Subscription
@@ -68,6 +69,8 @@ consumer.Options.Settings = new SubscriberClient.Settings
 ```
 
 The default maximum outstanding element count is one. Native flow control supplies backpressure and the concurrency bound; Relayer does not add a scheduler. A mismatch fails startup. Streaming callbacks deliver individual messages; batch handlers fail startup.
+
+Every transport with consumers must set `PublisherSettings.EnableMessageOrdering = true`. Poison-message copies preserve ordering keys received from external publishers, including on unordered subscriptions. Startup rejects disabled publisher ordering before processing can begin. Send-only transports can leave it disabled.
 
 ## Ordering and native access
 

@@ -30,6 +30,7 @@ builder.Services.AddRelayer(relayer =>
         {
             options.Publisher = publisher;
             options.Subscriber = subscriber;
+            options.PublisherSettings = new() { EnableMessageOrdering = true };
             options.Topics.Add(TopicName.Parse(topic));
             options.Topics.Add(TopicName.Parse(topic + "-dead"));
             options.Subscriptions.Add(new() { Name = subscription, Topic = topic, AckDeadlineSeconds = 10 });

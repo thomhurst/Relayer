@@ -89,6 +89,29 @@ public class GooglePubSubSendTests
     }
 
     [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Consumer_requires_ordering_for_key_preserving_dead_letter_copies(bool enabled)
+    {
+        var native = new GatedPublisher();
+        await using var provider = Provider(native, transport =>
+        {
+            transport.Options.Configure(options => options.PublisherSettings.EnableMessageOrdering = enabled);
+            transport.Consume("projects/test/subscriptions/orders", consumer =>
+            {
+                consumer.Options.Failure = new() { DeadLetterEndpoint = Topic };
+                consumer.Handler<PubSubHandler>();
+            });
+        });
+        if (enabled)
+            await Assert.That(provider.GetRequiredService<ITransport>()).IsNotNull();
+        else
+            await Assert.That(() => provider.GetRequiredService<ITransport>()).Throws<InvalidOperationException>()
+                .WithMessageContaining("PublisherSettings.EnableMessageOrdering = true");
+        await Assert.That(native.Started.Task.IsCompleted).IsFalse();
+    }
+
+    [Test]
     public async Task Pool_retains_concurrency_beyond_one_page()
     {
         var pool = new GooglePubSubPool<object>(static () => new());

@@ -134,6 +134,7 @@ public class GooglePubSubTests
                 {
                     options.Publisher = broker.Publisher;
                     options.Subscriber = broker.Subscriber;
+                    options.PublisherSettings = new() { EnableMessageOrdering = true };
                     options.Topics.Add(TopicName.Parse(topic));
                     options.Topics.Add(TopicName.Parse(deadLetter));
                     options.Subscriptions.Add(new() { Name = subscription, Topic = topic, AckDeadlineSeconds = 10 });
@@ -152,7 +153,7 @@ public class GooglePubSubTests
         using (var scope = host.Services.CreateScope())
         {
             var sender = scope.ServiceProvider.GetRequiredService<ISender>();
-            await sender.SendNowAsync(new PubSubOrder(-1), cancellationToken: token);
+            await sender.SendNowAsync(new PubSubOrder(-1), static options => options.GooglePubSub(static message => message.OrderingKey = "external-key"), cancellationToken: token);
             await sender.SendNowAsync(new PubSubOrder(42), cancellationToken: token);
         }
         await Assert.That(await handled.Values.Reader.ReadAsync(token)).IsEqualTo(42);
@@ -160,6 +161,7 @@ public class GooglePubSubTests
         while (dead.ReceivedMessages.Count == 0) dead = await broker.Subscriber.PullAsync(deadSubscription, 1, token);
         var poison = dead.ReceivedMessages[0].Message;
         await Assert.That(poison.Data.ToStringUtf8()).Contains("-1");
+        await Assert.That(poison.OrderingKey).IsEqualTo("external-key");
         await Assert.That(GooglePubSubBinding.TryGetHeader(new(poison, null!), FailureHeaders.History, out var history)).IsTrue();
         await Assert.That(history.ToString()).Contains("poison");
         await Assert.That(poison.Attributes.Values.All(value => System.Text.Encoding.UTF8.GetByteCount(value) <= 1024)).IsTrue();
