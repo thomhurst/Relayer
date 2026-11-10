@@ -16,6 +16,25 @@ namespace Relayer.Outbox.PostgreSql.Tests;
 public class AdoNetEnlistmentTests
 {
     [Test]
+    public async Task Batch_assigns_insert_sequence_in_enqueue_order_instead_of_UUID_order()
+    {
+        await using var database = new Database();
+        await database.Start();
+        await using var provider = database.Services();
+        await using var scope = provider.CreateAsyncScope();
+        var outbox = scope.ServiceProvider.GetRequiredService<PostgreSqlOutbox>();
+        await using var transaction = await outbox.BeginTransactionAsync(database.Source);
+        var first = Guid.Parse("01900000-0000-7000-8000-000000000002");
+        var second = Guid.Parse("01900000-0000-7000-8000-000000000001");
+        await outbox.EnlistAsync(Record() with { Id = first }, default);
+        await outbox.EnlistAsync(Record() with { Id = second }, default);
+        await transaction.CommitAsync();
+        await using var connection = await database.Source.OpenConnectionAsync();
+        var ids = await connection.QueryAsync<Guid>($"SELECT id FROM {Database.Table} ORDER BY seq");
+        await Assert.That(ids.SequenceEqual([first, second])).IsTrue();
+    }
+
+    [Test]
     [Arguments(false)]
     [Arguments(true)]
     public async Task Dapper_preserves_postgresql_array_parameters_in_business_commands(bool synchronous)

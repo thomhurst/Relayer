@@ -31,7 +31,7 @@ public abstract class OutboxOrderedDispatchContractTests
     public async Task Failed_head_blocks_later_rows_and_retries_preserve_native_payload()
     {
         await using var fixture = await CreateFixtureAsync();
-        // Insertion order must not replace visible UUID order.
+        // Each insert commits before the next: database insertion order wins over host UUID order.
         await fixture.Insert(Id(2), 0);
         await fixture.Insert(Id(1), 0);
         await fixture.Insert(Id(3), null);
@@ -43,11 +43,11 @@ public abstract class OutboxOrderedDispatchContractTests
         await Assert.That(transport.Ids.Count).IsEqualTo(0);
         var rows = await fixture.ReadRows();
         await Assert.That(rows.Length).IsEqualTo(3);
-        await Assert.That(rows[0]).IsEqualTo(new Row(Id(1), 1, "broker offline", false, false));
-        await Assert.That(rows[1]).IsEqualTo(new Row(Id(2), 0, null, false, false));
+        await Assert.That(rows[0]).IsEqualTo(new Row(Id(1), 0, null, false, false));
+        await Assert.That(rows[1]).IsEqualTo(new Row(Id(2), 1, "broker offline", false, false));
         fail = false;
         await Assert.That(await worker.DispatchLaneAsync(0)).IsEqualTo(2);
-        await Assert.That(transport.Ids.SequenceEqual([Id(1), Id(2)])).IsTrue();
+        await Assert.That(transport.Ids.SequenceEqual([Id(2), Id(1)])).IsTrue();
         await Assert.That(transport.LastBody).IsEquivalentTo(new byte[] { 7, 8, 9 });
         await Assert.That(transport.LastKey).IsEqualTo("customer-Ã©");
         await Assert.That(transport.LastDeliverAt).IsNull();

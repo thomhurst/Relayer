@@ -39,7 +39,7 @@ public class OutboxEnlistmentBenchmarks
         ];
         _record = new(Guid.CreateVersion7(), "events", "benchmark.order;v=1",
             new OutgoingMessage("orders", new byte[BodySize], headers, new WireString("customer-42")), DateTimeOffset.UtcNow);
-        _state.Add(_record);
+        _state.Add(_record, 1);
         _state.Clear();
     }
 
@@ -61,5 +61,32 @@ public class OutboxEnlistmentBenchmarks
         _context.Dispose();
         _scope.Dispose();
         _provider.Dispose();
+    }
+}
+
+/// <summary>Measures reusable row ordering when EF contexts interleave sends in one transaction.</summary>
+[MemoryDiagnoser]
+public class SharedTransactionSendOrderBenchmarks
+{
+    private BufferedOutboxMessage[] _rows = null!;
+
+    [Params(2, 32, 256)]
+    public int Count { get; set; }
+
+    [GlobalSetup]
+    public void Setup()
+    {
+        _rows = new BufferedOutboxMessage[Count];
+        for (var i = 0; i < Count; i++) _rows[i] = new();
+        OrderInterleavedRows();
+    }
+
+    [Benchmark]
+    public long OrderInterleavedRows()
+    {
+        // Two contexts each append in send order; concatenating them groups even and odd positions.
+        for (var i = 0; i < Count; i++) _rows[i].EnqueueOrder = i < Count / 2 ? i * 2 : (i - Count / 2) * 2 + 1;
+        EntityFrameworkCoreOutbox.SortSendOrder(_rows);
+        return _rows[^1].EnqueueOrder;
     }
 }

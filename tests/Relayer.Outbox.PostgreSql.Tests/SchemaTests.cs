@@ -28,6 +28,8 @@ public class SchemaTests
         await Assert.That(exit).IsEqualTo(0);
         await Assert.That(output.ToString()).IsEqualTo(script);
         await Assert.That(error.ToString()).IsEqualTo("");
+        await Assert.That(script).Contains("seq bigint GENERATED ALWAYS AS IDENTITY");
+        await Assert.That(script).Contains("(lane, seq)");
         await Assert.That(script).Contains("\"a\"\";--{{schema}}\".\"{{outbox}}_outbox\"");
 
         var migration = new MigrationBuilder("Npgsql.EntityFrameworkCore.PostgreSQL");

@@ -15,6 +15,53 @@ namespace Relayer.Outbox.PostgreSql.Tests;
 public class OrderedDispatchTests
 {
     [Test]
+    public async Task Sequential_commits_dispatch_in_insert_order_even_when_later_UUID_is_smaller()
+    {
+        await using var fixture = new PostgreSqlFixture();
+        await fixture.StartAsync();
+        await using var source = NpgsqlDataSource.Create(fixture.ConnectionString);
+        await PostgreSqlOutboxStoreTests.CreateSchema(source);
+        // Each insert commits before the next begins; both rows share the same key.
+        await Insert(source, Id(2), 0);
+        await Insert(source, Id(1), 0);
+        var transport = new RecordingTransport();
+        using var worker = Worker(source, transport);
+        await Assert.That(await worker.DispatchLaneAsync(0, default)).IsEqualTo(2);
+        await Assert.That(transport.Ids.SequenceEqual([Id(2), Id(1)])).IsTrue();
+    }
+
+    [Test]
+    public async Task Parked_key_barrier_and_ready_probe_follow_insert_sequence_instead_of_UUID()
+    {
+        await using var fixture = new PostgreSqlFixture();
+        await fixture.StartAsync();
+        await using var source = NpgsqlDataSource.Create(fixture.ConnectionString);
+        await PostgreSqlOutboxStoreTests.CreateSchema(source);
+        await Insert(source, Id(3), 0);
+        await Insert(source, Id(2), 0);
+        await Insert(source, Id(1), 0);
+        await using (var park = source.CreateCommand("UPDATE relayer_outbox SET status = 'parked' WHERE id = @id"))
+        {
+            park.Parameters.AddWithValue("id", Id(2));
+            await park.ExecuteNonQueryAsync();
+        }
+        using var lane = new PostgreSqlOrderedLane(source, new() { Lanes = 1 }, TimeSpan.FromSeconds(30));
+        var ready = new bool[1];
+        await lane.FindReadyAsync([true], ready, default);
+        await Assert.That(ready[0]).IsTrue();
+        var transport = new RecordingTransport();
+        using var worker = Worker(source, transport);
+        await Assert.That(await worker.DispatchLaneAsync(0, default)).IsEqualTo(1);
+        await Assert.That(transport.Ids.SequenceEqual([Id(3)])).IsTrue();
+        await lane.FindReadyAsync([true], ready, default);
+        await Assert.That(ready[0]).IsFalse();
+        await using (var unpark = source.CreateCommand("UPDATE relayer_outbox SET status = 'pending'"))
+            await unpark.ExecuteNonQueryAsync();
+        await Assert.That(await worker.DispatchLaneAsync(0, default)).IsEqualTo(2);
+        await Assert.That(transport.Ids.SequenceEqual([Id(3), Id(2), Id(1)])).IsTrue();
+    }
+
+    [Test]
     public async Task Named_immutable_options_bind_independently_and_registration_validates()
     {
         await using var source = NpgsqlDataSource.Create("Host=unused");
