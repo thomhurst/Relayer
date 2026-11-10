@@ -709,8 +709,8 @@ Verification queries the exact attempted inbox key and schema using a fresh conn
 an unknown commit without replaying committed work. Without an inbox there is no commit verification
 or duplicate protection. The original delivery scope keeps the strategy's context alive and is
 restored before ordinary failure handling. Failed-attempt sends and settlement requests are cleared
-after scope disposal. Composition selects the original middleware directly for non-retrying contexts,
-so their per-message work and allocations are unchanged. Retrying contexts add native strategy Task
+after scope disposal. Composition selects the original middleware directly for non-retrying contexts that omit an explicit
+isolation level (D51), so their per-message work and allocations are unchanged. Retrying contexts add native strategy Task
 callbacks and fresh DI scopes, with bounded reusable operation state; no parallel retry policy is
 implemented. Pooled contexts, ambient transactions and batch consumers remain rejected. Handlers must not end the owned
 transaction or perform native settlement. Inbox retention is provided by PostgreSQL maintenance (D38).

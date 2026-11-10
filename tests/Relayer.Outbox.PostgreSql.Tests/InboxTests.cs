@@ -49,14 +49,16 @@ public class InboxTests : InboxContractTests
     }
 
     [Test]
-    public async Task Outbox_write_failure_rolls_back_and_redelivery_runs_handler()
+    [Arguments(null)]
+    [Arguments(IsolationLevel.Serializable)]
+    public async Task Outbox_write_failure_rolls_back_and_redelivery_runs_handler(IsolationLevel? isolationLevel)
     {
         await using var database = new Database();
         await database.Start();
         await using var provider = database.Services(outbox: true);
         await database.Execute("ALTER TABLE \"Case\"\"Inbox\".\"test_outbox\" ADD CONSTRAINT reject_rows CHECK (false)");
         var settled = 0;
-        var pipeline = Pipeline(provider).Settle(_ => { settled++; return default; }).Build();
+        var pipeline = Pipeline(provider, isolationLevel: isolationLevel).Settle(_ => { settled++; return default; }).Build();
         var message = Message();
         await Assert.That(async () => await Deliver(pipeline, message)).Throws<PostgresException>();
         await Assert.That(settled).IsEqualTo(0);
@@ -150,10 +152,13 @@ public class InboxTests : InboxContractTests
         await using var provider = database.Services(outbox: true, retries: nativeRetries);
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
         var bothRead = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var firstCommitted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var firstMessage = Message();
+        var secondMessage = Message();
         var attempts = new ConcurrentBag<(string Message, IServiceProvider Scope, OrdersContext Context)>();
         var reads = 0;
         var control = provider.GetRequiredService<Control>();
-        control.AfterSave = async context =>
+        control.BeforeSave = async context =>
         {
             var db = context.Services.GetRequiredService<OrdersContext>();
             attempts.Add((context.MessageId, context.Services, db));
@@ -161,6 +166,10 @@ public class InboxTests : InboxContractTests
             await db.Set<Order>().CountAsync(timeout.Token);
             if (Interlocked.Increment(ref reads) == 2) bothRead.TrySetResult();
             await bothRead.Task.WaitAsync(timeout.Token);
+            // Both snapshots read the same predicate. Finish the winner before the loser writes,
+            // so its replay starts after that commit rather than racing an in-flight commit again.
+            if (context.MessageId == secondMessage.MessageId)
+                await firstCommitted.Task.WaitAsync(timeout.Token);
         };
         var failures = new FailurePipeline(provider, "events", "source", "orders", new());
         var completions = 0;
@@ -171,7 +180,11 @@ public class InboxTests : InboxContractTests
                     Interlocked.Increment(ref completions);
                 return default;
             }).Build();
-        await Task.WhenAll(Deliver(pipeline, Message(), timeout.Token), Deliver(pipeline, Message(), timeout.Token));
+        var first = Deliver(pipeline, firstMessage, timeout.Token);
+        var second = Deliver(pipeline, secondMessage, timeout.Token);
+        try { await first; }
+        finally { firstCommitted.TrySetResult(); }
+        await second;
         await Assert.That(control.Invocations).IsEqualTo(3);
         await Assert.That(completions).IsEqualTo(2);
         var replay = attempts.GroupBy(x => x.Message).Single(x => x.Count() == 2).ToArray();
@@ -468,6 +481,7 @@ public class InboxTests : InboxContractTests
     {
         public int Invocations;
         public bool Outbox;
+        public Func<MessageContext, ValueTask>? BeforeSave;
         public Func<MessageContext, ValueTask>? AfterSave;
         public Action? OnDispose;
     }
@@ -477,6 +491,7 @@ public class InboxTests : InboxContractTests
         public async ValueTask HandleAsync(Probe message, MessageContext context, CancellationToken cancellationToken)
         {
             var call = Interlocked.Increment(ref control.Invocations);
+            if (control.BeforeSave is { } before) await before(context);
             db.Add(new Order { Id = Guid.CreateVersion7() });
             if (control.Outbox) await sender.SendAsync(new Probe(call), cancellationToken);
             await db.SaveChangesAsync(cancellationToken);

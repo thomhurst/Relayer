@@ -10,10 +10,16 @@ internal sealed class PostgreSqlConflictExecutionStrategy(DbContext context)
     : ExecutionStrategy(context, maxRetryCount: 3, maxRetryDelay: TimeSpan.Zero)
 {
     protected override bool ShouldRetryOn(Exception exception)
-        => exception is PostgresException
+    {
+        // Npgsql's non-retrying strategy wraps transient command failures in InvalidOperationException.
+        // A SaveChanges wrapper may be nested inside it; only unwrap these provider/EF wrappers.
+        while (exception is InvalidOperationException or DbUpdateException && exception.InnerException is { } inner)
+            exception = inner;
+        return exception is PostgresException
         {
             SqlState: PostgresErrorCodes.SerializationFailure or PostgresErrorCodes.DeadlockDetected
         };
+    }
 
     protected override bool ShouldVerifySuccessOn(Exception exception) => false;
 }
