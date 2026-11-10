@@ -58,7 +58,9 @@ public static class PostgreSqlLocalBuilderExtensions
                     PostgreSqlLocalTransport.HandleFailureAsync, provider.GetService<IFailureClassifier>());
                 var tracing = provider.GetRequiredService<MessageTracing>();
                 var endpoint = new MessagingEndpoint { System = "postgresql", Destination = consumer.Source };
-                pipeline.Tracing(tracing, endpoint).Settle(PostgreSqlLocalTransport.SettleAsync);
+                var telemetry = provider.GetRequiredService<RelayerInstrumentation>().CreateEndpoint(new()
+                { System = "postgresql", Destination = consumer.Source });
+                pipeline.Tracing(tracing, endpoint).Telemetry(telemetry).Settle(PostgreSqlLocalTransport.SettleAsync);
                 foreach (var handler in handlers.Descriptors)
                     if (consumer.Handlers.Contains(handler.HandlerType)) pipeline.Handler(handler);
                 var composed = pipeline.Build(consumer.Concurrency);

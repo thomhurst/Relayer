@@ -1,3 +1,5 @@
+using System.Collections.Concurrent;
+using System.Diagnostics.Metrics;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -21,6 +23,16 @@ public class LocalTransportTests(PostgreSqlLocalSessionFixture server)
         await PostgreSqlOutboxStoreTests.CreateSchema(source);
         await using (var command = source.CreateCommand("CREATE TABLE local_business (value integer PRIMARY KEY)")) await command.ExecuteNonQueryAsync();
         await using var provider = Provider(source);
+        var instrumentation = provider.GetRequiredService<RelayerInstrumentation>();
+        var measurements = new ConcurrentQueue<(string Name, Dictionary<string, object?> Tags)>();
+        using var listener = new MeterListener();
+        listener.InstrumentPublished = (instrument, capture) =>
+        {
+            if (ReferenceEquals(instrument.Meter.Scope, instrumentation)) capture.EnableMeasurementEvents(instrument);
+        };
+        listener.SetMeasurementEventCallback<long>((instrument, _, tags, _) => measurements.Enqueue((instrument.Name, tags.ToArray().ToDictionary(pair => pair.Key, pair => pair.Value))));
+        listener.SetMeasurementEventCallback<double>((instrument, _, tags, _) => measurements.Enqueue((instrument.Name, tags.ToArray().ToDictionary(pair => pair.Key, pair => pair.Value))));
+        listener.Start();
         var starters = provider.GetServices<IHostedService>().ToArray();
         // Compose the consumer; drive the same dispatcher deterministically below.
         foreach (var starter in starters) if (starter is not PostgreSqlDirectDispatcher) await starter.StartAsync(default);
@@ -44,6 +56,42 @@ public class LocalTransportTests(PostgreSqlLocalSessionFixture server)
         else await worker.DispatchRecoveredAsync(rows.AsMemory(0, count), default);
         await Assert.That(await Count(source, "local_business")).IsEqualTo(1L);
         await Assert.That(await Count(source, "relayer_outbox")).IsEqualTo(0L);
+        foreach (var metric in new[] { "messaging.client.consumed.messages", "messaging.process.duration", "relayer.critical_time" })
+        {
+            var measurement = measurements.Single(item => item.Name == metric);
+            await Assert.That(measurement.Tags["messaging.system"]).IsEqualTo("postgresql");
+            await Assert.That(measurement.Tags["messaging.destination.name"]).IsEqualTo("work");
+            await Assert.That(measurement.Tags["messaging.operation.name"]).IsEqualTo("process");
+        }
+    }
+
+    [Test]
+    public async Task Idle_maintenance_stops_without_waiting_for_sweep_interval()
+    {
+        await using var database = server.CreateDatabase();
+        await database.StartAsync();
+        await using var source = NpgsqlDataSource.Create(database.ConnectionString);
+        await PostgreSqlOutboxStoreTests.CreateSchema(source);
+        await using var transport = new PostgreSqlLocalTransport("local", source, new(), ["work"]);
+        using var worker = new PostgreSqlMaintenanceWorker(source, new() { SweepInterval = TimeSpan.FromHours(1) },
+            [transport], NullLogger<PostgreSqlMaintenanceWorker>.Instance);
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        await worker.StartAsync(deadline.Token);
+        try
+        {
+            // Cleanup's committed lease proves the worker passed the stop check and reached its idle boundary.
+            while (true)
+            {
+                await using var command = source.CreateCommand("SELECT count(*) FROM relayer_leases WHERE name = 'cleanup'");
+                if ((long)(await command.ExecuteScalarAsync(deadline.Token))! == 1) break;
+                await Task.Yield();
+            }
+            using var stopDeadline = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            await worker.StopAsync(stopDeadline.Token);
+            await Assert.That(worker.ExecuteTask!.IsCompletedSuccessfully).IsTrue();
+            await Assert.That(await Count(source, "relayer_leases")).IsEqualTo(0L);
+        }
+        finally { await worker.StopAsync(deadline.Token); }
     }
 
     [Test]

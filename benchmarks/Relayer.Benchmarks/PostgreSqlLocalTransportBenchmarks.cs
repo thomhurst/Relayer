@@ -1,3 +1,4 @@
+using System.Diagnostics.Metrics;
 using BenchmarkDotNet.Attributes;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -12,6 +13,9 @@ namespace Relayer.Benchmarks;
 [MemoryDiagnoser]
 public class PostgreSqlLocalTransportBenchmarks
 {
+    [Params(false, true)]
+    public bool MetricsEnabled { get; set; }
+    private MeterListener? _listener;
     private NpgsqlDataSource _source = null!;
     private NpgsqlConnection _connection = null!;
     private ServiceProvider _provider = null!;
@@ -48,6 +52,18 @@ public class PostgreSqlLocalTransportBenchmarks
         });
         services.AddRelayerPostgreSqlDirectDispatch("local", _source, _options);
         _provider = services.BuildServiceProvider();
+        if (MetricsEnabled)
+        {
+            var instrumentation = _provider.GetRequiredService<RelayerInstrumentation>();
+            _listener = new MeterListener();
+            _listener.InstrumentPublished = (instrument, listener) =>
+            {
+                if (ReferenceEquals(instrument.Meter.Scope, instrumentation)) listener.EnableMeasurementEvents(instrument);
+            };
+            _listener.SetMeasurementEventCallback<long>(static (_, _, _, _) => { });
+            _listener.SetMeasurementEventCallback<double>(static (_, _, _, _) => { });
+            _listener.Start();
+        }
         foreach (var service in _provider.GetServices<IHostedService>())
             if (service is not PostgreSqlDirectDispatcher) await service.StartAsync(default);
         _transport = PostgreSqlLocalTransport.Find(_provider.GetServices<ITransport>().Single())!;
@@ -88,6 +104,7 @@ public class PostgreSqlLocalTransportBenchmarks
     [GlobalCleanup]
     public async Task Cleanup()
     {
+        _listener?.Dispose();
         await _provider.DisposeAsync();
         await Execute($"DROP TABLE IF EXISTS {_table}; DROP TABLE IF EXISTS public.{PostgreSqlOutboxSchema.QuoteIdentifier(_options.TablePrefix + "outbox_dead")}; DROP TABLE IF EXISTS public.{PostgreSqlOutboxSchema.QuoteIdentifier(_options.TablePrefix + "inbox")}; DROP TABLE IF EXISTS public.{PostgreSqlOutboxSchema.QuoteIdentifier(_options.TablePrefix + "leases")}");
         await _connection.DisposeAsync();
