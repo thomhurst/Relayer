@@ -94,6 +94,45 @@ class OriginalRunnerTests(unittest.TestCase):
             self.assertEqual(outcomes[3]["bdnRoundedBytesPerMessage"], 699)
             self.assertTrue((output / "2-candidate.log").read_text().startswith("\nLaunch failed:"))
 
+    def test_profiled_replay_retains_native_stats_and_requires_every_raw_capture(self):
+        for missing in (False, True):
+            with self.subTest(missing=missing), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                for side in ("baseline", "candidate"):
+                    self.fixture(root / "performance-builds" / side)
+                output = root / "results"
+                calls = []
+
+                def execute(command, **kwargs):
+                    calls.append(command)
+                    self.assertEqual(command[1:4], ["collect", "--profile", "gc-verbose"])
+                    self.assertIn("--show-child-io", command)
+                    original = command[command.index("--") + 1:]
+                    self.assertEqual(original[0], "dotnet")
+                    self.assertIn("--job", original)
+                    kwargs["stdout"].write(COMPLETE)
+                    trace = Path(command[command.index("--output") + 1])
+                    if not (missing and len(calls) == 2):
+                        trace.write_bytes(b"retained raw trace")
+
+                with patch("sys.argv", ["control", str(root), str(output), "--trace-tool", str(root / "dotnet-trace")]), \
+                     patch("frozen_bdn_control.verify", return_value="frozen"), \
+                     patch("frozen_bdn_control.subprocess.run", side_effect=execute):
+                    if missing:
+                        with self.assertRaisesRegex(SystemExit, "launches failed"):
+                            main()
+                    else:
+                        main()
+                self.assertEqual(len(calls), 4)
+                outcomes = json.loads((output / "outcomes.json").read_text())
+                self.assertTrue(all(item["operations"] == 65536 for item in outcomes))
+                self.assertEqual("profileError" in outcomes[1], missing)
+                self.assertTrue((output / "4-baseline.nettrace").exists())
+                protocol = json.loads((output / "protocol.json").read_text())
+                self.assertTrue(protocol["instrumented"])
+                self.assertIn("Whole-process", protocol["profile_limits"])
+                self.assertIn("no Relayer measurement markers", protocol["profile_limits"])
+
     def test_invalid_input_prevents_every_process_launch(self):
         with tempfile.TemporaryDirectory() as directory, \
              patch("sys.argv", ["control", directory, str(Path(directory) / "results")]), \
