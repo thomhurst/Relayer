@@ -22,13 +22,19 @@ public sealed class SqlServerFixture : IAsyncInitializer, IAsyncDisposable
                 "--env", "ACCEPT_EULA=Y", "--env", "MSSQL_SA_PASSWORD=Relayer-test-2026!",
                 "mcr.microsoft.com/mssql/server:2022-CU14-ubuntu-22.04"]);
             var port = (await _docker.RunAsync(["port", _name, "1433/tcp"])).Trim().Split(':')[^1];
-            ConnectionString = $"Server=127.0.0.1,{port};User ID=sa;Password=Relayer-test-2026!;Encrypt=False;Connect Timeout=2;Pool Blocking Period=NeverBlock";
+            ConnectionString = $"Server=127.0.0.1,{port};User ID=sa;Password=Relayer-test-2026!;Encrypt=False;Pool Blocking Period=NeverBlock";
+            // Short readiness attempts must not become the timeout for concurrent test logins.
+            var readinessConnectionString = new SqlConnectionStringBuilder(ConnectionString)
+            {
+                ConnectTimeout = 2,
+                Pooling = false
+            }.ConnectionString;
             var deadline = Stopwatch.StartNew();
             while (true)
             {
                 try
                 {
-                    await using var connection = new SqlConnection(ConnectionString);
+                    await using var connection = new SqlConnection(readinessConnectionString);
                     await connection.OpenAsync();
                     return;
                 }
