@@ -20,6 +20,9 @@ public class EntityFrameworkCoreConsumerBenchmarks
     [Params(false, true)]
     public bool NativeRetries { get; set; }
 
+    [Params(false, true)]
+    public bool ExplicitIsolation { get; set; }
+
     [GlobalSetup]
     public void Setup()
     {
@@ -40,7 +43,7 @@ public class EntityFrameworkCoreConsumerBenchmarks
                 _provider.GetRequiredService<MessageTypeRegistry>(), new Serializer(),
                 static (_, error, _) => ValueTask.FromException(error))
             .Handler(_provider.GetRequiredService<HandlerRegistry>().GetHandler<Probe, Handler>())
-            .EntityFrameworkCore<Context>("benchmark").Build(contextPoolCapacity: 1);
+            .EntityFrameworkCore<Context>("benchmark", isolationLevel: ExplicitIsolation ? System.Data.IsolationLevel.Serializable : null).Build(contextPoolCapacity: 1);
         _message = new ConsumeMessage { MessageId = "benchmark", MessageType = new("benchmark.ef-consumer", 1), Body = ReadOnlySequence<byte>.Empty };
     }
 

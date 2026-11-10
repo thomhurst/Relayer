@@ -547,7 +547,9 @@ composition time, validates its provider and owns the transaction around the com
 It inserts the inbox key before dispatch with `ON CONFLICT DO NOTHING`; the database unique constraint
 coordinates overlapping instances and permits a waiting delivery to run if the first rolls back.
 Outbox configuration on the selected context enables inbox deduplication automatically (D36).
-The transaction uses the provider's default isolation level; D51 proposes an optional level with conflict replay ([#354](https://github.com/thomhurst/Relayer/issues/354)).
+The transaction uses the provider's default isolation level unless an explicit native isolation level is supplied.
+Explicit isolation enables bounded PostgreSQL conflict replay through EF's native execution strategy
+when no application retrying strategy is configured; configured strategies remain authoritative (D51).
 Before commit the boundary requests completion if no settlement outcome is pending. The existing
 one-request rule rejects settlement changes during scope disposal after the work is durable.
 See [consumer configuration and failure boundaries](https://relayer.tomlonghurst.dev/docs/reference/ef-core-inbox).

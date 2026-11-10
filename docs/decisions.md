@@ -61,7 +61,7 @@ To change a decision, add a new entry that supersedes it rather than editing his
 | [D48](#d48-mysql-enqueue-owns-native-transactions-and-reuses-mysqlbatch) | MySQL enqueue owns native transactions and reuses MySqlBatch | Accepted |
 | [D49](#d49-sql-server-commit-dispatch-reuses-native-rpc-batches) | SQL Server commit dispatch reuses native RPC batches | Accepted |
 | [D50](#d50-ordered-lanes-follow-a-database-assigned-insert-sequence) | Ordered lanes follow a database-assigned insert sequence | Accepted |
-| [D51](#d51-the-ef-core-consumer-boundary-takes-an-isolation-level-and-replays-conflicts) | The EF Core consumer boundary takes an isolation level and replays conflicts | Proposed |
+| [D51](#d51-the-ef-core-consumer-boundary-takes-an-isolation-level-and-replays-conflicts) | The EF Core consumer boundary takes an isolation level and replays conflicts | Accepted |
 | [D52](#d52-allocations-a-native-api-requires-count-as-native-client-cost) | Allocations a native API requires count as native-client cost | Accepted |
 | [D53](#d53-singleton-only-consumers-open-delivery-scopes-on-demand) | Singleton-only consumers open delivery scopes on demand | Accepted |
 | [D54](#d54-service-bus-processors-drain-durable-work-before-settlement) | Service Bus processors drain durable work before settlement | Accepted |
@@ -1032,7 +1032,7 @@ SQL migration (D30). The upgrade preserves existing rows' former UUID order beca
 
 ## D51. The EF Core consumer boundary takes an isolation level and replays conflicts
 
-**Status.** Proposed; not implemented. Tracked by [#354](https://github.com/thomhurst/Relayer/issues/354).
+**Status.** Accepted. Implemented for PostgreSQL by [#354](https://github.com/thomhurst/Relayer/issues/354).
 
 **Context.** D36's consumer boundary owns the transaction around the handler and opens it at the provider
 default. The handler must not end or replace it, so an application that needs Repeatable Read or
@@ -1049,8 +1049,15 @@ snapshot as a serialization failure rather than as zero inserted rows.
 - The core stays free of database dependencies; classification lives beside the provider.
 
 **Consequences.** Handlers can rely on database isolation instead of hand-written locks. A replay after an
-inbox conflict sees the committed key and skips the handler. Retrying EF execution strategies stay
-rejected: the boundary, not the strategy, owns replay. The default path gains no per-message work.
+inbox conflict sees the committed key and skips the handler. Explicit isolation without an application
+retrying strategy selects EF Core 10.0.14's native `ExecutionStrategy`, with three zero-delay retries
+and PostgreSQL `40001`/`40P01` classification beside the provider. EF owns exception unwrapping,
+budget enforcement and exhaustion; D36 supplies complete fresh-scope callbacks. No parallel retry
+loop is introduced. These conflicts guarantee rollback, so no unknown-commit verification is needed.
+Application-configured retrying strategies remain authoritative for classification, count and delays,
+including conflicts; no second retry budget wraps them. Omitting isolation and native retries retains
+the original path. Isolation is selected once at composition and passed to the native overload;
+the default gains no per-message branch, scope or allocation.
 
 **Alternatives rejected.**
 - Letting the handler open its own transaction breaks the atomic inbox, business and outbox commit.

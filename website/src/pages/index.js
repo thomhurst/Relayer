@@ -315,7 +315,7 @@ const status = [
   ['EF Core transaction enlistment for PostgreSQL', 'Implemented enqueue path', true],
   ['PostgreSQL ADO.NET and Dapper transactions', 'Implemented enqueue path', true],
   ['Unordered PostgreSQL direct dispatch after EF commit', 'Implemented direct path', true],
-  ['EF Core consumer inbox for PostgreSQL', 'Implemented deduplication', true],
+  ['EF Core consumer inbox for PostgreSQL', 'Implemented deduplication, isolation levels and bounded conflict replay', true],
   ['Saga state transitions on the EF Core inbox/outbox', 'Implemented', true],
   ['Kafka connectivity and receiver liveness health adapters', 'Implemented', true],
   ['Other native broker health adapters', 'Planned', false],

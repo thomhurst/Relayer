@@ -1,3 +1,4 @@
+using System.Data;
 using System.Runtime.CompilerServices;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Storage;
@@ -7,8 +8,10 @@ using Npgsql;
 namespace Relayer.Outbox.EntityFrameworkCore;
 
 internal sealed class EntityFrameworkCoreConsumer<TContext>(string consumer, bool inbox, bool outbox,
-    OutboxConfiguration configuration, RelayerInstrumentation instrumentation) : IConsumeTransactionMiddleware where TContext : DbContext
+    OutboxConfiguration configuration, RelayerInstrumentation instrumentation, IsolationLevel? isolationLevel = null) : IConsumeTransactionMiddleware where TContext : DbContext
 {
+    private readonly IsolationLevel _isolationLevel = isolationLevel ?? IsolationLevel.Unspecified;
+
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
     public async ValueTask InvokeAsync(MessageContext context, ConsumeDelegate next)
     {
@@ -17,7 +20,7 @@ internal sealed class EntityFrameworkCoreConsumer<TContext>(string consumer, boo
         var db = context.Services.GetRequiredService<TContext>();
         if (db.Database.CurrentTransaction is not null || System.Transactions.Transaction.Current is not null)
             throw new InvalidOperationException("The EF Core consumer must own its transaction. Do not nest database consumer middleware or use an ambient transaction.");
-        var transaction = await db.Database.BeginTransactionAsync(cancellation).ConfigureAwait(false);
+        var transaction = await db.Database.BeginTransactionAsync(_isolationLevel, cancellation).ConfigureAwait(false);
         try
         {
             if (inbox)

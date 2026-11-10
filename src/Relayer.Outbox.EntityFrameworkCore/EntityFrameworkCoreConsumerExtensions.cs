@@ -1,3 +1,4 @@
+using System.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.Extensions.DependencyInjection;
@@ -13,18 +14,21 @@ public static class EntityFrameworkCoreConsumerExtensions
     /// Request retry or dead-letter before returning from handling. Before commit the boundary requests completion
     /// if no outcome is pending; further settlement requests, including during scope disposal, throw.
     /// Retrying EF execution strategies replay the complete inner pipeline in a fresh scope per attempt.
+    /// An explicit isolation level enables up to three immediate PostgreSQL conflict retries when no native retry strategy is configured.
     /// Use a stable consumer identity across replicas and restarts. Batch consumers are not supported.
     /// </remarks>
     public static ConsumePipelineBuilder EntityFrameworkCore<TContext>(this ConsumePipelineBuilder builder,
-        string consumer, bool inbox = false, EntityFrameworkCoreOutboxOptions? options = null) where TContext : DbContext
+        string consumer, bool inbox = false, EntityFrameworkCoreOutboxOptions? options = null,
+        IsolationLevel? isolationLevel = null) where TContext : DbContext
     {
         ArgumentNullException.ThrowIfNull(builder);
         ArgumentException.ThrowIfNullOrWhiteSpace(consumer);
-        return builder.Use(services => Create<TContext>(services, consumer, inbox, options));
+        return builder.Use(services => Create<TContext>(services, consumer, inbox, options, isolationLevel: isolationLevel));
     }
 
     internal static IConsumeMiddleware Create<TContext>(IServiceProvider services, string consumer,
-        bool inbox = false, EntityFrameworkCoreOutboxOptions? options = null, bool requireOutbox = false) where TContext : DbContext
+        bool inbox = false, EntityFrameworkCoreOutboxOptions? options = null, bool requireOutbox = false,
+        IsolationLevel? isolationLevel = null) where TContext : DbContext
     {
         var context = services.GetRequiredService<TContext>();
         if (context.Database.ProviderName != "Npgsql.EntityFrameworkCore.PostgreSQL")
@@ -42,9 +46,12 @@ public static class EntityFrameworkCoreConsumerExtensions
             throw new InvalidOperationException("Saga consumers require AddRelayerOutbox on the selected scoped DbContext. State, inbox and outgoing messages must share one transaction.");
         var configuration = outbox ?? new OutboxConfiguration(options ?? new());
         var boundary = new EntityFrameworkCoreConsumer<TContext>(consumer, inbox || outbox is not null, outbox is not null,
-            configuration, services.GetRequiredService<RelayerInstrumentation>());
-        return context.Database.CreateExecutionStrategy().RetriesOnFailure
-            ? new RetryingEntityFrameworkCoreConsumer<TContext>(boundary, consumer, inbox || outbox is not null, outbox is not null, configuration)
+            configuration, services.GetRequiredService<RelayerInstrumentation>(), isolationLevel);
+        var nativeRetries = context.Database.CreateExecutionStrategy().RetriesOnFailure;
+        // Keep the provider-default path unchanged. Explicit isolation opts into bounded conflict replay.
+        return nativeRetries || isolationLevel is not null
+            ? new RetryingEntityFrameworkCoreConsumer<TContext>(boundary, consumer, inbox || outbox is not null,
+                outbox is not null, configuration, conflictRetries: !nativeRetries)
             : boundary;
     }
 }

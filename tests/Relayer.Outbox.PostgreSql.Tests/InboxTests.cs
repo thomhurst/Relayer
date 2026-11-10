@@ -1,6 +1,9 @@
 using System.Buffers;
+using System.Collections.Concurrent;
+using System.Data;
 using System.Data.Common;
 using Microsoft.EntityFrameworkCore.Diagnostics;
+using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Npgsql;
@@ -135,6 +138,125 @@ public class InboxTests : InboxContractTests
         await Assert.That(await database.Count("outbox")).IsEqualTo(1L);
         await Assert.That(await database.Orders()).IsEqualTo(1L);
         await Assert.That(provider.GetRequiredService<Transport>().Sends).IsEqualTo(0);
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Serializable_conflicting_deliveries_replay_the_complete_handler_in_a_fresh_scope(bool nativeRetries)
+    {
+        await using var database = new Database();
+        await database.Start();
+        await using var provider = database.Services(outbox: true, retries: nativeRetries);
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        var bothRead = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var attempts = new ConcurrentBag<(string Message, IServiceProvider Scope, OrdersContext Context)>();
+        var reads = 0;
+        var control = provider.GetRequiredService<Control>();
+        control.AfterSave = async context =>
+        {
+            var db = context.Services.GetRequiredService<OrdersContext>();
+            attempts.Add((context.MessageId, context.Services, db));
+            await Assert.That(db.Database.CurrentTransaction!.GetDbTransaction().IsolationLevel).IsEqualTo(IsolationLevel.Serializable);
+            await db.Set<Order>().CountAsync(timeout.Token);
+            if (Interlocked.Increment(ref reads) == 2) bothRead.TrySetResult();
+            await bothRead.Task.WaitAsync(timeout.Token);
+        };
+        var failures = new FailurePipeline(provider, "events", "source", "orders", new());
+        var completions = 0;
+        var pipeline = Pipeline(provider, failures: failures, isolationLevel: IsolationLevel.Serializable)
+            .Settle(context =>
+            {
+                if (context.Features.GetRequired<ISettlementFeature>().RequestedDisposition is { Kind: DispositionKind.Complete })
+                    Interlocked.Increment(ref completions);
+                return default;
+            }).Build();
+        await Task.WhenAll(Deliver(pipeline, Message(), timeout.Token), Deliver(pipeline, Message(), timeout.Token));
+        await Assert.That(control.Invocations).IsEqualTo(3);
+        await Assert.That(completions).IsEqualTo(2);
+        var replay = attempts.GroupBy(x => x.Message).Single(x => x.Count() == 2).ToArray();
+        await Assert.That(replay[0].Scope).IsNotSameReferenceAs(replay[1].Scope);
+        await Assert.That(replay[0].Context).IsNotSameReferenceAs(replay[1].Context);
+        await Assert.That(await database.Orders()).IsEqualTo(2L);
+        await Assert.That(await database.Count("inbox")).IsEqualTo(2L);
+        await Assert.That(await database.Count("outbox")).IsEqualTo(2L);
+        await Assert.That(provider.GetRequiredService<Transport>().Sends).IsEqualTo(0);
+    }
+
+    [Test]
+    [Arguments(IsolationLevel.RepeatableRead, false)]
+    [Arguments(IsolationLevel.RepeatableRead, true)]
+    [Arguments(IsolationLevel.Serializable, false)]
+    [Arguments(IsolationLevel.Serializable, true)]
+    public async Task Snapshot_duplicate_racing_original_retries_the_inbox_without_repeating_handler(IsolationLevel isolationLevel, bool nativeRetries)
+    {
+        await using var database = new Database();
+        await database.Start();
+        await using var provider = database.Services(outbox: true, retries: nativeRetries);
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        var saved = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var control = provider.GetRequiredService<Control>();
+        control.AfterSave = async _ =>
+        {
+            saved.TrySetResult();
+            await release.Task.WaitAsync(timeout.Token);
+        };
+        var failures = new FailurePipeline(provider, "events", "source", "orders", new());
+        var completions = 0;
+        var pipeline = Pipeline(provider, failures: failures, isolationLevel: isolationLevel)
+            .Settle(context =>
+            {
+                if (((DefaultMessageContext)context).ObservedDisposition.Kind == DispositionKind.Complete)
+                    Interlocked.Increment(ref completions);
+                return default;
+            }).Build();
+        var message = Message();
+        var original = Deliver(pipeline, message, timeout.Token);
+        await saved.Task.WaitAsync(timeout.Token);
+        var duplicate = Deliver(pipeline, message, timeout.Token);
+        try { await database.WaitForInboxLock(); }
+        finally { release.TrySetResult(); }
+        await Task.WhenAll(original, duplicate);
+        await Assert.That(control.Invocations).IsEqualTo(1);
+        await Assert.That(completions).IsEqualTo(2);
+        await Assert.That(await database.Orders()).IsEqualTo(1L);
+        await Assert.That(await database.Count("inbox")).IsEqualTo(1L);
+        await Assert.That(await database.Count("outbox")).IsEqualTo(1L);
+    }
+
+    [Test]
+    [Arguments(PostgresErrorCodes.SerializationFailure, false)]
+    [Arguments(PostgresErrorCodes.DeadlockDetected, true)]
+    public async Task Conflict_retry_exhaustion_uses_normal_failure_handling(string sqlState, bool wrapped)
+    {
+        await using var database = new Database();
+        await database.Start();
+        await using var provider = database.Services(outbox: true);
+        var control = provider.GetRequiredService<Control>();
+        var scopes = new HashSet<IServiceProvider>();
+        control.AfterSave = async context =>
+        {
+            scopes.Add(context.Services);
+            try
+            {
+                var sql = sqlState == PostgresErrorCodes.SerializationFailure
+                    ? "DO $conflict$ BEGIN RAISE EXCEPTION 'transaction conflict' USING ERRCODE = '40001'; END $conflict$"
+                    : "DO $conflict$ BEGIN RAISE EXCEPTION 'transaction conflict' USING ERRCODE = '40P01'; END $conflict$";
+                await context.Services.GetRequiredService<OrdersContext>().Database.ExecuteSqlRawAsync(sql);
+            }
+            catch (PostgresException error) when (wrapped) { throw new DbUpdateException("Save failed", error); }
+        };
+        var failures = new FailurePipeline(provider, "events", "source", "orders", new());
+        var pipeline = Pipeline(provider, failures: failures, isolationLevel: IsolationLevel.Serializable).Build();
+        using var context = pipeline.RentContext(Message());
+        await pipeline.ProcessAsync(context);
+        await Assert.That(control.Invocations).IsEqualTo(4);
+        await Assert.That(scopes.Count).IsEqualTo(4);
+        await Assert.That(context.ObservedDisposition.Kind).IsEqualTo(DispositionKind.DeadLetter);
+        await Assert.That(await database.Orders()).IsEqualTo(0L);
+        await Assert.That(await database.Count("inbox")).IsEqualTo(0L);
+        await Assert.That(await database.Count("outbox")).IsEqualTo(0L);
     }
 
     [Test]
@@ -320,7 +442,7 @@ public class InboxTests : InboxContractTests
     }
 
     private static ConsumePipelineBuilder Pipeline(ServiceProvider provider, string consumer = "orders", bool inbox = false,
-        FailurePipeline? failures = null)
+        FailurePipeline? failures = null, IsolationLevel? isolationLevel = null)
     {
         var scopes = provider.GetRequiredService<IServiceScopeFactory>();
         var messages = provider.GetRequiredService<MessageTypeRegistry>();
@@ -328,7 +450,7 @@ public class InboxTests : InboxContractTests
             ? new ConsumePipelineBuilder(scopes, messages, new Serializer(), static (_, error, _) => ValueTask.FromException(error))
             : new ConsumePipelineBuilder(scopes, messages, new Serializer(), failures);
         return builder.Handler(provider.GetRequiredService<HandlerRegistry>().GetHandler<Probe, Handler>())
-            .EntityFrameworkCore<OrdersContext>(consumer, inbox, inbox ? Database.Options : null);
+            .EntityFrameworkCore<OrdersContext>(consumer, inbox, inbox ? Database.Options : null, isolationLevel: isolationLevel);
     }
 
     private static ConsumeMessage Message() => new()
