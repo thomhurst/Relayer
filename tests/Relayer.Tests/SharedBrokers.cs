@@ -96,14 +96,36 @@ internal sealed class ServiceBusStack(INetwork network, MsSqlContainer database,
         var database = databaseBuilder.Build();
         var stack = new ServiceBusStack(network, database,
             emulatorBuilder.WithMsSqlContainer(network, database, ServiceBusBuilder.DatabaseNetworkAlias).Build());
-        try { await ServiceBusStartupDiagnostics.StartAsync(stack.Emulator.StartAsync, database, stack.Emulator, provisioning.Token); return stack; }
+        await StartWithCleanupAsync(
+            () => ServiceBusStartupDiagnostics.StartAsync(stack.Emulator.StartAsync, database, stack.Emulator, provisioning.Token),
+            stack.DisposeAsync, provisioning.Token, ReportCleanupFailure);
+        return stack;
+    }
+
+    internal static async Task StartWithCleanupAsync(Func<Task> start, Func<ValueTask> cleanup,
+        CancellationToken provisioning, Action<Exception> reportCleanupFailure)
+    {
+        try { await start(); }
         catch (OperationCanceledException error) when (provisioning.IsCancellationRequested)
         {
-            await stack.DisposeAsync();
+            await CleanupFailedStartupAsync();
             throw new TimeoutException("Service Bus emulator provisioning exceeded 15 minutes (image pulls and container readiness).", error);
         }
-        catch { await stack.DisposeAsync(); throw; }
+        catch { await CleanupFailedStartupAsync(); throw; }
+
+        async Task CleanupFailedStartupAsync()
+        {
+            try { await cleanup(); }
+            catch (Exception cleanupError)
+            {
+                try { reportCleanupFailure(cleanupError); }
+                catch (Exception) { /* Preserve the startup failure even if output is unavailable. */ }
+            }
+        }
     }
+
+    private static void ReportCleanupFailure(Exception error) =>
+        Console.Error.WriteLine($"Service Bus startup cleanup failed: {error}");
 
     // The properties of the emulator's configured queues, within its documented TTL and size quotas.
     internal Task CreateQueueAsync(string name, bool requiresSession, CancellationToken token) =>
