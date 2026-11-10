@@ -38,6 +38,20 @@ class ScopeControlTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 executable(root, True)
 
+    def test_resolution_selection_uses_its_original_runner_and_rejects_scope_only(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source, image = original_tests.OriginalRunnerTests().fixture(root, '7')
+            original = source.read_text().replace('EndToEndBenchmarks', 'ConsumePipelineBenchmarks').replace('ConcurrentRoundTrip()', 'ScopeAndHandlerResolution()').replace('OperationsPerInvoke = 8', 'OperationsPerInvoke = 1').replace('{ Operations', '{ instance.ScopedHandler = true; Operations')
+            source.write_text(original)
+            self.assertEqual(executable(root, True, 'ScopeAndHandlerResolution'), (image.resolve(), '7'))
+            with self.assertRaises(ValueError):
+                executable(root, True)
+            with self.assertRaises(ValueError):
+                executable(root, False, 'ScopeAndHandlerResolution')
+            with self.assertRaises(ValueError):
+                executable(root, True, 'Other')
+
     def test_all_launches_attempted_and_unfavorable_results_retained_after_failure(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -51,7 +65,7 @@ class ScopeControlTests(unittest.TestCase):
 
             with patch('sys.argv', ['control', directory, str(root / 'output')]), \
                  patch('frozen_scope_control.verify', return_value='commit') as verify, \
-                 patch('frozen_scope_control.executable', side_effect=lambda path, scoped: (path / 'runner.dll', '4' if scoped else '0')), \
+                 patch('frozen_scope_control.executable', side_effect=lambda path, scoped, method="ScopeOnly": (path / 'runner.dll', '4' if scoped else '0')), \
                  patch('frozen_scope_control.subprocess.run', side_effect=execute):
                 with self.assertRaises(SystemExit):
                     main()
@@ -79,9 +93,9 @@ class ScopeControlTests(unittest.TestCase):
                         Path(environment['DOTNET_JitStdOutFile']).write_text(
                             '; Assembly listing for method Example:ScopeOnly()\n')
 
-                with patch('sys.argv', ['control', directory, str(root / 'output'), '--jit-disassembly']), \
+                with patch('sys.argv', ['control', directory, str(root / 'output'), '--jit-disassembly', '--method', 'ScopeAndHandlerResolution']), \
                      patch('frozen_scope_control.verify', return_value='commit') as verify, \
-                     patch('frozen_scope_control.executable', side_effect=lambda path, scoped: (path / 'runner.dll', '4' if scoped else '0')), \
+                     patch('frozen_scope_control.executable', side_effect=lambda path, scoped, method="ScopeOnly": (path / 'runner.dll', '4' if scoped else '0')), \
                      patch('frozen_scope_control.subprocess.run', side_effect=execute):
                     if emit_code:
                         main()
@@ -89,6 +103,9 @@ class ScopeControlTests(unittest.TestCase):
                         with self.assertRaises(SystemExit):
                             main()
                 self.assertEqual(len(environments), 8)
+                protocol = json.loads((root / 'output/protocol.json').read_text())
+                self.assertTrue(protocol['benchmark'].endswith('.ScopeAndHandlerResolution'))
+                self.assertTrue(all(launch['command'][3] == protocol['benchmark'] for launch in protocol['launches']))
                 self.assertEqual(verify.call_count, 6)
                 self.assertEqual(len({env['DOTNET_JitStdOutFile'] for env in environments}), 8)
                 outcomes = json.loads((root / 'output/outcomes.json').read_text())
@@ -113,7 +130,7 @@ class ScopeControlTests(unittest.TestCase):
                 with patch('sys.argv', ['control', directory, str(root / 'output'), '--tiered-compilation', setting]), \
                      patch('frozen_scope_control.os.environ', parent), \
                      patch('frozen_scope_control.verify', return_value='commit'), \
-                     patch('frozen_scope_control.executable', side_effect=lambda path, scoped: (path / 'runner.dll', '4')), \
+                     patch('frozen_scope_control.executable', side_effect=lambda path, scoped, method="ScopeOnly": (path / 'runner.dll', '4')), \
                      patch('frozen_scope_control.subprocess.run', side_effect=execute):
                     main()
                 expected = '0' if setting == 'off' else '1'

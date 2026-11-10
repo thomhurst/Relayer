@@ -1,4 +1,4 @@
-name: Frozen scope throughput control
+name: Frozen handler-resolution code capture
 
 # New historical-input experiment, never a rerun of the performance gate.
 on:
@@ -33,17 +33,16 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh run download 42772012652 --name performance-42772012652-1 --dir inputs
-      # Timing controls are retained in run 42779203851. Inspect native code in
-      # the unfavorable tiering-off condition; diagnostic timings are excluded.
-      - name: Capture native code with tiered compilation disabled
+          gh run download 42774764169 --name performance-42774764169-1 --dir inputs
+      # Separate diagnostic execution; retain every ABBA attempt, never gate timing.
+      - name: Capture original handler-resolution code without tier transitions
         if: success() || failure()
-        run: python3 .github/scripts/frozen_scope_control.py inputs results/tiering-off-code --tiered-compilation off --jit-disassembly
+        run: python3 .github/scripts/frozen_scope_control.py inputs results/code --method ScopeAndHandlerResolution --tiered-compilation off --jit-disassembly
       - name: Retain all outcomes and executable inputs
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: frozen-scope-control-${{ github.run_id }}-${{ github.run_attempt }}
+          name: frozen-handler-resolution-capture-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             results/
             inputs/
