@@ -1,0 +1,156 @@
+name: Frozen sequence propagation allocation investigation
+
+# Issue #430: fixed experiments against run 42760437053, never a performance-gate retry.
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/sequence-allocation-control.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  ORIGINAL_RUN: '42760437053'
+
+jobs:
+  original-engine:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 70
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
+        with:
+          dotnet-version: '10.0.403'
+      - name: Record host and verify existing launchers
+        run: |
+          mkdir -p results
+          dotnet --info > results/runtime.txt
+          uname -a > results/host.txt
+          python3 -m unittest discover -s .github/scripts -p test_frozen_bdn_control.py > results/launcher-tests.log 2>&1
+      - name: Download the original reports, inventories and frozen images
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh run download "$ORIGINAL_RUN" --name "performance-$ORIGINAL_RUN-1" --dir inputs
+      - name: Replay original strict comparison without changing inputs or thresholds
+        run: |
+          python3 - <<'PY' > results/original-comparison.log 2>&1
+          import json
+          import sys
+          from pathlib import Path
+          sys.path.insert(0, '.github/scripts')
+          from benchmark_gate import compare, input_change_summary, load_reports
+          from frozen_concurrent_control import verify
+          for side in ('baseline', 'candidate', 'baseline-after'):
+              verify(Path('inputs/performance-builds') / side)
+          manifest = json.loads(Path('inputs/performance-inputs.json').read_text())
+          assert manifest['identical'] is False
+          assert manifest['baseline'] != manifest['candidate']
+          reports = Path('inputs/performance-results')
+          failures, summary = compare(load_reports(reports / 'baseline'), load_reports(reports / 'candidate'),
+              baseline_after=load_reports(reports / 'baseline-after'), identical_inputs=False)
+          print(summary + input_change_summary(manifest['baseline'], manifest['candidate']))
+          print(json.dumps(failures, indent=2))
+          assert any('ConcurrentRoundTrip' in failure and 'allocations increased' in failure for failure in failures)
+          print('Reproduced original allocation failure; this is not a passing regression gate.')
+          PY
+      - name: Execute fixed original BenchmarkDotNet engine ABBA
+        if: ${{ !cancelled() }}
+        run: python3 .github/scripts/frozen_bdn_control.py inputs results/original-engine
+      - name: Retain original inputs and every outcome
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: sequence-allocation-original-engine-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            results/
+            inputs/
+            .github/scripts/benchmark_gate.py
+            .github/scripts/frozen_bdn_control.py
+            .github/scripts/frozen_concurrent_control.py
+            .github/workflows/sequence-allocation-control.yml
+          retention-days: 90
+
+  controls:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: full-delivery
+            probe: FrozenConcurrentProbe
+            options: ''
+            profile: true
+          - name: original-waiter
+            probe: FrozenConcurrentProbe
+            options: '--bdn-await'
+            profile: true
+          - name: fixture
+            probe: FrozenFixtureProbe
+            options: ''
+            profile: true
+          - name: exact-driver
+            probe: FrozenDriverProbe
+            options: '--exact-driver'
+            profile: false
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
+        with:
+          dotnet-version: '10.0.403'
+      - name: Record host, test verifier and build existing external probe
+        env:
+          PROBE: ${{ matrix.probe }}
+        run: |
+          mkdir -p results
+          dotnet --info > results/runtime.txt
+          uname -a > results/host.txt
+          python3 -m unittest discover -s .github/scripts -p test_frozen_concurrent_control.py > results/verifier-tests.log 2>&1
+          dotnet build "tools/$PROBE" -c Release > results/probe-build.log 2>&1
+      - name: Build existing profile reader and install pinned profiler
+        if: matrix.profile
+        run: |
+          dotnet build tools/FrozenAllocationReader -c Release > results/reader-build.log 2>&1
+          dotnet tool install dotnet-trace --tool-path .diagnostic-tools --version 10.0.750501 > results/trace-install.log 2>&1
+      - name: Download exact original inputs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh run download "$ORIGINAL_RUN" --name "performance-$ORIGINAL_RUN-1" --dir inputs
+      - name: Execute separate fixed-count ABBA
+        env:
+          PROBE: ${{ matrix.probe }}
+          OPTIONS: ${{ matrix.options }}
+        run: python3 .github/scripts/frozen_concurrent_control.py inputs "tools/$PROBE/bin/Release/net10.0/$PROBE.dll" results/unprofiled $OPTIONS
+      - name: Collect separate measured-region owner profiles
+        if: ${{ !cancelled() && matrix.profile }}
+        env:
+          PROBE: ${{ matrix.probe }}
+          OPTIONS: ${{ matrix.options }}
+        run: python3 .github/scripts/frozen_concurrent_control.py inputs "tools/$PROBE/bin/Release/net10.0/$PROBE.dll" results/profiled $OPTIONS --trace-tool .diagnostic-tools/dotnet-trace --profile-reader tools/FrozenAllocationReader/bin/Release/net10.0/FrozenAllocationReader.dll --keep-traces
+      - name: Count separate synchronous full-delivery invocations
+        if: ${{ !cancelled() && matrix.name == 'full-delivery' }}
+        run: python3 .github/scripts/frozen_concurrent_control.py inputs tools/FrozenConcurrentProbe/bin/Release/net10.0/FrozenConcurrentProbe.dll results/exact-roundtrips --exact-roundtrips
+      - name: Count separate synchronous handler invocations
+        if: ${{ !cancelled() && matrix.name == 'fixture' }}
+        run: python3 .github/scripts/frozen_concurrent_control.py inputs tools/FrozenFixtureProbe/bin/Release/net10.0/FrozenFixtureProbe.dll results/exact-invocations --exact-invocations
+      - name: Count separate synchronous channel release batches
+        if: ${{ !cancelled() && matrix.name == 'fixture' }}
+        run: python3 .github/scripts/frozen_concurrent_control.py inputs tools/FrozenFixtureProbe/bin/Release/net10.0/FrozenFixtureProbe.dll results/exact-releases --exact-releases
+      - name: Retain every outcome, original input and diagnostic executable
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: sequence-allocation-${{ matrix.name }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            results/
+            inputs/
+            tools/${{ matrix.probe }}/
+            tools/FrozenFixtureProbe/InvocationAllocations.cs
+            tools/FrozenMeasurementEvents.cs
+            tools/FrozenAllocationReader/
+            .diagnostic-tools/
+            .github/scripts/frozen_concurrent_control.py
+            .github/workflows/sequence-allocation-control.yml
+          retention-days: 90
