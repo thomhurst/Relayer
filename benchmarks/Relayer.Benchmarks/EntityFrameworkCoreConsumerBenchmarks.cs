@@ -23,12 +23,16 @@ public class EntityFrameworkCoreConsumerBenchmarks
     [Params(false, true)]
     public bool ExplicitIsolation { get; set; }
 
+    [Params(false, true)]
+    public bool Tenancy { get; set; }
+
     [GlobalSetup]
     public void Setup()
     {
         var connection = Environment.GetEnvironmentVariable("RELAYER_BENCHMARK_POSTGRES")
             ?? throw new InvalidOperationException("Set RELAYER_BENCHMARK_POSTGRES to a disposable PostgreSQL benchmark database.");
         var services = new ServiceCollection();
+        if (Tenancy) services.AddRelayerTenancy();
         services.AddDbContext<Context>(o => o.UseNpgsql(connection, n =>
         {
             if (NativeRetries) n.EnableRetryOnFailure();

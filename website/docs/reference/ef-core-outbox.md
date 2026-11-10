@@ -201,7 +201,9 @@ stable wire type and creation time directly from the send pipeline. This also wo
 and custom native header names; Relayer does not infer identity by scanning headers.
 The serialized body, all headers, ordering key and delivery time survive buffer reuse. New sends have
 zero attempts and no dispatch error; callers cannot supply a lane. Tenant ID is preserved when supplied
-through the low-level record contract; automatic tenant resolution remains planned.
+through the low-level record contract; automatic durable tenant metadata binding remains planned.
+[Native scoped store selection](tenant-stores.md) also supports incoming single-message EF consumers
+when tenancy is registered.
 
 Header codec version 1 uses little-endian Int32 version and count, followed by name/value pairs, each
 with an Int32 byte length and UTF-8 bytes. Header order and duplicate names are preserved. Ordered rows

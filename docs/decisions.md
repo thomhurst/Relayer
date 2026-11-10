@@ -888,12 +888,15 @@ configuration model. Validate manual scoped outbox units and explicitly composed
 against multiple PostgreSQL databases and schemas, including overlapping inbox IDs and rollback.
 Application-owned data sources retain their native ownership and pool semantics.
 
-**Consequences.** This supplies independently useful store isolation without waiting for automatic
-tenant-header propagation. It does not complete multi-tenancy: the EF consumer currently resolves a
-context during startup validation, before a delivery tenant exists. Dynamic incoming-tenant context
-binding must remove that assumption without a default tenant, preserve validation, and bind durable
-tenant metadata consistently with the wire header. Tenant enumeration and a shared dispatch connection
-budget remain separate work. Static per-tenant endpoints do not establish those dynamic guarantees.
+**Consequences.** With `AddRelayerTenancy`, single-message `EntityFrameworkCore<TContext>` consumers
+compose without resolving a startup context. Applications authorize and select stores through native
+scoped factories after header restoration. The boundary validates provider, context pooling and
+outbox options before transactions in delivery/retry scopes; native execution strategies remain
+authoritative. The existing immutable outbox configuration is attached through EF's native options
+extension facility, so delivery validation does not enumerate interceptor sequences or retain a
+worker-lifetime tenant cache. Providers without tenancy retain startup validation. Saga state model
+validation still requires a startup context. Durable tenant/store/header binding, tenant enumeration
+and a shared dispatch connection budget remain separate work.
 
 ## D46. SQL Server primitives use native SqlClient with an explicit AOT boundary
 

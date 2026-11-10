@@ -7,9 +7,9 @@ using Npgsql;
 
 namespace Relayer.Outbox.EntityFrameworkCore;
 
-// Selected once at composition; the non-retrying boundary pays none of these costs.
+// Fixed stores select this at composition. Tenant stores select the native strategy in their delivery scope.
 internal sealed class RetryingEntityFrameworkCoreConsumer<TContext>(EntityFrameworkCoreConsumer<TContext> boundary,
-    string consumer, bool inbox, bool outbox, OutboxConfiguration configuration, bool conflictRetries = false) : IConsumeTransactionMiddleware where TContext : DbContext
+    string consumer, bool conflictRetries = false) : IConsumeTransactionMiddleware where TContext : DbContext
 {
     private readonly Operation?[] _operations = new Operation[16];
 
@@ -19,21 +19,35 @@ internal sealed class RetryingEntityFrameworkCoreConsumer<TContext>(EntityFramew
         var incoming = (DefaultMessageContext)context;
         var services = incoming.Services;
         var db = services.GetRequiredService<TContext>();
-        var strategy = conflictRetries ? new PostgreSqlConflictExecutionStrategy(db) : db.Database.CreateExecutionStrategy();
-        var messageId = inbox ? EntityFrameworkCoreConsumer<TContext>.ParseMessageId(context.MessageId) : default;
+        var settings = boundary.Resolve(db);
+        IExecutionStrategy strategy;
+        if (boundary.ScopedValidation)
+        {
+            var native = db.Database.CreateExecutionStrategy();
+            if (!native.RetriesOnFailure && !conflictRetries)
+            {
+                await boundary.InvokeAsync(context, next, db, settings).ConfigureAwait(false);
+                return;
+            }
+            strategy = conflictRetries && !native.RetriesOnFailure ? new PostgreSqlConflictExecutionStrategy(db) : native;
+        }
+        else strategy = conflictRetries ? new PostgreSqlConflictExecutionStrategy(db) : db.Database.CreateExecutionStrategy();
+        var messageId = settings.Inbox ? EntityFrameworkCoreConsumer<TContext>.ParseMessageId(context.MessageId) : default;
         Operation? operation = null;
         for (var i = 0; i < _operations.Length; i++)
             if (Interlocked.Exchange(ref _operations[i], null) is { } cached) { operation = cached; break; }
         operation ??= new Operation();
         operation.Context = incoming;
         operation.Next = next;
-        operation.Configuration = configuration;
+        operation.Configuration = settings.Configuration;
+        operation.Inbox = settings.Inbox;
+        operation.Outbox = settings.Outbox;
         operation.MessageId = messageId;
         try
         {
             await strategy.ExecuteAsync((Owner: this, Operation: operation),
                 static (_, state, cancellation) => state.Owner.AttemptAsync(state.Operation, cancellation),
-                inbox ? static (_, state, cancellation) => state.Owner.VerifyAsync(state.Operation, cancellation) : null,
+                settings.Inbox ? static (_, state, cancellation) => state.Owner.VerifyAsync(state.Operation, cancellation) : null,
                 context.CancellationToken).ConfigureAwait(false);
             // Cleanup belongs outside both native retries and handler-failure policy.
             if (incoming.ScopeCleanupError is { } cleanup) ExceptionDispatchInfo.Throw(cleanup);
@@ -68,19 +82,22 @@ internal sealed class RetryingEntityFrameworkCoreConsumer<TContext>(EntityFramew
                 var buffer = context.ActiveAttemptBuffer;
                 context.SetServices(scope.ServiceProvider);
                 var db = context.Services.GetRequiredService<TContext>();
+                var settings = boundary.Resolve(db);
+                if (settings.Inbox != operation.Inbox || settings.Outbox != operation.Outbox)
+                    throw new InvalidOperationException("The selected DbContext must keep the same inbox and outbox capabilities across native retry attempts.");
                 var scopedSender = context.Services.GetService<ISender>();
                 if (scopedSender is not null && scopedSender is not Sender)
                     throw new InvalidOperationException("EF Core consumer retries require Relayer's scoped ISender.");
                 sender = (Sender?)scopedSender;
                 if (sender is not null) sender.AttemptBuffer = buffer;
-                try { await boundary.InvokeAsync(context, operation.Next).ConfigureAwait(false); }
+                try { await boundary.InvokeAsync(context, operation.Next, db, settings).ConfigureAwait(false); }
                 finally
                 {
                     // The transaction interceptor registers this scope's configuration first, including
                     // when commit throws. Verification must query that attempted inbox, not startup options.
-                    operation.Configuration = outbox
-                        ? context.Services.GetRequiredService<EntityFrameworkCoreOutbox>().Get(db, configuration).Configuration
-                        : configuration;
+                    operation.Configuration = operation.Outbox
+                        ? context.Services.GetRequiredService<EntityFrameworkCoreOutbox>().Get(db, settings.Configuration).Configuration
+                        : settings.Configuration;
                 }
             }
             finally
@@ -120,6 +137,9 @@ internal sealed class RetryingEntityFrameworkCoreConsumer<TContext>(EntityFramew
                 // Restore tenant-scoped configuration before resolving the verification context too.
                 context.SetServices(scope.ServiceProvider);
                 var db = scope.ServiceProvider.GetRequiredService<TContext>();
+                var settings = boundary.Resolve(db);
+                if (settings.Inbox != operation.Inbox || settings.Outbox != operation.Outbox)
+                    throw new InvalidOperationException("The verification DbContext must keep the attempted inbox and outbox capabilities.");
                 var connection = (NpgsqlConnection)db.Database.GetDbConnection();
                 await connection.OpenAsync(cancellation).ConfigureAwait(false);
                 await using var command = new NpgsqlCommand(operation.Configuration.InboxExistsSql, connection);
@@ -146,6 +166,8 @@ internal sealed class RetryingEntityFrameworkCoreConsumer<TContext>(EntityFramew
         internal ConsumeDelegate Next = null!;
         internal OutboxConfiguration Configuration = null!;
         internal Guid MessageId;
+        internal bool Inbox;
+        internal bool Outbox;
         internal void Clear()
         {
             Context = null!;

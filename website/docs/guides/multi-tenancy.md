@@ -53,10 +53,12 @@ native ordering, settlement, retries, or transaction semantics.
 
 ## Tenant databases and dispatch
 
-Automatic `IOutboxStoreResolver` selection and `ITenantSource` dispatch enumeration remain planned
-under [#38](https://github.com/thomhurst/Relayer/issues/38). There is no shared tenant connection budget
-yet. Existing [PostgreSQL](../reference/postgres-outbox.md) and [EF Core](../reference/ef-core-outbox.md)
-integrations continue to use explicitly selected connections and contexts. EF Core consumer composition
-validates a context in a temporary startup scope whose tenant is empty; database factories must also
-support that validation. The wire header is preserved
-in outbox payloads; automatic population of the separate `tenant_id` column remains planned.
+[Native tenant store selection](../reference/tenant-stores.md) uses application-owned scoped factories;
+there is no separate Relayer `IOutboxStoreResolver`. With `AddRelayerTenancy`, single-message
+`EntityFrameworkCore<TContext>` consumers compose without a startup DbContext or fallback tenant.
+Authorize the incoming identifier in the scoped native factory before selecting the store. The
+boundary validates the selected context before its transaction, including each native retry scope.
+
+`ITenantSource` dispatch enumeration and a shared tenant connection budget remain planned under
+[#38](https://github.com/thomhurst/Relayer/issues/38). The wire header is preserved in outbox payloads;
+automatic population and validation of the separate durable `tenant_id` column remain planned.
