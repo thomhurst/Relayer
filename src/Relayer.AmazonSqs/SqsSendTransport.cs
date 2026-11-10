@@ -39,7 +39,7 @@ internal sealed class SqsSendTransport : ITransport, ITransportSendTracing
     }
 
     // Resolve bindings before constructing an owned client, so invalid declarations cannot leak it.
-    internal static IReadOnlyDictionary<string, string> ResolveIdentityHeaders(IReadOnlyList<IRouteDefinition> routes)
+    internal static IReadOnlyDictionary<string, string> ResolveIdentityHeaders(IReadOnlyList<IRouteDefinition> routes, string endpointDescription = "SQS FIFO queue")
     {
         var headers = new Dictionary<string, string>(StringComparer.Ordinal);
         foreach (var route in routes)
@@ -48,7 +48,7 @@ internal sealed class SqsSendTransport : ITransport, ITransportSendTracing
                 route.SendOptions.EnvelopeMode != MessageEnvelopeMode.CloudEvents) continue;
             var identityHeader = route.SendOptions.HeaderNames.Id;
             if (headers.TryGetValue(route.Destination, out var existing) && existing != identityHeader)
-                throw new InvalidOperationException($"SQS FIFO queue '{route.Destination}': CloudEvents routes must use the same HeaderNames identity binding. Configure matching HeaderNames for every route to this queue.");
+                throw new InvalidOperationException($"{endpointDescription} '{route.Destination}': CloudEvents routes must use the same HeaderNames identity binding. Configure matching HeaderNames for every route to this queue.");
             headers[route.Destination] = identityHeader;
         }
         return headers;
