@@ -53,6 +53,9 @@ public class SqlServerOutboxCommitBenchmarks
     [Params(1, 64)]
     public int Rows { get; set; }
 
+    [Params(false, true)]
+    public bool Ordered { get; set; }
+
     [GlobalSetup]
     public async Task Setup()
     {
@@ -70,15 +73,17 @@ public class SqlServerOutboxCommitBenchmarks
         _nativeRows.Columns.Add("headers", typeof(byte[]));
         _nativeRows.Columns.Add("body", typeof(byte[]));
         _nativeRows.Columns.Add("created_at", typeof(DateTimeOffset));
+        _nativeRows.Columns.Add("lane", typeof(int));
+        _nativeRows.Columns.Add("ordering_key", typeof(string));
         _records = new OutboxRecord[Rows];
         var now = DateTimeOffset.UtcNow;
         var body = new byte[1024];
         for (var i = 0; i < Rows; i++)
         {
             var id = Guid.CreateVersion7();
-            _records[i] = new(id, "events", "benchmark.order;v=1", new OutgoingMessage("orders", body), now);
+            _records[i] = new(id, "events", "benchmark.order;v=1", new OutgoingMessage("orders", body, orderingKey: Ordered ? new WireString("customer") : null), now);
             _nativeRows.Rows.Add(id.ToByteArray(bigEndian: true), "events", "orders", "benchmark.order;v=1",
-                new byte[] { 1, 0, 0, 0, 0, 0, 0, 0 }, body, now);
+                new byte[] { 1, 0, 0, 0, 0, 0, 0, 0 }, body, now, Ordered ? 0 : DBNull.Value, Ordered ? "customer" : DBNull.Value);
         }
         await using var connection = new SqlConnection(_connectionString);
         await connection.OpenAsync();
@@ -124,7 +129,7 @@ public class SqlServerOutboxCommitBenchmarks
     {
         await using var connection = new SqlConnection(_connectionString);
         await connection.OpenAsync();
-        await using var drop = new SqlCommand($"DROP TABLE IF EXISTS {_table}, [dbo].[{_options.TablePrefix}inbox], [dbo].[{_options.TablePrefix}outbox_dead], [dbo].[{_options.TablePrefix}leases]", connection);
+        await using var drop = new SqlCommand($"DROP TABLE IF EXISTS {_table}, [dbo].[{_options.TablePrefix}inbox], [dbo].[{_options.TablePrefix}leases], [dbo].[{_options.TablePrefix}ordered_leases], [dbo].[{_options.TablePrefix}outbox_dead]; DROP SEQUENCE IF EXISTS [dbo].[{_options.TablePrefix}outbox_sequence]", connection);
         await drop.ExecuteNonQueryAsync();
         _nativeRows.Dispose();
         _scope.Dispose();

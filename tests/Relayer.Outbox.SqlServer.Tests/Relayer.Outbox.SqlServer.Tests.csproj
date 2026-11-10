@@ -3,6 +3,7 @@
     <OutputType>Exe</OutputType>
   </PropertyGroup>
   <ItemGroup>
+    <Compile Include="../Shared/OutboxOrderedDispatchContractTests.cs" Link="OutboxOrderedDispatchContractTests.cs" />
     <Compile Include="../Shared/OutboxStoreContractTests.cs" Link="OutboxStoreContractTests.cs" />
     <Compile Include="../Shared/OutboxDirectDispatchContractTests.cs" Link="OutboxDirectDispatchContractTests.cs" />
     <Compile Include="../Shared/OutboxMaintenanceContractTests.cs" Link="OutboxMaintenanceContractTests.cs" />

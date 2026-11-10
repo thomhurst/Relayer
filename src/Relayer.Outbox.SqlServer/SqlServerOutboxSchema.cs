@@ -15,22 +15,12 @@ public static class SqlServerOutboxSchema
         var leases = LeaseTable(options);
         var deadIndex = QuoteIdentifier(options.TablePrefix + "dead_retention_idx");
         var inboxIndex = QuoteIdentifier(options.TablePrefix + "inbox_expiry_idx");
+        var sequence = Sequence(options);
         var index = QuoteIdentifier(options.TablePrefix + "outbox_pending_idx");
-        // Dynamic DDL is needed for CREATE SCHEMA. Escape both identifier and SQL literal contexts.
-        return $"""
-            IF SCHEMA_ID(N'{Literal(schema)}') IS NULL
-                EXEC(N'CREATE SCHEMA {Literal(quotedSchema)}');
-            IF OBJECT_ID(N'{Literal(inbox)}', N'U') IS NULL
-                CREATE TABLE {inbox} (
-                    consumer nvarchar(256) COLLATE Latin1_General_100_BIN2 NOT NULL,
-                    message_id uniqueidentifier NOT NULL,
-                    processed_at datetimeoffset(7) NOT NULL DEFAULT SYSUTCDATETIME(),
-                    PRIMARY KEY (consumer, message_id)
-                );
-            IF OBJECT_ID(N'{Literal(table)}', N'U') IS NULL
-            BEGIN
+        var outboxDdl = $"""
                 CREATE TABLE {table} (
                     id binary(16) NOT NULL PRIMARY KEY CHECK (id <> 0x00000000000000000000000000000000),
+                    seq bigint NOT NULL,
                     lane int NULL CHECK (lane >= 0),
                     ordering_key nvarchar(max) NULL,
                     transport nvarchar(max) NOT NULL,
@@ -50,8 +40,30 @@ public static class SqlServerOutboxSchema
                     CHECK ((claim_token IS NULL AND claim_expires_at IS NULL)
                         OR (claim_token IS NOT NULL AND claim_expires_at IS NOT NULL))
                 );
+                ALTER TABLE {table} ADD DEFAULT (NEXT VALUE FOR {sequence}) FOR seq;
                 CREATE INDEX {index} ON {table} (lane, id)
                     INCLUDE (deliver_at, claim_expires_at) WHERE status = 'pending';
+                CREATE UNIQUE INDEX {QuoteIdentifier(options.TablePrefix + "outbox_seq_idx")} ON {table} (seq);
+                CREATE INDEX {QuoteIdentifier(options.TablePrefix + "outbox_lane_seq_idx")} ON {table} (lane, seq)
+                    INCLUDE (deliver_at, claim_expires_at) WHERE status = 'pending';
+            """;
+        // Dynamic DDL is needed for CREATE SCHEMA. Escape both identifier and SQL literal contexts.
+        return $"""
+            IF SCHEMA_ID(N'{Literal(schema)}') IS NULL
+                EXEC(N'CREATE SCHEMA {Literal(quotedSchema)}');
+            IF OBJECT_ID(N'{Literal(sequence)}', N'SO') IS NULL
+                CREATE SEQUENCE {sequence} AS bigint START WITH 1 INCREMENT BY 1 NO CACHE;
+            {CreateLeaseScript(options)}
+            IF OBJECT_ID(N'{Literal(inbox)}', N'U') IS NULL
+                CREATE TABLE {inbox} (
+                    consumer nvarchar(256) COLLATE Latin1_General_100_BIN2 NOT NULL,
+                    message_id uniqueidentifier NOT NULL,
+                    processed_at datetimeoffset(7) NOT NULL DEFAULT SYSUTCDATETIME(),
+                    PRIMARY KEY (consumer, message_id)
+                );
+            IF OBJECT_ID(N'{Literal(table)}', N'U') IS NULL
+            BEGIN
+                EXEC(N'{Literal(outboxDdl)}');
             END;
             IF OBJECT_ID(N'{Literal(dead)}', N'U') IS NULL
                 CREATE TABLE {dead} (
@@ -76,6 +88,50 @@ public static class SqlServerOutboxSchema
 
     internal static string DeadTable(SqlServerOutboxOptions options) =>
         QuoteIdentifier(options.Schema ?? "dbo") + "." + QuoteIdentifier(options.TablePrefix + "outbox_dead");
+    /// <summary>Explicit upgrade for pre-sequence tables. Stop writers/workers and execute in one application-owned transaction.</summary>
+    /// <remarks>Preserves historical UUID order; historical insertion order cannot be recovered. Do not reset the sequence.</remarks>
+    public static string UpgradeOrderedDispatchScript(SqlServerOutboxOptions? options = null)
+    {
+        options ??= new();
+        var table = Table(options);
+        var sequence = Sequence(options);
+        return $"""
+            IF @@TRANCOUNT = 0 THROW 51000, 'Run the ordered outbox upgrade in an explicit transaction with all writers and workers stopped.', 1;
+            IF COL_LENGTH(N'{Literal(table)}', N'seq') IS NOT NULL THROW 51000, 'The outbox already has an insert sequence.', 1;
+            IF OBJECT_ID(N'{Literal(sequence)}', N'SO') IS NULL
+                CREATE SEQUENCE {sequence} AS bigint START WITH 1 INCREMENT BY 1 NO CACHE;
+            ALTER TABLE {table} ADD seq bigint NULL;
+            """ + $"""
+
+            EXEC(N'UPDATE pending SET seq = numbered.position FROM {Literal(table)} AS pending JOIN (SELECT id, ROW_NUMBER() OVER (ORDER BY id) AS position FROM {Literal(table)}) AS numbered ON pending.id = numbered.id;');
+            DECLARE @next bigint;
+            EXEC sys.sp_executesql N'SELECT @next = COALESCE(MAX(seq), 0) + 1 FROM {Literal(table)}', N'@next bigint OUTPUT', @next OUTPUT;
+            DECLARE @restart nvarchar(max) = N'ALTER SEQUENCE {Literal(sequence)} RESTART WITH ' + CONVERT(nvarchar(20), @next);
+            EXEC sys.sp_executesql @restart;
+            EXEC(N'ALTER TABLE {Literal(table)} ALTER COLUMN seq bigint NOT NULL; ALTER TABLE {Literal(table)} ADD DEFAULT (NEXT VALUE FOR {Literal(sequence)}) FOR seq;');
+            EXEC(N'CREATE UNIQUE INDEX {Literal(QuoteIdentifier(options.TablePrefix + "outbox_seq_idx"))} ON {Literal(table)} (seq); CREATE INDEX {Literal(QuoteIdentifier(options.TablePrefix + "outbox_lane_seq_idx"))} ON {Literal(table)} (lane, seq) INCLUDE (deliver_at, claim_expires_at) WHERE status = ''pending'';');
+            {CreateLeaseScript(options)}
+            """;
+    }
+
+    private static string CreateLeaseScript(SqlServerOutboxOptions options)
+    {
+        var leases = OrderedLeaseTable(options);
+        return $"""
+            IF OBJECT_ID(N'{Literal(leases)}', N'U') IS NULL
+                CREATE TABLE {leases} (
+                    name varchar(100) COLLATE Latin1_General_100_BIN2 NOT NULL PRIMARY KEY,
+                    owner varchar(100) COLLATE Latin1_General_100_BIN2 NOT NULL,
+                    expires_at datetimeoffset(7) NOT NULL
+                );
+            """;
+    }
+
+    internal static string Sequence(SqlServerOutboxOptions options) =>
+        QuoteIdentifier(options.Schema ?? "dbo") + "." + QuoteIdentifier(options.TablePrefix + "outbox_sequence");
+
+    internal static string OrderedLeaseTable(SqlServerOutboxOptions options) =>
+        QuoteIdentifier(options.Schema ?? "dbo") + "." + QuoteIdentifier(options.TablePrefix + "ordered_leases");
 
     internal static string LeaseTable(SqlServerOutboxOptions options) =>
         QuoteIdentifier(options.Schema ?? "dbo") + "." + QuoteIdentifier(options.TablePrefix + "leases");

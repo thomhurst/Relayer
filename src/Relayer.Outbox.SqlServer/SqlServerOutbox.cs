@@ -13,11 +13,13 @@ public sealed class SqlServerOutbox : IOutboxEnlistment, IDisposable, IAsyncDisp
     private readonly List<SqlServerBufferedMessage> _rows = [];
     private readonly SqlServerOutboxBatch _batch = new();
     private readonly string _table;
+    private readonly string _sequence;
     private readonly int _lanes;
     private readonly RelayerInstrumentation? _instrumentation;
     private readonly SqlServerDirectDispatcher? _dispatcher;
     private SqlServerOutboxTransaction? _transaction;
     private int _count;
+    private bool _ordered;
     private bool _disposed;
 
     /// <summary>Creates a scoped SQL Server enlistment using validated options.</summary>
@@ -40,6 +42,7 @@ public sealed class SqlServerOutbox : IOutboxEnlistment, IDisposable, IAsyncDisp
         _lanes = options.Value.Lanes;
         _instrumentation = instrumentation;
         _table = SqlServerOutboxSchema.Table(options.Value);
+        _sequence = SqlServerOutboxSchema.Sequence(options.Value);
     }
 
     /// <summary>The active borrowed transaction. Create business commands through its Connection; consumer middleware owns completion.</summary>
@@ -101,6 +104,7 @@ public sealed class SqlServerOutbox : IOutboxEnlistment, IDisposable, IAsyncDisp
         SqlServerBufferedMessage.Validate(record);
         if (_count == _rows.Count) _rows.Add(new());
         _rows[_count].Copy(record, _lanes);
+        _ordered |= record.Message.OrderingKey is not null;
         _count++;
         return ValueTask.CompletedTask;
     }
@@ -108,7 +112,7 @@ public sealed class SqlServerOutbox : IOutboxEnlistment, IDisposable, IAsyncDisp
     internal SqlServerOutboxBatch? Prepare(SqlTransaction transaction)
     {
         if (_count == 0) return null;
-        _batch.Prepare(transaction, _table, _rows, _count);
+        _batch.Prepare(transaction, _table, _rows, _count, _ordered ? _sequence : null);
         return _batch;
     }
 
@@ -123,6 +127,7 @@ public sealed class SqlServerOutbox : IOutboxEnlistment, IDisposable, IAsyncDisp
         if (!ReferenceEquals(_transaction, transaction)) return;
         for (var i = 0; i < _count; i++) _rows[i].Clear();
         _count = 0;
+        _ordered = false;
         _transaction = null;
     }
 

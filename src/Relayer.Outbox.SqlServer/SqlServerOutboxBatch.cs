@@ -15,6 +15,9 @@ internal sealed class SqlServerOutboxBatch : DbDataReader
     private List<SqlServerBufferedMessage>? _rows;
     private int _count;
     private int _index;
+    private SqlCommand? _reserve;
+    private long _firstSequence;
+    private readonly object _sequence = 0L;
     private readonly string[] _columns = ["id", "lane", "ordering_key", "transport", "destination", "message_type", "headers", "body", "created_at", "deliver_at", "tenant_id"];
     private readonly PayloadTextReader _text;
     private readonly PayloadStream _stream;
@@ -26,7 +29,7 @@ internal sealed class SqlServerOutboxBatch : DbDataReader
         _stream = new(reads);
     }
 
-    internal void Prepare(SqlTransaction transaction, string table, List<SqlServerBufferedMessage> rows, int count)
+    internal void Prepare(SqlTransaction transaction, string table, List<SqlServerBufferedMessage> rows, int count, string? sequence = null)
     {
         _copy = new(transaction.Connection!, SqlBulkCopyOptions.CheckConstraints | SqlBulkCopyOptions.FireTriggers, transaction)
         {
@@ -35,6 +38,16 @@ internal sealed class SqlServerOutboxBatch : DbDataReader
         };
         // Explicit mappings omit server-owned defaults (attempts, status and fencing).
         for (var i = 0; i < _columns.Length; i++) _copy.ColumnMappings.Add(i, _columns[i]);
+        // sp_sequence_get_range is the native range allocator. Assign its values by the reader's
+        // send position, independent of the query planner or bulk-copy insertion order.
+        if (sequence is not null)
+        {
+            _copy.ColumnMappings.Add(11, "seq");
+            _reserve = new SqlCommand("sys.sp_sequence_get_range", transaction.Connection, transaction) { CommandType = CommandType.StoredProcedure };
+            _reserve.Parameters.Add("@sequence_name", SqlDbType.NVarChar, 776).Value = sequence;
+            _reserve.Parameters.Add("@range_size", SqlDbType.BigInt).Value = (long)count;
+            _reserve.Parameters.Add("@range_first_value", SqlDbType.Variant).Direction = ParameterDirection.Output;
+        }
         _rows = rows;
         _count = count;
         _index = -1;
@@ -42,19 +55,33 @@ internal sealed class SqlServerOutboxBatch : DbDataReader
 
     internal void Execute()
     {
-        try { _copy!.WriteToServer(this); }
+        try
+        {
+            if (_reserve is not null) { _reserve.ExecuteNonQuery(); _firstSequence = (long)_reserve.Parameters["@range_first_value"].Value; }
+            _copy!.WriteToServer(this);
+        }
         finally { Clear(); }
     }
 
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
     internal async ValueTask ExecuteAsync(CancellationToken cancellationToken)
     {
-        try { await _copy!.WriteToServerAsync(this, cancellationToken).ConfigureAwait(false); }
+        try
+        {
+            if (_reserve is not null)
+            {
+                await _reserve.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+                _firstSequence = (long)_reserve.Parameters["@range_first_value"].Value;
+            }
+            await _copy!.WriteToServerAsync(this, cancellationToken).ConfigureAwait(false);
+        }
         finally { Clear(); }
     }
 
     private void Clear()
     {
+        _reserve?.Dispose();
+        _reserve = null;
         _copy?.Close();
         _copy = null;
         _text.Reset(default);
@@ -65,9 +92,14 @@ internal sealed class SqlServerOutboxBatch : DbDataReader
     }
 
     public override bool Read() => ++_index < _count;
-    public override object GetValue(int i) => _rows![_index].GetValue(i);
+    public override object GetValue(int i)
+    {
+        if (i != 11) return _rows![_index].GetValue(i);
+        Unsafe.Unbox<long>(_sequence) = checked(_firstSequence + _index);
+        return _sequence;
+    }
     public override bool IsDBNull(int i) => GetValue(i) == DBNull.Value;
-    public override int FieldCount => 11;
+    public override int FieldCount => _reserve is null ? 11 : 12;
     public override bool IsClosed => false;
     public override bool HasRows => _count != 0;
     public override IEnumerator GetEnumerator() => throw new NotSupportedException();

@@ -3,6 +3,8 @@ title: Ordered PostgreSQL dispatch
 description: "Dispatch ordered outbox rows with lane leases, heartbeats and fair instance membership."
 ---
 
+SQL Server users: see [SQL Server ordered dispatch](sqlserver-store.md#ordered-dispatch) for registration, upgrades and its current management limits.
+
 `Relayer.Outbox.PostgreSql` supplies a hosted dispatcher for ordered rows written by
 [EF Core outbox enlistment](ef-core-outbox.md) or [ADO.NET/Dapper transactions](postgres-outbox.md).
 [Unordered direct dispatch](direct-dispatch.md) runs separately after a business transaction commits.

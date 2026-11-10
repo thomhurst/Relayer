@@ -6,8 +6,9 @@ description: "SQL Server ADO.NET/Dapper transactions, commit-triggered dispatch,
 `Relayer.Outbox.SqlServer` implements the [durable store contract](outbox-stores.md) using
 `Microsoft.Data.SqlClient` and SQL Server's native connection pooling. It supplies reads, atomic claims,
 renewal, completion, failure persistence, eligible backlog counts and scoped ADO.NET/Dapper transaction
-enlistment, opt-in consumer inbox deduplication, unordered dispatch, leased recovery, poison isolation and retention.
-**EF Core integration and ordered lane dispatch remain planned for SQL Server.** PostgreSQL's worker registrations do not accept this provider.
+enlistment, opt-in consumer inbox deduplication, unordered dispatch, leased recovery, poison isolation,
+retention and ordered dispatch with fenced lane leases. **EF Core integration remains planned for SQL Server.**
+PostgreSQL's worker registrations do not accept this provider.
 Registering a durable store alone does not make `ISender` transactional.
 
 **Native AOT and trimming are currently unsupported for SQL Server runtime operations.** SqlClient 7.1.1
@@ -20,8 +21,8 @@ Schema SQL/options remain AOT safe. This restriction is specific to this optiona
 
 Write the initial schema with your application's deployment tooling. Initial creation is idempotent and
 does not validate or upgrade an existing table. Schema evolution and rollback remain application-owned.
-This script creates the outbox table, pending index and inbox table. Re-run it when upgrading from
-a version without the inbox table; existing outbox definitions are unchanged. It does not create dead or lease tables.
+This script creates the outbox and inbox tables, pending/ordered indexes, native insert sequence and lease table.
+Existing outbox definitions are unchanged; use the explicit upgrade below for pre-sequence tables. It does not create a dead-letter table.
 
 ```csharp
 using Microsoft.Extensions.DependencyInjection;
@@ -256,7 +257,7 @@ attempted on its own schedule. It never expires pending or parked outbox message
 
 The outbox columns match `OutboxRecord`: `id`, `lane`, `ordering_key`, `transport`, `destination`,
 `message_type`, `headers`, `body`, `created_at`, `deliver_at`, `attempts`, `last_error`, `tenant_id`,
-plus `status`, `claim_token` and `claim_expires_at`.
+plus `seq`, `status`, `claim_token` and `claim_expires_at`. `seq` is assigned by a native SQL Server sequence; UUIDs remain stable identities and unordered read cursors.
 
 `id` and `claim_token` use **binary(16) in RFC/network byte order**. Use
 `id.ToByteArray(bigEndian: true)` when writing through native SQL, and
@@ -276,6 +277,68 @@ entry order, empty values and arbitrary value bytes survive storage. Corrupt hea
 Do not populate `headers` with JSON or empty bytes. Native writers must preserve the original CloudEvents
 identity, stable versioned wire message type, creation context, body, ordering key and schedule. They must
 reject native callbacks, which cannot be persisted. Use the scoped transaction integration below to enqueue through `ISender`.
+
+## Ordered dispatch
+
+Deploy the schema, register named native `ITransport` adapters, and add a worker:
+
+```csharp
+services.AddRelayerSqlServerOutbox(new SqlServerOutboxOptions { Lanes = 32 });
+services.AddRelayerSqlServerOrderedDispatch("orders", connectionString,
+    new SqlServerOrderedDispatchOptions
+    {
+        Lanes = 32,
+        BatchSize = 100,
+        LeaseDuration = TimeSpan.FromSeconds(30),
+        PollInterval = TimeSpan.FromSeconds(1),
+        MaxDispatchAttempts = 10
+    });
+```
+
+Writers and workers must target the same database, schema, prefix and lane count. Drain before changing
+lane count. A configuration-section overload binds these immutable settings through named options without
+reflection; native SqlClient runtime trimming/AOT restrictions still apply. Register unordered direct dispatch
+separately. Ordered dispatch does not require `DispatchStoreName`.
+
+The database clock controls membership, lane leases, schedules and fenced message claims. Members
+rebalance lanes into fair shares; each worker stops renewing lanes outside its share. A lane transaction
+locks its ownership row across sequential native sends, preventing another connected worker from stealing
+an in-flight lane even after expiry. Hard send deadlines use half the lease duration; admission stops after
+one quarter. Cancellation and shutdown roll back uncertain batches and release membership/leases when possible;
+otherwise they expire. A disconnected or cancellation-insensitive native send may still complete, so delivery
+remains at least once. Up to `BatchSize` accepted sends can replay after a rollback.
+
+Lanes read by database `seq`, including scheduled and claimed heads. Future or live-claimed heads block
+the lane; the worker never skips them. Exhausting `MaxDispatchAttempts` parks the original row, preserving
+its sequence and error. Later rows with exactly the same key remain behind that barrier, while other keys
+in the lane can proceed. SQL Server dead-letter inspection/redrive/purge APIs remain planned; operate on
+parked rows only with application-owned tooling that preserves the row and sequence. The worker records
+`relayer.outbox.poison` when parking; it does not add an unordered recovery or retention worker.
+
+A native sequence range is reserved immediately before each ordered bulk flush and assigned in send
+position order. Sequential transactions therefore dispatch in commit order even when their UUIDv7 values
+sort backwards. Concurrent transactions have no defined commit order. Gaps are normal: do not reset or
+reuse the sequence. Each ordered send replaces producer-supplied `relayer.outbox.sequence` headers with
+the database value; see [sequence guards and native-send limits](ordered-dispatch.md#guard-a-projection-against-stale-delivery).
+Native transport ordering and settlement are unchanged; destinations must advertise native ordering by key.
+
+### Upgrade pre-sequence tables
+
+Stop all writers and workers. Execute `SqlServerOutboxSchema.UpgradeOrderedDispatchScript(options)` in
+one explicit, application-owned transaction, then commit before restarting. The script refuses autocommit
+and already-upgraded tables. It assigns existing rows their historical UUID order because their original
+insert order cannot be recovered, creates the ordered index and lease table, and continues the sequence
+after the migrated maximum. Test your deployment/rollback procedure on a database copy first.
+
+```csharp
+await using var connection = new SqlConnection(connectionString);
+await connection.OpenAsync();
+await using var transaction = (SqlTransaction)await connection.BeginTransactionAsync();
+await using var upgrade = new SqlCommand(
+    SqlServerOutboxSchema.UpgradeOrderedDispatchScript(options), connection, transaction);
+await upgrade.ExecuteNonQueryAsync();
+await transaction.CommitAsync();
+```
 
 ## Reads and fenced outcomes
 
@@ -309,7 +372,8 @@ scoped enlistment, UUID parsing, native key-range locking and commit. It covers 
 with `[MemoryDiagnoser]`; select it with the same connection variable and `--filter`.
 
 `SqlServerOutboxBufferBenchmarks` attributes reusable copy/header/lane work at 256 and 4096 bytes without database I/O.
-`SqlServerOutboxCommitBenchmarks` compares native bulk-copy commits with buffered commits at 1 and 64 rows.
+`SqlServerOutboxCommitBenchmarks` covers unordered and ordered bulk commits at 1 and 64 rows, including native range allocation for ordered buffers.
+`SqlServerOrderedDispatchBenchmarks` measures complete owned-lane batches, including SQL reads, reusable decoding and fenced outcomes; `OrderedDispatchBenchmarks` isolates managed preparation.
 `SqlServerOutboxDispatchBenchmarks` compares reusable envelope buffers with commit-to-worker ownership
 transfer and destination grouping at 1 and 64 rows, excluding database I/O and native allocations.
 Use the same connection variable and select either class with `--filter`. Each commit invocation deletes

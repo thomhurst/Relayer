@@ -24,14 +24,15 @@ internal sealed class StoreData(SqlServerFixture database, SqlServerOutboxOption
     }
 
     internal async Task Insert(Guid id, DateTimeOffset now, int? lane = null, DateTimeOffset? deliverAt = null,
-        string status = "pending", DateTimeOffset? expires = null, int bodySize = 3)
+        string status = "pending", DateTimeOffset? expires = null, int bodySize = 3, bool orderedHeaders = false)
     {
         // Independent encoding fixture: little-endian version/count and byte lengths.
         using var headers = new MemoryStream();
         using (var writer = new BinaryWriter(headers, Encoding.UTF8, leaveOpen: true))
         {
             writer.Write(1);
-            writer.Write(3);
+            writer.Write(orderedHeaders ? 4 : 3);
+            if (orderedHeaders) WriteHeader(writer, "ce_id", Encoding.UTF8.GetBytes(id.ToString()));
             WriteHeader(writer, "duplicate", Encoding.UTF8.GetBytes("é"));
             WriteHeader(writer, "duplicate", [255, 0, 254]);
             WriteHeader(writer, "empty", []);

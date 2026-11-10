@@ -116,6 +116,14 @@ public sealed class SqlServerOutboxStore : IOutboxStore
     }
 
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder<>))]
+    internal async ValueTask<int> ReadRowsAsync(SqlCommand command, Memory<OutboxRecord> destination,
+        CancellationToken cancellationToken, bool includeOrderedSequence = false)
+    {
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        return await ReadRowsAsync(reader, destination, false, cancellationToken, includeOrderedSequence).ConfigureAwait(false);
+    }
+
+    [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder<>))]
     internal async ValueTask<int> ReadRecoveryAsync(SqlCommand command, Memory<OutboxRecord> destination, CancellationToken cancellationToken)
     {
         await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
@@ -124,7 +132,7 @@ public sealed class SqlServerOutboxStore : IOutboxStore
 
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder<>))]
     private async ValueTask<int> ReadRowsAsync(SqlDataReader reader, Memory<OutboxRecord> destination,
-        bool isolateMalformed, CancellationToken cancellationToken)
+        bool isolateMalformed, CancellationToken cancellationToken, bool includeOrderedSequence = false)
     {
         var count = 0;
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
@@ -137,6 +145,8 @@ public sealed class SqlServerOutboxStore : IOutboxStore
             {
                 var body = ReadBytes(reader, 4, ref slot.Body);
                 var headers = DurableOutboxHeaderCodec.Read(ReadBytes(reader, 5, ref slot.Headers), ref slot.Entries);
+                if (includeOrderedSequence)
+                    headers = OrderedSequenceHeader.Add(headers.Span, ref slot.OrderedEntries, slot.Sequence, reader.GetInt64(13));
                 var transport = reader.GetString(1);
                 var messageType = reader.GetString(2);
                 var destinationName = reader.GetString(3);
@@ -345,6 +355,8 @@ public sealed class SqlServerOutboxStore : IOutboxStore
 
     private sealed class RowBuffer
     {
+        internal readonly byte[] Sequence = new byte[20];
+        internal KeyValuePair<string, WireString>[] OrderedEntries = [];
         internal byte[] Body = [];
         internal byte[] Headers = [];
         internal KeyValuePair<string, WireString>[] Entries = [];
