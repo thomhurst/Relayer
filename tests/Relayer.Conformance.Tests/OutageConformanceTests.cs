@@ -16,6 +16,12 @@ public sealed class OutageConformanceTests
     }
 
     [Test]
+    public async Task Outage_accepts_warmup_redelivery_before_recovery_marker()
+    {
+        await Assert.That((await Suite("warmup-redelivery").RunAsync(TransportConformanceCase.SendDuringOutage)).Skipped).IsFalse();
+    }
+
+    [Test]
     [Arguments("unexpected", "outage sends")]
     [Arguments("lost", "receive completion")]
     public async Task Outage_rejects_unexpected_failures_and_lost_acknowledged_messages(string mode, string phase)
@@ -43,6 +49,8 @@ public sealed class OutageConformanceTests
         private readonly InMemoryFixture _inner = new(tracing);
         private bool _offline;
         private int _outageSends;
+        private int _warmupSettlements;
+        private readonly TaskCompletionSource _warmupRedelivered = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public ITransport Transport => this;
         public string Name => _inner.Transport.Name;
         public string Destination => _inner.Destination;
@@ -53,7 +61,22 @@ public sealed class OutageConformanceTests
         public bool IsExpectedOutageFailure(Exception error) => error is IOException;
         public TransportCapabilities GetCapabilities(string endpoint) => _inner.Transport.GetCapabilities(endpoint);
         public void RegisterConsumer(Func<InMemoryDelivery, CancellationToken, ValueTask<Disposition>> receive) => _inner.RegisterConsumer(receive);
-        public ValueTask SettleAsync(InMemoryDelivery incoming, Disposition disposition, CancellationToken token) => _inner.SettleAsync(incoming, disposition, token);
+        public ValueTask SettleAsync(InMemoryDelivery incoming, Disposition disposition, CancellationToken token)
+        {
+            // Requeue exactly the post-restart warm-up. Handler observation precedes
+            // settlement, so its next delivery may already be queued when outage recovery starts.
+            if (mode == "warmup-redelivery" && incoming.Message.Body.Span.SequenceEqual("{\"Value\":0}"u8))
+            {
+                var settlement = Interlocked.Increment(ref _warmupSettlements);
+                if (settlement == 2)
+                {
+                    incoming.Redeliver(TimeSpan.Zero);
+                    return default;
+                }
+                if (settlement == 3) _warmupRedelivered.TrySetResult();
+            }
+            return _inner.SettleAsync(incoming, disposition, token);
+        }
         public ValueTask<ConformanceDeadLetter> ReadDeadLetterAsync(CancellationToken token) => _inner.ReadDeadLetterAsync(token);
         public Task StartAsync(CancellationToken token) => _inner.Transport.StartAsync(token);
         public Task StopAsync(CancellationToken token) => _inner.Transport.StopAsync(token);
@@ -76,6 +99,10 @@ public sealed class OutageConformanceTests
                     return;
                 }
             }
+            // Queue the redelivered warm-up before the recovery marker, regardless
+            // of the in-memory endpoint's partition scheduling.
+            if (mode == "warmup-redelivery" && !_offline && Volatile.Read(ref _outageSends) != 0)
+                await _warmupRedelivered.Task.WaitAsync(token);
             await _inner.Transport.SendAsync(message, token);
         }
         public ValueTask SendBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken token) => _inner.Transport.SendBatchAsync(messages, token);

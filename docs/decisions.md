@@ -69,6 +69,7 @@ To change a decision, add a new entry that supersedes it rather than editing his
 | [D56](#d56-postgresql-cdc-wakes-existing-unordered-recovery) | PostgreSQL CDC wakes existing unordered recovery | Accepted |
 | [D57](#d57-google-pubsub-uses-prepared-native-api-clients) | Google Pub/Sub uses prepared native API clients | Accepted |
 | [D58](#d58-mysql-consumers-share-the-adonet-outbox-transaction) | MySQL consumers share the ADO.NET outbox transaction | Accepted |
+| [D59](#d59-sql-server-consumers-reuse-the-adonet-outbox-transaction) | SQL Server consumers reuse the ADO.NET outbox transaction | Accepted |
 
 ---
 
@@ -1315,3 +1316,33 @@ unsupported, as in D48. EF Core, saga persistence, ordered workers and inbox ret
 separate work. Existing scoped enlistment/transaction allocations remain visible in comparisons;
 no inbox buffers are allocated on the enqueue-only path. See the
 [MySQL guide](../website/docs/reference/mysql-store.md#atomic-consumer-inbox).
+
+## D59. SQL Server consumers reuse the ADO.NET outbox transaction
+
+**Status.** Accepted.
+
+**Context.** #332 needs atomic inbox identity, handler business writes and outgoing rows. The existing
+EF consumer is specific to Npgsql and cannot enlist SQL Server business writes. SqlClient 7.1.1's
+[SqlTransaction](https://github.com/dotnet/SqlClient/blob/v7.1.1/src/Microsoft.Data.SqlClient/src/Microsoft/Data/SqlClient/SqlTransaction.cs)
+already owns native commit, rollback and disposal, and D47 wraps it for ADO.NET/Dapper enlistment.
+SQL Server primary keys and `UPDLOCK, HOLDLOCK` supply uniqueness and serializable key-range locking.
+No distributed lock, duplicate exception loop, pool or retry engine is needed.
+
+**Decision.** An explicit outer `.SqlServer(consumer, connectionString, inbox: true)` boundary owns
+the existing scoped outbox transaction. Expose its borrowed `CurrentTransaction` for business commands.
+Insert the `(consumer, message_id)` inbox key before handling through a conditional insert protected
+by native update/range locks. A competing delivery waits for commit or rollback; a committed key skips
+the handler. Consumer names are binary case-sensitive, bounded to 256 UTF-16 code units and reject
+trailing spaces so SQL padding cannot alias accepted names. Inbox UUIDs use native `uniqueidentifier`
+for equality; ordered outbox IDs retain D46's binary representation.
+
+Commit/rollback by handlers is rejected; premature disposal rolls back and fails the delivery. Ordinary
+failure handling receives native failures after transaction disposal. Retry/dead-letter requests roll back;
+otherwise request immutable completion before committing, as in D36. Count duplicates only after commit.
+
+**Consequences.** The opt-in inbox supports ADO.NET/Dapper single-message consumers with the existing
+SQL Server outbox registration, schema/options and direct dispatcher. EF Core, sagas, batch consumers,
+provider retry strategies and inbox retention workers remain separate work. The connection string fixes
+the database per pipeline; outbox options fix the schema/prefix at composition. A mismatching reloaded
+scope fails before opening a transaction; restart the pipeline to select a new schema/prefix. D46's trimming/AOT restriction
+continues to apply. See the [SQL Server guide](../website/docs/reference/sqlserver-store.md#atomic-consumer-inbox).

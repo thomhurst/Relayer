@@ -316,6 +316,10 @@ public sealed class TransportConformanceSuite<TIncoming, TBinding>
                 CheckBody(await Next().ConfigureAwait(false), 0);
                 await Stop().ConfigureAwait(false);
                 await Start().ConfigureAwait(false);
+                // Native Start may return before its stream is established. Observe a
+                // delivery after restart before testing an established connection outage.
+                await Send(0).ConfigureAwait(false);
+                CheckBody(await Next().ConfigureAwait(false), 0);
                 progress.Phase = "broker disconnect";
                 await fixture.DisconnectAsync(token).ConfigureAwait(false);
                 progress.Phase = "outage sends";
@@ -337,7 +341,7 @@ public sealed class TransportConformanceSuite<TIncoming, TBinding>
                     await fixture.ReconnectAsync(token).ConfigureAwait(false);
                     await Start().ConfigureAwait(false);
                     await Send(4).ConfigureAwait(false);
-                    // A failed/cancelled native send may still arrive. Duplicates are legal;
+                    // A failed/cancelled native send or unsettled warm-up may still arrive. Duplicates are legal;
                     // every successfully acknowledged send and the recovery marker must arrive.
                     var required = new HashSet<int> { 4 };
                     for (var i = 0; i < acknowledged.Length; i++)
@@ -348,7 +352,7 @@ public sealed class TransportConformanceSuite<TIncoming, TBinding>
                         using var document = JsonDocument.Parse(message.Body);
                         var value = document.RootElement.GetProperty("Value").GetInt32();
                         CheckBody(message, value);
-                        Require(value is >= 1 and <= 4, "Unexpected outage delivery body.");
+                        Require(value is >= 0 and <= 4, "Unexpected outage delivery body.");
                         required.Remove(value);
                     }
                 }

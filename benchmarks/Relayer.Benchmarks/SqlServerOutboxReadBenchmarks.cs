@@ -55,7 +55,7 @@ public class SqlServerOutboxReadBenchmarks
     {
         await using var connection = new SqlConnection(_connectionString);
         await connection.OpenAsync();
-        await using var command = new SqlCommand($"DROP TABLE IF EXISTS [dbo].[{_options.TablePrefix}outbox]", connection);
+        await using var command = new SqlCommand($"DROP TABLE IF EXISTS [dbo].[{_options.TablePrefix}outbox], [dbo].[{_options.TablePrefix}inbox]", connection);
         await command.ExecuteNonQueryAsync();
     }
 }
