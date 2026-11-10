@@ -26,9 +26,13 @@ def main():
     parser.add_argument("output", type=Path)
     parser.add_argument("--trace-tool", type=Path)
     parser.add_argument("--profile-reader", type=Path)
+    parser.add_argument("--exact-invocations", action="store_true",
+                        help="Separate instrumented fixture control using synchronous thread-local counters.")
     args = parser.parse_args()
     if bool(args.trace_tool) != bool(args.profile_reader):
         parser.error("--trace-tool and --profile-reader must be supplied together")
+    if args.exact_invocations and args.trace_tool:
+        parser.error("Exact invocation counters and sampled profiles require separate ABBAs")
     args.output.mkdir(parents=True, exist_ok=False)
     builds = args.artifact / "performance-builds"
     commits = {side: verify(builds / side) for side in ("baseline", "candidate", "baseline-after")}
@@ -36,7 +40,11 @@ def main():
                 "warmup_batches": 4096, "measured_batches": 32768, "messages_per_batch": 8,
                 "counter": "GC.GetTotalAllocatedBytes(true)",
                 "limits": "Inclusive fixed-count control; not original BDN replay, allocation-owner attribution, throughput equivalence or native-client budget evidence."}
-    protocol["instrumented"] = args.trace_tool is not None
+    protocol["instrumented"] = args.trace_tool is not None or args.exact_invocations
+    protocol["exact_invocations"] = args.exact_invocations
+    if args.exact_invocations:
+        protocol["invocation_counter"] = "GC.GetAllocatedBytesForCurrentThread()"
+        protocol["invocation_boundary"] = "Synchronous cached handler call only; no await between counter reads. Excludes other threads and subsequent continuations; does not identify object types or the historical delta."
     if args.trace_tool:
         protocol["profile_limits"] = "Separate instrumented ABBA. Phase-filtered weighted samples can suggest owners, never exact object counts or subtraction from inclusive totals."
     (args.output / "protocol.json").write_text(json.dumps(protocol, indent=2) + "\n")
@@ -47,6 +55,8 @@ def main():
         if len(images) != 1:
             raise ValueError(f"Expected one frozen image for {side}, found {len(images)}")
         command = ["dotnet", str(args.probe.resolve()), str(images[0].parent.resolve())]
+        if args.exact_invocations:
+            command.append("--exact-invocations")
         trace = args.output / f"{index + 1}-{side}.nettrace"
         if args.trace_tool:
             command = [str(args.trace_tool.resolve()), "collect", "--profile", "gc-verbose",

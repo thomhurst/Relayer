@@ -448,3 +448,22 @@ limits: these profiles cannot attribute the historical end-to-end excess, and
 neither sample weights nor isolated totals may be subtracted from full delivery.
 Untraced and instrumented results remain separate. Failed extraction preserves
 raw captures, and every ABBA launch is attempted even after another launch fails.
+
+The fixture workflow additionally runs a **separate exact invocation ABBA** using
+`--exact-invocations`. Two `GC.GetAllocatedBytesForCurrentThread` reads enclose only
+the synchronous call to the original cached handler delegate. There is no await
+between the reads. A preallocated buffer records one exact byte count per measured
+invocation; warmup calls are excluded. After measurement the result includes the
+number of calls, their total bytes and the complete frequency histogram of bytes
+per call. Counts include the original handler's synchronous channel/runtime calls,
+including suspension setup, but exclude later continuations, other threads and
+the driver's own work. They distinguish this synchronous region from the earlier
+inclusive totals without relying on allocation-tick samples.
+
+This mode changes scheduling and runs separately from both uninstrumented and
+sampled controls. Its inclusive process total is an instrumented result too.
+Equal byte counts do not prove equal allocated types; use sampled call sites to
+choose further controls, rather than assigning a histogram bin to a type by size.
+These measurements neither reconstruct the original BenchmarkDotNet execution
+nor identify its historical excess by themselves. Do not subtract them from
+full-delivery totals or mix them into the uninstrumented comparison.

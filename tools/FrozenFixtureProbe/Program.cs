@@ -3,9 +3,12 @@ using System.Runtime.CompilerServices;
 using System.Runtime.Loader;
 using System.Text.Json;
 using System.Threading.Channels;
+using Relayer.Diagnostics;
 
 // Diagnostic only. Bind the original handler once; never rebuild historical workload assemblies.
-if (args.Length != 1) throw new ArgumentException("Expected the retained benchmark dependency directory.");
+if (args.Length is < 1 or > 2 || (args.Length == 2 && args[1] != "--exact-invocations"))
+    throw new ArgumentException("Expected the retained benchmark dependency directory and optional --exact-invocations.");
+var exactInvocations = args.Length == 2;
 var image = Path.GetFullPath(args[0]);
 var context = new AssemblyLoadContext("Frozen", isCollectible: false);
 context.Resolving += (_, name) =>
@@ -22,12 +25,12 @@ var signals = Activator.CreateInstance(signalsType)!;
 var handler = Activator.CreateInstance(handlerType, signals)!;
 var run = (Func<Task>)typeof(FixtureControl).GetMethod(nameof(FixtureControl.Measure))!
     .MakeGenericMethod(parameters[0].ParameterType, parameters[1].ParameterType)
-    .Invoke(null, [image, handler, method, signals])!;
+    .Invoke(null, [image, handler, method, signals, exactInvocations])!;
 await run();
 
 static class FixtureControl
 {
-    public static Func<Task> Measure<TMessage, TContext>(string image, object handler, MethodInfo method, object signals)
+    public static Func<Task> Measure<TMessage, TContext>(string image, object handler, MethodInfo method, object signals, bool exactInvocations)
     {
         var invoke = method.CreateDelegate<Func<TMessage, TContext, CancellationToken, ValueTask>>(handler);
         var message = (TMessage)Activator.CreateInstance(typeof(TMessage), 42)!;
@@ -43,11 +46,13 @@ static class FixtureControl
             var pending = new ValueTask[8];
             const int warmupBatches = 4096;
             const int measuredBatches = 32768;
+            var invocations = exactInvocations ? new InvocationAllocations(measuredBatches * 8) : null;
             for (var i = 0; i < warmupBatches; i++) await Batch();
             GC.Collect();
             GC.WaitForPendingFinalizers();
             GC.Collect();
             // Keep phase markers outside the inclusive counter, as in the full-delivery probe.
+            if (invocations is not null) invocations.Enabled = true;
             FrozenMeasurementEvents.Log.MeasurementStart();
             var allocated = GC.GetTotalAllocatedBytes(precise: true);
             var start = System.Diagnostics.Stopwatch.GetTimestamp();
@@ -56,10 +61,17 @@ static class FixtureControl
             var seconds = System.Diagnostics.Stopwatch.GetElapsedTime(start).TotalSeconds;
             var bytes = GC.GetTotalAllocatedBytes(precise: true) - allocated;
             FrozenMeasurementEvents.Log.MeasurementStop();
+            if (invocations is not null) invocations.Enabled = false;
             if (sum != measuredBatches * 8L * 42) throw new InvalidOperationException($"Unexpected sum: {sum}.");
+            var invocationReport = invocations?.Report();
+            if (invocationReport is not null && invocationReport.Invocations != measuredBatches * 8)
+                throw new InvalidOperationException("Exact invocation count does not match the measured workload.");
             Console.WriteLine(JsonSerializer.Serialize(new
             {
                 image, control = "original-handler-and-signal-channels", warmupBatches, measuredBatches,
+                instrumentation = exactInvocations ? "exact-synchronous-invocations" : "none",
+                invocationAllocations = invocationReport,
+                invocationLimits = "Exact bytes on the calling thread during the synchronous handler invocation only. Excludes continuations after suspension, other threads and the diagnostic driver. Includes original handler and called channel/runtime work; no exact type attribution or historical end-to-end delta attribution. Instrumentation changes scheduling; compare only within this separate ABBA.",
                 messages = measuredBatches * 8, bytes, bytesPerMessage = bytes / (measuredBatches * 8.0), seconds,
                 runtime = System.Runtime.InteropServices.RuntimeInformation.FrameworkDescription,
                 arch = System.Runtime.InteropServices.RuntimeInformation.ProcessArchitecture.ToString(),
@@ -71,7 +83,9 @@ static class FixtureControl
             {
                 for (var i = 0; i < pending.Length; i++)
                 {
-                    pending[i] = invoke(message, default!, limit.Token);
+                    pending[i] = invocations is null
+                        ? invoke(message, default!, limit.Token)
+                        : invocations.Invoke(invoke, message, default(TContext)!, limit.Token);
                     if (pending[i].IsCompleted) throw new InvalidOperationException("Handler must await release.");
                 }
                 for (var i = 0; i < pending.Length; i++) await entered.Reader.ReadAsync(limit.Token);

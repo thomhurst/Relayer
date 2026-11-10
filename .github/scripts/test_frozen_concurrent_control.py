@@ -79,6 +79,31 @@ class ProfileLaunchTests(unittest.TestCase):
                 self.assertIn("Relayer-FrozenMeasurement", command)
                 self.assertIn("gc-verbose", command)
 
+    def test_exact_invocations_use_separate_processes_and_protocol(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for side in ("baseline", "candidate", "baseline-after"):
+                image = root / "performance-builds" / side / "builds/net10.0/Relayer.Benchmarks-DefaultJob-1/bin/Release/net10.0/Relayer.Benchmarks.dll"
+                image.parent.mkdir(parents=True)
+                image.touch()
+            output = root / "results"
+            arguments = ["control", str(root), str(root / "probe.dll"), str(output), "--exact-invocations"]
+            with patch("sys.argv", arguments), patch("frozen_concurrent_control.verify", return_value="frozen"), patch("frozen_concurrent_control.subprocess.run") as execute:
+                main()
+            self.assertEqual(execute.call_count, 4)
+            for call in execute.call_args_list:
+                self.assertEqual(call.args[0][-1], "--exact-invocations")
+                self.assertNotIn("collect", call.args[0])
+            protocol = json.loads((output / "protocol.json").read_text())
+            self.assertTrue(protocol["instrumented"])
+            self.assertTrue(protocol["exact_invocations"])
+
+    def test_exact_counters_reject_combined_sampled_profiles(self):
+        arguments = ["control", "inputs", "probe.dll", "output", "--exact-invocations",
+                     "--trace-tool", "dotnet-trace", "--profile-reader", "reader.dll"]
+        with patch("sys.argv", arguments), self.assertRaises(SystemExit):
+            main()
+
     def test_profile_extracts_all_launches_and_removes_successful_raw_captures(self):
         self.run_profile(False)
 
