@@ -1,93 +1,94 @@
 ---
 title: Getting started
-description: "Declare a message, write a handler, configure a route and send your first message with Relayer."
+description: "Run a process-local checkout and billing example using the implemented Relayer API."
 ---
 
-This page builds the smallest useful Relayer application: one message, one handler, one route.
+Start with the runnable [modular monolith sample](https://github.com/thomhurst/Relayer/tree/main/samples/ModularMonolith). Checkout sends an order event to billing through the implemented in-memory transport. No broker is required.
 
-:::note[Before packages ship]
+## Requirements and run
 
-Relayer is not on NuGet yet, and the broker transports are still in progress. To try the core today, clone the repository and reference `src/Relayer/Relayer.csproj` from a .NET 10 project. The examples use placeholder option types where a transport package will later supply its native ones.
+Use .NET 10 SDK or later and C# 14. Packages are not published yet: clone the repository and run from its root:
 
-:::
+```shell
+dotnet run -c Release --project samples/ModularMonolith
+```
 
-## Requirements
+The output includes `Invoice created for order-1 (customer-1)` and the process exits. The sample project references `src/Relayer/Relayer.csproj` and the source generator project explicitly; project-reference consumers need that analyzer reference. Published packages will bundle it.
 
-- .NET 10 SDK or later
-- C# 14 (the default for `net10.0`)
+## Declare a message
 
-## 1. Declare a message
-
-Messages are identified on the wire by a stable name and version, never by their CLR type name. Renaming or moving the class never breaks a consumer, and services do not need to share a contracts assembly.
+Use a stable wire name and version rather than a CLR type name:
 
 ```csharp
 using Relayer;
 
-[Message("orders.placed", Version = 1)]
+[Message("samples.orders.placed", Version = 1)]
 public sealed record OrderPlaced(string OrderId, string CustomerId);
 ```
 
-If you forget the attribute, analyzer [RLY001](reference/diagnostics.md#rly001) warns and offers a code fix.
+Analyzer [RLY001](reference/diagnostics.md#rly001) reports missing message identities.
 
-## 2. Write a handler
+## Write a handler
 
-A handler is a plain class. It is resolved from a fresh DI scope for every message, so it can inject scoped services such as a `DbContext`.
+Handlers implement `IHandler<T>` and are resolved in a fresh scope per delivery. The sample's `BillingModule` prints the invoice and signals completion to the console host:
 
 ```csharp
-public sealed class OrderPlacedHandler(AppDbContext db) : IHandler<OrderPlaced>
+public sealed class OrderPlacedHandler(BillingModule billing) : IHandler<OrderPlaced>
 {
-    public async ValueTask HandleAsync(OrderPlaced message, MessageContext context, CancellationToken cancellationToken)
+    public ValueTask HandleAsync(OrderPlaced message, MessageContext context, CancellationToken cancellationToken)
     {
-        db.Invoices.Add(Invoice.For(message));
-        await db.SaveChangesAsync(cancellationToken);
+        billing.CreateInvoice(message);
+        return ValueTask.CompletedTask;
     }
 }
 ```
 
-If the handler throws, the [failure pipeline](guides/failure-handling.md) classifies the error, retries it and finally dead-letters it. A bad message never crashes or stalls the consumer.
+This demonstration has no durable invoice storage. In production, complete durable work before returning. Handler failures enter the [failure pipeline](guides/failure-handling.md); exhausted failures dead-letter rather than stalling healthy messages.
 
-## 3. Configure Relayer
+## Configure the host
 
-Register messages, handlers and a transport with its routes and consumers:
+The sample uses `Host.CreateApplicationBuilder(args)` and registers its billing module before Relayer:
 
 ```csharp
-services.AddRelayer(relayer =>
+using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.DependencyInjection;
+using Relayer;
+using Relayer.InMemory;
+
+var builder = Host.CreateApplicationBuilder(args);
+builder.Services.AddSingleton<BillingModule>();
+builder.Services.AddRelayer(relayer =>
 {
-    // Source-generated: registers every [Message] type in this assembly and its JSON metadata.
     relayer.AddMessageTypesFromThisAssembly();
-
-    relayer.AddTransport<BrokerOptions, RouteOptions, ConsumerOptions>("events", broker =>
+    relayer.InMemory("local", local =>
     {
-        broker.Options.Bind(configuration.GetSection("Events"));
-
-        broker.Send<OrderPlaced>("orders.placed",
-            route => route.OrderingKey(static m => m.CustomerId));
-
-        broker.Consume("orders.placed",
-            consumer => consumer.Handler<OrderPlacedHandler>().Concurrency(8));
+        local.Send<OrderPlaced>("orders");
+        local.Consume("orders", consumer => consumer.Handler<OrderPlacedHandler>());
     });
 });
 ```
 
-At host startup Relayer checks the whole configuration before any consumer starts: transport names, destinations, message identities, duplicate routes, handlers, option validators and endpoint capabilities. Every error is reported together. For example, an ordering key on an endpoint that cannot preserve order fails startup rather than being ignored.
+Generated registration supplies message identities, JSON metadata and handler dispatch. Startup validates routes, handlers and endpoint capabilities before receivers start. This queue needs no ordering key or external topology. See [in-memory transport](transports/in-memory.md) for ordered queues and logs.
 
-## 4. Send a message
+## Send from a scope
 
-`ISender` is a scoped service. Inject it anywhere:
+Start the host, create a scope, then resolve `ISender`. The sample's checkout module uses the same scoped service:
 
 ```csharp
-public sealed class CheckoutService(ISender sender)
+public sealed class CheckoutModule(ISender sender)
 {
-    public ValueTask PlaceAsync(Order order, CancellationToken cancellationToken) =>
-        sender.SendAsync(new OrderPlaced(order.Id, order.CustomerId), cancellationToken);
+    public ValueTask PlaceAsync(OrderPlaced order, CancellationToken cancellationToken) =>
+        sender.SendAsync(order, cancellationToken);
 }
 ```
 
-The core serializes the message with source-generated System.Text.Json, writes the [CloudEvents envelope](transports/envelopes.md) as native headers, derives the ordering key and hands the result to the transport. When an outbox transaction is active in the scope, the send is enlisted in it instead.
+The send serializes with source-generated JSON and adds the [CloudEvents envelope](transports/envelopes.md). In-memory send completion means queue admission, not handler completion. The runnable sample waits for billing's completion signal with a deadline and stops the host in `finally`.
+
+The in-memory queue and printed invoice disappear when the process ends. Broker transports including [Kafka](transports/kafka.md) and [Service Bus](transports/service-bus.md) are implemented; they use native persistence and settlement. With an active [EF outbox transaction](reference/ef-core-outbox.md), `SendAsync` persists outgoing messages with business data instead of sending immediately.
 
 ## Next steps
 
+- [Runnable samples](guides/samples.md)
 - [Messages and serialization](guides/messages.md)
-- [Handlers](guides/handlers.md)
 - [Sending messages](guides/sending.md)
-- [Failure handling](guides/failure-handling.md)
+- [Migration from MassTransit](migration/masstransit.md), [Rebus](migration/rebus.md) or [CAP](migration/cap.md)
