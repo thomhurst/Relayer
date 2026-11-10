@@ -475,3 +475,25 @@ retained images. Results from the other historical input sets cannot establish
 attribution for this run. Local ARM64 controls validate the tools; hosted Ubuntu
 x64 controls retain the original platform family. Neither reproduces the original
 BenchmarkDotNet execution or retrospectively identifies its allocation delta.
+
+The first native x64 controls for #357 completed in full-delivery run
+[42745408162](https://github.com/thomhurst/Relayer/actions/runs/42745408162)
+and fixture run
+[42745408270](https://github.com/thomhurst/Relayer/actions/runs/42745408270),
+using .NET 10.0.14 and 262144 measured messages per launch:
+
+| Untraced B/message | Baseline A1 | Candidate B1 | Candidate B2 | Baseline A2 |
+|---|---:|---:|---:|---:|
+| Full delivery | 700.303986 | 701.582031 | 700.116425 | 700.905823 |
+| Isolated fixture | 193.379059 | 193.562042 | 193.432770 | 193.423615 |
+
+One full-delivery candidate exceeds both baselines while the other falls below
+both. Both isolated-fixture candidates exceed their baseline bracket. These
+unfavorable observations remain unresolved; neither comparison establishes the
+historical allocation owner. Separate measured-region profiles have no missing
+stacks and show original handler channel reads and pooled handler state-machine
+rents in the isolated fixture. Full delivery also samples DI scope dictionaries
+and in-memory receiver channel reads. Sample weights do not assign exact bytes
+to any of these owners. The exact synchronous-invocation ABBA now includes this
+input set to measure the original handler call region separately; its results
+must remain distinct from these untraced totals and sampled profiles.
