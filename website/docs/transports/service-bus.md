@@ -224,4 +224,45 @@ Redrive uses the SDK's received-message copy constructor, preserving body, messa
 
 Purge permanently completes received DLQ messages without sending a copy. Concurrent consumers or administrators can change results, and cancellation or failure can leave partial progress. Exceptions propagate; these APIs do not promise atomic maintenance or an exact message count. Use an application timeout appropriate for the entity's native lock duration, and avoid long-running filters. Relayer does not run a parallel lock-renewal loop. The manager shares the transport client and never disposes a caller-owned client.
 
-The optional `MapRelayerDeadLetters()` HTTP integration and Kafka manager remain planned ([#372](https://github.com/thomhurst/Relayer/issues/372), [#371](https://github.com/thomhurst/Relayer/issues/371)). Applications must authorize any management surface they expose.
+### Optional HTTP management
+
+Install `Relayer.AspNetCore` in the ASP.NET Core application. Map a named manager and apply the application's authorization policy to the returned group:
+
+```csharp
+using Relayer.AspNetCore;
+
+builder.Services.AddAuthentication(/* application authentication scheme */);
+builder.Services.AddAuthorization(options =>
+    options.AddPolicy("dead-letter-operators", policy =>
+        policy.RequireAuthenticatedUser().RequireRole("MessagingOperator")));
+// Register the named Service Bus transport "bus" as above.
+var app = builder.Build();
+app.UseAuthentication();
+app.UseAuthorization();
+app.MapRelayerDeadLetters("bus", "/ops/dead-letters")
+    .RequireAuthorization("dead-letter-operators");
+```
+
+Authentication remains application-owned. Mapping alone does not install authentication or authorization; protect this surface because it exposes message bodies and destructive operations. The manager name is checked when routes are mapped, so register the transport before building the app.
+
+| Method and relative path | Input | Result |
+| --- | --- | --- |
+| `GET /` | None | Configured `{ id, destination }` sources |
+| `GET /messages` | Query: `source`, optional `maxMessages` and opaque `cursor` | `{ messages: [{ messageId, body }], nextCursor }` |
+| `POST /redrive` | JSON: `source`, optional `maxMessages` and `messageIds` | `{ affectedMessages }` |
+| `POST /purge` | JSON: `source`, optional `maxMessages` | `{ affectedMessages }` |
+
+`body` is base64-encoded bytes. Native feature objects are not serialized. Supply source IDs as query or JSON values, including subscription IDs such as `events/Subscriptions/audit`. URL-encode query values. All operations default to 20 messages and accept 1–100. Unknown JSON properties are rejected to catch misspelled filters. Invalid input and manager argument validation return `400` with an `{ error }` explanation; POST requests require JSON (`415` otherwise). Request cancellation reaches the manager; broker failures propagate to application exception handling.
+
+For example, redrive selected IDs from one bounded scan:
+
+```http
+POST /ops/dead-letters/redrive
+Content-Type: application/json
+
+{"source":"orders","maxMessages":100,"messageIds":["order-42","order-43"]}
+```
+
+The non-empty `messageIds` array accepts up to 100 IDs and matches them exactly (case-sensitive). Omit it to redrive all messages encountered in that scan. The scan examines at most `maxMessages` deliveries, not that many matches; unmatched messages remain in the DLQ. Purge permanently removes up to the bound and does not accept filters. Concurrent operations may see different messages. Redrive remains at-least-once, can partially succeed before failure or cancellation, and topic redrive can fan out to every subscription as described above. Inspect the source before retrying a failed maintenance request.
+
+These endpoints use source-generated JSON and support Native AOT without adding ASP.NET dependencies to core. Kafka management remains planned ([#371](https://github.com/thomhurst/Relayer/issues/371)).

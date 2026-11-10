@@ -143,6 +143,12 @@ jobs:
           dotnet publish tests/Relayer.AotSmoke -c Release -r linux-x64 -o .artifacts/aot-smoke
           .artifacts/aot-smoke/Relayer.AotSmoke
 
+      - name: Native AOT dead-letter HTTP smoke
+        if: steps.solution.outputs.present == 'true'
+        run: |
+          dotnet publish tests/Relayer.AspNetCore.AotSmoke -c Release -r linux-x64 -o .artifacts/dead-letter-http-aot
+          .artifacts/dead-letter-http-aot/Relayer.AspNetCore.AotSmoke
+
       - name: Google Pub/Sub Native AOT smoke test
         if: steps.solution.outputs.present == 'true'
         env:

@@ -1,5 +1,6 @@
 <Solution>
   <Folder Name="/src/">
+    <Project Path="src/Relayer.AspNetCore/Relayer.AspNetCore.csproj" />
     <Project Path="src/Relayer.Sagas/Relayer.Sagas.csproj" />
     <Project Path="src/Relayer/Relayer.csproj" />
     <Project Path="src/Relayer.Sagas.EntityFrameworkCore/Relayer.Sagas.EntityFrameworkCore.csproj" />
@@ -27,6 +28,8 @@
     <Project Path="src/Relayer.Outbox.PostgreSql/Relayer.Outbox.PostgreSql.csproj" />
   </Folder>
   <Folder Name="/tests/">
+    <Project Path="tests/Relayer.AspNetCore.AotSmoke/Relayer.AspNetCore.AotSmoke.csproj" />
+    <Project Path="tests/Relayer.AspNetCore.Tests/Relayer.AspNetCore.Tests.csproj" />
     <Project Path="tests/Relayer.Outbox.SqlServer.Tests/Relayer.Outbox.SqlServer.Tests.csproj" />
     <Project Path="tests/Relayer.Sagas.Tests/Relayer.Sagas.Tests.csproj" />
     <Project Path="tests/Relayer.Nats.Tests/Relayer.Nats.Tests.csproj" />
