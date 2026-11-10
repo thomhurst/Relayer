@@ -21,7 +21,7 @@ Schema SQL/options remain AOT safe. This restriction is specific to this optiona
 
 Write the initial schema with your application's deployment tooling. Initial creation is idempotent and
 does not validate or upgrade an existing table. Schema evolution and rollback remain application-owned.
-This script creates the outbox and inbox tables, pending/ordered indexes, native insert sequence and lease table.
+This script creates the outbox and inbox tables, pending/ordered indexes and a filtered `(lane, seq)` parked-row index, native insert sequence and lease table.
 Existing outbox definitions are unchanged; use the explicit upgrade below for pre-sequence tables. It does not create a dead-letter table.
 
 ```csharp
@@ -301,7 +301,8 @@ reflection; native SqlClient runtime trimming/AOT restrictions still apply. Regi
 separately. Ordered dispatch does not require `DispatchStoreName`.
 
 The database clock controls membership, lane leases, schedules and fenced message claims. Members
-rebalance lanes into fair shares; each worker stops renewing lanes outside its share. A lane transaction
+rebalance lanes into fair shares; each worker stops renewing lanes outside its share. A new owner may
+wait up to `LeaseDuration` for the previous owner's lease to expire. A lane transaction
 locks its ownership row across sequential native sends, preventing another connected worker from stealing
 an in-flight lane even after expiry. Hard send deadlines use half the lease duration; admission stops after
 one quarter. Cancellation and shutdown roll back uncertain batches and release membership/leases when possible;

@@ -46,6 +46,8 @@ public static class SqlServerOutboxSchema
                 CREATE UNIQUE INDEX {QuoteIdentifier(options.TablePrefix + "outbox_seq_idx")} ON {table} (seq);
                 CREATE INDEX {QuoteIdentifier(options.TablePrefix + "outbox_lane_seq_idx")} ON {table} (lane, seq)
                     INCLUDE (deliver_at, claim_expires_at) WHERE status = 'pending';
+                CREATE INDEX {QuoteIdentifier(options.TablePrefix + "outbox_parked_idx")} ON {table} (lane, seq)
+                    WHERE status = 'parked';
             """;
         // Dynamic DDL is needed for CREATE SCHEMA. Escape both identifier and SQL literal contexts.
         return $"""
@@ -110,6 +112,7 @@ public static class SqlServerOutboxSchema
             EXEC sys.sp_executesql @restart;
             EXEC(N'ALTER TABLE {Literal(table)} ALTER COLUMN seq bigint NOT NULL; ALTER TABLE {Literal(table)} ADD DEFAULT (NEXT VALUE FOR {Literal(sequence)}) FOR seq;');
             EXEC(N'CREATE UNIQUE INDEX {Literal(QuoteIdentifier(options.TablePrefix + "outbox_seq_idx"))} ON {Literal(table)} (seq); CREATE INDEX {Literal(QuoteIdentifier(options.TablePrefix + "outbox_lane_seq_idx"))} ON {Literal(table)} (lane, seq) INCLUDE (deliver_at, claim_expires_at) WHERE status = ''pending'';');
+            EXEC(N'CREATE INDEX {Literal(QuoteIdentifier(options.TablePrefix + "outbox_parked_idx"))} ON {Literal(table)} (lane, seq) WHERE status = ''parked'';');
             {CreateLeaseScript(options)}
             """;
     }
