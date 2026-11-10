@@ -324,6 +324,11 @@ the raw logs; an aggregate report can hide variation between launches. Automatic
 pilot calibration can choose different invocation counts, so use a further
 fixed-count experiment when that difference could explain the signal.
 
+Benchmarks target `net11.0` and run on BenchmarkDotNet 0.16, which writes its
+generated builds to `benchmarks/Relayer.Benchmarks/.bdn/`. The frozen control
+workflows replay images retained from earlier `net10.0` runs on BenchmarkDotNet
+0.15.8 and do not read the new layout.
+
 CI runs BenchmarkDotNet with `--keepFiles` and retains every generated build
 directory from both checkouts, including both baseline executions. The
 `performance-builds/` artifact directory contains generated drivers, projects,

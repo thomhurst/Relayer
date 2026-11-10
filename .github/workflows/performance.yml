@@ -113,7 +113,7 @@ jobs:
       - uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
         with:
           global-json-file: candidate/global.json
-          dotnet-version: '10.0.x' # runtime for the net10.0 target; global.json selects the 11.0 SDK
+          dotnet-version: '10.0.x' # runtime for a baseline commit whose benchmarks still target net10.0
 
       # Only Program.cs and RegressionGate/ enter either build. Benchmarks a PR adds for new
       # APIs therefore never have to compile against main, and the source generator sees the
@@ -234,7 +234,6 @@ jobs:
       - uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
         with:
           global-json-file: global.json
-          dotnet-version: '10.0.x' # runtime for the net10.0 target; global.json selects the 11.0 SDK
 
       - name: Start native JetStream server and wait for readiness
         run: |
@@ -275,8 +274,8 @@ jobs:
         run: |
           docker logs nats-benchmarks > nats-server.log 2>&1 || true
           git archive --format=zip --output=nats-source.zip HEAD
-          if [ -d benchmarks/Relayer.Benchmarks/bin/Release ]; then
-            tar -czf nats-builds.tar.gz -C benchmarks/Relayer.Benchmarks/bin Release
+          if [ -d benchmarks/Relayer.Benchmarks/.bdn ]; then
+            tar -czf nats-builds.tar.gz -C benchmarks/Relayer.Benchmarks .bdn
           fi
           find . -maxdepth 1 -type f \
             \( -name 'nats-*.log' -o -name nats-environment.txt -o -name nats-source.zip -o -name nats-builds.tar.gz \) \
