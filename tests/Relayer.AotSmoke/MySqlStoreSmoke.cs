@@ -1,6 +1,7 @@
 using Microsoft.Extensions.DependencyInjection;
 using MySqlConnector;
 using Relayer.Outbox.MySql;
+using Relayer.Serialization;
 
 namespace Relayer;
 
@@ -11,9 +12,13 @@ internal static class MySqlStoreSmoke
         await using var source = new MySqlDataSource("Server=127.0.0.1;Port=1;Connection Timeout=1;Database=relayer");
         if (!MySqlOutboxSchema.CreateScript().Contains("ENGINE=InnoDB", StringComparison.Ordinal))
             throw new InvalidOperationException("MySQL schema creation failed under Native AOT.");
-        await using var provider = new ServiceCollection().AddLogging().AddRelayerMySqlDirectDispatch("mysql-smoke", source)
-            .AddRelayerMySqlOutbox(new MySqlOutboxOptions { Lanes = 8, DispatchStoreName = "mysql-smoke" })
-            .BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
+        var services = new ServiceCollection().AddLogging().AddRelayerMySqlDirectDispatch("mysql-smoke", source)
+            .AddRelayerMySqlOutbox(new MySqlOutboxOptions { Lanes = 8, DispatchStoreName = "mysql-smoke" });
+        services.AddRelayer(static _ => { });
+        await using var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
+        new ConsumePipelineBuilder(provider.GetRequiredService<IServiceScopeFactory>(),
+            provider.GetRequiredService<MessageTypeRegistry>(), provider.GetRequiredService<IMessageSerializer>(),
+            static (_, error, _) => ValueTask.FromException(error)).MySql(source, "mysql-smoke", inbox: true);
         await using var scope = provider.CreateAsyncScope();
         var store = scope.ServiceProvider.GetRequiredKeyedService<IOutboxStore>("mysql-smoke");
         var outbox = scope.ServiceProvider.GetRequiredService<MySqlOutbox>();
@@ -33,6 +38,6 @@ internal static class MySqlStoreSmoke
             throw new InvalidOperationException("MySQL cancellation failed under Native AOT.");
         }
         catch (OperationCanceledException) { }
-        Console.WriteLine("MySQL store registration, schema, empty reads and cancellation passed under Native AOT.");
+        Console.WriteLine("MySQL consumer composition, store registration, schema, empty reads and cancellation passed under Native AOT.");
     }
 }

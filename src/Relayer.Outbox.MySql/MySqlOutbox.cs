@@ -1,5 +1,6 @@
 using System.Data;
 using System.Data.Common;
+using System.Runtime.CompilerServices;
 using Microsoft.Extensions.Options;
 using MySqlConnector;
 
@@ -12,11 +13,14 @@ public sealed class MySqlOutbox : IOutboxEnlistment, IDisposable, IAsyncDisposab
     private readonly List<BufferedOutboxMessage> _rows = [];
     private readonly MySqlOutboxBatch _batch;
     private readonly int _lanes;
+    private readonly MySqlOutboxOptions _options;
     private readonly RelayerInstrumentation? _instrumentation;
     private readonly MySqlDirectDispatcher? _dispatcher;
     private MySqlOutboxTransaction? _transaction;
     private int _count;
     private bool _disposed;
+    private MySqlCommand? _inbox;
+    private byte[]? _inboxId;
 
     /// <summary>Creates an enlistment using this scope's validated options.</summary>
     public MySqlOutbox(IOptionsSnapshot<MySqlOutboxOptions> options, RelayerInstrumentation? instrumentation = null)
@@ -32,10 +36,15 @@ public sealed class MySqlOutbox : IOutboxEnlistment, IDisposable, IAsyncDisposab
             throw new InvalidOperationException("Resolve a MySQL outbox with DispatchStoreName through its registered service provider.");
         _dispatcher = dispatcher;
         dispatcher?.ValidateStore(value.TablePrefix);
+        _options = value;
         _lanes = value.Lanes;
         _instrumentation = instrumentation;
         _batch = new(MySqlOutboxBatch.CreateInsertSql(MySqlOutboxSchema.Table(value)));
     }
+
+    /// <summary>The active transaction for ADO.NET/Dapper business commands, or null outside a unit.</summary>
+    /// <remarks>During consumer handling Relayer owns completion. Use Connection to create commands; do not dispose or complete the transaction.</remarks>
+    public DbTransaction? CurrentTransaction => IsActive ? _transaction : null;
 
     /// <inheritdoc />
     public bool IsActive => _transaction is { IsActive: true };
@@ -100,6 +109,28 @@ public sealed class MySqlOutbox : IOutboxEnlistment, IDisposable, IAsyncDisposab
         return ValueTask.CompletedTask;
     }
 
+    [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder<>))]
+    internal async ValueTask<bool> TryInsertInboxAsync(MySqlOutboxTransaction transaction, byte[] consumer,
+        Guid id, CancellationToken cancellationToken)
+    {
+        if (_inbox is null)
+        {
+            // Inputs are validated and bounded. IGNORE handles only the expected unique-key conflict
+            // in this schema; unlike an upsert its affected count is independent of CLIENT_FOUND_ROWS.
+            _inboxId = new byte[16];
+            _inbox = new($"INSERT IGNORE INTO {MySqlOutboxSchema.InboxTable(_options)} (consumer, message_id) VALUES (@consumer, @id)");
+            _inbox.Parameters.Add(new("consumer", MySqlDbType.VarBinary));
+            _inbox.Parameters.Add(new("id", MySqlDbType.Binary) { Value = _inboxId });
+        }
+        var native = transaction.Unwrap(transaction.Connection);
+        _inbox.Connection = native.Connection;
+        _inbox.Transaction = native;
+        _inbox.Parameters[0].Value = consumer;
+        id.TryWriteBytes(_inboxId, bigEndian: true, out _);
+        try { return await _inbox.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) == 1; }
+        finally { _inbox.Connection = null; _inbox.Transaction = null; _inbox.Parameters[0].Value = DBNull.Value; }
+    }
+
     internal MySqlOutboxBatch? Prepare(MySqlTransaction transaction)
     {
         if (_count == 0) return null;
@@ -135,7 +166,7 @@ public sealed class MySqlOutbox : IOutboxEnlistment, IDisposable, IAsyncDisposab
     {
         if (_disposed) return;
         try { _transaction?.Dispose(); }
-        finally { _disposed = true; _batch.Dispose(); }
+        finally { _disposed = true; _batch.Dispose(); _inbox?.Dispose(); }
     }
 
     /// <inheritdoc />
@@ -146,6 +177,6 @@ public sealed class MySqlOutbox : IOutboxEnlistment, IDisposable, IAsyncDisposab
         {
             if (_transaction is not null) await _transaction.DisposeAsync().ConfigureAwait(false);
         }
-        finally { _disposed = true; _batch.Dispose(); }
+        finally { _disposed = true; _batch.Dispose(); _inbox?.Dispose(); }
     }
 }

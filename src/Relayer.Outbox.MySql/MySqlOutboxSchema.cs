@@ -31,13 +31,24 @@ public static class MySqlOutboxSchema
                 INDEX pending_idx (status, lane, id),
                 INDEX scheduled_idx (deliver_at)
             ) ENGINE=InnoDB DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_bin;
+            CREATE TABLE IF NOT EXISTS {InboxTable(options ?? new())} (
+                consumer VARBINARY(768) NOT NULL,
+                message_id BINARY(16) NOT NULL,
+                processed_at DATETIME(6) NOT NULL DEFAULT (UTC_TIMESTAMP(6)),
+                PRIMARY KEY (consumer, message_id),
+                INDEX processed_idx (processed_at)
+            ) ENGINE=InnoDB;
             """;
     }
 
-    internal static string Table(MySqlOutboxOptions options)
+    internal static string InboxTable(MySqlOutboxOptions options) => Identifier(options, "inbox");
+
+    internal static string Table(MySqlOutboxOptions options) => Identifier(options, "outbox");
+
+    private static string Identifier(MySqlOutboxOptions options, string suffix)
     {
         ArgumentNullException.ThrowIfNull(options.TablePrefix);
-        var identifier = options.TablePrefix + "outbox";
+        var identifier = options.TablePrefix + suffix;
         // MySQL appends _chk_1 ... _chk_6 to the table name for these native CHECK constraints.
         if (identifier.Length > 58 || identifier.Contains('\0') || identifier.EndsWith(' '))
             throw new ArgumentException("MySQL outbox table identifiers must fit in 58 characters (52 for TablePrefix), reserve 6 for generated CHECK names, contain no NUL, and not end in a space.", nameof(options));
