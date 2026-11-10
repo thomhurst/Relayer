@@ -15,6 +15,10 @@ on:
         description: Run NATS native-client comparisons instead of the main regression gate
         type: boolean
         default: false
+      nats_allocations:
+        description: Capture separate NATS receive allocation traces (requires nats_native)
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -249,6 +253,21 @@ jobs:
             > nats-benchmarks.log 2>&1 \
             || { tail -n 80 nats-benchmarks.log; exit 1; }
 
+      # Allocation profiling runs separately so instrumentation cannot change the
+      # unprofiled comparisons above. BDN attaches to its measured child processes.
+      - name: Attribute native and Relayer receive allocations
+        if: inputs.nats_allocations == true
+        env:
+          RELAYER_NATS_ALLOCATION_PROFILE: '1'
+        run: |
+          dotnet run -c Release --project benchmarks/Relayer.Benchmarks -- \
+            --filter '*NatsWireReceiveBenchmarks*' \
+            --warmupCount 3 --iterationCount 3 --launchCount 1 \
+            --exporters fulljson --keepFiles --artifacts nats-allocations \
+            > nats-allocation-profile.log 2>&1 \
+            || { tail -n 80 nats-allocation-profile.log; exit 1; }
+          find nats-allocations -name '*.nettrace' -print -quit | grep -q .
+
       - name: Retain measurements, source and loaded benchmark binaries
         if: always()
         run: |
@@ -264,6 +283,9 @@ jobs:
             find nats-results -type f -exec sha256sum {} + >> nats-SHA256SUMS
             cat nats-results/results/*-report-github.md >> "$GITHUB_STEP_SUMMARY"
           fi
+          if [ -d nats-allocations ]; then
+            find nats-allocations -type f -exec sha256sum {} + >> nats-SHA256SUMS
+          fi
           echo 'Native NATS comparisons only; results require allocation attribution and performance review before an acceptance claim.' >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload native comparison evidence
@@ -274,6 +296,7 @@ jobs:
           retention-days: 90
           path: |
             nats-results/
+            nats-allocations/
             nats-*.log
             nats-environment.txt
             nats-source.zip
