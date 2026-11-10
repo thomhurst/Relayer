@@ -46,7 +46,7 @@ internal sealed class PubSubFixture : ITransportConformanceFixture<GooglePubSubD
     private bool _observedNativeFailure;
     public bool IsExpectedOutageFailure(Exception error)
     {
-        if (error is RpcException { StatusCode: StatusCode.Unavailable or StatusCode.DeadlineExceeded }) return true;
+        if (IsExpectedPublishFailure(error)) return true;
         if (_worker?.Completion.Exception is not { } failure || !IsNativeStreamWriteFailure(failure)
             || !IsObservedSubscriberFailure(error, failure)) return false;
         _observedNativeFailure = true;
@@ -174,11 +174,17 @@ internal sealed class PubSubFixture : ITransportConformanceFixture<GooglePubSubD
 
     private static bool IsNativeStreamWriteFailure(Exception error) => error is AggregateException aggregate
         ? aggregate.InnerExceptions.All(IsNativeStreamWriteFailure)
-        : error is IOException && ContainsDisconnectedSocket(error);
+        : error is IOException && ContainsDisconnectedConnection(error);
 
-    private static bool ContainsDisconnectedSocket(Exception error) =>
+    internal static bool IsExpectedPublishFailure(Exception error) => error is RpcException rpc
+        && (rpc.StatusCode is StatusCode.Unavailable or StatusCode.DeadlineExceeded
+            || (rpc.StatusCode == StatusCode.Internal && rpc.Status.DebugException is { } cause
+                && ContainsDisconnectedConnection(cause)));
+
+    private static bool ContainsDisconnectedConnection(Exception error) =>
         error is System.Net.Sockets.SocketException { SocketErrorCode: System.Net.Sockets.SocketError.ConnectionReset or System.Net.Sockets.SocketError.ConnectionAborted }
-        || (error.InnerException is { } inner && ContainsDisconnectedSocket(inner));
+        || error is System.Net.Http.HttpIOException { HttpRequestError: System.Net.Http.HttpRequestError.InvalidResponse or System.Net.Http.HttpRequestError.ResponseEnded }
+        || (error.InnerException is { } inner && ContainsDisconnectedConnection(inner));
 
     private static bool IsObservedSubscriberFailure(Exception error, AggregateException failure) => error is AggregateException aggregate
         ? aggregate.InnerExceptions.All(inner => IsObservedSubscriberFailure(inner, failure))

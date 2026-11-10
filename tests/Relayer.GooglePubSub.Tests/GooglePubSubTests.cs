@@ -82,7 +82,9 @@ public class GooglePubSubTests
     }
 
     [Test]
-    public async Task Fatal_native_initial_write_recreates_application_without_replacing_subscription()
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Fatal_native_initial_write_recreates_application_without_replacing_subscription(bool handshakeFailure)
     {
         using var deadline = new CancellationTokenSource(TimeSpan.FromMinutes(2));
         var token = deadline.Token;
@@ -91,14 +93,20 @@ public class GooglePubSubTests
         var fixture = (PubSubFixture)lease;
         var delivered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         fixture.RegisterConsumer((_, _) => { delivered.TrySetResult(); return new(Disposition.Complete); });
-        var failure = new IOException("The request was aborted.",
-            new System.Net.Sockets.SocketException((int)System.Net.Sockets.SocketError.ConnectionReset));
+        var failure = handshakeFailure
+            ? new System.Net.Http.HttpIOException(System.Net.Http.HttpRequestError.InvalidResponse,
+                "An HTTP/2 connection could not be established because the server did not complete the HTTP/2 handshake.",
+                new System.Net.Http.HttpIOException(System.Net.Http.HttpRequestError.ResponseEnded, "The response ended prematurely."))
+            : new IOException("The request was aborted.",
+                new System.Net.Sockets.SocketException((int)System.Net.Sockets.SocketError.ConnectionReset));
         fixture.InjectInitialWriteFailure(failure);
         var original = fixture.Transport;
         await original.StartAsync(token);
         await Assert.That(async () => await fixture.ConsumerCompletion.WaitAsync(token)).Throws<IOException>();
         await Assert.That(fixture.IsExpectedOutageFailure(failure)).IsTrue();
         await Assert.That(fixture.IsExpectedOutageFailure(new IOException("Unrelated failure"))).IsFalse();
+        await Assert.That(fixture.IsExpectedOutageFailure(new System.Net.Http.HttpIOException(
+            System.Net.Http.HttpRequestError.InvalidResponse, "A different connection failed."))).IsFalse();
         await Assert.That(async () => await original.StopAsync(token)).Throws<AggregateException>();
         await fixture.ReconnectAsync(token);
         await Assert.That(ReferenceEquals(original, fixture.Transport)).IsFalse();
