@@ -38,7 +38,7 @@ public class PostgreSqlFixtureTests
         var cleanup = new TimeoutException("docker rm timed out");
         var calls = new List<string[]>();
         var failures = new List<Exception>();
-        var fixture = new PostgreSqlFixture(args =>
+        var fixture = new PostgreSqlServer(args =>
         {
             calls.Add(args);
             if (args[0] == "rm") return Task.FromException<string>(cleanup);
@@ -66,7 +66,7 @@ public class PostgreSqlFixtureTests
     {
         var primary = new InvalidOperationException("test body failed");
         var failures = new List<Exception>();
-        var fixture = new PostgreSqlFixture(args => args[0] == "rm"
+        var fixture = new PostgreSqlServer(args => args[0] == "rm"
             ? Task.FromException<string>(new TimeoutException("docker rm timed out"))
             : Task.FromException<string>(new TimeoutException("docker run timed out")), failures.Add);
         // A failed run may still have created the named container.
@@ -82,14 +82,14 @@ public class PostgreSqlFixtureTests
     [Test]
     public async Task Disposing_an_unused_fixture_does_not_invoke_Docker()
     {
-        await using var fixture = new PostgreSqlFixture(_ => throw new InvalidOperationException("Unexpected Docker invocation"), _ => { });
+        await using var fixture = new PostgreSqlServer(_ => throw new InvalidOperationException("Unexpected Docker invocation"), _ => { });
     }
 
     [Test]
     public async Task Successful_cleanup_removes_only_the_owned_container()
     {
         var calls = new List<string[]>();
-        var fixture = new PostgreSqlFixture(args =>
+        var fixture = new PostgreSqlServer(args =>
         {
             calls.Add(args);
             return args[0] == "run" ? Task.FromException<string>(new TimeoutException("startup")) : Task.FromResult("");

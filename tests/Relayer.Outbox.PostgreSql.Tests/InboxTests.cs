@@ -642,7 +642,7 @@ public class InboxTests : InboxContractTests
             await connection.OpenAsync(timeout.Token);
             while (true)
             {
-                await using var command = new NpgsqlCommand("SELECT count(*) FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND query LIKE 'INSERT INTO %test_inbox%'", connection);
+                await using var command = new NpgsqlCommand("SELECT count(*) FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND query LIKE 'INSERT INTO %test_inbox%' AND datname = current_database()", connection);
                 if ((long)(await command.ExecuteScalarAsync(timeout.Token))! > 0) return;
                 await Task.Delay(10, timeout.Token);
             }

@@ -47,7 +47,7 @@ public class ChangeCaptureTests
     public async Task Startup_requires_persistent_slot_and_insert_only_unfiltered_publication()
     {
         await using var fixture = new PostgreSqlFixture();
-        await fixture.StartAsync(logicalReplication: true);
+        await fixture.StartAsync();
         await using var source = NpgsqlDataSource.Create(fixture.ConnectionString);
         await PostgreSqlOutboxStoreTests.CreateSchema(source);
         using var worker = Worker(source, fixture.ConnectionString, new());
@@ -62,7 +62,7 @@ public class ChangeCaptureTests
     public async Task Captures_commits_drains_pre_slot_backlog_and_preserves_ordered_and_future_rows()
     {
         await using var fixture = new PostgreSqlFixture();
-        await fixture.StartAsync(logicalReplication: true);
+        await fixture.StartAsync();
         await using var source = NpgsqlDataSource.Create(fixture.ConnectionString);
         await PostgreSqlOutboxStoreTests.CreateSchema(source);
         for (var i = 1; i <= 5; i++) await Insert(source, Id(i));
@@ -94,7 +94,7 @@ public class ChangeCaptureTests
     public async Task Shutdown_after_native_acceptance_replays_same_identity_and_body_on_restart()
     {
         await using var fixture = new PostgreSqlFixture();
-        await fixture.StartAsync(logicalReplication: true);
+        await fixture.StartAsync();
         await using var source = NpgsqlDataSource.Create(fixture.ConnectionString);
         await PostgreSqlOutboxStoreTests.CreateSchema(source);
         await Provision(source, fixture.ConnectionString);
@@ -137,7 +137,7 @@ public class ChangeCaptureTests
     public async Task Failed_send_stays_durable_after_checkpoint_and_restart_recovers_without_new_insert()
     {
         await using var fixture = new PostgreSqlFixture();
-        await fixture.StartAsync(logicalReplication: true);
+        await fixture.StartAsync();
         await using var source = NpgsqlDataSource.Create(fixture.ConnectionString);
         await PostgreSqlOutboxStoreTests.CreateSchema(source);
         await Provision(source, fixture.ConnectionString);
@@ -167,9 +167,12 @@ public class ChangeCaptureTests
         finally { await second.StopAsync(timeout.Token); }
     }
 
+    // Replication slot names are unique per server, which every test shares.
+    private static string Slot => TestContext.Current!.Isolation.GetIsolatedName("orders");
+
     private static PostgreSqlChangeCaptureOptions Options(int batchSize = 3, bool retainSentMessages = false) => new()
     {
-        Slot = new("orders"), Replication = new("orders", PgOutputProtocolVersion.V1), BatchSize = batchSize, RetainSentMessages = retainSentMessages
+        Slot = new(Slot), Replication = new("orders", PgOutputProtocolVersion.V1), BatchSize = batchSize, RetainSentMessages = retainSentMessages
     };
 
     [Test]
@@ -179,7 +182,7 @@ public class ChangeCaptureTests
     public async Task Database_failure_propagates_without_checkpoint_and_restart_recovers(string phase)
     {
         await using var fixture = new PostgreSqlFixture();
-        await fixture.StartAsync(logicalReplication: true);
+        await fixture.StartAsync();
         await using var source = NpgsqlDataSource.Create(fixture.ConnectionString);
         await PostgreSqlOutboxStoreTests.CreateSchema(source);
         await Provision(source, fixture.ConnectionString);
@@ -211,7 +214,7 @@ public class ChangeCaptureTests
                 catch (OperationCanceledException) when (observed.IsCancellationRequested) { }
                 await Assert.That(first.ExecuteTask!.IsFaulted).IsTrue();
                 await Assert.That(async () => await first.ExecuteTask!).Throws<PostgresException>();
-                await using var checkpoint = source.CreateCommand("SELECT confirmed_flush_lsn < @position FROM pg_replication_slots WHERE slot_name = 'orders'");
+                await using var checkpoint = source.CreateCommand($"SELECT confirmed_flush_lsn < @position FROM pg_replication_slots WHERE slot_name = '{Slot}'");
                 checkpoint.Parameters.AddWithValue("position", NpgsqlDbType.PgLsn, position);
                 await Assert.That(await checkpoint.ExecuteScalarAsync(timeout.Token) is true).IsTrue();
                 await Assert.That(await Count(source)).IsEqualTo(1L);
@@ -235,7 +238,7 @@ public class ChangeCaptureTests
     public async Task Non_transient_replication_failure_stops_host()
     {
         await using var fixture = new PostgreSqlFixture();
-        await fixture.StartAsync(logicalReplication: true);
+        await fixture.StartAsync();
         await using var source = NpgsqlDataSource.Create(fixture.ConnectionString);
         await PostgreSqlOutboxStoreTests.CreateSchema(source);
         await Provision(source, fixture.ConnectionString);
@@ -261,14 +264,14 @@ public class ChangeCaptureTests
     public async Task Transient_native_disconnect_reconnects_to_persistent_slot_and_captures_new_commits()
     {
         await using var fixture = new PostgreSqlFixture();
-        await fixture.StartAsync(logicalReplication: true);
+        await fixture.StartAsync();
         await using var source = NpgsqlDataSource.Create(fixture.ConnectionString);
         await PostgreSqlOutboxStoreTests.CreateSchema(source);
         await Provision(source, fixture.ConnectionString);
         var transport = new RecordingTransport();
         using var worker = new PostgreSqlChangeCaptureWorker(source,
             () => new(fixture.ConnectionString) { WalReceiverStatusInterval = TimeSpan.FromMilliseconds(25) },
-            new() { Slot = new("orders"), Replication = new("orders", PgOutputProtocolVersion.V1), ReconnectDelay = TimeSpan.FromMilliseconds(20) },
+            new() { Slot = new(Slot), Replication = new("orders", PgOutputProtocolVersion.V1), ReconnectDelay = TimeSpan.FromMilliseconds(20) },
             [transport], NullLogger<PostgreSqlChangeCaptureWorker>.Instance, NullLogger<PostgreSqlMaintenanceWorker>.Instance,
             NullLogger<PostgreSqlDirectDispatcher>.Instance);
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
@@ -277,7 +280,7 @@ public class ChangeCaptureTests
         {
             await Streaming(source, timeout.Token);
             int previous;
-            await using (var command = source.CreateCommand("SELECT active_pid FROM pg_replication_slots WHERE slot_name = 'orders'"))
+            await using (var command = source.CreateCommand($"SELECT active_pid FROM pg_replication_slots WHERE slot_name = '{Slot}'"))
                 previous = (int)(await command.ExecuteScalarAsync(timeout.Token))!;
             await using (var kill = source.CreateCommand("SELECT pg_terminate_backend(@pid)"))
             {
@@ -287,7 +290,7 @@ public class ChangeCaptureTests
             var position = await Insert(source, Id(1));
             await Acknowledged(source, position, timeout.Token);
             await Assert.That(transport.Ids.SequenceEqual([Id(1)])).IsTrue();
-            await using var current = source.CreateCommand("SELECT active_pid FROM pg_replication_slots WHERE slot_name = 'orders'");
+            await using var current = source.CreateCommand($"SELECT active_pid FROM pg_replication_slots WHERE slot_name = '{Slot}'");
             await Assert.That((int)(await current.ExecuteScalarAsync(timeout.Token))!).IsNotEqualTo(previous);
         }
         finally { await worker.StopAsync(timeout.Token); }
@@ -303,7 +306,7 @@ public class ChangeCaptureTests
         await Sql(source, $"CREATE PUBLICATION orders FOR TABLE relayer_outbox WITH (publish = '{publish}')");
         await using var connection = new LogicalReplicationConnection(connectionString);
         await connection.Open();
-        await connection.CreatePgOutputReplicationSlot("orders");
+        await connection.CreatePgOutputReplicationSlot(Slot);
     }
 
     private static async Task<NpgsqlLogSequenceNumber> Insert(NpgsqlDataSource source, Guid id,
@@ -326,13 +329,13 @@ public class ChangeCaptureTests
 
     private static Task Streaming(NpgsqlDataSource source, CancellationToken token) => Until(async () =>
     {
-        await using var command = source.CreateCommand("SELECT EXISTS (SELECT 1 FROM pg_replication_slots s JOIN pg_stat_replication r ON r.pid = s.active_pid WHERE s.slot_name = 'orders' AND r.state = 'streaming')");
+        await using var command = source.CreateCommand($"SELECT EXISTS (SELECT 1 FROM pg_replication_slots s JOIN pg_stat_replication r ON r.pid = s.active_pid WHERE s.slot_name = '{Slot}' AND r.state = 'streaming')");
         return (bool)(await command.ExecuteScalarAsync(token))!;
     }, token);
 
     private static Task Acknowledged(NpgsqlDataSource source, NpgsqlLogSequenceNumber position, CancellationToken token) => Until(async () =>
     {
-        await using var command = source.CreateCommand("SELECT confirmed_flush_lsn >= @position FROM pg_replication_slots WHERE slot_name = 'orders'");
+        await using var command = source.CreateCommand($"SELECT confirmed_flush_lsn >= @position FROM pg_replication_slots WHERE slot_name = '{Slot}'");
         command.Parameters.AddWithValue("position", NpgsqlDbType.PgLsn, position);
         return await command.ExecuteScalarAsync(token) is true;
     }, token);
