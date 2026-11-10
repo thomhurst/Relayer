@@ -12,17 +12,18 @@ internal sealed class PostgreSqlLocalTransport : ITransport, ITransportSendTraci
     private readonly PostgreSqlOutboxOptions _options;
     private readonly FrozenSet<string> _endpoints;
     private readonly Dictionary<string, Receiver> _consumers = new(StringComparer.Ordinal);
-    private readonly PostgreSqlOutboxStore?[] _completionStores = new PostgreSqlOutboxStore[64];
+    private readonly PostgreSqlLocalStatePool<PostgreSqlOutboxStore> _completionStores;
     private readonly FrozenDictionary<string, SendTracing>? _tracing;
     private readonly FrozenDictionary<string, MessageOperationTracing>? _settlementTracing;
-    private readonly SendState?[] _sendStates = new SendState[16];
+    private readonly PostgreSqlLocalStatePool<SendState> _sendStates = new(16, static () => new());
     private readonly string _insert;
     private readonly RelayerInstrumentation? _instrumentation;
     internal PostgreSqlDirectDispatcher? Dispatcher { get; set; }
-    private sealed class SendState
+    internal sealed class SendState : IDisposable
     {
         internal readonly PostgreSqlOutboxBatch Batch = new();
         internal readonly List<BufferedOutboxMessage> Rows = [new()];
+        public void Dispose() => Batch.Dispose();
     }
     private readonly TransportCapabilities _capabilities = new() { OrderedByKey = true, MaxBatchSize = 1, Transactions = true };
     internal PostgreSqlLocalTransport(string name, NpgsqlDataSource source, PostgreSqlOutboxOptions options, IEnumerable<string> endpoints, MessageTracing? tracing = null)
@@ -32,9 +33,8 @@ internal sealed class PostgreSqlLocalTransport : ITransport, ITransportSendTraci
         _options = options;
         _instrumentation = tracing?.Instrumentation;
         _endpoints = endpoints.ToFrozenSet(StringComparer.Ordinal);
-        for (var i = 0; i < _completionStores.Length; i++) _completionStores[i] = new(source, options);
+        _completionStores = new(64, () => new(source, options));
         _insert = PostgreSqlOutboxBatch.CreateInsertSql(PostgreSqlOutboxSchema.QuoteIdentifier(options.Schema ?? "public") + "." + PostgreSqlOutboxSchema.QuoteIdentifier(options.TablePrefix + "outbox"));
-        for (var i = 0; i < _sendStates.Length; i++) _sendStates[i] = new();
         if (tracing is not null)
         {
             _tracing = _endpoints.ToFrozenDictionary(endpoint => endpoint,
@@ -120,9 +120,7 @@ internal sealed class PostgreSqlLocalTransport : ITransport, ITransportSendTraci
     private async ValueTask ProcessAttemptAsync(Func<PostgreSqlLocalDelivery, CancellationToken, ValueTask<Disposition>> consumer,
         PostgreSqlLocalDelivery delivery, CancellationToken cancellationToken)
     {
-        PostgreSqlOutboxStore? store = null;
-        for (var i = 0; i < _completionStores.Length && store is null; i++) store = Interlocked.Exchange(ref _completionStores[i], null);
-        store ??= new(_source, _options);
+        var store = _completionStores.Rent();
         try
         {
             var disposition = await consumer(delivery with { CompletionStore = store, Owner = this }, cancellationToken).ConfigureAwait(false);
@@ -133,8 +131,7 @@ internal sealed class PostgreSqlLocalTransport : ITransport, ITransportSendTraci
         }
         finally
         {
-            for (var i = 0; i < _completionStores.Length; i++)
-                if (Interlocked.CompareExchange(ref _completionStores[i], store, null) is null) break;
+            _completionStores.Return(store);
         }
     }
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
@@ -182,9 +179,7 @@ internal sealed class PostgreSqlLocalTransport : ITransport, ITransportSendTraci
         }
         if (!TryReadId(id, out var messageId) || messageId.Version != 7 || type.IsEmpty)
             throw new InvalidOperationException("PostgreSQL local sends require the original UUIDv7 ce_id and stable ce_type CloudEvents headers. Use ISender with the default envelope.");
-        SendState? state = null;
-        for (var i = 0; i < _sendStates.Length && state is null; i++) state = Interlocked.Exchange(ref _sendStates[i], null);
-        state ??= new();
+        var state = _sendStates.Rent();
         try
         {
             var record = new OutboxRecord(messageId, Name, type.ToString(), message, DateTimeOffset.UtcNow);
@@ -203,9 +198,7 @@ internal sealed class PostgreSqlLocalTransport : ITransport, ITransportSendTraci
         finally
         {
             state.Rows[0].Clear();
-            for (var i = 0; i < _sendStates.Length; i++)
-                if (Interlocked.CompareExchange(ref _sendStates[i], state, null) is null) { state = null; break; }
-            state?.Batch.Dispose();
+            _sendStates.Return(state);
         }
     }
     private static bool TryReadId(WireString id, out Guid value)
@@ -226,7 +219,8 @@ internal sealed class PostgreSqlLocalTransport : ITransport, ITransportSendTraci
     public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
     public ValueTask DisposeAsync()
     {
-        foreach (var state in _sendStates) state?.Batch.Dispose();
+        _sendStates.Dispose();
+        _completionStores.Dispose();
         return default;
     }
 }
