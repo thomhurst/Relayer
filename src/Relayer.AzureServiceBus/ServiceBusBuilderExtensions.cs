@@ -47,6 +47,12 @@ public static class ServiceBusBuilderExtensions
                 provider.GetRequiredService<MessageTracing>(), logging, definition.Consumers);
         });
         builder.Services.AddSingleton<ITransport>(provider => provider.GetRequiredKeyedService<ServiceBusSendTransport>(name));
+        builder.Services.AddKeyedSingleton<IDeadLetterManager>(name, (provider, _) =>
+        {
+            var transport = provider.GetRequiredKeyedService<ServiceBusSendTransport>(name);
+            var definition = provider.GetRequiredService<RelayerConfiguration>().Transports.Single(item => item.Name == name);
+            return new ServiceBusDeadLetterManager(transport.Client, definition.Consumers);
+        });
         builder.Services.AddSingleton<IHostedService>(provider => new ServiceBusHostedService(provider, name));
         return builder;
     }
