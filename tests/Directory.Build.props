@@ -1,0 +1,8 @@
+<Project>
+  <Import Project="$([MSBuild]::GetPathOfFileAbove('Directory.Build.props', '$(MSBuildThisFileDirectory)../'))" />
+
+  <PropertyGroup>
+    <TargetFramework />
+    <TargetFrameworks>net10.0;net11.0</TargetFrameworks>
+  </PropertyGroup>
+</Project>

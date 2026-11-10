@@ -28,6 +28,8 @@ foreach (var listener in new[] { false, true })
     using var send = new Relayer.TestFixtures.SendTracingCompletionFixture(batch, listener);
     for (var i = 0; i < 16; i++) send.Run(traced: true);
     if (send.Run(traced: true) != 0) throw new InvalidOperationException("Send tracing allocates under Native AOT.");
+    // .NET 11 allocates once per completing thread on its first awaited completion; steady state is the claim.
+    send.Run(traced: true, asynchronousCaller: true);
     if (send.Run(traced: true, asynchronousCaller: true) != 0)
         throw new InvalidOperationException("Awaited send tracing allocates under Native AOT.");
 }

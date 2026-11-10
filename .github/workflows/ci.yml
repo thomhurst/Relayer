@@ -113,6 +113,7 @@ jobs:
         if: steps.solution.outputs.present == 'true'
         with:
           global-json-file: global.json
+          dotnet-version: '10.0.x' # runtime for the net10.0 target; global.json selects the 11.0 SDK
 
       - name: Restore
         if: steps.solution.outputs.present == 'true'
@@ -143,21 +144,27 @@ jobs:
       - name: Native AOT smoke test
         if: steps.solution.outputs.present == 'true'
         run: |
-          dotnet publish tests/Relayer.AotSmoke -c Release -r linux-x64 -o .artifacts/aot-smoke
-          .artifacts/aot-smoke/Relayer.AotSmoke
+          for framework in net10.0 net11.0; do
+            dotnet publish tests/Relayer.AotSmoke -c Release -f "$framework" -r linux-x64 -o ".artifacts/aot-smoke-$framework"
+            ".artifacts/aot-smoke-$framework/Relayer.AotSmoke"
+          done
 
       - name: Native AOT dead-letter HTTP smoke
         if: steps.solution.outputs.present == 'true'
         run: |
-          dotnet publish tests/Relayer.AspNetCore.AotSmoke -c Release -r linux-x64 -o .artifacts/dead-letter-http-aot
-          .artifacts/dead-letter-http-aot/Relayer.AspNetCore.AotSmoke
+          for framework in net10.0 net11.0; do
+            dotnet publish tests/Relayer.AspNetCore.AotSmoke -c Release -f "$framework" -r linux-x64 -o ".artifacts/dead-letter-http-aot-$framework"
+            ".artifacts/dead-letter-http-aot-$framework/Relayer.AspNetCore.AotSmoke"
+          done
 
       - name: Google Pub/Sub Native AOT smoke test
         if: steps.solution.outputs.present == 'true'
         env:
           PUBSUB_EMULATOR_HOST: 127.0.0.1:8085
         run: |
-          dotnet publish tests/Relayer.GooglePubSub.AotSmoke -c Release -r linux-x64 -o .artifacts/pubsub-aot
+          for framework in net10.0 net11.0; do
+            dotnet publish tests/Relayer.GooglePubSub.AotSmoke -c Release -f "$framework" -r linux-x64 -o ".artifacts/pubsub-aot-$framework"
+          done
           container=$(docker run -d -p 127.0.0.1:8085:8085 \
             gcr.io/google.com/cloudsdktool/google-cloud-cli@sha256:112c21f8f6e04b03b393b3c34fb943a1f443e839f18c6492c364ac2e6c3ff935 \
             gcloud beta emulators pubsub start --project=relayer-test --host-port=0.0.0.0:8085 --quiet)
@@ -174,7 +181,9 @@ jobs:
             docker logs "$container"
             exit 1
           fi
-          .artifacts/pubsub-aot/Relayer.GooglePubSub.AotSmoke
+          for framework in net10.0 net11.0; do
+            ".artifacts/pubsub-aot-$framework/Relayer.GooglePubSub.AotSmoke"
+          done
 
   # Tests for the issue/PR loop's merge gate and the Claude review helper. They run here, not in
   # their own workflow, so `CI Passed` (and therefore auto-merge) waits for them.

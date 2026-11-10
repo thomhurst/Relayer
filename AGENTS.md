@@ -36,7 +36,7 @@ Rules for code on the per-message path (pipeline, middleware, dispatch, serializ
 
 ## Library conventions and contracts
 
-- .NET 10 and later (D2). Nullable reference types on, warnings are errors, Central Package Management in `Directory.Packages.props`, shared settings in `Directory.Build.props` (D21).
+- .NET 10 and later (D2): libraries and tests multi-target `net10.0;net11.0`, and `net11.0` builds compile with runtime async (`runtime-async=on` in `Directory.Build.props`). Nullable reference types on, warnings are errors, Central Package Management in `Directory.Packages.props`, shared settings in `Directory.Build.props` (D21).
 - Native AOT and trimming safe from day one. Serialization uses System.Text.Json source generation by default (D8).
 - The core depends only on `Microsoft.Extensions.*` abstractions and the BCL. A transport package depends only on its native client and supports only its latest major version (D19).
 - Public APIs expose interfaces and options; implementations are internal or sealed. Use init-only options and fluent builders following existing code. Options also bind from `IConfiguration` through the Options pattern.

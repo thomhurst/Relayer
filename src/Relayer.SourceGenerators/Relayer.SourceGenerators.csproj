@@ -3,6 +3,7 @@
   <!-- Roslyn components must target netstandard2.0. Shipped inside the Relayer package, not on its own. -->
   <PropertyGroup>
     <TargetFramework>netstandard2.0</TargetFramework>
+    <TargetFrameworks />
     <IsPackable>false</IsPackable>
     <IsAotCompatible>false</IsAotCompatible>
     <GenerateDocumentationFile>false</GenerateDocumentationFile>

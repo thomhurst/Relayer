@@ -99,11 +99,11 @@ To change a decision, add a new entry that supersedes it rather than editing his
 
 ## D2. Target .NET 10 and later
 
-**Context.** .NET 8 support ends in November 2026. Supporting older targets limits the APIs available for AOT and performance work.
+**Context.** .NET 8 support ended in November 2026. Supporting older targets limits the APIs available for AOT and performance work. .NET 11 ships runtime async as an opt-in preview feature that replaces compiler-generated async state machines.
 
-**Decision.** Target `net10.0` (current LTS) and later, with the latest C# language version. The source generator targets `netstandard2.0`, as Roslyn requires.
+**Decision.** Target `net10.0` (current LTS) and each later release, currently `net11.0`, with the latest C# language version. Libraries and tests multi-target both; the `net11.0` builds opt in to runtime async (`<Features>runtime-async=on</Features>`). The source generator targets `netstandard2.0`, as Roslyn requires. Samples, benchmarks and the frozen-measurement tools stay on `net10.0`, so the regression gate still measures the LTS build.
 
-**Consequences.** We can use modern BCL APIs freely. Users on .NET 8 cannot adopt Relayer.
+**Consequences.** We can use modern BCL APIs freely. Users on .NET 8 cannot adopt Relayer. Building the repository needs the .NET 11 SDK, and running the tests needs the .NET 10 and .NET 11 runtimes. CI runs the test suite and the Native AOT smoke tests on both targets. Runtime async is still a preview feature, so the `net11.0` assets depend on it staying compatible within .NET 11.
 
 ## D3. MIT licence, permanently
 
