@@ -348,6 +348,20 @@ retain that control's inputs and binaries separately and identify it as a new
 experiment, not a replay of the original executable. Replaying on another host
 tests variation there; it does not reproduce the historical host's conditions.
 
+The frozen concurrent workflow also runs a separate fixed-count ABBA with
+`frozen_concurrent_control.py --bdn-await`. It binds the retained
+BenchmarkDotNet `AwaitHelper.GetResult<int>(ValueTask<int>)` once and completes
+each original `ConcurrentRoundTrip` synchronously, as the generated BDN driver
+does. The default external probe instead awaits that method asynchronously;
+these completion boundaries can change scheduling and continuation-cache reuse.
+Both modes keep 4096 warmup and 32768 measured batches, original binaries and
+inclusive allocation counters. Their results are separate experiments: the BDN
+waiter mode does not replay adaptive pilot calibration, identify historical
+allocation owners, or permit subtracting one mode's totals from the other.
+The protocol and each launch record name the completion boundary. Fixture,
+synchronous round-trip and exact-driver counters cannot be combined with the
+full-delivery BDN waiter mode.
+
 The artifact retention is **90 days**. Copy evidence to an independent archive
 before that deadline when an investigation must outlive it. Local PR evidence
 can be deleted when the PR closes, so it is not a permanent archive. Historical
