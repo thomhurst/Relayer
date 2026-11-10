@@ -51,6 +51,35 @@ An optional `EntityFrameworkCoreOutboxOptions` argument selects the schema and p
 inbox-only context. With an outbox, configure those options on `AddRelayerOutbox` instead; its
 scoped configuration is authoritative, including configuration reloads for newly created scopes.
 
+## Transaction isolation
+
+Omitting `isolationLevel` keeps the provider default (normally Read Committed on PostgreSQL).
+Pass the native `System.Data.IsolationLevel` when the handler needs a stronger invariant:
+
+```csharp
+builder.EntityFrameworkCore<OrdersDbContext>("orders.billing",
+    isolationLevel: System.Data.IsolationLevel.Serializable);
+```
+
+With an explicit isolation level and no configured retrying EF execution strategy, Relayer uses
+EF Core's native execution strategy to retry PostgreSQL serialization failures (`40001`) and
+deadlocks (`40P01`) immediately, up to three retries per handling attempt. These conflicts can
+originate in the inbox insert, handler, save or commit. Each replay runs the complete handler and
+inner middleware in a fresh DI scope, DbContext and transaction. Conflicts within that budget do
+not consume the ordinary failure policy's retries or dead-letter budget. Exhaustion raises EF's
+`RetryLimitExceededException` into normal consumer failure handling; each ordinary retry gets a
+new conflict budget. Other errors go directly to normal failure handling.
+
+At Repeatable Read or Serializable, a duplicate inbox insert waiting on a transaction that commits
+after its snapshot can raise `40001` instead of returning zero rows. A fresh attempt sees the
+committed inbox row and skips the handler.
+
+If the application configures a retrying EF execution strategy (for example `EnableRetryOnFailure`),
+that strategy remains authoritative for classification, retry count and delays, including conflicts.
+The default provider strategy classifies both conflict codes as transient. Relayer does not add a
+second retry budget around it. With neither an explicit isolation level nor a retrying strategy,
+the original transaction path and normal consumer failure policy are unchanged.
+
 ## Redelivery and failure
 
 The original message ID must be a non-empty UUIDv7. Invalid identities enter normal consume failure
@@ -95,7 +124,7 @@ implicit through `AddRelayerOutbox` or explicit through `inbox: true`. Without i
 replay business work. Keep external side effects idempotent even with an inbox: database rollback
 cannot undo an HTTP call.
 
-The non-retrying path retains its original transaction middleware. Retrying contexts additionally
+The provider-default path without configured retries retains its original transaction middleware. Retrying contexts additionally
 use native strategy callbacks and a fresh scope per attempt.
 
 ## Boundaries

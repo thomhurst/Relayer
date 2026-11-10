@@ -9,7 +9,7 @@ namespace Relayer.Outbox.EntityFrameworkCore;
 
 // Selected once at composition; the non-retrying boundary pays none of these costs.
 internal sealed class RetryingEntityFrameworkCoreConsumer<TContext>(EntityFrameworkCoreConsumer<TContext> boundary,
-    string consumer, bool inbox, bool outbox, OutboxConfiguration configuration) : IConsumeTransactionMiddleware where TContext : DbContext
+    string consumer, bool inbox, bool outbox, OutboxConfiguration configuration, bool conflictRetries = false) : IConsumeTransactionMiddleware where TContext : DbContext
 {
     private readonly Operation?[] _operations = new Operation[16];
 
@@ -18,7 +18,8 @@ internal sealed class RetryingEntityFrameworkCoreConsumer<TContext>(EntityFramew
     {
         var incoming = (DefaultMessageContext)context;
         var services = incoming.Services;
-        var strategy = services.GetRequiredService<TContext>().Database.CreateExecutionStrategy();
+        var db = services.GetRequiredService<TContext>();
+        var strategy = conflictRetries ? new PostgreSqlConflictExecutionStrategy(db) : db.Database.CreateExecutionStrategy();
         var messageId = inbox ? EntityFrameworkCoreConsumer<TContext>.ParseMessageId(context.MessageId) : default;
         Operation? operation = null;
         for (var i = 0; i < _operations.Length; i++)
