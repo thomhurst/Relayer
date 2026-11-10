@@ -79,10 +79,18 @@ public class OrderedDispatchTests
         // Each insert commits before the next begins; both rows share the same key.
         await Insert(source, Id(2), 0);
         await Insert(source, Id(1), 0);
-        var transport = new RecordingTransport();
+        var sequences = new List<long>();
+        var transport = new RecordingTransport((message, _) =>
+        {
+            var header = message.Headers.Span.ToArray().Single(h => h.Key == OutboxHeaders.Sequence);
+            sequences.Add(long.Parse(header.Value.Utf8.Span, System.Globalization.CultureInfo.InvariantCulture));
+            return ValueTask.CompletedTask;
+        });
         using var worker = Worker(source, transport);
         await Assert.That(await worker.DispatchLaneAsync(0, default)).IsEqualTo(2);
         await Assert.That(transport.Ids.SequenceEqual([Id(2), Id(1)])).IsTrue();
+        await Assert.That(sequences.Count).IsEqualTo(2);
+        await Assert.That(sequences[0] > 0 && sequences[1] > sequences[0]).IsTrue();
     }
 
     [Test]

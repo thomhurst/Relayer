@@ -323,7 +323,7 @@ const status = [
   ['Saga state transitions on the EF Core inbox/outbox', 'Implemented', true],
   ['Kafka connectivity and receiver liveness health adapters', 'Implemented', true],
   ['Other native broker health adapters', 'Planned', false],
-  ['Ordered PostgreSQL dispatch and lane leases', 'Implemented', true],
+  ['Ordered PostgreSQL dispatch and lane leases', 'Implemented with consumer insert sequences', true],
   ['PostgreSQL poison-row limits, key parking and dead-letter management', 'Implemented', true],
   ['PostgreSQL outbox recovery and retention cleanup', 'Implemented', true],
   ['PostgreSQL CDC outbox dispatch', 'Implemented; SQL Server CDC planned', true],

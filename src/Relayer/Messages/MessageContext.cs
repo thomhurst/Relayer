@@ -12,6 +12,20 @@ public abstract class MessageContext
     /// <summary>The message headers, read lazily from the native message.</summary>
     public abstract MessageHeaders Headers { get; }
 
+    /// <summary>The producer's outbox insert sequence, read lazily; null when absent or malformed.</summary>
+    /// <remarks>Compare only for one ordering key, outbox table and tenant. Concurrent transactions have no defined order.</remarks>
+    public long? OutboxSequence
+    {
+        get
+        {
+            if (!Headers.TryGetValue(OutboxHeaders.Sequence, out var value)) return null;
+            var parsed = value.Text is { } text
+                ? long.TryParse(text.AsSpan(), System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out var sequence)
+                : long.TryParse(value.Utf8.Span, System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out sequence);
+            return parsed && sequence > 0 ? sequence : null;
+        }
+    }
+
     /// <summary>The delivery attempt, starting at 1.</summary>
     public abstract int Attempt { get; }
 

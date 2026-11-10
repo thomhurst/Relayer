@@ -44,7 +44,7 @@ public sealed class PostgreSqlOutboxStore : IOutboxStore
             PostgreSqlOutboxSchema.QuoteIdentifier(options.TablePrefix + "outbox_dead");
         var eligible = "status = 'pending' AND (deliver_at IS NULL OR deliver_at <= @now) AND (claim_expires_at IS NULL OR claim_expires_at <= @now)";
         var fenced = "id = @id AND claim_token = @token AND claim_expires_at > @now";
-        _read = $"SELECT id, transport, message_type, destination, body, headers, ordering_key, deliver_at, created_at, lane, attempts, last_error, tenant_id FROM {table} WHERE {eligible} AND lane IS NOT DISTINCT FROM @lane AND (@after IS NULL OR id > @after) ORDER BY id LIMIT @limit";
+        _read = $"SELECT id, transport, message_type, destination, body, headers, ordering_key, deliver_at, created_at, lane, attempts, last_error, tenant_id, seq FROM {table} WHERE {eligible} AND lane IS NOT DISTINCT FROM @lane AND (@after IS NULL OR id > @after) ORDER BY id LIMIT @limit";
         _claim = $"UPDATE {table} SET claim_token = @token, claim_expires_at = @expires WHERE id = @id AND {eligible} RETURNING true";
         _claimBatch = $"UPDATE {table} AS row SET claim_token = claims.token, claim_expires_at = @expires FROM unnest(@ids, @tokens) WITH ORDINALITY AS claims(id, token, ordinal) WHERE row.id = claims.id AND {eligible} AND lane IS NULL RETURNING claims.ordinal";
         _renew = $"UPDATE {table} SET claim_expires_at = GREATEST(claim_expires_at, @expires) WHERE {fenced} RETURNING true";
@@ -71,7 +71,7 @@ public sealed class PostgreSqlOutboxStore : IOutboxStore
 
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder<>))]
     internal async ValueTask<int> ReadRowsAsync(NpgsqlCommand command, Memory<OutboxRecord> destination,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken, bool includeOrderedSequence = false)
     {
         await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
         var count = 0;
@@ -80,12 +80,15 @@ public sealed class PostgreSqlOutboxStore : IOutboxStore
             if (_headers.Count == count) _headers.Add(new());
             var slot = _headers[count];
             var headers = OutboxHeaderCodec.Read(reader.GetFieldValue<byte[]>(5), ref slot.Entries);
+            var sequence = reader.GetInt64(13);
+            if (includeOrderedSequence && !reader.IsDBNull(9))
+                headers = OrderedSequenceHeader.Add(headers.Span, ref slot.OrderedEntries, slot.Sequence, sequence);
             var message = new OutgoingMessage(reader.GetString(3), reader.GetFieldValue<byte[]>(4), headers,
                 reader.IsDBNull(6) ? null : new WireString(reader.GetString(6)),
                 reader.IsDBNull(7) ? null : reader.GetFieldValue<DateTimeOffset>(7));
             destination.Span[count++] = new(reader.GetGuid(0), reader.GetString(1), reader.GetString(2), message,
                 reader.GetFieldValue<DateTimeOffset>(8), reader.IsDBNull(9) ? null : reader.GetInt32(9), reader.GetInt32(10),
-                reader.IsDBNull(11) ? null : reader.GetString(11), reader.IsDBNull(12) ? null : reader.GetString(12));
+                reader.IsDBNull(11) ? null : reader.GetString(11), reader.IsDBNull(12) ? null : reader.GetString(12), sequence);
         }
         return count;
     }
@@ -219,5 +222,7 @@ public sealed class PostgreSqlOutboxStore : IOutboxStore
     private sealed class HeaderSlot
     {
         internal KeyValuePair<string, WireString>[] Entries = [];
+        internal KeyValuePair<string, WireString>[] OrderedEntries = [];
+        internal readonly byte[] Sequence = new byte[20];
     }
 }
