@@ -145,8 +145,19 @@ internal sealed partial class MySqlMaintenanceWorker : BackgroundService
         finally
         {
             // Named locks outlive transactions; explicitly release before returning a pooled session.
-            admission.CommandText = "SELECT RELEASE_LOCK(@resource)";
-            await admission.ExecuteScalarAsync(CancellationToken.None).ConfigureAwait(false);
+            // Cleanup must not replace a pass failure or inherit an unlimited command timeout.
+            try
+            {
+                admission.CommandText = "SELECT RELEASE_LOCK(@resource)";
+                admission.CommandTimeout = 3;
+                // Use the native command timeout, whose cancellation/hard-timeout path breaks
+                // an unresponsive session. A separate cancelled token could skip release entirely.
+                await admission.ExecuteScalarAsync(CancellationToken.None).ConfigureAwait(false);
+            }
+            catch (Exception error)
+            {
+                ReleaseFailed(_logger, error);
+            }
         }
     }
 
@@ -234,6 +245,9 @@ internal sealed partial class MySqlMaintenanceWorker : BackgroundService
 
     [LoggerMessage(2, LogLevel.Error, "MySQL outbox row {MessageId} moved to dead storage: {Error}")]
     private static partial void Quarantined(ILogger logger, Guid messageId, string error);
+
+    [LoggerMessage(3, LogLevel.Warning, "MySQL maintenance admission release failed. The original pass outcome is preserved.")]
+    private static partial void ReleaseFailed(ILogger logger, Exception exception);
 
     [LoggerMessage(1, LogLevel.Error, "MySQL outbox maintenance failed. Durable rows remain available for the next pass.")]
     private static partial void Failed(ILogger logger, Exception exception);

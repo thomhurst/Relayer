@@ -149,6 +149,35 @@ public sealed class MaintenanceTests
     }
 
     [Test]
+    public async Task Broken_admission_session_does_not_replace_send_cancellation()
+    {
+        await using var data = new MySqlFixture();
+        await data.StartAsync();
+        await data.Insert(Guid.CreateVersion7(), DateTimeOffset.UtcNow.AddDays(-1));
+        using var stop = new CancellationTokenSource();
+        var resource = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(
+            System.Text.Encoding.UTF8.GetBytes("relayer:" + MySqlOutboxSchema.LeaseTable(new()))))[..48] + ":sweeper";
+        var transport = new Transport(async _ =>
+        {
+            await using var connection = await data.Source.OpenConnectionAsync();
+            await using var command = new MySqlCommand("SELECT IS_USED_LOCK(@resource)", connection);
+            command.Parameters.AddWithValue("resource", resource);
+            var session = Convert.ToInt64(await command.ExecuteScalarAsync());
+            await data.Execute($"KILL CONNECTION {session}");
+            stop.Cancel();
+            stop.Token.ThrowIfCancellationRequested();
+        });
+        using var worker = Worker(data, transport);
+        await Assert.That(async () => await worker.SweepAsync(stop.Token)).Throws<OperationCanceledException>();
+        await Assert.That(await Scalar(data, "SELECT COUNT(*) FROM relayer_outbox WHERE attempts=0")).IsEqualTo(1L);
+        await data.Execute("UPDATE relayer_outbox SET claim_expires_at=UTC_TIMESTAMP(6)-INTERVAL 1 SECOND; UPDATE relayer_leases SET expires_at=UTC_TIMESTAMP(6)-INTERVAL 1 SECOND");
+        var replacementTransport = new Transport();
+        using var replacement = Worker(data, replacementTransport);
+        await Assert.That(await replacement.SweepAsync()).IsEqualTo(1);
+        await Assert.That(replacementTransport.Sent).IsEqualTo(1);
+    }
+
+    [Test]
     public async Task Ordered_malformed_row_parks_raw_and_unrelated_key_continues_in_original_sequence()
     {
         await using var data = new MySqlFixture();

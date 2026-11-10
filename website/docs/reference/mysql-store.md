@@ -327,10 +327,16 @@ native session admits a pass while the existing dispatcher claims and sends rows
 
 Separate database-time `sweeper` and `cleanup` leases elect leaders across instances. Native
 `GET_LOCK(..., 0)` admission avoids waiting behind a connected pass even after its idle lease
-expires. Named locks are explicitly released before returning pooled sessions. A crashed process
+expires. Named locks are explicitly released before returning pooled sessions. Release uses a three-second
+native command timeout (plus the configured MySqlConnector cancellation timeout); a release failure
+is logged without replacing the original pass error or cancellation. Broken sessions are discarded
+by MySqlConnector. A crashed process
 releases its session lock; rivals recover after leadership and row claims expire. Graceful
 shutdown releases this worker's leases. Use one writable MySQL primary: named locks are local
 to that server and are unsuitable for independent multi-primary writers.
+
+Workers wait `SweepInterval` after each recovery pass, including a full batch. With the defaults,
+a pass reads at most 100 rows before the five-second wait; transport and database time add to that interval.
 
 Each bounded recovery pass selects due, old-enough **unordered** pending rows without live claims.
 A fixed upper UUID boundary ensures failed, scheduled and previously claimed rows are revisited

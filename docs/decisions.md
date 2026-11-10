@@ -1523,7 +1523,10 @@ outbox recovery runtime. MySQL Event Scheduler executes SQL, not application tra
 **Decision.** Use separate database-time sweeper/cleanup leases, with zero-wait native `GET_LOCK`
 session admission scoped to database/table prefix. Hold admission across one bounded pass and
 explicitly release it before returning the pooled connection. Connected passes cannot overlap
-after idle leadership expiry. Row claims remain independently fenced autocommit mutations;
+after idle leadership expiry. The database-time row preserves idle leadership between passes;
+the session lock is authoritative while a pass is connected. Release uses the native command timeout
+and logs cleanup failures without replacing a pass error; the native client discards broken sessions.
+Row claims remain independently fenced autocommit mutations;
 leadership does not replace row ownership. Session loss and broker uncertainty retain the existing
 at-least-once boundary. Support one writable primary, not independent multi-primary servers.
 
