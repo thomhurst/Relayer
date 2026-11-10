@@ -8,6 +8,7 @@ using NATS.Client.JetStream;
 using NATS.Client.JetStream.Models;
 using Relayer.Nats;
 using Relayer.Serialization;
+using Relayer.Transports;
 
 namespace Relayer.Benchmarks;
 
@@ -20,10 +21,12 @@ public class NatsSendBenchmarks
     private IHost _host = null!;
     private IServiceScope _scope = null!;
     private ISender _sender = null!;
+    private ITransport _transport = null!;
     private IMessageSerializer _serializer = null!;
     private string _stream = null!;
     private readonly ArrayBufferWriter<byte> _buffer = new();
     private readonly NativeHeaders _headers = new();
+    private readonly SendHeaders _adapterHeaders = new();
     private readonly CancellationTokenSource _nativeTimeout = new();
     private readonly NatsBenchmarkOrder _order = new(42);
     private readonly MessageEnvelope _envelope = new(new("benchmarks.nats.order", 1), "/", new("ce-"));
@@ -55,9 +58,11 @@ public class NatsSendBenchmarks
         await _host.StartAsync();
         _scope = _host.Services.CreateScope();
         _sender = _scope.ServiceProvider.GetRequiredService<ISender>();
+        _transport = _host.Services.GetServices<ITransport>().Single(transport => transport.Name == "benchmark");
         _serializer = _host.Services.GetMessageSerializer("benchmark");
         await NativeJsonSend();
         await RelayerJsonSend();
+        await AdapterJsonSend();
     }
     [Benchmark(Baseline = true)]
     public async ValueTask NativeJsonSend()
@@ -84,6 +89,29 @@ public class NatsSendBenchmarks
     }
     [Benchmark]
     public ValueTask RelayerJsonSend() => _sender.SendNowAsync(_order);
+    // Isolate native invocation/header conversion from the full sender's route and continuation.
+    // Use the same UTF-8 header storage as the full sender, native serializer, JSON and deadline.
+    // This diagnostic is not a replacement for the end-to-end acceptance comparison above.
+    [Benchmark]
+    public async ValueTask AdapterJsonSend()
+    {
+        _buffer.Clear();
+        _adapterHeaders.Clear();
+        _serializer.Serialize(_order, _buffer);
+        _envelope.Write<SendHeaders, SendHeaders>(_adapterHeaders, MessageEnvelopeMetadata.Create(default));
+        _adapterHeaders.Add("content-type", new WireString(_serializer.ContentType));
+        _nativeTimeout.CancelAfter(TimeSpan.FromSeconds(30));
+        try
+        {
+            await _transport.SendAsync(new OutgoingMessage(_stream, _buffer.WrittenMemory, _adapterHeaders.Written)
+                .WithTracingStarted(), _nativeTimeout.Token);
+        }
+        finally
+        {
+            _nativeTimeout.CancelAfter(Timeout.InfiniteTimeSpan);
+            if (!_nativeTimeout.TryReset()) throw new InvalidOperationException("Adapter benchmark deadline expired.");
+        }
+    }
     [GlobalCleanup]
     public async Task Cleanup()
     {
