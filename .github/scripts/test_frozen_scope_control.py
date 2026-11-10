@@ -65,6 +65,40 @@ class ScopeControlTests(unittest.TestCase):
             self.assertEqual(outcomes[-1]['meanNs'], 27)
             self.assertEqual([item['scoped'] for item in outcomes], [True]*4 + [False]*4)
 
+    def test_jit_capture_retains_code_and_excludes_timing_and_missing_code_fails(self):
+        for emit_code in (True, False):
+            with self.subTest(emit_code=emit_code), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                environments = []
+
+                def execute(command, **kwargs):
+                    environment = kwargs['env']
+                    environments.append(environment)
+                    kwargs['stdout'].write(COMPLETE)
+                    if emit_code:
+                        Path(environment['DOTNET_JitStdOutFile']).write_text(
+                            '; Assembly listing for method Example:ScopeOnly()\n')
+
+                with patch('sys.argv', ['control', directory, str(root / 'output'), '--jit-disassembly']), \
+                     patch('frozen_scope_control.verify', return_value='commit') as verify, \
+                     patch('frozen_scope_control.executable', side_effect=lambda path, scoped: (path / 'runner.dll', '4' if scoped else '0')), \
+                     patch('frozen_scope_control.subprocess.run', side_effect=execute):
+                    if emit_code:
+                        main()
+                    else:
+                        with self.assertRaises(SystemExit):
+                            main()
+                self.assertEqual(len(environments), 8)
+                self.assertEqual(verify.call_count, 6)
+                self.assertEqual(len({env['DOTNET_JitStdOutFile'] for env in environments}), 8)
+                outcomes = json.loads((root / 'output/outcomes.json').read_text())
+                self.assertTrue(all('meanNs' not in item for item in outcomes))
+                self.assertTrue(all('bytesPerOperation' not in item for item in outcomes))
+                if emit_code:
+                    self.assertTrue(all('disassembly' in item for item in outcomes))
+                else:
+                    self.assertTrue(all('error' in item for item in outcomes))
+
     def test_invalid_archive_never_launches(self):
         with tempfile.TemporaryDirectory() as directory, \
              patch('sys.argv', ['control', directory, str(Path(directory) / 'output')]), \

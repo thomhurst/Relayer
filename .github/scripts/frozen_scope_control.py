@@ -2,6 +2,7 @@
 """Fixed ABBA replay of run 42772012652 ScopeOnly images, never a gate retry."""
 import argparse
 import json
+import os
 from pathlib import Path
 import re
 import statistics
@@ -57,6 +58,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("artifact", type=Path)
     parser.add_argument("output", type=Path)
+    parser.add_argument("--jit-disassembly", action="store_true",
+                        help="Separate code-capture experiment; its timings are not performance evidence")
     args = parser.parse_args()
     builds = args.artifact.resolve() / "performance-builds"
     commits = {side: verify(builds / side) for side in SIDES}
@@ -67,6 +70,8 @@ def main():
                 "plan": "Scoped ABBA, then unscoped ABBA; A2 reuses first baseline image",
                 "engine": "Original Default job, native NoAcknowledgementConsoleHost without anonymous-pipe parent",
                 "limits": "New host/process executions, not historical reconstruction. Image-associated differences do not identify a production defect; absent differences do not prove equivalence. No threshold changes or gate pass claim.",
+                "jitDisassembly": args.jit_disassembly,
+                "timingUse": "Excluded: JIT diagnostics perturb execution" if args.jit_disassembly else "New ABBA experiment only",
                 "launches": []}
     for scoped in (True, False):
         for side in LAUNCHES:
@@ -79,16 +84,33 @@ def main():
     for index, launch in enumerate(protocol["launches"], 1):
         outcome = {"launch": index, "side": launch["side"], "scoped": launch["scoped"]}
         log_path = args.output / f"{index}-{launch['side']}-{launch['scoped']}.log"
+        environment = os.environ.copy()
+        disassembly = (args.output / f"{index}-{launch['side']}-{launch['scoped']}.asm").resolve()
+        if args.jit_disassembly:
+            environment.update(DOTNET_JitDisasm="*", DOTNET_JitDisasmDiffable="1",
+                               DOTNET_JitStdOutFile=str(disassembly))
+            outcome["diagnosticEnvironment"] = {key: environment[key] for key in
+                ("DOTNET_JitDisasm", "DOTNET_JitDisasmDiffable", "DOTNET_JitStdOutFile")}
         with log_path.open("w") as log:
             try:
                 subprocess.run(launch["command"], cwd=Path(launch["command"][1]).parent,
-                               stdout=log, stderr=subprocess.STDOUT, check=True, timeout=600)
+                               stdout=log, stderr=subprocess.STDOUT, check=True, timeout=600,
+                               env=environment)
             except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as error:
                 outcome["error"] = str(error)
                 log.write(f"\nLaunch failed: {error}\n")
         if "error" not in outcome:
             try:
-                outcome.update(result(log_path.read_text()))
+                native = result(log_path.read_text())
+                if args.jit_disassembly:
+                    # Retain raw timing in process logs but never mix diagnostic timings
+                    # into outcomes consumed as throughput evidence.
+                    if not disassembly.exists() or "; Assembly listing for method " not in disassembly.read_text():
+                        raise ValueError("Missing native JIT disassembly")
+                    outcome["disassembly"] = disassembly.name
+                    outcome["timingUse"] = "Excluded: JIT diagnostics perturb execution"
+                else:
+                    outcome.update(native)
             except ValueError as error:
                 outcome["error"] = str(error)
         outcomes.append(outcome)

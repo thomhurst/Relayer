@@ -29,12 +29,14 @@ jobs:
           dotnet --info > results/runtime.txt
           uname -a > results/host.txt
           python3 -m unittest discover -s .github/scripts -p test_frozen_scope_control.py > results/launcher-tests.log 2>&1
-      - name: Download original images and execute native BenchmarkDotNet ABBA
+      - name: Download original images for code attribution
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh run download 42772012652 --name performance-42772012652-1 --dir inputs
-          python3 .github/scripts/frozen_scope_control.py inputs results/original-engine
+      - name: Capture native JIT code separately from timing experiment
+        if: success() || failure()
+        run: python3 .github/scripts/frozen_scope_control.py inputs results/jit-code --jit-disassembly
       - name: Retain all outcomes and executable inputs
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
