@@ -77,9 +77,9 @@ public class TenantDispatchTests
         finally { release.TrySetResult(); }
         await pass;
         await Assert.That(transport.Sent.Count).IsEqualTo(5);
-        await Assert.That(await fixture.Connections()).IsEqualTo(0L);
+        await fixture.WaitForNoConnections();
         await worker.ReleaseAllAsync();
-        await Assert.That(await fixture.Connections()).IsEqualTo(0L);
+        await fixture.WaitForNoConnections();
     }
 
     [Test]
@@ -123,7 +123,7 @@ public class TenantDispatchTests
         await Assert.That(transport.Sent.Count).IsEqualTo(1);
         fixture.Catalog.Entries = [healthy];
         await worker.PassAsync(default);
-        await Assert.That(await fixture.Connections()).IsEqualTo(0L);
+        await fixture.WaitForNoConnections();
         await worker.ReleaseAllAsync();
     }
 
@@ -145,14 +145,14 @@ public class TenantDispatchTests
         await entered.Task.WaitAsync(TimeSpan.FromSeconds(15));
         cancel.Cancel();
         await Assert.That(async () => await pass).Throws<OperationCanceledException>();
-        await Assert.That(await fixture.Connections()).IsEqualTo(0L);
+        await fixture.WaitForNoConnections();
         block = false;
         await worker.StartAsync(default);
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
         while (transport.Sent.Count < 2) await Task.Delay(10, timeout.Token);
         await worker.StopAsync(timeout.Token);
         foreach (var store in fixture.Entries) await Assert.That(await Count(store, "leases")).IsEqualTo(0L);
-        await Assert.That(await fixture.Connections()).IsEqualTo(0L);
+        await fixture.WaitForNoConnections();
     }
 
     [Test]
@@ -248,7 +248,7 @@ public class TenantDispatchTests
         await Assert.That(entered).IsTrue();
         await Assert.That(transport.Sent.Single().Tenant).IsEqualTo(fixture.Entries[1].TenantId);
         await Assert.That(await Count(fixture.Entries[0], "outbox")).IsEqualTo(1L);
-        await Assert.That(await fixture.Connections()).IsEqualTo(0L);
+        await fixture.WaitForNoConnections();
         await worker.ReleaseAllAsync();
     }
 
@@ -272,7 +272,7 @@ public class TenantDispatchTests
         if (tenantDeadline) await worker.PassAsync(default);
         await Assert.That(transport.Sent.Select(x => x.Id).SequenceEqual([Id(2), Id(3)])).IsTrue();
         await Assert.That(await Count(store, "outbox")).IsEqualTo(1L);
-        await Assert.That(await fixture.Connections()).IsEqualTo(0L);
+        await fixture.WaitForNoConnections();
         await worker.ReleaseAllAsync();
     }
 
@@ -293,7 +293,7 @@ public class TenantDispatchTests
             await Assert.That(await Count(store, "outbox")).IsEqualTo((long)remaining);
         }
         await Assert.That(transport.Sent.Select(x => x.Id).SequenceEqual([Id(1), Id(2), Id(3)])).IsTrue();
-        await Assert.That(await fixture.Connections()).IsEqualTo(0L);
+        await fixture.WaitForNoConnections();
         await worker.ReleaseAllAsync();
     }
 
@@ -359,8 +359,25 @@ public class TenantDispatchTests
         await Assert.That(transport.Sent.Any(x => x.Id == Id(2))).IsTrue();
         await Assert.That(transport.Sent.Any(x => x.Id == Id(3))).IsTrue();
         await Assert.That(await Count(store, "inbox")).IsEqualTo(0L);
-        await Assert.That(await fixture.Connections()).IsEqualTo(0L);
+        await fixture.WaitForNoConnections();
         await worker.ReleaseAllAsync();
+    }
+
+    [Test]
+    public async Task Connection_release_observation_rejects_a_live_backend()
+    {
+        await using var fixture = new Stores();
+        await fixture.Start(1);
+        var connection = await fixture.Entries[0].DataSource.OpenConnectionAsync();
+        try
+        {
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(1));
+            await Assert.That(async () => await fixture.WaitForNoConnections(timeout.Token))
+                .Throws<OperationCanceledException>();
+            await Assert.That(await fixture.Connections()).IsEqualTo(1L);
+        }
+        finally { await connection.DisposeAsync(); }
+        await fixture.WaitForNoConnections();
     }
 
     private static Guid MessageId(OutgoingMessage message)
@@ -473,6 +490,19 @@ public class TenantDispatchTests
             await using var observer = NpgsqlDataSource.Create(_fixture.ConnectionString);
             await using var command = observer.CreateCommand("SELECT count(*) FROM pg_stat_activity WHERE application_name='tenant-dispatch-test'");
             return (long)(await command.ExecuteScalarAsync())!;
+        }
+        internal async Task WaitForNoConnections(CancellationToken cancellationToken = default)
+        {
+            // Npgsql's unpooled close sends Terminate without awaiting backend exit.
+            // Keep one non-tenant observer open so polling does not add sessions to the count.
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            timeout.CancelAfter(TimeSpan.FromSeconds(15));
+            await using var observer = new NpgsqlConnection(_fixture.ConnectionString);
+            await observer.OpenAsync(timeout.Token);
+            await using var command = new NpgsqlCommand(
+                "SELECT count(*) FROM pg_stat_activity WHERE application_name='tenant-dispatch-test'", observer);
+            while ((long)(await command.ExecuteScalarAsync(timeout.Token))! != 0)
+                await Task.Delay(10, timeout.Token);
         }
         public async ValueTask DisposeAsync()
         {
