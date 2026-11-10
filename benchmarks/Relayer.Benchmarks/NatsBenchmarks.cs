@@ -1,4 +1,5 @@
 using System.Buffers;
+using System.Runtime.CompilerServices;
 using System.Text.Json.Serialization;
 using BenchmarkDotNet.Attributes;
 using Microsoft.Extensions.DependencyInjection;
@@ -64,7 +65,10 @@ public class NatsSendBenchmarks
         await RelayerJsonSend();
         await AdapterJsonSend();
     }
+    // Exclude benchmark-owned continuation boxes from native-client allocation attribution.
+    // Both wrappers use the same pooled builder as the transport under measurement.
     [Benchmark(Baseline = true)]
+    [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
     public async ValueTask NativeJsonSend()
     {
         _buffer.Clear();
@@ -91,8 +95,10 @@ public class NatsSendBenchmarks
     public ValueTask RelayerJsonSend() => _sender.SendNowAsync(_order);
     // Isolate native invocation/header conversion from the full sender's route and continuation.
     // Use the same UTF-8 header storage as the full sender, native serializer, JSON and deadline.
+    // Pool the diagnostic continuation too; an ordinary builder adds a per-call benchmark box.
     // This diagnostic is not a replacement for the end-to-end acceptance comparison above.
     [Benchmark]
+    [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
     public async ValueTask AdapterJsonSend()
     {
         _buffer.Clear();
