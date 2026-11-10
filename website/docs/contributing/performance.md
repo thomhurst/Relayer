@@ -413,7 +413,7 @@ SQS/SNS or RabbitMQ.
 
 ### Frozen concurrent investigation
 
-`Frozen concurrent allocation investigation` runs a separate diagnostic on native Ubuntu x64 against the retained executables from runs 42306276036 and 42312305889. It verifies every retained build inventory before executing an external cached-delegate probe. Each run uses separate baseline/candidate/candidate/baseline processes, 4096 warmup batches and exactly 32768 measured batches of eight messages. All outcomes, runtime identity, probe and original inputs are uploaded for 90 days, including failed launches. The workflow runs when its tooling changes in a pull request and can also be dispatched deliberately. It requires the original artifacts to remain available.
+`Frozen concurrent allocation investigation` runs a separate diagnostic on native Ubuntu x64 against the retained executables from runs 42306276036, 42312305889 and 42310409459. It verifies every retained build inventory before executing an external cached-delegate probe. Each run uses separate baseline/candidate/candidate/baseline processes, 4096 warmup batches and exactly 32768 measured batches of eight messages. All outcomes, runtime identity, probe and original inputs are uploaded for 90 days, including failed launches. The workflow runs when its tooling changes in a pull request and can also be dispatched deliberately. It requires the original artifacts to remain available.
 
 The process-wide allocation counter includes fixture, serializer, dependency-injection and transport work. These controls can reveal repeatable image-dependent behavior or variation within one frozen image; they do not identify an allocation owner, replay the original BenchmarkDotNet driver, establish throughput equivalence, or demonstrate the native-client performance budget. An unfavorable result remains evidence to investigate. This workflow does not change the strict regression gate or rerun it for green.
 
@@ -467,3 +467,11 @@ choose further controls, rather than assigning a histogram bin to a type by size
 These measurements neither reconstruct the original BenchmarkDotNet execution
 nor identify its historical excess by themselves. Do not subtract them from
 full-delivery totals or mix them into the uninstrumented comparison.
+
+Run 42310409459 is a separate changed-input comparison tracked in #357: its
+original concurrent round trip reports 699/700 baseline and 701 candidate
+B/message. Both full-delivery and isolated-fixture workflows include those exact
+retained images. Results from the other historical input sets cannot establish
+attribution for this run. Local ARM64 controls validate the tools; hosted Ubuntu
+x64 controls retain the original platform family. Neither reproduces the original
+BenchmarkDotNet execution or retrospectively identifies its allocation delta.
