@@ -41,6 +41,13 @@ internal sealed partial class PostgreSqlOrderedDispatcher : BackgroundService
             throw new InvalidOperationException("Ordered outbox dispatch requires at least one named ITransport adapter.");
     }
 
+    public override async Task StartAsync(CancellationToken cancellationToken)
+    {
+        await PostgreSqlSentSchema.ValidateAsync(_source, _options.RetainSentMessages, _options.Schema,
+            _options.TablePrefix, cancellationToken).ConfigureAwait(false);
+        await base.StartAsync(cancellationToken).ConfigureAwait(false);
+    }
+
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         // Reuse the deadline source across successful batches. Cancellation is an exceptional path.

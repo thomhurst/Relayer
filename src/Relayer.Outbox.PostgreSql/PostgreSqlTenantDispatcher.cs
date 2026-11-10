@@ -63,10 +63,15 @@ internal sealed partial class PostgreSqlTenantDispatcher : BackgroundService
         throw new InvalidOperationException($"Tenant dispatch store '{tenantId}' is not in the authorized catalog.");
     }
 
-    public override Task StartAsync(CancellationToken cancellationToken)
+    public override async Task StartAsync(CancellationToken cancellationToken)
     {
-        foreach (var entry in ValidateSnapshot()) ValidateEntry(entry);
-        return base.StartAsync(cancellationToken);
+        foreach (var entry in ValidateSnapshot())
+        {
+            ValidateEntry(entry);
+            await PostgreSqlSentSchema.ValidateAsync(entry.DataSource, entry.Options.RetainSentMessages,
+                entry.Options.Schema, entry.Options.TablePrefix, cancellationToken).ConfigureAwait(false);
+        }
+        await base.StartAsync(cancellationToken).ConfigureAwait(false);
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -127,6 +132,7 @@ internal sealed partial class PostgreSqlTenantDispatcher : BackgroundService
                 deadline.CancelAfter(_options.TurnTimeout);
                 try
                 {
+                    await store.Direct.ValidateSchemaAsync(deadline.Token).ConfigureAwait(false);
                     for (var visited = 0; visited < 4; visited++)
                     {
                         deadline.Token.ThrowIfCancellationRequested();

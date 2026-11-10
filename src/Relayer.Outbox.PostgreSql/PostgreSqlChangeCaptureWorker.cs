@@ -33,6 +33,8 @@ internal sealed partial class PostgreSqlChangeCaptureWorker : BackgroundService
 
     public override async Task StartAsync(CancellationToken cancellationToken)
     {
+        await PostgreSqlSentSchema.ValidateAsync(_source, _options.RetainSentMessages, _options.Schema,
+            _options.TablePrefix, cancellationToken).ConfigureAwait(false);
         // Provisioning belongs to the application, never to the privileged replication worker.
         await using var slot = _source.CreateCommand("SELECT EXISTS (SELECT 1 FROM pg_replication_slots WHERE slot_name = @slot AND plugin = 'pgoutput' AND slot_type = 'logical' AND database = current_database() AND NOT temporary)");
         slot.Parameters.AddWithValue("slot", _options.Slot.Name);

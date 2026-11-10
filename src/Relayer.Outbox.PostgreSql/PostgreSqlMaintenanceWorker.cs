@@ -54,6 +54,13 @@ internal sealed partial class PostgreSqlMaintenanceWorker : BackgroundService
         _inbox = $"DELETE FROM {Table("inbox")} WHERE (consumer, message_id) IN (SELECT consumer, message_id FROM {Table("inbox")} WHERE processed_at <= clock_timestamp() - @retention ORDER BY processed_at, consumer, message_id LIMIT @limit)";
     }
 
+    public override async Task StartAsync(CancellationToken cancellationToken)
+    {
+        await PostgreSqlSentSchema.ValidateAsync(_source, _options.RetainSentMessages, _options.Schema,
+            _options.TablePrefix, cancellationToken).ConfigureAwait(false);
+        await base.StartAsync(cancellationToken).ConfigureAwait(false);
+    }
+
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         var nextCleanup = DateTimeOffset.MinValue;

@@ -76,6 +76,19 @@ header when sending ordered rows.
 
 The store does not generate identities, serialize messages, or rewrite envelopes during reads.
 
+## Sent-message history
+
+`RetainSentMessages` opts dispatchers into retaining sent IDs, destinations and completion times.
+When enabled, workers validate that the schema-qualified `outbox_sent` table exists before
+starting dispatch. If it is missing, startup fails with an instruction to rerun
+`PostgreSqlOutboxSchema.CreateScript` for the configured schema and table prefix.
+New tenant catalog entries are validated before their first dispatch turn.
+
+Retention runs only in the [maintenance worker](postgres-maintenance.md#sent-message-history)
+or tenant catalog cleanup. Direct or ordered dispatch alone does not expire history:
+keep maintenance running with `RetainSentMessages = true` and a positive `SentRetention`,
+or the history table grows without a bound.
+
 ## Poison rows and key release
 
 Dispatch stops retrying after `MaxDispatchAttempts` failed sends (default **10**).

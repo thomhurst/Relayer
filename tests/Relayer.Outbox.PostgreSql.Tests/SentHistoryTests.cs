@@ -12,6 +12,81 @@ namespace Relayer.Outbox.PostgreSql.Tests;
 public class SentHistoryTests
 {
     [Test]
+    [Arguments("direct")]
+    [Arguments("ordered")]
+    [Arguments("maintenance")]
+    [Arguments("cdc")]
+    [Arguments("tenant")]
+    public async Task Startup_rejects_missing_history_table_before_dispatch(string mode)
+    {
+        await using var fixture = new PostgreSqlFixture();
+        await fixture.StartAsync();
+        await using var source = NpgsqlDataSource.Create(fixture.ConnectionString);
+        var options = new PostgreSqlOutboxOptions { Schema = "old\"schema", TablePrefix = "test_", RetainSentMessages = true };
+        await PostgreSqlOutboxStoreTests.CreateSchema(source, options);
+        await Sql(source, "DROP TABLE \"old\"\"schema\".test_outbox_sent");
+        var transport = new Transport(1);
+        using Microsoft.Extensions.Hosting.BackgroundService worker = mode switch
+        {
+            "direct" => new PostgreSqlDirectDispatcher(source, options, new(), [transport], NullLogger<PostgreSqlDirectDispatcher>.Instance),
+            "ordered" => new PostgreSqlOrderedDispatcher(source, new() { Schema = options.Schema, TablePrefix = options.TablePrefix, RetainSentMessages = true },
+                [transport], NullLogger<PostgreSqlOrderedDispatcher>.Instance),
+            "maintenance" => new PostgreSqlMaintenanceWorker(source, new() { Schema = options.Schema, TablePrefix = options.TablePrefix, RetainSentMessages = true },
+                [transport], NullLogger<PostgreSqlMaintenanceWorker>.Instance),
+            "cdc" => new PostgreSqlChangeCaptureWorker(source, () => throw new InvalidOperationException("Must not open replication"),
+                new() { Schema = options.Schema, TablePrefix = options.TablePrefix, RetainSentMessages = true,
+                    Slot = new("unused"), Replication = new("unused", Npgsql.Replication.PgOutput.PgOutputProtocolVersion.V1) },
+                [transport], NullLogger<PostgreSqlChangeCaptureWorker>.Instance, NullLogger<PostgreSqlMaintenanceWorker>.Instance,
+                NullLogger<PostgreSqlDirectDispatcher>.Instance),
+            _ => new PostgreSqlTenantDispatcher(new HistoryCatalog(new PostgreSqlTenantStore("tenant", source, options)), new(), [transport], NullLoggerFactory.Instance)
+        };
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => worker.StartAsync(default));
+        await Assert.That(error!.Message).Contains("test_outbox_sent");
+        await Assert.That(error.Message).Contains("PostgreSqlOutboxSchema.CreateScript");
+        await Assert.That(transport.Count).IsEqualTo(0);
+        await PostgreSqlOutboxStoreTests.CreateSchema(source, options);
+        await PostgreSqlSentSchema.ValidateAsync(source, true, options.Schema, options.TablePrefix, default);
+        await Sql(source, "DROP TABLE \"old\"\"schema\".test_outbox_sent");
+        await PostgreSqlSentSchema.ValidateAsync(source, false, options.Schema, options.TablePrefix, default);
+    }
+
+    [Test]
+    public async Task New_catalog_entry_cannot_send_until_history_schema_is_deployed()
+    {
+        await using var fixture = new PostgreSqlFixture();
+        await fixture.StartAsync();
+        await using var source = NpgsqlDataSource.Create(fixture.ConnectionString);
+        var options = new PostgreSqlOutboxOptions { RetainSentMessages = true };
+        await PostgreSqlOutboxStoreTests.CreateSchema(source, options);
+        await Sql(source, "DROP TABLE relayer_outbox_sent");
+        var catalog = new HistoryCatalog();
+        var transport = new Transport(1);
+        using var worker = new PostgreSqlTenantDispatcher(catalog, new(), [transport], NullLoggerFactory.Instance);
+        await worker.PassAsync(default);
+        catalog.Entries = [new("tenant", source, options)];
+        var id = Guid.NewGuid();
+        var now = DateTimeOffset.UtcNow;
+        await PostgreSqlOutboxStoreTests.Insert(source, options, id, now);
+        var row = new BufferedOutboxMessage();
+        row.Copy(new(id, "events", "order.placed.v1", new("orders", new byte[] { 1 }), now), 32);
+        worker.GetDispatcher("tenant").Committed([row], 1);
+        await worker.PassAsync(default);
+        await Assert.That(transport.Count).IsEqualTo(0);
+        await Assert.That(await Count(source, "relayer_outbox")).IsEqualTo(1L);
+        await PostgreSqlOutboxStoreTests.CreateSchema(source, options);
+        await worker.PassAsync(default);
+        await Assert.That(transport.Count).IsEqualTo(1);
+        await Assert.That(await Count(source, "relayer_outbox_sent")).IsEqualTo(1L);
+        await worker.ReleaseAllAsync();
+    }
+
+    private sealed class HistoryCatalog(params PostgreSqlTenantStore[] entries) : ITenantSource
+    {
+        internal IReadOnlyList<PostgreSqlTenantStore> Entries { get; set; } = entries;
+        public IReadOnlyList<PostgreSqlTenantStore> GetTenants() => Entries;
+    }
+
+    [Test]
     public async Task Completion_retains_only_live_fenced_rows_and_rolls_back_if_history_write_fails()
     {
         await using var fixture = new PostgreSqlFixture();
