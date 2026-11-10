@@ -60,13 +60,23 @@ The copy contract exercises the adapter boundary used by outbox dispatch, schedu
 
 ## Graceful stop
 
-`CleanShutdown` sends one message and holds its handler at an asynchronous gate. Once the handler has entered, the suite starts a bounded graceful stop, rejects an already-completed stop while processing is still held, releases the handler and awaits shutdown. A synchronous completion observer also rejects asynchronous stop completion before the full in-flight consumer pipeline, including settlement, finishes. No sleeps or process-wide log capture are used. The fixture must also implement `ITransportShutdownConformanceFixture`; absence of this evidence is a failure, never a capability skip.
+`CleanShutdown` sends one message (with a key on ordered endpoints, including Service Bus sessions) and holds its handler at an asynchronous gate. Once the handler has entered, the suite starts a bounded graceful stop, rejects an already-completed stop while processing is still held, releases the handler and awaits shutdown. A synchronous completion observer also rejects asynchronous stop completion before the full in-flight consumer pipeline, including settlement, finishes. No sleeps or process-wide log capture are used. The fixture must also implement `ITransportShutdownConformanceFixture`; absence of this evidence is a failure, never a capability skip.
 
 Give each fixture its own `ConformanceLogCapture` and expose it as `Logs`. Register that provider with every logger factory used by the adapter and its native clients **before** creating them, with a minimum level of `Warning` or lower. Keep the capture available after fixture disposal. The suite rejects `Error` and `Critical` entries and warning-level `OperationCanceledException` entries, including those emitted during disposal. Informational cancellation messages are allowed. A transport with no logging, such as the in-memory transport, still exposes its own empty capture.
 
 Implement `VerifyShutdownAsync` using native lifecycle instrumentation and durable broker state. Check that no settlement, renewal or send occurred after the corresponding receiver or sender closed. Verify that the in-flight message either completed durably or remains available for native redelivery. Do not treat a successful `StopAsync` alone as proof: the hook must throw on any violation. For an in-process transport, its receive-loop completion and actual message completion provide the reference evidence. External adapters need their real broker or emulator and client-specific observations; the harness does not emulate native closure or acknowledgements.
 
-Queue and log in-memory fixtures run this case. The Service Bus runner excludes `CleanShutdown` until its fixture supplies native shutdown evidence; this is pending coverage, not a capability skip. Native adapter adoption is tracked in [#384](https://github.com/thomhurst/Relayer/issues/384); shared outbox shutdown contracts for claims, database disposal and owned leases are tracked separately in [#385](https://github.com/thomhurst/Relayer/issues/385). The transport case does not claim to validate an outbox worker.
+Queue and log in-memory fixtures, Kafka, Service Bus queue and session processors, and Google Pub/Sub run this case against their production receive/send lifecycles. Native cases use real brokers or emulators:
+
+| Adapter | Native lifecycle and durability evidence |
+|---|---|
+| Kafka | Forwarding probes instrument the real Dekaf consumer, producer and their facets through disposal. The receive loop must drain and the broker must report the in-flight record's committed offset. Adapter and Dekaf logs share a fixture-local capture. |
+| Service Bus | Fixture-filtered SDK events record successful broker completion, client closure, sends and automatic message/session renewals. Queue and session shutdown run separately. SDK events and production adapter logs feed the same capture through disposal. |
+| Google Pub/Sub | A pass-through gRPC interceptor observes broker-confirmed acknowledgement RPCs, streaming-pull closure, renewal calls and admitted publish RPCs. A forwarding subscriber observes actual native stop/disposal completion; the native publisher shutdown callback records its drained closure. The native subscriber must finish and the broker subscription must remain durable for redelivery if an acknowledgement was not persisted. API, gRPC and high-level native client logs use fixture-local capture. |
+
+SQS ([#224](https://github.com/thomhurst/Relayer/issues/224)), RabbitMQ ([#274](https://github.com/thomhurst/Relayer/issues/274)), RabbitMQ Streams ([#316](https://github.com/thomhurst/Relayer/issues/316)) and NATS ([#313](https://github.com/thomhurst/Relayer/issues/313)) do not yet implement production receivers. Their graceful-stop adoption is planned alongside receive execution; they are not passing cases or capability skips. A fixture must not simulate native delivery to claim coverage.
+
+Shared outbox shutdown contracts separately validate claims, database disposal and owned leases; this transport case does not validate an outbox worker.
 
 ## Outage sends
 

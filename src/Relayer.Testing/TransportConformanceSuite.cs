@@ -216,7 +216,9 @@ public sealed class TransportConformanceSuite<TIncoming, TBinding>
         switch (scenario)
         {
             case TransportConformanceCase.CleanShutdown:
-                await Send(1).ConfigureAwait(false);
+                // Session-enabled native endpoints require their key even for one message.
+                await Send(1, key: fixture.Transport.GetCapabilities(fixture.Destination).OrderedByKey
+                    ? new WireString("conformance") : null).ConfigureAwait(false);
                 CheckBody(await Next().ConfigureAwait(false), 1);
                 progress.Phase = "in-flight transport shutdown";
                 var stopping = Stop();
