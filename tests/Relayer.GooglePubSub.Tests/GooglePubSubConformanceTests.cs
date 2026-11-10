@@ -39,14 +39,23 @@ public class GooglePubSubConformanceTests
 internal sealed class PubSubFixture : ITransportConformanceFixture<GooglePubSubDelivery>, ITransportShutdownConformanceFixture
 {
     internal PubSubBroker Broker { get; }
-    private readonly ServiceProvider _provider;
-    internal GooglePubSubTransport Adapter { get; }
+    private ServiceProvider _provider = null!;
+    internal GooglePubSubTransport Adapter { get; private set; } = null!;
     private GooglePubSubConsumer? _worker;
     public TimeSpan? OutageSendTimeout => TimeSpan.FromSeconds(10);
-    public bool IsExpectedOutageFailure(Exception error) => error is RpcException { StatusCode: StatusCode.Unavailable or StatusCode.DeadlineExceeded };
+    private bool _observedNativeFailure;
+    public bool IsExpectedOutageFailure(Exception error)
+    {
+        if (error is RpcException { StatusCode: StatusCode.Unavailable or StatusCode.DeadlineExceeded }) return true;
+        if (_worker?.Completion.Exception is not { } failure || !IsNativeStreamWriteFailure(failure)
+            || !IsObservedSubscriberFailure(error, failure)) return false;
+        _observedNativeFailure = true;
+        return true;
+    }
     private readonly ILoggerFactory _logs;
-    private readonly PubSubShutdownInterceptor _native = new();
-    private readonly SubscriberServiceApiClient _subscriber;
+    private PubSubShutdownInterceptor _native = new();
+    private SubscriberServiceApiClient _subscriber = null!;
+    private Func<GooglePubSubDelivery, CancellationToken, ValueTask<Disposition>>? _receive;
     private readonly MessageTracing _tracing;
     private bool _verifyShutdown;
     public ConformanceLogCapture Logs { get; }
@@ -63,13 +72,18 @@ internal sealed class PubSubFixture : ITransportConformanceFixture<GooglePubSubD
         _tracing = tracing;
         Logs = logs;
         _logs = loggerFactory;
-        var invoker = broker.Invoker.Intercept(_native);
+        BuildApplication();
+    }
+
+    private void BuildApplication()
+    {
+        var invoker = Broker.Invoker.Intercept(_native);
         var publisherSettings = new PublisherServiceApiSettings();
         publisherSettings.PublishSettings = publisherSettings.PublishSettings.WithExpiration(Expiration.FromTimeout(TimeSpan.FromSeconds(5)));
         var publisher = new PublisherServiceApiClientImpl(new Publisher.PublisherClient(invoker), publisherSettings, _logs.CreateLogger("PubSub.PublisherApi"));
         _subscriber = new SubscriberServiceApiClientImpl(new Subscriber.SubscriberClient(invoker), null, _logs.CreateLogger("PubSub.SubscriberApi"));
         var services = new ServiceCollection();
-        services.AddLogging(builder => builder.AddProvider(logs));
+        services.AddLogging(builder => builder.AddProvider(Logs));
         services.AddRelayer(builder => builder.GooglePubSub("conformance", transport =>
         {
             transport.TopologyMode = TopologyMode.Provision;
@@ -83,7 +97,7 @@ internal sealed class PubSubFixture : ITransportConformanceFixture<GooglePubSubD
             });
         }));
         // Use the source-local tracing owner supplied by the conformance suite.
-        services.AddSingleton(tracing);
+        services.AddSingleton(_tracing);
         _provider = services.BuildServiceProvider();
         Adapter = (GooglePubSubTransport)_provider.GetRequiredService<ITransport>();
         NativePublisherShutdown.Observe(Adapter.PublisherFor(Destination), _native);
@@ -124,6 +138,7 @@ internal sealed class PubSubFixture : ITransportConformanceFixture<GooglePubSubD
 
     public void RegisterConsumer(Func<GooglePubSubDelivery, CancellationToken, ValueTask<Disposition>> receive)
     {
+        _receive = receive;
         var settings = WithNativeLogger(new SubscriberClient.Settings { FlowControlSettings = new(32, null) }, _logs.CreateLogger("PubSub.Subscriber"));
         _worker = new(() => new ObservedSubscriberClient(
             new SubscriberClientImpl(SubscriptionName.Parse(Subscription), [_subscriber], settings.Clone(), static () => Task.CompletedTask), _native),
@@ -131,11 +146,43 @@ internal sealed class PubSubFixture : ITransportConformanceFixture<GooglePubSubD
         Adapter.Consumers.Add(_worker);
         _worker.Receive = receive;
     }
+    internal Task ConsumerCompletion => _worker!.Completion;
+    internal void InjectInitialWriteFailure(IOException error) => _native.InitialWriteFailure = error;
+
     public ValueTask SettleAsync(GooglePubSubDelivery incoming, Disposition disposition, CancellationToken token) => _worker!.SettleAsync(incoming, disposition, token);
     public ValueTask<ConformanceDeadLetter> ReadDeadLetterAsync(CancellationToken token) => throw new NotSupportedException("Pub/Sub cannot dead-letter on demand with error attributes.");
     // Closing the proxy drops live TCP streams while preserving the emulator's native endpoint state.
     public Task DisconnectAsync(CancellationToken token) => Broker.SetConnectedAsync(false, token);
-    public Task ReconnectAsync(CancellationToken token) => Broker.SetConnectedAsync(true, token);
+    public async Task ReconnectAsync(CancellationToken token)
+    {
+        await Broker.SetConnectedAsync(true, token);
+        var failure = _worker?.Completion.Exception;
+        if (failure is null) return;
+        // Google's client intentionally makes an initial StreamingPull write I/O failure fatal
+        // (googleapis/google-cloud-dotnet#16088). Recreate the application explicitly, retaining
+        // the real broker, topic and subscription; never add a subscriber retry loop to Relayer.
+        if (!_observedNativeFailure || !IsNativeStreamWriteFailure(failure)) throw failure;
+        try { await _provider.DisposeAsync(); }
+        catch (Exception error) when (IsObservedSubscriberFailure(error, failure)) { }
+        _observedNativeFailure = false;
+        _native = new();
+        BuildApplication();
+        RegisterConsumer(_receive!);
+        var persisted = await _subscriber.GetSubscriptionAsync(Subscription, cancellationToken: token);
+        if (persisted.Topic != Destination) throw new InvalidOperationException("Recovery replaced the durable Pub/Sub endpoint.");
+    }
+
+    private static bool IsNativeStreamWriteFailure(Exception error) => error is AggregateException aggregate
+        ? aggregate.InnerExceptions.All(IsNativeStreamWriteFailure)
+        : error is IOException && ContainsDisconnectedSocket(error);
+
+    private static bool ContainsDisconnectedSocket(Exception error) =>
+        error is System.Net.Sockets.SocketException { SocketErrorCode: System.Net.Sockets.SocketError.ConnectionReset or System.Net.Sockets.SocketError.ConnectionAborted }
+        || (error.InnerException is { } inner && ContainsDisconnectedSocket(inner));
+
+    private static bool IsObservedSubscriberFailure(Exception error, AggregateException failure) => error is AggregateException aggregate
+        ? aggregate.InnerExceptions.All(inner => IsObservedSubscriberFailure(inner, failure))
+        : failure.Flatten().InnerExceptions.Any(observed => ReferenceEquals(observed, error));
     public async ValueTask VerifyShutdownAsync(CancellationToken token)
     {
         _verifyShutdown = true;

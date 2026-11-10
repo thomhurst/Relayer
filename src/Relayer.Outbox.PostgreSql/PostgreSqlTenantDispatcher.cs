@@ -15,13 +15,14 @@ internal sealed partial class PostgreSqlTenantDispatcher : BackgroundService
     private readonly ITransport[] _transports;
     private readonly ILoggerFactory _logs;
     private readonly RelayerInstrumentation? _instrumentation;
+    private readonly TimeProvider? _orderedTimeProvider;
     private readonly ILogger _logger;
     private readonly object _gate = new();
     private readonly Dictionary<string, Store> _stores = new(StringComparer.Ordinal);
     private bool _stopped;
 
     public PostgreSqlTenantDispatcher(ITenantSource catalog, PostgreSqlTenantDispatchOptions options,
-        IEnumerable<ITransport> transports, ILoggerFactory logs, RelayerInstrumentation? instrumentation = null)
+        IEnumerable<ITransport> transports, ILoggerFactory logs, RelayerInstrumentation? instrumentation = null, TimeProvider? orderedTimeProvider = null)
     {
         _catalog = catalog;
         _options = options;
@@ -31,6 +32,7 @@ internal sealed partial class PostgreSqlTenantDispatcher : BackgroundService
             throw new InvalidOperationException("Tenant outbox dispatch requires at least one named ITransport adapter.");
         _logs = logs;
         _instrumentation = instrumentation;
+        _orderedTimeProvider = orderedTimeProvider;
         _logger = logs.CreateLogger<PostgreSqlTenantDispatcher>();
     }
 
@@ -229,7 +231,7 @@ internal sealed partial class PostgreSqlTenantDispatcher : BackgroundService
             ClaimDuration = entry.Options.LeaseDuration }, _transports, _logs.CreateLogger<PostgreSqlDirectDispatcher>(), instrumentation: _instrumentation),
         new(entry.DataSource, _options.Maintenance(entry.Options), _transports, _logs.CreateLogger<PostgreSqlMaintenanceWorker>(),
             _logs.CreateLogger<PostgreSqlDirectDispatcher>(), _instrumentation),
-        new(entry.DataSource, OrderedOptions(entry.Options), _transports, _logs.CreateLogger<PostgreSqlOrderedDispatcher>(), instrumentation: _instrumentation));
+        new(entry.DataSource, OrderedOptions(entry.Options), _transports, _logs.CreateLogger<PostgreSqlOrderedDispatcher>(), _orderedTimeProvider, _instrumentation));
     }
 
     private PostgreSqlOrderedDispatchOptions OrderedOptions(PostgreSqlOutboxOptions store) => new()

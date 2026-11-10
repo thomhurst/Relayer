@@ -1283,6 +1283,14 @@ Do not wrap authentication, add another reconnect/flow-control engine, suppress 
 The strict AOT smoke uses managed gRPC public constructors and generated JSON against the emulator;
 production authentication paths need separate application validation.
 
+The native subscriber intentionally faults on an initial streaming-write `IOException`, including a
+replacement stream opened after an established connection drops (see
+[google-cloud-dotnet #16088](https://github.com/googleapis/google-cloud-dotnet/issues/16088)). Preserve
+that fatal lifecycle: applications recreate the host against the existing durable subscription instead
+of adding an adapter retry engine. Outage conformance may explicitly recreate its DI application only
+after recognizing the exact native subscriber failure caused by the injected TCP reset. Unrelated
+shutdown errors remain failures, and every acknowledged message must still arrive on the same endpoint.
+
 Nack cannot change broker attributes, and native DeadLetterPolicy cannot supply on-demand dead-lettering
 with Relayer error history. Keep these capabilities unavailable to the core durable failure policy. Reuse
 the existing core retry and acknowledged dead-letter-copy path, with explicit destination topics. Native

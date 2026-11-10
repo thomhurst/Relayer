@@ -26,7 +26,7 @@ public interface ITransportConformanceFixture<TIncoming> : IAsyncDisposable
     HeaderNames HeaderNames { get; }
     /// <summary>Native outage send budget, or null when this fixture cannot inject a real broker outage.</summary>
     TimeSpan? OutageSendTimeout => null;
-    /// <summary>Recognizes native connectivity failures expected while the broker is stopped.</summary>
+    /// <summary>Recognizes native connectivity failures expected while the broker is stopped, including offline shutdown.</summary>
     bool IsExpectedOutageFailure(Exception error) => false;
     /// <summary>Registers the supplied core receive pipeline before the first start.</summary>
     void RegisterConsumer(Func<TIncoming, CancellationToken, ValueTask<Disposition>> receive);
@@ -36,7 +36,7 @@ public interface ITransportConformanceFixture<TIncoming> : IAsyncDisposable
     ValueTask<ConformanceDeadLetter> ReadDeadLetterAsync(CancellationToken cancellationToken);
     /// <summary>Interrupts the broker connection. In-memory fixtures stop their transport instead.</summary>
     Task DisconnectAsync(CancellationToken cancellationToken);
-    /// <summary>Restores the broker connection and waits for native recovery without replacing the endpoint.</summary>
+    /// <summary>Restores the broker connection and waits for native recovery without replacing the endpoint. A permanently faulted native client requires explicit application recreation, not an adapter retry loop.</summary>
     Task ReconnectAsync(CancellationToken cancellationToken);
 }
 

@@ -82,6 +82,33 @@ public class GooglePubSubTests
     }
 
     [Test]
+    public async Task Fatal_native_initial_write_recreates_application_without_replacing_subscription()
+    {
+        using var deadline = new CancellationTokenSource(TimeSpan.FromMinutes(2));
+        var token = deadline.Token;
+        using var tracing = new MessageTracing(Options.Create(new TracingOptions()), []);
+        await using var lease = await PubSubFixture.CreateAsync(tracing, token);
+        var fixture = (PubSubFixture)lease;
+        var delivered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        fixture.RegisterConsumer((_, _) => { delivered.TrySetResult(); return new(Disposition.Complete); });
+        var failure = new IOException("The request was aborted.",
+            new System.Net.Sockets.SocketException((int)System.Net.Sockets.SocketError.ConnectionReset));
+        fixture.InjectInitialWriteFailure(failure);
+        var original = fixture.Transport;
+        await original.StartAsync(token);
+        await Assert.That(async () => await fixture.ConsumerCompletion.WaitAsync(token)).Throws<IOException>();
+        await Assert.That(fixture.IsExpectedOutageFailure(failure)).IsTrue();
+        await Assert.That(fixture.IsExpectedOutageFailure(new IOException("Unrelated failure"))).IsFalse();
+        await Assert.That(async () => await original.StopAsync(token)).Throws<AggregateException>();
+        await fixture.ReconnectAsync(token);
+        await Assert.That(ReferenceEquals(original, fixture.Transport)).IsFalse();
+        await fixture.Transport.StartAsync(token);
+        await fixture.Transport.SendAsync(new(fixture.Destination, "recovered"u8.ToArray()), token);
+        await delivered.Task.WaitAsync(token);
+        await fixture.Transport.StopAsync(token);
+    }
+
+    [Test]
     public async Task Shutdown_drains_inflight_processing_before_native_acknowledgement()
     {
         using var deadline = new CancellationTokenSource(TimeSpan.FromMinutes(2));

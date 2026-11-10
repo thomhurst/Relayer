@@ -283,10 +283,18 @@ public class TenantDispatchTests
         await fixture.Start(1);
         var store = fixture.Entries[0];
         for (var number = 1; number <= 3; number++) await Insert(store, number, 0);
-        var transport = new Transport(async (_, token) => await Task.Delay(TimeSpan.FromMilliseconds(600), token));
+        var clock = new AdmissionClock();
+        var transport = new Transport((_, _) =>
+        {
+            // Advance beyond half the ten-second tenant turn, but below the default
+            // lane's 7.5-second admission budget. The first row must commit before
+            // another row is admitted, without sleeping or racing real SQL work.
+            clock.Advance(TimeSpan.FromSeconds(6));
+            return default;
+        });
         using var worker = new PostgreSqlTenantDispatcher(fixture.Catalog,
-            new() { TurnTimeout = TimeSpan.FromSeconds(1), RecoveryDelay = TimeSpan.Zero },
-            [transport], NullLoggerFactory.Instance);
+            new() { TurnTimeout = TimeSpan.FromSeconds(10), RecoveryDelay = TimeSpan.Zero },
+            [transport], NullLoggerFactory.Instance, orderedTimeProvider: clock);
         for (var remaining = 2; remaining >= 0; remaining--)
         {
             await worker.PassAsync(default);
@@ -295,6 +303,14 @@ public class TenantDispatchTests
         await Assert.That(transport.Sent.Select(x => x.Id).SequenceEqual([Id(1), Id(2), Id(3)])).IsTrue();
         await fixture.WaitForNoConnections();
         await worker.ReleaseAllAsync();
+    }
+
+    private sealed class AdmissionClock : TimeProvider
+    {
+        private long _timestamp;
+        public override long TimestampFrequency => TimeSpan.TicksPerSecond;
+        public override long GetTimestamp() => _timestamp;
+        internal void Advance(TimeSpan elapsed) => _timestamp += elapsed.Ticks;
     }
 
     [Test]
