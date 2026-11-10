@@ -116,6 +116,33 @@ public class ServiceBusSendEmulatorTests
                 Equals(value.Tags["messaging.system"], "servicebus") &&
                 Equals(value.Tags["server.address"], client.FullyQualifiedNamespace) && !value.Tags.ContainsKey("error.type"))).IsTrue();
 
+            // Externally managed session queues work with least-privilege topology modes.
+            foreach (var mode in new[] { TopologyMode.Validate, TopologyMode.None })
+            {
+                var trustedOptions = new AzureServiceBusTransportOptions { Client = client };
+                trustedOptions.Queues.Add(new("send-sessions") { RequiresSession = true });
+                trustedOptions.TrustedSessionEntities.Add("send-sessions");
+                await using var trusted = new ServiceBusSendTransport("trusted", client, false, trustedOptions,
+                    ["send-sessions"], mode);
+                await Assert.That((await trusted.ApplyTopologyAsync(mode, token)).Differences.Count).IsEqualTo(0);
+                await Assert.That(trusted.GetCapabilities("send-sessions").OrderedByKey).IsTrue();
+                var key = "trusted-" + mode;
+                await trusted.SendAsync(new("send-sessions", new byte[] { 8 }, orderingKey: new WireString(key)), token);
+                await using var trustedSession = await client.AcceptSessionAsync("send-sessions", key, cancellationToken: token);
+                var received = await trustedSession.ReceiveMessageAsync(TimeSpan.FromSeconds(30), token)
+                    ?? throw new InvalidOperationException("Trusted session send was not delivered.");
+                await Assert.That(received.SessionId).IsEqualTo(key);
+                await trustedSession.CompleteMessageAsync(received, token);
+
+                var untrustedOptions = new AzureServiceBusTransportOptions { Client = client };
+                untrustedOptions.Queues.Add(new("send-sessions") { RequiresSession = true });
+                await using var untrusted = new ServiceBusSendTransport("untrusted", client, false, untrustedOptions,
+                    ["send-sessions"], mode);
+                await Assert.That(async () => await untrusted.SendAsync(new("send-sessions", default,
+                    orderingKey: new WireString(key)), token)).Throws<InvalidOperationException>()
+                    .WithMessageContaining("TrustedSessionEntities");
+            }
+
             // Existing properties are reported, never updated or replaced.
             options.Queues[0].MaxDeliveryCount = 11;
             var drift = await transport.ApplyTopologyAsync(TopologyMode.Provision, token);

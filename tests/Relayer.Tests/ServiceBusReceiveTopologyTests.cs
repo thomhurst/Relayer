@@ -26,6 +26,23 @@ public sealed class ServiceBusReceiveTopologyTests
     }
 
     [Test]
+    public async Task Trusted_session_subscription_still_validates_a_declared_consumers_Listen_link()
+    {
+        var client = new ListenClient();
+        var options = new AzureServiceBusTransportOptions { Client = client };
+        options.Topics.Add(new("events"));
+        options.Subscriptions.Add(new("events", "audit") { RequiresSession = true });
+        options.TrustedSessionEntities.Add("events/Subscriptions/audit");
+        var subscription = new ConsumerDefinition<ServiceBusConsumerOptions>("events", new() { Subscription = "audit" },
+            [], 1, 1, TimeSpan.FromMilliseconds(100));
+        await using var transport = new ServiceBusSendTransport("listen", client, false, options, [], TopologyMode.Validate,
+            consumers: [subscription]);
+        var report = await transport.ApplyTopologyAsync(TopologyMode.Validate, default);
+        await Assert.That(report.Differences.Count).IsEqualTo(0);
+        await Assert.That(client.Receiver.Peeks).IsEqualTo(1);
+    }
+
+    [Test]
     public async Task Delayed_redelivery_fails_at_composition_without_starting_a_processor()
     {
         var client = new ServiceBusReceiveTests.NativeClient();

@@ -31,6 +31,12 @@ internal sealed class ServiceBusSendTransport : ITransport, ITransportSendTracin
             if (!entities.Add(topic.Name)) throw new InvalidOperationException($"Service Bus transport '{name}': duplicate entity '{topic.Name}'.");
         foreach (var destination in destinations)
             if (!entities.Contains(destination)) throw new InvalidOperationException($"Service Bus transport '{name}': destination '{destination}' needs a native queue or topic declaration.");
+        foreach (var entity in options.TrustedSessionEntities)
+        {
+            if (!options.Queues.Any(queue => queue.Name == entity && queue.RequiresSession) &&
+                !options.Subscriptions.Any(subscription => subscription.TopicName + "/Subscriptions/" + subscription.SubscriptionName == entity && subscription.RequiresSession))
+                throw new InvalidOperationException($"Service Bus transport '{name}': TrustedSessionEntities entry '{entity}' needs a native queue or subscription declaration with RequiresSession=true.");
+        }
         var subscriptions = new HashSet<(string, string)>();
         foreach (var subscription in options.Subscriptions)
         {
@@ -59,10 +65,12 @@ internal sealed class ServiceBusSendTransport : ITransport, ITransportSendTracin
             var topic = options.Topics.SingleOrDefault(item => item.Name == destination);
             if ((queue is null) == (topic is null))
                 throw new InvalidOperationException($"Service Bus transport '{name}': destination '{destination}' needs exactly one native queue or topic declaration.");
-            // Only Provision verifies settings before sends start. Link attachment cannot establish session requirements.
-            var ordered = mode == TopologyMode.Provision && (queue?.RequiresSession == true ||
-                (topic is not null && options.Subscriptions.Any(item => item.TopicName == destination) &&
-                 options.Subscriptions.Where(item => item.TopicName == destination).All(item => item.RequiresSession)));
+            // Link attachment cannot establish session requirements. Trust is explicit per native entity.
+            var ordered = queue is not null
+                ? queue.RequiresSession && (mode == TopologyMode.Provision || options.TrustedSessionEntities.Contains(queue.Name))
+                : options.Subscriptions.Any(item => item.TopicName == destination) &&
+                  options.Subscriptions.Where(item => item.TopicName == destination).All(item => item.RequiresSession &&
+                      (mode == TopologyMode.Provision || options.TrustedSessionEntities.Contains(item.TopicName + "/Subscriptions/" + item.SubscriptionName)));
             var endpoint = new Endpoint(client.CreateSender(destination), new()
             {
                 OrderedByKey = ordered,
@@ -224,7 +232,7 @@ internal sealed class ServiceBusSendTransport : ITransport, ITransportSendTracin
         if (message.IsTombstone) throw new NotSupportedException("Service Bus does not support native tombstones.");
         var endpoint = GetEndpoint(message.Destination);
         if (message.OrderingKey is not null && !endpoint.Capabilities.OrderedByKey)
-            throw new InvalidOperationException($"Service Bus destination '{message.Destination}': session ordering is unresolved. Declare RequiresSession on the queue or every topic subscription and use Provision to verify it; Validate/None do not establish session requirements.");
+            throw new InvalidOperationException($"Service Bus destination '{message.Destination}': session ordering is unresolved. Declare RequiresSession on the queue or every topic subscription and use Provision to verify it, or add each entity to TrustedSessionEntities to trust its declaration in Validate/None.");
     }
 
     public async Task StartAsync(CancellationToken cancellationToken)

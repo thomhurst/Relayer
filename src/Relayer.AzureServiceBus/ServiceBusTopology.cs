@@ -23,7 +23,7 @@ internal sealed class ServiceBusTopology(string name, ServiceBusClient client,
                 if (consumers?.Any(consumer => consumer.Source == queue.Name) == true && destinations?.Contains(queue.Name) != true)
                     await ValidateReceiveAsync(queue.Name, null, differences, cancellationToken).ConfigureAwait(false);
                 else await ValidateSendAsync(queue.Name, differences, cancellationToken).ConfigureAwait(false);
-                if (queue.RequiresSession) UnresolvedSessions(queue.Name, differences);
+                if (queue.RequiresSession && !options.TrustedSessionEntities.Contains(queue.Name)) UnresolvedSessions(queue.Name, differences);
             }
             else await ProvisionQueueAsync(queue, differences, cancellationToken).ConfigureAwait(false);
         }
@@ -43,8 +43,12 @@ internal sealed class ServiceBusTopology(string name, ServiceBusClient client,
             if (mode == TopologyMode.Validate)
             {
                 var entity = subscription.TopicName + "/Subscriptions/" + subscription.SubscriptionName;
-                await ValidateReceiveAsync(subscription.TopicName, subscription.SubscriptionName, differences, cancellationToken).ConfigureAwait(false);
-                if (subscription.RequiresSession) UnresolvedSessions(entity, differences);
+                var trusted = subscription.RequiresSession && options.TrustedSessionEntities.Contains(entity);
+                // A send-only identity cannot inspect subscriptions. Trusted send declarations belong to external topology.
+                if (!trusted || consumers?.Any(consumer => consumer.Source == subscription.TopicName &&
+                    consumer is ConsumerDefinition<ServiceBusConsumerOptions> receive && receive.Options.Subscription == subscription.SubscriptionName) == true)
+                    await ValidateReceiveAsync(subscription.TopicName, subscription.SubscriptionName, differences, cancellationToken).ConfigureAwait(false);
+                if (subscription.RequiresSession && !trusted) UnresolvedSessions(entity, differences);
             }
             else await ProvisionSubscriptionAsync(subscription, differences, cancellationToken).ConfigureAwait(false);
         }
@@ -68,7 +72,7 @@ internal sealed class ServiceBusTopology(string name, ServiceBusClient client,
     }
 
     private static void UnresolvedSessions(string entity, List<string> differences) =>
-        differences.Add($"Entity '{entity}': RequiresSession=true cannot be verified with least-privilege link access. Use an explicit Provision startup with administration credentials to verify native settings. Validate never requests Manage permission.");
+        differences.Add($"Entity '{entity}': RequiresSession=true cannot be verified with least-privilege link access. Use Provision with administration credentials to verify native settings, or add the entity to TrustedSessionEntities to trust its RequiresSession=true declaration. Validate never requests Manage permission.");
 
     private async Task ValidateSendAsync(string entity, List<string> differences, CancellationToken cancellationToken)
     {

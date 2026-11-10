@@ -257,6 +257,7 @@ Superseded by [D24](#d24-capabilities-are-valued-and-declared-per-endpoint).
 - Topology comes from the declared routes and consumers.
 - Modes: `Provision`, `Validate` (the default, needing least privilege), and `None`.
 - The topology can be exported to JSON, Bicep, or Terraform.
+- Service Bus applications may explicitly trust per-entity native `RequiresSession=true` declarations in Validate/None when topology is externally managed. Trust grants ordering capabilities without Manage access; Provision still verifies native settings. Send-only validation does not peek trusted subscriptions, whose existence and completeness remain the application's responsibility.
 
 ## D17. Testing is a first-class product
 
