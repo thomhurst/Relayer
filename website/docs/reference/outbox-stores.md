@@ -192,3 +192,25 @@ Reuse the provider's native transaction and commit hook; do not emulate dispatch
 EF interception, implicit-commit buffer reuse, SQL statement batching, native contention, completion-failure injection, shutdown and logging
 tests in the provider suite. MongoDB commit-triggered dispatch and its adapter remain planned; passing these
 PostgreSQL cases does not establish MongoDB support or resolve its strict Native AOT release gate.
+
+### Graceful worker shutdown
+
+Link `tests/Shared/OutboxShutdownContractTests.cs`, derive from `OutboxShutdownContractTests`, and add
+`[InheritsTests]`. PostgreSQL implements the direct, ordered and maintenance cases in
+`tests/Relayer.Outbox.PostgreSql.Tests/SharedShutdownContractTests.cs`; other stores should adopt each case
+when the corresponding worker ships.
+
+Each case starts and stops a real Generic Host with a native send in flight. The direct worker drains a
+claimed batch; ordered and maintenance workers cancel the send and join its completion before releasing
+leases. Explicit entry, shutdown and release signals establish that stop waits for native work, without
+using elapsed time as evidence. Future work stays durable. After stop, the fixture checks row identities,
+payloads, attempts, errors, paired claim fields, dead rows, owned lease release and preservation of a foreign
+lease. The PostgreSQL fixture observes native lease-table transaction locks while sends are blocked.
+
+Capture logs separately for each host, including the maintenance worker's internal dispatcher and native
+database commands. Error/Critical logs and warning-level shutdown cancellation fail the contract. Close the
+sender after workers stop, assert no send after closure, and dispose the host-owned data source only after
+its worker task completes. PostgreSQL also verifies that its worker connections are gone after disposal;
+its independent observer connection remains available for durable-state checks. Keep logging capture active
+through host disposal. These cases cover cooperative graceful shutdown; they do not replace process-crash
+recovery tests or establish behavior after a shutdown deadline expires.
