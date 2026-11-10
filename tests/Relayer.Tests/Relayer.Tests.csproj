@@ -34,6 +34,7 @@
 
   <ItemGroup>
     <Compile Include="..\..\tests\Shared\ConcurrentReceiveFixture.cs" Link="Fixtures\ConcurrentReceiveFixture.cs" />
+    <Compile Include="../../benchmarks/Relayer.Benchmarks/RegressionGate/PendingReadBarrier.cs" Link="Fixtures/PendingReadBarrier.cs" />
   </ItemGroup>
 
   <ItemGroup>
