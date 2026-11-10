@@ -57,6 +57,7 @@ Console.WriteLine("Tenant registration and pooled UTF-8 scope cleanup passed und
 SagaDiagramSmoke.Run();
 AsyncApiSmoke.Run();
 await SagaDispatchSmoke.RunAsync();
+await ServiceBusReceiversSmoke.RunAsync();
 
 var serviceBusMessage = ServiceBusModelFactory.ServiceBusReceivedMessage(new BinaryData(new byte[] { 42 }),
     properties: new Dictionary<string, object> { ["cloudEvents:type"] = "smoke;v=1" }, deliveryCount: 2);

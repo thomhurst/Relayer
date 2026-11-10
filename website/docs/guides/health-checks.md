@@ -27,7 +27,9 @@ Microsoft's health service. Normal application hosts already provide logging.
 
 These checks describe readiness. Do not use broker connectivity or a dispatch backlog to trigger process restarts.
 The core package has no health-check dependency. Polls read receiver snapshots; optional native adapters
-record progress in their receive paths. Kafka health tracking adds no per-message allocations.
+record progress in their receive paths. Kafka health tracking adds no per-message allocations. Service Bus tracks
+active callback slots only when its optional adapter is registered, and that tracking adds no allocation to
+the callback. Tracking never affects delivery: a callback that finds no free slot is processed but not reported.
 
 ## Explicit adapters
 
@@ -36,9 +38,17 @@ or an application-supplied store.
 Registering a transport does not establish native connectivity. Register adapters explicitly as keyed services.
 For Kafka, reference `Relayer.Kafka.HealthChecks` and call `AddRelayerKafkaHealthProviders("orders-broker")`
 with the exact transport name; see [Kafka health checks](../transports/kafka.md#health-checks) for native
-configuration and receiver state. Without adapters, configured transports, consumers and stores report unhealthy.
+configuration and receiver state.
+
+For Service Bus, reference `Relayer.AzureServiceBus.HealthChecks` and call
+`services.AddRelayerServiceBusHealthProviders("orders-broker")` before host startup, in addition to
+`AddRelayerHealthChecks`. See [Service Bus health](../transports/service-bus.md#health).
+Connectivity opens native send links or peeks receive endpoints without sending, consuming, locking or
+settling probe messages. Receiver snapshots report the oldest active callback's activation time;
+stopped processors report unavailable state.
+
+Without adapters, configured transports, consumers and stores report unhealthy.
 Remaining native broker adapter work is tracked with the
-[Service Bus](https://github.com/thomhurst/Relayer/issues/24),
 [SQS/SNS](https://github.com/thomhurst/Relayer/issues/39),
 [RabbitMQ](https://github.com/thomhurst/Relayer/issues/40) and
 [outbox foundation](https://github.com/thomhurst/Relayer/issues/28) implementations:

@@ -155,7 +155,7 @@ The transport builds its native message, applies `options.ApplyNative<TNative>(n
 
 **4. Capabilities and topology.** `GetCapabilities(endpoint)` returns a `TransportCapabilities` record for one endpoint (D24). `ApplyTopologyAsync(mode, ct)` validates or provisions the endpoints the transport's builder declared and returns a report the core uses for the startup diff and for topology export.
 
-Service Bus sending uses native queue/topic/subscription declarations. Least-privilege Validate checks send-link accessibility and peeks subscriptions without sending probe messages or using administration APIs. Entity descriptions require Manage rights, so Validate cannot compare native settings or establish session ordering; declared session requirements fail explicitly. Explicit Provision verifies native settings and creates missing entities without updating or deleting existing ones. See [Service Bus](https://relayer.tomlonghurst.dev/docs/transports/service-bus) for ownership and validation boundaries. Hosted receiver composition remains separate.
+Service Bus sending uses native queue/topic/subscription declarations. Least-privilege Validate checks send-link accessibility and peeks subscriptions without sending probe messages or using administration APIs. Entity descriptions require Manage rights, so Validate cannot compare native settings or establish session ordering; declared session requirements fail explicitly. Explicit Provision verifies native settings and creates missing entities without updating or deleting existing ones. See [Service Bus](https://relayer.tomlonghurst.dev/docs/transports/service-bus) for ownership and validation boundaries. Hosted queue and subscription receivers compose the durable core pipeline with native processors. Session processors retain the original native callbacks. Both reject auto-complete and ReceiveAndDelete; settlement runs after scope disposal. Immediate redelivery uses native abandon and error-property updates; delayed redelivery is rejected instead of copying subscription retries back to the topic.
 
 **5. Builders.** The core ships generic builders, and the transport supplies its own option types:
 
@@ -233,7 +233,7 @@ This API declares configuration. Startup validates runtime adapters' endpoint ca
 
 ### 3.2 Handlers
 
-Handlers are plain classes that are resolved from a fresh DI scope for every message (or batch). They can inject scoped services such as a `DbContext`.
+Handlers are plain classes that are resolved from a fresh DI scope for every message (or batch). They can inject scoped services such as a `DbContext`. A failure-pipeline consumer whose handlers are all singletons opens that scope on demand (D53).
 
 ```csharp
 public sealed class OrderPlacedHandler(AppDbContext db, ISender sender) : IHandler<OrderPlaced>
@@ -752,7 +752,7 @@ Goals, measured against the raw native client in the same benchmark:
 
 Techniques:
 
-- The middleware pipeline is compiled into a delegate chain once per consumer at startup. Nothing is resolved per message except the DI scope.
+- The middleware pipeline is compiled into a delegate chain once per consumer at startup. Nothing is resolved per message except the DI scope, which singleton-only consumers open on demand (D53).
 - `ValueTask` everywhere. Context objects are pooled. Headers are read lazily from the native message and only materialized when accessed.
 - Single-message dispatch with an explicit failure delegate keeps continuation storage with the rented context and native receive state. Cross-worker completion does not depend on runtime async state-machine cache hits. Fresh scopes, async disposal and settlement ordering remain unchanged; batch and executable-retry paths retain their existing implementations.
 - `IBufferWriter<byte>` / `ReadOnlySequence<byte>` serialization with pooled buffers.
@@ -801,6 +801,7 @@ hashes can change frozen dispatch-table layouts across unchanged processes.
 | `Relayer.Serialization.*` | Protobuf, Avro, MessagePack | The respective library |
 | `Relayer.Testing` / `.Testing.Containers` | Harness and fixtures | `Testcontainers` |
 | `Relayer.Aspire` | Aspire integration (resources and health) | `Aspire.Hosting` |
+| `Relayer.AzureServiceBus.HealthChecks` | Optional Service Bus native probes and receiver-owned liveness | `Relayer.AzureServiceBus`, `Relayer.HealthChecks` |
 | `Relayer.HealthChecks` | Connectivity, consumer liveness and outbox backlog health integration | `Microsoft.Extensions.Diagnostics.HealthChecks` |
 | `Relayer.Kafka.HealthChecks` | Optional native Kafka connectivity and receiver liveness adapters | `Relayer.Kafka`, `Relayer.HealthChecks` |
 | Later | `Relayer.GooglePubSub`, `Relayer.Pulsar` | — |

@@ -557,13 +557,13 @@ public class BatchPipelineTests
             await consumer.ProcessBatchAsync(contexts, batchCancellation.Token);
             for (var i = 0; i < contexts.Length; i++) contexts[i].Dispose();
             using var scope = scopes.CreateScope();
-            _ = scope.ServiceProvider.GetRequiredService<ISender>();
+            _ = scope.ServiceProvider.GetRequiredService<ScopedBaseline>();
         }
         var start = GC.GetAllocatedBytesForCurrentThread();
         for (var iteration = 0; iteration < 1000; iteration++)
         {
             using var scope = scopes.CreateScope();
-            _ = scope.ServiceProvider.GetRequiredService<ISender>();
+            _ = scope.ServiceProvider.GetRequiredService<ScopedBaseline>();
         }
         var baseline = GC.GetAllocatedBytesForCurrentThread() - start;
         start = GC.GetAllocatedBytesForCurrentThread();
@@ -624,6 +624,11 @@ public class BatchPipelineTests
         await Assert.That(observed.Events.Count()).IsEqualTo(0);
     }
 
+    private sealed class ScopedBaseline
+    {
+        internal static readonly ScopedBaseline Shared = new();
+    }
+
     internal static ServiceProvider Provider(int size = 4, int nativeSize = 10)
     {
         var services = new ServiceCollection();
@@ -632,6 +637,8 @@ public class BatchPipelineTests
         services.AddSingleton<ITransport>(provider => provider.GetRequiredService<Transport>());
         services.AddSingleton<IMessageSerializer, Serializer>();
         services.AddScoped<Lifetime>();
+        // Same DI bookkeeping as the attached sender, without allocating a service instance.
+        services.AddScoped(static _ => ScopedBaseline.Shared);
         services.AddSingleton<AllocationHandler>();
         services.AddRelayer(builder =>
         {
