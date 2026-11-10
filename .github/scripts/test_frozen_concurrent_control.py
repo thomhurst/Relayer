@@ -233,7 +233,7 @@ if __name__ == "__main__":
 class SourceLaunchTests(unittest.TestCase):
     def test_source_control_rejects_mixed_regions_and_profiles_before_launching(self):
         for options in (("--exact-invocations",), ("--exact-releases",), ("--exact-driver",),
-                        ("--exact-roundtrips",), ("--bdn-await",),
+                        ("--exact-roundtrips",), ("--exact-worker",), ("--bdn-await",),
                         ("--trace-tool", "trace", "--profile-reader", "reader")):
             with self.subTest(options=options), patch("sys.argv", ["control", "inputs", "probe", "output", "--exact-sources", *options]), patch("frozen_concurrent_control.subprocess.run") as execute:
                 with self.assertRaises(SystemExit):
@@ -261,3 +261,37 @@ class SourceLaunchTests(unittest.TestCase):
             self.assertTrue(protocol["instrumented"])
             self.assertTrue(protocol["exact_sources"])
             self.assertIn("First observation is not proof", protocol["source_boundary"])
+
+
+class WorkerLaunchTests(unittest.TestCase):
+    def test_worker_protocol_uses_original_waiter_and_keeps_both_candidate_launches(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for side in ("baseline", "candidate", "baseline-after"):
+                image = root / "performance-builds" / side / "builds/net10.0/Relayer.Benchmarks-DefaultJob-1/bin/Release/net10.0/Relayer.Benchmarks.dll"
+                image.parent.mkdir(parents=True)
+                image.touch()
+            output = root / "results"
+            with patch("sys.argv", ["control", str(root), "probe", str(output), "--exact-worker"]), patch("frozen_concurrent_control.verify", return_value="frozen"), patch("frozen_concurrent_control.subprocess.run") as execute:
+                main()
+            self.assertEqual(execute.call_count, 4)
+            sides = []
+            for call in execute.call_args_list:
+                command = call.args[0]
+                self.assertEqual(command[-1], "--exact-worker")
+                sides.append(Path(command[-2]).relative_to((root / "performance-builds").resolve()).parts[0])
+            self.assertEqual(sides, ["baseline", "candidate", "candidate", "baseline"])
+            protocol = json.loads((output / "protocol.json").read_text())
+            self.assertTrue(protocol["instrumented"])
+            self.assertTrue(protocol["exact_worker"])
+            self.assertEqual(protocol["completion_boundary"], "original-BenchmarkDotNet-AwaitHelper.GetResult")
+            self.assertIn("excludes initial handler work before read return", protocol["worker_boundary"])
+
+    def test_worker_rejects_other_regions_or_profile_before_launching(self):
+        for options in (("--exact-invocations",), ("--exact-releases",), ("--exact-driver",),
+                        ("--exact-roundtrips",), ("--exact-sources",), ("--bdn-await",),
+                        ("--trace-tool", "trace", "--profile-reader", "reader")):
+            with self.subTest(options=options), patch("sys.argv", ["control", "inputs", "probe", "output", "--exact-worker", *options]), patch("frozen_concurrent_control.subprocess.run") as execute:
+                with self.assertRaises(SystemExit):
+                    main()
+                execute.assert_not_called()

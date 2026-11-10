@@ -4,8 +4,9 @@ using System.Text.Json;
 using Relayer.Diagnostics;
 
 // Separate instrumented full-delivery control, never a rebuild of historical workload images.
-if (args.Length != 2 || args[1] != "--exact-driver")
-    throw new ArgumentException("Expected the retained dependency directory and --exact-driver.");
+if (args.Length != 2 || args[1] is not ("--exact-driver" or "--exact-worker"))
+    throw new ArgumentException("Expected the retained dependency directory and --exact-driver or --exact-worker.");
+var exactWorker = args[1] == "--exact-worker";
 var image = Path.GetFullPath(args[0]);
 var context = new AssemblyLoadContext("Frozen", isCollectible: false);
 context.Resolving += (_, name) =>
@@ -33,6 +34,16 @@ var starts = new InvocationAllocations(measuredBatches);
 var waits = new InvocationAllocations(measuredBatches);
 Func<Func<ValueTask<int>>, ValueTask<int>> begin = static callback => callback();
 Func<(Func<ValueTask<int>, int> Wait, ValueTask<int> Pending), int> finish = static state => state.Wait(state.Pending);
+WorkerReadChannel? workers = null;
+if (exactWorker)
+{
+    var signals = type.GetField("_signals", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(fixture)!;
+    var field = signals.GetType().GetField("<Release>k__BackingField", BindingFlags.Instance | BindingFlags.NonPublic)!;
+    var original = (System.Threading.Channels.Channel<byte>)field.GetValue(signals)!;
+    workers = new WorkerReadChannel(original, (warmupBatches + measuredBatches) * 8);
+    field.SetValue(signals, workers);
+}
+var batches = 0;
 await setup();
 try
 {
@@ -57,7 +68,9 @@ try
     {
         image, warmupBatches, measuredBatches, messages = measuredBatches * 8,
         bytes, bytesPerMessage = bytes / (measuredBatches * 8.0),
-        instrumentation = "exact-driver-calling-thread", invocation, completion,
+        instrumentation = exactWorker ? "exact-worker-native-read-and-continuation" : "exact-driver-calling-thread", invocation, completion,
+        workers = workers?.Report(warmupBatches * 8),
+        workerLimits = "Separate instrumented original-waiter full-delivery control. Read counter covers only original native ReadAsync on its worker thread. Registration counter starts after wrapper construction immediately before ReadAsync returns, ends on await registration on the same thread, and covers original PendingReadBarrier/builder setup plus allocation-free wrapper forwarding. Continuation counter wraps original registered callback synchronously, including inline downstream work and GetResult, excluding callback scheduling, setup, and later callbacks. Wrapper replaces source identity seen by awaiter, adds allocations, retains all sources/targets, and drains callbacks per batch; changes execution. First retained identity is in reserved read-index order, not temporal order or allocation proof. Registration covers await setup only, not the whole initial handler invocation; no historical owner trace; no subtraction or historical attribution. Thread IDs cover these exact regions only.",
         runtime = System.Runtime.InteropServices.RuntimeInformation.FrameworkDescription,
         arch = System.Runtime.InteropServices.RuntimeInformation.ProcessArchitecture.ToString(),
         limits = "Exact calling-thread byte counts around the synchronous workload call and original BDN waiter separately. No await between counter reads. Excludes allocations on other threads; waiter includes any inline continuations on the calling thread. Does not identify object types or attribute the historical delta. Recording changes scheduling; never subtract from another experiment."
@@ -68,5 +81,7 @@ finally { await cleanup(); }
 int Batch()
 {
     var pending = starts.Invoke(begin, run);
-    return waits.Invoke(finish, (wait, pending));
+    var result = waits.Invoke(finish, (wait, pending));
+    workers?.Drain(++batches * 8);
+    return result;
 }

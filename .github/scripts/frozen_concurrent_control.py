@@ -39,14 +39,15 @@ def main():
     parser.add_argument("--bdn-await", action="store_true",
                         help="Use original BDN synchronous ValueTask waiter in the full-delivery probe.")
     parser.add_argument("--exact-sources", action="store_true", help="Separate handler source identity and synchronous byte control.")
+    parser.add_argument("--exact-worker", action="store_true", help="Separate original-waiter native worker read and resumed callback counters.")
     args = parser.parse_args()
-    if args.bdn_await and (args.exact_invocations or args.exact_releases or args.exact_roundtrips or args.exact_driver or args.exact_sources):
+    if args.bdn_await and (args.exact_invocations or args.exact_releases or args.exact_roundtrips or args.exact_driver or args.exact_sources or args.exact_worker):
         parser.error("BDN full-delivery waiter and exact counters are distinct controls")
-    if sum((args.exact_invocations, args.exact_releases, args.exact_roundtrips, args.exact_driver, args.exact_sources)) > 1:
+    if sum((args.exact_invocations, args.exact_releases, args.exact_roundtrips, args.exact_driver, args.exact_sources, args.exact_worker)) > 1:
         parser.error("Exact regions require separate ABBAs")
     if bool(args.trace_tool) != bool(args.profile_reader):
         parser.error("--trace-tool and --profile-reader must be supplied together")
-    if (args.exact_invocations or args.exact_releases or args.exact_roundtrips or args.exact_driver or args.exact_sources) and args.trace_tool:
+    if (args.exact_invocations or args.exact_releases or args.exact_roundtrips or args.exact_driver or args.exact_sources or args.exact_worker) and args.trace_tool:
         parser.error("Exact invocation counters and sampled profiles require separate ABBAs")
     if args.keep_traces and not args.trace_tool:
         parser.error("--keep-traces requires --trace-tool and --profile-reader")
@@ -57,13 +58,16 @@ def main():
                 "warmup_batches": 4096, "measured_batches": 32768, "messages_per_batch": 8,
                 "counter": "GC.GetTotalAllocatedBytes(true)",
                 "limits": "Inclusive fixed-count control; not original BDN replay, allocation-owner attribution, throughput equivalence or native-client budget evidence."}
-    protocol["completion_boundary"] = "original-BenchmarkDotNet-AwaitHelper.GetResult" if args.bdn_await or args.exact_driver else "asynchronous-await"
-    protocol["instrumented"] = args.trace_tool is not None or args.exact_invocations or args.exact_releases or args.exact_roundtrips or args.exact_driver or args.exact_sources
+    protocol["completion_boundary"] = "original-BenchmarkDotNet-AwaitHelper.GetResult" if args.bdn_await or args.exact_driver or args.exact_worker else "asynchronous-await"
+    protocol["instrumented"] = args.trace_tool is not None or args.exact_invocations or args.exact_releases or args.exact_roundtrips or args.exact_driver or args.exact_sources or args.exact_worker
     protocol["exact_invocations"] = args.exact_invocations
     protocol["exact_releases"] = args.exact_releases
     protocol["exact_roundtrips"] = args.exact_roundtrips
     protocol["exact_sources"] = args.exact_sources
     protocol["exact_driver"] = args.exact_driver
+    protocol["exact_worker"] = args.exact_worker
+    if args.exact_worker:
+        protocol["worker_boundary"] = "Original native pending release ReadAsync, same-worker-thread handler await setup between read return and await registration, and registered handler callback separately; exact same-thread synchronous bytes only. Wrapper retains native sources/continuation targets and drains each batch. Alters execution, excludes initial handler work before read return; no historical owner trace or cross-control subtraction."
     if args.exact_sources:
         protocol["source_boundary"] = "Original synchronous handler call bytes correlated with returned source reference identity across warmup and measurement; separate native release-channel pending-read control follows. Reflection and retained identities alter GC/scheduling and are outside regional counters. First observation is not proof of allocation inside that call; no worker/historical attribution or cross-control subtraction."
     if args.exact_roundtrips:
@@ -90,6 +94,8 @@ def main():
             command.append("--bdn-await")
         if args.exact_sources:
             command.append("--exact-sources")
+        if args.exact_worker:
+            command.append("--exact-worker")
         if args.exact_driver:
             command.append("--exact-driver")
         if args.exact_invocations:
