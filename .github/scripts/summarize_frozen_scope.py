@@ -38,6 +38,10 @@ def summarize(directory, audit=False):
             or protocol.get('tieredCompilation') != 'off'
             or len(protocol.get('launches', [])) != 8 or len(outcomes) != 8):
         raise ValueError('Expected complete tiering-off scope or handler-resolution code capture')
+    # Older wildcard captures predate the explicit native filter field.
+    jit_method = protocol.get('jitMethod', '*')
+    if not isinstance(jit_method, str) or not jit_method.strip():
+        raise ValueError('Expected a nonempty native JIT method filter')
     captures = []
     for index, ((side, scoped), launch, outcome) in enumerate(zip(expected, protocol['launches'], outcomes), 1):
         name = f'{index}-{side}-{scoped}.asm'
@@ -47,7 +51,7 @@ def summarize(directory, audit=False):
                 or outcome.get('scoped') is not scoped or 'error' in outcome
                 or outcome.get('disassembly') != name
                 or outcome.get('runtimeEnvironment', {}).get('DOTNET_TieredCompilation') != '0'
-                or diagnostic.get('DOTNET_JitDisasm') != '*'
+                or diagnostic.get('DOTNET_JitDisasm') != jit_method
                 or diagnostic.get('DOTNET_JitDisasmDiffable') != '1'):
             raise ValueError('Missing, failed or unexpected capture launch')
         raw = (directory / name).read_bytes()
@@ -76,7 +80,7 @@ def summarize(directory, audit=False):
         groups.append({'scoped': offset == 0, 'comparable': True, 'methodIdentities': len(names),
                        'identicalAcrossAllFour': len(names) - len(differences),
                        'differences': differences})
-    return {'benchmark': protocol['benchmark'], 'captures': captures, 'groups': groups,
+    return {'benchmark': protocol['benchmark'], 'jitMethod': jit_method, 'captures': captures, 'groups': groups,
             'comparison': 'Exact bytes per method identity, preserving repeated-listing order; no normalization or filtering.',
             'limits': 'Diffable native JIT text omits addresses/relocations and does not cover all precompiled code, layout, host state or execution. Matching listings do not prove timing equivalence or historical causality. Different listings do not prove a production regression. Diagnostic timings are excluded; no gate pass or accepted trade-off.'}
 

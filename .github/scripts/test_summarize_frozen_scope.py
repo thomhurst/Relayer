@@ -60,6 +60,42 @@ class ScopeListingTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 summarize(directory)
 
+    def test_named_filter_is_preserved_and_must_match_every_launch(self):
+        with tempfile.TemporaryDirectory() as root:
+            directory = Path(root)
+            protocol, outcomes = self.fixture(directory)
+            protocol['jitMethod'] = '*:GetRequiredService*'
+            for outcome in outcomes:
+                outcome['diagnosticEnvironment']['DOTNET_JitDisasm'] = protocol['jitMethod']
+            (directory / 'protocol.json').write_text(json.dumps(protocol))
+            (directory / 'outcomes.json').write_text(json.dumps(outcomes))
+            actual = summarize(directory)
+            self.assertEqual(actual['jitMethod'], protocol['jitMethod'])
+            self.assertEqual(actual['groups'][0]['identicalAcrossAllFour'], 2)
+            # A named filter does not relax raw listing integrity.
+            path = directory / '1-baseline-True.asm'
+            path.write_bytes(path.read_bytes() + b'; Assembly listing for method Partial()\n')
+            with self.assertRaises(ValueError):
+                summarize(directory)
+            self.assertFalse(summarize(directory, audit=True)['groups'][0]['comparable'])
+            for index in range(8):
+                wrong = copy.deepcopy(outcomes)
+                wrong[index]['diagnosticEnvironment']['DOTNET_JitDisasm'] = '*'
+                (directory / 'outcomes.json').write_text(json.dumps(wrong))
+                with self.subTest(index=index), self.assertRaises(ValueError):
+                    summarize(directory, audit=True)
+
+    def test_rejects_invalid_explicit_filter_and_preserves_legacy_wildcard(self):
+        with tempfile.TemporaryDirectory() as root:
+            directory = Path(root)
+            protocol, _ = self.fixture(directory)
+            self.assertEqual(summarize(directory)['jitMethod'], '*')
+            for value in (None, '', '   ', 1, ['Resolve']):
+                protocol['jitMethod'] = value
+                (directory / 'protocol.json').write_text(json.dumps(protocol))
+                with self.subTest(value=value), self.assertRaises(ValueError):
+                    summarize(directory, audit=True)
+
     def test_audit_reports_invalid_capture_without_comparing_partial_group(self):
         with tempfile.TemporaryDirectory() as root:
             directory = Path(root)
