@@ -10,6 +10,11 @@ on:
     branches: [main]
     types: [opened, synchronize, reopened, ready_for_review, labeled]
   workflow_dispatch:
+    inputs:
+      nats_native:
+        description: Run NATS native-client comparisons instead of the main regression gate
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -33,9 +38,10 @@ jobs:
   scope:
     name: Decide whether to benchmark
     if: >-
-      github.event_name != 'pull_request'
-      || (github.event.pull_request.draft == false
-          && (github.event.action != 'labeled' || github.event.label.name == 'performance'))
+      inputs.nats_native != true
+      && (github.event_name != 'pull_request'
+          || (github.event.pull_request.draft == false
+              && (github.event.action != 'labeled' || github.event.label.name == 'performance')))
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
@@ -210,3 +216,70 @@ jobs:
             performance-harness.sha256
             performance-inputs.json
             performance-summary.md
+
+  nats-native:
+    name: NATS native-client comparisons
+    if: github.event_name == 'workflow_dispatch' && inputs.nats_native == true
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      NATS_URL: nats://127.0.0.1:4222
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
+        with:
+          global-json-file: global.json
+
+      - name: Start native JetStream server and wait for readiness
+        run: |
+          docker run -d --name nats-benchmarks -p 127.0.0.1:4222:4222 -p 127.0.0.1:8222:8222 nats:2.15.2 -js -m 8222
+          curl --fail --retry 30 --retry-delay 1 --retry-connrefused 'http://127.0.0.1:8222/healthz?js-enabled-only=true'
+          git rev-parse HEAD > nats-environment.txt
+          dotnet --info >> nats-environment.txt
+          docker inspect nats-benchmarks >> nats-environment.txt
+
+      # Compare native and Relayer in the same build. This transport did not execute
+      # messages on main, so copying these classes onto main cannot form a baseline.
+      - name: Measure confirmed JSON sends and pull receive with confirmed ACK
+        run: |
+          dotnet run -c Release --project benchmarks/Relayer.Benchmarks -- \
+            --filter '*NatsSendBenchmarks*' '*NatsWireReceiveBenchmarks*' \
+            --warmupCount 5 --iterationCount 15 --launchCount 2 \
+            --exporters fulljson --keepFiles --artifacts nats-results \
+            > nats-benchmarks.log 2>&1 \
+            || { tail -n 80 nats-benchmarks.log; exit 1; }
+
+      - name: Retain measurements, source and loaded benchmark binaries
+        if: always()
+        run: |
+          docker logs nats-benchmarks > nats-server.log 2>&1 || true
+          git archive --format=zip --output=nats-source.zip HEAD
+          if [ -d benchmarks/Relayer.Benchmarks/bin/Release ]; then
+            tar -czf nats-builds.tar.gz -C benchmarks/Relayer.Benchmarks/bin Release
+          fi
+          find . -maxdepth 1 -type f \
+            \( -name 'nats-*.log' -o -name nats-environment.txt -o -name nats-source.zip -o -name nats-builds.tar.gz \) \
+            -exec sha256sum {} + > nats-SHA256SUMS
+          if [ -d nats-results/results ]; then
+            find nats-results -type f -exec sha256sum {} + >> nats-SHA256SUMS
+            cat nats-results/results/*-report-github.md >> "$GITHUB_STEP_SUMMARY"
+          fi
+          echo 'Native NATS comparisons only; results require allocation attribution and performance review before an acceptance claim.' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload native comparison evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: nats-performance-${{ github.run_id }}-${{ github.run_attempt }}
+          retention-days: 90
+          path: |
+            nats-results/
+            nats-*.log
+            nats-environment.txt
+            nats-source.zip
+            nats-builds.tar.gz
+            nats-SHA256SUMS
+
+      - name: Stop owned server
+        if: always()
+        run: docker rm -f nats-benchmarks
