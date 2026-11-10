@@ -72,6 +72,7 @@ To change a decision, add a new entry that supersedes it rather than editing his
 | [D59](#d59-sql-server-consumers-reuse-the-adonet-outbox-transaction) | SQL Server consumers reuse the ADO.NET outbox transaction | Accepted |
 | [D60](#d60-bound-catalog-dispatch-by-native-connection-lifetimes) | Bound catalog dispatch by native connection lifetimes | Accepted |
 | [D61](#d61-aspire-reuses-native-resource-wiring-and-application-telemetry) | Aspire reuses native resource wiring and application telemetry | Accepted |
+| [D62](#d62-sql-server-maintenance-reuses-direct-dispatch-and-native-transaction-locks) | SQL Server maintenance reuses direct dispatch and native transaction locks | Accepted |
 
 ---
 
@@ -1410,3 +1411,29 @@ require restart. Applications choose sampling/exporters (including those from Se
 authentication and health policy. The sample uses native Kafka and Service Bus emulator resources;
 other transports can use their existing configuration directly. See the
 [Aspire guide](../website/docs/guides/aspire.md).
+
+## D62. SQL Server maintenance reuses direct dispatch and native transaction locks
+
+**Context.** D47/D49's durable SQL Server rows survive missed commit notifications and crashes.
+SqlClient 7.1.1's [SqlDependency source](https://github.com/dotnet/SqlClient/blob/v7.1.1/src/Microsoft.Data.SqlClient/src/Microsoft/Data/SqlClient/SqlDependency.cs)
+provides Service Broker query notifications, including process-wide listener state. Notifications do not
+replace retry, scheduled-row recovery or bounded retention. We inspected that implementation and SQL Server's
+[Service Broker facilities](https://learn.microsoft.com/en-us/sql/database-engine/configure-windows/sql-server-service-broker)
+and [sp_getapplock](https://learn.microsoft.com/en-us/sql/relational-databases/system-stored-procedures/sp-getapplock-transact-sql).
+
+**Decision.** Apply D38's bounded high-water traversal and separate durable idle leases to SQL Server.
+Use native transaction-owned application locks with zero wait to arbitrate connected leadership, and hold
+that transaction through dispatch and retention. Reuse the direct dispatcher, capability cache, native batches
+and fenced mutations on that same connection, avoiding a second sender or waiting on a second pool slot.
+Database clock expiry governs idle leadership. Row fencing still arbitrates against direct dispatch.
+No new notification or wake mechanism is introduced; Service Broker remains application-owned.
+
+Transfer malformed header rows to a raw dead copy under a live fenced claim. Count recovery configuration
+failures and native send failures; an atomic update/dead-copy/delete transaction dead-letters exhausted
+unordered rows and parks exhausted ordered rows. Retention preserves dead copies of parked barriers.
+The maximum send-attempt setting must match all dispatchers for a store. Completion failures after native
+success do not consume attempts. Future scheduled ISender registration and ordered lane workers remain separate.
+
+**Consequences.** Recovery is at least once; rollback after native acceptance replays the original identity.
+A connected pass can delay its own cleanup, while another replica immediately skips its active leadership.
+Explicit idempotent schema deployment creates missing dead and lease tables without implicit migrations.

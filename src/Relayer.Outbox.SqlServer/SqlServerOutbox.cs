@@ -136,6 +136,7 @@ public sealed class SqlServerOutbox : IOutboxEnlistment, IDisposable, IAsyncDisp
     {
         _ = SqlServerOutboxSchema.CreateScript(options);
         if (options.DispatchStoreName is not null) ArgumentException.ThrowIfNullOrWhiteSpace(options.DispatchStoreName);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(options.MaxDispatchAttempts);
         if (options.Lanes <= 0) throw new ArgumentOutOfRangeException(nameof(options), "Lanes must be positive.");
     }
 

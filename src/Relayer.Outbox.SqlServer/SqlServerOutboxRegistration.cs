@@ -74,6 +74,7 @@ public static class SqlServerOutboxRegistration
             DispatchStoreName = configuration?[nameof(defaults.DispatchStoreName)] ?? defaults.DispatchStoreName,
             Schema = configuration?[nameof(defaults.Schema)] ?? defaults.Schema,
             TablePrefix = configuration?[nameof(defaults.TablePrefix)] ?? defaults.TablePrefix,
+            MaxDispatchAttempts = Read(nameof(defaults.MaxDispatchAttempts), defaults.MaxDispatchAttempts),
             Lanes = Read(nameof(defaults.Lanes), defaults.Lanes)
         };
 

@@ -29,6 +29,8 @@ public class SqlServerOutboxDispatchBenchmarks
                 new OutgoingMessage(i % 2 == 0 ? "alpha" : "beta", body, headers), _now);
         }
         // Both halves of the buffer swap and header decode must reach their high-water marks.
+        RecoveryBufferAndGroup();
+        RecoveryBufferAndGroup();
         BufferOnly();
         TransferAndGroup();
         TransferAndGroup();
@@ -44,6 +46,18 @@ public class SqlServerOutboxDispatchBenchmarks
             bytes += _source[i].ToMessage().Body.Length;
             _source[i].Clear();
         }
+        return bytes;
+    }
+
+    [Benchmark]
+    public int RecoveryBufferAndGroup()
+    {
+        for (var i = 0; i < Rows; i++) _source[i].Copy(_records[i], 32, unordered: true);
+        _batch.Take(_source, Rows, _now);
+        _batch.Sort();
+        var bytes = 0;
+        for (var i = 0; i < _batch.Count; i++) bytes += _batch.Rows[i].ToMessage().Body.Length;
+        _batch.Clear();
         return bytes;
     }
 

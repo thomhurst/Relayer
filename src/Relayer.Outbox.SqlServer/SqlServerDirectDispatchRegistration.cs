@@ -35,7 +35,7 @@ public static partial class SqlServerOutboxServiceCollectionExtensions
         if (dispatchOptions.QueueCapacity is <= 0 or int.MaxValue || dispatchOptions.BatchSize <= 0 || dispatchOptions.ClaimDuration <= TimeSpan.Zero)
             throw new ArgumentOutOfRangeException(nameof(dispatchOptions), "QueueCapacity and BatchSize must be positive, QueueCapacity must be below Int32.MaxValue, and ClaimDuration must be positive.");
         storeOptions ??= new();
-        var snapshot = new SqlServerOutboxOptions { Schema = storeOptions.Schema, TablePrefix = storeOptions.TablePrefix, Lanes = storeOptions.Lanes };
+        var snapshot = new SqlServerOutboxOptions { Schema = storeOptions.Schema, TablePrefix = storeOptions.TablePrefix, Lanes = storeOptions.Lanes, MaxDispatchAttempts = storeOptions.MaxDispatchAttempts };
         _ = SqlServerOutboxSchema.CreateScript(snapshot);
         services.AddRelayerSqlServerOutboxStore(storeName, connectionString, snapshot);
         services.AddSingleton(new DispatchSettings(storeName, dispatchOptions));

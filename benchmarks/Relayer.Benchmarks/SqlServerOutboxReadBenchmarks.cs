@@ -13,6 +13,8 @@ namespace Relayer.Benchmarks;
 public class SqlServerOutboxReadBenchmarks
 {
     private string _connectionString = null!;
+    private SqlConnection _recoveryConnection = null!;
+    private SqlCommand _recoveryCommand = null!;
     private SqlServerOutboxStore _store = null!;
     private OutboxRecord[] _rows = null!;
     private readonly DateTimeOffset _now = new(2030, 1, 1, 0, 0, 0, TimeSpan.Zero);
@@ -43,6 +45,9 @@ public class SqlServerOutboxReadBenchmarks
             insert.Parameters.Add("@now", SqlDbType.DateTimeOffset).Value = _now;
             await insert.ExecuteNonQueryAsync();
         }
+        _recoveryConnection = new SqlConnection(_connectionString);
+        await _recoveryConnection.OpenAsync();
+        _recoveryCommand = new SqlCommand($"SELECT TOP ({Rows}) id, transport, message_type, destination, body, headers, ordering_key, deliver_at, created_at, lane, attempts, last_error, tenant_id FROM [dbo].[{_options.TablePrefix}outbox] WHERE lane IS NULL AND status='pending' ORDER BY id", _recoveryConnection);
         if (await _store.ReadPendingAsync(new(null, _now), _rows, default) != Rows)
             throw new InvalidOperationException("Benchmark fixture must return the configured row count.");
     }
@@ -50,12 +55,17 @@ public class SqlServerOutboxReadBenchmarks
     [Benchmark]
     public ValueTask<int> ReadPending() => _store.ReadPendingAsync(new(null, _now), _rows, default);
 
+    [Benchmark]
+    public ValueTask<int> ReadRecovery() => _store.ReadRecoveryAsync(_recoveryCommand, _rows, default);
+
     [GlobalCleanup]
     public async Task Cleanup()
     {
+        if (_recoveryCommand is not null) await _recoveryCommand.DisposeAsync();
+        if (_recoveryConnection is not null) await _recoveryConnection.DisposeAsync();
         await using var connection = new SqlConnection(_connectionString);
         await connection.OpenAsync();
-        await using var command = new SqlCommand($"DROP TABLE IF EXISTS [dbo].[{_options.TablePrefix}outbox], [dbo].[{_options.TablePrefix}inbox]", connection);
+        await using var command = new SqlCommand($"DROP TABLE IF EXISTS [dbo].[{_options.TablePrefix}outbox], [dbo].[{_options.TablePrefix}inbox], [dbo].[{_options.TablePrefix}outbox_dead], [dbo].[{_options.TablePrefix}leases]", connection);
         await command.ExecuteNonQueryAsync();
     }
 }
