@@ -91,9 +91,13 @@ public static class PubSubSession
     {
         // Like TUnit's own per-session instances, a later session in this process starts afresh.
         var shared = Interlocked.Exchange(ref _shared, new(StartAsync));
+        if (!shared.IsValueCreated) return;
+        // Wait for a startup still in flight (every test may have given up on it) so its containers are not left behind.
+        Emulator emulator;
+        try { emulator = await shared.Value; }
         // A failed startup already cleaned up and failed the tests that needed it.
-        if (!shared.IsValueCreated || !shared.Value.IsCompletedSuccessfully) return;
-        try { await shared.Value.Result.Container.DisposeAsync(); }
-        finally { await shared.Value.Result.Network.DisposeAsync(); }
+        catch { return; }
+        try { await emulator.Container.DisposeAsync(); }
+        finally { await emulator.Network.DisposeAsync(); }
     }
 }
