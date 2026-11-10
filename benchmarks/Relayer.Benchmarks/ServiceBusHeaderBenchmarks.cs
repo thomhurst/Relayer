@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Text;
 using Azure.Messaging.ServiceBus;
 using BenchmarkDotNet.Attributes;
@@ -16,13 +17,20 @@ public class ServiceBusHeaderBenchmarks
     private readonly MessageEnvelope _second = new(new("benchmark.other", 1), "/other", new("cloudEvents:"));
     private readonly DateTimeOffset _time = DateTimeOffset.UtcNow;
     private long _sequence;
+    private ActivityContext _creation;
 
     [Params(false, true)]
     public bool AlternatingRoutes { get; set; }
 
+    [Params(false, true)]
+    public bool Tracing { get; set; }
+
     [GlobalSetup]
     public void Setup()
     {
+        _creation = Tracing
+            ? ActivityContext.Parse("00-0123456789abcdef0123456789abcdef-0123456789abcdef-01", "vendor=original")
+            : default;
         _relayer.Prepare(Next());
         _relayer.Clear();
         RawHeaders();
@@ -53,14 +61,14 @@ public class ServiceBusHeaderBenchmarks
         var sequence = ++_sequence;
         var envelope = AlternatingRoutes && (sequence & 1) == 0 ? _second : _first;
         envelope.Write<HeaderBuffer, HeaderBuffer>(_headers,
-            new(Guid.CreateVersion7(), _time.AddTicks(sequence), default));
-        return new("orders", default, _headers.Entries);
+            new(Guid.CreateVersion7(), _time.AddTicks(sequence), _creation));
+        return new("orders", default, _headers.Entries.AsMemory(0, Tracing ? 7 : 5));
     }
 
     private sealed class HeaderBuffer : IMessageHeaderWriter<HeaderBuffer>
     {
-        internal readonly KeyValuePair<string, WireString>[] Entries = new KeyValuePair<string, WireString>[5];
-        private readonly byte[][] _values = [new byte[128], new byte[128], new byte[128], new byte[128], new byte[128]];
+        internal readonly KeyValuePair<string, WireString>[] Entries = new KeyValuePair<string, WireString>[7];
+        private readonly byte[][] _values = [new byte[128], new byte[128], new byte[128], new byte[128], new byte[128], new byte[128], new byte[128]];
 
         public static void SetHeader(HeaderBuffer message, string name, ReadOnlySpan<char> value)
         {
