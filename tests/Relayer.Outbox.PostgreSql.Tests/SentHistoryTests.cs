@@ -260,7 +260,9 @@ public class SentHistoryTests
         var id = Guid.NewGuid();
         await using (var insert = source.CreateCommand("INSERT INTO relayer_outbox_sent VALUES (@id, 'old', clock_timestamp() - interval '10 days')"))
         { insert.Parameters.AddWithValue("id", id); await insert.ExecuteNonQueryAsync(); }
-        var now = DateTimeOffset.UtcNow;
+        var clock = DateTimeOffset.UtcNow;
+        // PostgreSQL timestamps retain microseconds, while Linux UtcNow can include 100 ns ticks.
+        var now = clock.AddTicks(-(clock.Ticks % 10));
         await PostgreSqlOutboxStoreTests.Insert(source, options, id, now);
         var store = new PostgreSqlOutboxStore(source, options);
         var claim = new OutboxClaim(id, Guid.NewGuid());
