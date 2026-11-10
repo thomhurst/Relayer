@@ -104,6 +104,19 @@ header when sending ordered rows.
 
 The store does not generate identities, serialize messages, or rewrite envelopes during reads.
 
+## Sent-message history
+
+`RetainSentMessages` opts dispatchers into retaining sent IDs, destinations and completion times.
+When enabled, workers validate that the schema-qualified `outbox_sent` table exists before
+starting dispatch. If it is missing, startup fails with an instruction to rerun
+`PostgreSqlOutboxSchema.CreateScript` for the configured schema and table prefix.
+New tenant catalog entries are validated before their first dispatch turn.
+
+Retention runs only in the [maintenance worker](postgres-maintenance.md#sent-message-history)
+or tenant catalog cleanup. Direct or ordered dispatch alone does not expire history:
+keep maintenance running with `RetainSentMessages = true` and a positive `SentRetention`,
+or the history table grows without a bound.
+
 ## Poison rows and key release
 
 Dispatch stops retrying after `MaxDispatchAttempts` failed sends (default **10**).
@@ -173,12 +186,17 @@ export RELAYER_POSTGRES_CONNECTION_STRING='Host=localhost;Database=app;Username=
 dotnet relayer message locate --id 01900000-0000-7000-8000-000000000001
 ```
 
+Sent history is opt-in for lookup too: set `RetainSentMessages = true` on the lookup options
+or pass `--sent-history` to the tool. Deploy the history table first by rerunning
+`PostgreSqlOutboxSchema.CreateScript`; an enabled lookup reports an actionable error if it is missing.
+Default lookups continue to work with older schemas and do not query sent history.
+
 Optional `--schema` and `--prefix` select the writer's tables. Credentials stay in
 the environment. Failures return exit code 1; successful lookups return 0 even
 when the ID is absent. Authorize database/schema access before exposing the API:
 results include destinations, consumer names, claim tokens and error text.
 
-The state is `pending`, `scheduled`, `claimed`, `parked`, `dead`, or `not present`.
+The state is `pending`, `scheduled`, `claimed`, `parked`, `dead`, `sent`, or `not present`.
 A live claim takes precedence over scheduling. An expired claim is pending or
 scheduled, with its old claim metadata still visible. Parked rows take precedence
 over their dead-table copy; later rows of that ordered key also report `parked`. Scheduled rows include the due time, claimed rows the
@@ -196,8 +214,12 @@ a `parked` result needs poison-key recovery. Inbox receipts identify consumers t
 committed a durable inbox entry. Receipts are returned even without an outbox row
 and remain subject to inbox retention.
 
-`not present` is ambiguous between never committed and sent and deleted.
-Sent-metadata retention is planned separately. Absence proves neither delivery
-nor non-delivery. The lookup observes this PostgreSQL store, not the broker. It
+With [sent-history retention](postgres-maintenance.md#sent-message-history) enabled, `sent`
+reports the destination and `SentAt` (the CLI prints `Sent:`). This records fenced database
+completion after native acceptance, not consumer processing. Live and dead rows take
+precedence if an application reuses an ID. Inbox receipts remain independent.
+
+`not present` includes never committed, history disabled, and history expired. Absence
+proves neither delivery nor non-delivery. The lookup observes this PostgreSQL store, not the broker. It
 uses a read-only, repeatable-read snapshot, never claims or releases rows, and
 never reads message bodies. It adds no work to dispatch.

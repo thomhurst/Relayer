@@ -45,7 +45,7 @@ public static partial class PostgreSqlOutboxServiceCollectionExtensions
         if (dispatchOptions.QueueCapacity is <= 0 or int.MaxValue || dispatchOptions.BatchSize <= 0 || dispatchOptions.ClaimDuration <= TimeSpan.Zero)
             throw new ArgumentOutOfRangeException(nameof(dispatchOptions), "QueueCapacity and BatchSize must be positive, QueueCapacity must be below Int32.MaxValue, and ClaimDuration must be positive.");
         storeOptions ??= new();
-        var snapshot = new PostgreSqlOutboxOptions { Schema = storeOptions.Schema, TablePrefix = storeOptions.TablePrefix, MaxDispatchAttempts = storeOptions.MaxDispatchAttempts };
+        var snapshot = new PostgreSqlOutboxOptions { Schema = storeOptions.Schema, TablePrefix = storeOptions.TablePrefix, MaxDispatchAttempts = storeOptions.MaxDispatchAttempts, RetainSentMessages = storeOptions.RetainSentMessages };
         _ = PostgreSqlOutboxSchema.CreateScript(snapshot);
         services.AddRelayerPostgreSqlOutboxStore(storeName, dataSource, snapshot);
         services.AddSingleton(new DispatchSettings(storeName, dispatchOptions));
@@ -109,7 +109,7 @@ public static partial class PostgreSqlOutboxServiceCollectionExtensions
         ArgumentNullException.ThrowIfNull(dataSource);
         options ??= new();
         ArgumentNullException.ThrowIfNull(options.TablePrefix);
-        var snapshot = new PostgreSqlOutboxOptions { Schema = options.Schema, TablePrefix = options.TablePrefix, MaxDispatchAttempts = options.MaxDispatchAttempts };
+        var snapshot = new PostgreSqlOutboxOptions { Schema = options.Schema, TablePrefix = options.TablePrefix, MaxDispatchAttempts = options.MaxDispatchAttempts, RetainSentMessages = options.RetainSentMessages };
         // Validate identifiers immediately, rather than waiting for the first database operation.
         _ = new PostgreSqlOutboxStore(dataSource, snapshot);
         services.AddKeyedScoped<IOutboxStore>(storeName, (_, _) => new PostgreSqlOutboxStore(dataSource, snapshot));
@@ -163,6 +163,7 @@ public static partial class PostgreSqlOutboxServiceCollectionExtensions
             Lanes = ReadOrdered(configuration, nameof(defaults.Lanes), defaults.Lanes),
             LeaseDuration = ReadOrdered(configuration, nameof(defaults.LeaseDuration), defaults.LeaseDuration),
             PollInterval = ReadOrdered(configuration, nameof(defaults.PollInterval), defaults.PollInterval),
+            RetainSentMessages = ReadOrdered(configuration, nameof(defaults.RetainSentMessages), defaults.RetainSentMessages),
             MaxDispatchAttempts = ReadOrdered(configuration, nameof(defaults.MaxDispatchAttempts), defaults.MaxDispatchAttempts),
             BatchSize = ReadOrdered(configuration, nameof(defaults.BatchSize), defaults.BatchSize)
         });

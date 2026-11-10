@@ -329,7 +329,7 @@ const status = [
   ['Ordered PostgreSQL dispatch and lane leases', 'Implemented with consumer insert sequences', true],
   ['PostgreSQL poison-row limits, key parking and dead-letter management', 'Implemented', true],
   ['PostgreSQL outbox recovery and retention cleanup', 'Implemented', true],
-  ['PostgreSQL current message lookup API and CLI', 'Implemented', true],
+  ['PostgreSQL message lookup API, CLI and bounded sent history', 'Implemented', true],
   ['PostgreSQL CDC outbox dispatch', 'Implemented; SQL Server CDC planned', true],
   ['Native scoped tenant store selection', 'Implemented with authorized durable binding and bounded PostgreSQL catalog dispatch', true],
   ['Send and delivery tracing, settlement, metrics and logs', 'Implemented', true],

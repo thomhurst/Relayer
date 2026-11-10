@@ -12,10 +12,13 @@ internal static class RelayerCommand
             return Run(args, output, error);
         string? id = null, schema = null;
         var prefix = "relayer_";
+        var sentHistory = false;
         var seen = new HashSet<string>(StringComparer.Ordinal);
-        for (var i = 2; i < args.Length; i += 2)
+        for (var i = 2; i < args.Length; i++)
         {
-            if (i + 1 == args.Length || !seen.Add(args[i])) return Fail(error, "Repeated or incomplete lookup option.");
+            if (!seen.Add(args[i])) return Fail(error, "Repeated lookup option.");
+            if (args[i] == "--sent-history") { sentHistory = true; continue; }
+            if (i + 1 == args.Length) return Fail(error, "Incomplete lookup option.");
             switch (args[i])
             {
                 case "--id": id = args[i + 1]; break;
@@ -23,6 +26,7 @@ internal static class RelayerCommand
                 case "--prefix": prefix = args[i + 1]; break;
                 default: return Fail(error, $"Unknown lookup option: {args[i]}");
             }
+            i++;
         }
         if (!Guid.TryParse(id, out var messageId) || messageId == Guid.Empty)
             return Fail(error, "Provide --id with a nonempty message UUID.");
@@ -31,20 +35,22 @@ internal static class RelayerCommand
         try
         {
             await using var source = NpgsqlDataSource.Create(connectionString);
-            var result = await new PostgreSqlMessageLookup(source, new() { Schema = schema, TablePrefix = prefix })
+            var result = await new PostgreSqlMessageLookup(source, new() { Schema = schema, TablePrefix = prefix, RetainSentMessages = sentHistory })
                 .FindAsync(messageId).ConfigureAwait(false);
             output.WriteLine($"Message: {result.MessageId}\nState: {result.State}");
-            if (result.State == "not present") output.WriteLine("May mean never committed or sent and deleted; inbox receipts are independent evidence.");
+            if (result.State == "not present") output.WriteLine("May mean never committed, history disabled, or history expired; inbox receipts are independent evidence.");
             if (result.Destination is not null) output.WriteLine($"Destination: {result.Destination}");
             if (result.DeliverAt is { } due) output.WriteLine($"Due: {due:O}");
             if (result.ClaimToken is { } token) output.WriteLine($"Claim: {token}; expires: {result.ClaimExpiresAt:O}");
             output.WriteLine($"Attempts: {result.Attempts}; last error: {result.LastError}");
+            if (result.SentAt is { } sent) output.WriteLine($"Sent: {sent:O}");
             if (result.FailedAt is { } failed) output.WriteLine($"Failed: {failed:O}");
             if (result.Lane is { } lane) output.WriteLine($"Lane: {lane.ToString(CultureInfo.InvariantCulture)}; owner: {result.LaneOwner}; expires: {result.LaneExpiresAt:O}; earlier rows: {result.EarlierRows?.ToString(CultureInfo.InvariantCulture) ?? "unknown"}");
             foreach (var receipt in result.InboxReceipts) output.WriteLine($"Inbox: {receipt.Consumer}; processed: {receipt.ProcessedAt:O}");
             return 0;
         }
         catch (ArgumentException exception) { return Fail(error, exception.Message); }
+        catch (InvalidOperationException exception) { return Fail(error, exception.Message); }
         catch (NpgsqlException) { return Fail(error, "PostgreSQL lookup failed. Check database access and apply the Relayer schema first."); }
     }
 
@@ -52,7 +58,7 @@ internal static class RelayerCommand
     {
         if (args is ["--help"] or ["-h"])
         {
-            output.WriteLine("dotnet relayer message locate --id <UUID> [--schema public] [--prefix relayer_] (uses RELAYER_POSTGRES_CONNECTION_STRING)");
+            output.WriteLine("dotnet relayer message locate --id <UUID> [--schema public] [--prefix relayer_] [--sent-history] (uses RELAYER_POSTGRES_CONNECTION_STRING)");
             output.WriteLine("dotnet relayer db script --provider postgres [--schema public] [--prefix relayer_]");
             return 0;
         }

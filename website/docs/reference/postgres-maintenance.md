@@ -39,7 +39,7 @@ Each pass uses one connection for leadership, recovery claims, completion and re
 hold a pool connection while waiting to borrow another; a single-connection pool works, with application work serialized.
 
 Use `services.AddRelayerPostgreSqlMaintenance("orders", dataSource, configuration.GetSection("Maintenance"))`
-to bind the same property names without reflection. Set a retention value to `"infinite"` in configuration,
+to bind the same property names without reflection. Set `DeadRetention` or `InboxRetention` to `"infinite"` in configuration,
 or `null` in code, to disable deletion from that table. Settings are immutable snapshots, readable through
 `IOptionsMonitor<PostgreSqlMaintenanceOptions>.Get("orders")`; restart to change them. Batch size must be
 1–10000. Delays and retention must be positive (recovery age can be zero); leadership leases must be 1 second–1 hour.
@@ -88,3 +88,48 @@ Retention applies to existing tables. The [EF Core consumer boundary](ef-core-in
 **Inbox retention bounds deduplication.** After deletion, an old identity can invoke its consumer again.
 Choose retention longer than your broker replay/redelivery window, or disable it. Dead-row deletion is
 permanent; use indefinite retention if operational investigation or audit requires keeping those records.
+
+
+### Sent-message history
+
+Sent history is disabled by default. To retain diagnostic evidence after successful sends,
+set `RetainSentMessages = true` on the `PostgreSqlOutboxOptions` passed to direct dispatch
+and durable stores, and on every `PostgreSqlOrderedDispatchOptions`,
+`PostgreSqlChangeCaptureOptions` and `PostgreSqlMaintenanceOptions` for those tables.
+Tenant catalog dispatch reads the flag from each store's `PostgreSqlOutboxOptions`.
+
+```csharp
+services.AddRelayerPostgreSqlDirectDispatch("orders", dataSource,
+    new PostgreSqlOutboxOptions { RetainSentMessages = true });
+services.AddRelayerPostgreSqlMaintenance("orders", dataSource,
+    new PostgreSqlMaintenanceOptions
+    {
+        RetainSentMessages = true,
+        SentRetention = TimeSpan.FromDays(7)
+    });
+```
+
+Apply the current [schema script](postgres-schema.md) before enabling sent history in workers or the
+lookup tool; rerunning it adds the history table and index to existing schemas.
+`outbox_sent` stores only ID, destination and `sent_at`, never body, headers or errors.
+A fenced completion deletes the outbox row and inserts this metadata in one PostgreSQL
+statement; stale or expired claims record nothing. Ordered and recovery transactions
+commit or roll back both changes together. Native acceptance followed by a crash before
+completion can still redeliver the message.
+
+Maintenance deletes at most `BatchSize` history rows per cleanup pass, oldest first,
+using the existing `cleanup` lease. If completion refreshes history for a reused message ID
+while cleanup waits on its row lock, cleanup rechecks the refreshed timestamp and keeps
+the entry until it is old enough. `SentRetention` defaults to seven days and must be
+positive and finite; configuration uses the same property names. Tenant dispatch exposes
+`SentRetention` on `PostgreSqlTenantDispatchOptions`. Keep maintenance running and
+`RetainSentMessages` enabled there while history exists: stopping cleanup or disabling
+that flag leaves existing history intact. The window is an age policy, not a hard row
+count or size limit: cleanup lag can retain older entries until later passes.
+
+When disabled, dispatch uses the original delete SQL with no extra branch, parameters,
+copy, allocation or database round trip. When enabled, each completed message adds one
+metadata insert/upsert and its primary-key and retention-index writes in the same round
+trip. No body crosses back to the application. The PostgreSQL tenant-dispatch benchmark
+compares enabled and disabled completion including native database I/O.
+[Message lookup](postgres-store.md#find-a-missing-message) reports retained entries as `sent` when its `RetainSentMessages` option or CLI `--sent-history` switch is enabled.

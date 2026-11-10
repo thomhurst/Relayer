@@ -27,6 +27,9 @@ internal sealed class PostgreSqlDirectDispatcher : BackgroundService
     private readonly List<BufferedOutboxMessage> _recoveryRows = [];
     private readonly OutboxDispatchBatch _recoveryBatch = new();
     private int _recoveredPoison;
+    private readonly Npgsql.NpgsqlDataSource _source;
+    private readonly bool _retainSentMessages;
+    private bool _schemaValidated;
 
     internal void RecoveryCommitted()
     {
@@ -38,6 +41,8 @@ internal sealed class PostgreSqlDirectDispatcher : BackgroundService
         PostgreSqlDirectDispatchOptions options, IEnumerable<ITransport> transports, ILogger<PostgreSqlDirectDispatcher> logger,
         PostgreSqlOutboxStore? store = null, RelayerInstrumentation? instrumentation = null)
     {
+        _source = dataSource;
+        _retainSentMessages = storeOptions.RetainSentMessages;
         _store = store ?? new(dataSource, storeOptions);
         _schema = storeOptions.Schema ?? "public";
         _prefix = storeOptions.TablePrefix;
@@ -63,6 +68,19 @@ internal sealed class PostgreSqlDirectDispatcher : BackgroundService
     {
         if (_schema != (schema ?? "public") || _prefix != prefix)
             throw new InvalidOperationException("The EF Core outbox and its direct dispatcher must use identical PostgreSQL schema and table prefix settings.");
+    }
+
+    internal async Task ValidateSchemaAsync(CancellationToken cancellationToken)
+    {
+        if (_schemaValidated) return;
+        await PostgreSqlSentSchema.ValidateAsync(_source, _retainSentMessages, _schema, _prefix, cancellationToken).ConfigureAwait(false);
+        _schemaValidated = true;
+    }
+
+    public override async Task StartAsync(CancellationToken cancellationToken)
+    {
+        await ValidateSchemaAsync(cancellationToken).ConfigureAwait(false);
+        await base.StartAsync(cancellationToken).ConfigureAwait(false);
     }
 
     // Called only after durable commit. Queue pressure and shutdown cannot make a committed transaction fail.

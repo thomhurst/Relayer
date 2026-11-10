@@ -12,7 +12,7 @@ namespace Relayer.Outbox.PostgreSql;
 
 public static partial class PostgreSqlOutboxServiceCollectionExtensions
 {
-    /// <summary>Registers leased unordered recovery and bounded dead-row/inbox retention against existing tables.</summary>
+    /// <summary>Registers leased unordered recovery and bounded dead-row, sent-metadata and inbox retention against existing tables.</summary>
     /// <remarks>Use the same schema and prefix as the writer. Ordered recovery requires the ordered lane dispatcher.</remarks>
     public static IServiceCollection AddRelayerPostgreSqlMaintenance(this IServiceCollection services,
         string name, NpgsqlDataSource dataSource, PostgreSqlMaintenanceOptions? options = null)
@@ -54,12 +54,14 @@ public static partial class PostgreSqlOutboxServiceCollectionExtensions
         {
             Schema = configuration[nameof(defaults.Schema)],
             TablePrefix = configuration[nameof(defaults.TablePrefix)] ?? defaults.TablePrefix,
+            RetainSentMessages = ReadValue(nameof(defaults.RetainSentMessages), defaults.RetainSentMessages),
             MaxDispatchAttempts = ReadValue(nameof(defaults.MaxDispatchAttempts), defaults.MaxDispatchAttempts),
             BatchSize = ReadValue(nameof(defaults.BatchSize), defaults.BatchSize),
             RecoveryDelay = ReadValue(nameof(defaults.RecoveryDelay), defaults.RecoveryDelay),
             SweepInterval = ReadValue(nameof(defaults.SweepInterval), defaults.SweepInterval),
             LeaseDuration = ReadValue(nameof(defaults.LeaseDuration), defaults.LeaseDuration),
             ClaimDuration = ReadValue(nameof(defaults.ClaimDuration), defaults.ClaimDuration),
+            SentRetention = ReadValue(nameof(defaults.SentRetention), defaults.SentRetention),
             CleanupInterval = ReadValue(nameof(defaults.CleanupInterval), defaults.CleanupInterval),
             DeadRetention = ReadRetention(nameof(defaults.DeadRetention), defaults.DeadRetention),
             InboxRetention = ReadRetention(nameof(defaults.InboxRetention), defaults.InboxRetention)

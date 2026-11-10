@@ -63,10 +63,15 @@ internal sealed partial class PostgreSqlTenantDispatcher : BackgroundService
         throw new InvalidOperationException($"Tenant dispatch store '{tenantId}' is not in the authorized catalog.");
     }
 
-    public override Task StartAsync(CancellationToken cancellationToken)
+    public override async Task StartAsync(CancellationToken cancellationToken)
     {
-        foreach (var entry in ValidateSnapshot()) ValidateEntry(entry);
-        return base.StartAsync(cancellationToken);
+        foreach (var entry in ValidateSnapshot())
+        {
+            ValidateEntry(entry);
+            await PostgreSqlSentSchema.ValidateAsync(entry.DataSource, entry.Options.RetainSentMessages,
+                entry.Options.Schema, entry.Options.TablePrefix, cancellationToken).ConfigureAwait(false);
+        }
+        await base.StartAsync(cancellationToken).ConfigureAwait(false);
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -127,6 +132,8 @@ internal sealed partial class PostgreSqlTenantDispatcher : BackgroundService
                 deadline.CancelAfter(_options.TurnTimeout);
                 try
                 {
+                    // Catalog entries can be added after startup; successful validation is cached.
+                    await store.Direct.ValidateSchemaAsync(deadline.Token).ConfigureAwait(false);
                     for (var visited = 0; visited < 4; visited++)
                     {
                         deadline.Token.ThrowIfCancellationRequested();
@@ -237,14 +244,14 @@ internal sealed partial class PostgreSqlTenantDispatcher : BackgroundService
     private PostgreSqlOrderedDispatchOptions OrderedOptions(PostgreSqlOutboxOptions store) => new()
     {
         Schema = store.Schema, TablePrefix = store.TablePrefix, Lanes = store.Lanes,
-        LeaseDuration = store.LeaseDuration, MaxDispatchAttempts = store.MaxDispatchAttempts,
+        LeaseDuration = store.LeaseDuration, MaxDispatchAttempts = store.MaxDispatchAttempts, RetainSentMessages = store.RetainSentMessages,
         BatchSize = _options.BatchSize, PollInterval = store.LeaseDuration / 4
     };
 
     private static bool SameStore(PostgreSqlTenantStore left, PostgreSqlTenantStore right) =>
         ReferenceEquals(left.DataSource, right.DataSource) && (left.Options.Schema ?? "public") == (right.Options.Schema ?? "public") &&
         left.Options.TablePrefix == right.Options.TablePrefix && left.Options.Lanes == right.Options.Lanes &&
-        left.Options.LeaseDuration == right.Options.LeaseDuration && left.Options.MaxDispatchAttempts == right.Options.MaxDispatchAttempts;
+        left.Options.LeaseDuration == right.Options.LeaseDuration && left.Options.MaxDispatchAttempts == right.Options.MaxDispatchAttempts && left.Options.RetainSentMessages == right.Options.RetainSentMessages;
 
     private sealed class Store(PostgreSqlTenantStore entry, PostgreSqlDirectDispatcher direct,
         PostgreSqlMaintenanceWorker maintenance, PostgreSqlOrderedDispatcher ordered) : IDisposable

@@ -75,6 +75,7 @@ public static class PostgreSqlOutboxRegistration
             TablePrefix = configuration?[nameof(defaults.TablePrefix)] ?? defaults.TablePrefix,
             Lanes = Read(nameof(defaults.Lanes), defaults.Lanes),
             LeaseDuration = Read(nameof(defaults.LeaseDuration), defaults.LeaseDuration),
+            RetainSentMessages = Read(nameof(defaults.RetainSentMessages), defaults.RetainSentMessages),
             MaxDispatchAttempts = Read(nameof(defaults.MaxDispatchAttempts), defaults.MaxDispatchAttempts)
         };
 

@@ -19,6 +19,9 @@ public sealed class PostgreSqlOutboxOptions
     /// <summary>How long a lane or job lease lasts without a heartbeat.</summary>
     public TimeSpan LeaseDuration { get; init; } = TimeSpan.FromSeconds(30);
 
+    /// <summary>Retain sent IDs, destinations and completion times. Disabled by default; enable on every dispatcher and maintenance worker for this store.</summary>
+    public bool RetainSentMessages { get; init; }
+
     /// <summary>Dispatch attempts before a row is moved to the dead table.</summary>
     public int MaxDispatchAttempts { get; init; } = 10;
 }

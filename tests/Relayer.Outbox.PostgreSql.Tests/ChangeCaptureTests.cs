@@ -70,7 +70,7 @@ public class ChangeCaptureTests
         await Insert(source, Id(7), future: true);
         await Provision(source, fixture.ConnectionString);
         var transport = new RecordingTransport();
-        using var worker = Worker(source, fixture.ConnectionString, transport);
+        using var worker = Worker(source, fixture.ConnectionString, transport, retainSentMessages: true);
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
         await worker.StartAsync(timeout.Token);
         try
@@ -84,6 +84,8 @@ public class ChangeCaptureTests
             await Assert.That(transport.BatchSizes.All(static size => size <= 2)).IsTrue();
             await Assert.That(transport.BatchSizes.Count).IsGreaterThan(0);
             await Assert.That(await Count(source)).IsEqualTo(2L);
+            await using var sent = source.CreateCommand("SELECT count(*) FROM relayer_outbox_sent");
+            await Assert.That((long)(await sent.ExecuteScalarAsync(timeout.Token))!).IsEqualTo(6L);
         }
         finally { await worker.StopAsync(timeout.Token); }
     }
@@ -165,9 +167,9 @@ public class ChangeCaptureTests
         finally { await second.StopAsync(timeout.Token); }
     }
 
-    private static PostgreSqlChangeCaptureOptions Options(int batchSize = 3) => new()
+    private static PostgreSqlChangeCaptureOptions Options(int batchSize = 3, bool retainSentMessages = false) => new()
     {
-        Slot = new("orders"), Replication = new("orders", PgOutputProtocolVersion.V1), BatchSize = batchSize
+        Slot = new("orders"), Replication = new("orders", PgOutputProtocolVersion.V1), BatchSize = batchSize, RetainSentMessages = retainSentMessages
     };
 
     [Test]
@@ -291,8 +293,8 @@ public class ChangeCaptureTests
         finally { await worker.StopAsync(timeout.Token); }
     }
 
-    private static PostgreSqlChangeCaptureWorker Worker(NpgsqlDataSource source, string connectionString, RecordingTransport transport) =>
-        new(source, () => new(connectionString) { WalReceiverStatusInterval = TimeSpan.FromMilliseconds(25) }, Options(), [transport],
+    private static PostgreSqlChangeCaptureWorker Worker(NpgsqlDataSource source, string connectionString, RecordingTransport transport, bool retainSentMessages = false) =>
+        new(source, () => new(connectionString) { WalReceiverStatusInterval = TimeSpan.FromMilliseconds(25) }, Options(retainSentMessages: retainSentMessages), [transport],
             NullLogger<PostgreSqlChangeCaptureWorker>.Instance, NullLogger<PostgreSqlMaintenanceWorker>.Instance,
             NullLogger<PostgreSqlDirectDispatcher>.Instance);
 

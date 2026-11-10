@@ -28,7 +28,15 @@ internal sealed class PostgreSqlOrderedLane : IDisposable
         var fenced = "id = @id AND claim_token = @token AND claim_expires_at > clock_timestamp()";
         _claim = CreateMutation($"UPDATE {table} SET claim_token = @token, claim_expires_at = clock_timestamp() + @duration WHERE id = @id AND status = 'pending' AND (deliver_at IS NULL OR deliver_at <= clock_timestamp()) AND (claim_expires_at IS NULL OR claim_expires_at <= clock_timestamp())");
         _claim.Parameters.Add(new NpgsqlParameter<TimeSpan>("duration", NpgsqlDbType.Interval) { TypedValue = duration });
-        _complete = CreateMutation($"DELETE FROM {table} WHERE {fenced}");
+        var complete = $"DELETE FROM {table} WHERE {fenced}";
+        if (options.RetainSentMessages)
+        {
+            var sent = PostgreSqlOutboxSchema.QuoteIdentifier(options.Schema ?? "public") + "." +
+                PostgreSqlOutboxSchema.QuoteIdentifier(options.TablePrefix + "outbox_sent");
+            // INSERT's affected-row count preserves the existing ExecuteNonQuery completion contract.
+            complete = $"WITH deleted AS ({complete} RETURNING id, destination) INSERT INTO {sent} (id, destination, sent_at) SELECT id, destination, clock_timestamp() FROM deleted ON CONFLICT (id) DO UPDATE SET destination = EXCLUDED.destination, sent_at = EXCLUDED.sent_at";
+        }
+        _complete = CreateMutation(complete);
         var dead = PostgreSqlOutboxSchema.QuoteIdentifier(options.Schema ?? "public") + "." +
             PostgreSqlOutboxSchema.QuoteIdentifier(options.TablePrefix + "outbox_dead");
         _fail = CreateMutation(PostgreSqlPoisonSql.Failure(table, dead, fenced, options.MaxDispatchAttempts));

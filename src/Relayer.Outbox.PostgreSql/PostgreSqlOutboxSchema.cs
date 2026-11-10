@@ -2,7 +2,7 @@ using System.Text;
 
 namespace Relayer.Outbox.PostgreSql;
 
-/// <summary>Creates the shared PostgreSQL outbox, dead outbox, inbox and lease tables.</summary>
+/// <summary>Creates the shared PostgreSQL outbox, dead outbox, sent metadata, inbox and lease tables.</summary>
 public static class PostgreSqlOutboxSchema
 {
     /// <summary>Returns idempotent SQL for a new schema. This does not upgrade existing table definitions.</summary>
