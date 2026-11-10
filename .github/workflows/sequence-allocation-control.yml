@@ -128,7 +128,7 @@ jobs:
         env:
           PROBE: ${{ matrix.probe }}
           OPTIONS: ${{ matrix.options }}
-        run: python3 .github/scripts/frozen_concurrent_control.py inputs "tools/$PROBE/bin/Release/net10.0/$PROBE.dll" results/profiled $OPTIONS --trace-tool .diagnostic-tools/dotnet-trace --profile-reader tools/FrozenAllocationReader/bin/Release/net10.0/FrozenAllocationReader.dll
+        run: python3 .github/scripts/frozen_concurrent_control.py inputs "tools/$PROBE/bin/Release/net10.0/$PROBE.dll" results/profiled $OPTIONS --trace-tool .diagnostic-tools/dotnet-trace --profile-reader tools/FrozenAllocationReader/bin/Release/net10.0/FrozenAllocationReader.dll --keep-traces
       - name: Count separate synchronous full-delivery invocations
         if: ${{ !cancelled() && matrix.name == 'full-delivery' }}
         run: python3 .github/scripts/frozen_concurrent_control.py inputs tools/FrozenConcurrentProbe/bin/Release/net10.0/FrozenConcurrentProbe.dll results/exact-roundtrips --exact-roundtrips

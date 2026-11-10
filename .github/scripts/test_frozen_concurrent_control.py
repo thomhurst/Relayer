@@ -41,7 +41,7 @@ class FrozenInventoryTests(unittest.TestCase):
 
 
 class ProfileLaunchTests(unittest.TestCase):
-    def run_profile(self, extraction_fails):
+    def run_profile(self, extraction_fails, keep_traces=False):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             for side in ("baseline", "candidate", "baseline-after"):
@@ -64,6 +64,8 @@ class ProfileLaunchTests(unittest.TestCase):
 
             arguments = ["control", str(root), str(root / "probe.dll"), str(output),
                          "--trace-tool", str(root / "dotnet-trace"), "--profile-reader", str(root / "reader.dll")]
+            if keep_traces:
+                arguments.append("--keep-traces")
             with patch("sys.argv", arguments), patch("frozen_concurrent_control.verify", return_value="frozen"), patch("frozen_concurrent_control.subprocess.run", side_effect=execute):
                 if extraction_fails:
                     with self.assertRaisesRegex(SystemExit, "One or more launches failed"):
@@ -71,13 +73,22 @@ class ProfileLaunchTests(unittest.TestCase):
                 else:
                     main()
             self.assertEqual(len(commands), 8)
-            self.assertEqual(len(list(output.glob("*.nettrace"))), 4 if extraction_fails else 0)
+            self.assertEqual(len(list(output.glob("*.nettrace"))), 4 if extraction_fails or keep_traces else 0)
             self.assertEqual(len(list(output.glob("*.etlx"))), 4 if extraction_fails else 0)
             self.assertEqual(len(list(output.glob("*-allocations.jsonl"))), 4)
             self.assertTrue(json.loads((output / "protocol.json").read_text())["instrumented"])
+            self.assertEqual(json.loads((output / "protocol.json").read_text())["raw_traces_retained"], keep_traces)
             for command in commands[::2]:
                 self.assertIn("Relayer-FrozenMeasurement", command)
                 self.assertIn("gc-verbose", command)
+
+    def test_retains_raw_traces_for_reanalysis_after_successful_extraction(self):
+        self.run_profile(extraction_fails=False, keep_traces=True)
+
+    def test_keep_traces_requires_a_profile_before_creating_output(self):
+        with patch("sys.argv", ["control", "inputs", "probe", "output", "--keep-traces"]), self.assertRaises(SystemExit), patch("frozen_concurrent_control.subprocess.run") as execute:
+            main()
+        execute.assert_not_called()
 
     def test_exact_invocations_use_separate_processes_and_protocol(self):
         with tempfile.TemporaryDirectory() as directory:

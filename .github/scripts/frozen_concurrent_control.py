@@ -26,6 +26,8 @@ def main():
     parser.add_argument("output", type=Path)
     parser.add_argument("--trace-tool", type=Path)
     parser.add_argument("--profile-reader", type=Path)
+    parser.add_argument("--keep-traces", action="store_true",
+                        help="Retain raw EventPipe captures after extraction so owner analysis can be repeated.")
     parser.add_argument("--exact-invocations", action="store_true",
                         help="Separate instrumented fixture control using synchronous thread-local counters.")
     parser.add_argument("--exact-releases", action="store_true",
@@ -45,6 +47,8 @@ def main():
         parser.error("--trace-tool and --profile-reader must be supplied together")
     if (args.exact_invocations or args.exact_releases or args.exact_roundtrips or args.exact_driver) and args.trace_tool:
         parser.error("Exact invocation counters and sampled profiles require separate ABBAs")
+    if args.keep_traces and not args.trace_tool:
+        parser.error("--keep-traces requires --trace-tool and --profile-reader")
     args.output.mkdir(parents=True, exist_ok=False)
     builds = args.artifact / "performance-builds"
     commits = {side: verify(builds / side) for side in ("baseline", "candidate", "baseline-after")}
@@ -68,6 +72,7 @@ def main():
         protocol["invocation_counter"] = "GC.GetAllocatedBytesForCurrentThread()"
         protocol["invocation_boundary"] = "Synchronous cached handler call only; no await between counter reads. Excludes other threads and subsequent continuations; does not identify object types or the historical delta."
     if args.trace_tool:
+        protocol["raw_traces_retained"] = args.keep_traces
         protocol["profile_limits"] = "Separate instrumented ABBA. Phase-filtered weighted samples can suggest owners, never exact object counts or subtraction from inclusive totals."
     (args.output / "protocol.json").write_text(json.dumps(protocol, indent=2) + "\n")
     # All images verify before the first launch. Preserve every process output, including failures.
@@ -111,8 +116,10 @@ def main():
                     output.write(f"\nProfile extraction failed: {error}\n")
                     failed = True
                 else:
-                    # Full measured stacks and sample weights are retained; raw captures are disposable.
-                    trace.unlink()
+                    # The portable raw capture supports re-extraction with an improved reader.
+                    # The reader-specific index is reproducible and need not be uploaded.
+                    if not args.keep_traces:
+                        trace.unlink()
                     trace.with_suffix(trace.suffix + ".etlx").unlink(missing_ok=True)
     if failed:
         raise SystemExit("One or more launches failed; inspect all retained outputs.")
