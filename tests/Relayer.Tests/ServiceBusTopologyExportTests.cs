@@ -85,6 +85,35 @@ public sealed class ServiceBusTopologyExportTests
     [Test]
     [Arguments(ServiceBusTopologyFormat.Bicep)]
     [Arguments(ServiceBusTopologyFormat.Terraform)]
+    public async Task Forwarding_dependencies_ignore_case_and_preserve_native_addresses(ServiceBusTopologyFormat format)
+    {
+        using var provider = Provider(options =>
+        {
+            options.Queues.Add(new("source") { ForwardTo = "archive", ForwardDeadLetteredMessagesTo = "EVENTS" });
+            options.Queues.Add(new("Archive"));
+            options.Topics.Add(new("Events"));
+            options.Subscriptions.Add(new("Events", "sub") { ForwardTo = "ARCHIVE", ForwardDeadLetteredMessagesTo = "archive" });
+        });
+        var output = Export(provider.GetRequiredService<ServiceBusTopologyExporter>(), format);
+        var queue = ResourceBody(output, "queue0", format);
+        var subscription = ResourceBody(output, "subscription3", format);
+        var dependency = format == ServiceBusTopologyFormat.Bicep ? "dependsOn: [" : "depends_on = [";
+        var prefix = format == ServiceBusTopologyFormat.Bicep ? "" : "azapi_resource.";
+        await Assert.That(queue).Contains(dependency);
+        await Assert.That(queue).Contains("\n    " + prefix + "queue1");
+        await Assert.That(queue).Contains("\n    " + prefix + "topic2");
+        await Assert.That(subscription).Contains(dependency);
+        await Assert.That(subscription).Contains("\n    " + prefix + "queue1");
+        var separator = format == ServiceBusTopologyFormat.Bicep ? ": '" : " = \"";
+        await Assert.That(queue).Contains("forwardTo" + separator + "archive");
+        await Assert.That(queue).Contains("forwardDeadLetteredMessagesTo" + separator + "EVENTS");
+        await Assert.That(subscription).Contains("forwardTo" + separator + "ARCHIVE");
+        await Assert.That(subscription).Contains("forwardDeadLetteredMessagesTo" + separator + "archive");
+    }
+
+    [Test]
+    [Arguments(ServiceBusTopologyFormat.Bicep)]
+    [Arguments(ServiceBusTopologyFormat.Terraform)]
     public async Task Escapes_literal_names_and_interpolation_without_changing_identity(ServiceBusTopologyFormat format)
     {
         using var provider = Provider(options => options.Queues.Add(new("o'${name}%{literal}雪🚀")));
@@ -122,6 +151,7 @@ public sealed class ServiceBusTopologyExportTests
     [Arguments("duplicate-subscription")]
     [Arguments("slash")]
     [Arguments("cycle")]
+    [Arguments("case-cycle")]
     [Arguments("parent-cycle")]
     [Arguments("status")]
     public async Task Unsupported_declarations_fail_before_writing_any_output(string scenario)
@@ -142,6 +172,7 @@ public sealed class ServiceBusTopologyExportTests
                 case "duplicate": options.Topics.Add(new("queue")); break;
                 case "duplicate-subscription": options.Subscriptions.Add(new("topic", "subscription")); break;
                 case "slash": options.Queues.Add(new("path/queue")); break;
+                case "case-cycle": options.Queues[0].ForwardDeadLetteredMessagesTo = "QUEUE"; break;
                 case "cycle": options.Queues[0].ForwardTo = "queue"; break;
                 case "parent-cycle": options.Subscriptions[0].ForwardTo = "topic"; break;
                 case "status": options.Queues[0].Status = new EntityStatus("unsupported"); break;

@@ -114,7 +114,7 @@ public sealed class ServiceBusTopologyExporter
         }
         // Native forwarding requires its destination to exist first. Keep external names literal;
         // dependencies on declared destinations are emitted without changing the native address.
-        var endpoints = resources.Where(item => item.Parent is null).ToDictionary(item => item.Name, StringComparer.Ordinal);
+        var endpoints = resources.Where(item => item.Parent is null).ToDictionary(item => item.Name, StringComparer.OrdinalIgnoreCase);
         foreach (var resource in resources)
         foreach (var forward in resource.Forwards)
             if (endpoints.TryGetValue(forward, out var target)) resource.Dependencies.Add(target.Symbol);
