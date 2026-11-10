@@ -90,11 +90,11 @@ internal sealed class NatsNativeTransport : ITransport, ITransportSendTracing
         try
         {
             ObjectDisposedException.ThrowIf(_disposed, this);
+            if (_started) return;
             EnsureConnection();
             try
             {
                 await _connection!.PingAsync(cancellationToken).ConfigureAwait(false);
-                if (_started) return;
                 foreach (var consumer in Consumers) await consumer.StartAsync(_context!, cancellationToken).ConfigureAwait(false);
                 _started = true;
             }

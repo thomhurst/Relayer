@@ -11,6 +11,24 @@ namespace Relayer.Nats.Tests;
 public class NatsExecutionTests
 {
     [Test]
+    public async Task Repeated_start_during_outage_does_not_ping_or_close_the_running_transport()
+    {
+        using var deadline = new CancellationTokenSource(TimeSpan.FromMinutes(1));
+        var token = deadline.Token;
+        // This test changes server-wide connectivity and therefore owns its broker.
+        await using var broker = await NatsTopologyTests.Broker.StartAsync(token);
+        await using var provider = NatsConfigurationTests.Provider(options => options.ConnectionOptions = broker.Options());
+        var transport = provider.GetRequiredService<Relayer.Transports.ITransport>();
+        await transport.StartAsync(token);
+        await broker.SetConnectedAsync(false, token);
+        // Startup is idempotent; native reconnect owns the existing connection during an outage.
+        using var secondStart = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+        await transport.StartAsync(secondStart.Token);
+        await broker.SetConnectedAsync(true, token);
+        await transport.StopAsync(token);
+    }
+
+    [Test]
     public async Task Hosted_pipeline_retries_and_confirms_poison_copy_before_acknowledging_original()
     {
         using var deadline = new CancellationTokenSource(TimeSpan.FromMinutes(2));
