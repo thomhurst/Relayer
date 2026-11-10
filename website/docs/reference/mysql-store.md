@@ -278,6 +278,9 @@ only later rows for that exact key are blocked, while other keys continue. Malfo
 empty required routing fields also consume attempts and park the original raw row. Inspect and repair
 parked rows through application-owned SQL. Resume by updating the original row to
 `status = 'pending', attempts = 0`; deleting and reinserting it would change its order.
+If the repaired row exhausts again through the outbox store, its dead copy is atomically
+replaced with the latest raw contents, attempts, error and failure time while the original
+row parks again. You do not need to delete the previous dead copy before resuming it.
 
 Completion requires the same token and an unexpired claim. Cancellation, connection loss or
 uncertain completion rolls back the batch; broker sends can be duplicated. Delivery remains

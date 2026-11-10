@@ -88,6 +88,32 @@ public sealed class MaintenanceTests
     }
 
     [Test]
+    public async Task Repaired_ordered_row_can_park_again_and_refresh_its_dead_copy()
+    {
+        await using var data = new MySqlFixture();
+        await data.StartAsync();
+        var id = Guid.CreateVersion7();
+        await data.Insert(id, DateTimeOffset.UtcNow, lane: 3);
+        using var store = new MySqlOutboxStore(data.Source, new() { MaxDispatchAttempts = 2 });
+        var now = DateTimeOffset.UtcNow;
+        for (var cycle = 0; cycle < 2; cycle++)
+        {
+            for (var attempt = 0; attempt < 2; attempt++)
+            {
+                var claim = new OutboxClaim(id, Guid.NewGuid());
+                await Assert.That(await store.TryClaimAsync(claim, now, now.AddMinutes(1), default)).IsTrue();
+                await Assert.That(await store.RecordFailureAsync(claim, cycle == 0 ? "original" : "repaired", now, default)).IsTrue();
+                await Assert.That(await store.RecordFailureAsync(claim, "stale", now, default)).IsFalse();
+            }
+            await Assert.That(await Scalar(data, "SELECT COUNT(*) FROM relayer_outbox WHERE status='parked' AND attempts=2 AND lane=3")).IsEqualTo(1L);
+            if (cycle == 0)
+                await data.Execute("UPDATE relayer_outbox SET status='pending', attempts=0, body=X'ABCD'");
+        }
+        await Assert.That(await Scalar(data, "SELECT COUNT(*) FROM relayer_dead")).IsEqualTo(1L);
+        await Assert.That(await Scalar(data, "SELECT COUNT(*) FROM relayer_dead WHERE attempts=2 AND last_error='repaired' AND body=X'ABCD'")).IsEqualTo(1L);
+    }
+
+    [Test]
     public async Task Invalid_transport_exhausts_recovery_attempts_without_stalling_valid_groups()
     {
         await using var data = new MySqlFixture();

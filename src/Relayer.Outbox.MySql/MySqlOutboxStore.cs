@@ -45,7 +45,7 @@ public sealed class MySqlOutboxStore : IOutboxStore, IDisposable
         _complete = new($"DELETE FROM {table} WHERE {fenced}");
         _fail = new($"UPDATE {table} SET attempts=attempts+1,last_error=@error WHERE {fenced}");
         _failureSql = $"""
-            INSERT INTO {dead} (id,lane,ordering_key,transport,destination,message_type,headers,body,created_at,deliver_at,attempts,last_error,tenant_id,failed_at)
+            REPLACE INTO {dead} (id,lane,ordering_key,transport,destination,message_type,headers,body,created_at,deliver_at,attempts,last_error,tenant_id,failed_at)
             SELECT id,lane,ordering_key,transport,destination,message_type,headers,body,created_at,deliver_at,attempts,last_error,tenant_id,UTC_TIMESTAMP(6)
             FROM {table} WHERE id=@id AND attempts>=@limit;
             DELETE FROM {table} WHERE id=@id AND attempts>=@limit AND lane IS NULL;
