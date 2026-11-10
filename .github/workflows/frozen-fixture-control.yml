@@ -44,6 +44,7 @@ jobs:
           dotnet tool install dotnet-trace --tool-path .diagnostic-tools --version 10.0.750501 > results/trace-install.log 2>&1
       - name: Validate selected retained run IDs
         run: |
+          [[ "$PERFORMANCE_RUNS" =~ [^[:space:]] ]] || { echo "Select at least one numeric run ID" >&2; exit 1; }
           for run in $PERFORMANCE_RUNS; do
             [[ "$run" =~ ^[0-9]+$ ]] || { echo "Invalid run ID: $run" >&2; exit 1; }
           done
