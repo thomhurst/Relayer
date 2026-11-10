@@ -197,7 +197,9 @@ Graceful stop waits for native cancel-ok and active callbacks before closing the
 stop deadline cancels processing. Unexpected callback failure reaches the hosted service and leaves uncertain
 work unacknowledged. A connection outage that prevents acknowledgement leaves the delivery for native
 redelivery without terminating the host when automatic recovery is enabled. Channel protocol errors and
-unroutable poison copies still fault the receiver. Automatic recovery remains owned by RabbitMQ.Client.
+unroutable poison copies still fault the receiver. When native automatic recovery is disabled, an unexpected
+connection shutdown faults the receiver and reaches the hosted service even when no handler is active.
+Normal host shutdown does not fault completion. Automatic recovery remains owned by RabbitMQ.Client.
 
 Process and settle destinations are `{exchange}:{routing key}:{queue}`, including `:orders:orders` for the
 default exchange. Samplers receive the actual destination at process start. Spans include routing key and

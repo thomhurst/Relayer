@@ -94,6 +94,14 @@ internal sealed class RabbitMqConsumer
     private Task ConnectionShutdownAsync(object sender, ShutdownEventArgs reason)
     {
         Volatile.Write(ref _connectionShutdown, reason);
+        // Without native recovery there may never be another callback to report this failure.
+        // StopAsync marks intentional shutdown before closing any native resources.
+        if (!_automaticRecovery && Volatile.Read(ref _stopping) == 0)
+        {
+            var error = new AlreadyClosedException(reason);
+            Volatile.Write(ref _failure, error);
+            _completion.TrySetException(error);
+        }
         return Task.CompletedTask;
     }
 

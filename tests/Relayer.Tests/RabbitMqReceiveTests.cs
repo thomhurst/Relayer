@@ -233,6 +233,59 @@ public class RabbitMqReceiveTests
     }
 
     [Test]
+    public async Task Normal_stop_with_native_recovery_disabled_completes_successfully()
+    {
+        using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(2));
+        var token = timeout.Token;
+        await using var broker = await RabbitMqTopologyTests.Broker.StartAsync(token);
+        var factory = broker.Factory();
+        factory.AutomaticRecoveryEnabled = false;
+        using var host = Host(factory, new());
+        await host.StartAsync(token);
+        var consumer = ((RabbitMqNativeTransport)host.Services.GetRequiredService<ITransport>()).Consumers.Single();
+        await host.StopAsync(token);
+        await Assert.That(consumer.Completion.IsCompletedSuccessfully).IsTrue();
+    }
+
+    [Test]
+    [Arguments(true)]
+    [Arguments(false)]
+    public async Task Idle_connection_shutdown_respects_native_automatic_recovery(bool automaticRecovery)
+    {
+        using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(2));
+        var token = timeout.Token;
+        await using var broker = await RabbitMqTopologyTests.Broker.StartAsync(token);
+        var factory = broker.Factory();
+        factory.AutomaticRecoveryEnabled = automaticRecovery;
+        factory.NetworkRecoveryInterval = TimeSpan.FromMilliseconds(100);
+        var control = new RabbitMqReceiveControl();
+        using var host = Host(factory, control);
+        await host.StartAsync(token);
+        var transport = (RabbitMqNativeTransport)host.Services.GetRequiredService<ITransport>();
+        var consumer = transport.Consumers.Single();
+        await WaitAsync(() => Task.FromResult(consumer.GetHealthState()?.IsIdle == true), token);
+        await broker.CommandAsync(["rabbitmqctl", "stop_app"], token);
+        if (!automaticRecovery)
+        {
+            await Assert.That(async () => await consumer.Completion.WaitAsync(token)).Throws<AlreadyClosedException>();
+            await WaitAsync(() => Task.FromResult(host.Services.GetRequiredService<IHostApplicationLifetime>().ApplicationStopping.IsCancellationRequested), token);
+        }
+        else
+        {
+            var probe = host.Services.GetRequiredKeyedService<ITransportHealthProbe>("rabbit");
+            await WaitAsync(async () => (await probe.CheckAsync(token)).Status == HealthStatus.Unhealthy, token);
+            await Assert.That(consumer.Completion.IsCompleted).IsFalse();
+            await broker.CommandAsync(["rabbitmqctl", "start_app"], token);
+            await WaitAsync(() => Task.FromResult(consumer.GetHealthState()?.IsIdle == true), token);
+            await transport.SendAsync(new("orders", "{\"Value\":42}"u8.ToArray(), Headers()), token);
+            await Assert.That(await control.Values.Reader.ReadAsync(token)).IsEqualTo(42);
+            await Assert.That(consumer.Completion.IsCompleted).IsFalse();
+        }
+        await host.StopAsync(token);
+        if (automaticRecovery) await Assert.That(consumer.Completion.IsCompletedSuccessfully).IsTrue();
+    }
+
+    [Test]
     public async Task Hosted_consumer_and_health_recover_after_a_broker_restart()
     {
         using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(2));
