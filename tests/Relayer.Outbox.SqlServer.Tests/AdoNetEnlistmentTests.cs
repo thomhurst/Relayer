@@ -16,6 +16,16 @@ namespace Relayer.Outbox.SqlServer.Tests;
 public class AdoNetEnlistmentTests(SqlServerFixture fixture)
 {
     [Test]
+    public async Task Database_cleanup_disconnects_remaining_sessions()
+    {
+        await using var database = new Database(fixture);
+        await database.Start();
+        await using var connection = await database.Open();
+        // ClearPool marks checked-out connections for disposal; it does not close their server sessions.
+        await database.DisposeAsync();
+    }
+
+    [Test]
     [Arguments(false)]
     [Arguments(true)]
     public async Task Dapper_business_commands_and_outbox_rows_commit_atomically_in_one_batch(bool synchronous)
@@ -512,8 +522,11 @@ public class AdoNetEnlistmentTests(SqlServerFixture fixture)
             using (var pool = new SqlConnection(ConnectionString)) SqlConnection.ClearPool(pool);
             await using var admin = new SqlConnection(fixture.ConnectionString);
             await admin.OpenAsync();
-            await using var drop = new SqlCommand($"DROP DATABASE [{_name.Replace("]", "]]")}]", admin);
+            var identifier = "[" + _name.Replace("]", "]]") + "]";
+            // End remaining server sessions before dropping this test's isolated database.
+            await using var drop = new SqlCommand($"ALTER DATABASE {identifier} SET SINGLE_USER WITH ROLLBACK IMMEDIATE; DROP DATABASE {identifier}", admin);
             await drop.ExecuteNonQueryAsync();
+            _created = false;
         }
     }
 
