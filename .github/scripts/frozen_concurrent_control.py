@@ -38,14 +38,15 @@ def main():
                         help="Separate full-delivery calling-thread invocation and original BDN completion counts.")
     parser.add_argument("--bdn-await", action="store_true",
                         help="Use original BDN synchronous ValueTask waiter in the full-delivery probe.")
+    parser.add_argument("--exact-sources", action="store_true", help="Separate handler source identity and synchronous byte control.")
     args = parser.parse_args()
-    if args.bdn_await and (args.exact_invocations or args.exact_releases or args.exact_roundtrips or args.exact_driver):
+    if args.bdn_await and (args.exact_invocations or args.exact_releases or args.exact_roundtrips or args.exact_driver or args.exact_sources):
         parser.error("BDN full-delivery waiter and exact counters are distinct controls")
-    if sum((args.exact_invocations, args.exact_releases, args.exact_roundtrips, args.exact_driver)) > 1:
+    if sum((args.exact_invocations, args.exact_releases, args.exact_roundtrips, args.exact_driver, args.exact_sources)) > 1:
         parser.error("Exact regions require separate ABBAs")
     if bool(args.trace_tool) != bool(args.profile_reader):
         parser.error("--trace-tool and --profile-reader must be supplied together")
-    if (args.exact_invocations or args.exact_releases or args.exact_roundtrips or args.exact_driver) and args.trace_tool:
+    if (args.exact_invocations or args.exact_releases or args.exact_roundtrips or args.exact_driver or args.exact_sources) and args.trace_tool:
         parser.error("Exact invocation counters and sampled profiles require separate ABBAs")
     if args.keep_traces and not args.trace_tool:
         parser.error("--keep-traces requires --trace-tool and --profile-reader")
@@ -57,11 +58,14 @@ def main():
                 "counter": "GC.GetTotalAllocatedBytes(true)",
                 "limits": "Inclusive fixed-count control; not original BDN replay, allocation-owner attribution, throughput equivalence or native-client budget evidence."}
     protocol["completion_boundary"] = "original-BenchmarkDotNet-AwaitHelper.GetResult" if args.bdn_await or args.exact_driver else "asynchronous-await"
-    protocol["instrumented"] = args.trace_tool is not None or args.exact_invocations or args.exact_releases or args.exact_roundtrips or args.exact_driver
+    protocol["instrumented"] = args.trace_tool is not None or args.exact_invocations or args.exact_releases or args.exact_roundtrips or args.exact_driver or args.exact_sources
     protocol["exact_invocations"] = args.exact_invocations
     protocol["exact_releases"] = args.exact_releases
     protocol["exact_roundtrips"] = args.exact_roundtrips
+    protocol["exact_sources"] = args.exact_sources
     protocol["exact_driver"] = args.exact_driver
+    if args.exact_sources:
+        protocol["source_boundary"] = "Original synchronous handler call bytes correlated with returned source reference identity across warmup and measurement; separate native release-channel pending-read control follows. Reflection and retained identities alter GC/scheduling and are outside regional counters. First observation is not proof of allocation inside that call; no worker/historical attribution or cross-control subtraction."
     if args.exact_roundtrips:
         protocol["roundtrip_boundary"] = "One synchronous original ConcurrentRoundTrip call (eight messages); no await. Calling-thread work only, excluding later continuations and other threads. No historical allocation attribution."
     if args.exact_driver:
@@ -84,6 +88,8 @@ def main():
         command = ["dotnet", str(args.probe.resolve()), str(images[0].parent.resolve())]
         if args.bdn_await:
             command.append("--bdn-await")
+        if args.exact_sources:
+            command.append("--exact-sources")
         if args.exact_driver:
             command.append("--exact-driver")
         if args.exact_invocations:
