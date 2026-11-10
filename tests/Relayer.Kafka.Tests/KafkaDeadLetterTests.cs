@@ -182,6 +182,29 @@ public class KafkaDeadLetterTests
             .RedriveAsync(source, cancellationToken: token)).IsEqualTo(1);
     }
 
+    [Test]
+    public async Task Slow_native_fetch_does_not_end_peek_or_purge_before_a_record_arrives()
+    {
+        using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(2));
+        var token = timeout.Token;
+        using var tracing = new MessageTracing(Options.Create(new TracingOptions()), []);
+        await using var fixture = (KafkaFixture)await KafkaFixture.CreateAsync(tracing, token);
+        var source = fixture.Destination + ".dead-letter";
+        await using var producer = new ProducerBuilder<byte[], byte[]>().WithBootstrapServers(fixture.Bootstrap).Build();
+        await producer.InitializeAsync(token);
+        await producer.ProduceAsync(source, null!, "body"u8.ToArray(), token);
+        // Native broker long polling holds this small response beyond the former one-second deadline.
+        await using var provider = Provider(fixture.Bootstrap, fixture.Destination, slowFetch: true);
+        var manager = provider.GetRequiredKeyedService<IDeadLetterManager>("events");
+        await Assert.That((await manager.PeekAsync(source, 1, cancellationToken: token)).Messages.Count).IsEqualTo(1);
+        await Assert.That(await manager.PurgeAsync(source, 1, token)).IsEqualTo(1);
+        await Assert.That(await manager.PurgeAsync(source, 1, token)).IsEqualTo(0);
+        using var canceled = new CancellationTokenSource();
+        canceled.Cancel();
+        await Assert.That(async () => await manager.PeekAsync(source, cancellationToken: canceled.Token)).Throws<OperationCanceledException>();
+        await Assert.That(async () => await manager.PurgeAsync(source, cancellationToken: canceled.Token)).Throws<OperationCanceledException>();
+    }
+
     private sealed class FailingSerializer : ISerializer<(ReadOnlyMemory<byte> Body, Headers Headers)?>
     {
         public void Serialize<TWriter>((ReadOnlyMemory<byte> Body, Headers Headers)? value, ref TWriter destination,
@@ -189,7 +212,7 @@ public class KafkaDeadLetterTests
             throw new InvalidOperationException("send failed");
     }
 
-    private static ServiceProvider Provider(string bootstrap, string destination, bool failSend = false)
+    private static ServiceProvider Provider(string bootstrap, string destination, bool failSend = false, bool slowFetch = false)
     {
         var services = new ServiceCollection();
         services.AddRelayer(r => r.Kafka("events", kafka =>
@@ -197,7 +220,11 @@ public class KafkaDeadLetterTests
             kafka.Options.Configure(o =>
             {
                 o.BootstrapServers.Add(bootstrap);
-                o.ConfigureConsumer = native => native.WithGroupId("ordinary-consumer");
+                o.ConfigureConsumer = native =>
+                {
+                    native.WithGroupId("ordinary-consumer");
+                    if (slowFetch) native.WithFetchMinBytes(1_000_000).WithFetchMaxWait(TimeSpan.FromSeconds(3));
+                };
                 if (failSend) o.ConfigureProducer = native => native.WithValueSerializer(new FailingSerializer());
             });
             kafka.Consume(destination, c => { c.Options.Group = "ordinary-consumer"; c.Handler<TombstoneValueHandler>(); });

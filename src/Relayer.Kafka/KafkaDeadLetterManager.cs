@@ -55,8 +55,8 @@ internal sealed class KafkaDeadLetterManager : IDeadLetterManager
         var ended = false;
         while (messages.Count < maxMessages)
         {
-            var record = await reader.ConsumeOneAsync(TimeSpan.FromSeconds(1), cancellationToken).ConfigureAwait(false);
-            if (record is null) break;
+            var record = await reader.ConsumeOneAsync(Timeout.InfiniteTimeSpan, cancellationToken).ConfigureAwait(false);
+            if (record is null) continue;
             if (record.Value.IsPartitionEof) { ended = true; break; }
             messages.Add(Snapshot(record.Value));
             offset = checked(record.Value.Offset + 1);
@@ -140,8 +140,9 @@ internal sealed class KafkaDeadLetterManager : IDeadLetterManager
             long next = 0;
             while (deleted + scanned < maxMessages)
             {
-                var record = await reader.ConsumeOneAsync(TimeSpan.FromSeconds(1), cancellationToken).ConfigureAwait(false);
-                if (record is null || record.Value.IsPartitionEof) break;
+                var record = await reader.ConsumeOneAsync(Timeout.InfiniteTimeSpan, cancellationToken).ConfigureAwait(false);
+                if (record is null) continue;
+                if (record.Value.IsPartitionEof) break;
                 next = checked(record.Value.Offset + 1);
                 scanned++;
             }
