@@ -146,7 +146,7 @@ Hosted in-memory consumers configure delivery tracing automatically. Their nativ
 
 Native adapters that log settlement errors themselves implement `IMessageBinding.TryConsumeLoggedSettlementError` to consume a delivery-local marker for the exact exception already logged. This prevents a second pipeline failure log while preserving native logs for errors a handler catches. Clear markers before native state is reused. The in-memory adapter implements this hook; it retains a marker only when a native log was actually emitted.
 
-See [Health checks](health-checks.md) for readiness integration, including optional Kafka native adapters. Other native broker adapters remain planned; see the [roadmap](../roadmap.md).
+See [Health checks](health-checks.md#explicit-adapters) for readiness integration with optional native connectivity and receiver-liveness adapters for Kafka, Service Bus, SQS and RabbitMQ. Register each adapter explicitly alongside `AddRelayerHealthChecks`, using the exact transport name declared in `AddRelayer`.
 
 ## Outbox tracing and metrics
 

@@ -326,7 +326,7 @@ const status = [
   ['EF Core consumer inbox for PostgreSQL', 'Implemented deduplication, isolation levels and bounded conflict replay', true],
   ['Saga state transitions on the EF Core inbox/outbox', 'Implemented', true],
   ['Kafka connectivity and receiver liveness health adapters', 'Implemented', true],
-  ['Other native broker health adapters', 'Planned', false],
+  ['Service Bus, SQS and RabbitMQ connectivity and receiver liveness health adapters', 'Implemented', true],
   ['Ordered PostgreSQL dispatch and lane leases', 'Implemented with consumer insert sequences', true],
   ['PostgreSQL poison-row limits, key parking and dead-letter management', 'Implemented', true],
   ['PostgreSQL outbox recovery and retention cleanup', 'Implemented', true],
