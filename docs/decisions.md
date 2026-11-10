@@ -73,6 +73,7 @@ To change a decision, add a new entry that supersedes it rather than editing his
 | [D60](#d60-bound-catalog-dispatch-by-native-connection-lifetimes) | Bound catalog dispatch by native connection lifetimes | Accepted |
 | [D61](#d61-aspire-reuses-native-resource-wiring-and-application-telemetry) | Aspire reuses native resource wiring and application telemetry | Accepted |
 | [D62](#d62-sql-server-maintenance-reuses-direct-dispatch-and-native-transaction-locks) | SQL Server maintenance reuses direct dispatch and native transaction locks | Accepted |
+| [D63](#d63-mysql-ordered-dispatch-uses-innodb-lease-rows-and-native-identity) | MySQL ordered dispatch uses InnoDB lease rows and native identity | Accepted |
 
 ---
 
@@ -1049,7 +1050,7 @@ benchmarks isolate Relayer's reusable copy/swap/group work; database and native 
 
 ## D50. Ordered lanes follow a database-assigned insert sequence
 
-**Status.** Accepted. Implemented for PostgreSQL; SQL Server and MySQL ordered dispatch must adopt the same rule in #330 and #344.
+**Status.** Accepted. Implemented for PostgreSQL and MySQL; SQL Server ordered dispatch must adopt the same rule in #330.
 
 **Context.** D34 reads each lane in ascending `id` order. The `id` is a UUIDv7 created on the application
 host when the message is sent, while its row is inserted at flush, immediately before commit (D31, D32).
@@ -1078,7 +1079,7 @@ their `seq` values also follow commit order. A sequence is non-transactional: it
 business transaction can wait on, and it cannot raise a serialization failure. Transactions that are
 genuinely concurrent still have no defined order, and a row committed late can still be dispatched after
 a higher `seq`; idempotent, version-guarded consumers remain necessary. Existing tables need an explicit
-SQL migration (D30). The upgrade preserves existing rows' former UUID order because historical insertion order is unavailable; it must run with writers and dispatchers stopped, in one application-owned transaction. Identity values can have gaps; keep the sequence's default cache of one and do not reset it.
+SQL migration (D30). The upgrade preserves existing rows' former UUID order because historical insertion order is unavailable; it must run with writers and dispatchers stopped, in one application-owned transaction where transactional DDL is supported. MySQL DDL commits implicitly; its stopped, multi-step upgrade requires a backup before deployment. Identity values can have gaps; keep the sequence's default cache of one and do not reset it.
 
 **Alternatives rejected.**
 - A per-key advisory lock held from flush to commit gives strict commit order, but makes same-key writers queue
@@ -1437,3 +1438,22 @@ success do not consume attempts. Future scheduled ISender registration and order
 **Consequences.** Recovery is at least once; rollback after native acceptance replays the original identity.
 A connected pass can delay its own cleanup, while another replica immediately skips its active leadership.
 Explicit idempotent schema deployment creates missing dead and lease tables without implicit migrations.
+
+## D63. MySQL ordered dispatch uses InnoDB lease rows and native identity
+
+**Context.** MySqlConnector 2.6.2 supplies native transactions, cancellation and sequential
+`MySqlBatch` commands. MySQL 8.4 supplies `AUTO_INCREMENT`, conditional updates and InnoDB row
+locks. Event Scheduler runs SQL in the server; it cannot execute application transport sends
+or track their completion.
+
+**Decision.** Reuse D34's polling, membership, bounded admission and lease-row transaction lock
+across native sends, using MySQL database time and conditional statements with explicit ownership
+checks. Native identity follows the existing batch flush's send order (D48). Core shares the
+capability cache and sequence-header projection. No parallel notification engine is introduced.
+
+**Consequences.** Live lanes are fenced across workers, including slow or cancelling sends.
+Native statement-level auto-increment locking remains unchanged; no per-key writer lock is added.
+The explicit upgrade preserves former UUID order for old rows and documents implicit DDL commits.
+Exhausted rows park in place, preserving their sequence and key barrier. Management and unordered
+recovery remain #345. Ordered polling does not enable writer scheduling until registration can
+validate a matching scheduling worker.

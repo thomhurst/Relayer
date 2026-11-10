@@ -1,6 +1,6 @@
 using System.Buffers.Text;
 
-namespace Relayer.Outbox.PostgreSql;
+namespace Relayer;
 
 // Storage belongs to the reader's reusable row slot and remains borrowed until its next read.
 internal static class OrderedSequenceHeader

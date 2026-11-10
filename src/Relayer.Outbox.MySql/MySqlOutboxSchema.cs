@@ -11,6 +11,7 @@ public static class MySqlOutboxSchema
         return $"""
             CREATE TABLE IF NOT EXISTS {table} (
                 id BINARY(16) PRIMARY KEY CHECK (id <> X'00000000000000000000000000000000'),
+                seq BIGINT NOT NULL AUTO_INCREMENT UNIQUE,
                 lane INT CHECK (lane >= 0),
                 ordering_key LONGTEXT,
                 transport LONGTEXT NOT NULL,
@@ -28,9 +29,15 @@ public static class MySqlOutboxSchema
                 claim_token BINARY(16) CHECK (claim_token <> X'00000000000000000000000000000000'),
                 claim_expires_at DATETIME(6),
                 CHECK ((claim_token IS NULL) = (claim_expires_at IS NULL)),
-                INDEX pending_idx (status, lane, id),
+                INDEX pending_idx (status, lane, seq),
+                INDEX unordered_idx (status, lane, id),
                 INDEX scheduled_idx (deliver_at)
             ) ENGINE=InnoDB DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_bin;
+            CREATE TABLE IF NOT EXISTS {LeaseTable(options ?? new())} (
+                name VARCHAR(80) CHARACTER SET ascii COLLATE ascii_bin PRIMARY KEY,
+                owner VARCHAR(100) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+                expires_at DATETIME(6) NOT NULL
+            ) ENGINE=InnoDB;
             CREATE TABLE IF NOT EXISTS {InboxTable(options ?? new())} (
                 consumer VARBINARY(768) NOT NULL,
                 message_id BINARY(16) NOT NULL,
@@ -40,6 +47,27 @@ public static class MySqlOutboxSchema
             ) ENGINE=InnoDB;
             """;
     }
+
+    /// <summary>One-time upgrade for tables created before ordered dispatch. Stop all writers and workers first.</summary>
+    /// <remarks>MySQL DDL commits implicitly. Back up first and run each step exactly once; historical insert order is unavailable.</remarks>
+    public static string UpgradeOrderedScript(MySqlOutboxOptions? options = null)
+    {
+        var table = Table(options ?? new());
+        return $"""
+            ALTER TABLE {table} ADD COLUMN seq BIGINT NULL;
+            CREATE TEMPORARY TABLE relayer_sequence_upgrade AS
+                SELECT id, ROW_NUMBER() OVER (ORDER BY id) AS seq FROM {table};
+            UPDATE {table} AS target JOIN relayer_sequence_upgrade AS numbered ON target.id = numbered.id
+                SET target.seq = numbered.seq;
+            DROP TEMPORARY TABLE relayer_sequence_upgrade;
+            ALTER TABLE {table} MODIFY COLUMN seq BIGINT NOT NULL AUTO_INCREMENT, ADD UNIQUE INDEX sequence_idx (seq),
+                DROP INDEX pending_idx, ADD INDEX pending_idx (status, lane, seq),
+                ADD INDEX unordered_idx (status, lane, id);
+            {CreateScript(options)}
+            """;
+    }
+
+    internal static string LeaseTable(MySqlOutboxOptions options) => Identifier(options, "leases");
 
     internal static string InboxTable(MySqlOutboxOptions options) => Identifier(options, "inbox");
 

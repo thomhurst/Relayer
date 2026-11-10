@@ -1,7 +1,7 @@
 using System.Runtime.CompilerServices;
 using Relayer.Transports;
 
-namespace Relayer.Outbox.PostgreSql;
+namespace Relayer;
 
 // Owned exclusively by the ordered dispatch worker's sequential lane loop.
 internal sealed class OrderedDispatchCapabilityCache

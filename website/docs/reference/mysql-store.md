@@ -129,7 +129,7 @@ Savepoints and `CommandBehavior.CloseConnection` are rejected because their effe
 not match the buffered sends. Disposing the borrowed connection view has no effect; dispose
 the transaction instead. Ambient `TransactionScope` is rejected before beginning a unit.
 
-Ordering keys use the shared stable lane hash. All writers and future ordered workers must
+Ordering keys use the shared stable lane hash. All writers and ordered workers must
 agree on `Lanes` (default `64`); changing it requires draining or migrating existing rows.
 The enlistment reports no scheduling support until matching due-row workers are implemented.
 Registering this integration alone does not send persisted rows to a broker.
@@ -182,8 +182,7 @@ Pass an optional native `IsolationLevel` to `MySql`. InnoDB lock timeouts, deadl
 native errors propagate to the ordinary failure policy. The same InnoDB, implicit-commit,
 ambient-transaction and command-connection restrictions as transactional enqueue apply.
 The boundary supports single-message ADO.NET/Dapper handlers, with optional unordered commit
-dispatch; it does not provide EF Core integration, saga persistence, batch consumers, ordered
-workers or inbox retention jobs. With `inbox: false` it still owns the atomic business/outbox
+dispatch; it does not provide EF Core integration, saga persistence, batch consumers or inbox retention jobs. With `inbox: false` it still owns the atomic business/outbox
 transaction, but every redelivery runs the handler.
 
 ## Commit-triggered unordered dispatch
@@ -238,10 +237,72 @@ remains planned in [#345](https://github.com/thomhurst/Relayer/issues/345). Use 
 application-owned recovery path until that worker ships; enqueue/notification alone does not
 guarantee eventual delivery after a crash.
 
+## Ordered dispatch
+
+Register the native named transports and an ordered worker alongside the transactional writer:
+
+```csharp
+services.AddRelayerMySqlOutbox(new MySqlOutboxOptions { Lanes = 64 });
+services.AddRelayerMySqlOrderedDispatch("orders", dataSource,
+    new MySqlOrderedDispatchOptions
+    {
+        Lanes = 64,
+        LeaseDuration = TimeSpan.FromSeconds(30),
+        PollInterval = TimeSpan.FromSeconds(1),
+        BatchSize = 100,
+        MaxDispatchAttempts = 10
+    });
+```
+
+An overload accepts an `IConfiguration` section. Immutable options are read once at worker startup.
+Use the same database, prefix and lane count on every writer and worker. The application owns
+the data source and disposes it after workers stop. Destinations must support native ordering
+by key; invalid routing records a durable failure without sending.
+
+Native `AUTO_INCREMENT` assigns each row a `seq`. The existing `MySqlBatch` flush inserts rows
+in send order. Ordered reads follow insertion sequence among visible rows, including when a
+later sequential commit has a smaller UUID. Concurrent transactions have no defined commit
+order. UUIDs remain stable message and claim identities. The worker replaces producer copies
+of `relayer.outbox.sequence` with the database sequence in decimal. Compare it only within one
+key, source table and tenant. Gaps are normal; never reset the sequence. Ordinary store read
+cursors remain UUID-based.
+
+Database-time membership shares lanes fairly. Conditional InnoDB updates renew ownership;
+the native lease-row lock remains held through sequential broker sends and database completion.
+A rival cannot steal an in-flight send. Expired ownership transfers after the transaction releases
+its lock. Idle scans do not renew lane leases. Hosted batches stop admitting sends after a quarter
+lease and request cancellation after half a lease; native completion is awaited before releasing
+ownership, including shutdown. Size leases for expected send and database latency.
+
+A future-due or live-claimed head blocks later rows. Database due checks remove `deliver_at`
+from the native send. Failures persist attempts and errors, commit a successful prefix and retry
+on later scans. At `MaxDispatchAttempts`, the original row parks with its sequence intact;
+only later rows for that exact key are blocked, while other keys continue. Until management
+in [#345](https://github.com/thomhurst/Relayer/issues/345) ships, inspect and repair parked rows
+through application-owned SQL. Resume by updating the original row to
+`status = 'pending', attempts = 0`; deleting and reinserting it would change its order.
+
+Completion requires the same token and an unexpired claim. Cancellation, connection loss or
+uncertain completion rolls back the batch; broker sends can be duplicated. Delivery remains
+at least once. Shutdown releases this member's leases after outstanding sends finish; crashes
+leave leases to expire. Ordered rows are polled after restart. Unordered recovery and retention
+remain planned. Writer scheduling capabilities remain false; registration does not enable
+delayed `ISender` calls.
+
+### Upgrade existing tables
+
+Stop **all writers and workers**, back up the database and apply
+`MySqlOutboxSchema.UpgradeOrderedScript(options)` exactly once before restarting. It assigns
+existing rows their former UUID order because historical insertion order is unavailable, then
+enables native identity assignment and creates leases. UUIDs and payloads remain intact.
+MySQL DDL commits implicitly: this multi-step upgrade is neither transactional nor idempotent.
+After any failure, finish or restore the backup before restarting. Fresh databases use
+`CreateScript`, which does not alter existing tables.
+
 ## Remaining integration
 
-Ordered lane ownership is tracked by [#344](https://github.com/thomhurst/Relayer/issues/344),
-and recovery/poison/retention by [#345](https://github.com/thomhurst/Relayer/issues/345).
-Atomic inbox integration is implemented above; ordered dispatch and recovery remain planned.
-The schema helper is not exposed through `dotnet relayer db` yet. Full SQL Server and MySQL
-parity remains tracked by [#41](https://github.com/thomhurst/Relayer/issues/41).
+Unordered recovery, poison management and retention remain tracked by
+[#345](https://github.com/thomhurst/Relayer/issues/345). Atomic inbox and ordered dispatch
+are implemented; inbox retention remains application-owned. The schema helper is not exposed
+through `dotnet relayer db` yet. Full parity is tracked by
+[#41](https://github.com/thomhurst/Relayer/issues/41).

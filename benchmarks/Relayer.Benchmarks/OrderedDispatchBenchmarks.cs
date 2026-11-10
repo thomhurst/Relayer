@@ -1,5 +1,6 @@
 using BenchmarkDotNet.Attributes;
 using Relayer.Outbox.PostgreSql;
+using Relayer.Outbox.MySql;
 using Relayer.Transports;
 
 namespace Relayer.Benchmarks;
@@ -25,6 +26,9 @@ public class OrderedDispatchBenchmarks
 
     [Benchmark]
     public OutgoingMessage ResolveAndProject() => PostgreSqlOrderedDispatcher.Prepare(_row, _transports, _capabilities).Message;
+
+    [Benchmark]
+    public OutgoingMessage MySqlResolveAndProject() => MySqlOrderedDispatcher.Prepare(_row, _transports, _capabilities).Message;
 
     [Benchmark]
     public OutboxClaim CreateClaim() => new(_row.Id, Guid.NewGuid());
