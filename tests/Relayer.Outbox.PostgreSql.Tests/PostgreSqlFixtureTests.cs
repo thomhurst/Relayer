@@ -80,6 +80,22 @@ public class PostgreSqlFixtureTests
     }
 
     [Test]
+    public async Task Dispose_drops_the_database_and_those_created_under_its_name()
+    {
+        var fixture = new PostgreSqlFixture();
+        await fixture.StartAsync();
+        var admin = (await PostgreSqlSession.Current).Admin;
+        await using (var create = admin.CreateCommand($"CREATE DATABASE {fixture.Database}_tenant")) await create.ExecuteNonQueryAsync();
+        await using var count = admin.CreateCommand("SELECT count(*) FROM pg_database WHERE starts_with(datname, $1)");
+        count.Parameters.AddWithValue(fixture.Database);
+        await Assert.That((long)(await count.ExecuteScalarAsync())!).IsEqualTo(2L);
+
+        await fixture.DisposeAsync();
+
+        await Assert.That((long)(await count.ExecuteScalarAsync())!).IsEqualTo(0L);
+    }
+
+    [Test]
     public async Task Disposing_an_unused_fixture_does_not_invoke_Docker()
     {
         await using var fixture = new PostgreSqlServer(_ => throw new InvalidOperationException("Unexpected Docker invocation"), _ => { });
