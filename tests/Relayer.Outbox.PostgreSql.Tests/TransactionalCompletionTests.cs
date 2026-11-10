@@ -3,14 +3,15 @@ using Relayer.Outbox.PostgreSql;
 
 namespace Relayer.Outbox.PostgreSql.Tests;
 
-public class TransactionalCompletionTests
+[ClassDataSource<PostgreSqlLocalSessionFixture>(Shared = SharedType.PerTestSession)]
+public class TransactionalCompletionTests(PostgreSqlLocalSessionFixture server)
 {
     [Test]
     [Arguments(true)]
     [Arguments(false)]
     public async Task Completion_and_business_work_share_the_callers_commit_or_rollback(bool commit)
     {
-        await using var fixture = new PostgreSqlFixture();
+        await using var fixture = server.CreateDatabase();
         await fixture.StartAsync();
         await using var source = NpgsqlDataSource.Create(fixture.ConnectionString);
         var options = new PostgreSqlOutboxOptions { Schema = "local-work", TablePrefix = "custom_" };
@@ -46,7 +47,7 @@ public class TransactionalCompletionTests
     [Arguments("missing")]
     public async Task Lost_fences_allow_business_work_to_be_rolled_back(string kind)
     {
-        await using var fixture = new PostgreSqlFixture();
+        await using var fixture = server.CreateDatabase();
         await fixture.StartAsync();
         await using var source = NpgsqlDataSource.Create(fixture.ConnectionString);
         await PostgreSqlOutboxStoreTests.CreateSchema(source);
@@ -79,7 +80,7 @@ public class TransactionalCompletionTests
     [Test]
     public async Task Cancellation_and_validation_leave_transaction_ownership_with_the_caller()
     {
-        await using var fixture = new PostgreSqlFixture();
+        await using var fixture = server.CreateDatabase();
         await fixture.StartAsync();
         await using var source = NpgsqlDataSource.Create(fixture.ConnectionString);
         await PostgreSqlOutboxStoreTests.CreateSchema(source);
@@ -107,7 +108,7 @@ public class TransactionalCompletionTests
     [Test]
     public async Task Expiry_uses_wall_clock_after_transaction_start_and_supplied_database()
     {
-        await using var fixture = new PostgreSqlFixture();
+        await using var fixture = server.CreateDatabase();
         await fixture.StartAsync();
         await using var source = NpgsqlDataSource.Create(fixture.ConnectionString);
         // Completion must use the supplied transaction, never open the store's configured database.
@@ -135,6 +136,35 @@ public class TransactionalCompletionTests
             // Disposal must restore the row without the store retaining the transaction.
         }
         await Assert.That(await Count(source, "relayer_outbox")).IsEqualTo(1L);
+    }
+
+    [Test]
+    public async Task Caller_owned_completion_retains_sent_metadata_only_on_commit()
+    {
+        await using var database = server.CreateDatabase();
+        await database.StartAsync();
+        await using var source = NpgsqlDataSource.Create(database.ConnectionString);
+        var options = new PostgreSqlOutboxOptions { RetainSentMessages = true };
+        await PostgreSqlOutboxStoreTests.CreateSchema(source, options);
+        var store = new PostgreSqlOutboxStore(source, options);
+        var now = DateTimeOffset.UtcNow;
+        var claim = new OutboxClaim(Guid.CreateVersion7(), Guid.NewGuid());
+        await PostgreSqlOutboxStoreTests.Insert(source, options, claim.MessageId, now);
+        await store.TryClaimAsync(claim, now, now.AddHours(1), default);
+        await using var connection = await source.OpenConnectionAsync();
+        await using (var rolledBack = await connection.BeginTransactionAsync())
+        {
+            await Assert.That(await store.CompleteAsync(claim, rolledBack, default)).IsTrue();
+            await rolledBack.RollbackAsync();
+        }
+        await Assert.That(await Count(source, "relayer_outbox_sent")).IsEqualTo(0L);
+        await using (var committed = await connection.BeginTransactionAsync())
+        {
+            await Assert.That(await store.CompleteAsync(claim, committed, default)).IsTrue();
+            await committed.CommitAsync();
+        }
+        await Assert.That(await Count(source, "relayer_outbox_sent")).IsEqualTo(1L);
+        await Assert.That(await Count(source, "relayer_outbox")).IsEqualTo(0L);
     }
 
     private static async Task<long> Count(NpgsqlDataSource source, string table)

@@ -11,6 +11,7 @@ internal sealed class BufferedOutboxMessage
     internal string Destination { get; private set; } = "";
     internal string MessageType { get; private set; } = "";
     internal Guid Id { get; private set; }
+    internal int Attempts { get; private set; }
     // Scope-local enqueue position when several EF contexts share one transaction.
     internal long EnqueueOrder { get; set; }
     internal DateTimeOffset CreatedAt { get; private set; }
@@ -40,6 +41,7 @@ internal sealed class BufferedOutboxMessage
         Destination = message.Destination;
         MessageType = record.MessageType;
         Id = record.Id;
+        Attempts = record.Attempts;
         CreatedAt = record.CreatedAt.ToUniversalTime();
         TenantId = record.TenantId;
         DeliverAt = message.DeliverAt?.ToUniversalTime();
@@ -80,6 +82,7 @@ internal sealed class BufferedOutboxMessage
     {
         Transport = Destination = MessageType = "";
         Id = default;
+        Attempts = 0;
         CreatedAt = default;
         TenantId = null;
         DeliverAt = null;

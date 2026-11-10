@@ -333,6 +333,7 @@ const status = [
   ['PostgreSQL CDC outbox dispatch', 'Implemented; SQL Server CDC planned', true],
   ['Native scoped tenant store selection', 'Implemented with authorized durable binding and bounded PostgreSQL catalog dispatch', true],
   ['Send and delivery tracing, settlement, metrics and logs', 'Implemented', true],
+  ['PostgreSQL durable local work transport', 'Implemented with native transactional completion and shared dispatch', true],
   ['PostgreSQL outbox tracing and metrics', 'Implemented', true],
   ['Other native receive telemetry', 'Planned', false],
 ];

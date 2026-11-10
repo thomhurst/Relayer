@@ -28,6 +28,8 @@ internal sealed partial class PostgreSqlMaintenanceWorker : BackgroundService
     private readonly string _sent;
     private readonly OutboxRecord[] _rows;
     private Guid? _after;
+    private int _localStop;
+    private readonly CancellationTokenSource _idleStop = new();
     private Guid? _through;
 
     internal PostgreSqlMaintenanceWorker(NpgsqlDataSource source, PostgreSqlMaintenanceOptions options,
@@ -66,14 +68,16 @@ internal sealed partial class PostgreSqlMaintenanceWorker : BackgroundService
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        using var idleStop = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken, _idleStop.Token);
         var nextCleanup = DateTimeOffset.MinValue;
         try
         {
-            while (!stoppingToken.IsCancellationRequested)
+            while (!stoppingToken.IsCancellationRequested && Volatile.Read(ref _localStop) == 0)
             {
                 try { await SweepAsync(stoppingToken).ConfigureAwait(false); }
                 catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { break; }
                 catch (Exception error) { Failed(_logger, "sweeper", error); }
+                if (Volatile.Read(ref _localStop) != 0) break;
                 if (DateTimeOffset.UtcNow >= nextCleanup)
                 {
                     try { await CleanupAsync(stoppingToken).ConfigureAwait(false); }
@@ -81,16 +85,27 @@ internal sealed partial class PostgreSqlMaintenanceWorker : BackgroundService
                     catch (Exception error) { Failed(_logger, "cleanup", error); }
                     nextCleanup = DateTimeOffset.UtcNow + _options.CleanupInterval;
                 }
-                await Task.Delay(_options.SweepInterval, stoppingToken).ConfigureAwait(false);
+                await Task.Delay(_options.SweepInterval, idleStop.Token).ConfigureAwait(false);
             }
         }
-        catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { }
+        catch (OperationCanceledException) when (idleStop.IsCancellationRequested) { }
         finally
         {
             using var timeout = new CancellationTokenSource(_options.LeaseDuration);
             try { await ReleaseAsync(timeout.Token).ConfigureAwait(false); }
             catch (Exception error) { Failed(_logger, "lease release", error); }
         }
+    }
+
+    public override async Task StopAsync(CancellationToken cancellationToken)
+    {
+        if (!_dispatcher.HasLocalTransport) { await base.StopAsync(cancellationToken).ConfigureAwait(false); return; }
+        Interlocked.Exchange(ref _localStop, 1);
+        _dispatcher.Quiesce();
+        // Wake idle maintenance without cancelling the token draining active local deliveries.
+        await _idleStop.CancelAsync().ConfigureAwait(false);
+        try { if (ExecuteTask is { } task) await task.WaitAsync(cancellationToken).ConfigureAwait(false); }
+        finally { await base.StopAsync(cancellationToken).ConfigureAwait(false); }
     }
 
     internal ValueTask<int> SweepAsync(CancellationToken cancellationToken) => RunAsync("sweeper", false, cancellationToken);
@@ -205,6 +220,7 @@ internal sealed partial class PostgreSqlMaintenanceWorker : BackgroundService
     {
         base.Dispose();
         _dispatcher.Dispose();
+        _idleStop.Dispose();
     }
 
     [LoggerMessage(Level = LogLevel.Error, Message = "PostgreSQL outbox {Job} failed. Durable work remains available for a later pass.")]

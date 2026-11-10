@@ -16,6 +16,9 @@ internal sealed partial class PostgreSqlOrderedDispatcher : BackgroundService
     private readonly OutboxRecord[] _rows;
     private readonly bool[] _ready;
     private int _nextLane;
+    private int _localStop;
+    private readonly CancellationTokenSource _idleStop = new();
+    private readonly bool _hasLocal;
     private readonly OrderedDispatchCapabilityCache _capabilities = new();
     private readonly ILogger<PostgreSqlOrderedDispatcher> _logger;
     private readonly TimeProvider _timeProvider;
@@ -37,6 +40,7 @@ internal sealed partial class PostgreSqlOrderedDispatcher : BackgroundService
         foreach (var transport in transports)
             if (!_transports.TryAdd(transport.Name, transport))
                 throw new InvalidOperationException($"Transport '{transport.Name}' is registered more than once.");
+        _hasLocal = _transports.Values.Any(static transport => PostgreSqlLocalTransport.Find(transport) is not null);
         if (_transports.Count == 0)
             throw new InvalidOperationException("Ordered outbox dispatch requires at least one named ITransport adapter.");
     }
@@ -52,10 +56,11 @@ internal sealed partial class PostgreSqlOrderedDispatcher : BackgroundService
     {
         // Reuse the deadline source across successful batches. Cancellation is an exceptional path.
         var deadline = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
+        using var idleStop = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken, _idleStop.Token);
         long? lastRebalance = null;
         try
         {
-            while (!stoppingToken.IsCancellationRequested)
+            while (!stoppingToken.IsCancellationRequested && Volatile.Read(ref _localStop) == 0)
             {
                 var madeProgress = false;
                 try
@@ -64,6 +69,7 @@ internal sealed partial class PostgreSqlOrderedDispatcher : BackgroundService
                     await _lane.FindReadyAsync(_coordinator.Assigned, _ready, stoppingToken).ConfigureAwait(false);
                     for (var lane = 0; lane < _options.Lanes; lane++)
                     {
+                        if (Volatile.Read(ref _localStop) != 0) break;
                         if (!_ready[lane] || !_coordinator.Assigned[lane]) continue;
                         // A preceding slow batch can consume the heartbeat interval. Refresh before renewing another lane.
                         await RebalanceIfDueAsync().ConfigureAwait(false);
@@ -89,10 +95,10 @@ internal sealed partial class PostgreSqlOrderedDispatcher : BackgroundService
                 catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { break; }
                 catch (Exception error) { DispatchFailed(_logger, error); }
                 if (!madeProgress)
-                    await Task.Delay(_options.PollInterval, _timeProvider, stoppingToken).ConfigureAwait(false);
+                    await Task.Delay(_options.PollInterval, _timeProvider, idleStop.Token).ConfigureAwait(false);
             }
         }
-        catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { }
+        catch (OperationCanceledException) when (idleStop.IsCancellationRequested) { }
         finally
         {
             deadline.Dispose();
@@ -149,9 +155,20 @@ internal sealed partial class PostgreSqlOrderedDispatcher : BackgroundService
 
     internal ValueTask ReleaseAsync(CancellationToken cancellationToken) => _coordinator.ReleaseAsync(cancellationToken);
 
+    public override async Task StopAsync(CancellationToken cancellationToken)
+    {
+        if (!_hasLocal) { await base.StopAsync(cancellationToken).ConfigureAwait(false); return; }
+        Interlocked.Exchange(ref _localStop, 1);
+        // Wake an idle scan without cancelling the token draining active local deliveries.
+        await _idleStop.CancelAsync().ConfigureAwait(false);
+        try { if (ExecuteTask is { } task) await task.WaitAsync(cancellationToken).ConfigureAwait(false); }
+        finally { await base.StopAsync(cancellationToken).ConfigureAwait(false); }
+    }
+
     public override void Dispose()
     {
         base.Dispose();
+        _idleStop.Dispose();
         _lane.Dispose();
     }
 
@@ -173,31 +190,44 @@ internal sealed partial class PostgreSqlOrderedDispatcher : BackgroundService
         try
         {
             count = await _lane.ReadAsync(connection, transaction, lane, _rows, cancellationToken).ConfigureAwait(false);
-            for (var index = 0; index < count; index++)
+            for (var index = 0; index < count && Volatile.Read(ref _localStop) == 0; index++)
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 if (_timeProvider.GetElapsedTime(started) >= admissionBudget) break;
                 var row = _rows[index];
-                var claim = new OutboxClaim(row.Id, Guid.NewGuid());
-                if (!await _lane.ClaimAsync(connection, transaction, claim, cancellationToken).ConfigureAwait(false)) break;
+                var localTransport = _transports.TryGetValue(row.TransportName, out var registered) ? PostgreSqlLocalTransport.Find(registered) : null;
+                var localAdmission = localTransport?.TryEnter(row.Message.Destination);
+                if (localTransport is not null && localAdmission is null) break;
                 try
                 {
-                    var prepared = Prepare(row, _transports, _capabilities);
-                    _instrumentation?.RecordOutboxDispatchLag(_timeProvider.GetUtcNow() - row.CreatedAt);
-                    await prepared.Transport.SendAsync(prepared.Message, cancellationToken).ConfigureAwait(false);
+                    var claim = new OutboxClaim(row.Id, Guid.NewGuid());
+                    if (!await _lane.ClaimAsync(connection, transaction, claim, cancellationToken).ConfigureAwait(false)) break;
+                    try
+                    {
+                        var prepared = Prepare(row, _transports, _capabilities);
+                        _instrumentation?.RecordOutboxDispatchLag(_timeProvider.GetUtcNow() - row.CreatedAt);
+                        if (PostgreSqlLocalTransport.Find(prepared.Transport) is { } local)
+                        {
+                            local.ValidateStore(_source, _options.Schema, _options.TablePrefix, _options.RetainSentMessages, _options.MaxDispatchAttempts);
+                            await local.ConsumeAsync(prepared.Message, claim, row.Attempts + 1, transaction, cancellationToken).ConfigureAwait(false);
+                        }
+                        else await prepared.Transport.SendAsync(prepared.Message, cancellationToken).ConfigureAwait(false);
+                    }
+                    catch (Exception error) when (!cancellationToken.IsCancellationRequested)
+                    {
+                        if (!await _lane.FailAsync(connection, transaction, claim, error.Message, cancellationToken, error is PostgreSqlLocalFailure { Action: FailureAction.DeadLetter }).ConfigureAwait(false))
+                            throw new InvalidOperationException("Ordered outbox claim expired while recording a dispatch failure.", error);
+                        poisoned = row.Attempts + 1 >= _options.MaxDispatchAttempts || error is PostgreSqlLocalFailure { Action: FailureAction.DeadLetter };
+                        DispatchFailed(_logger, error);
+                        break;
+                    }
+                    // Do not advance to another row after an uncertain completion. Rollback safely permits duplicates.
+                    if (PostgreSqlLocalTransport.Find(_transports[row.TransportName]) is null &&
+                        !await _lane.CompleteAsync(connection, transaction, claim, cancellationToken).ConfigureAwait(false))
+                        throw new InvalidOperationException("Ordered outbox claim expired after native send. The batch remains available for recovery.");
+                    sent++;
                 }
-                catch (Exception error) when (!cancellationToken.IsCancellationRequested)
-                {
-                    if (!await _lane.FailAsync(connection, transaction, claim, error.Message, cancellationToken).ConfigureAwait(false))
-                        throw new InvalidOperationException("Ordered outbox claim expired while recording a dispatch failure.", error);
-                    poisoned = row.Attempts + 1 >= _options.MaxDispatchAttempts;
-                    DispatchFailed(_logger, error);
-                    break;
-                }
-                // Do not advance to another row after an uncertain completion. Rollback safely permits duplicates.
-                if (!await _lane.CompleteAsync(connection, transaction, claim, cancellationToken).ConfigureAwait(false))
-                    throw new InvalidOperationException("Ordered outbox claim expired after native send. The batch remains available for recovery.");
-                sent++;
+                finally { localAdmission?.Exit(); }
             }
             await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
             _instrumentation?.AddOutboxPending(-sent);

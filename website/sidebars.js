@@ -36,6 +36,7 @@ const sidebars = {
       link: {type: 'doc', id: 'transports/index'},
       items: [
         'transports/in-memory',
+        'transports/postgresql-local',
         'transports/kafka',
         'transports/service-bus',
         'transports/service-bus-receive',

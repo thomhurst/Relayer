@@ -14,6 +14,7 @@ internal sealed class PostgreSqlOrderedLane : IDisposable
     private readonly NpgsqlCommand _claim;
     private readonly NpgsqlCommand _complete;
     private readonly NpgsqlCommand _fail;
+    private readonly NpgsqlCommand _failImmediately;
 
     internal PostgreSqlOrderedLane(NpgsqlDataSource source, PostgreSqlOutboxOptions options, TimeSpan duration)
     {
@@ -41,6 +42,8 @@ internal sealed class PostgreSqlOrderedLane : IDisposable
             PostgreSqlOutboxSchema.QuoteIdentifier(options.TablePrefix + "outbox_dead");
         _fail = CreateMutation(PostgreSqlPoisonSql.Failure(table, dead, fenced, options.MaxDispatchAttempts));
         _fail.Parameters.Add(new NpgsqlParameter<string>("error", NpgsqlDbType.Text));
+        _failImmediately = CreateMutation(PostgreSqlPoisonSql.Failure(table, dead, fenced, 1));
+        _failImmediately.Parameters.Add(new NpgsqlParameter<string>("error", NpgsqlDbType.Text));
     }
 
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
@@ -74,7 +77,7 @@ internal sealed class PostgreSqlOrderedLane : IDisposable
         OutboxClaim claim, CancellationToken cancellationToken) => MutateAsync(connection, transaction, _complete, claim, null, cancellationToken);
 
     internal ValueTask<bool> FailAsync(NpgsqlConnection connection, NpgsqlTransaction transaction,
-        OutboxClaim claim, string error, CancellationToken cancellationToken) => MutateAsync(connection, transaction, _fail, claim, error, cancellationToken);
+        OutboxClaim claim, string error, CancellationToken cancellationToken, bool permanent = false) => MutateAsync(connection, transaction, permanent ? _failImmediately : _fail, claim, error, cancellationToken);
 
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder<>))]
     private async ValueTask<bool> MutateAsync(NpgsqlConnection connection, NpgsqlTransaction transaction, NpgsqlCommand command,
@@ -118,5 +121,6 @@ internal sealed class PostgreSqlOrderedLane : IDisposable
         _claim.Dispose();
         _complete.Dispose();
         _fail.Dispose();
+        _failImmediately.Dispose();
     }
 }

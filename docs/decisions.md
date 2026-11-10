@@ -1579,7 +1579,7 @@ work queue. Native row locks, conditional DELETE and transactions already supply
 No database extension is required; introducing an extension-owned queue would add deployment requirements
 and a second durable store alongside rows that already enlist in the business transaction.
 
-**Decision.** Permit a narrow D1/D42 exception for the planned PostgreSQL local transport: reuse the outbox
+**Decision.** Permit a narrow D1/D42 exception for the PostgreSQL local transport: reuse the outbox
 as its durable queue, rather than emulating an existing broker's features. Do not build another table,
 claim protocol, retry scheduler, ordering mechanism or dead-letter store. Reuse D50 lanes and the existing
 poison transitions. Notifications may only accelerate discovery; durable rows remain authoritative.
@@ -1590,8 +1590,7 @@ transaction's database and this store's schema/prefix. Expiry uses `clock_timest
 caller timestamp or the start of a potentially long transaction. The caller commits or rolls back; false
 means it must roll back all associated business work. No transaction is retained or rebound to the store.
 
-**Consequences.** #458 supplies the primitive; the transport and consume-boundary integration remain planned
-in #459. They must carry row identity and claim token into each attempt and roll back on a lost fence.
+**Consequences.** #458 supplies the primitive; #459 adds named local routes and consumers. Direct dispatch opens a native transaction; maintenance and ordered dispatch lend their existing transaction. The consume settlement callback carries row identity and claim token into fenced deletion and rolls back on a lost fence. Native savepoints isolate failed handler writes before the existing retry/poison transition; discard rolls back handler writes before completion. Atomic per-consumer admission bounds local concurrency without a second queue or scheduler; rejected admission leaves the original row for shared recovery. Local attempts drain on shutdown before worker cancellation.
 Native row locks serialize deletion with competing claims. Rollback restores both business work and the row;
 a successful deletion remains provisional until commit. This permits atomic completion only for work in
 that same transaction, not exactly-once external effects. Existing broker dispatch and settlement are unchanged.

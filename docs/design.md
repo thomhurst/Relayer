@@ -20,7 +20,7 @@ It is **not** a new broker abstraction. It does not change how the underlying te
 8. **Few dependencies.** The core depends only on `Microsoft.Extensions.*` abstractions and the BCL. Each transport package adds only its native client.
 9. **Permissive licence.** MIT, permanently.
 
-The planned PostgreSQL durable local transport is a scoped exception to broker wrapping: D66 requires it to reuse existing outbox rows, native database transactions, lane leases and poison handling. It is not implemented yet.
+The PostgreSQL durable local transport is a scoped exception to broker wrapping: D66 requires it to reuse existing outbox rows, native database transactions, lane leases and poison handling. [Usage and transaction boundaries](../website/docs/transports/postgresql-local.md) describe its explicit registration.
 
 ### Non-goals
 

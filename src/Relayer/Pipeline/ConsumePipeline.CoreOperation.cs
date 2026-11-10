@@ -95,6 +95,7 @@ public sealed partial class ConsumePipeline
                             _scope = new AsyncServiceScope(_owner._scopes.CreateScope());
                             _stage = Stage.Scope;
                             _context.SetServices(_scope.ServiceProvider);
+                            if (_owner.BufferAttemptSends) _context.AttachSender(_scope.ServiceProvider);
                             _stage = Stage.Handler;
                             if (!_owner._dispatch.TryGetValue(_context.MessageType, out var dispatch))
                                 throw new UnknownMessageTypeException(_context.MessageType);
@@ -112,6 +113,7 @@ public sealed partial class ConsumePipeline
                             goto case Stage.AfterDispose;
                         case Stage.AfterDispose:
                             if (!AwaitPending()) return;
+                            if (_owner.BufferAttemptSends) _context.EndAttemptSender();
                             if (_error is { } error) ExceptionDispatchInfo.Throw(error);
                             _context.CancellationToken.ThrowIfCancellationRequested();
                             if (_failure is null && _context.Settlement.Request is { } request)
@@ -120,6 +122,23 @@ public sealed partial class ConsumePipeline
                                 _context.ApplyFailureDisposition();
                             }
                             _context.ClearServices();
+                            if (!_owner.BufferAttemptSends) goto case Stage.PrepareSettlement;
+                            _stage = Stage.Flush;
+                            // Scope disposal is part of the attempt. Failure or a non-complete
+                            // settlement must discard its sends, just like ProcessWithFailuresAsync.
+                            if (_failure is null &&
+                                (_context.Settlement.Request is not { } settlement || settlement.Kind == DispositionKind.Complete))
+                                _pending = _context.SendBuffer.FlushAsync(_context.CancellationToken).ConfigureAwait(false).GetAwaiter();
+                            else
+                            {
+                                _context.SendBuffer.Clear();
+                                _pending = default;
+                            }
+                            goto case Stage.Flush;
+                        case Stage.Flush:
+                            if (!AwaitPending()) return;
+                            goto case Stage.PrepareSettlement;
+                        case Stage.PrepareSettlement:
                             _stage = Stage.Settlement;
                             _pending = (_owner._settlement?.Invoke(_context) ?? default).ConfigureAwait(false).GetAwaiter();
                             goto case Stage.Settlement;
@@ -169,6 +188,11 @@ public sealed partial class ConsumePipeline
         {
             try
             {
+                if (_owner.BufferAttemptSends)
+                {
+                    _context.EndAttemptSender();
+                    _context.SendBuffer.Clear();
+                }
                 try
                 {
                     if (error is not null && !(error is OperationCanceledException && _context.CancellationToken.IsCancellationRequested))
@@ -219,7 +243,7 @@ public sealed partial class ConsumePipeline
         public void OnCompleted(Action<object?> continuation, object? state, short token, ValueTaskSourceOnCompletedFlags flags)
             => _completion.OnCompleted(continuation, state, token, flags);
 
-        private enum Stage { Start, Scope, Handler, Failure, Dispose, AfterDispose, Settlement }
+        private enum Stage { Start, Scope, Handler, Failure, Dispose, AfterDispose, Flush, PrepareSettlement, Settlement }
         private struct Runner(CoreOperation operation) : IAsyncStateMachine
         {
             public void MoveNext() => operation.MoveNext();

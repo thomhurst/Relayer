@@ -29,7 +29,11 @@ internal sealed class PostgreSqlDirectDispatcher : BackgroundService
     private int _recoveredPoison;
     private readonly Npgsql.NpgsqlDataSource _source;
     private readonly bool _retainSentMessages;
+    private readonly int _maxDispatchAttempts;
     private bool _schemaValidated;
+    private int _quiescing;
+    internal bool HasLocalTransport => _transports.Values.Any(static transport => PostgreSqlLocalTransport.Find(transport) is not null);
+    internal void Quiesce() => Interlocked.Exchange(ref _quiescing, 1);
 
     internal void RecoveryCommitted()
     {
@@ -43,6 +47,7 @@ internal sealed class PostgreSqlDirectDispatcher : BackgroundService
     {
         _source = dataSource;
         _retainSentMessages = storeOptions.RetainSentMessages;
+        _maxDispatchAttempts = storeOptions.MaxDispatchAttempts;
         _store = store ?? new(dataSource, storeOptions);
         _schema = storeOptions.Schema ?? "public";
         _prefix = storeOptions.TablePrefix;
@@ -69,6 +74,9 @@ internal sealed class PostgreSqlDirectDispatcher : BackgroundService
         if (_schema != (schema ?? "public") || _prefix != prefix)
             throw new InvalidOperationException("The EF Core outbox and its direct dispatcher must use identical PostgreSQL schema and table prefix settings.");
     }
+
+    internal void ValidateLocal(PostgreSqlLocalTransport local) =>
+        local.ValidateStore(_source, _schema, _prefix, _retainSentMessages, _maxDispatchAttempts);
 
     internal async Task ValidateSchemaAsync(CancellationToken cancellationToken)
     {
@@ -154,7 +162,7 @@ internal sealed class PostgreSqlDirectDispatcher : BackgroundService
         var admissionStarted = admissionBudget.HasValue ? (admissionTimeProvider?.GetTimestamp() ?? Stopwatch.GetTimestamp()) : 0;
         batch.Sort();
         var offset = 0;
-        while (offset < batch.Count)
+        while (offset < batch.Count && Volatile.Read(ref _quiescing) == 0)
         {
             if (admissionBudget is { } budget && (admissionTimeProvider?.GetElapsedTime(admissionStarted) ?? Stopwatch.GetElapsedTime(admissionStarted)) >= budget) break;
             var first = batch.Rows[offset];
@@ -178,6 +186,7 @@ internal sealed class PostgreSqlDirectDispatcher : BackgroundService
                 continue;
             }
             var count = 0;
+            PostgreSqlLocalTransport.Receiver? localAdmission = null;
             try
             {
                 while (offset < batch.Count && count < limit)
@@ -188,6 +197,11 @@ internal sealed class PostgreSqlDirectDispatcher : BackgroundService
                     _claims[count] = new(row.Id, Guid.NewGuid());
                     _created[count] = row.CreatedAt;
                     _messages[count++] = row.ToMessage();
+                }
+                if (PostgreSqlLocalTransport.Find(transport) is { } localTransport)
+                {
+                    localAdmission = localTransport.TryEnter(first.Destination);
+                    if (localAdmission is null) continue; // Durable rows remain available for a later recovery pass.
                 }
                 var now = DateTimeOffset.UtcNow;
                 var expires = now + _options.ClaimDuration;
@@ -208,6 +222,13 @@ internal sealed class PostgreSqlDirectDispatcher : BackgroundService
                         var dispatchTime = DateTimeOffset.UtcNow;
                         for (var i = 0; i < live; i++) _instrumentation.RecordOutboxDispatchLag(dispatchTime - _created[i]);
                     }
+                    if (PostgreSqlLocalTransport.Find(transport) is { } local)
+                    {
+                        ValidateLocal(local);
+                        await local.ConsumeAsync(_messages[0], _claims[0], first.Attempts + 1, _store.DispatchTransaction, cancellationToken).ConfigureAwait(false);
+                        _instrumentation?.AddOutboxPending(-1);
+                        continue;
+                    }
                     if (live == 1) await transport.SendAsync(_messages[0], cancellationToken).ConfigureAwait(false);
                     else await transport.SendBatchAsync(_messages.AsMemory(0, live), cancellationToken).ConfigureAwait(false);
                 }
@@ -219,7 +240,7 @@ internal sealed class PostgreSqlDirectDispatcher : BackgroundService
                     {
                         try
                         {
-                            if (await _store.RecordDispatchFailureAsync(_claims[i], error.Message, DateTimeOffset.UtcNow, cancellationToken).ConfigureAwait(false) == 2)
+                            if (await _store.RecordDispatchFailureAsync(_claims[i], error.Message, DateTimeOffset.UtcNow, cancellationToken, error is PostgreSqlLocalFailure { Action: FailureAction.DeadLetter }).ConfigureAwait(false) == 2)
                             {
                                 if (propagateDatabaseFailures) _recoveredPoison++;
                                 else _instrumentation?.RecordOutboxPoison();
@@ -244,6 +265,7 @@ internal sealed class PostgreSqlDirectDispatcher : BackgroundService
             catch (Exception error) when (!propagateDatabaseFailures) { DirectDispatchLog.Failed(_logger, error); }
             finally
             {
+                localAdmission?.Exit();
                 Array.Clear(_messages, 0, count);
                 Array.Clear(_claims, 0, count);
             }
