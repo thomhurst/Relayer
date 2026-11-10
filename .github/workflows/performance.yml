@@ -243,7 +243,7 @@ jobs:
       - name: Measure JSON sends, buffered dispatch and pull receive with confirmed ACK
         run: |
           dotnet run -c Release --project benchmarks/Relayer.Benchmarks -- \
-            --filter '*NatsSendBenchmarks*' '*NatsReceiveBenchmarks*' '*NatsWireReceiveBenchmarks*' \
+            --filter '*NatsSendBenchmarks*' '*NatsAsyncSendBenchmarks*' '*NatsReceiveBenchmarks*' '*NatsWireReceiveBenchmarks*' \
             --warmupCount 5 --iterationCount 15 --launchCount 2 \
             --exporters fulljson --keepFiles --artifacts nats-results \
             > nats-benchmarks.log 2>&1 \

@@ -151,6 +151,46 @@ public class NatsSendBenchmarks
     }
 }
 
+/// <summary>Naturally awaited send loops, alongside the single-call synchronous-driver comparisons above.</summary>
+[MemoryDiagnoser]
+public class NatsAsyncSendBenchmarks
+{
+    private const int Operations = 256;
+    private readonly NatsSendBenchmarks _send = new();
+
+    [GlobalSetup]
+    public Task Setup() => _send.Setup();
+
+    // BenchmarkDotNet blocks its caller for each ValueTask invocation. Waiting inside a sequence
+    // exercises an asynchronous caller instead, so pooled inner transport state can return to the
+    // worker cache before the next send. Keep the original single-call cases: their pool misses
+    // are real for a synchronously driven caller and must remain visible, not be subtracted away.
+    // Each operation still awaits one native confirmed publish; this is no broker-side batching.
+    [Benchmark(Baseline = true, OperationsPerInvoke = Operations)]
+    [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
+    public async ValueTask NativeJsonSend()
+    {
+        for (var i = 0; i < Operations; i++) await _send.NativeJsonSend();
+    }
+
+    [Benchmark(OperationsPerInvoke = Operations)]
+    [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
+    public async ValueTask RelayerJsonSend()
+    {
+        for (var i = 0; i < Operations; i++) await _send.RelayerJsonSend();
+    }
+
+    [Benchmark(OperationsPerInvoke = Operations)]
+    [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
+    public async ValueTask AdapterJsonSend()
+    {
+        for (var i = 0; i < Operations; i++) await _send.AdapterJsonSend();
+    }
+
+    [GlobalCleanup]
+    public Task Cleanup() => _send.Cleanup();
+}
+
 /// <summary>Already-delivered native messages: both paths deserialize JSON and resolve the same scoped handler.</summary>
 [MemoryDiagnoser]
 public class NatsReceiveBenchmarks
