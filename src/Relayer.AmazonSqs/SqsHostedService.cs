@@ -64,11 +64,12 @@ internal sealed class SqsHostedService(IServiceProvider provider, string name) :
             }
         SendOptions? options = null;
         // Normal envelope copies remain persistable. A malformed/differently bound FIFO
-        // identity needs the original native fallback, which cannot be stored by an outbox.
+        // identity (including native typed attributes) needs the original native fallback,
+        // which cannot be stored by an outbox.
         var hasSourceIdentity = attributes?.TryGetValue(sourceIdentityHeader, out var sourceIdentity) == true &&
-            !string.IsNullOrWhiteSpace(sourceIdentity.StringValue);
+            sourceIdentity.DataType == "String" && !string.IsNullOrWhiteSpace(sourceIdentity.StringValue);
         var hasDeadIdentity = attributes?.TryGetValue(deadIdentityHeader, out var deadIdentity) == true &&
-            !string.IsNullOrWhiteSpace(deadIdentity.StringValue);
+            deadIdentity.DataType == "String" && !string.IsNullOrWhiteSpace(deadIdentity.StringValue);
         var deduplication = hasSourceIdentity && hasDeadIdentity ? null :
             delivery.Message.Attributes?.GetValueOrDefault("MessageDeduplicationId");
         if (native is not null || deduplication is not null)

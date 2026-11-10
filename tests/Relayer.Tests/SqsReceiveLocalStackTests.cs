@@ -111,6 +111,30 @@ public sealed class SqsReceiveLocalStackTests
                 await Assert.That(malformedCopy.MessageAttributes.ContainsKey(FailureHeaders.History)).IsTrue();
                 await client.DeleteMessageAsync(deadUrl, malformedCopy.ReceiptHandle, token);
             }
+            if (fifo)
+            {
+                var sourceUrlForTyped = (await client.GetQueueUrlAsync(source, token)).QueueUrl;
+                foreach (var dataType in new[] { "Number", "String.eventId" })
+                {
+                    var nativeId = "native-typed-" + dataType;
+                    await client.SendMessageAsync(new SendMessageRequest
+                    {
+                        QueueUrl = sourceUrlForTyped, MessageBody = "malformed", MessageGroupId = "typed-group",
+                        MessageDeduplicationId = nativeId,
+                        MessageAttributes = new() { [names.Id] = new() { DataType = dataType, StringValue = "42" } },
+                    }, token);
+                    var typed = await client.ReceiveMessageAsync(new ReceiveMessageRequest
+                    {
+                        QueueUrl = deadUrl, WaitTimeSeconds = 10, MessageAttributeNames = ["All"], MessageSystemAttributeNames = ["All"],
+                    }, token);
+                    var typedCopy = typed.Messages.Single();
+                    await Assert.That(typedCopy.Attributes["MessageDeduplicationId"]).IsEqualTo(nativeId);
+                    await Assert.That(typedCopy.MessageAttributes[names.Id].DataType).IsEqualTo(dataType);
+                    await Assert.That(typedCopy.MessageAttributes[names.Id].StringValue).IsEqualTo("42");
+                    await Assert.That(typedCopy.MessageAttributes.ContainsKey(FailureHeaders.History)).IsTrue();
+                    await client.DeleteMessageAsync(deadUrl, typedCopy.ReceiptHandle, token);
+                }
+            }
             await Send(2);
             await control.Healthy.Task.WaitAsync(token);
             await Send(3);

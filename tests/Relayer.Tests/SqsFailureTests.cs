@@ -29,6 +29,32 @@ public sealed class SqsFailureTests
         else copy.ValidateForOutbox();
     }
 
+    [Test]
+    [Arguments("Number", "ce_id", "ce_id")]
+    [Arguments("String.eventId", "ce_id", "ce_id")]
+    [Arguments("Number", "source_id", "ce_id")]
+    [Arguments("String.eventId", "ce_id", "dead_id")]
+    public async Task Fifo_copy_preserves_native_deduplication_for_typed_identity_attributes(string dataType, string sourceHeader, string deadHeader)
+    {
+        using var client = new SqsReceiveTests.ReceiveClient();
+        using var delivery = new SqsDelivery(client, "url");
+        var message = SqsReceiveTests.Message("body", 1);
+        message.MessageAttributes[sourceHeader] = new() { DataType = dataType, StringValue = "42" };
+        message.MessageAttributes[deadHeader] = new() { DataType = dataType, StringValue = "42" };
+        message.Attributes["MessageDeduplicationId"] = "native-id";
+        message.Attributes["MessageGroupId"] = "group";
+        delivery.Prepare(message, TimeProvider.System.GetTimestamp(), null);
+        var context = new CopyContext();
+        context.Features.Set(new NativeMessage<SqsDelivery> { Message = delivery });
+        var copy = SqsHostedService.Copy(context, sourceHeader, deadHeader);
+        var state = new SqsSendState("0");
+        state.Prepare(copy, "dead.fifo", true, deadHeader);
+        await Assert.That(state.Request.MessageDeduplicationId).IsEqualTo("native-id");
+        await Assert.That(state.Request.MessageAttributes[deadHeader].DataType).IsEqualTo(dataType);
+        await Assert.That(state.Request.MessageAttributes[deadHeader].StringValue).IsEqualTo("42");
+        await Assert.That(() => copy.ValidateForOutbox()).Throws<InvalidOperationException>();
+    }
+
     private sealed class CopyContext : MessageContext
     {
         public override string MessageId => "id";
