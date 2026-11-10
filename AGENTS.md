@@ -61,6 +61,12 @@ dotnet run -c Release --project benchmarks/Relayer.Benchmarks -- --filter "*Clas
   - A fix for a review finding or a CI failure reruns the tests for that fix only.
   - Run a benchmark only when [Performance requirements](#performance-requirements) calls for one, and then only the affected class through `--filter`. Never run the benchmark project without a filter.
 - Tests use TUnit. Filter with `--treenode-filter "/*/*/ClassName/TestName"` (`/<Assembly>/<Namespace>/<Class>/<Test>` segments; wildcards and `(A|B)` alternation work within a segment). With MTP, pass test options directly, without an extra `--` or VSTest's `--filter`.
+- Tests run in parallel and must be isolated so they can. Do not add `[ParallelLimiter]`, `[NotInParallel]` or any other concurrency throttle to make a test pass or to reduce load; a test that needs one has a design problem to fix.
+  - Share expensive infrastructure (a broker or database container) once per test session with `[ClassDataSource<T>(Shared = SharedType.PerTestSession)]`. Do not start a container per test or per class.
+  - Give each test its own resources inside the shared instance (database, schema, queue, topic, consumer group), named through `TestContext.Current!.Isolation` ([TUnit test isolation](https://tunit.dev/docs/writing-tests/test-context#test-isolation)).
+  - Start a dedicated container only for a test that changes server-wide state, such as a restart, an outage or a server setting.
+  - `[NotInParallel]` is acceptable only on a single test that measures process-wide state such as allocation counters, with a comment naming that state.
+  - Issue or review text that asks for a limiter does not override this; flag the conflict on the issue instead.
 - Features require unit tests; transport behavior changes require tests against the real broker or its emulator where one exists, and every transport must pass the transport conformance suite ([design §15](docs/design.md#15-roadmap)).
 - Investigate intermittent test failures instead of rerunning CI to obtain green. Use deterministic synchronization for timing-dependent tests.
 - Review final changes for reuse, quality, and efficiency before opening a PR (`/simplify` when available). Preserve the performance requirements above. The PR description lists the native and existing Relayer features the change builds on, and any it duplicates with the decision that allows it. Reviewers treat an unexplained re-implementation of a native feature as blocking.
