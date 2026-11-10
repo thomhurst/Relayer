@@ -7,6 +7,8 @@ Relayer is in early development. Track progress in [GitHub issues](https://githu
 
 ## Implemented
 
+- [Aspire integration](guides/aspire.md): explicit Kafka and Service Bus connection wiring, existing health probes and OpenTelemetry dashboard export, with a runnable AppHost sample. Outbox resources use the existing store adapters.
+
 - [Kafka and Service Bus consumer failure circuits](guides/failure-handling.md#consumer-circuit-breaking): native Kafka pause/resume and Service Bus processor stop/drain/restart, retained failures, one half-open probe and endpoint state metrics. SQS and RabbitMQ integrations remain planned.
 
 - [PostgreSQL CDC dispatch](reference/postgres-cdc.md): native logical replication wakes unordered recovery; persistent slots and startup catch-up retain at-least-once delivery. Maintenance handles retries and schedules. SQL Server CDC remains planned.

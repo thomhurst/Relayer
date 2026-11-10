@@ -1,0 +1,10 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+  <ItemGroup>
+    <ProjectReference Include="../../src/Relayer.Aspire/Relayer.Aspire.csproj" />
+    <ProjectReference Include="../../src/Relayer.Kafka.HealthChecks/Relayer.Kafka.HealthChecks.csproj" />
+    <ProjectReference Include="../../src/Relayer.AzureServiceBus.HealthChecks/Relayer.AzureServiceBus.HealthChecks.csproj" />
+    <ProjectReference Include="../../src/Relayer.SourceGenerators/Relayer.SourceGenerators.csproj" OutputItemType="Analyzer" ReferenceOutputAssembly="false" />
+    <PackageReference Include="OpenTelemetry.Exporter.OpenTelemetryProtocol" />
+    <PackageReference Include="OpenTelemetry.Instrumentation.AspNetCore" />
+  </ItemGroup>
+</Project>

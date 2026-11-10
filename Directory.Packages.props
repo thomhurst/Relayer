@@ -3,6 +3,16 @@
     <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
   </PropertyGroup>
 
+  <ItemGroup Label="Aspire">
+    <PackageVersion Include="OpenTelemetry.Instrumentation.AspNetCore" Version="1.20.1" />
+    <PackageVersion Include="OpenTelemetry.Extensions.Hosting" Version="1.20.1" />
+    <PackageVersion Include="OpenTelemetry.Exporter.OpenTelemetryProtocol" Version="1.20.1" />
+    <PackageVersion Include="Aspire.Hosting.AppHost" Version="13.6.2" />
+    <PackageVersion Include="Aspire.Hosting.Kafka" Version="13.6.2" />
+    <PackageVersion Include="Aspire.Hosting.Azure.ServiceBus" Version="13.6.2" />
+    <PackageVersion Include="Aspire.Hosting.Testing" Version="13.6.2" />
+  </ItemGroup>
+
   <ItemGroup Label="Build">
     <PackageVersion Include="Microsoft.Diagnostics.Tracing.TraceEvent" Version="3.2.8" />
     <PackageVersion Include="MinVer" Version="8.0.0" />

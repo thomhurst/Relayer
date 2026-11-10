@@ -1,0 +1,9 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <Description>OpenTelemetry integration for Relayer.</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../Relayer/Relayer.csproj" />
+    <PackageReference Include="OpenTelemetry.Extensions.Hosting" />
+  </ItemGroup>
+</Project>

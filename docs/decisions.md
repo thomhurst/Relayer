@@ -70,6 +70,8 @@ To change a decision, add a new entry that supersedes it rather than editing his
 | [D57](#d57-google-pubsub-uses-prepared-native-api-clients) | Google Pub/Sub uses prepared native API clients | Accepted |
 | [D58](#d58-mysql-consumers-share-the-adonet-outbox-transaction) | MySQL consumers share the ADO.NET outbox transaction | Accepted |
 | [D59](#d59-sql-server-consumers-reuse-the-adonet-outbox-transaction) | SQL Server consumers reuse the ADO.NET outbox transaction | Accepted |
+| [D60](#d60-bound-catalog-dispatch-by-native-connection-lifetimes) | Bound catalog dispatch by native connection lifetimes | Accepted |
+| [D61](#d61-aspire-reuses-native-resource-wiring-and-application-telemetry) | Aspire reuses native resource wiring and application telemetry | Accepted |
 
 ---
 
@@ -1383,3 +1385,28 @@ Catalog refreshes and turns are finite, bounded by cancellation deadlines. Per-s
 and queues live only while cataloged; removing a store retires queues and releases fenced leases
 under the same admission limit. Native expiry recovers interrupted release. Source ownership,
 authorization, provisioning and immutable snapshot publication remain application responsibilities.
+
+## D61. Aspire reuses native resource wiring and application telemetry
+
+**Context.** Aspire 13.6 supplies Kafka and Service Bus resources, `WithReference`
+connection injection, readiness probes and OTLP dashboard configuration. Relayer already
+supplies native transport option builders, keyed health adapters, durable outbox stores
+and its `Relayer` ActivitySource/Meter. The original package table proposed an
+`Aspire.Hosting` dependency without an application-side connection contract.
+
+**Decision.** Keep AppHost resource declaration on Aspire's native APIs. `Relayer.Aspire`
+is an optional, transport-neutral application-side package: `AddRelayerInstrumentation`
+subscribes the application's existing OpenTelemetry providers. Typed `UseAspireConnection`
+methods live in each existing transport package and configure its named options from
+`ConnectionStrings`. Applications therefore acquire only their chosen native clients;
+`Relayer.Aspire` depends on core and OpenTelemetry hosting, with no transport or AppHost
+orchestration dependencies. Native configuration callbacks stay reachable.
+Health registration and HTTP readiness probes use existing APIs directly. Outbox resource
+connections go to the existing database adapters; schema, transaction enlistment and workers
+remain explicit. No native resource, exporter, client, health runtime or transaction is reimplemented.
+
+**Consequences.** Configuration is captured during registration and connection changes
+require restart. Applications choose sampling/exporters (including those from ServiceDefaults),
+authentication and health policy. The sample uses native Kafka and Service Bus emulator resources;
+other transports can use their existing configuration directly. See the
+[Aspire guide](../website/docs/guides/aspire.md).
