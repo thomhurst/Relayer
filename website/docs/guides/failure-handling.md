@@ -82,11 +82,25 @@ Batch handlers use the feature on each `batch.Items[i].Context`. A reported per-
 
 When composing the lower-level `ConsumePipelineBuilder` with an explicit `ConsumeFailureDelegate`, successful manual requests become native dispositions directly. That composer owns capability validation, side-effect durability and fallback handling. The in-memory hosted consumer uses this direct native path. Transport-specific operations such as Azure Service Bus defer remain available through native transport features.
 
-## Consumer circuit breaking (planned)
+## Consumer circuit breaking
 
-Consumer circuit breaking is not enabled or configurable yet. The core contains an internal failure-rate policy with fixed sampling windows and one half-open probe; native consumer integration remains planned. Current consumers continue to use the retry, redelivery and dead-letter behavior described above.
+Kafka consumers can opt into native pause/resume protection with `consumer.Options.CircuitBreaker`. It is disabled by default. The policy counts one logical delivery after its in-process retries, using fixed sampling windows. Only exceptions classified as `FailureAction.Retry` count as circuit failures. Permanent (`DeadLetter`) and intentional (`Discard`) outcomes follow the classifier immediately and count as successful circuit outcomes, so a permanent poison record cannot trap recovery in a loop. Once the minimum throughput and failure ratio are reached, the consumer pauses its assigned partitions natively. The threshold-crossing failed delivery is retained in Kafka without a dead-letter copy or an offset commit past it; deliveries while open do not enter handlers.
 
-The planned integration will pause Kafka consumers through native pause/resume and stop Service Bus processors through their native lifecycle. It must retain failed deliveries while open, then admit one probe before resuming normal consumption. The existing circuit-state telemetry recorder alone does not indicate that a consumer has this behavior.
+```csharp
+consumer.Options.CircuitBreaker = new()
+{
+    FailureRatio = 0.5,
+    MinimumThroughput = 10,
+    SamplingDuration = TimeSpan.FromSeconds(30),
+    BreakDuration = TimeSpan.FromSeconds(5),
+};
+```
+
+These are the defaults when configured. Startup rejects non-finite ratios, ratios outside `(0, 1]`, minimum throughput outside `1..1073741823`, and durations below one millisecond or above the native timer limit. In-process retries run before the circuit records a retryable failure; retryable failures below the threshold still follow the normal dead-letter policy.
+
+After the break duration, one retained delivery probes recovery. A failed probe opens the circuit again without copying or committing it; a successful probe closes it and resumes normal consumption. Kafka's native polling and ownership handling continue while paused. Assignment changes invalidate borrowed batches, and replay controls still drain the current batch before seeking. Shutdown stops polling without waiting for the break duration; a later timer signal cannot restart the receiver. Delivery remains at-least-once, so completed messages from an uncommitted batch can repeat.
+
+The endpoint's `relayer.circuit.state` metric records actual transitions: 0 closed, 1 open, 2 half-open. Service Bus and other transports' native circuit integration remains planned.
 
 ## Error history
 

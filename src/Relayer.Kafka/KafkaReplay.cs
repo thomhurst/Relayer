@@ -19,6 +19,12 @@ internal sealed class KafkaReplay
     private readonly Queue<KafkaSeekRequest> _requests = new();
     private CancellationTokenSource? _poll;
     private bool _running;
+    private bool _wake;
+
+    internal void Wake()
+    {
+        lock (_gate) { _wake = true; _poll?.Cancel(); }
+    }
 
     internal void Start()
     {
@@ -40,7 +46,8 @@ internal sealed class KafkaReplay
         lock (_gate)
         {
             _poll = CancellationTokenSource.CreateLinkedTokenSource(stop);
-            if (_requests.Count != 0) _poll.Cancel();
+            if (_requests.Count != 0 || _wake) _poll.Cancel();
+            _wake = false;
             return _poll;
         }
     }

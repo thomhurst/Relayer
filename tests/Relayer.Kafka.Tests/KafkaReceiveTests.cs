@@ -138,9 +138,11 @@ public class KafkaReceiveTests
     }
 
     [Test]
-    [Arguments(1)]
-    [Arguments(3)]
-    public async Task Retained_partition_replays_invalidated_batch_before_committing(int invalidateAfter)
+    [Arguments(1, false)]
+    [Arguments(3, false)]
+    [Arguments(1, true)]
+    [Arguments(3, true)]
+    public async Task Retained_partition_replays_invalidated_batch_before_committing(int invalidateAfter, bool circuitEnabled)
     {
         using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(2));
         var token = timeout.Token;
@@ -155,8 +157,12 @@ public class KafkaReceiveTests
         native.Assign(partition);
         var ownership = new KafkaOwnership();
         var handled = new List<long>();
+        ConsumerCircuitDelivery? circuit = null;
         await using var adapter = new KafkaConsumer(native, Receive, tracing,
             new() { System = "kafka", Destination = fixture.Destination, ConsumerGroup = fixture.Destination }, ownership);
+        using var instruments = new RelayerInstrumentation();
+        circuit = circuitEnabled ? adapter.ConfigureCircuit(new() { FailureRatio = .01, MinimumThroughput = 1 },
+            instruments.CreateEndpoint(new() { System = "kafka", Destination = fixture.Destination }), TimeProvider.System) : null;
         await native.InitializeAsync(token);
         await using var batches = native.ConsumeBatchAsync(token).GetAsyncEnumerator(token);
         await Assert.That(await batches.MoveNextAsync()).IsTrue();
@@ -171,10 +177,21 @@ public class KafkaReceiveTests
             completed += await adapter.ProcessBatchAsync(batches.Current, token);
         await Assert.That(handled.ToArray()).IsEquivalentTo(new long[] { 0, 1, 2 });
         await Assert.That(await native.GetCommittedOffsetAsync(partition, token)).IsEqualTo(3L);
+        if (circuit is not null)
+        {
+            circuit.TryEnter();
+            await Assert.That(circuit.Complete(true)).IsTrue();
+            // Exercise the native assignment listener while open, including a retained partition.
+            await ownership.OnPartitionsAssignedAsync([partition], token);
+            await Assert.That(native.Paused.Contains(partition)).IsTrue();
+            await Assert.That(await native.GetCommittedOffsetAsync(partition, token)).IsEqualTo(3L);
+        }
+
 
         async ValueTask<Disposition> Receive(KafkaDelivery delivery, CancellationToken cancellationToken)
         {
             handled.Add(delivery.Result.Offset);
+            circuit?.Complete(false);
             if (handled.Count == invalidateAfter && ownership.Version == 0)
                 await ownership.OnPartitionsAssignedAsync([partition], cancellationToken);
             return Disposition.Complete;
@@ -377,13 +394,107 @@ public class KafkaReceiveTests
         }
     }
 
+    [Test]
+    [Arguments(false, false, false)]
+    [Arguments(true, false, false)]
+    [Arguments(false, true, false)]
+    [Arguments(false, false, true)]
+    public async Task Circuit_retains_failed_offset_and_preserves_permanent_dead_letter_handling(bool stopOpen, bool retry, bool permanentPoison)
+    {
+        using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(2));
+        var token = timeout.Token;
+        using var tracing = new MessageTracing(Options.Create(new TracingOptions()), []);
+        await using var fixture = (KafkaFixture)await KafkaFixture.CreateAsync(tracing, token);
+        var control = new KafkaReceiveControl { CircuitFailure = true };
+        var clock = new CircuitClock();
+        var states = Channel.CreateUnbounded<int>();
+        using var meter = new System.Diagnostics.Metrics.MeterListener();
+        meter.InstrumentPublished = (instrument, listener) =>
+        {
+            if (instrument.Meter.Name == "Relayer" && instrument.Name == "relayer.circuit.state") listener.EnableMeasurementEvents(instrument);
+        };
+        meter.SetMeasurementEventCallback<int>((_, state, tags, _) =>
+        {
+            foreach (var tag in tags)
+                if (tag.Key == "messaging.destination.name" && Equals(tag.Value, fixture.Destination)) states.Writer.TryWrite(state);
+        });
+        meter.Start();
+        using var host = BuildHost(fixture, control, circuitClock: clock, circuitRetry: retry);
+        await host.StartAsync(token);
+        var receiver = host.Services.GetRequiredKeyedService<KafkaProducerTransport>("events").Consumers[0];
+        await fixture.Transport.StartAsync(token);
+        var retainedOffset = permanentPoison ? 1L : 0L;
+        if (permanentPoison) await fixture.Transport.SendAsync(Message(fixture.Destination, 6), token);
+        await fixture.Transport.SendAsync(Message(fixture.Destination, 5), token);
+        await State(1);
+        await fixture.Transport.SendAsync(Message(fixture.Destination, 3), token);
+        await using var offsets = new ConsumerBuilder<byte[], byte[]>().WithBootstrapServers(fixture.Bootstrap)
+            .WithGroupId(fixture.Destination).WithOffsetCommitMode(OffsetCommitMode.Manual).Build();
+        await offsets.InitializeAsync(token);
+        var committedBeforeProbe = await offsets.GetCommittedOffsetAsync(new(fixture.Destination, 0), token);
+        await Assert.That(committedBeforeProbe is null || committedBeforeProbe <= retainedOffset).IsTrue();
+        // A replay control request drains the borrowed batch while preserving the open circuit.
+        await host.Services.GetRequiredKeyedService<IKafkaConsumerControl>("events")
+            .SeekAsync(fixture.Destination, new TopicPartitionOffset(fixture.Destination, 0, retainedOffset), token);
+        await Assert.That(control.CircuitAttempts).IsEqualTo(retry ? 2 : 1);
+        if (stopOpen)
+        {
+            await host.StopAsync(token);
+            clock.Recover(); // A late timer cannot restart a stopped native receiver.
+            await Assert.That(receiver.Completion.IsCompletedSuccessfully).IsTrue();
+            await Assert.That(control.CircuitAttempts).IsEqualTo(retry ? 2 : 1);
+            await Assert.That(await offsets.GetCommittedOffsetAsync(new(fixture.Destination, 0), token) is null or < 0).IsTrue();
+            return;
+        }
+        clock.Recover();
+        await State(2);
+        await State(1);
+        await Assert.That(control.CircuitAttempts).IsEqualTo(retry ? 4 : 2);
+        control.CircuitFailure = false;
+        clock.Recover();
+        await Assert.That(await control.ReadHandledAsync(receiver.Completion, token)).IsEqualTo(5);
+        await Assert.That(await control.ReadHandledAsync(receiver.Completion, token)).IsEqualTo(3);
+        await host.StopAsync(token);
+        await Assert.That(await offsets.GetCommittedOffsetAsync(new(fixture.Destination, 0), token)).IsEqualTo(2L + retainedOffset);
+        await using var dead = new ConsumerBuilder<byte[], byte[]>().WithBootstrapServers(fixture.Bootstrap).Build();
+        await dead.InitializeAsync(token);
+        var ends = await dead.QueryWatermarkOffsetsAsync(new(fixture.Destination + ".dead-letter", 0), token);
+        await Assert.That(ends.High).IsEqualTo(retainedOffset);
+
+        async Task State(int expected)
+        {
+            while (await states.Reader.ReadAsync(token) != expected) { }
+        }
+    }
+
+    internal sealed class CircuitClock : TimeProvider
+    {
+        private ManualTimer? _recovery;
+        public override ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period)
+            => new ManualTimer(this, callback, state);
+        internal void Recover() => (_recovery ?? throw new InvalidOperationException("No recovery is scheduled.")).Fire();
+        private sealed class ManualTimer(CircuitClock clock, TimerCallback callback, object? state) : ITimer
+        {
+            private bool _disposed;
+            public bool Change(TimeSpan dueTime, TimeSpan period)
+            {
+                if (_disposed) return false;
+                if (dueTime != Timeout.InfiniteTimeSpan && period == Timeout.InfiniteTimeSpan) clock._recovery = this;
+                return true;
+            }
+            public void Dispose() => _disposed = true;
+            public ValueTask DisposeAsync() { Dispose(); return default; }
+            internal void Fire() { if (!_disposed) callback(state); }
+        }
+    }
+
     private const string Creation = "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01";
     private static OutgoingMessage Message(string topic, int number) => new(topic, Encoding.UTF8.GetBytes($"{{\"Number\":{number}}}"),
         new KeyValuePair<string, WireString>[] { new("ce_id", new("record-" + number)), new("ce_type", new("tests.kafka.receive;v=1")),
             new("traceparent", new(Creation)), new("tracestate", new("tenant=original")) }, new WireString("customer-1"));
 
     private static IHost BuildHost(KafkaFixture fixture, KafkaReceiveControl control, bool missingDeadLetter = false,
-        bool healthySibling = false)
+        bool healthySibling = false, CircuitClock? circuitClock = null, bool circuitRetry = false)
     {
         var builder = Host.CreateApplicationBuilder();
         builder.Logging.ClearProviders();
@@ -394,6 +505,7 @@ public class KafkaReceiveTests
         });
         builder.Services.Configure<HostOptions>(options => options.BackgroundServiceExceptionBehavior = BackgroundServiceExceptionBehavior.Ignore);
         builder.Services.AddSingleton(control);
+        if (circuitClock is not null) builder.Services.AddSingleton<TimeProvider>(circuitClock);
         builder.Services.AddRelayer(relayer =>
         {
             relayer.AddMessageTypesFromThisAssembly();
@@ -411,9 +523,10 @@ public class KafkaReceiveTests
                 kafka.Consume(fixture.Destination, consumer =>
                 {
                     consumer.Options.Group = fixture.Destination;
+                    if (circuitClock is not null) consumer.Options.CircuitBreaker = new() { MinimumThroughput = 1 };
                     consumer.Options.Failure = new()
                     {
-                        RetryDelays = new[] { TimeSpan.Zero }, Jitter = 0,
+                        RetryDelays = circuitClock is null || circuitRetry ? new[] { TimeSpan.Zero } : [], Jitter = 0,
                         DeadLetterEndpoint = missingDeadLetter ? fixture.Destination + ".missing" : null,
                         // Only missing-topic scenarios need a short failure-injection deadline.
                         CopyTimeout = missingDeadLetter ? TimeSpan.FromSeconds(1) : new FailureOptions().CopyTimeout,
@@ -440,6 +553,8 @@ public sealed class KafkaReceiveControl
     internal TaskCompletionSource Release { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
     internal Channel<int> Handled { get; } = Channel.CreateUnbounded<int>();
     internal int FirstAttempts;
+    internal volatile bool CircuitFailure;
+    internal int CircuitAttempts;
     internal KafkaConsumeFeature LastFeature;
 
     internal async Task<int> ReadHandledAsync(Task receiverCompletion, CancellationToken cancellationToken)
@@ -478,6 +593,12 @@ public sealed class KafkaReceiveHandler(KafkaReceiveControl control) : IHandler<
             control.Entered.SetResult();
             await control.Release.Task.WaitAsync(cancellationToken);
             throw new InvalidOperationException("retry me");
+        }
+        if (message.Number == 6) throw new MessageEnvelopeException("permanent poison");
+        if (message.Number == 5)
+        {
+            Interlocked.Increment(ref control.CircuitAttempts);
+            if (control.CircuitFailure) throw new InvalidOperationException("dependency unavailable");
         }
         if (message.Number == 2) throw new InvalidOperationException("poison record");
         control.Handled.Writer.TryWrite(message.Number);

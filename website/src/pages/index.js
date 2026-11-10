@@ -295,7 +295,7 @@ const status = [
   ['Packaged transport conformance suite', 'Implemented', true],
   ['Test harness and standalone handler context', 'Implemented', true],
   ['CI performance regression gate and in-memory benchmarks', 'Implemented; raw broker cases planned', true],
-  ['Kafka producers, serial consumers, typed tombstones, dead-letter copies and offset/timestamp replay', 'Implemented', true],
+  ['Kafka producers, serial consumers, typed tombstones, dead-letter copies, circuit breaking and offset/timestamp replay', 'Implemented', true],
   ['Named transport serializers and independent Kafka JSON schema registries', 'Implemented; explicit startup contracts', true],
   ['Optional Protobuf and MessagePack serializers', 'Implemented; explicit generated contracts and Native AOT coverage', true],
   ['Avro with generated codecs and startup-prepared schema registry', 'Implemented; Native AOT/trimming unsupported', true],

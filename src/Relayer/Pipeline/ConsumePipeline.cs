@@ -259,6 +259,7 @@ public sealed partial class ConsumePipeline
                         }
                         failure = null;
                     }
+                    _failures!.Circuit?.Complete(false);
                     break;
                 }
                 context.Settlement.Clear();
@@ -269,7 +270,15 @@ public sealed partial class ConsumePipeline
                     context.NextAttempt();
                     continue;
                 }
-                await _failures!.HandleAsync(context, attemptFailure, action).ConfigureAwait(false);
+                if (!Enum.IsDefined(action)) throw new InvalidOperationException("IFailureClassifier returned an undefined FailureAction.");
+                if (_failures!.Circuit?.Complete(action == FailureAction.Retry) == true)
+                {
+                    // The serial adapter retains this native delivery and suppresses settlement.
+                    context.FailureDisposition = Disposition.Redeliver(TimeSpan.Zero);
+                    context.ApplyFailureDisposition();
+                    break;
+                }
+                await _failures.HandleAsync(context, attemptFailure, action).ConfigureAwait(false);
                 context.ApplyFailureDisposition();
                 break;
             }

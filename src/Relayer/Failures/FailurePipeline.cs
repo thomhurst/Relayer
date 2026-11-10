@@ -11,6 +11,7 @@ namespace Relayer;
 /// </remarks>
 public sealed class FailurePipeline
 {
+    internal ConsumerCircuitDelivery? Circuit { get; set; }
     private readonly ITransport _transport;
     private readonly string _consumer;
     private readonly string _source;
