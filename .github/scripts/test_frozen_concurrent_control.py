@@ -58,6 +58,8 @@ class ProfileLaunchTests(unittest.TestCase):
                     trace.write_bytes(b"trace")
                     Path(str(trace) + ".etlx").write_bytes(b"index")
                 elif extraction_fails:
+                    kwargs["stdout"].write('{"kind":"measurement","samplesWithoutStacks":1}\n')
+                    kwargs["stderr"].write("Missing measured allocation stack\n")
                     raise subprocess.CalledProcessError(1, command)
                 else:
                     kwargs["stdout"].write('{"kind":"measurement"}\n')
@@ -76,6 +78,14 @@ class ProfileLaunchTests(unittest.TestCase):
             self.assertEqual(len(list(output.glob("*.nettrace"))), 4 if extraction_fails or keep_traces else 0)
             self.assertEqual(len(list(output.glob("*.etlx"))), 4 if extraction_fails else 0)
             self.assertEqual(len(list(output.glob("*-allocations.jsonl"))), 4)
+            for profile in output.glob("*-allocations.jsonl"):
+                records = [json.loads(line) for line in profile.read_text().splitlines()]
+                self.assertEqual(len(records), 1)
+                self.assertEqual(records[0]["kind"], "measurement")
+            if extraction_fails:
+                for diagnostics in output.glob("*-extraction.log"):
+                    self.assertIn("Missing measured allocation stack", diagnostics.read_text())
+                    self.assertIn("Profile extraction failed", diagnostics.read_text())
             self.assertTrue(json.loads((output / "protocol.json").read_text())["instrumented"])
             self.assertEqual(json.loads((output / "protocol.json").read_text())["raw_traces_retained"], keep_traces)
             for command in commands[::2]:

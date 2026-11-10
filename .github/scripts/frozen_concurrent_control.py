@@ -120,12 +120,13 @@ def main():
                 log.write("\nProfile capture missing; allocation ownership cannot be inspected.\n")
             failed = True
         if args.profile_reader and trace.exists():
-            with (args.output / f"{index + 1}-{side}-allocations.jsonl").open("w") as output:
+            with (args.output / f"{index + 1}-{side}-allocations.jsonl").open("w") as output, \
+                 (args.output / f"{index + 1}-{side}-extraction.log").open("w") as diagnostics:
                 try:
                     subprocess.run(["dotnet", str(args.profile_reader.resolve()), str(trace.resolve())],
-                                   stdout=output, stderr=subprocess.STDOUT, check=True, timeout=600)
+                                   stdout=output, stderr=diagnostics, check=True, timeout=600)
                 except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as error:
-                    output.write(f"\nProfile extraction failed: {error}\n")
+                    diagnostics.write(f"\nProfile extraction failed: {error}\n")
                     failed = True
                 else:
                     # The portable raw capture supports re-extraction with an improved reader.

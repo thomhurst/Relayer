@@ -465,6 +465,11 @@ weights into exact component byte counts or identify the historical excess by su
 The reader also exits unsuccessfully after writing the extracted records when any
 measured sample has no stack. The launcher then preserves the raw trace and index
 for diagnosis, continues the other launches, and reports a failed investigation.
+Extraction diagnostics are written to each launch’s `*-extraction.log`, separately
+from the `*-allocations.jsonl` records. Records emitted before a rejection remain
+parseable, so the summary can report missing stacks without decoding an exception
+traceback as JSON. Failures before records are emitted can leave an empty profile.
+
 An inclusive allocation result is still retained; it cannot fill the missing stack.
 
 ### Exact full-delivery driver control
