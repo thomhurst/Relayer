@@ -1,4 +1,6 @@
 using System.Buffers;
+using System.Data.Common;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Npgsql;
@@ -108,11 +110,13 @@ public class InboxTests : InboxContractTests
     }
 
     [Test]
-    public async Task Immediate_retry_uses_a_fresh_scope_and_commits_only_the_successful_attempt()
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Immediate_retry_uses_a_fresh_scope_and_commits_only_the_successful_attempt(bool nativeRetries)
     {
         await using var database = new Database();
         await database.Start();
-        await using var provider = database.Services(outbox: true);
+        await using var provider = database.Services(outbox: true, retries: nativeRetries);
         var scopes = new List<IServiceProvider>();
         provider.GetRequiredService<Control>().AfterSave = context =>
         {
@@ -146,10 +150,71 @@ public class InboxTests : InboxContractTests
     }
 
     [Test]
-    public async Task Retrying_strategy_is_rejected_during_composition()
+    public async Task Native_strategy_replays_a_transient_connection_failure_in_a_fresh_scope()
     {
-        await using var provider = new Database().Services(outbox: true, retries: true);
-        await Assert.That(() => Pipeline(provider)).Throws<InvalidOperationException>();
+        await using var database = new Database();
+        await database.Start();
+        await using var provider = database.Services(outbox: true, retries: true);
+        var control = provider.GetRequiredService<Control>();
+        var scopes = new List<IServiceProvider>();
+        var contexts = new List<OrdersContext>();
+        control.AfterSave = async context =>
+        {
+            scopes.Add(context.Services);
+            var db = context.Services.GetRequiredService<OrdersContext>();
+            contexts.Add(db);
+            if (scopes.Count != 1) return;
+            var connection = (NpgsqlConnection)db.Database.GetDbConnection();
+            await database.Execute($"SELECT pg_terminate_backend({connection.ProcessID})");
+            await using var command = connection.CreateCommand();
+            command.CommandText = "SELECT 1";
+            await command.ExecuteScalarAsync();
+        };
+        await Deliver(Pipeline(provider).Build(), Message());
+        await Assert.That(control.Invocations).IsEqualTo(2);
+        await Assert.That(scopes[0]).IsNotSameReferenceAs(scopes[1]);
+        await Assert.That(contexts[0]).IsNotSameReferenceAs(contexts[1]);
+        await Assert.That(await database.Orders()).IsEqualTo(1L);
+        await Assert.That(await database.Count("inbox")).IsEqualTo(1L);
+        await Assert.That(await database.Count("outbox")).IsEqualTo(1L);
+    }
+
+    [Test]
+    public async Task Native_strategy_verifies_an_unknown_commit_without_replaying_the_transaction()
+    {
+        await using var database = new Database();
+        await database.Start();
+        var fault = new LostCommitResponse();
+        await using var provider = database.Services(outbox: true, retries: true, interceptor: fault);
+        var settled = 0;
+        await Deliver(Pipeline(provider).Settle(_ => { settled++; return default; }).Build(), Message());
+        await Assert.That(fault.Transactions).IsEqualTo(1);
+        await Assert.That(fault.Commits).IsEqualTo(1);
+        await Assert.That(provider.GetRequiredService<Control>().Invocations).IsEqualTo(1);
+        await Assert.That(settled).IsEqualTo(1);
+        await Assert.That(await database.Orders()).IsEqualTo(1L);
+        await Assert.That(await database.Count("inbox")).IsEqualTo(1L);
+        await Assert.That(await database.Count("outbox")).IsEqualTo(1L);
+    }
+
+    private sealed class LostCommitResponse : DbTransactionInterceptor
+    {
+        internal int Transactions;
+        internal int Commits;
+        public override ValueTask<DbTransaction> TransactionStartedAsync(DbConnection connection, TransactionEndEventData eventData,
+            DbTransaction result, CancellationToken cancellationToken = default)
+        {
+            Transactions++;
+            return new(result);
+        }
+        public override async Task TransactionCommittedAsync(DbTransaction transaction, TransactionEndEventData eventData,
+            CancellationToken cancellationToken = default)
+        {
+            if (++Commits != 1) return;
+            // The database has committed, but the client cannot observe a successful response.
+            await eventData.Context!.Database.GetDbConnection().CloseAsync();
+            throw new NpgsqlException("Injected lost commit response", new IOException("Connection lost after commit"));
+        }
     }
 
     [Test]
@@ -310,7 +375,7 @@ public class InboxTests : InboxContractTests
             await Execute(PostgreSqlOutboxSchema.CreateScript(new() { Schema = Options.Schema, TablePrefix = Options.TablePrefix }) +
                 "CREATE TABLE orders (\"Id\" uuid PRIMARY KEY)");
         }
-        internal ServiceProvider Services(bool outbox, bool retries = false, Func<EntityFrameworkCoreOutboxOptions>? contextOptions = null)
+        internal ServiceProvider Services(bool outbox, bool retries = false, Func<EntityFrameworkCoreOutboxOptions>? contextOptions = null, IInterceptor? interceptor = null)
         {
             var services = new ServiceCollection();
             services.AddSingleton(new Control { Outbox = outbox });
@@ -321,7 +386,8 @@ public class InboxTests : InboxContractTests
             services.AddDbContext<OrdersContext>((sp, o) =>
             {
                 o.UseNpgsql(string.IsNullOrEmpty(_fixture.ConnectionString) ? "Host=unused" : _fixture.ConnectionString,
-                    native => { if (retries) native.EnableRetryOnFailure(); });
+                    native => { if (retries) native.EnableRetryOnFailure(3, TimeSpan.Zero, null); });
+                if (interceptor is not null) o.AddInterceptors(interceptor);
                 if (outbox) o.AddRelayerOutbox(sp, contextOptions?.Invoke() ?? Options);
             });
             // Outbox on another context must not turn on the inbox for OrdersContext.

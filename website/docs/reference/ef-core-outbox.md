@@ -107,6 +107,10 @@ the whole explicit transaction, rather than retrying a final save alone.
 
 ### Retrying execution strategies
 
+For message consumers, the [EF Core consumer boundary](ef-core-inbox.md#ef-core-connection-retries)
+applies the strategy to the complete handler automatically and verifies unknown commits through the
+inbox. The following manual pattern is for units of work outside that consumer boundary.
+
 When Npgsql uses `EnableRetryOnFailure()`, an implicit save with buffered messages fails before opening
 a transaction, with a Relayer error explaining the required explicit transaction. Wrap the entire unit
 in EF's execution strategy and create a fresh DI scope and DbContext on each attempt:

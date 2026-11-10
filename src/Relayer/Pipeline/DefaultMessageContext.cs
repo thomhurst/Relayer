@@ -61,6 +61,7 @@ public sealed class DefaultMessageContext : MessageContext, IDisposable
         if (FailureDisposition is { } disposition) _receive?.SetDisposition(disposition);
     }
     internal AttemptSendBuffer SendBuffer { get; } = new();
+    internal AttemptSendBuffer? ActiveAttemptBuffer => _sender?.AttemptBuffer;
     internal void InitializeAttempts()
     {
         _attempt = Math.Max(Attempt, checked(FailureMetadata.ReadCount(Headers, FailureHeaders.Attempts) + 1));
