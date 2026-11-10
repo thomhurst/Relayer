@@ -65,6 +65,34 @@ public class FrozenInvocationAllocationTests
         await Assert.That(report.Bytes).IsEqualTo(0);
     }
 
+    [Test]
+    public async Task Result_calls_count_only_synchronous_work_and_preserve_the_pending_result()
+    {
+        var completion = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
+        byte[]? retained = null;
+        Func<ValueTask<int>> invoke = () =>
+        {
+            retained = new byte[64];
+            return new ValueTask<int>(completion.Task);
+        };
+        var recorder = new InvocationAllocations(1);
+        _ = recorder.Invoke(invoke); // Warmup is excluded.
+        var before = GC.GetAllocatedBytesForCurrentThread();
+        _ = invoke();
+        var expected = GC.GetAllocatedBytesForCurrentThread() - before;
+        recorder.Enabled = true;
+        var pending = recorder.Invoke(invoke);
+        recorder.Enabled = false;
+        var report = recorder.Report();
+        await Assert.That(pending.IsCompleted).IsFalse();
+        await Assert.That(report.Invocations).IsEqualTo(1);
+        await Assert.That(report.Bytes).IsEqualTo(expected);
+        await Assert.That(expected).IsGreaterThan(0);
+        completion.SetResult(42);
+        await Assert.That(await pending).IsEqualTo(42);
+        GC.KeepAlive(retained);
+    }
+
     private sealed class AllocatingHandler
     {
         private readonly TaskCompletionSource _completion = new(TaskCreationOptions.RunContinuationsAsynchronously);

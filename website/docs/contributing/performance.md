@@ -521,3 +521,25 @@ end-to-end allocation owners. Histogram sizes do not identify allocated types.
 The separate exact release-batch ABBA also includes this input set, testing
 calling-thread channel completion scheduling outside the handler-call boundary.
 Its measurements must remain separate from handler-call and inclusive totals.
+
+
+For #357, the full-delivery workflow also runs a **separate exact round-trip-call
+ABBA** (`--exact-roundtrips`). It reuses the exact recorder around one synchronous
+call to the frozen original `ConcurrentRoundTrip` delegate, before awaiting the
+returned `ValueTask<int>`. Each of 32768 records represents an eight-message call;
+4096 warmup calls are excluded. This covers synchronous full-delivery work that
+the isolated handler and release controls do not execute, including any send and
+pipeline work reached before the first suspension. Two calling-thread allocation
+counter reads enclose only that delegate call; the probe awaits its result after
+the second read. Histograms are processed after measurement.
+
+This boundary excludes other threads and subsequent continuations, even if they
+complete before the delegate returns. Scheduling depends on instrumentation; its
+inclusive process totals and exact counts belong to this separate experiment.
+Neither subtraction from isolated or inclusive controls nor histogram-based type
+inference identifies the historical owner. Earlier unfavorable measurements
+remain unresolved. Native exact release-batch run
+[42751736039](https://github.com/thomhurst/Relayer/actions/runs/42751736039) reported
+0/0/0/0 calling-thread bytes per eight-write record for the original #357 inputs;
+this excludes excess only in that instrumented release region. PR #409 has merged
+and its required CI run 42752233964 passed. Historical attribution remains open.
