@@ -5,6 +5,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
 using Microsoft.Extensions.Hosting;
 using RabbitMQ.Client;
+using RabbitMQ.Client.Exceptions;
 using Relayer.HealthChecks;
 using Relayer.RabbitMQ;
 using Relayer.Transports;
@@ -23,7 +24,12 @@ public class RabbitMqReceiveTests
         using var host = Host(broker.Factory(), control);
         await host.StartAsync(token);
         var transport = host.Services.GetRequiredService<ITransport>();
-        await transport.SendAsync(new("orders", "bad-json"u8.ToArray(), Headers()), token);
+        var options = new SendOptions().RabbitMQ(properties =>
+        {
+            properties.CorrelationId = "request-id";
+            properties.ReplyTo = "native-replies";
+        });
+        await transport.SendAsync(new("orders", "bad-json"u8.ToArray(), Headers(), options: options), token);
         await transport.SendAsync(new("orders", "{\"Value\":42}"u8.ToArray(), Headers()), token);
         await Assert.That(await control.Values.Reader.ReadAsync(token)).IsEqualTo(42);
         await host.StopAsync(token);
@@ -33,6 +39,8 @@ public class RabbitMqReceiveTests
         await Assert.That(System.Text.Encoding.UTF8.GetString(poison.Body.Span)).IsEqualTo("bad-json");
         await Assert.That(poison.BasicProperties.Headers!.ContainsKey(FailureHeaders.History)).IsTrue();
         await Assert.That(poison.BasicProperties.Headers.ContainsKey("traceparent")).IsTrue();
+        await Assert.That(poison.BasicProperties.CorrelationId).IsEqualTo("request-id");
+        await Assert.That(poison.BasicProperties.ReplyTo).IsEqualTo("native-replies");
         await Assert.That((await channel.QueueDeclarePassiveAsync("orders", token)).MessageCount).IsEqualTo(0u);
     }
 
@@ -178,6 +186,53 @@ public class RabbitMqReceiveTests
     }
 
     [Test]
+    [Arguments(true)]
+    [Arguments(false)]
+    public async Task In_flight_ack_failure_respects_native_automatic_recovery(bool automaticRecovery)
+    {
+        using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(2));
+        var token = timeout.Token;
+        await using var broker = await RabbitMqTopologyTests.Broker.StartAsync(token);
+        var factory = broker.Factory();
+        factory.AutomaticRecoveryEnabled = automaticRecovery;
+        factory.NetworkRecoveryInterval = TimeSpan.FromMilliseconds(100);
+        var finish = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var failedAck = new TaskCompletionSource<Exception>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var attempts = 0;
+        var control = new RabbitMqReceiveControl { Handle = _ => Interlocked.Increment(ref attempts) == 1 ? new(finish.Task) : default };
+        using var host = Host(factory, control);
+        await host.StartAsync(token);
+        var transport = (RabbitMqNativeTransport)host.Services.GetRequiredService<ITransport>();
+        var consumer = transport.Consumers.Single();
+        var probe = host.Services.GetRequiredKeyedService<ITransportHealthProbe>("rabbit");
+        // Observe the real native exception after Relayer's callback exception handler runs.
+        control.NativeCallback = context => context.RabbitMQ().Channel.CallbackExceptionAsync += (_, args) =>
+        {
+            failedAck.TrySetResult(args.Exception);
+            return Task.CompletedTask;
+        };
+        await transport.SendAsync(new("orders", "{\"Value\":1}"u8.ToArray(), Headers()), token);
+        await control.Values.Reader.ReadAsync(token);
+        await broker.CommandAsync(["rabbitmqctl", "stop_app"], token);
+        await WaitAsync(async () => (await probe.CheckAsync(token)).Status == HealthStatus.Unhealthy, token);
+        finish.TrySetResult();
+        await Assert.That(await failedAck.Task.WaitAsync(token)).IsTypeOf<AlreadyClosedException>();
+        if (!automaticRecovery)
+        {
+            await Assert.That(consumer.Completion.IsFaulted).IsTrue();
+            await host.StopAsync(token);
+            return;
+        }
+        await Assert.That(consumer.Completion.IsCompleted).IsFalse();
+        await Assert.That(host.Services.GetRequiredService<IHostApplicationLifetime>().ApplicationStopping.IsCancellationRequested).IsFalse();
+        await broker.CommandAsync(["rabbitmqctl", "start_app"], token);
+        await Assert.That(await control.Values.Reader.ReadAsync(token)).IsEqualTo(1);
+        await WaitAsync(() => Task.FromResult(consumer.GetHealthState()?.IsIdle == true), token);
+        await Assert.That(consumer.Completion.IsCompleted).IsFalse();
+        await host.StopAsync(token);
+    }
+
+    [Test]
     public async Task Hosted_consumer_and_health_recover_after_a_broker_restart()
     {
         using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(2));
@@ -247,6 +302,7 @@ public sealed class RabbitMqReceiveControl
 {
     public Channel<int> Values { get; } = Channel.CreateUnbounded<int>();
     public Func<int, ValueTask>? Handle { get; init; }
+    public Action<MessageContext>? NativeCallback { get; set; }
 }
 [Message("rabbit.receive")]
 public sealed record RabbitMqReceivePayload(int Value);
@@ -254,6 +310,7 @@ public sealed class RabbitMqReceiveHandler(RabbitMqReceiveControl control) : IHa
 {
     public ValueTask HandleAsync(RabbitMqReceivePayload message, MessageContext context, CancellationToken cancellationToken)
     {
+        control.NativeCallback?.Invoke(context);
         control.Values.Writer.TryWrite(message.Value);
         return control.Handle?.Invoke(message.Value) ?? default;
     }

@@ -95,6 +95,7 @@ internal sealed class RabbitMqReceiveComposer
             target.Headers = properties.Headers;
             target.ContentEncoding = properties.ContentEncoding;
             target.CorrelationId = properties.CorrelationId;
+            target.ReplyTo = properties.ReplyTo;
             target.MessageId = properties.MessageId;
             target.Type = properties.Type;
             target.AppId = properties.AppId;

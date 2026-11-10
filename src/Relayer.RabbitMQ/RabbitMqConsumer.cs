@@ -1,6 +1,7 @@
 using System.Runtime.CompilerServices;
 using RabbitMQ.Client;
 using RabbitMQ.Client.Events;
+using RabbitMQ.Client.Exceptions;
 
 namespace Relayer.RabbitMQ;
 
@@ -11,9 +12,12 @@ internal sealed class RabbitMqConsumer
     private readonly RabbitMqConsumerOptions _options;
     private readonly RabbitMqEndpointCache _endpoints;
     private readonly TimeProvider _clock;
+    private readonly bool _automaticRecovery;
     private readonly long[] _active;
     private CancellationTokenSource _abort = new();
     private IChannel? _channel;
+    private IConnection? _connection;
+    private ShutdownEventArgs? _connectionShutdown;
     private AsyncEventingBasicConsumer? _native;
     private string? _tag;
     private int _running;
@@ -34,6 +38,7 @@ internal sealed class RabbitMqConsumer
         _receive = receive;
         _endpoints = new(tracing, declaration.Source, factory?.HostName, factory?.Port);
         _clock = clock ?? TimeProvider.System;
+        _automaticRecovery = factory?.AutomaticRecoveryEnabled ?? true;
         _active = new long[declaration.Concurrency];
     }
 
@@ -59,6 +64,9 @@ internal sealed class RabbitMqConsumer
         _drained = new(TaskCreationOptions.RunContinuationsAsynchronously);
         _completion = new(TaskCreationOptions.RunContinuationsAsynchronously);
         var channel = await connection.CreateChannelAsync(_options.ChannelOptions, token).ConfigureAwait(false);
+        _connection = connection;
+        _connectionShutdown = null;
+        connection.ConnectionShutdownAsync += ConnectionShutdownAsync;
         try
         {
             await channel.BasicQosAsync(0, _options.PrefetchCount, false, token).ConfigureAwait(false);
@@ -72,11 +80,32 @@ internal sealed class RabbitMqConsumer
                 _options.Arguments, native, token).ConfigureAwait(false);
             Volatile.Write(ref _running, 1);
         }
-        catch { _channel = null; _native = null; await channel.DisposeAsync().ConfigureAwait(false); throw; }
+        catch
+        {
+            connection.ConnectionShutdownAsync -= ConnectionShutdownAsync;
+            _connection = null;
+            _channel = null;
+            _native = null;
+            await channel.DisposeAsync().ConfigureAwait(false);
+            throw;
+        }
+    }
+
+    private Task ConnectionShutdownAsync(object sender, ShutdownEventArgs reason)
+    {
+        Volatile.Write(ref _connectionShutdown, reason);
+        return Task.CompletedTask;
     }
 
     private Task CallbackFailedAsync(object sender, CallbackExceptionEventArgs args)
     {
+        // The native recoverable connection owns redelivery after a connection outage. Keep
+        // its shutdown reason even after recovery so a delayed callback cannot fault the host.
+        // A channel-only protocol error or an unroutable poison copy remains terminal.
+        if (_automaticRecovery && args.Exception is AlreadyClosedException error &&
+            error.ShutdownReason is { Initiator: not ShutdownInitiator.Application, ReplyCode: not 403 } reason &&
+            (ReferenceEquals(reason, _connection?.CloseReason) || ReferenceEquals(reason, Volatile.Read(ref _connectionShutdown))))
+            return Task.CompletedTask;
         Volatile.Write(ref _failure, args.Exception);
         _completion.TrySetException(args.Exception);
         return Task.CompletedTask;
@@ -171,6 +200,8 @@ internal sealed class RabbitMqConsumer
         finally
         {
             Volatile.Write(ref _running, 0);
+            if (_connection is { } connection) connection.ConnectionShutdownAsync -= ConnectionShutdownAsync;
+            _connection = null;
             await channel.DisposeAsync().ConfigureAwait(false);
             _channel = null;
             _native = null;

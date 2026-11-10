@@ -183,7 +183,7 @@ after success to prevent a second settlement. Prefer the common settlement API w
 Relayer acknowledges after handling, scoped disposal and durable failure handling finish. Default poison
 handling sends to `source + ".dead-letter"`, waits for its publisher confirm, then acknowledges the original.
 Set `consumer.Options.Failure.DeadLetterEndpoint` to use another declared destination. Copies retain CloudEvents,
-creation context and native headers, and add common error metadata. A failed or unroutable copy leaves the
+creation context, native headers and native correlation/reply destinations, and add common error metadata. A failed or unroutable copy leaves the
 source unacknowledged and faults the hosted receiver; closing the channel permits native redelivery. Provision
 a durable failure queue or exchange/binding before starting consumers.
 
@@ -195,7 +195,9 @@ flag is exposed unchanged and is never treated as a delivery counter. Native del
 
 Graceful stop waits for native cancel-ok and active callbacks before closing their settlement channel. The host's
 stop deadline cancels processing. Unexpected callback failure reaches the hosted service and leaves uncertain
-work unacknowledged. Automatic recovery remains owned by RabbitMQ.Client.
+work unacknowledged. A connection outage that prevents acknowledgement leaves the delivery for native
+redelivery without terminating the host when automatic recovery is enabled. Channel protocol errors and
+unroutable poison copies still fault the receiver. Automatic recovery remains owned by RabbitMQ.Client.
 
 Process and settle destinations are `{exchange}:{routing key}:{queue}`, including `:orders:orders` for the
 default exchange. Samplers receive the actual destination at process start. Spans include routing key and
