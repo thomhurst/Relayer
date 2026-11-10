@@ -46,3 +46,25 @@ whole suite several times back to back can therefore fail with
 `Exception while reading from stream` on every test. Run the tests that cover your
 change instead, or wait 30 seconds between full runs. Linux hosts and CI are not
 affected.
+
+## Service Bus startup diagnostics
+
+Service Bus fixture startup failures print a diagnostic report before cleanup and
+attach it to the original exception's `Data["ServiceBusStartupDiagnostics"]`.
+The report inspects both SQL Server and the emulator, including Docker's exit code,
+`OOMKilled` flag, status, error and timestamps, then reads their stdout/stderr.
+Each inspect/log request has an independent five-second budget even when the
+provisioning deadline has expired. Missing containers or failed diagnostic requests
+are reported without replacing the startup exception.
+
+Exit 137 commonly indicates SIGKILL, but a process can also return that code itself;
+it does not by itself establish an OOM kill.
+`oomKilled=True` records Docker's OOM observation. When it is false, inspect SQL
+logs for errors such as 701 (insufficient memory) and correlate Docker host memory
+and other workloads; a false flag does not exclude SQL's own memory exhaustion.
+Diagnostics record available evidence rather than retrying startup or changing
+resource limits. The controlled diagnostic tests can be run with:
+
+```bash
+dotnet test -c Release --project tests/Relayer.Tests --treenode-filter '/*/*/ServiceBusStartupDiagnosticsTests/*'
+```

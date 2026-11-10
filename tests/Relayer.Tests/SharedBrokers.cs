@@ -96,7 +96,7 @@ internal sealed class ServiceBusStack(INetwork network, MsSqlContainer database,
         var database = databaseBuilder.Build();
         var stack = new ServiceBusStack(network, database,
             emulatorBuilder.WithMsSqlContainer(network, database, ServiceBusBuilder.DatabaseNetworkAlias).Build());
-        try { await stack.Emulator.StartAsync(provisioning.Token); return stack; }
+        try { await ServiceBusStartupDiagnostics.StartAsync(stack.Emulator.StartAsync, database, stack.Emulator, provisioning.Token); return stack; }
         catch (OperationCanceledException error) when (provisioning.IsCancellationRequested)
         {
             await stack.DisposeAsync();
