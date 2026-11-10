@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fixed ABBA replay of run 42772012652 ScopeOnly images, never a gate retry."""
+"""Fixed ABBA replay of retained scope benchmark images, never a gate retry."""
 import argparse
 import json
 import os
@@ -15,7 +15,9 @@ LAUNCHES = ("baseline", "candidate", "candidate", "baseline")
 BENCHMARK = "Relayer.Benchmarks.ConsumePipelineBenchmarks.ScopeOnly"
 
 
-def executable(root, scoped):
+def executable(root, scoped, method="ScopeOnly"):
+    if method not in ("ScopeOnly", "ScopeAndHandlerResolution"):
+        raise ValueError("Unsupported retained scope benchmark")
     root = Path(root).resolve()
     files = {item["path"] for item in json.loads((root / "inventory-sha256.json").read_text())["files"]}
     sources = list(root.glob("builds/*/Relayer.Benchmarks-DefaultJob-*/*.notcs"))
@@ -25,9 +27,9 @@ def executable(root, scoped):
     runners = re.findall(r"public unsafe class Runnable_(\d+) : global::Relayer\.Benchmarks\.ConsumePipelineBenchmarks\s*\{(.*?)(?=public unsafe class Runnable_|\Z)", source.read_text(), re.S)
     parameter = "instance.ScopedHandler = " + str(scoped).lower() + ";"
     matches = [(identity, body) for identity, body in runners
-               if parameter in body and "AwaitHelper.GetResult(ScopeOnly())" in body]
+               if parameter in body and f"AwaitHelper.GetResult({method}())" in body]
     if len(matches) != 1:
-        raise ValueError("Expected one original ScopeOnly runner for selected parameter")
+        raise ValueError("Expected one original selected scope runner for selected parameter")
     identity, body = matches[0]
     if "OperationsPerInvoke = 1," not in body or "MeasureExtraStats = true," not in body:
         raise ValueError("Expected original one-operation GC-stat job")
@@ -62,17 +64,28 @@ def main():
                         help="Separate code-capture experiment; its timings are not performance evidence")
     parser.add_argument("--tiered-compilation", choices=("default", "off"), default="default",
                         help="Diagnostic runtime control; off uses native DOTNET_TieredCompilation=0")
+    parser.add_argument("--method", choices=("ScopeOnly", "ScopeAndHandlerResolution"),
+                        default="ScopeOnly", help="Select the original generated benchmark runner")
+    parser.add_argument("--jit-method", default="*",
+                        help="Native DOTNET_JitDisasm method filter; requires --jit-disassembly")
     args = parser.parse_args()
+    if args.jit_method != "*" and not args.jit_disassembly:
+        parser.error("--jit-method requires --jit-disassembly")
+    if not args.jit_method.strip():
+        parser.error("--jit-method must not be empty")
+    benchmark = BENCHMARK.rsplit(".", 1)[0] + "." + args.method
     builds = args.artifact.resolve() / "performance-builds"
     commits = {side: verify(builds / side) for side in SIDES}
-    runners = {(side, scoped): executable(builds / side, scoped)
+    runners = {(side, scoped): executable(builds / side, scoped, args.method)
                for side in SIDES for scoped in (True, False)}
     args.output.mkdir(parents=True, exist_ok=False)
-    protocol = {"commits": commits, "benchmark": BENCHMARK,
+    protocol = {"commits": commits, "benchmark": benchmark,
                 "plan": "Scoped ABBA, then unscoped ABBA; A2 reuses first baseline image",
                 "engine": "Original Default job, native NoAcknowledgementConsoleHost without anonymous-pipe parent",
                 "limits": "New host/process executions, not historical reconstruction. Image-associated differences do not identify a production defect; absent differences do not prove equivalence. No threshold changes or gate pass claim.",
                 "jitDisassembly": args.jit_disassembly,
+                "jitMethod": args.jit_method if args.jit_disassembly else None,
+                "captureLimits": "Method filtering reduces concurrent listing output; it does not serialize JIT compilation. Missing, interleaved or precompiled methods remain limitations, not evidence of equality.",
                 "tieredCompilation": args.tiered_compilation,
                 "runtimeControlLimits": "Disabling tiering changes execution, not production configuration. Cross-condition timing is diagnostic only; host/process order remains a confound.",
                 "timingUse": "Excluded: JIT diagnostics perturb execution" if args.jit_disassembly else "New ABBA experiment only",
@@ -81,7 +94,7 @@ def main():
         for side in LAUNCHES:
             image, identity = runners[side, scoped]
             protocol["launches"].append({"side": side, "scoped": scoped,
-                "command": ["dotnet", str(image), "--benchmarkName", BENCHMARK,
+                "command": ["dotnet", str(image), "--benchmarkName", benchmark,
                             "--job", "Default", "--benchmarkId", identity]})
     (args.output / "protocol.json").write_text(json.dumps(protocol, indent=2) + "\n")
     outcomes = []
@@ -97,7 +110,7 @@ def main():
             if key in environment}
         disassembly = (args.output / f"{index}-{launch['side']}-{launch['scoped']}.asm").resolve()
         if args.jit_disassembly:
-            environment.update(DOTNET_JitDisasm="*", DOTNET_JitDisasmDiffable="1",
+            environment.update(DOTNET_JitDisasm=args.jit_method, DOTNET_JitDisasmDiffable="1",
                                DOTNET_JitStdOutFile=str(disassembly))
             outcome["diagnosticEnvironment"] = {key: environment[key] for key in
                 ("DOTNET_JitDisasm", "DOTNET_JitDisasmDiffable", "DOTNET_JitStdOutFile")}
