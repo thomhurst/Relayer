@@ -27,8 +27,6 @@ public class ServiceBusSendEmulatorTests
         };
         metrics.SetMeasurementEventCallback<long>((_, count, _, _) => Interlocked.Add(ref sent, count));
         metrics.Start();
-        using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(5));
-        var token = timeout.Token;
         await using var network = new NetworkBuilder().Build();
         var databaseBuilder = new MsSqlBuilder("mcr.microsoft.com/mssql/server:2022-CU14-ubuntu-22.04")
             .WithNetwork(network).WithNetworkAliases(ServiceBusBuilder.DatabaseNetworkAlias);
@@ -41,7 +39,17 @@ public class ServiceBusSendEmulatorTests
         }
         await using var database = databaseBuilder.Build();
         await using var emulator = emulatorBuilder.WithMsSqlContainer(network, database, ServiceBusBuilder.DatabaseNetworkAlias).Build();
-        await emulator.StartAsync(token);
+        // Image pulls and dependency readiness have their own bounded setup budget.
+        using (var provisioning = new CancellationTokenSource(TimeSpan.FromMinutes(15)))
+        {
+            try { await emulator.StartAsync(provisioning.Token); }
+            catch (OperationCanceledException error) when (provisioning.IsCancellationRequested)
+            {
+                throw new TimeoutException("Service Bus emulator provisioning exceeded 15 minutes (image pulls and container readiness).", error);
+            }
+        }
+        using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(5));
+        var token = timeout.Token;
         using var capture = new SendDurationCapture(instrumentation);
         await using var client = new ServiceBusClient(emulator.GetConnectionString());
         var admin = new ServiceBusAdministrationClient(emulator.GetHttpConnectionString());

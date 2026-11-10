@@ -12,12 +12,13 @@ public sealed class ServiceBusConformanceTests
     [Test]
     public async Task Service_bus_emulator_passes_queue_and_session_transport_contracts()
     {
-        using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(8));
-        var token = timeout.Token;
         var destinations = Enum.GetValues<TransportConformanceCase>().Where(scenario => scenario != TransportConformanceCase.OrderingByKey)
             .ToDictionary(scenario => scenario, _ => "conformance-" + Guid.NewGuid().ToString("N"));
         var sessionDestination = "conformance-session-" + Guid.NewGuid().ToString("N");
-        await using var broker = await ServiceBusReceiveBroker.StartAsync(token, destinations.Values.ToArray(), [sessionDestination]);
+        // Provisioning owns its deadline; broker assertions get their full operation budget.
+        await using var broker = await ServiceBusReceiveBroker.StartAsync(destinations.Values.ToArray(), [sessionDestination]);
+        using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(8));
+        var token = timeout.Token;
         var destination = "";
         var queues = new TransportConformanceSuite<ProcessMessageEventArgs, ServiceBusBinding>(
             (tracing, cancellation) => ServiceBusConformanceFixture<ProcessMessageEventArgs>.CreateAsync(broker, tracing, false, destination, cancellation),
