@@ -1,6 +1,7 @@
 using System.Collections.Frozen;
 using System.Runtime.CompilerServices;
 using System.Runtime.ExceptionServices;
+using Microsoft.Extensions.Logging;
 using NATS.Client.Core;
 using NATS.Client.JetStream;
 using Relayer.Transports;
@@ -23,12 +24,14 @@ internal sealed class NatsNativeTransport : ITransport, ITransportSendTracing
     private readonly FrozenDictionary<string, Endpoint> _endpoints;
     private readonly FrozenSet<(string Stream, string Name)> _declaredConsumers;
     private readonly MessageTracing _tracing;
+    private readonly ILogger<NatsConsumerWorker>? _consumerLogger;
     internal List<NatsConsumerWorker> Consumers { get; } = [];
 
-    internal NatsNativeTransport(string name, NatsTransportOptions options, TransportDefinition definition, MessageTracing tracing)
+    internal NatsNativeTransport(string name, NatsTransportOptions options, TransportDefinition definition, MessageTracing tracing, ILoggerFactory? logging = null)
     {
         Name = name;
         _tracing = tracing;
+        _consumerLogger = logging?.CreateLogger<NatsConsumerWorker>();
         ArgumentNullException.ThrowIfNull(options.ConnectionOptions);
         _options = options.ConnectionOptions;
         _jetStreamOptions = options.JetStreamOptions;
@@ -165,7 +168,7 @@ internal sealed class NatsNativeTransport : ITransport, ITransportSendTracing
     internal NatsConsumerWorker AddConsumer(string stream, string name, NatsJSConsumeOpts settings, int concurrency)
     {
         if (!_declaredConsumers.Contains((stream, name))) throw new InvalidOperationException($"Undeclared NATS consumer '{stream}/{name}'.");
-        var worker = new NatsConsumerWorker(stream, name, settings, concurrency, _tracing);
+        var worker = new NatsConsumerWorker(stream, name, settings, concurrency, _tracing, _consumerLogger);
         Consumers.Add(worker);
         return worker;
     }
@@ -196,8 +199,8 @@ internal sealed class NatsNativeTransport : ITransport, ITransportSendTracing
             var failed = true;
             try
             {
-                headers.TryGetLastValue("traceparent", out headers.TraceParent);
-                headers.TryGetLastValue("tracestate", out headers.TraceState);
+                headers.TryGetValue("traceparent", out headers.TraceParent);
+                headers.TryGetValue("tracestate", out headers.TraceState);
                 var ack = await context.PublishAsync(message.Destination, message.Body,
                     headers, opts: _publishOptions, headers: headers, cancellationToken: token).ConfigureAwait(false);
                 ack.EnsureSuccess();

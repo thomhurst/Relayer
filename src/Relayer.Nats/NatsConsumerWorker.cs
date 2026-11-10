@@ -1,11 +1,12 @@
 using System.Runtime.CompilerServices;
+using Microsoft.Extensions.Logging;
 using NATS.Client.Core;
 using NATS.Client.JetStream;
 using NATS.Client.JetStream.Models;
 
 namespace Relayer.Nats;
 
-internal sealed class NatsConsumerWorker(string stream, string name, NatsJSConsumeOpts settings, int concurrency, MessageTracing tracing)
+internal sealed partial class NatsConsumerWorker(string stream, string name, NatsJSConsumeOpts settings, int concurrency, MessageTracing tracing, ILogger<NatsConsumerWorker>? logger = null)
 {
     private readonly MessageOperationTracing _ack = new(tracing, new() { System = "nats", Destination = stream, Subscription = name }, MessagingOperation.Settle, "ack");
     private CancellationTokenSource? _pull;
@@ -71,8 +72,21 @@ internal sealed class NatsConsumerWorker(string stream, string name, NatsJSConsu
         if (disposition.Kind != DispositionKind.Complete)
             throw new NotSupportedException("NATS settlement uses confirmed ACK after durable work. NAK cannot update failure headers; use in-process retries and a DeadLetterEndpoint, or native message APIs explicitly.");
         using var activity = _ack.Start();
-        await delivery.Message.AckAsync(new() { DoubleAck = true }, token).ConfigureAwait(false);
+        try
+        {
+            await delivery.Message.AckAsync(new() { DoubleAck = true }, token).ConfigureAwait(false);
+        }
+        catch (Exception error) when (!token.IsCancellationRequested)
+        {
+            // Work is durable. An uncertain ACK must not stop healthy sibling consumers or
+            // be retried by a parallel recovery loop: native AckWait owns redelivery.
+            MessageOperationTracing.Fail(activity, "_OTHER");
+            if (logger is not null) AckFailed(logger, error, stream, name);
+        }
     }
+    [LoggerMessage(Level = LogLevel.Error, Message = "NATS confirmed ACK failed for {Stream}/{Consumer}; native AckWait controls redelivery.")]
+    private static partial void AckFailed(ILogger logger, Exception exception, string stream, string consumer);
+
     internal async Task StopAsync(CancellationToken token)
     {
         if (_pull is null) return;

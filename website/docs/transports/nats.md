@@ -3,7 +3,7 @@ title: NATS JetStream
 description: "Confirmed native JetStream sends, durable pull consumers and explicit topology."
 ---
 
-`Relayer.Nats` wraps NATS.Net 3.3.2 with owned named connections, confirmed JetStream publications, durable pull consumers and confirmed acknowledgements. Enable JetStream on the server (`nats-server -js`). Performance acceptance remains under investigation in [#313](https://github.com/thomhurst/Relayer/issues/313): local full-send measurements show an allocation delta above the raw client, and local timing has not established the 5% throughput budget. No performance exception has been accepted.
+`Relayer.Nats` wraps NATS.Net 3.3.2 with owned named connections, confirmed JetStream publications, durable pull consumers and confirmed acknowledgements. Enable JetStream on the server (`nats-server -js`). Performance acceptance remains under investigation in [#313](https://github.com/thomhurst/Relayer/issues/313): full-send measurements show an allocation delta above the raw client, and the first hosted Linux comparison measured receive latency at 1.11 times raw native (305.7 μs versus 276.0 μs). The 5% throughput budget and zero Relayer allocation target remain unproven. No performance exception has been accepted.
 
 ## Register sends and a durable consumer
 
@@ -60,7 +60,7 @@ Receivers require durable pull consumers with explicit per-message acknowledgeme
 
 `consumer.Options.Settings` passes native `NatsJSConsumeOpts` unchanged. `DrainOnCancel = true` is required and enabled by default. `Concurrency(n)` starts `n` native pull enumerations against the durable consumer, each processing one delivery at a time. Native buffer limits apply per enumeration. Shutdown cancels pulls, drains through the native protocol, finishes buffered processing and confirms ACKs before closing. A stop deadline cancels processing; incomplete work remains available for native redelivery.
 
-Starting an already running transport returns without probing the connection; native reconnect remains responsible for an outage. An exception escaping message processing, failure-copy publication or confirmed ACK faults the hosted consumer and cancels its sibling pull enumerations. It does not ACK incomplete work: JetStream retains that work for redelivery when consumption resumes. The default .NET host stops on the background-service failure, making an unavailable dead-letter destination or failed settlement visible rather than silently retrying forever.
+Starting an already running transport returns without probing the connection; native reconnect remains responsible for an outage. A non-cancellation confirmed-ACK failure is logged and marks its settlement span as failed; native NATS acknowledgement telemetry records the error. Consumption continues, and native `AckWait` controls redelivery if the server did not receive the ACK. Relayer does not retry ACKs or undo durable work. An exception escaping message processing or failure-copy publication faults the hosted consumer and cancels its sibling pull enumerations. It does not ACK incomplete work: JetStream retains that work for redelivery when consumption resumes. The default .NET host stops on the background-service failure, making an unavailable dead-letter destination visible rather than silently retrying forever.
 
 Poison messages use the existing core failure pipeline: in-process `RetryDelays`, then a copy to the required `DeadLetterEndpoint` subject, confirmed before ACK of the original. Ensure that subject is captured by a JetStream stream. Copy/ACK failure can duplicate the copy at the at-least-once boundary. Original bodies, CloudEvents identity and creation context survive, including malformed envelopes. Copies omit the original native `Nats-Msg-Id` so stream-wide deduplication cannot suppress a dead-letter copy to another subject in the same stream.
 
@@ -77,7 +77,7 @@ await sender.SendNowAsync(order,
     options => options.Nats(headers => headers["application-header"] = "value"), ct);
 ```
 
-The original native message exposes its connection. Delivery objects are borrowed until processing returns. Send callbacks receive reusable native `NatsHeaders` immediately before publication; do not retain them. CloudEvents attributes use `ce-` headers. Relayer telemetry uses `messaging.system = nats`, the publish subject for sends, and the native stream/durable subscription for processing and settlement. Its public native context-aware serializer hook preserves stored `traceparent`/`tracestate` even with NATS instrumentation enabled, so dispatch and failure copies keep their creation context.
+The original native message exposes its connection. Delivery objects are borrowed until processing returns. Send callbacks receive reusable native `NatsHeaders` immediately before publication; do not retain them. CloudEvents attributes use `ce-` headers. Dead-letter copies preserve native header value lists and omit the original stream-wide deduplication ID. Relayer telemetry uses `messaging.system = nats`, the publish subject for sends, and the native stream/durable subscription for processing and settlement. Its public native context-aware serializer hook preserves stored `traceparent`/`tracestate` even with NATS instrumentation enabled, so dispatch and failure copies keep their creation context.
 
 ## Topology modes
 

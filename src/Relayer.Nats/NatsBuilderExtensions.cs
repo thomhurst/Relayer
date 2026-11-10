@@ -1,6 +1,7 @@
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Options;
+using Microsoft.Extensions.Logging;
 using NATS.Client.JetStream;
 using Relayer.Transports;
 
@@ -24,7 +25,7 @@ public static class NatsBuilderExtensions
         builder.Services.AddKeyedSingleton<NatsNativeTransport>(name, (provider, _) => new(name,
             provider.GetRequiredService<IOptionsMonitor<NatsTransportOptions>>().Get(name),
             provider.GetRequiredService<RelayerConfiguration>().Transports.Single(item => item.Name == name),
-            provider.GetRequiredService<MessageTracing>()));
+            provider.GetRequiredService<MessageTracing>(), provider.GetService<ILoggerFactory>()));
         builder.Services.AddSingleton<ITransport>(provider => provider.GetRequiredKeyedService<NatsNativeTransport>(name));
         builder.Services.AddSingleton<IHostedService>(provider => new NatsHostedService(provider, name));
         return builder;
@@ -97,6 +98,16 @@ internal sealed class NatsHostedService(IServiceProvider provider, string name) 
                 headers[index++] = new(pair.Key, new(pair.Value.ToString()));
             }
         return new(message.Subject, message.Data, headers.AsMemory(0, index), options: new SendOptions().Nats(
-            static native => ((NatsPublishHeaders)native).IsFailureCopy = true));
+            native =>
+            {
+                ((NatsPublishHeaders)native).IsFailureCopy = true;
+                // Portable headers carry a single string; preserve unchanged native lists after
+                // the core has added failure metadata. Do not overwrite updated failure headers.
+                if (message.Headers is not { } original) return;
+                foreach (var pair in original)
+                    if (pair.Value.Count > 1 && native.TryGetValue(pair.Key, out var current) &&
+                        current.ToString() == pair.Value.ToString())
+                        native[pair.Key] = pair.Value;
+            }));
     }
 }

@@ -60,8 +60,8 @@ public class NatsAllocationTests
         }
         var added = GC.GetAllocatedBytesForCurrentThread() - before;
         await Assert.That(added).IsEqualTo(0L);
-        await Assert.That(headers["traceparent"].ToString()).IsEqualTo(headers.TraceParent);
-        await Assert.That(headers["tracestate"].ToString()).IsEqualTo(headers.TraceState);
+        await Assert.That(headers["traceparent"].ToString()).IsEqualTo(headers.TraceParent.ToString());
+        await Assert.That(headers["tracestate"].ToString()).IsEqualTo(headers.TraceState.ToString());
         await Assert.That(writer.WrittenSpan.SequenceEqual(body)).IsTrue();
     }
 }

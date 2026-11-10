@@ -12,8 +12,8 @@ internal sealed class NatsPublishHeaders(bool caseSensitive)
       INatsSerializeWithContext<ReadOnlyMemory<byte>>
 {
     internal bool IsFailureCopy;
-    internal string? TraceParent;
-    internal string? TraceState;
+    internal StringValues TraceParent;
+    internal StringValues TraceState;
     public void Serialize(IBufferWriter<byte> writer, ReadOnlyMemory<byte> value) =>
         NatsRawSerializer<ReadOnlyMemory<byte>>.Default.Serialize(writer, value);
     public void Serialize(IBufferWriter<byte> writer, ReadOnlyMemory<byte> value, in NatsMsgContext context)
@@ -21,9 +21,9 @@ internal sealed class NatsPublishHeaders(bool caseSensitive)
         var headers = context.Headers ?? throw new InvalidOperationException("NATS publication requires a headers instance.");
         // Publish options can inject MsgId after native callbacks; clear it at serialization too.
         if (IsFailureCopy) headers.Remove("Nats-Msg-Id");
-        if (TraceParent is { } parent) headers["traceparent"] = parent;
+        if (TraceParent.Count > 0) headers["traceparent"] = TraceParent;
         else headers.Remove("traceparent");
-        if (TraceState is { } state) headers["tracestate"] = state;
+        if (TraceState.Count > 0) headers["tracestate"] = TraceState;
         else headers.Remove("tracestate");
         Serialize(writer, value);
     }
@@ -31,7 +31,7 @@ internal sealed class NatsPublishHeaders(bool caseSensitive)
     {
         Clear();
         IsFailureCopy = false;
-        TraceParent = null;
-        TraceState = null;
+        TraceParent = default;
+        TraceState = default;
     }
 }

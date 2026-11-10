@@ -29,7 +29,9 @@ public class NatsExecutionTests
     }
 
     [Test]
-    public async Task Hosted_pipeline_retries_and_confirms_poison_copy_before_acknowledging_original()
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Hosted_pipeline_retries_and_confirms_poison_copy_before_acknowledging_original(bool multipleTraceHeaders)
     {
         using var deadline = new CancellationTokenSource(TimeSpan.FromMinutes(2));
         var token = deadline.Token;
@@ -73,10 +75,16 @@ public class NatsExecutionTests
         var poison = new byte[] { 1, 2, 3 };
         var poisonHeaders = new NatsPublishHeaders(false)
         {
-            ["original"] = "preserved",
+            ["original"] = new Microsoft.Extensions.Primitives.StringValues(["first", "second"]),
             ["Nats-Msg-Id"] = "original-poison-id",
             TraceParent = "00-11111111111111111111111111111111-2222222222222222-01",
         };
+        if (multipleTraceHeaders)
+        {
+            poisonHeaders.TraceParent = new Microsoft.Extensions.Primitives.StringValues([poisonHeaders.TraceParent.ToString(), "malformed-parent"]);
+            poisonHeaders.TraceState = new Microsoft.Extensions.Primitives.StringValues(["first=value", "second=value"]);
+            poisonHeaders["ce-id"] = new Microsoft.Extensions.Primitives.StringValues(["first-id", "second-id"]);
+        }
         var ack = await js.PublishAsync(orders, new ReadOnlyMemory<byte>(poison), poisonHeaders,
             headers: poisonHeaders, cancellationToken: token);
         ack.EnsureSuccess();
@@ -88,9 +96,16 @@ public class NatsExecutionTests
         var copy = await dead.NextAsync(NatsRawSerializer<byte[]>.Default, cancellationToken: token);
         await Assert.That(copy).IsNotNull();
         await Assert.That(copy!.Data).IsEquivalentTo(poison);
-        await Assert.That(copy.Headers!["original"].ToString()).IsEqualTo("preserved");
+        await Assert.That(copy.Headers!["original"].ToArray()).IsEquivalentTo(new string?[] { "first", "second" });
+        await Assert.That(copy.Headers.TryGetLastValue("original", out var last)).IsTrue();
+        await Assert.That(last).IsEqualTo("second");
         await Assert.That(copy.Headers.ContainsKey("Nats-Msg-Id")).IsFalse();
-        await Assert.That(copy.Headers["traceparent"].ToString()).IsEqualTo("00-11111111111111111111111111111111-2222222222222222-01");
+        await Assert.That(copy.Headers["traceparent"].ToArray()).IsEquivalentTo(poisonHeaders.TraceParent.ToArray());
+        if (multipleTraceHeaders)
+        {
+            await Assert.That(copy.Headers["tracestate"].ToArray()).IsEquivalentTo(poisonHeaders.TraceState.ToArray());
+            await Assert.That(copy.Headers["ce-id"].ToArray()).IsEquivalentTo(new string?[] { "first-id", "second-id" });
+        }
         await copy.AckAsync(new() { DoubleAck = true }, token);
         await host.StopAsync(token);
         var settled = await js.GetConsumerAsync(events, "worker", token);
@@ -98,6 +113,59 @@ public class NatsExecutionTests
         await Assert.That(settled.Info.AckFloor.ConsumerSeq).IsEqualTo(2UL);
         await Assert.That(control.Attempts).IsEqualTo(2);
     }
+    [Test]
+    public async Task Failed_confirmed_ack_leaves_native_redelivery_running()
+    {
+        using var deadline = new CancellationTokenSource(TimeSpan.FromMinutes(1));
+        var token = deadline.Token;
+        var broker = await NatsSessionBroker.Current.WaitAsync(token);
+        var events = TestContext.Current!.Isolation.GetIsolatedName("ack_events");
+        var subject = TestContext.Current!.Isolation.GetIsolatedName("ack_orders");
+        var services = new ServiceCollection();
+        services.AddRelayer(relayer => relayer.Nats("ack_failure", transport =>
+        {
+            transport.Options.Configure(options =>
+            {
+                options.ConnectionOptions = broker.Options();
+                options.Streams.Add(new(events) { Configuration = new(events, [subject]) });
+                options.Consumers.Add(new(events, "worker") { Configuration = new("worker") { AckWait = TimeSpan.FromMilliseconds(200) } });
+            });
+            transport.Send<ExecutionMessage>(subject);
+        }));
+        await using var provider = services.BuildServiceProvider();
+        var adapter = (NatsNativeTransport)provider.GetRequiredService<Relayer.Transports.ITransport>();
+        await adapter.ApplyTopologyAsync(TopologyMode.Provision, token);
+        var worker = adapter.AddConsumer(events, "worker", new() { MaxMsgs = 1, DrainOnCancel = true, Expires = TimeSpan.FromSeconds(1) }, 2);
+        var redelivered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var calls = 0;
+        worker.Receive = async (delivery, processing) =>
+        {
+            if (Interlocked.Increment(ref calls) == 1)
+            {
+                // A real native confirmed ACK request to an unsubscribed subject fails without
+                // acknowledging the original. No connection outage or timing race is required.
+                var failed = new NatsJSMsg<ReadOnlyMemory<byte>>(new NatsMsg<ReadOnlyMemory<byte>>(
+                    subject, subject + ".no_ack_receiver", 0, null, delivery.Message.Data, delivery.Message.Connection),
+                    new NatsJSContext(delivery.Message.Connection!));
+                await worker.SettleAsync(new(failed, delivery.Consumer), Disposition.Complete, processing);
+                return Disposition.SettledByHandler;
+            }
+            if (delivery.Message.Metadata!.Value.NumDelivered > 1) redelivered.TrySetResult();
+            return Disposition.Complete;
+        };
+        await adapter.StartAsync(token);
+        await using var native = new NatsConnection(broker.Options());
+        var js = new NatsJSContext(native);
+        (await js.PublishAsync(subject, new byte[] { 42 }, NatsRawSerializer<byte[]>.Default, cancellationToken: token)).EnsureSuccess();
+        await Task.WhenAny(redelivered.Task, worker.Completion).WaitAsync(token);
+        if (worker.Completion.IsCompleted) await worker.Completion;
+        await redelivered.Task.WaitAsync(token);
+        await adapter.StopAsync(token);
+        var consumer = await js.GetConsumerAsync(events, "worker", token);
+        await Assert.That(consumer.Info.NumAckPending).IsEqualTo(0L);
+        await Assert.That(calls).IsEqualTo(2);
+    }
+
     [Test]
     public async Task Native_failure_stops_sibling_receivers_and_cleanup_closes_the_owned_connection()
     {
