@@ -1,8 +1,10 @@
 namespace Relayer.GooglePubSub;
 
-// Match the existing Service Bus pool's retention at the observed concurrency high-water mark.
+// Bound retained native-boundary state (D52); overflow is collected and misses allocate.
 internal sealed class GooglePubSubPool<T>(Func<T> create) where T : class
 {
+    internal const int Capacity = 256;
+    private const int PageSize = 64;
     private readonly Page _first = new();
     internal T Rent()
     {
@@ -14,10 +16,11 @@ internal sealed class GooglePubSubPool<T>(Func<T> create) where T : class
     internal void Return(T item)
     {
         var page = _first;
-        while (true)
+        for (var pageIndex = 0; pageIndex < Capacity / PageSize; pageIndex++)
         {
             for (var i = 0; i < page.Slots.Length; i++)
                 if (Interlocked.CompareExchange(ref page.Slots[i], item, null) is null) return;
+            if (pageIndex == Capacity / PageSize - 1) return;
             var next = Volatile.Read(ref page.Next);
             if (next is null) next = Interlocked.CompareExchange(ref page.Next, new Page(), null) ?? page.Next!;
             page = next;
@@ -25,7 +28,7 @@ internal sealed class GooglePubSubPool<T>(Func<T> create) where T : class
     }
     private sealed class Page
     {
-        internal readonly T?[] Slots = new T[64];
+        internal readonly T?[] Slots = new T[PageSize];
         internal Page? Next;
     }
 }

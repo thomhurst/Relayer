@@ -98,6 +98,25 @@ public class GooglePubSubSendTests
         await Assert.That(second.SetEquals(first)).IsTrue();
     }
 
+    [Test]
+    public async Task Pool_discards_overflow_and_allocates_on_miss()
+    {
+        var created = 0;
+        var pool = new GooglePubSubPool<object>(() => { created++; return new(); });
+        var burst = Enumerable.Range(0, GooglePubSubPool<object>.Capacity + 1).Select(_ => pool.Rent()).ToArray();
+        foreach (var item in burst) pool.Return(item);
+        var retained = new HashSet<object>();
+        for (var i = 0; i < GooglePubSubPool<object>.Capacity; i++) retained.Add(pool.Rent());
+        await Assert.That(retained.Count).IsEqualTo(GooglePubSubPool<object>.Capacity);
+        await Assert.That(retained.SetEquals(burst.Take(GooglePubSubPool<object>.Capacity))).IsTrue();
+        var beforeMiss = created;
+        var replacement = pool.Rent();
+        await Assert.That(created).IsEqualTo(beforeMiss + 1);
+        await Assert.That(burst.Contains(replacement)).IsFalse();
+        pool.Return(replacement);
+        await Assert.That(ReferenceEquals(pool.Rent(), replacement)).IsTrue();
+    }
+
     private static ServiceProvider Provider(PublisherServiceApiClient publisher,
         Action<TransportBuilder<GooglePubSubTransportOptions, GooglePubSubRouteOptions, GooglePubSubConsumerOptions>>? configure = null)
     {
