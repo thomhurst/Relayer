@@ -82,10 +82,14 @@ param(
     [string]$OwnerId = '',
     [string]$Fingerprint = '',
     [ValidateRange(60, 604800)]
-    [int]$DeferSeconds = 21600
+    [int]$DeferSeconds = 21600,
+
+    [ValidateRange(1, 600)]
+    [int]$DockerTimeoutSeconds = 30
 )
 
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'BoundedProcess.ps1')
 
 # Store absolute paths so release works from any checkout of this repository.
 if ($Worktree) { $Worktree = [IO.Path]::GetFullPath($Worktree) }
@@ -179,40 +183,52 @@ $lockKey = "relayer:agent-lock:$LockName"
 $metaKey = "relayer:agent-lock-meta:$LockName"
 $deferKey = "relayer:agent-defer:$LockName"
 
-function Ensure-AgentRedis {
-    # One inspect tells missing vs stopped vs running: error exit = missing,
-    # 'false' = stopped, 'true' = running. Warm path (the common loop case) costs
-    # this single call — no separate `docker ps` or a redundant PING; the verb's
-    # own Redis command is the connectivity check.
-    $state = docker inspect -f '{{.State.Running}} {{join .Args " "}}' $redisContainer 2>$null
-    $found = $LASTEXITCODE -eq 0
-    if ($found -and $state -like 'true *') { return }
+function Invoke-LockDocker {
+    param([string[]]$Arguments, [switch]$AllowNonzeroExit)
 
-    # Locks and deferral records must survive a Docker restart, or a restart strips every
-    # running unit of its lock. A stopped container holds no data in memory, so replacing
-    # one created without the append-only file loses nothing. Only a plain `redis-server`
-    # command is replaced; `docker rm` without -f refuses a container that another caller
-    # has just started.
-    if ($found -and ([string]$state -split ' ')[1] -eq 'redis-server' -and $state -notlike '*--appendonly yes*') {
-        docker rm $redisContainer 2>$null | Out-Null
-        # Another caller may have removed or replaced it first; act on what exists now.
-        $state = docker inspect -f '{{.State.Running}} {{join .Args " "}}' $redisContainer 2>$null
-        $found = $LASTEXITCODE -eq 0
+    # Never print the full arguments: Redis EVAL includes the private ownership token.
+    $action = "docker $($Arguments[0]) during $Verb for $(if ($LockName) { $LockName } else { 'lock backend' })"
+    try {
+        $result = Invoke-BoundedProcess -FilePath 'docker' -Arguments $Arguments -TimeoutSeconds $DockerTimeoutSeconds
     }
-    if (-not $found) {
-        docker run -d --name $redisContainer --restart unless-stopped -v "${redisContainer}-data:/data" redis:7-alpine `
-            redis-server --save '' --appendonly yes --appendfsync everysec 2>$null | Out-Null
+    catch { Die 1 "$action failed: $($_.Exception.Message); ownership cache retained" }
+    if ($result.ExitCode -ne 0 -and -not $AllowNonzeroExit) {
+        Die 1 "$action failed (exit $($result.ExitCode)); check Docker/Redis availability; ownership cache retained"
     }
-    else {
-        docker start $redisContainer | Out-Null
-    }
-    # Cold start only: the container may not be answering yet, so confirm.
-    if ((docker exec $redisContainer redis-cli PING) -ne 'PONG') {
-        Die 1 "redis PING failed on $redisContainer"
-    }
+    return $result
 }
 
-function Redis { (& docker exec $redisContainer redis-cli @args | Out-String).Trim() }
+function Ensure-AgentRedis {
+    # One inspect tells missing vs stopped vs running. Inspect failure may mean a
+    # missing container; setup is confirmed by the bounded PING below.
+    $inspection = Invoke-LockDocker -Arguments @('inspect', '-f', '{{.State.Running}} {{join .Args " "}}', $redisContainer) -AllowNonzeroExit
+    $state = $inspection.Output.Trim()
+    $found = $inspection.ExitCode -eq 0
+    if ($found -and $state -like 'true *') { return }
+
+    # Locks and deferral records must survive a Docker restart. Only replace a stopped,
+    # non-persistent plain redis-server; rm without -f refuses a concurrent start.
+    if ($found -and ([string]$state -split ' ')[1] -eq 'redis-server' -and $state -notlike '*--appendonly yes*') {
+        Invoke-LockDocker -Arguments @('rm', $redisContainer) -AllowNonzeroExit | Out-Null
+        $inspection = Invoke-LockDocker -Arguments @('inspect', '-f', '{{.State.Running}} {{join .Args " "}}', $redisContainer) -AllowNonzeroExit
+        $state = $inspection.Output.Trim()
+        $found = $inspection.ExitCode -eq 0
+    }
+    if (-not $found) {
+        # Another caller may create the container first; PING remains authoritative.
+        Invoke-LockDocker -Arguments @('run', '-d', '--name', $redisContainer, '--restart', 'unless-stopped', '-v', "${redisContainer}-data:/data", 'redis:7-alpine',
+            'redis-server', '--save', '', '--appendonly', 'yes', '--appendfsync', 'everysec') -AllowNonzeroExit | Out-Null
+    }
+    else {
+        Invoke-LockDocker -Arguments @('start', $redisContainer) | Out-Null
+    }
+    if ((Redis PING) -ne 'PONG') { Die 1 "redis PING failed during $Verb for $LockName on $redisContainer" }
+}
+
+function Redis {
+    $result = Invoke-LockDocker -Arguments (@('exec', $redisContainer, 'redis-cli') + $args)
+    return $result.Output.Trim()
+}
 
 function New-Meta([string]$Token) {
     @{

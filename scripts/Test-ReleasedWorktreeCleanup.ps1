@@ -109,6 +109,7 @@ try {
         . (Join-Path $PSScriptRoot 'WorktreeCleanup.ps1')
         New-Item -ItemType Directory (Join-Path $repo 'scripts') -Force | Out-Null
         Copy-Item $agentLocks (Join-Path $repo 'scripts/AgentLocks.ps1')
+        Copy-Item (Join-Path (Split-Path $agentLocks -Parent) 'BoundedProcess.ps1') (Join-Path $repo 'scripts/BoundedProcess.ps1')
         foreach ($kind in @('busy', 'busy-new-work')) {
             $path = New-Checkout $kind
             New-Item -ItemType Directory (Join-Path $path 'bin') | Out-Null
