@@ -271,6 +271,23 @@ Comparisons without source verification keep the strict throughput and allocatio
 
 ### Investigating changed comparison inputs
 
+The separate `Frozen full-delivery driver allocation control` workflow retains
+an exact-driver summary for each historical input set. To validate downloaded
+records and regenerate a summary without launching another experiment, run:
+
+```powershell
+python .github/scripts/summarize_frozen_driver.py C:/retained/results/42306276036-exact-driver
+```
+
+The summary requires all four declared ABBA launches, matching runtime and
+architecture, fixed operation counts, and exact histogram count/byte sums.
+It reports inclusive bytes and calling-thread workload-invocation and BDN-waiter
+bytes separately. These regions exclude work on other threads; they do not
+identify object types or attribute a historical allocation increase. Keep
+unfavorable launches visible and never subtract separate experiments to assign
+an owner. Missing or inconsistent records fail validation rather than producing
+a partial comparison. This is diagnostic validation, not the regression gate.
+
 When verified inventories differ, the summary lists added, removed and changed
 input paths. This is an investigation aid, not a causal assignment or an exemption
 from the thresholds. An unchanged benchmark and unchanged call-path source can
