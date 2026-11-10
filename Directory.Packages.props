@@ -4,13 +4,13 @@
   </PropertyGroup>
 
   <ItemGroup Label="Aspire">
-    <PackageVersion Include="OpenTelemetry.Instrumentation.AspNetCore" Version="1.20.1" />
+    <PackageVersion Include="OpenTelemetry.Instrumentation.AspNetCore" Version="1.20.2" />
     <PackageVersion Include="OpenTelemetry.Extensions.Hosting" Version="1.20.1" />
     <PackageVersion Include="OpenTelemetry.Exporter.OpenTelemetryProtocol" Version="1.20.1" />
-    <PackageVersion Include="Aspire.Hosting.AppHost" Version="13.6.2" />
-    <PackageVersion Include="Aspire.Hosting.Kafka" Version="13.6.2" />
-    <PackageVersion Include="Aspire.Hosting.Azure.ServiceBus" Version="13.6.2" />
-    <PackageVersion Include="Aspire.Hosting.Testing" Version="13.6.2" />
+    <PackageVersion Include="Aspire.Hosting.AppHost" Version="13.6.4" />
+    <PackageVersion Include="Aspire.Hosting.Kafka" Version="13.6.4" />
+    <PackageVersion Include="Aspire.Hosting.Azure.ServiceBus" Version="13.6.4" />
+    <PackageVersion Include="Aspire.Hosting.Testing" Version="13.6.4" />
   </ItemGroup>
 
   <ItemGroup Label="Build">
