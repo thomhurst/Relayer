@@ -22,7 +22,7 @@ public interface IDeadLetterManager
 /// <summary>A configured source identifier and its native redrive destination.</summary>
 public sealed record DeadLetterSource(string Id, string Destination);
 
-/// <summary>A management snapshot. Native objects are available through Features; no receive lock is transferred.</summary>
+/// <summary>A management snapshot. Native objects are available through Features; settlement through these objects is unsupported.</summary>
 public sealed class DeadLetterMessage
 {
     /// <summary>Native message identifier, if present.</summary>

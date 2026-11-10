@@ -59,36 +59,53 @@ internal sealed class ServiceBusDeadLetterManager : IDeadLetterManager
         // Receive one bounded native batch; filtering cannot repeatedly receive an unmatched delivery.
         // Unsettled originals remain in the DLQ if sending, filtering or settlement fails.
         var messages = await receiver.ReceiveMessagesAsync(maxMessages, TimeSpan.FromSeconds(1), cancellationToken).ConfigureAwait(false);
-        if (purge)
+        var next = 0;
+        ServiceBusSender? sender = null;
+        try
         {
-            var removed = 0;
-            foreach (var message in messages)
+            var changed = 0;
+            for (; next < messages.Count; next++)
             {
+                var message = messages[next];
+                cancellationToken.ThrowIfCancellationRequested();
+                if (!purge)
+                {
+                    if (filter is not null && !filter(Snapshot(message)))
+                    {
+                        await receiver.AbandonMessageAsync(message, cancellationToken: cancellationToken).ConfigureAwait(false);
+                        continue;
+                    }
+                    sender ??= _client.CreateSender(endpoint.Entity);
+                    // Native copy preserves payload, application properties, identity, session and partition keys.
+                    var outgoing = new ServiceBusMessage(message);
+                    // A redrive begins a new broker lifetime, using the original TTL rather than expired timestamps.
+                    outgoing.GetRawAmqpMessage().Properties.AbsoluteExpiryTime = null;
+                    outgoing.GetRawAmqpMessage().Properties.CreationTime = null;
+                    await sender.SendMessageAsync(outgoing, cancellationToken).ConfigureAwait(false);
+                }
                 await receiver.CompleteMessageAsync(message, cancellationToken).ConfigureAwait(false);
-                removed++;
+                changed++;
             }
-            return removed;
+            return changed;
         }
-        await using var sender = _client.CreateSender(endpoint.Entity);
-        var redriven = 0;
-        foreach (var message in messages)
+        catch
         {
-            cancellationToken.ThrowIfCancellationRequested();
-            if (filter is not null && !filter(Snapshot(message)))
+            // Release the failing delivery and unprocessed suffix, even after caller cancellation.
+            // Preserve the original failure if a lock expired or the broker cannot accept cleanup.
+            for (; next < messages.Count; next++)
             {
-                await receiver.AbandonMessageAsync(message, cancellationToken: cancellationToken).ConfigureAwait(false);
-                continue;
+                try
+                {
+                    await receiver.AbandonMessageAsync(messages[next], cancellationToken: CancellationToken.None).ConfigureAwait(false);
+                }
+                catch (Exception) { }
             }
-            // Native copy preserves payload, application properties, identity, session and partition keys.
-            var outgoing = new ServiceBusMessage(message);
-            // A redrive begins a new broker lifetime, using the original TTL rather than expired timestamps.
-            outgoing.GetRawAmqpMessage().Properties.AbsoluteExpiryTime = null;
-            outgoing.GetRawAmqpMessage().Properties.CreationTime = null;
-            await sender.SendMessageAsync(outgoing, cancellationToken).ConfigureAwait(false);
-            await receiver.CompleteMessageAsync(message, cancellationToken).ConfigureAwait(false);
-            redriven++;
+            throw;
         }
-        return redriven;
+        finally
+        {
+            if (sender is not null) await sender.DisposeAsync().ConfigureAwait(false);
+        }
     }
 
     private Source GetSource(string source, int maxMessages)

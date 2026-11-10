@@ -73,10 +73,10 @@ public sealed class ServiceBusDeadLetterTests
         client.Receiver.Messages = [Message("copy", 1)];
         client.Sender.Fail = true;
         await Assert.That(async () => await Manager(client).RedriveAsync("orders")).Throws<InvalidOperationException>();
-        await Assert.That(client.Events.ToArray()).IsEquivalentTo(new[] { "send:copy" });
+        await Assert.That(client.Events.ToArray()).IsEquivalentTo(new[] { "send:copy", "abandon:copy" });
         client.Events.Clear();
         await Assert.That(async () => await Manager(client).RedriveAsync("orders", _ => throw new InvalidOperationException())).Throws<InvalidOperationException>();
-        await Assert.That(client.Events.Count).IsEqualTo(0);
+        await Assert.That(client.Events.ToArray()).IsEquivalentTo(new[] { "abandon:copy" });
         await Assert.That(client.Receiver.Disposals).IsEqualTo(2);
     }
 
@@ -103,6 +103,41 @@ public sealed class ServiceBusDeadLetterTests
         await Assert.That(async () => await Manager(client).RedriveAsync("orders", cancellationToken: cancellation.Token))
             .Throws<OperationCanceledException>();
         await Assert.That(client.Events.Count).IsEqualTo(0);
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Mid_batch_failure_releases_suffix_and_preserves_error_when_cleanup_fails(bool purge)
+    {
+        var client = new Client();
+        client.Receiver.Messages = [Message("done", 1), Message("fail", 2), Message("remaining", 3)];
+        client.Receiver.FailComplete = "fail";
+        client.Receiver.FailAbandon = "fail";
+        var manager = Manager(client);
+        await Assert.That(async () =>
+        {
+            if (purge) await manager.PurgeAsync("orders", 3);
+            else await manager.RedriveAsync("orders", maxMessages: 3);
+        }).Throws<InvalidOperationException>().WithMessage("complete");
+        await Assert.That(client.Events.TakeLast(2).ToArray())
+            .IsEquivalentTo(new[] { "abandon:fail", "abandon:remaining" });
+        await Assert.That(client.Events.Contains("abandon:done")).IsFalse();
+    }
+
+    [Test]
+    public async Task Cancellation_after_receive_releases_entire_batch_with_uncancelled_token()
+    {
+        var client = new Client();
+        client.Receiver.Messages = [Message("first", 1), Message("second", 2)];
+        using var cancellation = new CancellationTokenSource();
+        await Assert.That(async () => await Manager(client).RedriveAsync("orders", _ =>
+        {
+            cancellation.Cancel();
+            cancellation.Token.ThrowIfCancellationRequested();
+            return true;
+        }, 2, cancellation.Token)).Throws<OperationCanceledException>();
+        await Assert.That(client.Events.ToArray()).IsEquivalentTo(new[] { "abandon:first", "abandon:second" });
     }
 
     private static ServiceBusDeadLetterManager Manager(Client client) => new(client,
@@ -141,14 +176,16 @@ public sealed class ServiceBusDeadLetterTests
         internal long? From;
         internal int Maximum;
         internal int Disposals;
+        internal string? FailComplete;
+        internal string? FailAbandon;
         public override Task<IReadOnlyList<ServiceBusReceivedMessage>> PeekMessagesAsync(int maxMessages, long? fromSequenceNumber = null, CancellationToken cancellationToken = default)
         { From = fromSequenceNumber; return Task.FromResult(Messages); }
         public override Task<IReadOnlyList<ServiceBusReceivedMessage>> ReceiveMessagesAsync(int maxMessages, TimeSpan? maxWaitTime = null, CancellationToken cancellationToken = default)
         { cancellationToken.ThrowIfCancellationRequested(); Maximum = maxMessages; return Task.FromResult(Messages); }
         public override Task CompleteMessageAsync(ServiceBusReceivedMessage message, CancellationToken cancellationToken = default)
-        { events.Add("complete:" + message.MessageId); return Task.CompletedTask; }
+        { events.Add("complete:" + message.MessageId); return message.MessageId == FailComplete ? Task.FromException(new InvalidOperationException("complete")) : Task.CompletedTask; }
         public override Task AbandonMessageAsync(ServiceBusReceivedMessage message, IDictionary<string, object>? propertiesToModify = null, CancellationToken cancellationToken = default)
-        { events.Add("abandon:" + message.MessageId); return Task.CompletedTask; }
+        { cancellationToken.ThrowIfCancellationRequested(); events.Add("abandon:" + message.MessageId); return message.MessageId == FailAbandon ? Task.FromException(new InvalidOperationException("abandon")) : Task.CompletedTask; }
         public override ValueTask DisposeAsync() { Disposals++; return default; }
     }
 
