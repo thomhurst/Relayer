@@ -316,6 +316,10 @@ public sealed class TransportConformanceSuite<TIncoming, TBinding>
                 CheckBody(await Next().ConfigureAwait(false), 0);
                 await Stop().ConfigureAwait(false);
                 await Start().ConfigureAwait(false);
+                // Native Start may return before its stream is established. Observe a
+                // delivery after restart before testing an established connection outage.
+                await Send(0).ConfigureAwait(false);
+                CheckBody(await Next().ConfigureAwait(false), 0);
                 progress.Phase = "broker disconnect";
                 await fixture.DisconnectAsync(token).ConfigureAwait(false);
                 progress.Phase = "outage sends";
