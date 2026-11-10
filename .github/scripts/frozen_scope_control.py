@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fixed ABBA replay of retained scope benchmark images, never a gate retry."""
+"""Predeclared replay of retained scope benchmark images, never a gate retry."""
 import argparse
 import json
 import os
@@ -72,6 +72,8 @@ def main():
                         help="Diagnostic runtime control; uses native DOTNET_ReadyToRun=1/0")
     parser.add_argument("--single-image", choices=("baseline", "candidate"),
                         help="Negative control: execute one original image in every A/B slot")
+    parser.add_argument("--counterbalanced", action="store_true",
+                        help="Scoped-only fixed ABBA/BAAB/BAAB/ABBA blocks (16 processes)")
     args = parser.parse_args()
     if args.jit_method != "*" and not args.jit_disassembly:
         parser.error("--jit-method requires --jit-disassembly")
@@ -84,7 +86,9 @@ def main():
                for side in SIDES for scoped in (True, False)}
     args.output.mkdir(parents=True, exist_ok=False)
     protocol = {"commits": commits, "benchmark": benchmark,
-                "plan": "Scoped ABBA, then unscoped ABBA; A2 reuses first baseline image",
+                "plan": ("Scoped-only ABBA/BAAB/BAAB/ABBA; 4 fixed blocks, no adaptive stopping"
+                         if args.counterbalanced else "Scoped ABBA, then unscoped ABBA; A2 reuses first baseline image"),
+                "analysisPlan": "Compare process means within each block by actual image; retain every block difference and process. Counterbalancing addresses fixed launch-position effects, not arbitrary host drift or historical causality. No gate decision or equivalence claim.",
                 "engine": "Original Default job, native NoAcknowledgementConsoleHost without anonymous-pipe parent",
                 "limits": "New host/process executions, not historical reconstruction. Image-associated differences do not identify a production defect; absent differences do not prove equivalence. No threshold changes or gate pass claim.",
                 "jitDisassembly": args.jit_disassembly,
@@ -92,22 +96,31 @@ def main():
                 "captureLimits": "Method filtering reduces concurrent listing output; it does not serialize JIT compilation. Missing, interleaved or precompiled methods remain limitations, not evidence of equality.",
                 "tieredCompilation": args.tiered_compilation,
                 "singleImage": args.single_image,
-                "slotMeaning": "side is the ABBA slot label; imageSide identifies the executed original image",
+                "slotMeaning": "side is the planned A/B slot label; imageSide identifies the executed original image; all A slots reuse the first baseline image",
                 "readyToRun": args.ready_to_run,
                 "runtimeControlLimits": "Changing tiering or ReadyToRun changes execution, not production configuration. Cross-condition timing is diagnostic only; host/process order remains a confound.",
-                "timingUse": "Excluded: JIT diagnostics perturb execution" if args.jit_disassembly else "New ABBA experiment only",
+                "timingUse": "Excluded: JIT diagnostics perturb execution" if args.jit_disassembly else "New fixed-plan experiment only",
                 "launches": []}
-    for scoped in (True, False):
-        for side in LAUNCHES:
-            image_side = args.single_image or side
-            image, identity = runners[image_side, scoped]
-            protocol["launches"].append({"side": side, "imageSide": image_side, "scoped": scoped,
-                "command": ["dotnet", str(image), "--benchmarkName", benchmark,
-                            "--job", "Default", "--benchmarkId", identity]})
+    # ABBA is a palindrome: swap A/B, rather than reversing it, for BAAB.
+    if args.counterbalanced:
+        baab = tuple("candidate" if side == "baseline" else "baseline" for side in LAUNCHES)
+        blocks = (LAUNCHES, baab, baab, LAUNCHES)
+    else:
+        blocks = (LAUNCHES,)
+    for scoped in ((True,) if args.counterbalanced else (True, False)):
+        for block, sides in enumerate(blocks, 1):
+            for position, side in enumerate(sides, 1):
+                image_side = args.single_image or side
+                image, identity = runners[image_side, scoped]
+                protocol["launches"].append({"side": side, "imageSide": image_side, "scoped": scoped,
+                    "block": block, "position": position,
+                    "command": ["dotnet", str(image), "--benchmarkName", benchmark,
+                                "--job", "Default", "--benchmarkId", identity]})
     (args.output / "protocol.json").write_text(json.dumps(protocol, indent=2) + "\n")
     outcomes = []
     for index, launch in enumerate(protocol["launches"], 1):
-        outcome = {"launch": index, "side": launch["side"], "imageSide": launch["imageSide"], "scoped": launch["scoped"]}
+        outcome = {"launch": index, "side": launch["side"], "imageSide": launch["imageSide"], "scoped": launch["scoped"],
+                   "block": launch["block"], "position": launch["position"]}
         log_path = args.output / f"{index}-{launch['side']}-{launch['scoped']}.log"
         environment = os.environ.copy()
         if args.tiered_compilation == "off":
