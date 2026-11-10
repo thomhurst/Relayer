@@ -160,6 +160,7 @@ public sealed class MySqlOutbox : IOutboxEnlistment, IDisposable, IAsyncDisposab
     internal static void ValidateOptions(MySqlOutboxOptions options)
     {
         _ = MySqlOutboxSchema.Table(options);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(options.MaxDispatchAttempts);
         if (options.DispatchStoreName is not null && string.IsNullOrWhiteSpace(options.DispatchStoreName))
             throw new ArgumentException("DispatchStoreName must be nonempty when supplied.", nameof(options));
         if (options.Lanes <= 0) throw new ArgumentOutOfRangeException(nameof(options), "Lanes must be positive.");

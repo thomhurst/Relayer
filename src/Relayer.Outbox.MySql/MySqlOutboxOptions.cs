@@ -3,6 +3,9 @@ namespace Relayer.Outbox.MySql;
 /// <summary>Names for MySQL durable outbox storage in the data source's selected database.</summary>
 public sealed class MySqlOutboxOptions
 {
+    /// <summary>Failed sends before dead-lettering. Match across dispatchers for the same tables.</summary>
+    public int MaxDispatchAttempts { get; init; } = 10;
+
     /// <summary>Stable lane count for ordering keys. All writers and ordered workers must agree.</summary>
     public int Lanes { get; init; } = 64;
 

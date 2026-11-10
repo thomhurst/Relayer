@@ -119,7 +119,7 @@ internal sealed class MySqlDirectDispatcher : BackgroundService
     }
 
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
-    private async ValueTask DispatchAsync(OutboxDispatchBatch batch, CancellationToken cancellationToken)
+    private async ValueTask DispatchAsync(OutboxDispatchBatch batch, CancellationToken cancellationToken, bool recordInvalid = false)
     {
         batch.Sort();
         var offset = 0;
@@ -139,8 +139,16 @@ internal sealed class MySqlDirectDispatcher : BackgroundService
             catch (Exception error)
             {
                 DirectDispatchLog.Failed(_logger, error);
-                // Skip this destination without claiming its rows or abandoning unrelated groups.
-                do { offset++; }
+                // Recovery records invalid destinations; notifications leave them for inspection.
+                do
+                {
+                    var id = batch.Rows[offset++].Id;
+                    if (!recordInvalid) continue;
+                    var claim = new OutboxClaim(id, Guid.NewGuid());
+                    var now = DateTimeOffset.UtcNow;
+                    if (await _store.TryClaimAsync(claim, now, now + _options.ClaimDuration, cancellationToken).ConfigureAwait(false))
+                        (await _store.RecordDispatchFailureAsync(claim, error.Message, now, cancellationToken).ConfigureAwait(false)).RecordTelemetry(_instrumentation);
+                }
                 while (offset < batch.Count && batch.Rows[offset].Transport == first.Transport &&
                     batch.Rows[offset].Destination == first.Destination);
                 continue;
@@ -187,7 +195,7 @@ internal sealed class MySqlDirectDispatcher : BackgroundService
                     {
                         try
                         {
-                            await _store.RecordFailureAsync(_claims[i], error.Message, DateTimeOffset.UtcNow, cancellationToken).ConfigureAwait(false);
+                            (await _store.RecordDispatchFailureAsync(_claims[i], error.Message, DateTimeOffset.UtcNow, cancellationToken).ConfigureAwait(false)).RecordTelemetry(_instrumentation);
                         }
                         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
                         catch (Exception failure) { DirectDispatchLog.Failed(_logger, failure); }
@@ -213,6 +221,9 @@ internal sealed class MySqlDirectDispatcher : BackgroundService
             }
         }
     }
+
+    internal ValueTask DispatchRecoveredAsync(OutboxDispatchBatch batch, CancellationToken cancellationToken) =>
+        DispatchAsync(batch, cancellationToken, recordInvalid: true);
 
     internal static int CompactClaims(Span<OutgoingMessage> messages, Span<OutboxClaim> claims, ReadOnlySpan<bool> claimed,
         Span<DateTimeOffset> created = default)

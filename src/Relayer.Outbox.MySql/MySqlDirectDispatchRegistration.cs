@@ -32,7 +32,7 @@ public static partial class MySqlOutboxServiceCollectionExtensions
         if (dispatchOptions.QueueCapacity is <= 0 or int.MaxValue || dispatchOptions.BatchSize <= 0 || dispatchOptions.ClaimDuration <= TimeSpan.Zero)
             throw new ArgumentOutOfRangeException(nameof(dispatchOptions), "QueueCapacity and BatchSize must be positive, QueueCapacity must be below Int32.MaxValue, and ClaimDuration must be positive.");
         storeOptions ??= new();
-        var snapshot = new MySqlOutboxOptions { TablePrefix = storeOptions.TablePrefix, Lanes = storeOptions.Lanes };
+        var snapshot = new MySqlOutboxOptions { MaxDispatchAttempts = storeOptions.MaxDispatchAttempts, TablePrefix = storeOptions.TablePrefix, Lanes = storeOptions.Lanes };
         _ = MySqlOutboxSchema.CreateScript(snapshot);
         services.AddRelayerMySqlOutboxStore(storeName, dataSource, snapshot);
         services.AddSingleton(new DispatchSettings(storeName, dispatchOptions));

@@ -136,6 +136,7 @@ internal sealed partial class MySqlOrderedDispatcher : BackgroundService
                 if (!await _lane.ClaimAsync(connection, transaction, claim, cancellationToken).ConfigureAwait(false)) break;
                 try
                 {
+                    if (row.TransportName.Length == 0) throw new InvalidDataException(row.LastError);
                     var prepared = Prepare(row, _transports, _capabilities);
                     _instrumentation?.RecordOutboxDispatchLag(_timeProvider.GetUtcNow() - row.CreatedAt);
                     await prepared.Transport.SendAsync(prepared.Message, cancellationToken).ConfigureAwait(false);

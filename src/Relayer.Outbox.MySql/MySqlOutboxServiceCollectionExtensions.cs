@@ -15,7 +15,7 @@ public static partial class MySqlOutboxServiceCollectionExtensions
         ArgumentException.ThrowIfNullOrWhiteSpace(name);
         ArgumentNullException.ThrowIfNull(dataSource);
         MySqlOutboxStore.ValidateDataSource(dataSource);
-        var snapshot = new MySqlOutboxOptions { TablePrefix = (options ?? new()).TablePrefix };
+        var snapshot = new MySqlOutboxOptions { MaxDispatchAttempts = (options ?? new()).MaxDispatchAttempts, TablePrefix = (options ?? new()).TablePrefix };
         _ = MySqlOutboxSchema.Table(snapshot);
         foreach (var descriptor in services)
             if (descriptor.ServiceType == typeof(IOutboxStore) && Equals(descriptor.ServiceKey, name))

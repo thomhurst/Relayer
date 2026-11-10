@@ -33,6 +33,13 @@ public static class MySqlOutboxSchema
                 INDEX unordered_idx (status, lane, id),
                 INDEX scheduled_idx (deliver_at)
             ) ENGINE=InnoDB DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_bin;
+            CREATE TABLE IF NOT EXISTS {DeadTable(options ?? new())} (
+                id BINARY(16) PRIMARY KEY, lane INT, ordering_key LONGTEXT,
+                transport LONGTEXT NOT NULL, destination LONGTEXT NOT NULL, message_type LONGTEXT NOT NULL,
+                headers LONGBLOB NOT NULL, body LONGBLOB NOT NULL, created_at DATETIME(6) NOT NULL,
+                deliver_at DATETIME(6), attempts INT NOT NULL, last_error LONGTEXT, tenant_id LONGTEXT,
+                failed_at DATETIME(6) NOT NULL, INDEX failed_idx (failed_at)
+            ) ENGINE=InnoDB DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_bin;
             CREATE TABLE IF NOT EXISTS {LeaseTable(options ?? new())} (
                 name VARCHAR(80) CHARACTER SET ascii COLLATE ascii_bin PRIMARY KEY,
                 owner VARCHAR(100) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
@@ -66,6 +73,8 @@ public static class MySqlOutboxSchema
             {CreateScript(options)}
             """;
     }
+
+    internal static string DeadTable(MySqlOutboxOptions options) => Identifier(options, "dead");
 
     internal static string LeaseTable(MySqlOutboxOptions options) => Identifier(options, "leases");
 
