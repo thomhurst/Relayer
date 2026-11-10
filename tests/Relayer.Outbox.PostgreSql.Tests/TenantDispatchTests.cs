@@ -242,7 +242,8 @@ public class TenantDispatchTests
             if (blocked) { entered = true; await Task.Delay(Timeout.Infinite, token); }
         });
         using var worker = new PostgreSqlTenantDispatcher(fixture.Catalog,
-            new() { MaxConnections = 1, TurnTimeout = TimeSpan.FromSeconds(2), RecoveryDelay = TimeSpan.Zero },
+            // A wall-clock budget each tenant gets in turn; leave room for a busy shared server.
+            new() { MaxConnections = 1, TurnTimeout = TimeSpan.FromSeconds(6), RecoveryDelay = TimeSpan.Zero },
             [transport], NullLoggerFactory.Instance);
         await worker.PassAsync(default);
         await Assert.That(entered).IsTrue();

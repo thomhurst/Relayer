@@ -144,10 +144,14 @@ public static class MySqlSession
     {
         // Like TUnit's own per-session instances, a later session in this process starts afresh.
         var shared = Interlocked.Exchange(ref _shared, new(StartAsync));
+        if (!shared.IsValueCreated) return;
+        // Wait for a startup still in flight (every test may have given up on it) so its container is not left behind.
+        Session session;
+        try { session = await shared.Value; }
         // A failed startup already removed its container and failed the tests that needed it.
-        if (!shared.IsValueCreated || !shared.Value.IsCompletedSuccessfully) return;
-        await shared.Value.Result.Admin.DisposeAsync();
-        await shared.Value.Result.Server.DisposeAsync();
+        catch { return; }
+        await session.Admin.DisposeAsync();
+        await session.Server.DisposeAsync();
     }
 }
 
