@@ -23,6 +23,7 @@ internal sealed class SqlServerDirectDispatcher : BackgroundService
     private readonly bool[] _claimed;
     private readonly DateTimeOffset[] _created;
     private readonly RelayerInstrumentation? _instrumentation;
+    private long _recoveredCompletions;
     private readonly string _schema;
     private readonly string _prefix;
     private readonly string _dataSource;
@@ -213,7 +214,8 @@ internal sealed class SqlServerDirectDispatcher : BackgroundService
                 try
                 {
                     var completed = await _store.CompleteBatchAsync(_claims.AsMemory(0, live), DateTimeOffset.UtcNow, cancellationToken).ConfigureAwait(false);
-                    _instrumentation?.AddOutboxPending(-completed);
+                    if (recordInvalid) _recoveredCompletions += completed;
+                    else _instrumentation?.AddOutboxPending(-completed);
                     if (completed != live) DirectDispatchLog.Incomplete(_logger, completed, live);
                 }
                 catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
@@ -227,6 +229,14 @@ internal sealed class SqlServerDirectDispatcher : BackgroundService
                 Array.Clear(_claims, 0, count);
             }
         }
+    }
+
+    // The maintenance worker owns this dispatcher and calls this once per transaction.
+    internal void FinishRecovery(bool committed)
+    {
+        var completed = _recoveredCompletions;
+        _recoveredCompletions = 0;
+        if (committed && completed != 0) _instrumentation?.AddOutboxPending(-completed);
     }
 
     internal ValueTask DispatchRecoveredAsync(OutboxDispatchBatch batch, CancellationToken cancellationToken) =>

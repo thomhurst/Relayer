@@ -130,6 +130,7 @@ internal sealed partial class SqlServerMaintenanceWorker : BackgroundService
         acquire.Parameters.AddWithValue("@duration", (int)_options.LeaseDuration.TotalMilliseconds);
         if (await acquire.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) is not true) return 0;
         _store.UseDispatchTransaction(connection, transaction);
+        var committed = false;
         try
         {
             var count = cleanup ? await DeleteExpiredAsync(connection, transaction, cancellationToken).ConfigureAwait(false)
@@ -140,6 +141,7 @@ internal sealed partial class SqlServerMaintenanceWorker : BackgroundService
             renew.Parameters.AddWithValue("@owner", _owner);
             await renew.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
             await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+            committed = true;
             return count;
         }
         catch
@@ -148,7 +150,11 @@ internal sealed partial class SqlServerMaintenanceWorker : BackgroundService
             _hasAfter = _hasThrough = false;
             throw;
         }
-        finally { _store.UseDispatchTransaction(null, null); }
+        finally
+        {
+            _store.UseDispatchTransaction(null, null);
+            _dispatcher.FinishRecovery(committed);
+        }
     }
 
     private async ValueTask<int> DispatchAsync(SqlConnection connection, SqlTransaction transaction, CancellationToken cancellationToken)

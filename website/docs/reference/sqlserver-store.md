@@ -233,7 +233,8 @@ Stored schedules are respected; this registration does not yet enable future sch
 Recovery reuses direct dispatch's endpoint grouping, capability cache and fenced claims in one database
 transaction. A crash or database error rolls back the whole pass, including completions for messages
 already accepted by the broker; those messages can all replay with their original identities. Delivery
-is at least once. Row locks remain held through native sends until the pass commits or rolls back.
+is at least once. Recovery decrements `relayer.outbox.pending` only after the pass commits;
+a rolled-back pass publishes no pending-count decrement. Row locks remain held through native sends until the pass commits or rolls back.
 
 Separate durable `sweeper` and `cleanup` leases use the database clock. Native transaction application
 locks serialize connected passes without waiting behind another leader. Idle leadership expires after

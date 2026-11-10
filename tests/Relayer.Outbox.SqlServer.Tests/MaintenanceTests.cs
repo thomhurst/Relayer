@@ -1,5 +1,6 @@
 using Microsoft.Data.SqlClient;
 using System.Diagnostics;
+using System.Diagnostics.Metrics;
 using System.Text;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -119,6 +120,42 @@ public sealed class MaintenanceTests(SqlServerFixture database)
         await Assert.That(rows[0].Id).IsEqualTo(id);
         using var rival = Worker(data, new());
         await Assert.That(await rival.SweepAsync()).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task Pending_metric_changes_only_after_recovery_commit_and_discards_rollback()
+    {
+        var data = new StoreData(database);
+        await data.Create();
+        await data.Insert(Guid.CreateVersion7(), DateTimeOffset.UtcNow.AddDays(-1));
+        await data.Insert(Guid.CreateVersion7(), DateTimeOffset.UtcNow.AddDays(-1));
+        using var instrumentation = new RelayerInstrumentation();
+        long delta = 0;
+        using var listener = new MeterListener();
+        listener.InstrumentPublished = (instrument, meterListener) =>
+        {
+            if (ReferenceEquals(instrument.Meter.Scope, instrumentation) && instrument.Name == "relayer.outbox.pending") meterListener.EnableMeasurementEvents(instrument);
+        };
+        listener.SetMeasurementEventCallback<long>((_, value, _, _) => delta += value);
+        listener.Start();
+        using var cancellation = new CancellationTokenSource();
+        var sends = 0;
+        var transport = new Transport(token =>
+        {
+            // MaxBatchSize=1: the first completion has executed before the second send.
+            if (++sends == 2) { cancellation.Cancel(); return ValueTask.FromCanceled(token); }
+            return ValueTask.CompletedTask;
+        });
+        using var worker = new SqlServerMaintenanceWorker(
+            new SqlConnectionStringBuilder(database.ConnectionString) { InitialCatalog = "master" }.ConnectionString,
+            new() { TablePrefix = data.Options.TablePrefix, BatchSize = 4, RecoveryDelay = TimeSpan.Zero },
+            [transport], NullLogger<SqlServerMaintenanceWorker>.Instance, instrumentation: instrumentation);
+        await Assert.ThrowsAsync<OperationCanceledException>(() => worker.SweepAsync(cancellation.Token).AsTask());
+        await Assert.That(delta).IsEqualTo(0L);
+        await Assert.That(await Scalar($"SELECT COUNT_BIG(*) FROM {data.Table}")).IsEqualTo(2L);
+        await Assert.That(await worker.SweepAsync()).IsEqualTo(2);
+        await Assert.That(delta).IsEqualTo(-2L);
+        await Assert.That(await Scalar($"SELECT COUNT_BIG(*) FROM {data.Table}")).IsEqualTo(0L);
     }
 
     [Test]
