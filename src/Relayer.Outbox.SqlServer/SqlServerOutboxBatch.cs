@@ -63,6 +63,7 @@ internal sealed class SqlServerOutboxBatch : DbDataReader
         finally { Clear(); }
     }
 
+    [RuntimeAsyncMethodGeneration(false)]
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
     internal async ValueTask ExecuteAsync(CancellationToken cancellationToken)
     {

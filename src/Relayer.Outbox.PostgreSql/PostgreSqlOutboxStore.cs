@@ -82,6 +82,7 @@ public sealed class PostgreSqlOutboxStore : IOutboxStore
         return await ReadRowsAsync(command, destination, cancellationToken).ConfigureAwait(false);
     }
 
+    [RuntimeAsyncMethodGeneration(false)]
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder<>))]
     internal async ValueTask<int> ReadRowsAsync(NpgsqlCommand command, Memory<OutboxRecord> destination,
         CancellationToken cancellationToken, bool includeOrderedSequence = false)
@@ -118,6 +119,7 @@ public sealed class PostgreSqlOutboxStore : IOutboxStore
 
     // Direct dispatch claims one native group in one statement. Returned flags refer to input positions,
     // regardless of PostgreSQL's result order; live competing claims and ineligible rows stay untouched.
+    [RuntimeAsyncMethodGeneration(false)]
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
     internal async ValueTask ClaimBatchAsync(ReadOnlyMemory<OutboxClaim> claims, Memory<bool> claimed,
         DateTimeOffset now, DateTimeOffset expiresAt, CancellationToken cancellationToken)
@@ -201,6 +203,7 @@ public sealed class PostgreSqlOutboxStore : IOutboxStore
     }
 
     /// <inheritdoc />
+    [RuntimeAsyncMethodGeneration(false)]
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder<>))]
     public async ValueTask<bool> RecordFailureAsync(OutboxClaim claim, string error, DateTimeOffset now,
         CancellationToken cancellationToken)

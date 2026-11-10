@@ -94,7 +94,6 @@ __pycache__/
 
 # BenchmarkDotNet output
 BenchmarkDotNet.Artifacts/
-.bdn/
 benchmark-results/
 
 # Temporary test projects

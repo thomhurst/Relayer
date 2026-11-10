@@ -25,6 +25,7 @@ internal sealed class EntityFrameworkCoreConsumer<TContext>(string consumer, boo
         return InvokeAsync(context, next, db, Resolve(db));
     }
 
+    [RuntimeAsyncMethodGeneration(false)]
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
     internal async ValueTask InvokeAsync(MessageContext context, ConsumeDelegate next, TContext db, EntityFrameworkCoreConsumerSettings settings)
     {

@@ -94,6 +94,7 @@ internal sealed partial class MySqlOrderedDispatcher : BackgroundService
             catch (Exception error) { ReleaseFailed(_logger, error); }
         }
 
+        [RuntimeAsyncMethodGeneration(false)]
         [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
         async ValueTask RebalanceIfDueAsync()
         {
@@ -112,6 +113,7 @@ internal sealed partial class MySqlOrderedDispatcher : BackgroundService
     }
 
     // One connection and lease-row transaction lock per batch. Never run concurrent sends within a lane.
+    [RuntimeAsyncMethodGeneration(false)]
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder<>))]
     internal async ValueTask<int> DispatchLaneAsync(int lane, CancellationToken cancellationToken)
     {

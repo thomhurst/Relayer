@@ -159,6 +159,7 @@ internal sealed class SqsSendTransport : ITransport, ITransportSendTracing
     public ValueTask SendAsync(OutgoingMessage message, CancellationToken cancellationToken) =>
         GetEndpoint(message.Destination).Tracing is { } tracing ? tracing.SendAsync(message, cancellationToken) : SendCoreAsync(message, cancellationToken);
 
+    [RuntimeAsyncMethodGeneration(false)]
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
     private async ValueTask SendCoreAsync(OutgoingMessage message, CancellationToken cancellationToken)
     {
@@ -190,6 +191,7 @@ internal sealed class SqsSendTransport : ITransport, ITransportSendTracing
         finally { _operations.Return(state); }
     }
 
+    [RuntimeAsyncMethodGeneration(false)]
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
     public async ValueTask SendBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken)
     {
@@ -208,6 +210,7 @@ internal sealed class SqsSendTransport : ITransport, ITransportSendTracing
         }
     }
 
+    [RuntimeAsyncMethodGeneration(false)]
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
     private async ValueTask SendBatchCoreAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken)
     {
@@ -259,6 +262,7 @@ internal sealed class SqsSendTransport : ITransport, ITransportSendTracing
         finally { _operations.Return(state); }
     }
 
+    [RuntimeAsyncMethodGeneration(false)]
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
     private async ValueTask FlushAsync(SqsOperationState state, Endpoint endpoint, int offset, CancellationToken cancellationToken)
     {

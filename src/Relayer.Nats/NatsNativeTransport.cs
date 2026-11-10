@@ -207,6 +207,7 @@ internal sealed class NatsNativeTransport : ITransport, ITransportSendTracing
         }
     }
 
+    [RuntimeAsyncMethodGeneration(false)]
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
     public async ValueTask SendBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken token)
     {
@@ -216,6 +217,7 @@ internal sealed class NatsNativeTransport : ITransport, ITransportSendTracing
         for (var i = 0; i < messages.Length; i++) await SendAsync(messages.Span[i], token).ConfigureAwait(false);
     }
 
+    [RuntimeAsyncMethodGeneration(false)]
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
     private async ValueTask SendBatchCoreAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken token)
     {

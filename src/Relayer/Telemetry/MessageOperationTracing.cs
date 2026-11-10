@@ -180,6 +180,7 @@ public sealed class MessageOperationTracing
             }
         }
 
+        [RuntimeAsyncMethodGeneration(false)]
         [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
         private static async ValueTask AwaitUntracedAsync(MessageContext context, ValueTask pending)
         {
@@ -192,6 +193,7 @@ public sealed class MessageOperationTracing
             }
         }
 
+        [RuntimeAsyncMethodGeneration(false)]
         [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
         private async ValueTask InvokeTracedAsync(MessageContext context)
         {

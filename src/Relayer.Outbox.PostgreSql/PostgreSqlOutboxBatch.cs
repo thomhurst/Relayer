@@ -74,6 +74,7 @@ internal sealed class PostgreSqlOutboxBatch : IDisposable
         finally { Clear(); }
     }
 
+    [RuntimeAsyncMethodGeneration(false)]
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
     internal async ValueTask ExecuteAsync(CancellationToken cancellationToken)
     {

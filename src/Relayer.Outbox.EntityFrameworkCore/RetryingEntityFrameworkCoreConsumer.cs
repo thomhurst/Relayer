@@ -13,6 +13,7 @@ internal sealed class RetryingEntityFrameworkCoreConsumer<TContext>(EntityFramew
 {
     private readonly Operation?[] _operations = new Operation[16];
 
+    [RuntimeAsyncMethodGeneration(false)]
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
     public async ValueTask InvokeAsync(MessageContext context, ConsumeDelegate next)
     {

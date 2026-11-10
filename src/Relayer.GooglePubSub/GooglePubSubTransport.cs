@@ -86,6 +86,7 @@ internal sealed class GooglePubSubTransport : ITransport, ITransportSendTracing,
     public ValueTask SendAsync(OutgoingMessage message, CancellationToken cancellationToken) =>
         GetEndpoint(message.Destination).Tracing.SendAsync(message, cancellationToken);
 
+    [RuntimeAsyncMethodGeneration(false)]
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
     private async ValueTask SendCoreAsync(OutgoingMessage message, CancellationToken cancellationToken)
     {
@@ -122,6 +123,7 @@ internal sealed class GooglePubSubTransport : ITransport, ITransportSendTracing,
         return GetEndpoint(destination).Tracing.SendBatchAsync(messages, cancellationToken);
     }
 
+    [RuntimeAsyncMethodGeneration(false)]
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
     private async ValueTask SendMixedAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken)
     {
@@ -136,6 +138,7 @@ internal sealed class GooglePubSubTransport : ITransport, ITransportSendTracing,
         }
     }
 
+    [RuntimeAsyncMethodGeneration(false)]
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
     private async ValueTask SendBatchCoreAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken)
     {

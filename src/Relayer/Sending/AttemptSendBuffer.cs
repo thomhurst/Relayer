@@ -27,6 +27,7 @@ internal sealed class AttemptSendBuffer
         entry.Copy(transport, message, timeout);
     }
 
+    [RuntimeAsyncMethodGeneration(false)]
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
     internal async ValueTask FlushAsync(CancellationToken cancellationToken)
     {
@@ -104,6 +105,7 @@ internal sealed class AttemptSendBuffer
             return result;
         }
 
+        [RuntimeAsyncMethodGeneration(false)]
         [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
         internal async ValueTask SendAsync(CancellationToken cancellationToken)
         {

@@ -92,6 +92,7 @@ public sealed class SqlServerOutboxStore : IOutboxStore
     }
 
     /// <inheritdoc />
+    [RuntimeAsyncMethodGeneration(false)]
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder<>))]
     public async ValueTask<int> ReadPendingAsync(OutboxReadRequest request, Memory<OutboxRecord> destination,
         CancellationToken cancellationToken)
@@ -115,6 +116,7 @@ public sealed class SqlServerOutboxStore : IOutboxStore
         return await ReadRowsAsync(reader, destination, false, cancellationToken).ConfigureAwait(false);
     }
 
+    [RuntimeAsyncMethodGeneration(false)]
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder<>))]
     internal async ValueTask<int> ReadRowsAsync(SqlCommand command, Memory<OutboxRecord> destination,
         CancellationToken cancellationToken, bool includeOrderedSequence = false)
@@ -124,6 +126,7 @@ public sealed class SqlServerOutboxStore : IOutboxStore
         return await ReadRowsAsync(reader, destination, includeOrderedSequence, cancellationToken, includeOrderedSequence).ConfigureAwait(false);
     }
 
+    [RuntimeAsyncMethodGeneration(false)]
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder<>))]
     internal async ValueTask<int> ReadRecoveryAsync(SqlCommand command, Memory<OutboxRecord> destination, CancellationToken cancellationToken)
     {
@@ -131,6 +134,7 @@ public sealed class SqlServerOutboxStore : IOutboxStore
         return await ReadRowsAsync(reader, destination, true, cancellationToken).ConfigureAwait(false);
     }
 
+    [RuntimeAsyncMethodGeneration(false)]
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder<>))]
     private async ValueTask<int> ReadRowsAsync(SqlDataReader reader, Memory<OutboxRecord> destination,
         bool isolateMalformed, CancellationToken cancellationToken, bool includeOrderedSequence = false)
@@ -214,6 +218,7 @@ public sealed class SqlServerOutboxStore : IOutboxStore
         return MutateAsync(_fail, claim, now, null, error, cancellationToken);
     }
 
+    [RuntimeAsyncMethodGeneration(false)]
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder<>))]
     private async ValueTask<bool> MutateAsync(string sql, OutboxClaim claim, DateTimeOffset now,
         DateTimeOffset? expiresAt, string? error, CancellationToken cancellationToken, int? failureLimit = null)
@@ -243,6 +248,7 @@ public sealed class SqlServerOutboxStore : IOutboxStore
     }
 
     // Native RPC batches retain one independently fenced autocommit statement per row.
+    [RuntimeAsyncMethodGeneration(false)]
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
     internal async ValueTask ClaimBatchAsync(ReadOnlyMemory<OutboxClaim> claims, Memory<bool> claimed,
         DateTimeOffset now, DateTimeOffset expiresAt, CancellationToken cancellationToken)
@@ -268,6 +274,7 @@ public sealed class SqlServerOutboxStore : IOutboxStore
         }
     }
 
+    [RuntimeAsyncMethodGeneration(false)]
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder<>))]
     internal async ValueTask<long> CompleteBatchAsync(ReadOnlyMemory<OutboxClaim> claims, DateTimeOffset now,
         CancellationToken cancellationToken)
@@ -319,6 +326,7 @@ public sealed class SqlServerOutboxStore : IOutboxStore
     }
 
     /// <inheritdoc />
+    [RuntimeAsyncMethodGeneration(false)]
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder<>))]
     public async ValueTask<long?> GetPendingCountAsync(DateTimeOffset now, CancellationToken cancellationToken)
     {

@@ -7,6 +7,7 @@ internal sealed class RabbitMqSettlement(MessageTracing tracing, MessagingEndpoi
     private readonly MessageOperationTracing _ack = new(tracing, endpoint, MessagingOperation.Settle, "ack");
     private readonly MessageOperationTracing _nack = new(tracing, endpoint, MessagingOperation.Settle, "nack");
 
+    [RuntimeAsyncMethodGeneration(false)]
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
     internal async ValueTask SettleAsync(MessageContext context)
     {
@@ -16,6 +17,7 @@ internal sealed class RabbitMqSettlement(MessageTracing tracing, MessagingEndpoi
         native.Disposition = Disposition.SettledByHandler;
     }
 
+    [RuntimeAsyncMethodGeneration(false)]
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
     internal async ValueTask SettleAsync(RabbitMqDelivery delivery, Disposition disposition, CancellationToken token)
     {

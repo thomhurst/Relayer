@@ -148,6 +148,7 @@ internal sealed class RabbitMqConsumer
         return ProcessCoreAsync(message).AsTask();
     }
 
+    [RuntimeAsyncMethodGeneration(false)]
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
     private async ValueTask ProcessCoreAsync(BasicDeliverEventArgs message)
     {

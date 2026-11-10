@@ -29,6 +29,7 @@ internal sealed class MySqlOrderedLane : IDisposable
         _fail.Command.Parameters.AddWithValue("maximum", maxAttempts);
     }
 
+    [RuntimeAsyncMethodGeneration(false)]
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
     internal async ValueTask FindReadyAsync(bool[] assigned, bool[] ready, CancellationToken cancellationToken)
     {
@@ -48,6 +49,7 @@ internal sealed class MySqlOrderedLane : IDisposable
         finally { command.Connection = null; }
     }
 
+    [RuntimeAsyncMethodGeneration(false)]
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder<>))]
     internal async ValueTask<int> ReadAsync(MySqlConnection connection, MySqlTransaction transaction,
         int lane, Memory<OutboxRecord> rows, CancellationToken cancellationToken)
@@ -71,6 +73,7 @@ internal sealed class MySqlOrderedLane : IDisposable
     internal ValueTask<bool> FailAsync(MySqlConnection connection, MySqlTransaction transaction, OutboxClaim claim,
         string error, CancellationToken cancellationToken) => MutateAsync(connection, transaction, _fail, claim, error, cancellationToken);
 
+    [RuntimeAsyncMethodGeneration(false)]
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder<>))]
     private static async ValueTask<bool> MutateAsync(MySqlConnection connection, MySqlTransaction transaction,
         MySqlStoreParameters operation, OutboxClaim claim, string? error, CancellationToken cancellationToken)

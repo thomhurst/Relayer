@@ -5,6 +5,8 @@
     <TargetFramework />
     <TargetFrameworks>net10.0;net11.0</TargetFrameworks>
     <IsPackable>true</IsPackable>
+    <!-- Each assembly compiles its own internal RuntimeAsyncMethodGenerationAttribute; InternalsVisibleTo makes the copies overlap. -->
+    <NoWarn>$(NoWarn);CS0436</NoWarn>
     <IsAotCompatible>true</IsAotCompatible>
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
     <PackageReadmeFile>README.md</PackageReadmeFile>
@@ -16,6 +18,7 @@
 
   <!-- .NET 10 includes GitHub SourceLink support in the SDK. -->
   <ItemGroup>
+    <Compile Include="$(MSBuildThisFileDirectory)Shared/RuntimeAsyncMethodGenerationAttribute.cs" Link="Shared/RuntimeAsyncMethodGenerationAttribute.cs" />
     <None Include="$(MSBuildThisFileDirectory)../README.md" Pack="true" PackagePath="/" />
     <None Include="$(MSBuildThisFileDirectory)../assets/package-icon.png" Pack="true" PackagePath="/" />
   </ItemGroup>

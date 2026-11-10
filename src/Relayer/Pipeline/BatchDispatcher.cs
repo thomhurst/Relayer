@@ -31,6 +31,7 @@ internal sealed class BatchDispatcher<TMessage> : BatchDispatcher
         for (var i = 0; i < concurrency; i++) _states[i] = new State(size);
     }
 
+    [RuntimeAsyncMethodGeneration(false)]
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
     internal override async ValueTask InvokeAsync(ReadOnlyMemory<DefaultMessageContext> contexts,
         Memory<Exception?> errors, CancellationToken cancellationToken)

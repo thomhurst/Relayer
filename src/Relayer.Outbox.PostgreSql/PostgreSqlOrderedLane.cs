@@ -46,6 +46,7 @@ internal sealed class PostgreSqlOrderedLane : IDisposable
         _failImmediately.Parameters.Add(new NpgsqlParameter<string>("error", NpgsqlDbType.Text));
     }
 
+    [RuntimeAsyncMethodGeneration(false)]
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
     internal async ValueTask FindReadyAsync(bool[] assigned, bool[] ready, CancellationToken cancellationToken)
     {
@@ -60,6 +61,7 @@ internal sealed class PostgreSqlOrderedLane : IDisposable
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false)) ready[reader.GetInt32(0)] = true;
     }
 
+    [RuntimeAsyncMethodGeneration(false)]
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder<>))]
     internal async ValueTask<int> ReadAsync(NpgsqlConnection connection, NpgsqlTransaction transaction,
         int lane, Memory<OutboxRecord> rows, CancellationToken cancellationToken)
@@ -79,6 +81,7 @@ internal sealed class PostgreSqlOrderedLane : IDisposable
     internal ValueTask<bool> FailAsync(NpgsqlConnection connection, NpgsqlTransaction transaction,
         OutboxClaim claim, string error, CancellationToken cancellationToken, bool permanent = false) => MutateAsync(connection, transaction, permanent ? _failImmediately : _fail, claim, error, cancellationToken);
 
+    [RuntimeAsyncMethodGeneration(false)]
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder<>))]
     private async ValueTask<bool> MutateAsync(NpgsqlConnection connection, NpgsqlTransaction transaction, NpgsqlCommand command,
         OutboxClaim claim, string? error, CancellationToken cancellationToken)

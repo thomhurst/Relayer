@@ -45,6 +45,7 @@ public readonly struct ServiceBusMessageContext
     public ServiceBusReceivedMessage Message => _delivery.Message;
 
     /// <summary>Completes the message natively before marking it settled.</summary>
+    [RuntimeAsyncMethodGeneration(false)]
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
     public async ValueTask CompleteAsync()
     {
@@ -54,6 +55,7 @@ public readonly struct ServiceBusMessageContext
     }
 
     /// <summary>Abandons the message with the SDK's unchanged property modifications.</summary>
+    [RuntimeAsyncMethodGeneration(false)]
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
     public async ValueTask AbandonAsync(IDictionary<string, object>? propertiesToModify = null)
     {
@@ -63,6 +65,7 @@ public readonly struct ServiceBusMessageContext
     }
 
     /// <summary>Defers the message natively. Retrieve it later by its native sequence number.</summary>
+    [RuntimeAsyncMethodGeneration(false)]
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
     public async ValueTask DeferAsync(IDictionary<string, object>? propertiesToModify = null)
     {
@@ -72,6 +75,7 @@ public readonly struct ServiceBusMessageContext
     }
 
     /// <summary>Dead-letters the message with the SDK's unchanged reason, description and property modifications.</summary>
+    [RuntimeAsyncMethodGeneration(false)]
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
     public async ValueTask DeadLetterAsync(string reason, string? description = null,
         IDictionary<string, object>? propertiesToModify = null)

@@ -44,6 +44,7 @@ internal sealed class BatchExecution
         for (var i = 0; i < _states.Length; i++) _states[i] = new State(Size, _destination, _tracing);
     }
 
+    [RuntimeAsyncMethodGeneration(false)]
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
     internal async ValueTask ProcessAsync(ConsumePipeline owner, ReadOnlyMemory<DefaultMessageContext> contexts, CancellationToken cancellationToken)
     {
@@ -288,6 +289,7 @@ internal sealed class BatchExecution
         private CancellationTokenSource _flushCancellation = new();
         private readonly CancellationTokenRegistration[] _flushRegistrations = new CancellationTokenRegistration[size + 1];
 
+        [RuntimeAsyncMethodGeneration(false)]
         [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
         internal async ValueTask FlushAsync(AttemptSendBuffer buffer, int count, CancellationToken cancellationToken)
         {

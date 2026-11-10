@@ -61,6 +61,7 @@ internal sealed class PostgreSqlLaneCoordinator
         await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
     }
 
+    [RuntimeAsyncMethodGeneration(false)]
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder<>))]
     internal async ValueTask<bool> AcquireAsync(NpgsqlConnection connection, NpgsqlTransaction transaction,
         int lane, CancellationToken cancellationToken)

@@ -209,6 +209,7 @@ internal sealed partial class ServiceBusConsumer : IAsyncDisposable
     internal Task ProcessSessionAsync(ProcessSessionMessageEventArgs args) =>
         (TrackHealth ? ProcessSessionTrackedAsync(args) : _receiveSession!(args, _abort.Token)).AsTask();
 
+    [RuntimeAsyncMethodGeneration(false)]
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
     private async ValueTask ProcessTrackedAsync(ProcessMessageEventArgs args)
     {
@@ -217,6 +218,7 @@ internal sealed partial class ServiceBusConsumer : IAsyncDisposable
         finally { Deactivate(slot); }
     }
 
+    [RuntimeAsyncMethodGeneration(false)]
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
     private async ValueTask ProcessSessionTrackedAsync(ProcessSessionMessageEventArgs args)
     {

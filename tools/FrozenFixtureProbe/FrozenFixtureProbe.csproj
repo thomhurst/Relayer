@@ -8,5 +8,6 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="../FrozenMeasurementEvents.cs" Link="FrozenMeasurementEvents.cs" />
+    <Compile Include="../../src/Shared/RuntimeAsyncMethodGenerationAttribute.cs" Link="RuntimeAsyncMethodGenerationAttribute.cs" />
   </ItemGroup>
 </Project>

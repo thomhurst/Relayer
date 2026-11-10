@@ -100,6 +100,7 @@ public sealed class FailurePipeline
         throw new InvalidOperationException($"Consumer '{_consumer}' from '{_source}' on transport '{_transport.Name}': redelivery delay {delay} has no executor. Shorten the delay, enable native redelivery/scheduling, or configure a message copy executor and durable IFailureScheduler.");
     }
 
+    [RuntimeAsyncMethodGeneration(false)]
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
     internal async ValueTask HandleSettlementAsync(DefaultMessageContext context, Disposition request)
     {
@@ -141,6 +142,7 @@ public sealed class FailurePipeline
     private TimeSpan Jitter(TimeSpan delay) => _options.Jitter == 0 || delay == TimeSpan.Zero ? delay
         : TimeSpan.FromTicks((long)(delay.Ticks * (1 - Random.Shared.NextDouble() * _options.Jitter)));
 
+    [RuntimeAsyncMethodGeneration(false)]
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
     internal async ValueTask HandleAsync(DefaultMessageContext context, Exception error, FailureAction action)
     {
@@ -176,6 +178,7 @@ public sealed class FailurePipeline
         }
     }
 
+    [RuntimeAsyncMethodGeneration(false)]
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
     private async ValueTask CopyAsync(DefaultMessageContext context, string destination, DateTimeOffset? deliverAt,
         KeyValuePair<string, WireString>[] metadata, bool schedule)

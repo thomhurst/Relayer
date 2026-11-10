@@ -2,8 +2,6 @@
 
   <PropertyGroup>
     <OutputType>Exe</OutputType>
-    <!-- The regression gate measures the runtime-async build. -->
-    <TargetFramework>net11.0</TargetFramework>
     <!-- BenchmarkDotNet generates code that trips some analyzers. -->
     <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
   </PropertyGroup>
