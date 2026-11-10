@@ -497,3 +497,15 @@ and in-memory receiver channel reads. Sample weights do not assign exact bytes
 to any of these owners. The exact synchronous-invocation ABBA now includes this
 input set to measure the original handler call region separately; its results
 must remain distinct from these untraced totals and sampled profiles.
+
+The fixture workflow also runs a separate `--exact-releases` ABBA. Each record
+counts calling-thread bytes around the entire synchronous batch of eight
+`Release.Writer.TryWrite` calls. The native channel completes waiting readers
+and schedules their continuations during these calls, so this tests a region
+excluded by the handler-invocation counter. There are exactly 32768 measured
+records, each representing eight writes; warmup is excluded. The JSON
+`invocationAllocations` histogram counts release-batch delegate calls in this
+mode, **not messages**. No await occurs inside the counter boundary. Other
+threads and later continuations remain excluded, and byte counts do not identify
+object types. This instrumented comparison neither attributes the historical
+excess nor permits subtraction from the other controls' totals.

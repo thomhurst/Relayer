@@ -6,9 +6,10 @@ using System.Threading.Channels;
 using Relayer.Diagnostics;
 
 // Diagnostic only. Bind the original handler once; never rebuild historical workload assemblies.
-if (args.Length is < 1 or > 2 || (args.Length == 2 && args[1] != "--exact-invocations"))
-    throw new ArgumentException("Expected the retained benchmark dependency directory and optional --exact-invocations.");
-var exactInvocations = args.Length == 2;
+if (args.Length is < 1 or > 2 || (args.Length == 2 && args[1] is not ("--exact-invocations" or "--exact-releases")))
+    throw new ArgumentException("Expected the retained benchmark dependency directory and optional --exact-invocations or --exact-releases.");
+var exactInvocations = args.Length == 2 && args[1] == "--exact-invocations";
+var exactReleases = args.Length == 2 && args[1] == "--exact-releases";
 var image = Path.GetFullPath(args[0]);
 var context = new AssemblyLoadContext("Frozen", isCollectible: false);
 context.Resolving += (_, name) =>
@@ -25,12 +26,12 @@ var signals = Activator.CreateInstance(signalsType)!;
 var handler = Activator.CreateInstance(handlerType, signals)!;
 var run = (Func<Task>)typeof(FixtureControl).GetMethod(nameof(FixtureControl.Measure))!
     .MakeGenericMethod(parameters[0].ParameterType, parameters[1].ParameterType)
-    .Invoke(null, [image, handler, method, signals, exactInvocations])!;
+    .Invoke(null, [image, handler, method, signals, exactInvocations, exactReleases])!;
 await run();
 
 static class FixtureControl
 {
-    public static Func<Task> Measure<TMessage, TContext>(string image, object handler, MethodInfo method, object signals, bool exactInvocations)
+    public static Func<Task> Measure<TMessage, TContext>(string image, object handler, MethodInfo method, object signals, bool exactInvocations, bool exactReleases)
     {
         var invoke = method.CreateDelegate<Func<TMessage, TContext, CancellationToken, ValueTask>>(handler);
         var message = (TMessage)Activator.CreateInstance(typeof(TMessage), 42)!;
@@ -38,6 +39,14 @@ static class FixtureControl
         var entered = (Channel<byte>)type.GetProperty("Entered")!.GetValue(signals)!;
         var release = (Channel<byte>)type.GetProperty("Release")!.GetValue(signals)!;
         var completed = (Channel<int>)type.GetProperty("Completed")!.GetValue(signals)!;
+        // Cache the delegate before warmup. The region includes all eight synchronous writes,
+        // including native completion scheduling on this thread; never await inside it.
+        Func<int, int, CancellationToken, ValueTask> releaseBatch = (_, _, _) =>
+        {
+            for (var i = 0; i < 8; i++)
+                if (!release.Writer.TryWrite(0)) throw new InvalidOperationException("Release channel is full.");
+            return ValueTask.CompletedTask;
+        };
         return Run;
 
         async Task Run()
@@ -46,7 +55,7 @@ static class FixtureControl
             var pending = new ValueTask[8];
             const int warmupBatches = 4096;
             const int measuredBatches = 32768;
-            var invocations = exactInvocations ? new InvocationAllocations(measuredBatches * 8) : null;
+            var invocations = exactInvocations || exactReleases ? new InvocationAllocations(measuredBatches * (exactReleases ? 1 : 8)) : null;
             for (var i = 0; i < warmupBatches; i++) await Batch();
             GC.Collect();
             GC.WaitForPendingFinalizers();
@@ -64,14 +73,15 @@ static class FixtureControl
             if (invocations is not null) invocations.Enabled = false;
             if (sum != measuredBatches * 8L * 42) throw new InvalidOperationException($"Unexpected sum: {sum}.");
             var invocationReport = invocations?.Report();
-            if (invocationReport is not null && invocationReport.Invocations != measuredBatches * 8)
+            if (invocationReport is not null && invocationReport.Invocations != measuredBatches * (exactReleases ? 1 : 8))
                 throw new InvalidOperationException("Exact invocation count does not match the measured workload.");
             Console.WriteLine(JsonSerializer.Serialize(new
             {
                 image, control = "original-handler-and-signal-channels", warmupBatches, measuredBatches,
-                instrumentation = exactInvocations ? "exact-synchronous-invocations" : "none",
+                instrumentation = exactReleases ? "exact-synchronous-release-batches" : exactInvocations ? "exact-synchronous-invocations" : "none",
+                exactRegion = exactReleases ? "Eight synchronous Release.Writer.TryWrite calls per record; includes calling-thread native completion scheduling, excludes other threads and later continuations." : "One synchronous handler delegate call per record.",
                 invocationAllocations = invocationReport,
-                invocationLimits = "Exact bytes on the calling thread during the synchronous handler invocation only. Excludes continuations after suspension, other threads and the diagnostic driver. Includes original handler and called channel/runtime work; no exact type attribution or historical end-to-end delta attribution. Instrumentation changes scheduling; compare only within this separate ABBA.",
+                invocationLimits = exactReleases ? "Exact bytes on the calling thread for the whole synchronous eight-write release batch only. No exact type attribution or historical delta attribution; do not subtract from inclusive totals. Recording changes scheduling; compare within this separate ABBA only." : "Exact bytes on the calling thread during the synchronous handler invocation only. Excludes continuations after suspension, other threads and the diagnostic driver. Includes original handler and called channel/runtime work; no exact type attribution or historical end-to-end delta attribution. Instrumentation changes scheduling; compare only within this separate ABBA.",
                 messages = measuredBatches * 8, bytes, bytesPerMessage = bytes / (measuredBatches * 8.0), seconds,
                 runtime = System.Runtime.InteropServices.RuntimeInformation.FrameworkDescription,
                 arch = System.Runtime.InteropServices.RuntimeInformation.ProcessArchitecture.ToString(),
@@ -83,14 +93,17 @@ static class FixtureControl
             {
                 for (var i = 0; i < pending.Length; i++)
                 {
-                    pending[i] = invocations is null
+                    pending[i] = invocations is null || exactReleases
                         ? invoke(message, default!, limit.Token)
                         : invocations.Invoke(invoke, message, default(TContext)!, limit.Token);
                     if (pending[i].IsCompleted) throw new InvalidOperationException("Handler must await release.");
                 }
                 for (var i = 0; i < pending.Length; i++) await entered.Reader.ReadAsync(limit.Token);
-                for (var i = 0; i < pending.Length; i++)
-                    if (!release.Writer.TryWrite(0)) throw new InvalidOperationException("Release channel is full.");
+                if (exactReleases)
+                    _ = invocations!.Invoke(releaseBatch, 0, 0, limit.Token);
+                else
+                    for (var i = 0; i < pending.Length; i++)
+                        if (!release.Writer.TryWrite(0)) throw new InvalidOperationException("Release channel is full.");
                 var total = 0;
                 for (var i = 0; i < pending.Length; i++) total += await completed.Reader.ReadAsync(limit.Token);
                 // Completion notification can precede handler return. Drain every original ValueTask before reuse.
