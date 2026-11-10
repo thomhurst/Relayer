@@ -78,11 +78,36 @@ internal sealed class OutboxTransactionInterceptor(EntityFrameworkCoreOutbox out
         return Task.CompletedTask;
     }
 
-    // Conservatively invalidate a manually rewound unit. EF's automatic savepoint rollback also reaches SaveChangesFailed.
-    public override void RolledBackToSavepoint(DbTransaction transaction, TransactionEventData eventData) => outbox.Invalidate(transaction);
+    public override void CreatedSavepoint(DbTransaction transaction, TransactionEventData eventData)
+    {
+        var state = outbox.Get(eventData.Context!, configuration);
+        if (state.Saving) state.SavepointCreated = true;
+    }
+
+    public override Task CreatedSavepointAsync(DbTransaction transaction, TransactionEventData eventData, CancellationToken cancellationToken = default)
+    {
+        CreatedSavepoint(transaction, eventData);
+        return Task.CompletedTask;
+    }
+
+    public override void ReleasedSavepoint(DbTransaction transaction, TransactionEventData eventData) =>
+        outbox.Get(eventData.Context!, configuration).SavepointCreated = false;
+
+    public override Task ReleasedSavepointAsync(DbTransaction transaction, TransactionEventData eventData, CancellationToken cancellationToken = default)
+    {
+        ReleasedSavepoint(transaction, eventData);
+        return Task.CompletedTask;
+    }
+
+    public override void RolledBackToSavepoint(DbTransaction transaction, TransactionEventData eventData)
+    {
+        // Manual rewinds, and saves without a confirmed native checkpoint, remain fatal.
+        if (!outbox.Get(eventData.Context!, configuration).RollbackSave()) outbox.Invalidate(transaction);
+    }
+
     public override Task RolledBackToSavepointAsync(DbTransaction transaction, TransactionEventData eventData, CancellationToken cancellationToken = default)
     {
-        outbox.Invalidate(transaction);
+        RolledBackToSavepoint(transaction, eventData);
         return Task.CompletedTask;
     }
 }

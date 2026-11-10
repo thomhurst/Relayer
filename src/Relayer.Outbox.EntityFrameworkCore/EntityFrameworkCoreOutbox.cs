@@ -198,6 +198,45 @@ internal sealed class OutboxContext(DbContext context, OutboxConfiguration confi
     internal List<BufferedOutboxMessage> Rows { get; } = [];
     internal int Count { get; private set; }
     internal int SelectionDepth { get; set; }
+    private int _savedCount;
+    internal bool Saving { get; private set; }
+    internal bool SavepointCreated { get; set; }
+    internal bool SaveRecovered { get; private set; }
+
+    internal void BeginSave()
+    {
+        Saving = true;
+        SavepointCreated = false;
+        SaveRecovered = false;
+    }
+
+    internal void Saved()
+    {
+        _savedCount = Count;
+        Saving = false;
+        SavepointCreated = false;
+        SaveRecovered = false;
+    }
+
+    internal bool RollbackSave()
+    {
+        if (!Saving || !SavepointCreated || Failed) return false;
+        // Sends made before SavingChanges belong to this save too. The last successful
+        // save, rather than native savepoint creation, establishes the buffer boundary.
+        for (var i = _savedCount; i < Count; i++) Rows[i].Clear();
+        Count = _savedCount;
+        SaveRecovered = true;
+        return true;
+    }
+
+    internal bool FinishFailedSave()
+    {
+        var recovered = Saving && SaveRecovered && !Failed;
+        Saving = false;
+        SavepointCreated = false;
+        SaveRecovered = false;
+        return recovered;
+    }
 
     internal void CheckTransaction()
     {
@@ -251,6 +290,10 @@ internal sealed class OutboxContext(DbContext context, OutboxConfiguration confi
     {
         for (var i = 0; i < Count; i++) Rows[i].Clear();
         Count = 0;
+        _savedCount = 0;
+        Saving = false;
+        SavepointCreated = false;
+        SaveRecovered = false;
         Transaction = null;
         Failed = false;
         Detached = false;

@@ -1,7 +1,9 @@
 using System.Buffers;
 using System.Data;
+using System.Data.Common;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Storage;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
@@ -119,6 +121,140 @@ public class EnlistmentTests
     }
 
     [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Automatic_savepoint_rollback_discards_only_sends_since_last_successful_save(bool synchronous)
+    {
+        await using var database = new Database();
+        await database.Start();
+        await using var provider = database.Services();
+        await using var scope = provider.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<OrdersContext>();
+        var sender = scope.ServiceProvider.GetRequiredService<ISender>();
+        await using var transaction = synchronous ? db.Database.BeginTransaction() : await db.Database.BeginTransactionAsync();
+        await sender.SendAsync(new Probe(1));
+        db.Add(new Order { Id = 1 });
+        if (synchronous) db.SaveChanges(); else await db.SaveChangesAsync();
+        // An empty successful save must also establish the next send boundary.
+        await sender.SendAsync(new Probe(2));
+        if (synchronous) db.SaveChanges(); else await db.SaveChangesAsync();
+        await sender.SendAsync(new Probe(3));
+        db.Add(new Order { Id = -1 });
+        if (synchronous) await Assert.That(() => db.SaveChanges()).Throws<DbUpdateException>();
+        else await Assert.That(async () => await db.SaveChangesAsync()).Throws<DbUpdateException>();
+        db.ChangeTracker.Clear();
+        await sender.SendAsync(new Probe(4));
+        db.Add(new Order { Id = 2 });
+        if (synchronous) db.SaveChanges(); else await db.SaveChangesAsync();
+        await sender.SendAsync(new Probe(5)); // Sends after the final save still commit.
+        if (synchronous) transaction.Commit(); else await transaction.CommitAsync();
+        await Assert.That(await database.Count()).IsEqualTo(4L);
+        await Assert.That(await database.Scalar($"SELECT count(*) FROM {Database.Table} WHERE get_byte(body, 0) IN (1, 2, 4, 5)")).IsEqualTo(4L);
+        await Assert.That(await database.Scalar("SELECT count(*) FROM orders")).IsEqualTo(2L);
+        await Assert.That(await database.Scalar("SELECT count(*) FROM batch_log")).IsEqualTo(1L);
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Manual_savepoint_rollback_and_unrecovered_cancellation_still_reject_commit(bool cancellation)
+    {
+        await using var database = new Database();
+        await database.Start();
+        await using var provider = database.Services();
+        await using var scope = provider.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<OrdersContext>();
+        await using var transaction = await db.Database.BeginTransactionAsync();
+        await scope.ServiceProvider.GetRequiredService<ISender>().SendAsync(new Probe(1));
+        if (cancellation)
+        {
+            db.Add(new Order { Id = 1 });
+            using var canceled = new CancellationTokenSource();
+            canceled.Cancel();
+            await Assert.That(async () => await db.SaveChangesAsync(canceled.Token)).Throws<OperationCanceledException>();
+        }
+        else
+        {
+            await transaction.CreateSavepointAsync("manual");
+            await transaction.RollbackToSavepointAsync("manual");
+        }
+        await Assert.That(async () => await transaction.CommitAsync()).Throws<InvalidOperationException>();
+        await transaction.RollbackAsync();
+        await Assert.That(await database.Count()).IsEqualTo(0L);
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Canceled_save_with_confirmed_native_rollback_can_continue(bool synchronous)
+    {
+        await using var database = new Database();
+        await database.Start();
+        await using var provider = database.Services();
+        await using var scope = provider.CreateAsyncScope();
+        var options = new DbContextOptionsBuilder<OrdersContext>().UseNpgsql(database.ConnectionString)
+            .AddRelayerOutbox(scope.ServiceProvider, Database.Options).AddInterceptors(new CancelCommand());
+        await using var db = new OrdersContext(options.Options);
+        var sender = scope.ServiceProvider.GetRequiredService<ISender>();
+        await using var transaction = synchronous ? db.Database.BeginTransaction() : await db.Database.BeginTransactionAsync();
+        await sender.SendAsync(new Probe(1));
+        db.Add(new Order { Id = 1 });
+        // The command cancels without canceling the caller token, so EF can roll back its savepoint.
+        if (synchronous) await Assert.That(() => db.SaveChanges()).Throws<OperationCanceledException>();
+        else await Assert.That(async () => await db.SaveChangesAsync()).Throws<OperationCanceledException>();
+        db.ChangeTracker.Clear();
+        await sender.SendAsync(new Probe(2));
+        db.Add(new Order { Id = 2 });
+        if (synchronous) db.SaveChanges(); else await db.SaveChangesAsync();
+        if (synchronous) transaction.Commit(); else await transaction.CommitAsync();
+        await Assert.That(await database.Count()).IsEqualTo(1L);
+        await Assert.That(await database.Scalar($"SELECT get_byte(body, 0)::bigint FROM {Database.Table}")).IsEqualTo(2L);
+        await Assert.That(await database.Scalar("SELECT count(*) FROM orders WHERE \"Id\" = 2")).IsEqualTo(1L);
+    }
+
+    private sealed class CancelCommand : DbCommandInterceptor
+    {
+        private bool _cancel = true;
+        public override InterceptionResult<DbDataReader> ReaderExecuting(DbCommand command, CommandEventData eventData,
+            InterceptionResult<DbDataReader> result)
+        {
+            if (_cancel)
+            {
+                _cancel = false;
+                throw new OperationCanceledException("Cancel the first business command.");
+            }
+            return result;
+        }
+
+        public override ValueTask<InterceptionResult<DbDataReader>> ReaderExecutingAsync(DbCommand command,
+            CommandEventData eventData, InterceptionResult<DbDataReader> result, CancellationToken cancellationToken = default) =>
+            new(ReaderExecuting(command, eventData, result));
+    }
+
+    [Test]
+    public async Task Recovering_one_context_does_not_discard_another_shared_contexts_sends()
+    {
+        await using var database = new Database();
+        await database.Start();
+        await using var provider = database.Services();
+        await using var scope = provider.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<OrdersContext>();
+        var audits = scope.ServiceProvider.GetRequiredService<AuditContext>();
+        var sender = scope.ServiceProvider.GetRequiredService<ISender>();
+        await using var transaction = await db.Database.BeginTransactionAsync();
+        audits.Database.SetDbConnection(db.Database.GetDbConnection());
+        await using var joined = await audits.Database.UseTransactionAsync(transaction.GetDbTransaction());
+        using (audits.EnlistRelayerOutbox()) await sender.SendAsync(new Probe(1));
+        using (db.EnlistRelayerOutbox()) await sender.SendAsync(new Probe(2));
+        db.Add(new Order { Id = -1 });
+        await Assert.That(async () => await db.SaveChangesAsync()).Throws<DbUpdateException>();
+        db.ChangeTracker.Clear();
+        await transaction.CommitAsync();
+        await Assert.That(await database.Count()).IsEqualTo(1L);
+        await Assert.That(await database.Scalar($"SELECT get_byte(body, 0)::bigint FROM {Database.Table}")).IsEqualTo(1L);
+    }
+
+    [Test]
     public async Task Rollback_disposal_cancellation_and_failed_saves_never_leak_messages()
     {
         await using var database = new Database();
@@ -151,7 +287,8 @@ public class EnlistmentTests
             await Assert.That(async () => await db.SaveChangesAsync()).Throws<DbUpdateException>();
         }
         db.ChangeTracker.Clear();
-        // A failed explicit unit cannot commit its earlier buffered sends after a savepoint rollback.
+        // Without native automatic savepoint recovery a failed explicit unit still cannot commit.
+        db.Database.AutoSavepointsEnabled = false;
         await using (var transaction = await db.Database.BeginTransactionAsync())
         {
             await sender.SendAsync(new Probe(5));
@@ -217,6 +354,7 @@ public class EnlistmentTests
             }
             else
             {
+                db.Database.AutoSavepointsEnabled = false;
                 db.Add(new Order { Id = -1 });
                 if (synchronous) await Assert.That(() => db.SaveChanges()).Throws<DbUpdateException>();
                 else await Assert.That(async () => await db.SaveChangesAsync()).Throws<DbUpdateException>();

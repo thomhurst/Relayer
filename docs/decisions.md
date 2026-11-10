@@ -564,7 +564,14 @@ PostgreSQL is implemented first. Its versioned header codec retains all name/val
 FNV-1a lane hashing uses UTF-8 ordering keys. Tenant metadata is preserved when explicitly supplied; an application-authorized scoped binding supplies and validates it for tenant stores (D45).
 
 **Consequences.** No SaveChanges override, entity mapping, header scanning, or process-wide mutable
-state is required. Native transaction rollback/disposal abandons buffered sends. Failed explicit units and savepoint rollback
+state is required. Native transaction rollback/disposal abandons buffered sends. Each context's last
+successful SaveChanges (including an empty save) establishes its retained-send boundary, initially zero.
+A confirmed native automatic savepoint rollback during that context's SaveChanges discards sends since
+that boundary, including sends buffered before SaveChanges began, and permits the explicit unit to
+continue. Other participating contexts retain their own buffers. Successful native savepoint release
+drops the active checkpoint; failed/canceled-save callbacks preserve recovery only after confirmed
+rollback. Relayer does not issue savepoint SQL or emulate database recovery. Manual savepoint rollback,
+failed saves without confirmed recovery (including AutoSavepointsEnabled=false), and failed commits
 invalidate commit until the whole transaction ends. Callers retry complete units with either a fresh context
 or the same context after full rollback (or server abort), disposal of the EF transaction wrapper and any
 outbox selections, and clearing/reloading tracked entities. Relayer clears buffered sends and failure/transaction
