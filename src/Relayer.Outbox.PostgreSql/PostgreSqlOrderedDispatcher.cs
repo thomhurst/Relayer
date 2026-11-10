@@ -17,6 +17,7 @@ internal sealed partial class PostgreSqlOrderedDispatcher : BackgroundService
     private readonly bool[] _ready;
     private int _nextLane;
     private int _localStop;
+    private readonly CancellationTokenSource _idleStop = new();
     private readonly bool _hasLocal;
     private readonly OrderedDispatchCapabilityCache _capabilities = new();
     private readonly ILogger<PostgreSqlOrderedDispatcher> _logger;
@@ -55,6 +56,7 @@ internal sealed partial class PostgreSqlOrderedDispatcher : BackgroundService
     {
         // Reuse the deadline source across successful batches. Cancellation is an exceptional path.
         var deadline = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
+        using var idleStop = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken, _idleStop.Token);
         long? lastRebalance = null;
         try
         {
@@ -93,10 +95,10 @@ internal sealed partial class PostgreSqlOrderedDispatcher : BackgroundService
                 catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { break; }
                 catch (Exception error) { DispatchFailed(_logger, error); }
                 if (!madeProgress)
-                    await Task.Delay(_options.PollInterval, _timeProvider, stoppingToken).ConfigureAwait(false);
+                    await Task.Delay(_options.PollInterval, _timeProvider, idleStop.Token).ConfigureAwait(false);
             }
         }
-        catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { }
+        catch (OperationCanceledException) when (idleStop.IsCancellationRequested) { }
         finally
         {
             deadline.Dispose();
@@ -157,6 +159,8 @@ internal sealed partial class PostgreSqlOrderedDispatcher : BackgroundService
     {
         if (!_hasLocal) { await base.StopAsync(cancellationToken).ConfigureAwait(false); return; }
         Interlocked.Exchange(ref _localStop, 1);
+        // Wake an idle scan without cancelling the token draining active local deliveries.
+        await _idleStop.CancelAsync().ConfigureAwait(false);
         try { if (ExecuteTask is { } task) await task.WaitAsync(cancellationToken).ConfigureAwait(false); }
         finally { await base.StopAsync(cancellationToken).ConfigureAwait(false); }
     }
@@ -164,6 +168,7 @@ internal sealed partial class PostgreSqlOrderedDispatcher : BackgroundService
     public override void Dispose()
     {
         base.Dispose();
+        _idleStop.Dispose();
         _lane.Dispose();
     }
 

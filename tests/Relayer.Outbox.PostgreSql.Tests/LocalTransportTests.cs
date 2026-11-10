@@ -95,6 +95,48 @@ public class LocalTransportTests(PostgreSqlLocalSessionFixture server)
     }
 
     [Test]
+    public async Task Idle_ordered_dispatch_stops_without_waiting_for_poll_interval()
+    {
+        await using var database = server.CreateDatabase();
+        await database.StartAsync();
+        await using var source = NpgsqlDataSource.Create(database.ConnectionString);
+        await PostgreSqlOutboxStoreTests.CreateSchema(source);
+        await using var transport = new PostgreSqlLocalTransport("local", source, new(), ["work"]);
+        var clock = new IdlePollClock();
+        using var worker = new PostgreSqlOrderedDispatcher(source,
+            new() { Lanes = 1, PollInterval = TimeSpan.FromMinutes(1), LeaseDuration = TimeSpan.FromMinutes(10) },
+            [transport], NullLogger<PostgreSqlOrderedDispatcher>.Instance, clock);
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        await worker.StartAsync(deadline.Token);
+        try
+        {
+            // The timer never fires: only shutdown cancellation can complete this idle wait.
+            await clock.FirstPoll.Task.WaitAsync(deadline.Token);
+            using var stopDeadline = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            await worker.StopAsync(stopDeadline.Token);
+            await Assert.That(worker.ExecuteTask!.IsCompletedSuccessfully).IsTrue();
+            await Assert.That(await Count(source, "relayer_leases")).IsEqualTo(0L);
+        }
+        finally { await worker.StopAsync(deadline.Token); }
+    }
+
+    private sealed class IdlePollClock : TimeProvider
+    {
+        internal TaskCompletionSource FirstPoll { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public override ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period)
+        {
+            FirstPoll.TrySetResult();
+            return new SilentTimer();
+        }
+        private sealed class SilentTimer : ITimer
+        {
+            public bool Change(TimeSpan dueTime, TimeSpan period) => true;
+            public void Dispose() { }
+            public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+        }
+    }
+
+    [Test]
     [Arguments(-10, false)]
     [Arguments(-11, false)]
     [Arguments(10, false)]
