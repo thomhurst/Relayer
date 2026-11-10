@@ -15,6 +15,8 @@ public delegate ValueTask ConsumeFailureDelegate(MessageContext context, Excepti
 public sealed partial class ConsumePipeline
 {
     internal BatchExecution? BatchExecution { get; init; }
+    // Native durable failure delegates can reuse attempt buffering without a second retry runtime.
+    internal bool BufferAttemptSends { get; set; }
 
     /// <summary>Whether this consumer dispatches a generated batch handler.</summary>
     public bool IsBatch => BatchExecution is not null;

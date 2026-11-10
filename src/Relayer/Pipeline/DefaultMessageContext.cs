@@ -131,9 +131,11 @@ public sealed class DefaultMessageContext : MessageContext, IDisposable
     internal void BindScope() => SetServices(_scope!.ServiceProvider);
 
     // The attempt's sends stay in its buffer until the handler, middleware and scope disposal succeed.
-    internal void AttachSender()
+    internal void AttachSender() => AttachSender(_scope!.ServiceProvider);
+
+    internal void AttachSender(IServiceProvider services)
     {
-        var service = _scope!.ServiceProvider.GetService<ISender>();
+        var service = services.GetService<ISender>();
         if (service is not null && service is not Sender)
             throw new InvalidOperationException("The failure pipeline requires Relayer's scoped ISender to buffer failed-attempt sends.");
         _sender = (Sender?)service;

@@ -45,6 +45,7 @@ public static class PostgreSqlLocalBuilderExtensions
             transport.Dispatcher = provider.GetRequiredKeyedService<PostgreSqlDirectDispatcher>(storeName);
             transport.Dispatcher.ValidateLocal(transport);
             var handlers = provider.GetRequiredService<HandlerRegistry>();
+            provider.GetRequiredService<SenderPool>().Enable();
             foreach (var route in declaration.Routes)
                 if (route.SendOptions.EnvelopeMode != MessageEnvelopeMode.CloudEvents || route.SendOptions.HeaderNames.Id != "ce_id")
                     throw new NotSupportedException("PostgreSQL local routes require CloudEvents headers. Raw envelopes and custom CloudEvents header bindings are unsupported.");
@@ -60,7 +61,9 @@ public static class PostgreSqlLocalBuilderExtensions
                 pipeline.Tracing(tracing, endpoint).Settle(PostgreSqlLocalTransport.SettleAsync);
                 foreach (var handler in handlers.Descriptors)
                     if (consumer.Handlers.Contains(handler.HandlerType)) pipeline.Handler(handler);
-                var receive = new ReceivePipeline<PostgreSqlLocalDelivery, PostgreSqlLocalMessageBinding>(pipeline.Build(consumer.Concurrency), new(), consumer.Concurrency);
+                var composed = pipeline.Build(consumer.Concurrency);
+                composed.BufferAttemptSends = true;
+                var receive = new ReceivePipeline<PostgreSqlLocalDelivery, PostgreSqlLocalMessageBinding>(composed, new(), consumer.Concurrency);
                 transport.Register(consumer.Source, receive.ProcessAsync, consumer.Concurrency);
             }
             transport.ValidateConsumers();

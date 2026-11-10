@@ -47,6 +47,46 @@ public class LocalTransportTests(PostgreSqlLocalSessionFixture server)
     }
 
     [Test]
+    [Arguments(-10, false)]
+    [Arguments(-11, false)]
+    [Arguments(10, false)]
+    [Arguments(-10, true)]
+    [Arguments(-11, true)]
+    [Arguments(10, true)]
+    public async Task Follow_up_sends_require_successful_handler_and_scope_disposal(int value, bool ordered)
+    {
+        await using var database = server.CreateDatabase();
+        await database.StartAsync();
+        await using var source = NpgsqlDataSource.Create(database.ConnectionString);
+        await PostgreSqlOutboxStoreTests.CreateSchema(source);
+        await using (var command = source.CreateCommand("CREATE TABLE local_business (value integer PRIMARY KEY)")) await command.ExecuteNonQueryAsync();
+        await using var provider = Provider(source, ordered);
+        foreach (var starter in provider.GetServices<IHostedService>()) if (starter is not PostgreSqlDirectDispatcher) await starter.StartAsync(default);
+        var transport = provider.GetServices<ITransport>().Single();
+        await Enqueue(provider, source, new(value), true);
+        await using var original = source.CreateCommand("SELECT id FROM relayer_outbox");
+        var parentId = (Guid)(await original.ExecuteScalarAsync())!;
+        if (ordered)
+        {
+            using var worker = new PostgreSqlOrderedDispatcher(source, new() { Lanes = 1, MaxDispatchAttempts = 1 }, [transport], provider.GetRequiredService<ILogger<PostgreSqlOrderedDispatcher>>());
+            await worker.DispatchLaneAsync(0, default);
+        }
+        else
+        {
+            var rows = new OutboxRecord[1];
+            var count = await new PostgreSqlOutboxStore(source).ReadPendingAsync(new(null, DateTimeOffset.UtcNow), rows, default);
+            using var worker = new PostgreSqlDirectDispatcher(source, new() { MaxDispatchAttempts = 1 }, new(), [transport], provider.GetRequiredService<ILogger<PostgreSqlDirectDispatcher>>());
+            await worker.DispatchRecoveredAsync(rows.AsMemory(0, count), default);
+        }
+        await Assert.That(await Count(source, "local_business")).IsEqualTo(value > 0 ? 1L : 0L);
+        await Assert.That(await Count(source, "relayer_outbox_dead")).IsEqualTo(value > 0 ? 0L : 1L);
+        // Failed attempts must not leave child rows, including sends made during scope disposal.
+        await using var children = source.CreateCommand("SELECT count(*) FROM relayer_outbox WHERE id <> @parent");
+        children.Parameters.AddWithValue("parent", parentId);
+        await Assert.That((long)(await children.ExecuteScalarAsync())!).IsEqualTo(value > 0 ? 1L : 0L);
+    }
+
+    [Test]
     public async Task Enqueue_rollback_never_invokes_the_consumer()
     {
         await using var database = server.CreateDatabase();
@@ -213,6 +253,7 @@ public class LocalTransportTests(PostgreSqlLocalSessionFixture server)
                 });
             });
             services.AddSingleton(source);
+        services.AddScoped<FailingCleanup>();
             services.AddRelayerPostgreSqlDirectDispatch("local", source);
             await using var provider = services.BuildServiceProvider();
             await Assert.ThrowsAsync<Exception>(async () =>
@@ -278,6 +319,7 @@ public class LocalTransportTests(PostgreSqlLocalSessionFixture server)
     {
         var services = new ServiceCollection().AddLogging(logging => logging.AddConsole());
         services.AddSingleton(source);
+        services.AddScoped<FailingCleanup>();
         if (failureAction is { } action) services.AddSingleton<IFailureClassifier>(new FixedClassifier(action));
         services.AddRelayer(builder =>
         {
@@ -307,9 +349,17 @@ public class LocalTransportTests(PostgreSqlLocalSessionFixture server)
         await using var command = source.CreateCommand("SELECT count(*) FROM " + table);
         return (long)(await command.ExecuteScalarAsync())!;
     }
+    public sealed class FailingCleanup(ISender sender) : IAsyncDisposable
+    {
+        public async ValueTask DisposeAsync()
+        {
+            await sender.SendAsync(new LocalWork(2000));
+            throw new InvalidOperationException("scope cleanup failed");
+        }
+    }
     [Message("local.work")]
     public sealed record LocalWork(int Value);
-    public sealed class LocalHandler(NpgsqlDataSource source) : IHandler<LocalWork>
+    public sealed class LocalHandler(NpgsqlDataSource source, ISender sender) : IHandler<LocalWork>
     {
         public async ValueTask HandleAsync(LocalWork message, MessageContext context, CancellationToken cancellationToken)
         {
@@ -317,6 +367,11 @@ public class LocalTransportTests(PostgreSqlLocalSessionFixture server)
             await using var command = new NpgsqlCommand("INSERT INTO local_business VALUES (@value)", delivery.Transaction.Connection, delivery.Transaction);
             command.Parameters.AddWithValue("value", message.Value);
             await command.ExecuteNonQueryAsync(context.CancellationToken);
+            if (message.Value is 10 or -10 or -11)
+            {
+                await sender.SendAsync(new LocalWork(1000), cancellationToken);
+                if (message.Value == -11) context.Services.GetRequiredService<FailingCleanup>();
+            }
             if (message.Value is -2 or -3)
             {
                 await using var fence = source.CreateCommand(message.Value == -2
@@ -326,7 +381,7 @@ public class LocalTransportTests(PostgreSqlLocalSessionFixture server)
                 if (message.Value == -3) fence.Parameters.AddWithValue("token", Guid.NewGuid());
                 await fence.ExecuteNonQueryAsync(cancellationToken);
             }
-            else if (message.Value < 0) throw new InvalidOperationException("poison");
+            else if (message.Value < 0 && message.Value != -11) throw new InvalidOperationException("poison");
         }
     }
 }
