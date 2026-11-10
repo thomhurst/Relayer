@@ -182,7 +182,7 @@ class ScopeControlTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             environments = []
-            listing = ('; Assembly listing for method Dispatcher1:Resolve()\n'
+            listing = ('; Assembly listing for method Dispatcher1:GetService()\n'
                        '; Total bytes of code 7\n')
 
             def execute(command, **kwargs):
@@ -194,7 +194,7 @@ class ScopeControlTests(unittest.TestCase):
 
             parent = {'DOTNET_JitDisasm': '*'}
             with patch('sys.argv', ['control', directory, str(root / 'output'),
-                                    '--jit-disassembly', '--jit-method', 'Resolve']), \
+                                    '--jit-disassembly', '--jit-method', 'VisitScopeCache GetService']), \
                  patch('frozen_scope_control.os.environ', parent), \
                  patch('frozen_scope_control.verify', return_value='commit') as verify, \
                  patch('frozen_scope_control.executable', return_value=(root / 'runner.dll', '4')), \
@@ -202,12 +202,12 @@ class ScopeControlTests(unittest.TestCase):
                 main()
             self.assertEqual(verify.call_count, 6)
             self.assertEqual(len(environments), 8)
-            self.assertTrue(all(env['DOTNET_JitDisasm'] == 'Resolve' for env in environments))
+            self.assertTrue(all(env['DOTNET_JitDisasm'] == 'VisitScopeCache GetService' for env in environments))
             self.assertEqual(parent, {'DOTNET_JitDisasm': '*'})
             protocol = json.loads((root / 'output/protocol.json').read_text())
-            self.assertEqual(protocol['jitMethod'], 'Resolve')
+            self.assertEqual(protocol['jitMethod'], 'VisitScopeCache GetService')
             outcomes = json.loads((root / 'output/outcomes.json').read_text())
-            self.assertTrue(all(item['diagnosticEnvironment']['DOTNET_JitDisasm'] == 'Resolve'
+            self.assertTrue(all(item['diagnosticEnvironment']['DOTNET_JitDisasm'] == 'VisitScopeCache GetService'
                                 for item in outcomes))
             self.assertTrue(all('error' not in item and 'meanNs' not in item and
                                 'bytesPerOperation' not in item for item in outcomes))

@@ -22,8 +22,8 @@ jobs:
       fail-fast: false
       matrix:
         # Native method-name filters: each family gets separate ABBA processes.
-        # Do not combine them: whole-process output interleaved in run 42788193160.
-        method: [Resolve, GetRequiredService, GetService, VisitScopeCache, Dispose, DisposeAsync, WorkloadActionNoUnroll, WorkloadActionUnroll]
+        # Keep output narrow: whole-process output interleaved in run 42788193160.
+        method: [Resolve, GetRequiredService, GetService, "VisitScopeCache GetService", Dispose, DisposeAsync, WorkloadActionNoUnroll, WorkloadActionUnroll]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
@@ -43,8 +43,10 @@ jobs:
       # Separate diagnostic execution; retain every ABBA attempt, never gate timing.
       # https://github.com/dotnet/runtime/blob/v10.0.14/docs/design/coreclr/jit/viewing-jit-dumps.md#note-about-multi-threaded-applications
       # Filtering reduces output contention; it does not synchronize compilations.
-      # VisitScopeCache may be absent in unscoped captures: retain the explicit
-      # missing-code failure and every other matrix outcome, never infer equality.
+      # Run 42790849618 confirmed VisitScopeCache has no unscoped listing.
+      # Native space-separated filters retain it alongside the common GetService
+      # caller. Absence of VisitScopeCache is not equality across scope modes.
+      # Missing listings still fail; malformed output still requires strict audit.
       - name: Capture one method family without tier transitions
         if: success() || failure()
         env:
