@@ -28,11 +28,14 @@ try
     GC.WaitForPendingFinalizers();
     GC.Collect();
     long result = 0;
+    // Markers sit outside the inclusive counter; profiles are separate instrumented launches.
+    FrozenMeasurementEvents.Log.MeasurementStart();
     var allocated = GC.GetTotalAllocatedBytes(precise: true);
     var start = System.Diagnostics.Stopwatch.GetTimestamp();
     for (var i = 0; i < measuredBatches; i++) result += await run();
     var elapsed = System.Diagnostics.Stopwatch.GetElapsedTime(start);
     var bytes = GC.GetTotalAllocatedBytes(precise: true) - allocated;
+    FrozenMeasurementEvents.Log.MeasurementStop();
     if (result != measuredBatches * messagesPerBatch * 42L)
         throw new InvalidOperationException($"Unexpected delivery sum: {result}.");
     Console.WriteLine(JsonSerializer.Serialize(new
@@ -47,4 +50,14 @@ try
 finally
 {
     await cleanup();
+}
+
+[System.Diagnostics.Tracing.EventSource(Name = "Relayer-FrozenMeasurement")]
+sealed class FrozenMeasurementEvents : System.Diagnostics.Tracing.EventSource
+{
+    internal static readonly FrozenMeasurementEvents Log = new();
+    [System.Diagnostics.Tracing.Event(1)]
+    public void MeasurementStart() => WriteEvent(1);
+    [System.Diagnostics.Tracing.Event(2)]
+    public void MeasurementStop() => WriteEvent(2);
 }
