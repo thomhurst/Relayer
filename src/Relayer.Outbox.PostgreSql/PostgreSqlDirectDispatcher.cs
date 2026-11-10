@@ -104,7 +104,8 @@ internal sealed class PostgreSqlDirectDispatcher : BackgroundService
     }
 
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
-    private async ValueTask DispatchAsync(OutboxDispatchBatch batch, CancellationToken cancellationToken)
+    private async ValueTask DispatchAsync(OutboxDispatchBatch batch, CancellationToken cancellationToken,
+        bool propagateDatabaseFailures = false)
     {
         batch.Sort();
         var offset = 0;
@@ -175,7 +176,7 @@ internal sealed class PostgreSqlDirectDispatcher : BackgroundService
                             await _store.RecordFailureAsync(_claims[i], error.Message, DateTimeOffset.UtcNow, cancellationToken).ConfigureAwait(false);
                         }
                         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
-                        catch (Exception failure) { DirectDispatchLog.Failed(_logger, failure); }
+                        catch (Exception failure) when (!propagateDatabaseFailures) { DirectDispatchLog.Failed(_logger, failure); }
                     }
                     continue;
                 }
@@ -187,10 +188,10 @@ internal sealed class PostgreSqlDirectDispatcher : BackgroundService
                     if (completed != live) DirectDispatchLog.Incomplete(_logger, completed, live);
                 }
                 catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
-                catch (Exception error) { DirectDispatchLog.CompletionFailed(_logger, error); }
+                catch (Exception error) when (!propagateDatabaseFailures) { DirectDispatchLog.CompletionFailed(_logger, error); }
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
-            catch (Exception error) { DirectDispatchLog.Failed(_logger, error); }
+            catch (Exception error) when (!propagateDatabaseFailures) { DirectDispatchLog.Failed(_logger, error); }
             finally
             {
                 Array.Clear(_messages, 0, count);
@@ -201,10 +202,13 @@ internal sealed class PostgreSqlDirectDispatcher : BackgroundService
 
     // Recovery owns a separate dispatcher instance, so these buffers never overlap the commit queue.
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
-    internal async ValueTask DispatchRecoveredAsync(ReadOnlyMemory<OutboxRecord> rows, CancellationToken cancellationToken)
+    internal async ValueTask DispatchRecoveredAsync(ReadOnlyMemory<OutboxRecord> rows, CancellationToken cancellationToken,
+        bool propagateDatabaseFailures = false)
     {
         var batch = PrepareRecovered(rows.Span);
-        try { await DispatchAsync(batch, cancellationToken).ConfigureAwait(false); }
+        // An aborted PostgreSQL transaction can accept COMMIT as ROLLBACK. Recovery must observe
+        // database errors before its caller commits or advances the replication checkpoint.
+        try { await DispatchAsync(batch, cancellationToken, propagateDatabaseFailures).ConfigureAwait(false); }
         finally { batch.Clear(); }
     }
 
