@@ -1,0 +1,7 @@
+<Project>
+  <!-- Runtime async is opt-in on .NET 11; the net10.0 builds keep compiler-generated state machines.
+       This is in the targets file so it also sees a TargetFramework set in a project file. -->
+  <PropertyGroup Condition="'$(TargetFramework)' == 'net11.0'">
+    <Features>$(Features);runtime-async=on</Features>
+  </PropertyGroup>
+</Project>
