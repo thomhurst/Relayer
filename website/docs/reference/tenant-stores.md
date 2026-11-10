@@ -227,6 +227,10 @@ recovery. Replacing a source or store options retires its previous state; create
 the catalog pass has observed the replacement. Old scopes may leave committed rows for recovery.
 
 Each turn has a `TurnTimeout`, so a failed or contended store cannot monopolize admission indefinitely.
+Unordered recovery stops admitting native transport groups after half the remaining turn, reserving
+time to commit completed groups. Unadmitted rows remain durable for a subsequent recovery pass.
+A native send or batch that individually exceeds the turn can still be retried under at-least-once delivery.
+Expected turn expiration does not produce an error log; genuine store failures still do.
 Ordered batches stop admitting messages after half the remaining turn budget (or the existing lease-based
 admission budget, whichever is shorter), reserving time for the final admitted send and database commit.
 This lets completed sends drain a lane when a turn is shorter than a full batch. A send that itself
@@ -264,3 +268,8 @@ Comparisons are ordinal and preserve UTF-8 values without per-message decoding. 
 or normalized. The binding snapshots the authorized ID once per scoped store. It does not change native
 transaction, retry, rollback or inbox uniqueness semantics. Without tenancy and a binding, existing
 fixed-store callers retain their optional caller-supplied `OutboxRecord.TenantId` behavior.
+
+Catalog authorization is checked when each EF context is configured: Relayer reads the in-memory
+snapshot, allocates two validation sets and scans its entries (O(N) per scope). There is no fixed
+catalog-size limit, but account for this cost when choosing context lifetimes for large catalogs.
+This check rejects removed or replaced stores immediately, before the next scheduler pass.

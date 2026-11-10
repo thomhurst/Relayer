@@ -139,7 +139,7 @@ internal sealed partial class PostgreSqlTenantDispatcher : BackgroundService
                                     await store.Direct.DispatchQueuedAsync(deadline.Token).ConfigureAwait(false);
                                     break;
                                 case 1:
-                                    await store.Maintenance.SweepAsync(deadline.Token).ConfigureAwait(false);
+                                    await store.Maintenance.SweepAsync(_options.TurnTimeout - Stopwatch.GetElapsedTime(turnStarted), deadline.Token).ConfigureAwait(false);
                                     break;
                                 case 2:
                                     await store.Ordered.DispatchPassAsync(_options.TurnTimeout - Stopwatch.GetElapsedTime(turnStarted), deadline.Token).ConfigureAwait(false);
@@ -155,6 +155,7 @@ internal sealed partial class PostgreSqlTenantDispatcher : BackgroundService
                     }
                 }
                 catch (OperationCanceledException) when (token.IsCancellationRequested) { throw; }
+                catch (OperationCanceledException) when (deadline.IsCancellationRequested) { }
                 catch (Exception error) { Failed(_logger, store.Entry.TenantId, error); }
             }).ConfigureAwait(false);
         }

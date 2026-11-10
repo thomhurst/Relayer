@@ -24,6 +24,7 @@ public class PostgreSqlTenantDispatchBenchmarks
     [Params(1, 16)] public int TenantCount { get; set; }
     [Params(1, 100)] public int MessagesPerTenant { get; set; }
     [Params(1, 4)] public int LaneCount { get; set; }
+    [Params(1, 4)] public int DestinationCount { get; set; }
 
     [GlobalSetup]
     public void Setup()
@@ -59,11 +60,12 @@ public class PostgreSqlTenantDispatchBenchmarks
         foreach (var entry in _entries)
         {
             var schema = entry.Options.Schema;
-            using var command = _source.CreateCommand($"TRUNCATE {schema}.relayer_outbox, {schema}.relayer_leases; INSERT INTO {schema}.relayer_outbox (id,lane,ordering_key,transport,destination,message_type,headers,body,created_at) SELECT ('01900000-0000-7000-8000-' || lpad(to_hex(n),12,'0'))::uuid, CASE WHEN n % 2 = 0 THEN n % @lanes ELSE NULL END, CASE WHEN n % 2 = 0 THEN 'key-' || (n % @lanes)::text ELSE NULL END, 'events','orders','order;v=1',@headers,@body,clock_timestamp() FROM generate_series(1,@count) AS n");
+            using var command = _source.CreateCommand($"TRUNCATE {schema}.relayer_outbox, {schema}.relayer_leases; INSERT INTO {schema}.relayer_outbox (id,lane,ordering_key,transport,destination,message_type,headers,body,created_at) SELECT ('01900000-0000-7000-8000-' || lpad(to_hex(n),12,'0'))::uuid, CASE WHEN n % 2 = 0 THEN n % @lanes ELSE NULL END, CASE WHEN n % 2 = 0 THEN 'key-' || (n % @lanes)::text ELSE NULL END, 'events','orders-' || (n % @destinations)::text,'order;v=1',@headers,@body,clock_timestamp() FROM generate_series(1,@count) AS n");
             command.Parameters.AddWithValue("headers", _headers);
             command.Parameters.AddWithValue("body", new byte[256]);
             command.Parameters.AddWithValue("count", MessagesPerTenant);
             command.Parameters.AddWithValue("lanes", LaneCount);
+            command.Parameters.AddWithValue("destinations", DestinationCount);
             command.ExecuteNonQuery();
         }
     }

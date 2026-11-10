@@ -298,6 +298,31 @@ public class TenantDispatchTests
     }
 
     [Test]
+    public async Task Recovery_groups_commit_progress_within_a_short_tenant_turn()
+    {
+        await using var fixture = new Stores();
+        await fixture.Start(1);
+        var store = fixture.Entries[0];
+        for (var number = 1; number <= 3; number++)
+        {
+            await Insert(store, number, null);
+            await Sql(store, $"UPDATE {Table(store, "outbox")} SET destination = 'destination-{number}' WHERE id = '{Id(number)}'");
+        }
+        var transport = new Transport(async (_, token) => await Task.Delay(TimeSpan.FromMilliseconds(600), token));
+        using var worker = new PostgreSqlTenantDispatcher(fixture.Catalog,
+            new() { TurnTimeout = TimeSpan.FromSeconds(1), RecoveryDelay = TimeSpan.Zero },
+            [transport], NullLoggerFactory.Instance);
+        await worker.PassAsync(default);
+        await Assert.That(await Count(store, "outbox")).IsEqualTo(2L);
+        // Each remaining group needs one pass; an empty boundary pass wraps the UUID cursor.
+        for (var turn = 0; turn < 4; turn++)
+            await worker.PassAsync(default);
+        await Assert.That(await Count(store, "outbox")).IsEqualTo(0L);
+        await Assert.That(transport.Sent.Select(x => x.Id).Order().SequenceEqual(new[] { Id(1), Id(2), Id(3) }.Order())).IsTrue();
+        await worker.ReleaseAllAsync();
+    }
+
+    [Test]
     public async Task Exhausted_direct_turn_resumes_recovery_ordered_dispatch_and_cleanup()
     {
         await using var fixture = new Stores();
