@@ -13,7 +13,6 @@ public class MySqlInboxBenchmarks
 {
     private MySqlDataSource _source = null!;
     private ServiceProvider _provider = null!;
-    private IServiceScope _scope = null!;
     private MySqlConsumer _consumer = null!;
     private Context _context = null!;
     private string _prefix = null!;
@@ -36,14 +35,16 @@ public class MySqlInboxBenchmarks
         services.AddSingleton<RelayerInstrumentation>();
         services.AddRelayerMySqlOutbox(options);
         _provider = services.BuildServiceProvider();
-        _scope = _provider.CreateScope();
         await using (var create = _source.CreateCommand(MySqlOutboxSchema.CreateScript(options)))
             await create.ExecuteNonQueryAsync();
         _insert = $"INSERT IGNORE INTO {MySqlOutboxSchema.InboxTable(options)} (consumer, message_id) VALUES (@consumer, @id)";
         _consumer = new(_source, "benchmark", _identity, true, IsolationLevel.Unspecified,
             _provider.GetRequiredService<RelayerInstrumentation>());
-        _context = new(_scope.ServiceProvider) { Id = _duplicate };
-        await _consumer.InvokeAsync(_context, static _ => default);
+        _context = new() { Id = _duplicate };
+        var duplicate = Duplicate;
+        Duplicate = true;
+        await RelayerInbox();
+        Duplicate = duplicate;
     }
 
     [Benchmark(Baseline = true)]
@@ -61,10 +62,14 @@ public class MySqlInboxBenchmarks
     }
 
     [Benchmark]
-    public ValueTask RelayerInbox()
+    [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
+    public async ValueTask RelayerInbox()
     {
+        await using var scope = _provider.CreateAsyncScope();
+        _context.ServiceProvider = scope.ServiceProvider;
         _context.Id = Duplicate ? _duplicate : Guid.CreateVersion7().ToString("D");
-        return _consumer.InvokeAsync(_context, static _ => default);
+        try { await _consumer.InvokeAsync(_context, static _ => default).ConfigureAwait(false); }
+        finally { _context.ServiceProvider = null!; }
     }
 
     [GlobalCleanup]
@@ -72,19 +77,19 @@ public class MySqlInboxBenchmarks
     {
         await using (var drop = _source.CreateCommand($"DROP TABLE `{_prefix}inbox`, `{_prefix}outbox`"))
             await drop.ExecuteNonQueryAsync();
-        await new AsyncServiceScope(_scope).DisposeAsync();
         await _provider.DisposeAsync();
         await _source.DisposeAsync();
     }
 
-    private sealed class Context(IServiceProvider services) : MessageContext
+    private sealed class Context : MessageContext
     {
+        internal IServiceProvider ServiceProvider { get; set; } = null!;
         internal string Id { get; set; } = "";
         public override string MessageId => Id;
         public override MessageType MessageType => new("benchmark", 1);
         public override MessageHeaders Headers => MessageHeaders.Empty;
         public override int Attempt => 1;
-        public override IServiceProvider Services => services;
+        public override IServiceProvider Services => ServiceProvider;
         public override MessageFeatures Features { get; } = new();
         public override CancellationToken CancellationToken => default;
     }

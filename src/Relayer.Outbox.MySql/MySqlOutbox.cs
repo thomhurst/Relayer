@@ -19,21 +19,22 @@ public sealed class MySqlOutbox : IOutboxEnlistment, IDisposable, IAsyncDisposab
     private MySqlOutboxTransaction? _transaction;
     private int _count;
     private bool _disposed;
-    private MySqlCommand? _inbox;
-    private byte[]? _inboxId;
+    private readonly MySqlInboxPools? _inboxPools;
+    private MySqlInboxPool? _inboxPool;
 
     /// <summary>Creates an enlistment using this scope's validated options.</summary>
     public MySqlOutbox(IOptionsSnapshot<MySqlOutboxOptions> options, RelayerInstrumentation? instrumentation = null)
         : this(options, instrumentation, null) { }
 
     internal MySqlOutbox(IOptionsSnapshot<MySqlOutboxOptions> options, RelayerInstrumentation? instrumentation,
-        MySqlDirectDispatcher? dispatcher)
+        MySqlDirectDispatcher? dispatcher, MySqlInboxPools? inboxPools = null)
     {
         ArgumentNullException.ThrowIfNull(options);
         var value = options.Value;
         ValidateOptions(value);
         if (value.DispatchStoreName is not null && dispatcher is null)
             throw new InvalidOperationException("Resolve a MySQL outbox with DispatchStoreName through its registered service provider.");
+        _inboxPools = inboxPools;
         _dispatcher = dispatcher;
         dispatcher?.ValidateStore(value.TablePrefix);
         _options = value;
@@ -113,22 +114,25 @@ public sealed class MySqlOutbox : IOutboxEnlistment, IDisposable, IAsyncDisposab
     internal async ValueTask<bool> TryInsertInboxAsync(MySqlOutboxTransaction transaction, byte[] consumer,
         Guid id, CancellationToken cancellationToken)
     {
-        if (_inbox is null)
+        var pool = _inboxPool ??= _inboxPools?.Get(_options.TablePrefix) ?? new MySqlInboxPool(_options);
+        var scratch = pool.Rent();
+        var command = scratch.Command;
+        try
         {
-            // Inputs are validated and bounded. IGNORE handles only the expected unique-key conflict
-            // in this schema; unlike an upsert its affected count is independent of CLIENT_FOUND_ROWS.
-            _inboxId = new byte[16];
-            _inbox = new($"INSERT IGNORE INTO {MySqlOutboxSchema.InboxTable(_options)} (consumer, message_id) VALUES (@consumer, @id)");
-            _inbox.Parameters.Add(new("consumer", MySqlDbType.VarBinary));
-            _inbox.Parameters.Add(new("id", MySqlDbType.Binary) { Value = _inboxId });
+            var native = transaction.Unwrap(transaction.Connection);
+            command.Connection = native.Connection;
+            command.Transaction = native;
+            command.Parameters[0].Value = consumer;
+            id.TryWriteBytes(scratch.Id, bigEndian: true, out _);
+            return await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) == 1;
         }
-        var native = transaction.Unwrap(transaction.Connection);
-        _inbox.Connection = native.Connection;
-        _inbox.Transaction = native;
-        _inbox.Parameters[0].Value = consumer;
-        id.TryWriteBytes(_inboxId, bigEndian: true, out _);
-        try { return await _inbox.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) == 1; }
-        finally { _inbox.Connection = null; _inbox.Transaction = null; _inbox.Parameters[0].Value = DBNull.Value; }
+        finally
+        {
+            command.Connection = null;
+            command.Transaction = null;
+            command.Parameters[0].Value = DBNull.Value;
+            pool.Return(scratch);
+        }
     }
 
     internal MySqlOutboxBatch? Prepare(MySqlTransaction transaction)
@@ -166,7 +170,7 @@ public sealed class MySqlOutbox : IOutboxEnlistment, IDisposable, IAsyncDisposab
     {
         if (_disposed) return;
         try { _transaction?.Dispose(); }
-        finally { _disposed = true; _batch.Dispose(); _inbox?.Dispose(); }
+        finally { _disposed = true; _batch.Dispose(); if (_inboxPools is null) _inboxPool?.Dispose(); }
     }
 
     /// <inheritdoc />
@@ -177,6 +181,6 @@ public sealed class MySqlOutbox : IOutboxEnlistment, IDisposable, IAsyncDisposab
         {
             if (_transaction is not null) await _transaction.DisposeAsync().ConfigureAwait(false);
         }
-        finally { _disposed = true; _batch.Dispose(); _inbox?.Dispose(); }
+        finally { _disposed = true; _batch.Dispose(); if (_inboxPools is null) _inboxPool?.Dispose(); }
     }
 }

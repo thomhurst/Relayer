@@ -17,12 +17,13 @@ public static class MySqlOutboxRegistration
             !services.Any(static descriptor => descriptor.ServiceType == typeof(MySqlOutbox)))
             throw new InvalidOperationException("A different IOutboxEnlistment is already registered. Configure one scoped outbox integration.");
         if (options is not null) MySqlOutbox.ValidateOptions(options);
+        services.TryAddSingleton<MySqlInboxPools>();
         services.TryAddScoped<MySqlOutbox>(provider =>
         {
             var snapshot = provider.GetRequiredService<IOptionsSnapshot<MySqlOutboxOptions>>();
             var dispatcher = snapshot.Value.DispatchStoreName is { } name
                 ? provider.GetRequiredKeyedService<MySqlDirectDispatcher>(name) : null;
-            return new(snapshot, provider.GetService<RelayerInstrumentation>(), dispatcher);
+            return new(snapshot, provider.GetService<RelayerInstrumentation>(), dispatcher, provider.GetRequiredService<MySqlInboxPools>());
         });
         services.TryAddScoped<IOutboxEnlistment>(static provider => provider.GetRequiredService<MySqlOutbox>());
         services.TryAddSingleton<IValidateOptions<MySqlOutboxOptions>, Validator>();

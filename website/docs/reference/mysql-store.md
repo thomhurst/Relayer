@@ -165,7 +165,10 @@ The native unique key serializes concurrent duplicate deliveries. `INSERT IGNORE
 committed key; a competing rollback lets the waiting insert succeed. Validated bounded inputs
 fit the inbox schema, so ignored duplicate inserts are the expected no-op. A duplicate skips
 the handler, commits its read-only outcome, and records `relayer.inbox.duplicates`. This works
-with either native `UseAffectedRows` setting. Retaining inbox keys retains deduplication;
+with either native `UseAffectedRows` setting. Inbox commands and UUID scratch buffers are reused
+across delivery scopes by a provider-owned pool, separated by table prefix so configuration
+reloads do not retarget existing scopes. The pool retains the observed concurrency high-water
+mark until provider disposal. Retaining inbox keys retains deduplication;
 application-owned deletion deliberately ends that protection.
 
 Handler errors, cancellation before commit, outbox insert errors, and retry or dead-letter
