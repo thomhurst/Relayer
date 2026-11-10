@@ -13,9 +13,9 @@ A transport is an adapter over one native client. Each transport package depends
 | `Relayer.AzureServiceBus` | Azure Service Bus | `Azure.Messaging.ServiceBus` | [Native sending, topology and receivers](service-bus.md), native settlement and optional health implemented |
 | `Relayer.AmazonSqs` | Amazon SQS and SNS | `AWSSDK.SQS` and `AWSSDK.SimpleNotificationService` | [SQS receiving, native sending and topology](amazon-sqs.md), SNS publishing and optional SQS health implemented |
 | `Relayer.RabbitMQ` | RabbitMQ | `RabbitMQ.Client` | [Native topology, confirmed sends, receivers and optional health](rabbitmq.md) implemented; optional native delays supported |
-| `Relayer.RabbitMQ.Streams` | RabbitMQ Streams | `RabbitMQ.Stream.Client` | [Native connection and stream topology](rabbitmq-streams.md) implemented; message execution blocked on native failed-offset recovery |
-| `Relayer.Nats` | NATS JetStream | `NATS.Client.JetStream` | [Native connection and topology](nats.md) implemented; message execution blocked on native byte-backed headers |
-| `Relayer.Pulsar` (planned) | Apache Pulsar | Client assessment: DotPulsar 5.3.4 | [Implementation blocked on native UTF-8 properties and Native AOT compatibility](pulsar.md); no adapter implemented |
+| `Relayer.RabbitMQ.Streams` | RabbitMQ Streams | `RabbitMQ.Stream.Client` | [Native connection and stream topology](rabbitmq-streams.md) implemented; message execution awaits a released client with the merged native `SubscriptionListener` recovery API |
+| `Relayer.Nats` | NATS JetStream | `NATS.Client.JetStream` | [Native JetStream execution, connection and topology](nats.md) implemented; hosted performance comparison accepted in #468 |
+| `Relayer.Pulsar` (planned) | Apache Pulsar | Client assessment: DotPulsar 5.3.4 | [Implementation awaits a verified Native AOT byte-message path](pulsar.md); no adapter implemented |
 | `Relayer.GooglePubSub` | [Google Cloud Pub/Sub](google-pubsub.md) | `Google.Cloud.PubSub.V1` | Native publishing, streaming pull, durable failure copies and topology implemented; prepared-client AOT coverage |
 
 Every transport, including third-party ones, must pass the transport conformance suite: send, receive, settle, retry, dead-letter, delay, ordering, trace propagation and reconnect.
