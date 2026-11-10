@@ -5,6 +5,19 @@ namespace Relayer.Tests;
 public class FrozenAllocationGroupTests
 {
     [Test]
+    public async Task MissingStacksRejectOtherwiseNonemptyProfile()
+    {
+        await Assert.That(() => AllocationGroups.VerifyComplete(1, 1)).Throws<InvalidDataException>();
+        AllocationGroups.VerifyComplete(1, 0);
+    }
+
+    [Test]
+    public async Task EmptyMeasuredRegionRejectsProfile()
+    {
+        await Assert.That(() => AllocationGroups.VerifyComplete(0, 0)).Throws<InvalidDataException>();
+    }
+
+    [Test]
     public async Task IdenticalStacksOnDifferentThreadsRemainSeparate()
     {
         var groups = new AllocationGroups();

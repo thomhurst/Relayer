@@ -58,4 +58,6 @@ Console.WriteLine(JsonSerializer.Serialize(new
 foreach (var process in processGroups.OrderBy(p => p.Key))
 foreach (var group in process.Value.Values.OrderByDescending(g => g.SampledBytes))
     Console.WriteLine(JsonSerializer.Serialize(new { kind = "allocation", processId = process.Key, group.ThreadId, group.Type, group.Stack, group.Samples, group.SampledBytes }));
-if (processGroups.Count == 0) throw new InvalidDataException("No allocation samples found in the selected scope.");
+// Print all extracted evidence first. A nonzero exit preserves the original capture in
+// the launcher, rather than deleting the only remaining route to missing owners.
+AllocationGroups.VerifyComplete(processGroups.Count, samplesWithoutStacks);

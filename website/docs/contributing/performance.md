@@ -452,6 +452,21 @@ The investigation also records a **separate instrumented ABBA** with `dotnet-tra
 
 These are weighted allocation samples, not exact object counts. A tick can include bytes from before a measurement boundary, and instrumentation changes scheduling. The separate profiled results must not be mixed into the untraced ABBA, subtracted as exact per-component bytes, or used alone to assign the historical excess. Use the stacks to choose a component-specific controlled experiment before proposing a production fix. Missing markers or an empty measured sample set fail visibly.
 
+The native workflow also retains a validated owner summary for every profiled launch.
+To inspect an extracted profile offline, run
+`python3 .github/scripts/frozen_profile_summary.py 1-baseline-allocations.jsonl`.
+The summary preserves each complete type/stack identity, its weighted samples and
+trace-local allocating thread IDs, and reports totals per thread. It rejects missing
+stacks, duplicate groups and invalid counts instead of silently presenting incomplete
+ownership evidence. `emittedBoundaryMarker` means only that the thread emitted a
+start or stop marker; it does not identify a driver or worker role. Compare stacks
+across launches, never numeric thread IDs. These summaries do not turn sampled
+weights into exact component byte counts or identify the historical excess by subtraction.
+The reader also exits unsuccessfully after writing the extracted records when any
+measured sample has no stack. The launcher then preserves the raw trace and index
+for diagnosis, continues the other launches, and reports a failed investigation.
+An inclusive allocation result is still retained; it cannot fill the missing stack.
+
 ### Exact full-delivery driver control
 
 `Frozen full-delivery driver allocation control` runs a separate instrumented

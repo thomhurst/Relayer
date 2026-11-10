@@ -7,6 +7,14 @@ internal sealed class AllocationGroups
 
     public IEnumerable<AllocationGroup> Values => _groups.Values;
 
+    public static void VerifyComplete(int processCount, long samplesWithoutStacks)
+    {
+        if (samplesWithoutStacks != 0)
+            throw new InvalidDataException($"{samplesWithoutStacks} measured allocation samples have no stack; retain the trace and recollect before interpreting owners.");
+        if (processCount == 0)
+            throw new InvalidDataException("No allocation samples found in the selected scope.");
+    }
+
     public void Add(int threadId, string type, string stack, long sampledBytes)
     {
         var key = (threadId, type, stack);
