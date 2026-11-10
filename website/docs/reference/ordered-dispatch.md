@@ -10,7 +10,8 @@ SQL Server users: see [SQL Server ordered dispatch](sqlserver-store.md#ordered-d
 [Unordered direct dispatch](direct-dispatch.md) runs separately after a business transaction commits.
 [Maintenance](postgres-maintenance.md) supplies unordered recovery and retention cleanup;
 [consumer inbox deduplication](ef-core-inbox.md) and outbox tracing are also implemented.
-Poison-row movement remains planned.
+The worker implements [poison-row handling and key release](postgres-store.md#poison-rows-and-key-release),
+parking failed ordered keys while unrelated keys continue.
 
 ## Register
 

@@ -9,7 +9,7 @@ transaction enlistment, dispatch, lease acquisition, poison-row handling or inbo
 Register [EF Core transaction enlistment](ef-core-outbox.md) separately to persist outgoing rows.
 [Ordered dispatch and lease acquisition](ordered-dispatch.md) and [unordered direct dispatch](direct-dispatch.md)
 are implemented separately. [Leased recovery and cleanup](postgres-maintenance.md) are also available.
-Poison-row handling remains [planned](../roadmap.md).
+The separately registered dispatchers implement [poison-row handling and key release](postgres-store.md#poison-rows-and-key-release).
 [EF Core consumer inbox](ef-core-inbox.md) implements deduplication using the inbox table.
 [SQL Server schema tooling](sqlserver-store.md) and [MySQL schema tooling](mysql-store.md) are implemented separately.
 
