@@ -25,6 +25,7 @@ internal sealed class OutboxSaveChangesInterceptor(EntityFrameworkCoreOutbox out
             }
             catch { state.Clear(); throw; }
         }
+        state.BeginSave();
         return result;
     }
 
@@ -45,6 +46,7 @@ internal sealed class OutboxSaveChangesInterceptor(EntityFrameworkCoreOutbox out
             }
             catch { state.Clear(); throw; }
         }
+        state.BeginSave();
         return result;
     }
 
@@ -59,6 +61,7 @@ internal sealed class OutboxSaveChangesInterceptor(EntityFrameworkCoreOutbox out
     public override int SavedChanges(SaveChangesCompletedEventData eventData, int result)
     {
         var state = Outbox.Get(eventData.Context!, Configuration);
+        state.Saved();
         if (state.OwnedTransaction is { } transaction)
         {
             try { transaction.Commit(); }
@@ -77,6 +80,7 @@ internal sealed class OutboxSaveChangesInterceptor(EntityFrameworkCoreOutbox out
         int result, CancellationToken cancellationToken = default)
     {
         var state = Outbox.Get(eventData.Context!, Configuration);
+        state.Saved();
         if (state.OwnedTransaction is { } transaction)
         {
             try { await transaction.CommitAsync(cancellationToken).ConfigureAwait(false); }
@@ -105,7 +109,10 @@ internal sealed class OutboxSaveChangesInterceptor(EntityFrameworkCoreOutbox out
             try { transaction.Dispose(); }
             finally { state.OwnedTransaction = null; state.Clear(); }
         }
-        else if (state.Transaction is { } explicitTransaction) Outbox.Invalidate(explicitTransaction);
+        else if (state.Transaction is { } explicitTransaction)
+        {
+            if (!state.FinishFailedSave()) Outbox.Invalidate(explicitTransaction);
+        }
         else state.Clear();
     }
 
@@ -117,7 +124,10 @@ internal sealed class OutboxSaveChangesInterceptor(EntityFrameworkCoreOutbox out
             try { await transaction.DisposeAsync().ConfigureAwait(false); }
             finally { state.OwnedTransaction = null; state.Clear(); }
         }
-        else if (state.Transaction is { } explicitTransaction) Outbox.Invalidate(explicitTransaction);
+        else if (state.Transaction is { } explicitTransaction)
+        {
+            if (!state.FinishFailedSave()) Outbox.Invalidate(explicitTransaction);
+        }
         else state.Clear();
     }
 }

@@ -109,7 +109,19 @@ Calling `Commit` directly on the underlying `DbTransaction` bypasses EF intercep
 Use EF's rollback and disposal APIs too. Cancellation or insertion failure prevents commit; disposing or
 rolling back a transaction discards its buffered rows. Native callbacks cannot be persisted and fail before buffering.
 
-After a failed save, commit, or manual savepoint rollback, roll back the complete explicit transaction
+EF's automatic savepoints let a failed save recover inside an explicit transaction when the native
+rollback succeeds. Each context retains sends covered by its last successful `SaveChanges` (including
+an empty save). Sends buffered since that save, including sends made before the failed save starts,
+are discarded. Before the first successful save, the retained boundary is empty. For example, send A
+and save successfully, send B and catch a failed save, then send C and save successfully: commit writes
+A and C. Clear or repair EF's tracked changes before continuing; Relayer only resets its send buffer.
+Each context sharing a transaction has its own send/save boundary. Sends after the final successful
+save still join commit normally.
+
+Recovery requires a confirmed native automatic savepoint rollback during the failed or canceled save.
+With `AutoSavepointsEnabled = false`, a failed rollback, or cancellation that prevents rollback,
+Relayer invalidates the unit. Manual savepoint rollback remains unsupported.
+After an unrecovered failed save, failed commit, or manual savepoint rollback, roll back the complete explicit transaction
 and dispose its EF wrapper before retrying the whole unit. If PostgreSQL has already aborted the transaction
 (for example after a serialization failure), dispose the wrapper. Relayer rejects commit of an invalidated unit.
 
