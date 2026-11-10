@@ -23,9 +23,10 @@ public sealed class ServiceBusReceiveEmulatorTests
     [Test]
     public async Task Native_processors_receive_queues_subscriptions_sessions_drain_and_recover()
     {
+        // Provisioning owns its deadline; broker assertions get their full operation budget.
+        await using var broker = await ServiceBusReceiveBroker.StartAsync(["receive-orders"], ["receive-sessions"], includeTopic: true);
         using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(6));
         var token = timeout.Token;
-        await using var broker = await ServiceBusReceiveBroker.StartAsync(token, ["receive-orders"], ["receive-sessions"], includeTopic: true);
         await using var client = new ServiceBusClient(broker.ConnectionString, new ServiceBusClientOptions
         {
             RetryOptions = new() { MaxRetries = 0 },
@@ -186,9 +187,11 @@ internal sealed class ServiceBusReceiveBroker : IAsyncDisposable
     private ServiceBusReceiveBroker(INetwork network, MsSqlContainer database, ServiceBusContainer emulator, string configurationPath)
     { _network = network; _database = database; _emulator = emulator; _configurationPath = configurationPath; }
 
-    internal static async Task<ServiceBusReceiveBroker> StartAsync(CancellationToken token, string[]? queues = null,
+    internal static async Task<ServiceBusReceiveBroker> StartAsync(string[]? queues = null,
         string[]? sessions = null, bool includeTopic = false)
     {
+        using var provisioning = new CancellationTokenSource(TimeSpan.FromMinutes(15));
+        var token = provisioning.Token;
         var network = new NetworkBuilder().Build();
         var databaseBuilder = new MsSqlBuilder("mcr.microsoft.com/mssql/server:2022-CU14-ubuntu-22.04")
             .WithNetwork(network).WithNetworkAliases(ServiceBusBuilder.DatabaseNetworkAlias);
@@ -221,6 +224,11 @@ internal sealed class ServiceBusReceiveBroker : IAsyncDisposable
         var emulator = emulatorBuilder.WithMsSqlContainer(network, database, ServiceBusBuilder.DatabaseNetworkAlias).Build();
         var broker = new ServiceBusReceiveBroker(network, database, emulator, configurationPath);
         try { await emulator.StartAsync(token); return broker; }
+        catch (OperationCanceledException error) when (provisioning.IsCancellationRequested)
+        {
+            await broker.DisposeAsync();
+            throw new TimeoutException("Service Bus emulator provisioning exceeded 15 minutes (image pulls and container readiness).", error);
+        }
         catch { await broker.DisposeAsync(); throw; }
 
         void AddQueue(string name, bool session)

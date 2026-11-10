@@ -17,8 +17,6 @@ public partial class ServiceBusBindingTests
     [Arguments(true)]
     public async Task Native_settlement_round_trips_against_service_bus_emulator(bool nativeOnly)
     {
-        using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(5));
-        var token = timeout.Token;
         // LinkStateLost retains the underlying AMQP exception, which MessageLockLost omits.
         using var sdkLogs = AzureEventSourceListener.CreateConsoleLogger(EventLevel.Warning);
         await using var network = new NetworkBuilder().Build();
@@ -39,7 +37,17 @@ public partial class ServiceBusBindingTests
         await using var database = databaseBuilder.Build();
         await using var emulator = emulatorBuilder
             .WithMsSqlContainer(network, database, ServiceBusBuilder.DatabaseNetworkAlias).Build();
-        await emulator.StartAsync(token);
+        // Image pulls and dependency readiness have their own bounded setup budget.
+        using (var provisioning = new CancellationTokenSource(TimeSpan.FromMinutes(15)))
+        {
+            try { await emulator.StartAsync(provisioning.Token); }
+            catch (OperationCanceledException error) when (provisioning.IsCancellationRequested)
+            {
+                throw new TimeoutException("Service Bus emulator provisioning exceeded 15 minutes (image pulls and container readiness).", error);
+            }
+        }
+        using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(5));
+        var token = timeout.Token;
         await using var client = new ServiceBusClient(emulator.GetConnectionString());
         await using var sender = client.CreateSender("settlement");
         await using var receiver = client.CreateReceiver("settlement");
