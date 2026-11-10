@@ -420,3 +420,20 @@ The process-wide allocation counter includes fixture, serializer, dependency-inj
 The investigation also records a **separate instrumented ABBA** with `dotnet-trace` GC allocation stacks. The external probe emits `Relayer-FrozenMeasurement` start/stop events outside its inclusive counter. `FrozenAllocationReader` requires one ordered pair in one process and retains only that process's allocation ticks between the markers, with complete stacks, sample weights, excluded-sample counts and missing-stack counts. Setup, warmup and cleanup samples are excluded. Successful extraction removes the raw trace containers; failed extraction preserves them for diagnosis. The original executables remain unchanged.
 
 These are weighted allocation samples, not exact object counts. A tick can include bytes from before a measurement boundary, and instrumentation changes scheduling. The separate profiled results must not be mixed into the untraced ABBA, subtracted as exact per-component bytes, or used alone to assign the historical excess. Use the stacks to choose a component-specific controlled experiment before proposing a production fix. Missing markers or an empty measured sample set fail visibly.
+
+### Frozen handler fixture control
+
+`tools/FrozenFixtureProbe` loads the retained executable's original `ConcurrentHandler`
+and signal channels, binds a typed delegate once, and measures 4096 warmup plus
+32768 eight-handler batches. It deliberately excludes DI, JSON, transport and the
+Relayer pipeline. Every batch waits for all original handler ValueTasks after the
+completion signals, so pooled handler state cannot spill into the next batch.
+
+The `Frozen handler fixture allocation control` workflow verifies all retained
+build inventories before a separate-process ABBA for each historical input set.
+It preserves all outcomes and executable inputs for 90 days. This is a new
+owner-isolating experiment, not a rerun of the regression gate. It measures the
+original fixture, native scheduler and diagnostic driver together; its scheduling
+differs from full delivery. Variation here cannot identify the historical excess,
+and its totals must never be subtracted from end-to-end totals. The strict gate
+and production performance requirements remain unchanged.
