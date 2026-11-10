@@ -1,3 +1,4 @@
+using Azure.Messaging.ServiceBus.Administration;
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Text;
@@ -24,7 +25,7 @@ public sealed class ServiceBusReceiveEmulatorTests
     public async Task Native_processors_receive_queues_subscriptions_sessions_drain_and_recover()
     {
         // Provisioning owns its deadline; broker assertions get their full operation budget.
-        await using var broker = await ServiceBusReceiveBroker.StartAsync(["receive-orders"], ["receive-sessions"], includeTopic: true);
+        await using var broker = await ServiceBusReceiveBroker.StartAsync(["receive-orders"], ["receive-sessions"], includeTopic: true, dedicated: true);
         using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(6));
         var token = timeout.Token;
         await using var client = new ServiceBusClient(broker.ConnectionString, new ServiceBusClientOptions
@@ -181,26 +182,59 @@ public sealed class ServiceBusReceiveEmulatorTests
     }
 }
 
+// Entities for one test on the session's shared emulator. A test that restarts the emulator
+// asks for a dedicated one, reached through a proxy that keeps its public ports stable.
 internal sealed class ServiceBusReceiveBroker : IAsyncDisposable
 {
-    private readonly INetwork _network;
-    private readonly MsSqlContainer _database;
+    private readonly INetwork? _network;
+    private readonly MsSqlContainer? _database;
     private readonly ServiceBusContainer _emulator;
-    private readonly IContainer _proxy;
-    private readonly string _configurationPath;
+    private readonly IContainer? _proxy;
+    private readonly string? _configurationPath;
+    private readonly List<string> _queues = [];
+    private bool _topic;
     internal string ConnectionString => ThroughProxy(_emulator.GetConnectionString(), ServiceBusBuilder.ServiceBusPort);
     internal string AdministrationConnectionString => ThroughProxy(_emulator.GetHttpConnectionString(), ServiceBusBuilder.ServiceBusHttpPort);
+
+    private ServiceBusReceiveBroker(ServiceBusContainer emulator) => _emulator = emulator;
 
     private ServiceBusReceiveBroker(INetwork network, MsSqlContainer database, ServiceBusContainer emulator, IContainer proxy, string configurationPath)
     { _network = network; _database = database; _emulator = emulator; _proxy = proxy; _configurationPath = configurationPath; }
 
-    private string ThroughProxy(string connectionString, int port) => connectionString.Replace(
+    private string ThroughProxy(string connectionString, int port) => _proxy is null ? connectionString : connectionString.Replace(
         new UriBuilder("sb", _emulator.Hostname, _emulator.GetMappedPublicPort(port)).ToString(),
         new UriBuilder("sb", _proxy.Hostname, _proxy.GetMappedPublicPort(port)).ToString(), StringComparison.Ordinal);
 
     internal static async Task<ServiceBusReceiveBroker> StartAsync(string[]? queues = null,
-        string[]? sessions = null, bool includeTopic = false)
+        string[]? sessions = null, bool includeTopic = false, bool dedicated = false)
     {
+        if (!dedicated)
+        {
+            using var creation = new CancellationTokenSource(TimeSpan.FromMinutes(16));
+            var stack = await SharedBrokers.ServiceBus.Value.WaitAsync(creation.Token);
+            var shared = new ServiceBusReceiveBroker(stack.Emulator);
+            try
+            {
+                foreach (var name in queues ?? []) { await stack.CreateQueueAsync(name, false, creation.Token); shared._queues.Add(name); }
+                foreach (var name in sessions ?? []) { await stack.CreateQueueAsync(name, true, creation.Token); shared._queues.Add(name); }
+                if (includeTopic)
+                {
+                    var admin = new ServiceBusAdministrationClient(shared.AdministrationConnectionString);
+                    await admin.CreateTopicAsync(new CreateTopicOptions("receive-events")
+                    {
+                        DefaultMessageTimeToLive = TimeSpan.FromHours(1), MaxSizeInMegabytes = 100,
+                        DuplicateDetectionHistoryTimeWindow = TimeSpan.FromMinutes(10)
+                    }, creation.Token);
+                    shared._topic = true;
+                    await admin.CreateSubscriptionAsync(new CreateSubscriptionOptions("receive-events", "audit")
+                    {
+                        DefaultMessageTimeToLive = TimeSpan.FromHours(1), LockDuration = TimeSpan.FromMinutes(1), MaxDeliveryCount = 10
+                    }, creation.Token);
+                }
+                return shared;
+            }
+            catch { await shared.DisposeAsync(); throw; }
+        }
         using var provisioning = new CancellationTokenSource(TimeSpan.FromMinutes(15));
         var token = provisioning.Token;
         var network = new NetworkBuilder().Build();
@@ -266,10 +300,25 @@ internal sealed class ServiceBusReceiveBroker : IAsyncDisposable
         }
     }
 
-    internal Task DisconnectAsync(CancellationToken token) => _emulator.StopAsync(token);
-    internal Task ReconnectAsync(CancellationToken token) => _emulator.StartAsync(token);
+    internal Task DisconnectAsync(CancellationToken token) => Dedicated().StopAsync(token);
+    internal Task ReconnectAsync(CancellationToken token) => Dedicated().StartAsync(token);
+    private ServiceBusContainer Dedicated() => _proxy is not null ? _emulator
+        : throw new InvalidOperationException("Stopping the emulator needs StartAsync(dedicated: true); other tests share this one.");
+
     public async ValueTask DisposeAsync()
     {
+        if (_proxy is null)
+        {
+            // Throwing here would replace an exception unwinding through await using; the session removes the emulator.
+            try
+            {
+                var admin = new ServiceBusAdministrationClient(AdministrationConnectionString);
+                foreach (var queue in _queues) await admin.DeleteQueueAsync(queue);
+                if (_topic) await admin.DeleteTopicAsync("receive-events");
+            }
+            catch (Exception exception) { Console.Error.WriteLine($"Could not delete Service Bus test entities: {exception}"); }
+            return;
+        }
         try { await _proxy.DisposeAsync(); }
         finally { await DisposeBrokerAsync(); }
     }
@@ -279,8 +328,8 @@ internal sealed class ServiceBusReceiveBroker : IAsyncDisposable
         try { await _emulator.DisposeAsync(); }
         finally
         {
-            try { await _database.DisposeAsync(); }
-            finally { try { await _network.DisposeAsync(); } finally { File.Delete(_configurationPath); } }
+            try { await _database!.DisposeAsync(); }
+            finally { try { await _network!.DisposeAsync(); } finally { File.Delete(_configurationPath!); } }
         }
     }
 }

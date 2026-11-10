@@ -192,7 +192,7 @@ public class RabbitMqReceiveTests
     {
         using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(2));
         var token = timeout.Token;
-        await using var broker = await RabbitMqTopologyTests.Broker.StartAsync(token);
+        await using var broker = await RabbitMqTopologyTests.Broker.StartAsync(token, dedicated: true);
         var factory = broker.Factory();
         factory.AutomaticRecoveryEnabled = automaticRecovery;
         factory.NetworkRecoveryInterval = TimeSpan.FromMilliseconds(100);
@@ -254,7 +254,7 @@ public class RabbitMqReceiveTests
     {
         using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(2));
         var token = timeout.Token;
-        await using var broker = await RabbitMqTopologyTests.Broker.StartAsync(token);
+        await using var broker = await RabbitMqTopologyTests.Broker.StartAsync(token, dedicated: true);
         var factory = broker.Factory();
         factory.AutomaticRecoveryEnabled = automaticRecovery;
         factory.NetworkRecoveryInterval = TimeSpan.FromMilliseconds(100);
@@ -290,7 +290,7 @@ public class RabbitMqReceiveTests
     {
         using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(2));
         var token = timeout.Token;
-        await using var broker = await RabbitMqTopologyTests.Broker.StartAsync(token);
+        await using var broker = await RabbitMqTopologyTests.Broker.StartAsync(token, dedicated: true);
         var factory = broker.Factory();
         factory.NetworkRecoveryInterval = TimeSpan.FromMilliseconds(100);
         var control = new RabbitMqReceiveControl();

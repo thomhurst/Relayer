@@ -110,10 +110,11 @@ public class RabbitMqTopologyTests
         await channel.QueueDeclareAsync("existing", true, false, false, cancellationToken: token);
 
         // AMQP passive checks need no configure or write permission and publish no probes.
-        await broker.CommandAsync(["rabbitmqctl", "add_user", "reader", "reader"], token);
-        await broker.CommandAsync(["rabbitmqctl", "set_permissions", "-p", "/", "reader", "^$", "^$", ".*"], token);
+        var reader = "reader-" + broker.VirtualHost;
+        await broker.CommandAsync(["rabbitmqctl", "add_user", reader, "reader"], token);
+        await broker.CommandAsync(["rabbitmqctl", "set_permissions", "-p", broker.VirtualHost, reader, "^$", "^$", ".*"], token);
         var readOnly = broker.Factory();
-        readOnly.UserName = "reader";
+        readOnly.UserName = reader;
         readOnly.Password = "reader";
         await using var valid = RabbitMqConfigurationTests.Provider(options =>
         {
@@ -182,16 +183,40 @@ public class RabbitMqTopologyTests
         }
     }
 
-    internal sealed class Broker(IContainer container) : IAsyncDisposable
+    // A virtual host per test on the session's shared broker. A test that stops the broker
+    // to simulate an outage asks for a dedicated one instead.
+    internal sealed class Broker : IAsyncDisposable
     {
-        internal static async Task<Broker> StartAsync(CancellationToken token, bool delayedPlugin = false)
+        private readonly IContainer _container;
+        private readonly bool _dedicated;
+        internal string VirtualHost { get; }
+
+        private Broker(IContainer container, string virtualHost, bool dedicated)
+        {
+            _container = container;
+            VirtualHost = virtualHost;
+            _dedicated = dedicated;
+        }
+
+        internal static async Task<Broker> StartAsync(CancellationToken token, bool delayedPlugin = false, bool dedicated = false)
+        {
+            if (dedicated) return new(await StartContainerAsync(delayedPlugin, shared: false, token), "/", true);
+            var container = await (delayedPlugin ? SharedBrokers.RabbitMqWithDelayedPlugin : SharedBrokers.RabbitMq).Value.WaitAsync(token);
+            var broker = new Broker(container, TestContext.Current!.Isolation.GetIsolatedName(Guid.NewGuid().ToString("N")[..8]), false);
+            await broker.CommandAsync(["rabbitmqctl", "add_vhost", broker.VirtualHost], token);
+            await broker.CommandAsync(["rabbitmqctl", "set_permissions", "-p", broker.VirtualHost, "relayer", ".*", ".*", ".*"], token);
+            return broker;
+        }
+
+        internal static async Task<IContainer> StartContainerAsync(bool delayedPlugin, bool shared, CancellationToken token)
         {
             var builder = new ContainerBuilder("rabbitmq:4.1.4-alpine")
                 .WithEnvironment("RABBITMQ_DEFAULT_USER", "relayer")
                 .WithEnvironment("RABBITMQ_DEFAULT_PASS", "relayer")
-                .WithEnvironment("RABBITMQ_SERVER_ADDITIONAL_ERL_ARGS", "+S 2:2 +A 2")
                 .WithPortBinding(5672, true)
                 .WithWaitStrategy(Wait.ForUnixContainer().UntilMessageIsLogged("Server startup complete"));
+            // A dedicated broker serves one test; keep its Erlang VM small.
+            if (!shared) builder = builder.WithEnvironment("RABBITMQ_SERVER_ADDITIONAL_ERL_ARGS", "+S 2:2 +A 2");
             if (delayedPlugin)
             {
                 using var http = new HttpClient();
@@ -201,24 +226,35 @@ public class RabbitMqTopologyTests
             }
             if (OperatingSystem.IsLinux()) builder = builder.WithPortBinding("20000-29999", "5672");
             var container = builder.Build();
-            try { await container.StartAsync(token); return new(container); }
+            try { await container.StartAsync(token); return container; }
             catch { await container.DisposeAsync(); throw; }
         }
 
         internal ConnectionFactory Factory() => new()
         {
-            HostName = container.Hostname,
-            Port = container.GetMappedPublicPort(5672),
+            HostName = _container.Hostname,
+            Port = _container.GetMappedPublicPort(5672),
             UserName = "relayer",
             Password = "relayer",
+            VirtualHost = VirtualHost,
         };
 
         internal async Task CommandAsync(string[] command, CancellationToken token)
         {
-            var result = await container.ExecAsync(command, token);
+            var result = await _container.ExecAsync(command, token);
             if (result.ExitCode != 0) throw new InvalidOperationException(result.Stderr);
         }
 
-        public ValueTask DisposeAsync() => container.DisposeAsync();
+        public async ValueTask DisposeAsync()
+        {
+            if (_dedicated)
+            {
+                await _container.DisposeAsync();
+                return;
+            }
+            // Throwing here would replace an exception unwinding through await using; the session removes the broker.
+            try { await CommandAsync(["rabbitmqctl", "delete_vhost", VirtualHost], CancellationToken.None); }
+            catch (Exception exception) { Console.Error.WriteLine($"Could not delete RabbitMQ virtual host {VirtualHost}: {exception}"); }
+        }
     }
 }

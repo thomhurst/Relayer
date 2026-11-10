@@ -1,6 +1,6 @@
 ---
 title: Running repository tests
-description: Release validation and the core suite's broker concurrency bound.
+description: Release validation and how the core suite shares broker containers.
 ---
 
 Run the core suite from the repository root with .NET SDK selected by `global.json`
@@ -10,28 +10,22 @@ and Docker running:
 dotnet test -c Release --project tests/Relayer.Tests
 ```
 
-The core assembly uses TUnit's `ParallelLimiter<CoreTestParallelLimit>` to run at
-most **two tests concurrently across all classes**. This includes Service Bus
-emulators and their SQL dependencies, RabbitMQ and LocalStack fixtures. The permit
-covers setup, assertions and teardown, so containers still serving assertions count
-toward the bound. Nonbroker core tests also share this conservative limit. Keep
-broker fixtures within the test lifecycle and avoid overriding the assembly limiter
-on individual classes or methods.
+Tests run in parallel with no concurrency limiter. Broker containers are shared for
+the whole test run instead of started per test. `SharedBrokers` starts each one on
+first use, so a filtered run starts only what it needs, and removes them when the
+run ends:
 
-This is a limit per test process, not a Docker host budget. Other test assemblies,
-concurrent commands and other workers have independent limits. Each fixture retains
-its own isolated infrastructure and cleans up only its own resources. Provisioning
-and operation deadlines are unchanged; the bound does not retry failed tests.
+| Broker | Shared instance | What each test owns |
+|---|---|---|
+| RabbitMQ | one broker, and a second with the delayed-message plugin | a virtual host, through `RabbitMqTopologyTests.Broker.StartAsync` |
+| Service Bus emulator | one emulator with its SQL Server | queues, topics and subscriptions it creates through the administration client |
+| LocalStack | one container for SQS and SNS | uniquely named queues and topics |
 
-To verify the scheduler without starting Docker containers, run:
+A test that changes the whole broker, such as stopping it to simulate an outage, asks
+for a dedicated one with `dedicated: true`. Keep those rare: each dedicated Service
+Bus emulator brings its own SQL Server, and ten of them starting together exhaust
+Docker's memory.
 
-```powershell
-pwsh scripts/Test-CoreBrokerParallelism.ps1 -ResultsDirectory /path/to/results
-```
-
-The separate probe executable links the core assembly's actual limiter declaration.
-Paired fixture users synchronize without sleeps, across independent classes, and
-record peak concurrency and teardown. Two setups deliberately fail (one through
-cancellation); the script checks their structured test results and verifies that
-all other users finish and every fixture releases its slot. The probe is kept outside
-the normal suite because these expected failures must not count as suite failures.
+When you add a broker test, use the shared instance and name everything the test
+creates uniquely, for example with `TestContext.Current!.Isolation`. Do not add
+`[ParallelLimiter]` or `[NotInParallel]` to make a test pass.
