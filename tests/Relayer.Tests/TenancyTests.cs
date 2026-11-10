@@ -176,7 +176,6 @@ public class TenancyTests
     }
 
     [Test]
-    [NotInParallel]
     public async Task Tenant_receive_allocations_match_equivalent_native_DI_work()
     {
         await using var provider = Provider();

@@ -674,7 +674,10 @@ public class BatchPipelineTests
     {
         public Func<Batch<Payload>, CancellationToken, ValueTask<BatchResult>>? Invoke { get; set; }
         public List<IServiceProvider> Scopes { get; } = [];
-        public int Disposed { get; set; }
+        // Concurrent batches dispose their scopes on different threads.
+        private int _disposed;
+        public int Disposed => Volatile.Read(ref _disposed);
+        public void ScopeDisposed() => Interlocked.Increment(ref _disposed);
         public Task? Disposal { get; set; }
         public TaskCompletionSource? DisposalStarted { get; set; }
     }
@@ -693,7 +696,7 @@ public class BatchPipelineTests
         {
             control.DisposalStarted?.TrySetResult();
             if (control.Disposal is { } disposal) await disposal;
-            control.Disposed++;
+            control.ScopeDisposed();
         }
     }
     public sealed class Handler(Control control, Lifetime lifetime) : IBatchHandler<Payload>
