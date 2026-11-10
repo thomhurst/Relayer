@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Replay the retained #357 BenchmarkDotNet engine, without rebuilding or changing its job."""
+"""Replay a retained BenchmarkDotNet engine, without rebuilding or changing its job."""
 import argparse
 import json
 from pathlib import Path
@@ -59,6 +59,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("artifact", type=Path)
     parser.add_argument("output", type=Path)
+    parser.add_argument("--trace-tool", type=Path,
+                        help="Separate instrumented replay; retain whole-process raw allocation profiles.")
     args = parser.parse_args()
     builds = args.artifact.resolve() / "performance-builds"
     # Verify all three original inventories before starting any process. A2 deliberately
@@ -69,13 +71,27 @@ def main():
     protocol = {"commits": commits, "launches": LAUNCHES, "benchmark": BENCHMARK,
                 "engine": "Original retained BenchmarkDotNet generated executable and Default job",
                 "host": "Native NoAcknowledgementConsoleHost; original anonymous-pipe parent absent",
-                "operationsPerInvoke": 8, "instrumented": False,
+                "operationsPerInvoke": 8, "instrumented": args.trace_tool is not None,
                 "limits": "New original-engine executions, not historical reconstruction, allocation-type attribution, throughput equivalence or native-client budget evidence. No external fixed-count driver, sampled profile, job override or threshold change.",
                 "commands": []}
     for side in LAUNCHES:
         image, identity = runners[side]
         protocol["commands"].append(["dotnet", str(image), "--benchmarkName", BENCHMARK,
                                      "--job", "Default", "--benchmarkId", identity])
+    if args.trace_tool:
+        protocol["profile_limits"] = (
+            "Separate instrumented native-engine ABBA with gc-verbose allocation sampling. "
+            "Whole-process traces include startup, pilot, warmup, overhead and GC-stat work; "
+            "there are no Relayer measurement markers. Retain all raw captures and native logs. "
+            "Weighted samples are not exact object counts or attribution of a historical delta. "
+            "Profiler attachment changes scheduling; do not compare these totals as a gate, "
+            "subtract independent controls, or apply the marker-filtered reader to these captures.")
+        protocol["limits"] = protocol["profile_limits"]
+        protocol["commands"] = [
+            [str(args.trace_tool.resolve()), "collect", "--profile", "gc-verbose",
+             "--output", str((args.output / f"{index}-{side}.nettrace").resolve()),
+             "--show-child-io", "--", *command]
+            for index, (side, command) in enumerate(zip(LAUNCHES, protocol["commands"]), 1)]
     (args.output / "protocol.json").write_text(json.dumps(protocol, indent=2) + "\n")
     outcomes = []
     failed = False
@@ -96,6 +112,13 @@ def main():
             except ValueError as error:
                 outcome["error"] = str(error)
                 failed = True
+        if args.trace_tool:
+            trace = args.output / f"{index}-{side}.nettrace"
+            if not trace.is_file() or trace.stat().st_size == 0:
+                outcome["profileError"] = "Missing or empty raw allocation capture"
+                failed = True
+            else:
+                outcome["rawTrace"] = trace.name
         outcomes.append(outcome)
         (args.output / "outcomes.json").write_text(json.dumps(outcomes, indent=2) + "\n")
     # Preserve failure logs and attempt every launch, then fail closed on mutated inputs.

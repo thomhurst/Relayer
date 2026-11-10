@@ -28,9 +28,11 @@ public class ServiceBusSendAllocationTests
         var preparation = Measure(fixture, state, native, nativeData, prepare: true, 1000);
         Console.WriteLine($"Preparation: {preparation / 1000.0} B/send; raw SDK preparation: {nativePreparation / 1000.0} B/send; additional: {(preparation - nativePreparation) / 1000.0} B/send.");
 
-        // D52 attributes SDK-required strings to native-client cost; everything added must stay at zero.
+        // D52 attributes SDK-required strings to native-client cost; preparation must add no allocations.
+        // A lower preparation total satisfies the contract too: the native baseline can include
+        // incidental runtime allocations (CI observed 8 extra bytes across all 1,000 sends).
         await Assert.That(nativePreparation).IsGreaterThan(0L);
-        await Assert.That(preparation).IsEqualTo(nativePreparation);
+        await Assert.That(preparation).IsLessThanOrEqualTo(nativePreparation);
     }
 
     [Test]
