@@ -7,8 +7,11 @@ The core package defines `IOutboxStore`, `OutboxRecord`, `OutboxReadRequest` and
 integration authors. These contracts, the optional health adapter and [PostgreSQL schema scripts](postgres-schema.md)
 are implemented, together with [PostgreSQL durable reads and fenced claims](postgres-store.md)
 and [EF Core transaction enlistment for PostgreSQL](ef-core-outbox.md).
-[SQL Server durable reads and fenced claims](sqlserver-store.md) are implemented as a separate package;
-SQL Server supports ADO.NET/Dapper enlistment, atomic inbox, unordered direct dispatch, leased recovery and retention. EF Core and ordered workers remain planned.
+[SQL Server](sqlserver-store.md) and [MySQL](mysql-store.md) each provide a separate durable outbox package.
+Both support ADO.NET/Dapper enlistment, atomic consumer inbox, commit-triggered unordered dispatch,
+ordered dispatch with database-sequenced lanes and fenced leases, leased recovery, poison-row handling
+and bounded dead/inbox retention. Their provider pages describe explicit schema upgrades and integration
+boundaries; EF Core integration for these providers remains planned.
 [Unordered PostgreSQL direct dispatch](direct-dispatch.md) is available for EF commits.
 [Ordered PostgreSQL dispatch and lane leases](ordered-dispatch.md) are implemented separately.
 [Leased recovery and cleanup](postgres-maintenance.md) are available separately.
@@ -145,8 +148,8 @@ and drain concurrent deliveries before disposing their hosts and database.
 These cases supplement provider-specific tests. Borrowed-memory ownership, native transaction retries,
 configuration, scope disposal, ordered workers, connected-owner fencing and process-crash recovery need
 additional native integration tests. Passing the shared cases alone does not establish those guarantees.
-These shared suites currently run against
-PostgreSQL; MongoDB support remains planned.
+The shared store, direct-dispatch, ordered-dispatch, maintenance and inbox suites run against real
+PostgreSQL, SQL Server and MySQL databases. MongoDB support remains planned.
 
 ### Ordered dispatch contracts
 
