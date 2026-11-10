@@ -1,12 +1,12 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
-using System.Net;
-using System.Net.Sockets;
+using System.Text;
 using System.Text.Json.Serialization;
 using System.Text.Json.Nodes;
 using System.Threading.Channels;
 using Azure.Messaging.ServiceBus;
 using DotNet.Testcontainers.Builders;
+using DotNet.Testcontainers.Containers;
 using DotNet.Testcontainers.Networks;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
@@ -115,9 +115,15 @@ public sealed class ServiceBusReceiveEmulatorTests
 
         await ServiceBusReceiveTests.Start(provider, token);
         // Restart only this fixture's emulator, preserving its advertised client address.
+        var connectionString = broker.ConnectionString;
+        var administrationConnectionString = broker.AdministrationConnectionString;
         await broker.DisconnectAsync(token);
         await Assert.That((await probe.CheckAsync(token)).Status).IsEqualTo(HealthStatus.Unhealthy);
         await broker.ReconnectAsync(token);
+        await Assert.That(broker.ConnectionString).IsEqualTo(connectionString);
+        await Assert.That(broker.AdministrationConnectionString).IsEqualTo(administrationConnectionString);
+        var administration = new Azure.Messaging.ServiceBus.Administration.ServiceBusAdministrationClient(administrationConnectionString);
+        await Assert.That((await administration.QueueExistsAsync("receive-orders", token)).Value).IsTrue();
         await queue.SendMessageAsync(Message(40), token);
         while (await control.Received.Reader.ReadAsync(token) != 40) { }
         await Assert.That((await probe.CheckAsync(token)).Status).IsEqualTo(HealthStatus.Healthy);
@@ -180,12 +186,17 @@ internal sealed class ServiceBusReceiveBroker : IAsyncDisposable
     private readonly INetwork _network;
     private readonly MsSqlContainer _database;
     private readonly ServiceBusContainer _emulator;
+    private readonly IContainer _proxy;
     private readonly string _configurationPath;
-    internal string ConnectionString => _emulator.GetConnectionString();
-    internal string AdministrationConnectionString => _emulator.GetHttpConnectionString();
+    internal string ConnectionString => ThroughProxy(_emulator.GetConnectionString(), ServiceBusBuilder.ServiceBusPort);
+    internal string AdministrationConnectionString => ThroughProxy(_emulator.GetHttpConnectionString(), ServiceBusBuilder.ServiceBusHttpPort);
 
-    private ServiceBusReceiveBroker(INetwork network, MsSqlContainer database, ServiceBusContainer emulator, string configurationPath)
-    { _network = network; _database = database; _emulator = emulator; _configurationPath = configurationPath; }
+    private ServiceBusReceiveBroker(INetwork network, MsSqlContainer database, ServiceBusContainer emulator, IContainer proxy, string configurationPath)
+    { _network = network; _database = database; _emulator = emulator; _proxy = proxy; _configurationPath = configurationPath; }
+
+    private string ThroughProxy(string connectionString, int port) => connectionString.Replace(
+        new UriBuilder("sb", _emulator.Hostname, _emulator.GetMappedPublicPort(port)).ToString(),
+        new UriBuilder("sb", _proxy.Hostname, _proxy.GetMappedPublicPort(port)).ToString(), StringComparison.Ordinal);
 
     internal static async Task<ServiceBusReceiveBroker> StartAsync(string[]? queues = null,
         string[]? sessions = null, bool includeTopic = false)
@@ -195,8 +206,6 @@ internal sealed class ServiceBusReceiveBroker : IAsyncDisposable
         var network = new NetworkBuilder().Build();
         var databaseBuilder = new MsSqlBuilder("mcr.microsoft.com/mssql/server:2022-CU14-ubuntu-22.04")
             .WithNetwork(network).WithNetworkAliases(ServiceBusBuilder.DatabaseNetworkAlias);
-        var amqp = ReservePort();
-        var management = ReservePort();
         var configurationPath = Path.Combine(AppContext.BaseDirectory, "servicebus-receive-" + Guid.NewGuid().ToString("N") + ".json");
         var configuration = JsonNode.Parse(await File.ReadAllTextAsync(Path.Combine(AppContext.BaseDirectory, "servicebus-config.json"), token))!;
         var nativeNamespace = configuration["UserConfig"]!["Namespaces"]![0]!;
@@ -217,13 +226,30 @@ internal sealed class ServiceBusReceiveBroker : IAsyncDisposable
         }
         await File.WriteAllTextAsync(configurationPath, configuration.ToJsonString(), token);
         var emulatorBuilder = new ServiceBusBuilder("mcr.microsoft.com/azure-messaging/servicebus-emulator:2.0.0")
-            .WithAcceptLicenseAgreement(true).WithConfig(configurationPath)
-            .WithPortBinding(amqp, 5672).WithPortBinding(management, 5300);
-        if (OperatingSystem.IsLinux()) databaseBuilder = databaseBuilder.WithPortBinding("20000-29999", "1433");
+            .WithAcceptLicenseAgreement(true).WithConfig(configurationPath).WithNetworkAliases("servicebus");
+        // Keep Docker's public bindings alive while the upstream emulator stops and starts.
+        // Use the same pinned Toxiproxy image as the Pub/Sub reconnect fixture.
+        var proxyBuilder = new ContainerBuilder("ghcr.io/shopify/toxiproxy@sha256:5d3dae09bc185dcc5ff6cf43abf6062a4a720aff0c4306a471e773acdcd107aa")
+            .WithNetwork(network).WithPortBinding(5672, true).WithPortBinding(5300, true)
+            .WithResourceMapping(Encoding.UTF8.GetBytes("""
+                [
+                  { "name": "amqp", "listen": "0.0.0.0:5672", "upstream": "servicebus:5672", "enabled": true },
+                  { "name": "management", "listen": "0.0.0.0:5300", "upstream": "servicebus:5300", "enabled": true }
+                ]
+                """), "/proxies.json")
+            .WithCommand("-config", "/proxies.json")
+            .WithWaitStrategy(Wait.ForUnixContainer().UntilMessageIsLogged("Populated proxies from file"));
+        if (OperatingSystem.IsLinux())
+        {
+            databaseBuilder = databaseBuilder.WithPortBinding("20000-29999", "1433");
+            emulatorBuilder = emulatorBuilder.WithPortBinding("20000-29999", "5672").WithPortBinding("20000-29999", "5300");
+            proxyBuilder = proxyBuilder.WithPortBinding("20000-29999", "5672").WithPortBinding("20000-29999", "5300");
+        }
         var database = databaseBuilder.Build();
         var emulator = emulatorBuilder.WithMsSqlContainer(network, database, ServiceBusBuilder.DatabaseNetworkAlias).Build();
-        var broker = new ServiceBusReceiveBroker(network, database, emulator, configurationPath);
-        try { await emulator.StartAsync(token); return broker; }
+        var proxy = proxyBuilder.Build();
+        var broker = new ServiceBusReceiveBroker(network, database, emulator, proxy, configurationPath);
+        try { await emulator.StartAsync(token); await proxy.StartAsync(token); return broker; }
         catch (OperationCanceledException error) when (provisioning.IsCancellationRequested)
         {
             await broker.DisposeAsync();
@@ -240,22 +266,15 @@ internal sealed class ServiceBusReceiveBroker : IAsyncDisposable
         }
     }
 
-    private static int ReservePort()
-    {
-        var start = OperatingSystem.IsLinux() ? Random.Shared.Next(20000, 30000) : 0;
-        for (var attempt = 0; attempt < 10000; attempt++)
-        {
-            var listener = new TcpListener(IPAddress.Loopback, start == 0 ? 0 : 20000 + (start - 20000 + attempt) % 10000);
-            try { listener.Start(); return ((IPEndPoint)listener.LocalEndpoint).Port; }
-            catch (SocketException error) when (OperatingSystem.IsLinux() && error.SocketErrorCode == SocketError.AddressAlreadyInUse) { }
-            finally { listener.Stop(); }
-        }
-        throw new InvalidOperationException("No available Service Bus emulator test port in 20000-29999.");
-    }
-
     internal Task DisconnectAsync(CancellationToken token) => _emulator.StopAsync(token);
     internal Task ReconnectAsync(CancellationToken token) => _emulator.StartAsync(token);
     public async ValueTask DisposeAsync()
+    {
+        try { await _proxy.DisposeAsync(); }
+        finally { await DisposeBrokerAsync(); }
+    }
+
+    private async ValueTask DisposeBrokerAsync()
     {
         try { await _emulator.DisposeAsync(); }
         finally
