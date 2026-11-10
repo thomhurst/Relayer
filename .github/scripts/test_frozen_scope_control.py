@@ -294,8 +294,9 @@ class ScopeControlTests(unittest.TestCase):
                 self.assertTrue(all(item['meanNs'] == 27 for item in outcomes))
 
     def test_counterbalanced_blocks_keep_every_process_and_failure_with_image_provenance(self):
-        for selected in (None, "candidate"):
-            with self.subTest(selected=selected), tempfile.TemporaryDirectory() as directory:
+        for selected, method in ((None, "ScopeOnly"), ("candidate", "ScopeOnly"),
+                                 (None, "ScopeAndHandlerResolution")):
+            with self.subTest(selected=selected, method=method), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
                 calls = []
 
@@ -309,7 +310,7 @@ class ScopeControlTests(unittest.TestCase):
                     self.assertEqual(kwargs['env'], {})
 
                 options = ['--single-image', selected] if selected else []
-                with patch('sys.argv', ['control', directory, str(root / 'output'), '--counterbalanced'] + options), \
+                with patch('sys.argv', ['control', directory, str(root / 'output'), '--counterbalanced', '--method', method] + options), \
                      patch('frozen_scope_control.os.environ', {}), \
                      patch('frozen_scope_control.verify', return_value='commit') as verify, \
                      patch('frozen_scope_control.executable', side_effect=lambda path, scoped, method: (path / 'runner.dll', '4' if scoped else '0')), \
@@ -328,6 +329,8 @@ class ScopeControlTests(unittest.TestCase):
                 self.assertEqual([item['imageSide'] for item in outcomes], [selected or side for side in expected])
                 self.assertEqual([Path(command[1]).parent.name for command in calls], [selected or side for side in expected])
                 self.assertEqual([command[-1] for command in calls], ['4']*16)
+                self.assertTrue(all(command[3].endswith('.' + method) for command in calls))
+                self.assertTrue(protocol['benchmark'].endswith('.' + method))
                 self.assertTrue(all(item['scoped'] for item in outcomes))
                 self.assertIn('error', outcomes[1])
                 self.assertEqual(outcomes[2]['meanNs'], 40)

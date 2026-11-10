@@ -1,4 +1,4 @@
-name: Frozen scope CPU placement control
+name: Frozen handler resolution timing control
 
 # New historical-input experiment, never a rerun of the performance gate.
 on:
@@ -29,21 +29,22 @@ jobs:
           dotnet --info > results/runtime.txt
           uname -a > results/host.txt
           python3 -m unittest discover -s .github/scripts -p test_frozen_scope_control.py > results/launcher-tests.log 2>&1
-      - name: Download original images for code attribution
+      - name: Download original handler-resolution images
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh run download 42772012652 --name performance-42772012652-1 --dir inputs
-      # Separate scheduling hypothesis: default ABBA, pinned BAAB, pinned ABBA,
-      # default BAAB. Native taskset pins the whole process to the first allowed
-      # CPU; no runtime override, rebuild, gate comparison or adaptive retry.
-      - name: Bracket pinned scoped images with unrestricted controls
-        run: python3 .github/scripts/frozen_scope_control.py inputs results/affinity --affinity-control
+          gh run download 42774764169 --name performance-42774764169-1 --dir inputs
+      # #442: the distinct #437 handler-resolution loss has code captures, but
+      # ScopeOnly controls cannot attribute this path. Fixed ABBA/BAAB/BAAB/ABBA
+      # balances each original image across launch positions at default runtime.
+      # Retain all 16 outcomes; this is not a gate retry or historical reconstruction.
+      - name: Measure original scoped handler resolution in balanced blocks
+        run: python3 .github/scripts/frozen_scope_control.py inputs results/handler-resolution --method ScopeAndHandlerResolution --counterbalanced
       - name: Retain all outcomes and executable inputs
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: frozen-scope-affinity-${{ github.run_id }}-${{ github.run_attempt }}
+          name: frozen-handler-resolution-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             .github/workflows/frozen-scope-control.yml
             results/
