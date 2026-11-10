@@ -7,19 +7,25 @@ namespace Relayer.Nats.Tests;
 public class NatsAllocationTests
 {
     [Test]
-    public async Task Failure_copy_clears_publish_option_deduplication_and_reset_restores_normal_sends()
+    [Arguments("Nats-Msg-Id")]
+    [Arguments("Nats-Expected-Stream")]
+    [Arguments("Nats-Expected-Last-Msg-Id")]
+    [Arguments("Nats-Expected-Last-Sequence")]
+    [Arguments("Nats-Expected-Last-Subject-Sequence")]
+    [Arguments("Nats-Expected-Last-Subject-Sequence-Subject")]
+    public async Task Failure_copy_clears_publish_options_and_reset_restores_normal_sends(string name)
     {
         var headers = new NatsPublishHeaders(false) { IsFailureCopy = true };
         var context = new NatsMsgContext("dead", headers: headers);
         var writer = new ArrayBufferWriter<byte>();
-        // Native PublishAsync applies NatsJSPubOpts.MsgId before invoking this serializer hook.
-        headers["Nats-Msg-Id"] = "configured-id";
+        // Native PublishAsync applies NatsJSPubOpts before invoking this serializer hook.
+        headers[name] = "configured-value";
         headers.Serialize(writer, ReadOnlyMemory<byte>.Empty, context);
-        await Assert.That(headers.ContainsKey("Nats-Msg-Id")).IsFalse();
+        await Assert.That(headers.ContainsKey(name)).IsFalse();
         headers.Reset();
-        headers["Nats-Msg-Id"] = "ordinary-send";
+        headers[name] = "ordinary-send";
         headers.Serialize(writer, ReadOnlyMemory<byte>.Empty, context);
-        await Assert.That(headers["Nats-Msg-Id"].ToString()).IsEqualTo("ordinary-send");
+        await Assert.That(headers[name].ToString()).IsEqualTo("ordinary-send");
     }
 
     [Test]

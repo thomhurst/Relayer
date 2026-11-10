@@ -19,8 +19,17 @@ internal sealed class NatsPublishHeaders(bool caseSensitive)
     public void Serialize(IBufferWriter<byte> writer, ReadOnlyMemory<byte> value, in NatsMsgContext context)
     {
         var headers = context.Headers ?? throw new InvalidOperationException("NATS publication requires a headers instance.");
-        // Publish options can inject MsgId after native callbacks; clear it at serialization too.
-        if (IsFailureCopy) headers.Remove("Nats-Msg-Id");
+        // Native PublishAsync applies publication options after callbacks. A failure copy is a
+        // new publication, so neither deduplication nor the original optimistic checks apply.
+        if (IsFailureCopy)
+        {
+            headers.Remove("Nats-Msg-Id");
+            headers.Remove("Nats-Expected-Stream");
+            headers.Remove("Nats-Expected-Last-Msg-Id");
+            headers.Remove("Nats-Expected-Last-Sequence");
+            headers.Remove("Nats-Expected-Last-Subject-Sequence");
+            headers.Remove("Nats-Expected-Last-Subject-Sequence-Subject");
+        }
         if (TraceParent.Count > 0) headers["traceparent"] = TraceParent;
         else headers.Remove("traceparent");
         if (TraceState.Count > 0) headers["tracestate"] = TraceState;

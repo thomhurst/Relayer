@@ -93,8 +93,10 @@ internal sealed class NatsHostedService(IServiceProvider provider, string name) 
         if (message.Headers is { } source)
             foreach (var pair in source)
             {
-                // JetStream deduplication is stream-wide, including another subject in that stream.
-                if (string.Equals(pair.Key, "Nats-Msg-Id", StringComparison.OrdinalIgnoreCase)) continue;
+                // The copy is a new publication: stream-wide deduplication and optimistic
+                // publication checks belong to the original send, including noncanonical casing.
+                if (string.Equals(pair.Key, "Nats-Msg-Id", StringComparison.OrdinalIgnoreCase) ||
+                    pair.Key.StartsWith("Nats-Expected-", StringComparison.OrdinalIgnoreCase)) continue;
                 headers[index++] = new(pair.Key, new(pair.Value.ToString()));
             }
         return new(message.Subject, message.Data, headers.AsMemory(0, index), options: new SendOptions().Nats(

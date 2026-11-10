@@ -114,6 +114,87 @@ public class NatsExecutionTests
         await Assert.That(control.Attempts).IsEqualTo(2);
     }
     [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Poison_copy_drops_original_and_configured_publication_preconditions(bool separateDeadStream)
+    {
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        var token = deadline.Token;
+        var broker = await NatsSessionBroker.Current.WaitAsync(token);
+        var events = TestContext.Current!.Isolation.GetIsolatedName("precondition_events");
+        var deadStream = separateDeadStream ? events + "_dead" : events;
+        var orders = TestContext.Current!.Isolation.GetIsolatedName("precondition_orders");
+        var deadSubject = TestContext.Current!.Isolation.GetIsolatedName("precondition_dead");
+        var builder = Host.CreateApplicationBuilder();
+        builder.Services.AddSingleton(new ExecutionControl());
+        builder.Services.AddRelayer(relayer =>
+        {
+            relayer.AddMessageTypesFromThisAssembly();
+            relayer.UseJsonSerializer(NatsExecutionJson.Default);
+            relayer.Handler<ExecutionHandler>();
+            relayer.Nats("preconditions", transport =>
+            {
+                transport.TopologyMode = TopologyMode.Provision;
+                transport.Options.Configure(options =>
+                {
+                    options.ConnectionOptions = broker.Options();
+                    // These publication-only options are deliberately invalid for a failure copy.
+                    options.PublishOptions = new()
+                    {
+                        ExpectedStream = events,
+                        ExpectedLastSequence = 0,
+                        ExpectedLastMsgId = "not-the-last-id",
+                        ExpectedLastSubjectSequence = 0,
+                        ExpectedLastSubjectSequenceSubject = orders,
+                    };
+                    options.Streams.Add(new(events) { Configuration = new(events, separateDeadStream ? [orders] : [orders, deadSubject]) });
+                    if (separateDeadStream) options.Streams.Add(new(deadStream) { Configuration = new(deadStream, [deadSubject]) });
+                    options.Consumers.Add(new(events, "worker") { Configuration = new("worker") { FilterSubject = orders } });
+                });
+                transport.Consume("worker", consumer =>
+                {
+                    consumer.Options.Stream = events;
+                    consumer.Options.Failure = new() { DeadLetterEndpoint = deadSubject };
+                    consumer.Handler<ExecutionHandler>();
+                });
+            });
+        });
+        var host = builder.Build();
+        await using var lifetime = (IAsyncDisposable)host;
+        await host.StartAsync(token);
+        await using var native = new NatsConnection(broker.Options());
+        var js = new NatsJSContext(native);
+        await js.CreateConsumerAsync(deadStream, new("dead_reader") { FilterSubject = deadSubject }, token);
+        var headers = new NatsHeaders
+        {
+            ["Nats-Expected-Stream"] = events,
+            ["Nats-Expected-Last-Sequence"] = "0",
+            ["Nats-Expected-Last-Subject-Sequence"] = "0",
+            ["nats-expected-last-msg-id"] = "noncanonical-original-check",
+            ["Nats-Msg-Id"] = "original-id",
+            ["ce-id"] = "preserved-id",
+            ["application"] = "preserved-value",
+        };
+        byte[] poison = [1, 2, 3];
+        (await js.PublishAsync(orders, poison, NatsRawSerializer<byte[]>.Default, headers: headers, cancellationToken: token)).EnsureSuccess();
+        var reader = await js.GetConsumerAsync(deadStream, "dead_reader", token);
+        var copy = await reader.NextAsync(NatsRawSerializer<byte[]>.Default, cancellationToken: token);
+        await Assert.That(copy).IsNotNull();
+        await Assert.That(copy!.Data).IsEquivalentTo(poison);
+        await Assert.That(copy.Headers!["ce-id"].ToString()).IsEqualTo("preserved-id");
+        await Assert.That(copy.Headers["application"].ToString()).IsEqualTo("preserved-value");
+        foreach (var header in copy.Headers)
+            await Assert.That(header.Key.StartsWith("Nats-Expected-", StringComparison.OrdinalIgnoreCase)).IsFalse();
+        await Assert.That(copy.Headers.ContainsKey("Nats-Msg-Id")).IsFalse();
+        await copy.AckAsync(new() { DoubleAck = true }, token);
+        // Graceful stop waits for the original delivery's confirmed ACK after the durable copy.
+        await host.StopAsync(token);
+        var settled = await js.GetConsumerAsync(events, "worker", token);
+        await Assert.That(settled.Info.NumAckPending).IsEqualTo(0L);
+        await Assert.That(settled.Info.AckFloor.ConsumerSeq).IsEqualTo(1UL);
+    }
+
+    [Test]
     public async Task Failed_confirmed_ack_leaves_native_redelivery_running()
     {
         using var deadline = new CancellationTokenSource(TimeSpan.FromMinutes(1));
