@@ -36,11 +36,12 @@ internal sealed class ServiceBusHostedService(IServiceProvider provider, string 
                 var pipeline = new ConsumePipelineBuilder(provider.GetRequiredService<IServiceScopeFactory>(),
                     provider.GetRequiredService<MessageTypeRegistry>(), provider.GetMessageSerializer(name), failures,
                     provider.GetService<IFailureClassifier>());
-                pipeline.Tracing(tracing, endpoint).Telemetry(provider.GetRequiredService<RelayerInstrumentation>().CreateEndpoint(new()
+                var telemetry = provider.GetRequiredService<RelayerInstrumentation>().CreateEndpoint(new()
                 {
                     System = "servicebus", Destination = consumer.Source, Subscription = consumer.Options.Subscription,
                     ServerAddress = endpoint.ServerAddress,
-                })).Use(settlement).Settle(settlement.SettleAsync);
+                });
+                pipeline.Tracing(tracing, endpoint).Telemetry(telemetry).Use(settlement).Settle(settlement.SettleAsync);
                 foreach (var handler in handlers.Descriptors)
                     if (consumer.Handlers.Contains(handler.HandlerType)) pipeline.Handler(handler);
                 var composed = pipeline.Build(consumer.Concurrency);
@@ -65,6 +66,7 @@ internal sealed class ServiceBusHostedService(IServiceProvider provider, string 
                         : _transport.Client.CreateProcessor(consumer.Source, consumer.Options.ProcessorOptions);
                     receiver = new(consumer, native, receive.ProcessSettledAsync, time, logger);
                 }
+                if (consumer.Options.CircuitBreaker is { } circuit) receiver.ConfigureCircuit(circuit, composed, telemetry);
                 receiver.TrackHealth = _transport.HealthTracking;
                 receivers.Add(receiver);
             }

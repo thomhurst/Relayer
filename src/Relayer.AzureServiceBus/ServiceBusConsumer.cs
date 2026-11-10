@@ -1,4 +1,5 @@
 using System.Runtime.CompilerServices;
+using System.Threading.Channels;
 using Azure.Messaging.ServiceBus;
 using Microsoft.Extensions.Logging;
 
@@ -15,6 +16,12 @@ internal sealed partial class ServiceBusConsumer : IAsyncDisposable
     private readonly long[] _active;
     private readonly ILogger? _logger;
     private readonly CancellationTokenSource _abort = new();
+    private readonly Channel<bool> _control = Channel.CreateBounded<bool>(new BoundedChannelOptions(1)
+    { SingleReader = true, AllowSynchronousContinuations = false, FullMode = BoundedChannelFullMode.DropWrite });
+    private int _pauseRequested;
+    private Task? _controlTask;
+    private ConsumerCircuit? _circuit;
+    private EndpointTelemetry? _telemetry;
     private int _running;
     private int _disposed;
     internal IConsumerDefinition Declaration { get; }
@@ -54,6 +61,11 @@ internal sealed partial class ServiceBusConsumer : IAsyncDisposable
         var options = consumer.Options;
         ArgumentNullException.ThrowIfNull(options.ProcessorOptions);
         ArgumentNullException.ThrowIfNull(options.Failure);
+        if (options.CircuitBreaker is { } circuit)
+        {
+            // Reuse the policy's exact validation before native clients/processors are constructed.
+            circuit.Validate();
+        }
         var subscription = options.Subscription;
         var queue = subscription is null ? transport.Queues.SingleOrDefault(queue => queue.Name == consumer.Source) : null;
         var topic = subscription is null ? null : transport.Subscriptions.SingleOrDefault(item => item.TopicName == consumer.Source && item.SubscriptionName == subscription);
@@ -76,39 +88,105 @@ internal sealed partial class ServiceBusConsumer : IAsyncDisposable
         InvalidOperationException Invalid(string reason) => new($"Service Bus consumer '{consumer.Source}' on transport '{name}': {reason}");
     }
 
+    internal void ConfigureCircuit(ConsumerCircuitOptions options, ConsumePipeline pipeline, EndpointTelemetry telemetry)
+    {
+        _telemetry = telemetry;
+        _circuit = new ConsumerCircuit(options.FailureRatio, options.MinimumThroughput, options.SamplingDuration,
+            options.BreakDuration, _time, SignalProbe);
+        pipeline.Circuit = _circuit;
+        pipeline.CircuitChanged = SignalCircuit;
+        telemetry.RecordCircuitState(0);
+    }
+
+    // A bounded, asynchronous channel coalesces control requests. No native lifecycle operation runs on
+    // a processor callback or policy timer; StopProcessingAsync can safely drain those callbacks here.
+    private void SignalProbe() => SignalCircuit(false);
+
+    private void SignalCircuit(bool opened)
+    {
+        var state = _circuit!.State;
+        if (opened) Volatile.Write(ref _pauseRequested, 1);
+        _telemetry?.RecordCircuitState(state);
+        _control.Writer.TryWrite(true);
+    }
+
     internal async Task StartAsync(CancellationToken cancellationToken)
     {
         ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
+        cancellationToken.ThrowIfCancellationRequested();
         if (_abort.IsCancellationRequested)
             throw new InvalidOperationException("Recreate the application host after an aborted Service Bus drain.");
         if (Interlocked.CompareExchange(ref _running, 1, 0) != 0)
             throw new InvalidOperationException("The Service Bus processor is already running.");
         try
         {
-            if (_processor is { } processor) await processor.StartProcessingAsync(cancellationToken).ConfigureAwait(false);
-            else await _sessions!.StartProcessingAsync(cancellationToken).ConfigureAwait(false);
+            var started = _circuit?.State != 1;
+            if (started) await StartNativeAsync(cancellationToken).ConfigureAwait(false);
+            if (_circuit is not null) _controlTask = ControlAsync(started);
         }
         catch { Volatile.Write(ref _running, 0); throw; }
     }
+
+    private Task StartNativeAsync(CancellationToken token) => _processor is { } processor
+        ? processor.StartProcessingAsync(token) : _sessions!.StartProcessingAsync(token);
+
+    private Task StopNativeAsync() => _processor is { } processor
+        ? processor.StopProcessingAsync(CancellationToken.None) : _sessions!.StopProcessingAsync(CancellationToken.None);
+
+    private async Task ControlAsync(bool started)
+    {
+        try
+        {
+            while (true)
+            {
+                await _control.Reader.ReadAsync().ConfigureAwait(false);
+                if (Volatile.Read(ref _running) == 0) break;
+                if ((Interlocked.Exchange(ref _pauseRequested, 0) != 0 || _circuit?.State == 1) && started)
+                {
+                    await StopNativeAsync().ConfigureAwait(false);
+                    started = false;
+                }
+                // Recovery may have become available while native stop was draining.
+                if (_circuit?.State != 1 && !started && Volatile.Read(ref _running) != 0)
+                {
+                    await StartNativeAsync(_abort.Token).ConfigureAwait(false);
+                    started = true;
+                }
+            }
+        }
+        catch (OperationCanceledException) when (_abort.IsCancellationRequested && Volatile.Read(ref _running) == 0) { }
+        catch (Exception error)
+        {
+            Volatile.Write(ref _running, 0);
+            if (_logger is { } logger) CircuitControlFailed(logger, error, Declaration.Source);
+            throw;
+        }
+        finally
+        {
+            if (started) await StopNativeAsync().ConfigureAwait(false);
+        }
+    }
+
+    [LoggerMessage(Level = LogLevel.Error, Message = "Service Bus circuit control failed for {Source}.")]
+    private static partial void CircuitControlFailed(ILogger logger, Exception exception, string source);
 
     internal async Task StopAsync(CancellationToken cancellationToken)
     {
         // Native stop cancels its callback token immediately. Keep durable work alive until the host's
         // drain deadline instead; the native stop still owns receive shutdown and callback draining.
         using var registration = cancellationToken.UnsafeRegister(static state => ((CancellationTokenSource)state!).Cancel(), _abort);
+        Volatile.Write(ref _running, 0);
+        _control.Writer.TryWrite(true);
         try
         {
-            var stopping = _processor is { } processor ? processor.StopProcessingAsync(CancellationToken.None)
-                : _sessions!.StopProcessingAsync(CancellationToken.None);
+            var stopping = _controlTask ?? StopNativeAsync();
             await stopping.WaitAsync(cancellationToken).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
-            // WaitAsync's later registration may complete before the abort registration runs.
             _abort.Cancel();
             throw;
         }
-        finally { Volatile.Write(ref _running, 0); }
     }
 
     // The SDK callback must return a Task. AsTask is its smallest form: it allocates only when the pipeline
@@ -173,11 +251,17 @@ internal sealed partial class ServiceBusConsumer : IAsyncDisposable
     public async ValueTask DisposeAsync()
     {
         if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
+        Volatile.Write(ref _running, 0);
         _abort.Cancel();
         try
         {
-            if (_processor is { } processor) await processor.DisposeAsync().ConfigureAwait(false);
-            else await _sessions!.DisposeAsync().ConfigureAwait(false);
+            try { await StopAsync(CancellationToken.None).ConfigureAwait(false); }
+            finally
+            {
+                _circuit?.Dispose();
+                if (_processor is { } processor) await processor.DisposeAsync().ConfigureAwait(false);
+                else await _sessions!.DisposeAsync().ConfigureAwait(false);
+            }
         }
         finally
         {

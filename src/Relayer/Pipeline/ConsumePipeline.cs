@@ -51,6 +51,8 @@ public sealed partial class ConsumePipeline
     private readonly ILogger? _logger;
     internal HeaderNames EnvelopeNames { get; } = new();
     private int _batchCursor;
+    internal ConsumerCircuit? Circuit { get; set; }
+    internal Action<bool>? CircuitChanged { get; set; }
 
     internal ConsumePipeline(IServiceScopeFactory scopes, FrozenDictionary<MessageType, ConsumeDelegate> dispatch,
         IReadOnlyList<IConsumeMiddleware> middleware, ConsumeFailureDelegate failure, IFailureClassifier classifier,
@@ -188,8 +190,22 @@ public sealed partial class ConsumePipeline
         var start = telemetry is { DurationEnabled: true } ? Stopwatch.GetTimestamp() : 0;
         Exception? failure = null;
         Activity? activity = null;
+        var circuit = Circuit;
+        var admitted = false;
+        var probe = false;
+        var outcomeRecorded = false;
         try
         {
+            if (circuit is not null)
+            {
+                admitted = circuit.TryEnter(out probe);
+                if (!admitted)
+                {
+                    // Service Bus leaves rejected callbacks unsettled: native lock expiry returns them
+                    // without repeatedly abandoning the same delivery while a probe is running.
+                    return;
+                }
+            }
             activity = _tracing?.Start(context);
             telemetry?.RecordConsumed();
             var retry = 0;
@@ -278,12 +294,30 @@ public sealed partial class ConsumePipeline
                     context.ApplyFailureDisposition();
                     break;
                 }
-                await _failures.HandleAsync(context, attemptFailure, action).ConfigureAwait(false);
+                if (circuit is not null)
+                {
+                    outcomeRecorded = true;
+                    if (circuit.Complete(probe, true)) CircuitChanged?.Invoke(true);
+                    // Include outcomes already in flight when another callback opened the circuit.
+                    if (circuit.State != 0)
+                    {
+                        context.FailureDisposition = Disposition.Redeliver(TimeSpan.Zero);
+                        context.ApplyFailureDisposition();
+                        break;
+                    }
+                }
+                await _failures!.HandleAsync(context, attemptFailure, action).ConfigureAwait(false);
                 context.ApplyFailureDisposition();
                 break;
             }
             context.ClearServices();
             if (_settlement is { } settle) await settle(context).ConfigureAwait(false);
+            if (circuit is not null && !outcomeRecorded)
+            {
+                outcomeRecorded = true;
+                var opened = circuit.Complete(probe, false);
+                if (opened || probe) CircuitChanged?.Invoke(opened);
+            }
         }
         catch (OperationCanceledException) when (context.CancellationToken.IsCancellationRequested) { throw; }
         catch (Exception error)
@@ -294,6 +328,11 @@ public sealed partial class ConsumePipeline
         }
         finally
         {
+            // Scope, flush, settlement and cancellation failures must release a half-open probe too.
+            if (admitted && circuit is not null && !outcomeRecorded)
+            {
+                if (circuit.Complete(probe, true)) CircuitChanged?.Invoke(true);
+            }
             context.SendBuffer.Clear();
             try
             {

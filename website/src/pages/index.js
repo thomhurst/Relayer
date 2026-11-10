@@ -283,6 +283,7 @@ const status = [
   ['Consume pipeline and receive SPI', 'Implemented', true],
   ['Message upcaster chains for single and batch handlers', 'Implemented', true],
   ['Failure classification, retries and dead-letter copies', 'Implemented', true],
+  ['Service Bus consumer failure circuits', 'Implemented', true],
   ['Service Bus dead-letter management and optional authorized HTTP endpoints', 'Implemented', true],
   ['Service Bus DLQ and Kafka dead-letter inspection, filtered redrive and native purge', 'Implemented', true],
   ['Manual settlement requests with exception precedence', 'Implemented', true],

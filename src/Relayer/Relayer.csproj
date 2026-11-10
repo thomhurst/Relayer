@@ -35,6 +35,7 @@
     <InternalsVisibleTo Include="Relayer.Tests" />
     <InternalsVisibleTo Include="Relayer.Kafka" />
     <InternalsVisibleTo Include="Relayer.Kafka.Tests" />
+    <InternalsVisibleTo Include="Relayer.AzureServiceBus" />
     <InternalsVisibleTo Include="Relayer.Benchmarks" />
     <InternalsVisibleTo Include="Relayer.Outbox.PostgreSql.Tests" />
     <InternalsVisibleTo Include="Relayer.Outbox.MySql" />
