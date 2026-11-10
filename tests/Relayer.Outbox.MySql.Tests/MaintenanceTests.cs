@@ -12,6 +12,51 @@ namespace Relayer.Outbox.MySql.Tests;
 public sealed class MaintenanceTests
 {
     [Test]
+    [Arguments("malformed")]
+    [Arguments("transport")]
+    [Arguments("send")]
+    public async Task Unordered_poison_metrics_follow_committed_deletions_once(string failure)
+    {
+        await using var data = new MySqlFixture();
+        await data.StartAsync();
+        await data.Insert(Guid.CreateVersion7(), DateTimeOffset.UtcNow.AddDays(-1));
+        if (failure == "malformed") await data.Execute("UPDATE relayer_outbox SET headers=X'FF'");
+        if (failure == "transport") await data.Execute("UPDATE relayer_outbox SET transport='missing'");
+        using var instrumentation = new RelayerInstrumentation();
+        long pending = 0, poison = 0;
+        using var listener = new MeterListener();
+        listener.InstrumentPublished = (instrument, meterListener) =>
+        {
+            if (instrument == instrumentation.OutboxPending || instrument == instrumentation.OutboxPoison)
+                meterListener.EnableMeasurementEvents(instrument);
+        };
+        listener.SetMeasurementEventCallback<long>((instrument, count, _, _) =>
+        {
+            if (instrument == instrumentation.OutboxPending) Interlocked.Add(ref pending, count);
+            else Interlocked.Add(ref poison, count);
+        });
+        listener.Start();
+        instrumentation.AddOutboxPending(1);
+        var transport = failure == "send" ? new Transport(_ => throw new InvalidOperationException("native send failed")) : new Transport();
+        using var worker = new MySqlMaintenanceWorker(data.Source,
+            new() { BatchSize = 4, RecoveryDelay = TimeSpan.Zero, MaxDispatchAttempts = 2 },
+            [transport], NullLogger<MySqlMaintenanceWorker>.Instance, instrumentation: instrumentation);
+        await worker.SweepAsync();
+        await Assert.That(poison).IsEqualTo(failure == "malformed" ? 1L : 0L);
+        await Assert.That(pending).IsEqualTo(failure == "malformed" ? 0L : 1L);
+        // The fixed-bound pass first reaches its end, then starts a new pass.
+        await worker.SweepAsync();
+        await worker.SweepAsync();
+        await Assert.That(await Scalar(data, "SELECT COUNT(*) FROM relayer_outbox")).IsEqualTo(0L);
+        await Assert.That(await Scalar(data, "SELECT COUNT(*) FROM relayer_dead")).IsEqualTo(1L);
+        await Assert.That(pending).IsEqualTo(0L);
+        await Assert.That(poison).IsEqualTo(1L);
+        await worker.SweepAsync();
+        await Assert.That(pending).IsEqualTo(0L);
+        await Assert.That(poison).IsEqualTo(1L);
+    }
+
+    [Test]
     public async Task Malformed_row_is_copied_raw_to_dead_without_stalling_valid_rows()
     {
         await using var data = new MySqlFixture();
@@ -142,10 +187,15 @@ public sealed class MaintenanceTests
         var claim = new OutboxClaim(id, Guid.NewGuid());
         var now = DateTimeOffset.UtcNow;
         await Assert.That(await store.TryClaimAsync(claim, now, now.AddMinutes(1), default)).IsTrue();
-        await Assert.That(async () => await store.RecordFailureAsync(claim, "offline", now, default)).Throws<MySqlException>();
+        await Assert.That(async () => await store.RecordDispatchFailureAsync(claim, "offline", now, default)).Throws<MySqlException>();
         await Assert.That(await Scalar(data, "SELECT COUNT(*) FROM relayer_outbox WHERE attempts=0 AND claim_token IS NOT NULL")).IsEqualTo(1L);
         await data.Execute("DROP TRIGGER fail_dead");
-        await Assert.That(await store.RecordFailureAsync(claim, "offline", now, default)).IsTrue();
+        var committed = await store.RecordDispatchFailureAsync(claim, "offline", now, default);
+        await Assert.That(committed.Accepted).IsTrue();
+        await Assert.That(committed.Removed).IsTrue();
+        var stale = await store.RecordDispatchFailureAsync(claim, "offline", now, default);
+        await Assert.That(stale.Accepted).IsFalse();
+        await Assert.That(stale.Removed).IsFalse();
         await Assert.That(await Scalar(data, "SELECT COUNT(*) FROM relayer_outbox")).IsEqualTo(0L);
     }
 

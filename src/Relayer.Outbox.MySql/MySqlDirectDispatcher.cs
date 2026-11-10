@@ -147,7 +147,7 @@ internal sealed class MySqlDirectDispatcher : BackgroundService
                     var claim = new OutboxClaim(id, Guid.NewGuid());
                     var now = DateTimeOffset.UtcNow;
                     if (await _store.TryClaimAsync(claim, now, now + _options.ClaimDuration, cancellationToken).ConfigureAwait(false))
-                        await _store.RecordFailureAsync(claim, error.Message, now, cancellationToken).ConfigureAwait(false);
+                        (await _store.RecordDispatchFailureAsync(claim, error.Message, now, cancellationToken).ConfigureAwait(false)).RecordTelemetry(_instrumentation);
                 }
                 while (offset < batch.Count && batch.Rows[offset].Transport == first.Transport &&
                     batch.Rows[offset].Destination == first.Destination);
@@ -195,7 +195,7 @@ internal sealed class MySqlDirectDispatcher : BackgroundService
                     {
                         try
                         {
-                            await _store.RecordFailureAsync(_claims[i], error.Message, DateTimeOffset.UtcNow, cancellationToken).ConfigureAwait(false);
+                            (await _store.RecordDispatchFailureAsync(_claims[i], error.Message, DateTimeOffset.UtcNow, cancellationToken).ConfigureAwait(false)).RecordTelemetry(_instrumentation);
                         }
                         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
                         catch (Exception failure) { DirectDispatchLog.Failed(_logger, failure); }

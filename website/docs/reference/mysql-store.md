@@ -355,6 +355,11 @@ Direct notifications leave invalid routes unclaimed for recovery to inspect.
 Malformed ordered rows retain their persisted attempt count, so parking at the configured retry
 limit records the outbox poison counter once.
 
+Unordered recovery records `relayer.outbox.dead_lettered` and decrements
+`relayer.outbox.pending` only after the fenced transaction commits a poison deletion.
+This includes exhausted native sends, invalid transport destinations and malformed-row
+quarantine. Retries, stale claims and rolled-back transitions do not change these counters.
+
 Cleanup deletes at most `BatchSize` expired dead rows and `BatchSize` expired inbox keys per pass,
 using database UTC time and the `failed_at` / `processed_at` indexes. Pending rows, parked ordered
 barriers and their dead copies are retained. Deleting an inbox key ends deduplication protection;

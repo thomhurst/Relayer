@@ -50,6 +50,7 @@ public sealed class MySqlOutboxStore : IOutboxStore, IDisposable
             FROM {table} WHERE id=@id AND attempts>=@limit;
             DELETE FROM {table} WHERE id=@id AND attempts>=@limit AND lane IS NULL;
             UPDATE {table} SET status=IF(attempts>=@limit,'parked',status),claim_token=NULL,claim_expires_at=NULL WHERE id=@id;
+            SELECT NOT EXISTS (SELECT 1 FROM {table} WHERE id=@id);
             """;
         _claimBatch = new($"UPDATE {table} SET claim_token = @token, claim_expires_at = @expires WHERE id = @id AND lane IS NULL AND {eligible}");
         _completeBatch = new($"DELETE FROM {table} WHERE {fenced}");
@@ -127,7 +128,7 @@ public sealed class MySqlOutboxStore : IOutboxStore, IDisposable
         return count;
     }
 
-    internal ValueTask<bool> QuarantineAsync(OutboxClaim claim, string error, CancellationToken cancellationToken) =>
+    internal ValueTask<FailureOutcome> QuarantineAsync(OutboxClaim claim, string error, CancellationToken cancellationToken) =>
         FailAsync(claim, error, DateTimeOffset.UtcNow, 1, cancellationToken);
 
     /// <inheritdoc />
@@ -156,17 +157,32 @@ public sealed class MySqlOutboxStore : IOutboxStore, IDisposable
     }
 
     /// <inheritdoc />
-    public ValueTask<bool> RecordFailureAsync(OutboxClaim claim, string error, DateTimeOffset now,
+    [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder<>))]
+    public async ValueTask<bool> RecordFailureAsync(OutboxClaim claim, string error, DateTimeOffset now,
         CancellationToken cancellationToken)
     {
         Validate(claim);
         ArgumentNullException.ThrowIfNull(error);
-        return FailAsync(claim, error, now, _failureLimit, cancellationToken);
+        return (await RecordDispatchFailureAsync(claim, error, now, cancellationToken).ConfigureAwait(false)).Accepted;
+    }
+
+    internal ValueTask<FailureOutcome> RecordDispatchFailureAsync(OutboxClaim claim, string error, DateTimeOffset now,
+        CancellationToken cancellationToken) => FailAsync(claim, error, now, _failureLimit, cancellationToken);
+
+    // Only returned after the native transaction commits; stale claims and rollback have no terminal outcome.
+    internal readonly record struct FailureOutcome(bool Accepted, bool Removed)
+    {
+        internal void RecordTelemetry(RelayerInstrumentation? instrumentation)
+        {
+            if (!Removed || instrumentation is null) return;
+            instrumentation.AddOutboxPending(-1);
+            instrumentation.RecordOutboxPoison();
+        }
     }
 
     // Native transaction makes the raw dead copy and live-row transition indivisible.
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder<>))]
-    private async ValueTask<bool> FailAsync(OutboxClaim claim, string error, DateTimeOffset now, int limit,
+    private async ValueTask<FailureOutcome> FailAsync(OutboxClaim claim, string error, DateTimeOffset now, int limit,
         CancellationToken cancellationToken)
     {
         EnsureAvailable(cancellationToken);
@@ -182,12 +198,12 @@ public sealed class MySqlOutboxStore : IOutboxStore, IDisposable
         var original = command.CommandText;
         try
         {
-            if (await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) != 1) return false;
+            if (await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) != 1) return default;
             command.Parameters["limit"].Value = limit;
             command.CommandText = _failureSql;
-            await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+            var removed = Convert.ToInt64(await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false)) != 0;
             await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
-            return true;
+            return new(true, removed);
         }
         finally
         {

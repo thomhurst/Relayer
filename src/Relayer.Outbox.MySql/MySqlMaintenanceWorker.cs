@@ -13,6 +13,7 @@ internal sealed partial class MySqlMaintenanceWorker : BackgroundService
     private readonly MySqlOutboxStore _store;
     private readonly MySqlDirectDispatcher _dispatcher;
     private readonly ILogger<MySqlMaintenanceWorker> _logger;
+    private readonly RelayerInstrumentation? _instrumentation;
     private readonly Guid _owner = Guid.NewGuid();
     private readonly string _leases, _table, _dead, _inbox;
     private readonly string _acquire, _renew, _read, _highWater, _deleteDead, _deleteInbox;
@@ -35,6 +36,7 @@ internal sealed partial class MySqlMaintenanceWorker : BackgroundService
         _dispatcher = new(dataSource, settings, new() { BatchSize = options.BatchSize, QueueCapacity = 1,
             ClaimDuration = options.ClaimDuration }, transports, dispatchLogger ?? NullLogger<MySqlDirectDispatcher>.Instance, _store, instrumentation);
         _logger = logger;
+        _instrumentation = instrumentation;
         _table = MySqlOutboxSchema.Table(settings);
         _leases = MySqlOutboxSchema.LeaseTable(settings);
         _dead = MySqlOutboxSchema.DeadTable(settings);
@@ -191,8 +193,9 @@ internal sealed partial class MySqlMaintenanceWorker : BackgroundService
                     var now = DateTimeOffset.UtcNow;
                     if (await _store.TryClaimAsync(claim, now, now + _options.ClaimDuration, cancellationToken).ConfigureAwait(false))
                     {
-                        if (await _store.QuarantineAsync(claim, row.LastError!, cancellationToken).ConfigureAwait(false))
-                            Quarantined(_logger, row.Id, row.LastError!);
+                        var outcome = await _store.QuarantineAsync(claim, row.LastError!, cancellationToken).ConfigureAwait(false);
+                        outcome.RecordTelemetry(_instrumentation);
+                        if (outcome.Accepted) Quarantined(_logger, row.Id, row.LastError!);
                     }
                     continue;
                 }
