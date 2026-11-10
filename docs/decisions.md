@@ -1411,6 +1411,7 @@ require restart. Applications choose sampling/exporters (including those from Se
 authentication and health policy. The sample uses native Kafka and Service Bus emulator resources;
 other transports can use their existing configuration directly. See the
 [Aspire guide](../website/docs/guides/aspire.md).
+
 ## D62. SQL Server maintenance reuses direct dispatch and native transaction locks
 
 **Context.** D47/D49's durable SQL Server rows survive missed commit notifications and crashes.

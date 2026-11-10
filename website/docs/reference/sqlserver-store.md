@@ -226,10 +226,14 @@ that message to run again.
 
 Each recovery pass reads at most `BatchSize` due, unordered pending rows older than `RecoveryDelay`,
 using a fixed UUID high-water mark before wrapping. Failed, previously claimed and newly due older rows
-are revisited even while newer rows arrive. Ordered lanes and parked rows remain untouched.
+are revisited even while newer rows arrive. `SweepInterval` delays every bounded pass, including full
+batches; tune it together with `BatchSize` for the desired recovery rate and database load.
+Ordered lanes and parked rows remain untouched.
 Stored schedules are respected; this registration does not yet enable future scheduled `ISender` calls.
 Recovery reuses direct dispatch's endpoint grouping, capability cache and fenced claims in one database
-transaction. Native acceptance followed by a crash can replay the original identity: delivery is at least once.
+transaction. A crash or database error rolls back the whole pass, including completions for messages
+already accepted by the broker; those messages can all replay with their original identities. Delivery
+is at least once. Row locks remain held through native sends until the pass commits or rolls back.
 
 Separate durable `sweeper` and `cleanup` leases use the database clock. Native transaction application
 locks serialize connected passes without waiting behind another leader. Idle leadership expires after
@@ -244,7 +248,8 @@ Unordered exhausted rows leave the outbox. An exhausted ordered row stays parked
 retained while that barrier exists. Completion errors after broker success do not consume send attempts.
 
 Each cleanup pass deletes at most `BatchSize` expired dead rows and `BatchSize` expired inbox keys,
-ordered by their failure or processing time. It never expires pending or parked outbox messages.
+ordered by their failure or processing time. A failed recovery pass is logged and retention is still
+attempted on its own schedule. It never expires pending or parked outbox messages.
 
 ## Storage and UUID ordering
 

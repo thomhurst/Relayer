@@ -4,6 +4,7 @@ using System.Text;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Relayer.Transports;
@@ -33,6 +34,47 @@ public sealed class MaintenanceTests(SqlServerFixture database)
         await Assert.That(transport.Sent).IsEqualTo(1);
         await Assert.That(await Scalar($"SELECT COUNT_BIG(*) FROM {SqlServerOutboxSchema.DeadTable(data.Options)} WHERE last_error LIKE '%{error}%' AND attempts=1")).IsEqualTo(1L);
         await Assert.That(await Scalar($"SELECT COUNT_BIG(*) FROM {data.Table}")).IsEqualTo(0L);
+    }
+
+    [Test]
+    public async Task Repeated_recovery_query_failures_do_not_suppress_inbox_retention()
+    {
+        var data = new StoreData(database);
+        await data.Create();
+        await data.Insert(Guid.CreateVersion7(), DateTimeOffset.UtcNow.AddDays(-1));
+        var inbox = SqlServerOutboxSchema.InboxTable(data.Options);
+        // Break recovery's row projection while leaving the retention tables and predicates valid.
+        await data.Execute($"EXEC sp_rename N'{data.Table}.headers', N'broken_headers', N'COLUMN'; " +
+            $"INSERT INTO {inbox} (consumer, message_id, processed_at) VALUES ('expired', NEWID(), DATEADD(day,-30,SYSUTCDATETIME()))");
+        var logger = new FailureLogger();
+        using var worker = new SqlServerMaintenanceWorker(
+            new SqlConnectionStringBuilder(database.ConnectionString) { InitialCatalog = "master" }.ConnectionString, new()
+        {
+            TablePrefix = data.Options.TablePrefix, RecoveryDelay = TimeSpan.Zero,
+            SweepInterval = TimeSpan.FromMilliseconds(1)
+        }, [new Transport()], logger);
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        await worker.StartAsync(timeout.Token);
+        try
+        {
+            // The second sweep error proves the first iteration has finished its cleanup attempt.
+            await logger.SecondFailure.Task.WaitAsync(timeout.Token);
+            await Assert.That(await Scalar($"SELECT COUNT_BIG(*) FROM {inbox}")).IsEqualTo(0L);
+        }
+        finally { await worker.StopAsync(timeout.Token); }
+    }
+
+    private sealed class FailureLogger : ILogger<SqlServerMaintenanceWorker>
+    {
+        private int _failures;
+        public TaskCompletionSource SecondFailure { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+        public bool IsEnabled(LogLevel logLevel) => true;
+        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception,
+            Func<TState, Exception?, string> formatter)
+        {
+            if (eventId.Id == 1 && Interlocked.Increment(ref _failures) == 2) SecondFailure.TrySetResult();
+        }
     }
 
     [Test]

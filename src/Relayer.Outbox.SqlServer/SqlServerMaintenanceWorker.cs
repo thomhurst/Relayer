@@ -86,14 +86,20 @@ internal sealed partial class SqlServerMaintenanceWorker : BackgroundService
                 try
                 {
                     await SweepAsync(stoppingToken).ConfigureAwait(false);
-                    if (DateTimeOffset.UtcNow >= nextCleanup)
+                }
+                catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { break; }
+                catch (Exception error) { Failed(_logger, error); }
+                // A failed recovery pass must not suppress the independently leased retention pass.
+                if (DateTimeOffset.UtcNow >= nextCleanup)
+                {
+                    try
                     {
                         await CleanupAsync(stoppingToken).ConfigureAwait(false);
                         nextCleanup = DateTimeOffset.UtcNow + _options.CleanupInterval;
                     }
+                    catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { break; }
+                    catch (Exception error) { Failed(_logger, error); }
                 }
-                catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { break; }
-                catch (Exception error) { Failed(_logger, error); }
                 await Task.Delay(_options.SweepInterval, stoppingToken).ConfigureAwait(false);
             }
         }
