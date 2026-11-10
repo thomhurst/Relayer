@@ -40,7 +40,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           failed=0
-          for run in 42306276036 42312305889; do
+          for run in 42306276036 42312305889 42310409459; do
             if ! gh run download "$run" --name "performance-$run-1" --dir "inputs/$run"; then
               failed=1
               continue
@@ -52,7 +52,7 @@ jobs:
         if: always()
         run: |
           failed=0
-          for run in 42306276036 42312305889; do
+          for run in 42306276036 42312305889 42310409459; do
             python3 .github/scripts/frozen_concurrent_control.py "inputs/$run" tools/FrozenFixtureProbe/bin/Release/net10.0/FrozenFixtureProbe.dll "results/$run-profiled" --trace-tool .diagnostic-tools/dotnet-trace --profile-reader tools/FrozenAllocationReader/bin/Release/net10.0/FrozenAllocationReader.dll || failed=1
           done
           exit "$failed"
@@ -60,7 +60,7 @@ jobs:
         if: always()
         run: |
           failed=0
-          for run in 42306276036 42312305889; do
+          for run in 42306276036 42312305889 42310409459; do
             python3 .github/scripts/frozen_concurrent_control.py "inputs/$run" tools/FrozenFixtureProbe/bin/Release/net10.0/FrozenFixtureProbe.dll "results/$run-exact-invocations" --exact-invocations || failed=1
           done
           exit "$failed"
