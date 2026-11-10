@@ -8,6 +8,8 @@ public class NatsAllocationTests
 {
     [Test]
     [Arguments("Nats-Msg-Id")]
+    [Arguments("Nats-Rollup")]
+    [Arguments("nats-rollup")]
     [Arguments("Nats-Expected-Stream")]
     [Arguments("Nats-Expected-Last-Msg-Id")]
     [Arguments("Nats-Expected-Last-Sequence")]

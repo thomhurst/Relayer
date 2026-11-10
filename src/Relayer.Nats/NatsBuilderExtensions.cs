@@ -94,9 +94,10 @@ internal sealed class NatsHostedService(IServiceProvider provider, string name) 
             foreach (var pair in source)
             {
                 // The copy is a new publication: stream-wide deduplication and optimistic
-                // publication checks belong to the original send, including noncanonical casing.
+                // publication checks and destructive rollups belong to the original send, including noncanonical casing.
                 if (string.Equals(pair.Key, "Nats-Msg-Id", StringComparison.OrdinalIgnoreCase) ||
-                    pair.Key.StartsWith("Nats-Expected-", StringComparison.OrdinalIgnoreCase)) continue;
+                    pair.Key.StartsWith("Nats-Expected-", StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(pair.Key, "Nats-Rollup", StringComparison.OrdinalIgnoreCase)) continue;
                 headers[index++] = new(pair.Key, new(pair.Value.ToString()));
             }
         return new(message.Subject, message.Data, headers.AsMemory(0, index), options: new SendOptions().Nats(

@@ -195,6 +195,77 @@ public class NatsExecutionTests
     }
 
     [Test]
+    [Arguments("sub")]
+    [Arguments("all")]
+    public async Task Poison_copy_drops_rollup_without_purging_previous_dead_letters(string rollup)
+    {
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        var token = deadline.Token;
+        var broker = await NatsSessionBroker.Current.WaitAsync(token);
+        var events = TestContext.Current!.Isolation.GetIsolatedName("rollup_events");
+        var deadStream = events + "_dead";
+        var orders = TestContext.Current!.Isolation.GetIsolatedName("rollup_orders");
+        var deadSubject = TestContext.Current!.Isolation.GetIsolatedName("rollup_dead");
+        var builder = Host.CreateApplicationBuilder();
+        builder.Services.AddSingleton(new ExecutionControl());
+        builder.Services.AddRelayer(relayer =>
+        {
+            relayer.AddMessageTypesFromThisAssembly();
+            relayer.UseJsonSerializer(NatsExecutionJson.Default);
+            relayer.Handler<ExecutionHandler>();
+            relayer.Nats("rollup", transport =>
+            {
+                transport.TopologyMode = TopologyMode.Provision;
+                transport.Options.Configure(options =>
+                {
+                    options.ConnectionOptions = broker.Options();
+                    options.Streams.Add(new(events) { Configuration = new(events, [orders]) { AllowRollupHdrs = true } });
+                    options.Streams.Add(new(deadStream) { Configuration = new(deadStream, [deadSubject]) { AllowRollupHdrs = true } });
+                    options.Consumers.Add(new(events, "worker") { Configuration = new("worker") { FilterSubject = orders } });
+                });
+                transport.Consume("worker", consumer =>
+                {
+                    consumer.Options.Stream = events;
+                    consumer.Options.Failure = new() { DeadLetterEndpoint = deadSubject };
+                    consumer.Handler<ExecutionHandler>();
+                });
+            });
+        });
+        var host = builder.Build();
+        await using var lifetime = (IAsyncDisposable)host;
+        await host.StartAsync(token);
+        await using var native = new NatsConnection(broker.Options());
+        var js = new NatsJSContext(native);
+        await js.CreateConsumerAsync(deadStream, new("dead_reader") { FilterSubject = deadSubject }, token);
+        byte[] retained = [4, 5, 6];
+        (await js.PublishAsync(deadSubject, retained, NatsRawSerializer<byte[]>.Default, cancellationToken: token)).EnsureSuccess();
+        var headers = new NatsHeaders
+        {
+            ["Nats-Rollup"] = rollup,
+            ["application"] = "preserved-value",
+        };
+        byte[] poison = [1, 2, 3];
+        (await js.PublishAsync(orders, poison, NatsRawSerializer<byte[]>.Default, headers: headers, cancellationToken: token)).EnsureSuccess();
+        var reader = await js.GetConsumerAsync(deadStream, "dead_reader", token);
+        var previous = await reader.NextAsync(NatsRawSerializer<byte[]>.Default, cancellationToken: token);
+        await Assert.That(previous).IsNotNull();
+        await Assert.That(previous!.Data).IsEquivalentTo(retained);
+        await previous.AckAsync(new() { DoubleAck = true }, token);
+        var copy = await reader.NextAsync(NatsRawSerializer<byte[]>.Default, cancellationToken: token);
+        await Assert.That(copy).IsNotNull();
+        await Assert.That(copy!.Data).IsEquivalentTo(poison);
+        await Assert.That(copy.Headers!["application"].ToString()).IsEqualTo("preserved-value");
+        await Assert.That((await js.GetStreamAsync(deadStream, cancellationToken: token)).Info.State.Messages).IsEqualTo(2L);
+        await Assert.That(copy.Headers.ContainsKey("Nats-Rollup")).IsFalse();
+        await copy.AckAsync(new() { DoubleAck = true }, token);
+        // Graceful stop waits for the original delivery's confirmed ACK after the durable copy.
+        await host.StopAsync(token);
+        var settled = await js.GetConsumerAsync(events, "worker", token);
+        await Assert.That(settled.Info.NumAckPending).IsEqualTo(0L);
+        await Assert.That(settled.Info.AckFloor.ConsumerSeq).IsEqualTo(1UL);
+    }
+
+    [Test]
     public async Task Failed_confirmed_ack_leaves_native_redelivery_running()
     {
         using var deadline = new CancellationTokenSource(TimeSpan.FromMinutes(1));

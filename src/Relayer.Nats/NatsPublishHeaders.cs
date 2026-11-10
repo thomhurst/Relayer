@@ -24,6 +24,7 @@ internal sealed class NatsPublishHeaders(bool caseSensitive)
         if (IsFailureCopy)
         {
             headers.Remove("Nats-Msg-Id");
+            headers.Remove("Nats-Rollup");
             headers.Remove("Nats-Expected-Stream");
             headers.Remove("Nats-Expected-Last-Msg-Id");
             headers.Remove("Nats-Expected-Last-Sequence");
