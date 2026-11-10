@@ -61,6 +61,8 @@ Relayer is in early development. Track progress in [GitHub issues](https://githu
 - Core tracing primitives, single and batch delivery spans, native settlement wrappers, consume metrics and generated failure logs. Kafka send, serial receive and batch-commit instrumentation, plus Service Bus process and native settlement instrumentation and Google Pub/Sub send/process and callback acknowledgement tracing, are implemented; PostgreSQL outbox trace propagation, pending deltas and dispatch lag are implemented; RabbitMQ process and ack/nack telemetry are implemented; SQS receive remains planned.
 - The optional [health integration](guides/health-checks.md), with connectivity, consumer liveness and backlog checks. Kafka, Service Bus and RabbitMQ companions supply native connectivity and receiver-owned liveness. The outbox adapter accepts application-provided durable stores; SQS adapters remain planned.
 
+- [PostgreSQL durable local transport](transports/postgresql-local.md): named routes/consumers, transactional completion, shared recovery, ordered lanes and poison handling.
+
 ## Native client prerequisites
 
 - [Apache Pulsar](transports/pulsar.md) remains planned. The client assessment found upstream prerequisites for byte-backed UTF-8 properties and a verified Native AOT byte-message path. No Pulsar adapter or package implementation is available yet.

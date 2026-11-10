@@ -14,6 +14,7 @@ public sealed class PostgreSqlOutboxStore : IOutboxStore
     private readonly NpgsqlDataSource _dataSource;
     private NpgsqlConnection? _dispatchConnection;
     private NpgsqlTransaction? _dispatchTransaction;
+    internal NpgsqlTransaction? DispatchTransaction => _dispatchTransaction;
     private readonly string _read;
     private readonly string _claim;
     private readonly string _claimBatch;
@@ -22,6 +23,7 @@ public sealed class PostgreSqlOutboxStore : IOutboxStore
     private readonly string _completeInTransaction;
     private readonly string _completeBatch;
     private readonly string _fail;
+    private readonly string _failImmediately;
     private readonly string _count;
     private readonly ScalarOperation<int> _failure = new(static value => (int)value!);
     private readonly ScalarOperation<bool> _mutation = new(static value => value is true);
@@ -56,10 +58,12 @@ public sealed class PostgreSqlOutboxStore : IOutboxStore
         {
             var sent = PostgreSqlOutboxSchema.QuoteIdentifier(options.Schema ?? "public") + "." +
                 PostgreSqlOutboxSchema.QuoteIdentifier(options.TablePrefix + "outbox_sent");
+            _completeInTransaction = PostgreSqlSentSql.Complete($"DELETE FROM {table} AS row WHERE id = @id AND claim_token = @token AND claim_expires_at > clock_timestamp()", sent, "clock_timestamp()", false);
             _complete = PostgreSqlSentSql.Complete($"DELETE FROM {table} AS row WHERE {fenced}", sent, "@now", false);
             _completeBatch = PostgreSqlSentSql.Complete($"DELETE FROM {table} AS row USING unnest(@ids, @tokens) AS claims(id, token) WHERE row.id = claims.id AND row.claim_token = claims.token AND row.claim_expires_at > @now", sent, "@now", true);
         }
         _fail = PostgreSqlPoisonSql.Failure(table, dead, fenced, options.MaxDispatchAttempts);
+        _failImmediately = PostgreSqlPoisonSql.Failure(table, dead, fenced, 1);
         _count = $"SELECT count(*) FROM {table} WHERE {eligible}";
     }
 
@@ -203,11 +207,11 @@ public sealed class PostgreSqlOutboxStore : IOutboxStore
         => await RecordDispatchFailureAsync(claim, error, now, cancellationToken).ConfigureAwait(false) != 0;
 
     internal ValueTask<int> RecordDispatchFailureAsync(OutboxClaim claim, string error, DateTimeOffset now,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken, bool permanent = false)
     {
         Validate(claim);
         ArgumentNullException.ThrowIfNull(error);
-        var command = CreateMutation(_fail, claim, now);
+        var command = CreateMutation(permanent ? _failImmediately : _fail, claim, now);
         Add(command, "error", NpgsqlDbType.Text, error);
         return _failure.Start(command, cancellationToken);
     }

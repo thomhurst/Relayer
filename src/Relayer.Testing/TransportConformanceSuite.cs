@@ -413,7 +413,7 @@ public sealed class TransportConformanceSuite<TIncoming, TBinding>
     {
         List<KeyValuePair<string, WireString>> headers =
         [
-            new(names.Id, new WireString(Guid.NewGuid().ToString("N"))),
+            new(names.Id, new WireString(Guid.CreateVersion7().ToString("N"))),
             new(names.Type, new WireString("relayer.conformance;v=1")),
             new(names.Source, new WireString("/relayer/conformance")),
             new(names.SpecVersion, new WireString("1.0")),

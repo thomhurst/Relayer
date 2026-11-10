@@ -11,6 +11,17 @@ public static class PostgreSqlOutboxRegistration
 {
     /// <summary>Adds the PostgreSQL outbox and the scoped IOutboxEnlistment used by ISender.</summary>
     public static IServiceCollection AddRelayerPostgreSqlOutbox(this IServiceCollection services, PostgreSqlOutboxOptions? options = null)
+        => Register(services, options, null);
+
+    /// <summary>Adds transactional enqueue with immediate commit-triggered dispatch through a named shared worker.</summary>
+    public static IServiceCollection AddRelayerPostgreSqlOutbox(this IServiceCollection services, string dispatchStoreName,
+        PostgreSqlOutboxOptions? options = null)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(dispatchStoreName);
+        return Register(services, options, dispatchStoreName);
+    }
+
+    private static IServiceCollection Register(IServiceCollection services, PostgreSqlOutboxOptions? options, string? dispatchStoreName)
     {
         ArgumentNullException.ThrowIfNull(services);
         if (services.Any(static descriptor => descriptor.ServiceType == typeof(IOutboxEnlistment)) &&
@@ -26,7 +37,8 @@ public static class PostgreSqlOutboxRegistration
                     throw new InvalidOperationException("Configure TenantBinding in the authorized native store factory when using AddRelayerTenancy with the PostgreSQL outbox.");
                 snapshot.Value.TenantBinding.ValidateContext(tenant);
             }
-            return new(snapshot, provider.GetServices<PostgreSqlSchedulingRegistration>(), provider.GetService<RelayerInstrumentation>());
+            return new(snapshot, provider.GetServices<PostgreSqlSchedulingRegistration>(), provider.GetService<RelayerInstrumentation>(),
+                dispatchStoreName is null ? null : provider.GetRequiredKeyedService<PostgreSqlDirectDispatcher>(dispatchStoreName));
         });
         services.TryAddScoped<IOutboxEnlistment>(static provider => provider.GetRequiredService<PostgreSqlOutbox>());
         services.TryAddSingleton<IValidateOptions<PostgreSqlOutboxOptions>, Validator>();

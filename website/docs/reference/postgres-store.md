@@ -82,8 +82,7 @@ at deletion, including time spent handling the message. Keep your claim valid fo
 Errors and cancellation require the same rollback/disposal discipline as other native commands; an uncertain
 commit still requires application recovery. Ordered workers also need the existing lane ownership protocol.
 
-This is a store primitive for application-owned workers. A named durable local transport and automatic consume
-transaction integration remain planned. It does not make external effects, such as HTTP calls, transactional.
+This primitive also backs the [durable local transport](../transports/postgresql-local.md), which supplies named registration and consume-pipeline integration.
 
 ## Header storage
 
