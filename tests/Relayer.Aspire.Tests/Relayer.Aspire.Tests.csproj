@@ -1,0 +1,10 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><OutputType>Exe</OutputType></PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="TUnit" />
+    <PackageReference Include="Microsoft.Extensions.Hosting" />
+    <PackageReference Include="Aspire.Hosting.Testing" />
+    <ProjectReference Include="../../src/Relayer.Aspire/Relayer.Aspire.csproj" />
+    <ProjectReference Include="../../samples/RelayerSample.AppHost/RelayerSample.AppHost.csproj" />
+  </ItemGroup>
+</Project>

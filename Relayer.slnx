@@ -1,5 +1,6 @@
 <Solution>
   <Folder Name="/src/">
+    <Project Path="src/Relayer.Aspire/Relayer.Aspire.csproj" />
     <Project Path="src/Relayer.AspNetCore/Relayer.AspNetCore.csproj" />
     <Project Path="src/Relayer.Sagas/Relayer.Sagas.csproj" />
     <Project Path="src/Relayer/Relayer.csproj" />
@@ -28,6 +29,7 @@
     <Project Path="src/Relayer.Outbox.PostgreSql/Relayer.Outbox.PostgreSql.csproj" />
   </Folder>
   <Folder Name="/tests/">
+    <Project Path="tests/Relayer.Aspire.Tests/Relayer.Aspire.Tests.csproj" />
     <Project Path="tests/Relayer.AspNetCore.AotSmoke/Relayer.AspNetCore.AotSmoke.csproj" />
     <Project Path="tests/Relayer.AspNetCore.Tests/Relayer.AspNetCore.Tests.csproj" />
     <Project Path="tests/Relayer.Outbox.SqlServer.Tests/Relayer.Outbox.SqlServer.Tests.csproj" />
@@ -56,6 +58,10 @@
   <Folder Name="/docs/">
     <File Path="docs/design.md" />
     <File Path="docs/decisions.md" />
+  </Folder>
+  <Folder Name="/samples/">
+    <Project Path="samples/RelayerSample.Api/RelayerSample.Api.csproj" />
+    <Project Path="samples/RelayerSample.AppHost/RelayerSample.AppHost.csproj" />
   </Folder>
   <Folder Name="/Solution Items/">
     <File Path="Directory.Build.props" />

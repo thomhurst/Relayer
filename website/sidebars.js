@@ -25,6 +25,7 @@ const sidebars = {
         'guides/saga-diagrams',
         'guides/telemetry',
         'guides/health-checks',
+        'guides/aspire',
         'guides/testing',
       ],
     },

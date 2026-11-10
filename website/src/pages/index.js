@@ -310,6 +310,7 @@ const status = [
   ['AsyncAPI topology and JSON contract export', 'Implemented; protocol bindings unsupported', true],
   ['Kafka parallel receive via Dekaf, SQS receiver composition and RabbitMQ receive adapter', 'In progress', false],
   ['Health checks with application-provided adapters', 'Implemented', true],
+  ['Aspire resource connections, health and telemetry', 'Implemented for Kafka and Service Bus', true],
   ['Scoped tenant header propagation', 'Implemented with durable binding and bounded PostgreSQL catalog dispatch', true],
   ['Durable outbox contracts and keyed health adapter', 'Implemented core seam', true],
   ['PostgreSQL schema scripts, CLI and EF migration path', 'Implemented schema tooling', true],

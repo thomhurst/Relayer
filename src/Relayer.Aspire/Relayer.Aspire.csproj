@@ -1,0 +1,10 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <Description>Aspire connection configuration and OpenTelemetry integration for Relayer.</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../Relayer.Kafka/Relayer.Kafka.csproj" />
+    <ProjectReference Include="../Relayer.AzureServiceBus/Relayer.AzureServiceBus.csproj" />
+    <PackageReference Include="OpenTelemetry.Extensions.Hosting" />
+  </ItemGroup>
+</Project>
