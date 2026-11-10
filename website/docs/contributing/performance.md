@@ -452,8 +452,18 @@ microbenchmarks do not establish that real-broker budget. `KafkaSendBenchmarks`
 already pairs raw Dekaf and Relayer adapter sends against a real broker for
 pre-serialized single messages and native batches. These cases are outside the
 `RegressionGate` category and do not cover the public default-JSON send pipeline
-or receive path. Complete default-JSON send and receive comparisons for real
-transports remain planned.
+or receive path.
+
+`KafkaReceiveBenchmarks` already compares raw Dekaf with the production serial
+Kafka receive adapter, including the core receive pipeline and generated handler
+dispatch. Both paths use the same source-generated JSON contract and commit native
+fetch-batch checkpoints. See [Kafka performance validation](../transports/kafka.md#performance-validation)
+for its maintained scope, broker configuration and invocation. These results are
+local diagnostics, not a claim that the 5% receive budget has passed; the planned
+parallel scheduler is outside this comparison.
+
+Complete default-JSON send-pipeline comparisons, parallel Kafka receive coverage
+and paired real-broker comparisons for the other transports remain planned.
 
 Each adapter must add paired raw-client and Relayer cases in the same benchmark
 class, using `[MemoryDiagnoser]`, with the raw case marked
