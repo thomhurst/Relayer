@@ -20,8 +20,8 @@ public class NatsTopologyTests
         var token = deadline.Token;
         await using var broker = await Broker.StartAsync(token);
         var nativeOptions = broker.Options();
-        var stream = new StreamConfig("orders", ["orders.>"]) { Storage = StreamConfigStorage.Memory, MaxMsgs = 100 };
-        var consumer = new ConsumerConfig("handler") { FilterSubject = "orders.placed", AckWait = TimeSpan.FromSeconds(20) };
+        var stream = new StreamConfig("orders", ["orders.>"]) { Storage = StreamConfigStorage.Memory, MaxMsgs = 100, MaxAge = TimeSpan.FromMinutes(1) };
+        var consumer = new ConsumerConfig("handler") { FilterSubject = "orders.placed", AckWait = TimeSpan.FromSeconds(5), Backoff = new[] { TimeSpan.FromSeconds(20) } };
         var host = new HostBuilder().ConfigureServices(services => services.AddRelayer(builder => builder.Nats("nats", nats =>
         {
             nats.TopologyMode = TopologyMode.Provision;
@@ -46,12 +46,13 @@ public class NatsTopologyTests
         var handler = await js.GetConsumerAsync("orders", "handler", token);
         await Assert.That(handler.Info.Config.AckWait).IsEqualTo(TimeSpan.FromSeconds(20));
         await Assert.That(handler.Info.Config.DurableName).IsEqualTo("handler");
+        await Assert.That((await transport.ApplyTopologyAsync(TopologyMode.Validate, token)).Differences).IsEmpty();
 
         await using var drift = NatsConfigurationTests.Provider(options =>
         {
             options.ConnectionOptions = broker.Options();
             options.Streams.Add(new("orders") { Configuration = stream with { Storage = StreamConfigStorage.File } });
-            options.Consumers.Add(new("orders", "handler") { Configuration = consumer with { AckWait = TimeSpan.FromSeconds(5) } });
+            options.Consumers.Add(new("orders", "handler") { Configuration = consumer with { AckWait = TimeSpan.FromSeconds(5), Backoff = new[] { TimeSpan.FromSeconds(5) } } });
             options.Streams.Add(new("after_error") { Configuration = new("after_error", ["after.error"]) });
         });
         var report = await drift.GetRequiredService<ITransport>().ApplyTopologyAsync(TopologyMode.Provision, token);
@@ -62,7 +63,7 @@ public class NatsTopologyTests
         await Assert.That((await js.GetStreamAsync("orders", cancellationToken: token)).Info.Config.Storage).IsEqualTo(StreamConfigStorage.Memory);
         await Assert.That((await js.GetConsumerAsync("orders", "handler", token)).Info.Config.AckWait).IsEqualTo(TimeSpan.FromSeconds(20));
         await Assert.That(stream.Storage).IsEqualTo(StreamConfigStorage.Memory);
-        await Assert.That(consumer.AckWait).IsEqualTo(TimeSpan.FromSeconds(20));
+        await Assert.That(consumer.AckWait).IsEqualTo(TimeSpan.FromSeconds(5));
 
         await host.StopAsync(token);
         await transport.StopAsync(token);
@@ -73,7 +74,7 @@ public class NatsTopologyTests
     }
 
     [Test]
-    public async Task Validate_reports_missing_and_unverified_configuration_without_creating_entities()
+    public async Task Validate_reports_missing_and_conflicting_configuration_without_creating_entities()
     {
         using var deadline = new CancellationTokenSource(TimeSpan.FromMinutes(3));
         var token = deadline.Token;
@@ -97,12 +98,12 @@ public class NatsTopologyTests
             options.ConnectionOptions = broker.Options();
             options.Streams.Add(new("missing"));
             options.Consumers.Add(new("events", "missing"));
-            options.Streams.Add(new("events") { Configuration = new("events", ["events.>"]) });
+            options.Streams.Add(new("events") { Configuration = new("events", ["different.>"]) });
         });
         var differences = (await missing.GetRequiredService<ITransport>().ApplyTopologyAsync(TopologyMode.Validate, token)).Differences;
         await Assert.That(differences.Count).IsEqualTo(3);
         await Assert.That(differences[0]).Contains("missing");
-        await Assert.That(differences[1]).Contains("equivalence checks are not implemented");
+        await Assert.That(differences[1]).Contains("subjects");
         await Assert.That(differences[2]).Contains("missing");
         await Assert.That(async () => await js.GetStreamAsync("missing", cancellationToken: token)).Throws<NatsJSApiException>();
         await Assert.That(async () => await js.GetConsumerAsync("events", "missing", token)).Throws<NatsJSApiException>();
@@ -142,8 +143,8 @@ public class NatsTopologyTests
         await using var provider = NatsConfigurationTests.Provider(options =>
         {
             options.ConnectionOptions = broker.Options("reader");
-            options.Streams.Add(new("events"));
-            options.Consumers.Add(new("events", "handler"));
+            options.Streams.Add(new("events") { Configuration = new("events", ["events.>"]) });
+            options.Consumers.Add(new("events", "handler") { Configuration = new("handler") });
         });
         var transport = provider.GetRequiredService<ITransport>();
         await transport.StartAsync(token);
@@ -164,7 +165,7 @@ public class NatsTopologyTests
         await Assert.That((await js.GetStreamAsync("events", cancellationToken: token)).Info.State.Messages).IsEqualTo(0L);
     }
 
-    private sealed class Broker(IContainer container) : IAsyncDisposable
+    internal sealed class Broker(IContainer container) : IAsyncDisposable
     {
         internal static async Task<Broker> StartAsync(CancellationToken token, string? configuration = null)
         {
@@ -179,6 +180,7 @@ public class NatsTopologyTests
             // Raw string line endings follow the checkout; /bin/sh requires LF even on Windows.
             builder = builder.WithEntrypoint("/bin/sh", "-c").WithCommand($"""
                 while true; do
+                    while [ -f /tmp/relayer-offline ]; do sleep 0.1; done
                     nats-server {arguments} &
                     broker=$!
                     trap 'kill -TERM "$broker"; wait "$broker"; exit 0' TERM INT
@@ -202,6 +204,13 @@ public class NatsTopologyTests
         internal async Task RestartAsync(CancellationToken token)
         {
             var result = await container.ExecAsync(["killall", "-TERM", "nats-server"], token);
+            if (result.ExitCode != 0) throw new InvalidOperationException(result.Stderr);
+        }
+
+        internal async Task SetConnectedAsync(bool connected, CancellationToken token)
+        {
+            var command = connected ? "rm -f /tmp/relayer-offline" : "touch /tmp/relayer-offline && killall -TERM nats-server";
+            var result = await container.ExecAsync(["/bin/sh", "-c", command], token);
             if (result.ExitCode != 0) throw new InvalidOperationException(result.Stderr);
         }
 

@@ -1,11 +1,11 @@
 ---
 title: NATS JetStream
-description: "Native NATS connection ownership and JetStream topology, with message execution still planned."
+description: "Confirmed native JetStream sends, durable pull consumers and explicit topology."
 ---
 
-`Relayer.Nats` currently manages named native connections and explicit JetStream stream/consumer topology. **Relayer send and receive execution are not implemented.** Declaring `Send` or `Consume` fails before connecting. Calling `ITransport.SendAsync` or `SendBatchAsync` also fails explicitly.
+`Relayer.Nats` wraps NATS.Net 3.3.2 with owned named connections, confirmed JetStream publications, durable pull consumers and confirmed acknowledgements. Enable JetStream on the server (`nats-server -js`). Performance acceptance remains under investigation in [#313](https://github.com/thomhurst/Relayer/issues/313): local full-send measurements show an allocation delta above the raw client, and local timing has not established the 5% throughput budget. No performance exception has been accepted.
 
-## Register a connection and topology
+## Register sends and a durable consumer
 
 ```csharp
 using Microsoft.Extensions.Options;
@@ -14,53 +14,79 @@ using NATS.Client.JetStream.Models;
 using Relayer;
 using Relayer.Nats;
 
-services.AddRelayer(relayer => relayer.Nats("events", nats =>
+services.AddRelayer(relayer =>
 {
-    nats.TopologyMode = TopologyMode.Provision;
-    nats.Options.Configure(options =>
+    relayer.AddMessageTypesFromThisAssembly();
+    relayer.AddHandlersFromThisAssembly();
+    relayer.Nats("events", nats =>
     {
-        options.ConnectionOptions = new NatsOpts
+        nats.TopologyMode = TopologyMode.Provision;
+        nats.Options.Configure(options =>
         {
-            Url = "nats://localhost:4222",
-        };
-        options.Streams.Add(new("orders")
-        {
-            Configuration = new StreamConfig("orders", ["orders.>"]),
-        });
-        options.Consumers.Add(new("orders", "billing")
-        {
-            Configuration = new ConsumerConfig("billing")
+            options.ConnectionOptions = new NatsOpts { Url = "nats://localhost:4222" };
+            options.Streams.Add(new("orders")
             {
-                FilterSubject = "orders.placed",
-            },
+                Configuration = new StreamConfig("orders", ["orders.placed", "orders.dead"]),
+            });
+            options.Consumers.Add(new("orders", "billing")
+            {
+                Configuration = new ConsumerConfig("billing") { FilterSubject = "orders.placed" },
+            });
+        });
+        nats.Send<OrderPlaced>("orders.placed");
+        nats.Consume("billing", consumer =>
+        {
+            consumer.Options.Stream = "orders";
+            consumer.Options.Failure = new()
+            {
+                RetryDelays = new[] { TimeSpan.FromSeconds(1) },
+                DeadLetterEndpoint = "orders.dead",
+            };
+            consumer.Handler<BillingHandler>();
         });
     });
-}));
+});
 ```
 
-The NATS server must have JetStream enabled. `ConnectionOptions` is the native `NatsOpts` instance, passed unchanged to an owned `NatsConnection`. Its authentication, TLS, logger factory and connection recovery remain native behavior. Optional `JetStreamOptions` passes an unchanged `NatsJSOpts` instance for native domains, API prefixes and request timeouts. DI resolution does not connect. Startup opens the connection with the native ping operation; shutdown and disposal close only that named connection. Caller-owned connections are not accepted.
+Register source-generated JSON serialization as described in [serialization](../guides/messages.md). Send routes use concrete publish subjects; consumers select a declared durable consumer and its stream. A topology consumer declaration alone does not start a receiver.
+
+`ConnectionOptions` passes `NatsOpts` unchanged, including authentication, TLS, logger factory, header case sensitivity and native recovery. Optional `JetStreamOptions` passes `NatsJSOpts` unchanged, including domains, API prefixes and timeouts. `PublishOptions` passes native `NatsJSPubOpts` unchanged to every publication on that named transport, including its retry policy. DI resolution does not connect. Relayer closes only its own named connection.
+
+## Delivery and failure boundaries
+
+Sends await native JetStream publication acknowledgements. Borrowed payload/header storage remains owned by the caller until completion. `SendBatchAsync` performs individual confirmed publications in input order; it is not an atomic broker batch.
+
+Receivers require durable pull consumers with explicit per-message acknowledgement, full payloads and unlimited `MaxDeliver`. Unsupported modes fail before consumption: auto/no acknowledgement can settle before durable work, and finite `MaxDeliver` can strand a poison message before its durable failure copy succeeds. Native flow control, delivery attempts, reconnect and acknowledgement timing remain NATS behavior. Configure `AckWait` for the processing duration, or call native `AckProgressAsync` through the delivery feature for long work; Relayer adds no renewal loop.
+
+`consumer.Options.Settings` passes native `NatsJSConsumeOpts` unchanged. `DrainOnCancel = true` is required and enabled by default. `Concurrency(n)` starts `n` native pull enumerations against the durable consumer, each processing one delivery at a time. Native buffer limits apply per enumeration. Shutdown cancels pulls, drains through the native protocol, finishes buffered processing and confirms ACKs before closing. A stop deadline cancels processing; incomplete work remains available for native redelivery.
+
+Poison messages use the existing core failure pipeline: in-process `RetryDelays`, then a copy to the required `DeadLetterEndpoint` subject, confirmed before ACK of the original. Ensure that subject is captured by a JetStream stream. Copy/ACK failure can duplicate the copy at the at-least-once boundary. Original bodies, CloudEvents identity and creation context survive, including malformed envelopes.
+
+JetStream NAK cannot persist changed failure headers. Portable `RedeliveryDelays` and portable manual retry therefore fail explicitly; use in-process retries and durable dead-letter copies. Native NAK remains accessible through `context.Nats().Message`. Relayer does not advertise native dead-lettering with error metadata, portable keyed ordering, native transactions, scheduled sends or tombstones. Use the durable outbox for scheduling. Subject/stream order remains native, without a portable per-key guarantee.
+
+## Native access and tracing
+
+```csharp
+var delivery = context.Nats();
+var nativeMessage = delivery.Message;
+var nativeConsumer = delivery.Consumer;
+
+await sender.SendNowAsync(order,
+    options => options.Nats(headers => headers["application-header"] = "value"), ct);
+```
+
+The original native message exposes its connection. Delivery objects are borrowed until processing returns. Send callbacks receive reusable native `NatsHeaders` immediately before publication; do not retain them. CloudEvents attributes use `ce-` headers. Relayer telemetry uses `messaging.system = nats`, the publish subject for sends, and the native stream/durable subscription for processing and settlement. Its public native context-aware serializer hook preserves stored `traceparent`/`tracestate` even with NATS instrumentation enabled, so dispatch and failure copies keep their creation context.
 
 ## Topology modes
 
-`None` performs no topology requests. Starting the host still opens its connection. `Validate` is the default and only reads native stream and consumer information; it never publishes probe messages, creates consumers, or changes broker settings.
+`None` makes no topology requests. `Validate` reads stream/consumer information only. Name-only declarations check existence. With `Configuration`, validation compares native generated JSON settings, normalizes JetStream scalar defaults and unordered subject sets, and ignores server-owned `_nats.*` metadata. Differences identify the entity, setting and expected/actual values. Validation never publishes probes or changes settings.
 
-For existence-only validation, declare names without `Configuration`:
+`Provision` calls native create-only APIs with the supplied `StreamConfig`/`ConsumerConfig`. The server checks existing entities for equivalence. Relayer never updates, deletes or purges entities; reconcile conflicts externally. Names and optional `DurableName` must match the declaration.
 
-```csharp
-options.Streams.Add(new("orders"));
-options.Consumers.Add(new("orders", "billing"));
-```
+## Performance and validation
 
-Full read-only configuration equivalence checks remain planned. A declaration with `Configuration` in `Validate` mode reports that limitation as an actionable topology difference and fails startup. It never silently treats matching names as proof that native settings match. Name-only declarations intentionally check existence only.
+[D52](https://github.com/thomhurst/Relayer/blob/main/docs/decisions.md#d52-allocations-a-native-api-requires-count-as-native-client-cost) classifies strings required by `NatsHeaders` for changing CloudEvents attributes as native-client cost. The native receive API also boxes JetStream deliveries and materializes raw payload memory. Relayer retains at most 64 reusable native header dictionaries per subject and pools asynchronous send/settlement state. Overflow allocates native header dictionaries; retention stays bounded.
 
-`Provision` passes each supplied `StreamConfig` to native `CreateStreamAsync` and each supplied `ConsumerConfig` to native `CreateConsumerAsync`. These are create-only operations: Relayer never calls the update, delete, purge, or create-or-update APIs. The server performs its native configuration-equivalence checks for existing entities. Native conflicts appear in the topology report; unrelated declarations can still be provisioned. A name-only entry only checks existence, even in `Provision` mode. Add native `Configuration` to create a missing entity.
+`NatsSendBenchmarks` compares native publication and the full Relayer JSON/CloudEvents send path with matching native header conversions (`NATS_URL` selects the real server). `NatsReceiveBenchmarks` compares already-delivered JSON dispatch with the core receive path. `NatsWireReceiveBenchmarks` additionally compares real native pull, JSON dispatch and confirmed ACK paths, preparing publications outside each measured iteration. All use `MemoryDiagnoser`; local results are diagnostic. Allocation tests pin header conversion against equivalent native string conversion. [nats.net#1285](https://github.com/nats-io/nats.net/issues/1285) requests byte-backed headers as an optimization, not an execution prerequisite.
 
-Native configuration names must match their declaration. An optional native `DurableName` must also match the declared consumer name. Consumer declarations manage broker entities; they do not start a Relayer message receiver.
-
-## Message execution status
-
-Send/receive pipelines, settlement, dead-letter copies, trace propagation, conformance tests and native-client performance comparisons remain planned under [#313](https://github.com/thomhurst/Relayer/issues/313). No message-path capabilities are advertised by this foundation.
-
-The native outgoing header API currently requires string values. Relayer's default binary CloudEvents path keeps changing header values in UTF-8 buffers; decoding each value into a new string would add allocations per send. [nats.net#1285](https://github.com/nats-io/nats.net/issues/1285) requests a public native path for byte-backed header values. Message execution remains blocked on a suitable native API, rather than bypassing the native publish protocol or weakening Relayer's allocation contract.
-
-This foundation has real-server topology/lifecycle tests and Native AOT registration/native configuration serialization coverage. It does not claim transport conformance or message-path performance compliance.
+Real-server tests cover topology, read-only configuration checks, recovery, hosted failure copies and every applicable reusable conformance case; unsupported capabilities skip explicitly. Set `NATS_URL` when running the Native AOT smoke to exercise real JSON send/receive and confirmed settlement.

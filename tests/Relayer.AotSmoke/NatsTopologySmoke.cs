@@ -1,4 +1,7 @@
 using System.Buffers;
+using System.Text.Json.Serialization;
+using Microsoft.Extensions.Hosting;
+using Relayer.Serialization;
 using Microsoft.Extensions.DependencyInjection;
 using NATS.Client.Core;
 using NATS.Client.JetStream;
@@ -32,5 +35,73 @@ internal static class NatsTopologySmoke
         NatsJSJsonSerializer<ConsumerConfig>.Default.Serialize(buffer, new ConsumerConfig("handler"));
         if (buffer.WrittenCount == 0) throw new InvalidOperationException("Native NATS topology serialization failed under Native AOT.");
         Console.WriteLine("NATS topology registration and native configuration serialization passed under Native AOT.");
+        if (Environment.GetEnvironmentVariable("NATS_URL") is { } url) await ExecuteAsync(url);
+    }
+    private static async Task ExecuteAsync(string url)
+    {
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        var token = timeout.Token;
+        var subject = "aot_" + Guid.NewGuid().ToString("N");
+        var completed = new NatsAotCompletion();
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddSingleton(completed);
+        services.AddRelayer(builder =>
+        {
+            builder.AddMessageTypesFromThisAssembly();
+            builder.UseJsonSerializer(NatsAotJson.Default);
+            builder.Handler<NatsAotHandler>();
+            builder.Nats("nats-aot", nats =>
+            {
+                nats.TopologyMode = TopologyMode.Provision;
+                nats.Options.Configure(options =>
+                {
+                    options.ConnectionOptions = new() { Url = url };
+                    options.Streams.Add(new(subject) { Configuration = new(subject, [subject, subject + ".dead"]) });
+                    options.Consumers.Add(new(subject, "worker") { Configuration = new("worker") { FilterSubject = subject } });
+                });
+                nats.Send<NatsAotMessage>(subject);
+                nats.Consume("worker", consumer =>
+                {
+                    consumer.Options.Stream = subject;
+                    consumer.Options.Settings = new() { MaxMsgs = 1, DrainOnCancel = true, Expires = TimeSpan.FromSeconds(1) };
+                    consumer.Options.Failure = new() { DeadLetterEndpoint = subject + ".dead" };
+                    consumer.Handler<NatsAotHandler>();
+                });
+            });
+        });
+        await using var provider = services.BuildServiceProvider();
+        foreach (var lifecycle in provider.GetServices<IHostedService>().OfType<IHostedLifecycleService>()) await lifecycle.StartingAsync(token);
+        var workers = provider.GetServices<IHostedService>().ToArray();
+        foreach (var worker in workers) await worker.StartAsync(token);
+        using var scope = provider.CreateScope();
+        await scope.ServiceProvider.GetRequiredService<ISender>().SendNowAsync(new NatsAotMessage(42), token);
+        await completed.Done.Task.WaitAsync(token);
+        foreach (var worker in workers.Reverse()) await worker.StopAsync(token);
+        await using var connection = new NatsConnection(new NatsOpts { Url = url });
+        var js = new NatsJSContext(connection);
+        var consumerInfo = await js.GetConsumerAsync(subject, "worker", token);
+        if (consumerInfo.Info.NumAckPending != 0 || consumerInfo.Info.AckFloor.ConsumerSeq != 1)
+            throw new InvalidOperationException("NATS AOT settlement did not confirm durable completion.");
+        await js.DeleteStreamAsync(subject, token);
+        Console.WriteLine("NATS native JSON send/receive and confirmed settlement passed under Native AOT.");
     }
 }
+
+[Message("nats.aot")]
+public sealed record NatsAotMessage(int Value);
+public sealed class NatsAotCompletion
+{
+    public TaskCompletionSource Done { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+}
+public sealed class NatsAotHandler(NatsAotCompletion completion) : IHandler<NatsAotMessage>
+{
+    public ValueTask HandleAsync(NatsAotMessage message, MessageContext context, CancellationToken cancellationToken)
+    {
+        if (message.Value != 42 || context.Nats().Message.Subject.Length == 0) throw new InvalidOperationException("NATS AOT native mapping changed.");
+        completion.Done.TrySetResult();
+        return default;
+    }
+}
+[JsonSerializable(typeof(NatsAotMessage))]
+internal partial class NatsAotJson : JsonSerializerContext;

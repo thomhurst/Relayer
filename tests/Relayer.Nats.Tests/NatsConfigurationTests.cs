@@ -56,23 +56,19 @@ public class NatsConfigurationTests
     }
 
     [Test]
-    public async Task Send_and_consumer_declarations_fail_before_connecting()
+    public async Task Send_registration_is_lazy_and_invalid_consumers_fail_before_connecting()
     {
         var services = new ServiceCollection();
         services.AddRelayer(builder => builder.Nats("nats", nats => nats.Send<Sample>("orders")));
         await using var provider = services.BuildServiceProvider();
-        var error = await Assert.That(() => provider.GetRequiredService<ITransport>()).Throws<NotSupportedException>();
-        await Assert.That(error!.Message).Contains("send and receive execution are not implemented");
-
+        var transport = provider.GetRequiredService<ITransport>();
+        await Assert.That(async () => await transport.SendAsync(new("orders", default), default)).Throws<InvalidOperationException>();
+        await transport.SendBatchAsync(ReadOnlyMemory<OutgoingMessage>.Empty, default);
         var consumers = new ServiceCollection();
         consumers.AddRelayer(builder => builder.Nats("nats", nats => nats.Consume("orders", consumer => consumer.Handler<SampleHandler>())));
         await using var consumerProvider = consumers.BuildServiceProvider();
-        await Assert.That(() => consumerProvider.GetRequiredService<ITransport>()).Throws<NotSupportedException>();
-
-        await using var native = Provider(_ => { });
-        var transport = native.GetRequiredService<ITransport>();
-        await Assert.That(async () => await transport.SendAsync(new("orders", default), default)).Throws<NotSupportedException>();
-        await Assert.That(async () => await transport.SendBatchAsync(ReadOnlyMemory<OutgoingMessage>.Empty, default)).Throws<NotSupportedException>();
+        var error = await Assert.That(() => consumerProvider.GetRequiredService<ITransport>()).Throws<InvalidOperationException>();
+        await Assert.That(error!.Message).Contains("declare");
     }
 
     [Test]
@@ -101,6 +97,24 @@ public class NatsConfigurationTests
             }
         });
         await Assert.That(() => provider.GetRequiredService<ITransport>()).Throws<ArgumentException>();
+    }
+
+    [Test]
+    [Arguments(0)]
+    [Arguments(1)]
+    [Arguments(2)]
+    [Arguments(3)]
+    public async Task Unsafe_native_consumers_are_rejected_before_receiving(int scenario)
+    {
+        var config = new ConsumerConfig("worker");
+        switch (scenario)
+        {
+            case 0: config.AckPolicy = ConsumerConfigAckPolicy.None; break;
+            case 1: config.DeliverSubject = "push"; break;
+            case 2: config.HeadersOnly = true; break;
+            case 3: config.MaxDeliver = 1; break;
+        }
+        await Assert.That(() => NatsConsumerWorker.Validate(config, "events", "worker")).Throws<InvalidOperationException>();
     }
 
     internal static ServiceProvider Provider(Action<NatsTransportOptions> configure)

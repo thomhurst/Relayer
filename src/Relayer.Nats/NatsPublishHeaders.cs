@@ -1,0 +1,33 @@
+using System.Buffers;
+using Microsoft.Extensions.Primitives;
+using NATS.Client.Core;
+
+namespace Relayer.Nats;
+
+// Native instrumentation injects its context before serialization. The native context-aware
+// hook runs before header encoding, so restore stored creation headers here. Keep the payload's
+// native generic type unchanged, avoiding larger native request state per publication.
+internal sealed class NatsPublishHeaders(bool caseSensitive)
+    : NatsHeaders(new Dictionary<string, StringValues>(16, caseSensitive ? StringComparer.Ordinal : StringComparer.OrdinalIgnoreCase)),
+      INatsSerializeWithContext<ReadOnlyMemory<byte>>
+{
+    internal string? TraceParent;
+    internal string? TraceState;
+    public void Serialize(IBufferWriter<byte> writer, ReadOnlyMemory<byte> value) =>
+        NatsRawSerializer<ReadOnlyMemory<byte>>.Default.Serialize(writer, value);
+    public void Serialize(IBufferWriter<byte> writer, ReadOnlyMemory<byte> value, in NatsMsgContext context)
+    {
+        var headers = context.Headers ?? throw new InvalidOperationException("NATS publication requires a headers instance.");
+        if (TraceParent is { } parent) headers["traceparent"] = parent;
+        else headers.Remove("traceparent");
+        if (TraceState is { } state) headers["tracestate"] = state;
+        else headers.Remove("tracestate");
+        Serialize(writer, value);
+    }
+    internal void Reset()
+    {
+        Clear();
+        TraceParent = null;
+        TraceState = null;
+    }
+}
