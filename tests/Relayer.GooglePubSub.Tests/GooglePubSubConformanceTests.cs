@@ -201,7 +201,8 @@ internal sealed class PubSubFixture : ITransportConformanceFixture<GooglePubSubD
                 && ContainsDisconnectedConnection(cause)));
 
     private static bool ContainsDisconnectedConnection(Exception error) =>
-        error is System.Net.Sockets.SocketException { SocketErrorCode: System.Net.Sockets.SocketError.ConnectionReset or System.Net.Sockets.SocketError.ConnectionAborted }
+        error is System.Net.Sockets.SocketException { SocketErrorCode: System.Net.Sockets.SocketError.ConnectionReset or System.Net.Sockets.SocketError.ConnectionAborted
+            or System.Net.Sockets.SocketError.Shutdown }
         || error is System.Net.Http.HttpIOException { HttpRequestError: System.Net.Http.HttpRequestError.InvalidResponse or System.Net.Http.HttpRequestError.ResponseEnded }
         || (error.InnerException is { } inner && ContainsDisconnectedConnection(inner));
 

@@ -81,11 +81,13 @@ public class GooglePubSubTests
     }
 
     [Test]
-    [Arguments(false, false)]
-    [Arguments(true, false)]
-    [Arguments(false, true)]
-    [Arguments(true, true)]
-    public async Task Fatal_native_initial_write_recreates_application_without_replacing_subscription(bool handshakeFailure, bool reconnectWhileRunning)
+    [Arguments(System.Net.Sockets.SocketError.ConnectionReset, false)]
+    [Arguments(System.Net.Sockets.SocketError.Success, false)]
+    [Arguments(System.Net.Sockets.SocketError.Shutdown, false)]
+    [Arguments(System.Net.Sockets.SocketError.ConnectionReset, true)]
+    [Arguments(System.Net.Sockets.SocketError.Success, true)]
+    [Arguments(System.Net.Sockets.SocketError.Shutdown, true)]
+    public async Task Fatal_native_initial_write_recreates_application_without_replacing_subscription(System.Net.Sockets.SocketError socketError, bool reconnectWhileRunning)
     {
         using var deadline = new CancellationTokenSource(TimeSpan.FromMinutes(2));
         var token = deadline.Token;
@@ -94,12 +96,13 @@ public class GooglePubSubTests
         var fixture = (PubSubFixture)lease;
         var delivered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         fixture.RegisterConsumer((_, _) => { delivered.TrySetResult(); return new(Disposition.Complete); });
-        var failure = handshakeFailure
+        // Success selects the HTTP/2 handshake failure; Shutdown is Unix EPIPE (broken pipe).
+        var failure = socketError == System.Net.Sockets.SocketError.Success
             ? new System.Net.Http.HttpIOException(System.Net.Http.HttpRequestError.InvalidResponse,
                 "An HTTP/2 connection could not be established because the server did not complete the HTTP/2 handshake.",
                 new System.Net.Http.HttpIOException(System.Net.Http.HttpRequestError.ResponseEnded, "The response ended prematurely."))
             : new IOException("The request was aborted.",
-                new System.Net.Sockets.SocketException((int)System.Net.Sockets.SocketError.ConnectionReset));
+                new System.Net.Sockets.SocketException((int)socketError));
         fixture.InjectInitialWriteFailure(failure);
         var original = fixture.Transport;
         if (reconnectWhileRunning) await fixture.DisconnectBeforeStartAsync(token);
