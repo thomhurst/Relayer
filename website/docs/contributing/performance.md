@@ -462,8 +462,12 @@ for its maintained scope, broker configuration and invocation. These results are
 local diagnostics, not a claim that the 5% receive budget has passed; the planned
 parallel scheduler is outside this comparison.
 
-Complete default-JSON send-pipeline comparisons, parallel Kafka receive coverage
-and paired real-broker comparisons for the other transports remain planned.
+For Kafka, complete default-JSON send-pipeline comparisons and parallel receive
+coverage remain planned. Other transports already have paired cases, including
+RabbitMQ and Service Bus send and receive benchmarks and SQS send benchmarks.
+`SqsReceiveBindingBenchmarks` isolates body preparation without a broker; it is
+not a real-broker receive comparison. Existing cases do not establish complete
+default-JSON pipeline coverage or prove the 5% budget for those transports.
 
 Each adapter must add paired raw-client and Relayer cases in the same benchmark
 class, using `[MemoryDiagnoser]`, with the raw case marked
