@@ -22,7 +22,11 @@ internal static class ServiceBusReceiversSmoke
             {
                 bus.TopologyMode = TopologyMode.None;
                 bus.Options.Configure(options => { options.Client = client; options.Queues.Add(new("orders")); });
-                bus.Consume("orders", consumer => consumer.Handler<Handler>());
+                bus.Consume("orders", consumer =>
+                {
+                    consumer.Options.CircuitBreaker = new();
+                    consumer.Handler<Handler>();
+                });
             });
         });
         await using var provider = services.BuildServiceProvider();

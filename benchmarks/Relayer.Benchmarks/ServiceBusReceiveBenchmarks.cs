@@ -14,6 +14,10 @@ namespace Relayer.Benchmarks;
 [MemoryDiagnoser]
 public class ServiceBusReceiveBenchmarks
 {
+    /// <summary>Include the optional closed-circuit admission/outcome work against the raw SDK baseline.</summary>
+    [Params(false, true)]
+    public bool CircuitEnabled { get; set; }
+
     private const int Records = 128;
     private ServiceBusAdministrationClient _admin = null!;
     private ServiceBusClient _client = null!;
@@ -56,6 +60,7 @@ public class ServiceBusReceiveBenchmarks
                 bus.Consume(_queue, consumer =>
                 {
                     consumer.Options.ProcessorOptions.PrefetchCount = 32;
+                    if (CircuitEnabled) consumer.Options.CircuitBreaker = new();
                     consumer.Handler<ServiceBusBenchmarkHandler>();
                 });
             });

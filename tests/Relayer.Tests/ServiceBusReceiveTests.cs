@@ -247,11 +247,12 @@ public sealed class ServiceBusReceiveTests
     }
 
     internal static ServiceProvider Provider(NativeClient client, Action<ConsumerBuilder<ServiceBusConsumerOptions>>? configure = null,
-        string? subscription = null, bool declare = true, bool health = false, bool sessions = false)
+        string? subscription = null, bool declare = true, bool health = false, bool sessions = false, TimeProvider? time = null)
     {
         var services = new ServiceCollection();
         services.AddLogging();
         services.AddSingleton<Control>();
+        if (time is not null) services.AddSingleton(time);
         if (health) services.AddRelayerServiceBusHealthProviders("bus");
         services.AddRelayer(builder =>
         {
@@ -459,6 +460,7 @@ public sealed class ServiceBusReceiveTests
         internal List<NativeProcessor> Processors { get; } = [];
         internal List<NativeSessionProcessor> SessionProcessors { get; } = [];
         internal string? FailProcessorNamed { get; set; }
+        internal Func<NativeProcessor, Task>? OnStart;
         public override string FullyQualifiedNamespace => "test.servicebus.windows.net";
         public override ServiceBusProcessor CreateProcessor(string queueName, ServiceBusProcessorOptions options) => Add(queueName, null, options);
         public override ServiceBusProcessor CreateProcessor(string topicName, string subscriptionName, ServiceBusProcessorOptions options) =>
@@ -475,6 +477,7 @@ public sealed class ServiceBusReceiveTests
         {
             if (source == FailProcessorNamed) throw new InvalidOperationException("Native processor failed.");
             var processor = new NativeProcessor(source, subscription, options);
+            processor.StartWork = () => OnStart?.Invoke(processor) ?? Task.CompletedTask;
             Processors.Add(processor);
             return processor;
         }
@@ -489,9 +492,12 @@ public sealed class ServiceBusReceiveTests
         internal int Starts;
         internal int Stops;
         internal int Disposals;
+        internal System.Threading.Channels.Channel<string> Lifecycle { get; } = System.Threading.Channels.Channel.CreateUnbounded<string>();
+        internal Task Drain = Task.CompletedTask;
+        internal Func<Task>? StartWork;
         internal Task Emit(ProcessMessageEventArgs args) => OnProcessMessageAsync(args);
-        public override Task StartProcessingAsync(CancellationToken cancellationToken = default) { Starts++; return Task.CompletedTask; }
-        public override Task StopProcessingAsync(CancellationToken cancellationToken = default) { Stops++; return Task.CompletedTask; }
+        public override Task StartProcessingAsync(CancellationToken cancellationToken = default) { Starts++; Lifecycle.Writer.TryWrite("start"); return StartWork?.Invoke() ?? Task.CompletedTask; }
+        public override Task StopProcessingAsync(CancellationToken cancellationToken = default) { Stops++; Lifecycle.Writer.TryWrite("stop"); return Drain; }
         public override Task CloseAsync(CancellationToken cancellationToken = default) { Disposals++; return Task.CompletedTask; }
     }
 
@@ -525,9 +531,15 @@ public sealed class ServiceBusReceiveTests
         public override ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }
 
-    private sealed class NativeSessionReceiver : ServiceBusSessionReceiver
+    internal sealed class NativeSessionReceiver : ServiceBusSessionReceiver
     {
         internal int Completions;
+        internal int Abandons;
+        internal int DeadLetters;
+        public override Task AbandonMessageAsync(ServiceBusReceivedMessage message, IDictionary<string, object>? propertiesToModify = null, CancellationToken cancellationToken = default)
+        { Abandons++; return Task.CompletedTask; }
+        public override Task DeadLetterMessageAsync(ServiceBusReceivedMessage message, string deadLetterReason, string? deadLetterErrorDescription = null, CancellationToken cancellationToken = default)
+        { DeadLetters++; return Task.CompletedTask; }
         public override Task CompleteMessageAsync(ServiceBusReceivedMessage message, CancellationToken cancellationToken = default)
         { Completions++; return Task.CompletedTask; }
     }
@@ -536,9 +548,11 @@ public sealed class ServiceBusReceiveTests
     {
         protected override ServiceBusProcessor InnerProcessor { get; } = new NativeProcessor("sessions", null, new() { AutoCompleteMessages = false });
         internal ServiceBusSessionProcessorOptions Options => options;
+        internal System.Threading.Channels.Channel<string> Lifecycle { get; } = System.Threading.Channels.Channel.CreateUnbounded<string>();
+        internal Task Drain = Task.CompletedTask;
         internal Task Emit(ProcessSessionMessageEventArgs args) => OnProcessSessionMessageAsync(args);
-        public override Task StartProcessingAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;
-        public override Task StopProcessingAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;
+        public override Task StartProcessingAsync(CancellationToken cancellationToken = default) { Lifecycle.Writer.TryWrite("start"); return Task.CompletedTask; }
+        public override Task StopProcessingAsync(CancellationToken cancellationToken = default) { Lifecycle.Writer.TryWrite("stop"); return Drain; }
         public override Task CloseAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;
     }
 

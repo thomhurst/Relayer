@@ -79,4 +79,7 @@ public sealed class ServiceBusConsumerOptions
 
     /// <summary>In-process retries, immediate native redelivery and native dead-letter handling.</summary>
     public FailureOptions Failure { get; set; } = new();
+
+    /// <summary>Optional failure-rate circuit. Stops native processing while open and admits one recovery probe.</summary>
+    public ConsumerCircuitOptions? CircuitBreaker { get; set; }
 }

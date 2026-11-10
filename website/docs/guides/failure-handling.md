@@ -100,7 +100,37 @@ These are the defaults when configured. Startup rejects non-finite ratios, ratio
 
 After the break duration, one retained delivery probes recovery. A failed probe opens the circuit again without copying or committing it; a successful probe closes it and resumes normal consumption. Kafka's native polling and ownership handling continue while paused. Assignment changes invalidate borrowed batches, and replay controls still drain the current batch before seeking. Shutdown stops polling without waiting for the break duration; a later timer signal cannot restart the receiver. Delivery remains at-least-once, so completed messages from an uncommitted batch can repeat.
 
-The endpoint's `relayer.circuit.state` metric records actual transitions: 0 closed, 1 open, 2 half-open. Service Bus and other transports' native circuit integration remains planned.
+The endpoint's `relayer.circuit.state` metric records actual transitions: 0 closed, 1 open, 2 half-open. SQS and RabbitMQ native circuit integrations remain planned.
+
+### Service Bus
+
+Service Bus consumers can opt into a failure-rate circuit:
+
+```csharp
+bus.Consume("orders", consumer =>
+{
+    consumer.Options.CircuitBreaker = new ConsumerCircuitOptions
+    {
+        FailureRatio = 0.5,
+        MinimumThroughput = 10,
+        SamplingDuration = TimeSpan.FromSeconds(30),
+        BreakDuration = TimeSpan.FromSeconds(5),
+    };
+    consumer.Handler<OrderHandler>();
+});
+```
+
+The circuit counts completed logical deliveries after in-process retries in fixed sampling windows. It opens when the failure fraction reaches `FailureRatio` after `MinimumThroughput` outcomes in the window. Startup rejects ratios outside `(0, 1]`, nonpositive throughput, and durations outside the native timer range (one millisecond through `uint.MaxValue - 1` milliseconds).
+
+Opening stops the native queue or session processor on a separate control lane, which drains active callbacks before restarting. The threshold-crossing failure and other failures completed while open are abandoned for native redelivery, bypassing the failure pipeline's redelivery/dead-letter policy. Successful work already in flight still settles normally. Callbacks rejected while open or while a probe runs are left unsettled for native lock expiry, avoiding repeated immediate abandonment. Service Bus still owns lock renewal, session ownership, ordering, concurrency and `MaxDeliveryCount`; its own delivery-limit and expiry rules continue to apply. A circuit cannot undo explicit settlement already performed by a handler.
+
+After `BreakDuration`, the native processor restarts and exactly one callback is admitted as a half-open probe. Successful handling, durable sends and native settlement close the circuit; a failed or cancelled probe reopens it. Shutdown drains the native processor and prevents recovery from restarting it. `relayer.circuit.state` records actual transitions: 0 closed, 1 open, 2 half-open, with the existing endpoint tags.
+
+The Service Bus circuit is disabled by default.
+
+Abandoning a failed delivery and allowing a rejected delivery's lock to expire both consume native delivery attempts. During a prolonged outage, Service Bus can dead-letter messages at `MaxDeliveryCount` even while the circuit is open. Size `BreakDuration` together with the queue or subscription's `MaxDeliveryCount` and expected outage duration; circuit retention does not override broker limits or message expiry.
+
+If a native circuit stop or recovery start fails, consumption stops and the failure is logged and retained for shutdown. With `AddRelayerServiceBusHealthProviders` and `AddRelayerHealthChecks` registered, consumer health reports the failure as unhealthy. Recreate the application host to resume consumption.
 
 ## Error history
 

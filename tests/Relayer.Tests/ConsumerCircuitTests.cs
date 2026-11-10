@@ -111,7 +111,7 @@ public class ConsumerCircuitTests
             TimeSpan.FromMilliseconds(breakMs), new Clock())).Throws<ArgumentOutOfRangeException>();
     }
 
-    private sealed class Clock : TimeProvider
+    internal sealed class Clock : TimeProvider
     {
         private readonly List<Timer> _timers = [];
         internal Timer Sampling => _timers[0];
@@ -125,7 +125,7 @@ public class ConsumerCircuitTests
         }
     }
 
-    private sealed class Timer(TimerCallback callback, object? state) : ITimer
+    internal sealed class Timer(TimerCallback callback, object? state) : ITimer
     {
         internal TimeSpan Due { get; private set; }
         internal bool Disposed { get; private set; }
