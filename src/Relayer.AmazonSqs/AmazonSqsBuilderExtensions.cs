@@ -8,29 +8,30 @@ using Relayer.Transports;
 
 namespace Relayer.AmazonSqs;
 
-/// <summary>Registers named native SQS send transports.</summary>
+/// <summary>Registers named native SQS transports.</summary>
 public static class AmazonSqsBuilderExtensions
 {
-    /// <summary>Declares SQS queue sending and topology. Receivers are not implemented yet; use AmazonSns for topic sending.</summary>
+    /// <summary>Declares native SQS sending, long-poll receivers and queue topology.</summary>
     public static IRelayerBuilder AmazonSqs(this IRelayerBuilder builder, string name,
         Action<TransportBuilder<AmazonSqsTransportOptions, AmazonSqsRouteOptions, AmazonSqsConsumerOptions>> configure)
     {
         ArgumentNullException.ThrowIfNull(builder);
         ArgumentNullException.ThrowIfNull(configure);
         builder.AddTransport(name, configure);
-        builder.Services.AddSingleton<ITransport>(provider =>
+        builder.Services.AddKeyedSingleton<SqsSendTransport>(name, (provider, _) =>
         {
             var declaration = provider.GetRequiredService<RelayerConfiguration>().Transports.Single(item => item.Name == name);
-            if (declaration.Consumers.Count != 0)
-                throw new NotSupportedException($"SQS transport '{name}': receiver composition is not implemented yet.");
             var options = provider.GetRequiredService<IOptionsMonitor<AmazonSqsTransportOptions>>().Get(name);
             SqsSendTransport.ValidateDeclarations(name, options, declaration.Routes.Select(route => route.Destination));
+            foreach (var consumer in declaration.Consumers)
+                SqsConsumer.ValidateDeclaration(name, options, (ConsumerDefinition<AmazonSqsConsumerOptions>)consumer);
             var identityHeaders = SqsSendTransport.ResolveIdentityHeaders(declaration.Routes);
             var client = options.SqsClient ?? new AmazonSQSClient(options.Sqs);
             return new SqsSendTransport(name, client, options.SqsClient is null, options,
                 provider.GetRequiredService<MessageTracing>(), provider.GetService<ILoggerFactory>(), identityHeaders);
         });
-        builder.Services.AddSingleton<IHostedService>(provider => new SqsSendHostedService(provider, name));
+        builder.Services.AddSingleton<ITransport>(provider => provider.GetRequiredKeyedService<SqsSendTransport>(name));
+        builder.Services.AddSingleton<IHostedService>(provider => new SqsHostedService(provider, name));
         return builder;
     }
 
@@ -42,12 +43,21 @@ public static class AmazonSqsBuilderExtensions
 /// <summary>SQS route options. Native queue settings belong on the transport declaration.</summary>
 public sealed class AmazonSqsRouteOptions;
 
-/// <summary>Reserved for native receiver composition.</summary>
-public sealed class AmazonSqsConsumerOptions;
+/// <summary>Native long-poll request settings and durable failure handling.</summary>
+public sealed class AmazonSqsConsumerOptions
+{
+    /// <summary>CloudEvents header binding used by this queue. Match the sending route's HeaderNames.</summary>
+    public HeaderNames HeaderNames { get; set; } = new();
+    /// <summary>Configures each worker's native ReceiveMessageRequest once before polling. QueueUrl, one-message receives and all attributes are required.</summary>
+    public Action<ReceiveMessageRequest>? ConfigureReceive { get; set; }
+    /// <summary>Retry policy and explicit dead-letter copy destination. Native redrive cannot attach failure metadata.</summary>
+    public FailureOptions Failure { get; set; } = new();
+}
 
+// SNS uses the same simple send-only lifecycle.
 internal sealed class SqsSendHostedService(IServiceProvider provider, string name) : IHostedService
 {
     private ITransport Transport => provider.GetServices<ITransport>().Single(transport => transport.Name == name);
-    public Task StartAsync(CancellationToken cancellationToken) => Transport.StartAsync(cancellationToken);
-    public Task StopAsync(CancellationToken cancellationToken) => Transport.StopAsync(cancellationToken);
+    public Task StartAsync(CancellationToken token) => Transport.StartAsync(token);
+    public Task StopAsync(CancellationToken token) => Transport.StopAsync(token);
 }

@@ -10,9 +10,9 @@ A transport is an adapter over one native client. Each transport package depends
 | `Relayer` | [In-memory](in-memory.md), for tests and samples | Built in | Implemented |
 | `Relayer.Outbox.PostgreSql` | [Durable local work](postgresql-local.md) | `Npgsql`, existing outbox rows | Named consumption, atomic completion and shared recovery/poison handling implemented |
 | `Relayer.Kafka` | [Apache Kafka](kafka.md) | [Dekaf](https://dekaf.tomlonghurst.dev/), a pure C# Kafka client | Producers and serial consumers implemented; parallel partition scheduling planned |
-| `Relayer.AzureServiceBus` | Azure Service Bus | `Azure.Messaging.ServiceBus` | [Native sending and topology](service-bus.md), [receive primitives](service-bus-receive.md) implemented; receiver composition in development |
-| `Relayer.AmazonSqs` | Amazon SQS and SNS | `AWSSDK.SQS` and `AWSSDK.SimpleNotificationService` | [SQS native sending and queue topology](amazon-sqs.md) implemented; receivers, SNS and health adapters planned |
-| `Relayer.RabbitMQ` | RabbitMQ | `RabbitMQ.Client` | [Native topology, confirmed sends and optional delays](rabbitmq.md) implemented; receive and health adapters planned |
+| `Relayer.AzureServiceBus` | Azure Service Bus | `Azure.Messaging.ServiceBus` | [Native sending, topology and receivers](service-bus.md), native settlement and optional health implemented |
+| `Relayer.AmazonSqs` | Amazon SQS and SNS | `AWSSDK.SQS` and `AWSSDK.SimpleNotificationService` | [SQS receiving, native sending and topology](amazon-sqs.md), SNS publishing and optional SQS health implemented |
+| `Relayer.RabbitMQ` | RabbitMQ | `RabbitMQ.Client` | [Native topology, confirmed sends, receivers and optional health](rabbitmq.md) implemented; optional native delays supported |
 | `Relayer.RabbitMQ.Streams` | RabbitMQ Streams | `RabbitMQ.Stream.Client` | [Native connection and stream topology](rabbitmq-streams.md) implemented; message execution blocked on native failed-offset recovery |
 | `Relayer.Nats` | NATS JetStream | `NATS.Client.JetStream` | [Native connection and topology](nats.md) implemented; message execution blocked on native byte-backed headers |
 | `Relayer.Pulsar` (planned) | Apache Pulsar | Client assessment: DotPulsar 5.3.4 | [Implementation blocked on native UTF-8 properties and Native AOT compatibility](pulsar.md); no adapter implemented |

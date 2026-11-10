@@ -20,6 +20,7 @@
     <Project Path="src/Relayer.AzureServiceBus.HealthChecks/Relayer.AzureServiceBus.HealthChecks.csproj" />
     <Project Path="src/dotnet-relayer/dotnet-relayer.csproj" />
     <Project Path="src/Relayer.AmazonSqs/Relayer.AmazonSqs.csproj" />
+    <Project Path="src/Relayer.AmazonSqs.HealthChecks/Relayer.AmazonSqs.HealthChecks.csproj" />
     <Project Path="src/Relayer.Outbox.SqlServer/Relayer.Outbox.SqlServer.csproj" />
     <Project Path="src/Relayer.RabbitMQ/Relayer.RabbitMQ.csproj" />
     <Project Path="src/Relayer.RabbitMQ.HealthChecks/Relayer.RabbitMQ.HealthChecks.csproj" />

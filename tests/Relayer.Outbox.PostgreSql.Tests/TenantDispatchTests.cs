@@ -263,15 +263,26 @@ public class TenantDispatchTests
         await fixture.Start(1, lanes: 3, leaseDuration: TimeSpan.FromSeconds(12));
         var store = fixture.Entries[0];
         for (var lane = 0; lane < 3; lane++) await Insert(store, lane + 1, lane);
+        var blockedLaneEntered = false;
         var transport = new Transport(async (message, token) =>
         {
-            if (MessageId(message) == Id(1)) await Task.Delay(Timeout.Infinite, token);
+            if (MessageId(message) == Id(1))
+            {
+                blockedLaneEntered = true;
+                await Task.Delay(Timeout.Infinite, token);
+            }
         });
         using var worker = new PostgreSqlTenantDispatcher(fixture.Catalog,
             new() { TurnTimeout = TimeSpan.FromSeconds(tenantDeadline ? 3 : 15), RecoveryDelay = TimeSpan.Zero },
             [transport], NullLoggerFactory.Instance);
-        await worker.PassAsync(default);
-        if (tenantDeadline) await worker.PassAsync(default);
+        // A turn includes schema validation, recovery and real SQL work. A busy
+        // server can exhaust it before reaching every ready lane. Assert eventual
+        // cursor progress after the blocked lane expires, not an exact pass count.
+        using var guard = new CancellationTokenSource(TimeSpan.FromSeconds(60));
+        do
+        {
+            await worker.PassAsync(guard.Token);
+        } while (!blockedLaneEntered || transport.Sent.Count < 2);
         await Assert.That(transport.Sent.Select(x => x.Id).SequenceEqual([Id(2), Id(3)])).IsTrue();
         await Assert.That(await Count(store, "outbox")).IsEqualTo(1L);
         await fixture.WaitForNoConnections();
