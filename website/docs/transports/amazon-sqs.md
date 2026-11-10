@@ -84,7 +84,7 @@ Even HTTP 200 responses can contain failed entries. `AmazonSqsBatchException.Res
 
 Native send attempts count actual entries in `messaging.client.sent.messages`; each SDK call records `messaging.client.operation.duration` through acknowledgement or failure, including partial batch failure. Preparation failures and empty batches record neither metric.
 
-Send spans use `messaging.system = aws_sqs`, `aws.sqs.queue.url`, and the native response's `aws.request_id`. Native AWS exceptions retain their request IDs. Creation context stays in message attributes. SNS spans use `aws_sns`; SQS `delete` settlement spans remain planned with receivers.
+Send spans use `messaging.system = aws_sqs`, `aws.sqs.queue.url`, and the native response's `aws.request_id`. Native AWS exceptions retain their request IDs. Creation context stays in message attributes. SNS spans use `aws.sns`; SQS `delete` settlement spans remain planned with receivers.
 
 ## Performance validation
 
@@ -163,6 +163,6 @@ options.Subscriptions.Add(new Amazon.SimpleNotificationService.Model.SubscribeRe
 
 Default `Validate` uses read APIs for topics, tags, subscriptions and optional queues, and reports missing resources or declared attribute drift. `Provision` creates only missing topics, queues and subscriptions with the native declarations. It never updates policies, subscription attributes, tags or existing resources; reconcile reported differences through infrastructure configuration. `None` skips topology checks; startup still resolves declared topics. Unconfirmed subscriptions are reported rather than treated as ready. There is no SNS receiver: consume from the subscribed SQS queue using its native client until Relayer's SQS receiver ships.
 
-SNS send spans and native metrics use `messaging.system = aws_sns`, with `aws.sns.topic.arn` and native `aws.request_id` on sends. Duration covers each native request through acknowledgement or failure; partial batch failures remain failures, and native attempt counts include each submitted entry.
+SNS send spans and native metrics use `messaging.system = aws.sns`, with `aws.sns.topic.arn` and native `aws.request_id` on sends. Duration covers each native request through acknowledgement or failure; partial batch failures remain failures, and native attempt counts include each submitted entry.
 
 `SnsSendBenchmarks` compares acknowledged single and batch publishing against raw AWS requests with `MemoryDiagnoser`, including optional metrics. Set `RELAYER_SNS_SERVICE_URL` for LocalStack or use the native AWS credential chain in a test account. `SnsBindingBenchmarks` isolates default envelope/body conversion for standard and FIFO sends. Required native `PublishRequest.Message`, `MessageAttributeValue.StringValue` and UTF-8 `MessageGroupId` strings are native-client cost under D52; request, entry and attribute containers are reused. The same 5% throughput budget applies; local measurements are diagnostic and serialized-send benchmarks do not establish the complete default-JSON pipeline budget.

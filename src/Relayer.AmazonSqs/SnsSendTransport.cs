@@ -55,7 +55,7 @@ internal sealed class SnsSendTransport : ITransport, ITransportSendTracing
         {
             var endpoint = new Endpoint(declaration, identityHeaders?.GetValueOrDefault(declaration.Name) ?? "ce_id");
             if (tracing is not null)
-                endpoint.Tracing = new(tracing, new() { System = "aws_sns", Destination = declaration.Name },
+                endpoint.Tracing = new(tracing, new() { System = "aws.sns", Destination = declaration.Name },
                     SendCoreAsync, SendBatchCoreAsync, logging?.CreateLogger<SnsSendTransport>());
             endpoints.Add(declaration.Name, endpoint);
         }

@@ -217,7 +217,7 @@ public class SnsSendTests
         await transport.SendAsync(new("orders", "{}"u8.ToArray()), default);
         await transport.SendBatchAsync(new OutgoingMessage[] { new("orders", "{}"u8.ToArray()) }, default);
         await Assert.That(activities.Count).IsEqualTo(3);
-        await Assert.That(activities[0].GetTagItem("messaging.system")).IsEqualTo("aws_sns");
+        await Assert.That(activities[0].GetTagItem("messaging.system")).IsEqualTo("aws.sns");
         await Assert.That(activities[0].GetTagItem("aws.request_id")).IsEqualTo("request-1");
         await Assert.That(activities[^1].GetTagItem("aws.request_id")).IsEqualTo("batch-request");
     }
@@ -256,7 +256,7 @@ public class SnsSendTests
         if (fail) await Assert.That(async () => await pending).Throws<AmazonSimpleNotificationServiceException>();
         else await pending;
         var duration = durations.Values.Single();
-        await Assert.That(duration.Tags["messaging.system"]).IsEqualTo("aws_sns");
+        await Assert.That(duration.Tags["messaging.system"]).IsEqualTo("aws.sns");
         await Assert.That(duration.Tags["messaging.destination.name"]).IsEqualTo("orders");
         await Assert.That(duration.Tags.ContainsKey("error.type")).IsEqualTo(fail);
     }
