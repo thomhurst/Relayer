@@ -5,6 +5,8 @@ on:
   pull_request:
     paths:
       - 'tools/FrozenDriverProbe/**'
+      - '.github/scripts/summarize_frozen_driver.py'
+      - '.github/scripts/test_summarize_frozen_driver.py'
       - 'tools/FrozenFixtureProbe/InvocationAllocations.cs'
       - '.github/scripts/frozen_concurrent_control.py'
       - '.github/scripts/test_frozen_concurrent_control.py'
@@ -30,6 +32,7 @@ jobs:
           dotnet --info > results/runtime.txt
           uname -a > results/host.txt
           python3 -m unittest discover -s .github/scripts -p test_frozen_concurrent_control.py > results/verifier-tests.log 2>&1
+          python3 -m unittest discover -s .github/scripts -p test_summarize_frozen_driver.py > results/summary-tests.log 2>&1
           dotnet build tools/FrozenDriverProbe -c Release > results/probe-build.log 2>&1
       - name: Download and verify originals before separate exact driver ABBA
         env:
@@ -42,6 +45,7 @@ jobs:
               continue
             fi
             python3 .github/scripts/frozen_concurrent_control.py "inputs/$run" tools/FrozenDriverProbe/bin/Release/net10.0/FrozenDriverProbe.dll "results/$run-exact-driver" --exact-driver || failed=1
+            python3 .github/scripts/summarize_frozen_driver.py "results/$run-exact-driver" > "results/$run-summary.json" || failed=1
           done
           exit "$failed"
       - name: Retain all outcomes and executable inputs
@@ -56,4 +60,5 @@ jobs:
             tools/FrozenFixtureProbe/InvocationAllocations.cs
             tools/FrozenMeasurementEvents.cs
             .github/scripts/frozen_concurrent_control.py
+            .github/scripts/summarize_frozen_driver.py
           retention-days: 90
