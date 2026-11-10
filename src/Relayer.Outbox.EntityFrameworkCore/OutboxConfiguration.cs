@@ -11,6 +11,7 @@ internal sealed class OutboxConfiguration
     internal bool SupportsScheduling { get; }
     internal bool SupportsOrderedScheduling { get; }
     internal string InboxInsertSql { get; }
+    internal string InboxExistsSql { get; }
 
     internal OutboxConfiguration(EntityFrameworkCoreOutboxOptions options, PostgreSqlDirectDispatcher? dispatcher = null, IEnumerable<PostgreSqlSchedulingRegistration>? workers = null)
     {
@@ -30,6 +31,7 @@ internal sealed class OutboxConfiguration
         }
         var inbox = PostgreSqlOutboxSchema.QuoteIdentifier(options.Schema ?? "public") + "." +
             PostgreSqlOutboxSchema.QuoteIdentifier(options.TablePrefix + "inbox");
+        InboxExistsSql = $"SELECT EXISTS (SELECT 1 FROM {inbox} WHERE consumer = @consumer AND message_id = @id)";
         InboxInsertSql = $"INSERT INTO {inbox} (consumer, message_id, processed_at) VALUES (@consumer, @id, clock_timestamp()) ON CONFLICT (consumer, message_id) DO NOTHING";
         InsertSql = PostgreSqlOutboxBatch.CreateInsertSql(Table);
     }

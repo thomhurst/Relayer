@@ -701,8 +701,18 @@ settlement requests roll back business data, inbox and outgoing rows before ordi
 Successful handling requests completion if no outcome is pending, then commits before scope disposal
 and native settlement. The one-request rule rejects any later settlement request, so disposal cannot
 retry or dead-letter work after commit. Native acknowledgement loss
-therefore redelivers safely. Retrying EF strategies, pooled contexts, ambient transactions and batch
-consumers are rejected; Relayer retries with fresh scopes instead. Handlers must not end the owned
+therefore redelivers safely. Retrying EF strategies are supported through the native
+`IExecutionStrategy.ExecuteAsync` operation and verification callbacks. Every strategy attempt runs
+the complete inner pipeline in a fresh scope, context and transaction; only native transient
+classification triggers these retries. Handler failures still flow to Relayer's consumer policy.
+Verification queries the exact attempted inbox key and schema using a fresh connection, resolving
+an unknown commit without replaying committed work. Without an inbox there is no commit verification
+or duplicate protection. The original delivery scope keeps the strategy's context alive and is
+restored before ordinary failure handling. Failed-attempt sends and settlement requests are cleared
+after scope disposal. Composition selects the original middleware directly for non-retrying contexts,
+so their per-message work and allocations are unchanged. Retrying contexts add native strategy Task
+callbacks and fresh DI scopes, with bounded reusable operation state; no parallel retry policy is
+implemented. Pooled contexts, ambient transactions and batch consumers remain rejected. Handlers must not end the owned
 transaction or perform native settlement. Inbox retention is provided by PostgreSQL maintenance (D38).
 
 ## D37. Ordered dispatch bounds validated endpoint retention

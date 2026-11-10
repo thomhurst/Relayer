@@ -116,8 +116,10 @@ Redelivery of the same UUIDv7 message ID skips the transition through the existi
 Configure the existing `FailurePipeline` with a bounded retry policy. Both
 `DbUpdateConcurrencyException` on updates and PostgreSQL unique-key errors on concurrent creation
 must be classified as `FailureAction.Retry` (the default classifier already does this). Do not
-catch these errors inside the transition or enable EF's `EnableRetryOnFailure`. Each retry must
-reload state and execute the whole transition in a fresh delivery scope. Exhausted retries use
+catch these errors inside the transition. Each retry reloads state and executes the whole transition
+in a fresh delivery scope. EF's `EnableRetryOnFailure` is also supported: the
+[consumer boundary](../reference/ef-core-inbox.md#ef-core-connection-retries) applies the native
+strategy to the complete transition in a fresh scope for transient connection faults. Exhausted retries use
 the consumer's existing redelivery/dead-letter policy. External HTTP or native broker calls are
 outside this database transaction; send through `ISender` to enlist outgoing work.
 

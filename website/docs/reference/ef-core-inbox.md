@@ -75,6 +75,27 @@ redeliver: the committed inbox row determines whether the handler runs again.
 Each suppressed duplicate records `relayer.inbox.duplicates` on the registered `Relayer` meter,
 with the stable consumer name under `relayer.consumer`. Message IDs are never metric dimensions.
 
+## EF Core connection retries
+
+Contexts configured with `EnableRetryOnFailure` are supported, including contexts shared with HTTP
+request handlers. Relayer runs the complete handler and inner middleware through EF Core's native
+execution strategy. Each transient-fault retry uses a fresh DI scope, DbContext and transaction;
+failed-attempt business writes, inbox rows and outgoing rows roll back together. Configure the native
+provider's retry count and delays as usual. Non-transient handler errors still follow
+[Relayer's consumer failure policy](../guides/failure-handling.md).
+
+When a transient commit error leaves its outcome unknown, the strategy checks the attempted inbox
+key on a fresh connection. A committed key completes processing without replaying the handler;
+buffered direct sends are retained and flushed by the outer failure pipeline. Each native attempt
+uses the outbox configuration of its fresh scoped DbContext, including reloaded schema and prefix.
+Otherwise the strategy retries the complete unit. This verification requires the inbox, either
+implicit through `AddRelayerOutbox` or explicit through `inbox: true`. Without it, unknown commits can
+replay business work. Keep external side effects idempotent even with an inbox: database rollback
+cannot undo an HTTP call.
+
+The non-retrying path retains its original transaction middleware. Retrying contexts additionally
+use native strategy callbacks and a fresh scope per attempt.
+
 ## Boundaries
 
 Use one database boundary per consumer. The middleware owns transaction completion: handlers must
@@ -84,7 +105,7 @@ Relayer does not call `SaveChanges` on your behalf. External HTTP calls and dire
 outside the database transaction and need their own idempotency.
 
 Context pooling, ambient transactions and batch consumers are unsupported. Composition rejects
-pooled contexts, other providers and `EnableRetryOnFailure`. Use Relayer's consumer retry policy so
-each retry gets a fresh DI scope and DbContext. Register scoped services for the lifetime of a delivery;
+pooled contexts and other providers. Both EF Core transient retries and Relayer consumer retries
+run whole attempts in fresh scopes and DbContexts. Register scoped services for the lifetime of a delivery;
 do not share a scope concurrently. Configure [inbox retention and cleanup](postgres-maintenance.md)
 to bound retained history; deleting a row ends its deduplication protection.
