@@ -53,12 +53,16 @@ internal sealed class SqsHostedService(IServiceProvider provider, string name) :
     {
         var delivery = context.AmazonSqs();
         var attributes = delivery.Message.MessageAttributes;
+        var fifo = delivery.QueueUrl.EndsWith(".fifo", StringComparison.Ordinal);
         var headers = new List<KeyValuePair<string, WireString>>(attributes?.Count ?? 0);
         Dictionary<string, MessageAttributeValue>? native = null;
         if (attributes is not null)
             foreach (var attribute in attributes)
             {
-                if (attribute.Value.DataType == "String" && attribute.Value.StringValue is { } text)
+                // Keep unusable destination identities native so portable header binding cannot
+                // overwrite the original FIFO deduplication fallback after the callback.
+                if (attribute.Value.DataType == "String" && attribute.Value.StringValue is { } text &&
+                    (!fifo || attribute.Key != deadIdentityHeader || !string.IsNullOrWhiteSpace(text)))
                     headers.Add(new(attribute.Key, new(text)));
                 else (native ??= new(StringComparer.Ordinal)).Add(attribute.Key, attribute.Value);
             }
@@ -73,7 +77,6 @@ internal sealed class SqsHostedService(IServiceProvider provider, string name) :
         var deduplication = hasSourceIdentity && hasDeadIdentity ? null :
             delivery.Message.Attributes?.GetValueOrDefault("MessageDeduplicationId");
         var groupId = delivery.Message.Attributes?.GetValueOrDefault("MessageGroupId");
-        var fifo = delivery.QueueUrl.EndsWith(".fifo", StringComparison.Ordinal);
         // Standard queues use native groups for fairness, not portable ordering.
         var fairGroup = fifo ? null : groupId;
         if (native is not null || deduplication is not null || fairGroup is not null)
