@@ -82,6 +82,12 @@ Batch handlers use the feature on each `batch.Items[i].Context`. A reported per-
 
 When composing the lower-level `ConsumePipelineBuilder` with an explicit `ConsumeFailureDelegate`, successful manual requests become native dispositions directly. That composer owns capability validation, side-effect durability and fallback handling. The in-memory hosted consumer uses this direct native path. Transport-specific operations such as Azure Service Bus defer remain available through native transport features.
 
+## Consumer circuit breaking (planned)
+
+Consumer circuit breaking is not enabled or configurable yet. The core contains an internal failure-rate policy with fixed sampling windows and one half-open probe; native consumer integration remains planned. Current consumers continue to use the retry, redelivery and dead-letter behavior described above.
+
+The planned integration will pause Kafka consumers through native pause/resume and stop Service Bus processors through their native lifecycle. It must retain failed deliveries while open, then admit one probe before resuming normal consumption. The existing circuit-state telemetry recorder alone does not indicate that a consumer has this behavior.
+
 ## Error history
 
 Copies keep the original message ID and trace context. Dead-lettered and redelivered messages carry their failure history: the original ID, total failed attempts, first and last failure times, and for every attempt the consumer, host, exception type, message and stack trace. The history is serialized with generated JSON, so it works under Native AOT.
