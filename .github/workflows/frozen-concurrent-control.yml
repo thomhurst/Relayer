@@ -5,6 +5,7 @@ on:
   pull_request:
     paths:
       - 'tools/FrozenConcurrentProbe/**'
+      - 'tools/FrozenFixtureProbe/InvocationAllocations.cs'
       - 'tools/FrozenMeasurementEvents.cs'
       - 'tools/FrozenAllocationReader/**'
       - 'Directory.Packages.props'
@@ -48,6 +49,9 @@ jobs:
             python3 .github/scripts/frozen_concurrent_control.py "inputs/$run" tools/FrozenConcurrentProbe/bin/Release/net10.0/FrozenConcurrentProbe.dll "results/$run" || failed=1
           done
           exit "$failed"
+      - name: Count exact synchronous full-delivery calls for run 42310409459
+        if: always()
+        run: python3 .github/scripts/frozen_concurrent_control.py inputs/42310409459 tools/FrozenConcurrentProbe/bin/Release/net10.0/FrozenConcurrentProbe.dll results/42310409459-exact-roundtrips --exact-roundtrips
       - name: Collect separate measured-region allocation profiles
         if: always()
         run: |
@@ -66,6 +70,7 @@ jobs:
             inputs/
             tools/FrozenConcurrentProbe/
             tools/FrozenMeasurementEvents.cs
+            tools/FrozenFixtureProbe/InvocationAllocations.cs
             tools/FrozenAllocationReader/
             .diagnostic-tools/
             .github/scripts/frozen_concurrent_control.py

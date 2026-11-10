@@ -7,6 +7,7 @@
     <IsTrimmable>false</IsTrimmable>
   </PropertyGroup>
   <ItemGroup>
+    <Compile Include="../FrozenFixtureProbe/InvocationAllocations.cs" Link="InvocationAllocations.cs" />
     <Compile Include="../FrozenMeasurementEvents.cs" Link="FrozenMeasurementEvents.cs" />
   </ItemGroup>
 </Project>

@@ -22,6 +22,17 @@ internal sealed class InvocationAllocations(int capacity)
         return pending;
     }
 
+    public ValueTask<TResult> Invoke<TResult>(Func<ValueTask<TResult>> invoke)
+    {
+        if (!Enabled) return invoke();
+        if (_count == _bytes.Length) throw new InvalidOperationException("Invocation allocation buffer is full.");
+        var before = GC.GetAllocatedBytesForCurrentThread();
+        var pending = invoke();
+        var bytes = GC.GetAllocatedBytesForCurrentThread() - before;
+        _bytes[_count++] = bytes;
+        return pending;
+    }
+
     public InvocationAllocationReport Report()
     {
         if (Enabled) throw new InvalidOperationException("Stop recording before processing allocation results.");
