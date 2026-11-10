@@ -3,6 +3,7 @@ using DotNet.Testcontainers.Containers;
 using DotNet.Testcontainers.Networks;
 using Google.Cloud.PubSub.V1;
 using Grpc.Net.Client;
+using Microsoft.Extensions.Logging;
 
 namespace Relayer.GooglePubSub.Tests;
 
@@ -12,9 +13,10 @@ internal sealed class PubSubBroker(IContainer container, IContainer proxy, INetw
     internal const string ProxyImage = "ghcr.io/shopify/toxiproxy@sha256:5d3dae09bc185dcc5ff6cf43abf6062a4a720aff0c4306a471e773acdcd107aa";
     internal PublisherServiceApiClient Publisher { get; } = new PublisherServiceApiClientImpl(new Publisher.PublisherClient(channel), null, null);
     internal SubscriberServiceApiClient Subscriber { get; } = new SubscriberServiceApiClientImpl(new Subscriber.SubscriberClient(channel), null, null);
+    internal Grpc.Core.CallInvoker Invoker => channel.CreateCallInvoker();
     internal string Address => $"{proxy.Hostname}:{proxy.GetMappedPublicPort(8085)}";
 
-    internal static async Task<PubSubBroker> StartAsync(CancellationToken token)
+    internal static async Task<PubSubBroker> StartAsync(CancellationToken token, ILoggerFactory? loggerFactory = null)
     {
         var network = new NetworkBuilder().Build();
         var container = new ContainerBuilder(Image).WithNetwork(network).WithNetworkAliases("pubsub-broker")
@@ -32,7 +34,7 @@ internal sealed class PubSubBroker(IContainer container, IContainer proxy, INetw
             using var body = new StringContent("{\"name\":\"pubsub\",\"listen\":\"0.0.0.0:8085\",\"upstream\":\"pubsub-broker:8085\"}", System.Text.Encoding.UTF8, "application/json");
             using var response = await control.PostAsync("/proxies", body, token);
             response.EnsureSuccessStatusCode();
-            return new(container, proxy, network, control, GrpcChannel.ForAddress($"http://{proxy.Hostname}:{proxy.GetMappedPublicPort(8085)}"));
+            return new(container, proxy, network, control, GrpcChannel.ForAddress($"http://{proxy.Hostname}:{proxy.GetMappedPublicPort(8085)}", new GrpcChannelOptions { LoggerFactory = loggerFactory }));
         }
         catch
         {

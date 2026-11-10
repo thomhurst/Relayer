@@ -1,6 +1,7 @@
 using Dekaf;
 using Dekaf.Admin;
 using Dekaf.Consumer;
+using Dekaf.Producer;
 using Dekaf.Serialization;
 using Microsoft.Extensions.Logging;
 using Relayer.Testing;
@@ -17,6 +18,7 @@ public class KafkaConformanceTests
     [Arguments(TransportConformanceCase.CreationContextCopies)]
     [Arguments(TransportConformanceCase.Reconnect)]
     [Arguments(TransportConformanceCase.SendDuringOutage)]
+    [Arguments(TransportConformanceCase.CleanShutdown)]
     public async Task Kafka_passes(TransportConformanceCase scenario)
     {
         var suite = new TransportConformanceSuite<KafkaDelivery, KafkaMessageBinding>(KafkaFixture.CreateAsync, TimeSpan.FromMinutes(2));
@@ -24,12 +26,18 @@ public class KafkaConformanceTests
     }
 }
 
-internal sealed class KafkaFixture : ITransportConformanceFixture<KafkaDelivery>
+internal sealed class KafkaFixture : ITransportConformanceFixture<KafkaDelivery>, ITransportShutdownConformanceFixture
 {
     internal KafkaRestartableBroker Broker { get; }
     private readonly KafkaProducerTransport _transport;
     private readonly MessageTracing _tracing;
-    private readonly ILoggerFactory _logs = LoggerFactory.Create(builder => builder
+    public ConformanceLogCapture Logs { get; } = new();
+    private readonly NativeLifecycleProbe _producerLifetime = new();
+    private readonly NativeLifecycleProbe _consumerLifetime = new();
+    private IKafkaConsumer<byte[], byte[]>? _consumer;
+    private bool _verifyShutdown;
+    private readonly ILoggerFactory _logs;
+    private static ILoggerFactory CreateLogs(ConformanceLogCapture capture) => LoggerFactory.Create(builder => builder.AddProvider(capture)
         .SetMinimumLevel(LogLevel.Debug).AddSimpleConsole(options =>
         {
             options.SingleLine = true;
@@ -47,11 +55,13 @@ internal sealed class KafkaFixture : ITransportConformanceFixture<KafkaDelivery>
     private KafkaFixture(KafkaRestartableBroker broker, MessageTracing tracing)
     {
         Broker = broker;
+        _logs = CreateLogs(Logs);
         _tracing = tracing;
         var producer = new ProducerBuilder<WireString?, (ReadOnlyMemory<byte> Body, Headers Headers)?>()
             .WithBootstrapServers(Bootstrap).WithLoggerFactory(_logs)
             .WithKeySerializer(new KafkaKeySerializer()).WithValueSerializer(new KafkaValueSerializer()).Build();
-        _transport = new("conformance", producer, [Destination, Destination + ".dead-letter"], tracing);
+        _transport = new("conformance", NativeLifecycleProxy.Wrap<IKafkaProducer<WireString?, (ReadOnlyMemory<byte> Body, Headers Headers)?>>(producer, _producerLifetime),
+            [Destination, Destination + ".dead-letter"], tracing, _logs);
     }
 
     internal static async ValueTask<ITransportConformanceFixture<KafkaDelivery>> CreateAsync(MessageTracing tracing, CancellationToken token)
@@ -82,7 +92,8 @@ internal sealed class KafkaFixture : ITransportConformanceFixture<KafkaDelivery>
             .WithLoggerFactory(_logs)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest).WithOffsetCommitMode(OffsetCommitMode.Manual)
             .WithAutoOffsetStore(false).AddRebalanceListener(ownership).SubscribeTo(Destination).Build();
-        _transport.Consumers.Add(new(consumer, receive, _tracing,
+        _consumer = consumer;
+        _transport.Consumers.Add(new(NativeLifecycleProxy.Wrap<IKafkaConsumer<byte[], byte[]>>(consumer, _consumerLifetime), receive, _tracing,
             new() { System = "kafka", Destination = Destination, ConsumerGroup = Destination }, ownership));
     }
 
@@ -102,13 +113,33 @@ internal sealed class KafkaFixture : ITransportConformanceFixture<KafkaDelivery>
         await using var admin = new AdminClientBuilder().WithBootstrapServers(Bootstrap).WithLoggerFactory(_logs).Build();
         await admin.DescribeClusterAsync(new DescribeClusterOptions(), cancellationToken);
     }
+    public async ValueTask VerifyShutdownAsync(CancellationToken cancellationToken)
+    {
+        _verifyShutdown = true;
+        if (_transport.Consumers.Any(worker => !worker.Completion.IsCompletedSuccessfully))
+            throw new InvalidOperationException("Kafka receive loop did not drain.");
+        var committed = await _consumer!.GetCommittedOffsetAsync(new(Destination, 0), cancellationToken);
+        if (committed != 1 || _consumerLifetime.Commits != 1)
+            throw new InvalidOperationException($"Kafka shutdown did not durably commit the in-flight record: {committed}.");
+        _consumerLifetime.AssertClean();
+        _producerLifetime.AssertClean();
+    }
+
     public async ValueTask DisposeAsync()
     {
         try { await _transport.DisposeAsync(); }
         finally
         {
             try { await Broker.DisposeAsync(); }
-            finally { _logs.Dispose(); }
+            finally
+            {
+                _logs.Dispose();
+                if (_verifyShutdown)
+                {
+                    _consumerLifetime.AssertClosed();
+                    _producerLifetime.AssertClosed();
+                }
+            }
         }
     }
 }

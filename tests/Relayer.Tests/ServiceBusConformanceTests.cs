@@ -1,6 +1,7 @@
 using Azure.Messaging.ServiceBus;
 using Azure.Messaging.ServiceBus.Administration;
 using System.Diagnostics;
+using Microsoft.Extensions.Logging;
 using Relayer.AzureServiceBus;
 using Relayer.Testing;
 using Relayer.Transports;
@@ -42,7 +43,7 @@ public sealed class ServiceBusConformanceTests
     [Test]
     public async Task Service_bus_emulator_passes_queue_and_session_transport_contracts()
     {
-        // Session ordering runs separately; native shutdown evidence is tracked in #384.
+        // Session ordering and graceful shutdown have separate native processor cases.
         var destinations = Enum.GetValues<TransportConformanceCase>()
             .Where(scenario => scenario is not (TransportConformanceCase.OrderingByKey or TransportConformanceCase.CleanShutdown))
             .ToDictionary(scenario => scenario, _ => "conformance-" + Guid.NewGuid().ToString("N"));
@@ -71,9 +72,33 @@ public sealed class ServiceBusConformanceTests
             TimeSpan.FromMinutes(2));
         await Assert.That((await sessions.RunAsync(TransportConformanceCase.OrderingByKey, token)).Skipped).IsFalse();
     }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Service_bus_graceful_stop_drains_native_processor(bool sessions)
+    {
+        var destination = "conformance-shutdown-" + Guid.NewGuid().ToString("N");
+        await using var broker = await ServiceBusReceiveBroker.StartAsync(
+            sessions ? [] : [destination], sessions ? [destination] : []);
+        if (sessions)
+        {
+            var suite = new TransportConformanceSuite<ProcessSessionMessageEventArgs, ServiceBusSessionBinding>(
+                (tracing, token) => ServiceBusConformanceFixture<ProcessSessionMessageEventArgs>.CreateAsync(broker, tracing, true, destination, token),
+                TimeSpan.FromMinutes(2));
+            await Assert.That((await suite.RunAsync(TransportConformanceCase.CleanShutdown)).Skipped).IsFalse();
+        }
+        else
+        {
+            var suite = new TransportConformanceSuite<ProcessMessageEventArgs, ServiceBusBinding>(
+                (tracing, token) => ServiceBusConformanceFixture<ProcessMessageEventArgs>.CreateAsync(broker, tracing, false, destination, token),
+                TimeSpan.FromMinutes(2));
+            await Assert.That((await suite.RunAsync(TransportConformanceCase.CleanShutdown)).Skipped).IsFalse();
+        }
+    }
 }
 
-internal sealed class ServiceBusConformanceFixture<TIncoming> : ITransportConformanceFixture<TIncoming>
+internal sealed class ServiceBusConformanceFixture<TIncoming> : ITransportConformanceFixture<TIncoming>, ITransportShutdownConformanceFixture
 {
     private readonly ServiceBusReceiveBroker _broker;
     private readonly ServiceBusClient _client;
@@ -85,6 +110,10 @@ internal sealed class ServiceBusConformanceFixture<TIncoming> : ITransportConfor
     private readonly ActivityListener _nativeInstrumentation;
     public TimeSpan? OutageSendTimeout => TimeSpan.FromSeconds(5);
     public bool IsExpectedOutageFailure(Exception error) => error is ServiceBusException { IsTransient: true };
+    private readonly ILoggerFactory _logs;
+    private readonly ServiceBusShutdownEvents _events;
+    private bool _verifyShutdown;
+    public ConformanceLogCapture Logs { get; } = new();
     public string Destination { get; }
     public ITransport Transport => _transport;
     public string MessagingSystem => "servicebus";
@@ -102,14 +131,16 @@ internal sealed class ServiceBusConformanceFixture<TIncoming> : ITransportConfor
             Sample = static (ref ActivityCreationOptions<ActivityContext> _) => ActivitySamplingResult.AllDataAndRecorded,
         };
         ActivitySource.AddActivityListener(_nativeInstrumentation);
-        _client = new(broker.ConnectionString);
+        _logs = LoggerFactory.Create(builder => builder.AddProvider(Logs));
+        _events = new(Destination, _logs.CreateLogger("Azure.Messaging.ServiceBus"));
+        _client = new(broker.ConnectionString, new ServiceBusClientOptions { Identifier = Destination });
         _admin = new(broker.AdministrationConnectionString);
         var options = new ServiceBusConsumerOptions();
         if (sessions) options.SessionProcessorOptions = new() { AutoCompleteMessages = false, MaxConcurrentSessions = 1 };
         _declaration = new(Destination, options, [], 1, 1, TimeSpan.FromMilliseconds(100));
         var native = new AzureServiceBusTransportOptions { Client = _client };
         native.Queues.Add(new(Destination) { RequiresSession = sessions, DefaultMessageTimeToLive = TimeSpan.FromHours(1) });
-        _transport = new("conformance", _client, true, native, [Destination], TopologyMode.Provision, _admin, tracing,
+        _transport = new("conformance", _client, true, native, [Destination], TopologyMode.Provision, _admin, tracing, _logs,
             consumers: [_declaration]);
         _settlement = new(tracing, new() { System = "servicebus", Destination = Destination });
     }
@@ -127,13 +158,15 @@ internal sealed class ServiceBusConformanceFixture<TIncoming> : ITransportConfor
         {
             var processor = _client.CreateSessionProcessor(Destination, _declaration.Options.SessionProcessorOptions!);
             _transport.Consumers.Add(new(_declaration, processor,
-                async (args, token) => await receive((TIncoming)(object)args, token)));
+                async (args, token) => await receive((TIncoming)(object)args, token),
+                logger: _logs.CreateLogger<ServiceBusConsumer>()));
         }
         else
         {
             var processor = _client.CreateProcessor(Destination, _declaration.Options.ProcessorOptions);
             _transport.Consumers.Add(new(_declaration, processor,
-                async (args, token) => await receive((TIncoming)(object)args, token)));
+                async (args, token) => await receive((TIncoming)(object)args, token),
+                logger: _logs.CreateLogger<ServiceBusConsumer>()));
         }
     }
 
@@ -155,9 +188,24 @@ internal sealed class ServiceBusConformanceFixture<TIncoming> : ITransportConfor
 
     public Task DisconnectAsync(CancellationToken cancellationToken) => _broker.DisconnectAsync(cancellationToken);
     public Task ReconnectAsync(CancellationToken cancellationToken) => _broker.ReconnectAsync(cancellationToken);
+    public ValueTask VerifyShutdownAsync(CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        _verifyShutdown = true;
+        // CompleteMessageComplete is emitted after the broker's successful settlement response.
+        _events.AssertClean(requireClosure: false);
+        return ValueTask.CompletedTask;
+    }
+
     public async ValueTask DisposeAsync()
     {
         try { await _transport.DisposeAsync(); await _admin.DeleteQueueAsync(Destination); }
-        finally { _nativeInstrumentation.Dispose(); }
+        finally
+        {
+            _nativeInstrumentation.Dispose();
+            _events.Dispose();
+            _logs.Dispose();
+            if (_verifyShutdown) _events.AssertClean(requireClosure: true);
+        }
     }
 }
