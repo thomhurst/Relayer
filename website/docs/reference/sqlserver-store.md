@@ -126,6 +126,7 @@ Deduplication requires the original nonempty UUIDv7 message ID and keys it by co
 The boundary opens one native read-committed transaction. SQL Server's `UPDLOCK, HOLDLOCK` key-range
 locks and primary-key uniqueness serialize competing deliveries of the same identity. A committed key
 skips handling and increments `relayer.inbox.duplicates`; rollback permits redelivery to run the handler.
+Duplicate detection uses an explicit SQL result and works when connections inherit `SET NOCOUNT ON`.
 Business writes through `CurrentTransaction.Connection`, inbox identity and outgoing rows commit
 atomically before broker settlement. An acknowledgement failure can redeliver committed work safely.
 Handler failures, cancellation and requested retry/dead-letter outcomes roll back before existing failure

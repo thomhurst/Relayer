@@ -35,6 +35,29 @@ public class InboxTests(SqlServerFixture server) : InboxContractTests
     }
 
     [Test]
+    public async Task Inbox_deduplicates_when_connections_inherit_nocount()
+    {
+        // Server user options affect every new session: use an owned server, isolated from parallel tests.
+        await using var isolated = new SqlServerFixture();
+        await isolated.InitializeAsync();
+        await using var database = new Database(isolated.ConnectionString);
+        await database.Start();
+        await database.Execute("EXEC sp_configure 'user options', 512; RECONFIGURE");
+        using (var pool = new SqlConnection(isolated.ConnectionString)) SqlConnection.ClearPool(pool);
+        await using (var connection = new SqlConnection(isolated.ConnectionString))
+        {
+            await connection.OpenAsync();
+            await Assert.That(await connection.ExecuteScalarAsync<int>("SELECT @@OPTIONS & 512")).IsEqualTo(512);
+        }
+        await using var consumer = new Consumer(database, "orders");
+        var id = Guid.CreateVersion7();
+        await consumer.DeliverAsync(id);
+        await consumer.DeliverAsync(id);
+        await Assert.That(consumer.Invocations).IsEqualTo(1);
+        await Assert.That(await database.ReadStateAsync()).IsEqualTo(new DurableState(1, 1, 1));
+    }
+
+    [Test]
     public async Task Consumer_identity_is_case_sensitive()
     {
         await using var database = new Database(server.ConnectionString);

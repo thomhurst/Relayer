@@ -33,7 +33,7 @@ public static class SqlServerConsumerExtensions
             var outbox = services.GetRequiredService<SqlServerOutbox>();
             var options = services.GetRequiredService<IOptionsSnapshot<SqlServerOutboxOptions>>().Value;
             var table = SqlServerOutboxSchema.InboxTable(options);
-            var insert = inbox ? $"INSERT INTO {table} (consumer, message_id) SELECT @consumer, @id WHERE NOT EXISTS (SELECT 1 FROM {table} WITH (UPDLOCK, HOLDLOCK) WHERE consumer = @consumer AND message_id = @id)" : null;
+            var insert = inbox ? $"INSERT INTO {table} (consumer, message_id) SELECT @consumer, @id WHERE NOT EXISTS (SELECT 1 FROM {table} WITH (UPDLOCK, HOLDLOCK) WHERE consumer = @consumer AND message_id = @id); SELECT @@ROWCOUNT" : null;
             return new Boundary(consumer, connectionString, outbox.Table, insert, services.GetRequiredService<RelayerInstrumentation>());
         });
     }
@@ -71,7 +71,8 @@ public static class SqlServerConsumerExtensions
                 idParameter.DbType = DbType.Guid;
                 idParameter.Value = id;
                 command.Parameters.Add(idParameter);
-                if (await command.ExecuteNonQueryAsync(cancellation).ConfigureAwait(false) == 0)
+                // Explicit SQL result remains available when the session suppresses affected-row tokens with NOCOUNT.
+                if ((int)(await command.ExecuteScalarAsync(cancellation).ConfigureAwait(false))! == 0)
                 {
                     RequestCompletion(context);
                     transaction.ConsumerOwned = false;

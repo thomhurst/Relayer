@@ -29,7 +29,7 @@ public class SqlServerConsumerBenchmarks
         _connection = Environment.GetEnvironmentVariable("RELAYER_SQLSERVER_BENCHMARK_CONNECTION")
             ?? throw new InvalidOperationException("Set RELAYER_SQLSERVER_BENCHMARK_CONNECTION to an isolated SQL Server database.");
         _table = $"[dbo].[{_options.TablePrefix}inbox]";
-        _insert = $"INSERT INTO {_table} (consumer, message_id) SELECT @consumer, @id WHERE NOT EXISTS (SELECT 1 FROM {_table} WITH (UPDLOCK, HOLDLOCK) WHERE consumer = @consumer AND message_id = @id)";
+        _insert = $"INSERT INTO {_table} (consumer, message_id) SELECT @consumer, @id WHERE NOT EXISTS (SELECT 1 FROM {_table} WITH (UPDLOCK, HOLDLOCK) WHERE consumer = @consumer AND message_id = @id); SELECT @@ROWCOUNT";
         _id = Guid.CreateVersion7().ToString("D");
         var services = new ServiceCollection();
         services.AddRelayerSqlServerOutbox(_options);
@@ -63,7 +63,7 @@ public class SqlServerConsumerBenchmarks
         await using var command = new SqlCommand(_insert, connection, transaction);
         command.Parameters.Add(new SqlParameter("@consumer", System.Data.SqlDbType.NVarChar, 256) { Value = "benchmark" });
         command.Parameters.Add(new SqlParameter("@id", System.Data.SqlDbType.UniqueIdentifier) { Value = Guid.Parse(_id) });
-        await command.ExecuteNonQueryAsync();
+        _ = (int)(await command.ExecuteScalarAsync())!;
         await transaction.CommitAsync();
     }
 
