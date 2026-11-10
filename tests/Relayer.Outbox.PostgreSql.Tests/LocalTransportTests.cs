@@ -405,6 +405,75 @@ public class LocalTransportTests(PostgreSqlLocalSessionFixture server)
         replacement!.Exit(); second!.Exit();
     }
 
+    [Test]
+    public async Task Concurrent_send_waves_beyond_initial_capacity_keep_rows_distinct()
+    {
+        await using var database = server.CreateDatabase();
+        await database.StartAsync();
+        var connectionString = new NpgsqlConnectionStringBuilder(database.ConnectionString) { MaxPoolSize = 1 }.ConnectionString;
+        await using var source = NpgsqlDataSource.Create(connectionString);
+        await PostgreSqlOutboxStoreTests.CreateSchema(source);
+        await using var transport = new PostgreSqlLocalTransport("local", source, new(), ["work"]);
+        const int concurrency = 33;
+        for (var wave = 0; wave < 2; wave++)
+        {
+            // Holding the only native connection forces every send to rent its own state
+            // before any of them can finish; there is no scheduler timing assumption.
+            var blocker = await source.OpenConnectionAsync();
+            var sends = new Task[concurrency];
+            try
+            {
+                for (var i = 0; i < concurrency; i++)
+                {
+                    KeyValuePair<string, WireString>[] headers = [new("ce_id", new(Guid.CreateVersion7().ToString())), new("ce_type", new("local.work;v=1"))];
+                    sends[i] = transport.SendAsync(new("work", new byte[] { (byte)(wave * concurrency + i) }, headers), default).AsTask();
+                }
+            }
+            finally { await blocker.DisposeAsync(); }
+            await Task.WhenAll(sends);
+        }
+        await using var check = source.CreateCommand("SELECT count(DISTINCT body) FROM relayer_outbox");
+        await Assert.That((long)(await check.ExecuteScalarAsync())!).IsEqualTo(2L * concurrency);
+    }
+
+    [Test]
+    public async Task Completion_saturation_reuses_stores_after_all_borrowed_deliveries_finish()
+    {
+        await using var database = server.CreateDatabase();
+        await database.StartAsync();
+        await using var source = NpgsqlDataSource.Create(database.ConnectionString);
+        await using var transport = new PostgreSqlLocalTransport("local", source, new(), ["work"]);
+        const int concurrency = 65;
+        var stores = new HashSet<PostgreSqlOutboxStore>();
+        var firstWave = new HashSet<PostgreSqlOutboxStore>();
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var count = 0;
+        transport.Register("work", async (delivery, _) =>
+        {
+            lock (stores)
+            {
+                if (!stores.Add(delivery.CompletionStore)) throw new InvalidOperationException("A live completion store was shared.");
+                if (++count == concurrency) entered.SetResult();
+            }
+            await release.Task;
+            return Disposition.SettledByHandler;
+        }, concurrency);
+        for (var wave = 0; wave < 2; wave++)
+        {
+            var attempts = new Task[concurrency];
+            for (var i = 0; i < concurrency; i++)
+                attempts[i] = transport.ConsumeAsync(new("work", default), new(Guid.CreateVersion7(), Guid.NewGuid()), 1, null, default).AsTask();
+            try { await entered.Task.WaitAsync(TimeSpan.FromSeconds(30)); }
+            finally { release.TrySetResult(); await Task.WhenAll(attempts); }
+            if (wave == 0) firstWave.UnionWith(stores);
+            else await Assert.That(stores.SetEquals(firstWave)).IsTrue();
+            stores.Clear(); count = 0;
+            release = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            entered = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        }
+    }
+
     internal static ServiceProvider Provider(NpgsqlDataSource source, bool ordered = false, bool directHandoff = false, int maxAttempts = 1, FailureAction? failureAction = null)
     {
         var services = new ServiceCollection().AddLogging(logging => logging.AddConsole());
