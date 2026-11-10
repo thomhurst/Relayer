@@ -133,6 +133,42 @@ Synchronous `Execute`, `SaveChanges` and transaction methods follow the same pat
 tracked entities or buffered messages from a failed attempt into the next attempt. A connection failure
 during commit can leave the outcome unknown; retries still require application-level idempotency.
 
+## PostgreSQL Serializable isolation
+
+Explicit EF transactions can request `IsolationLevel.Serializable` through EF's native
+`BeginTransactionAsync` overload. The PostgreSQL ADO.NET outbox accepts the same native isolation
+level. Relayer's enqueue uses a batched `INSERT`; it does not query pending outbox rows inside the
+business transaction. Dispatch claims, sends, deletes and retention run on separate connections.
+
+The real-PostgreSQL `SerializableIsolationTests` regression runs 16 concurrent writers for 32 batches
+(512 attempts per arm). Every writer updates its own existing business row and the Relayer arm adds
+one outgoing row with a UUIDv7 identity. All transactions establish their snapshots before any writer
+proceeds, and successful writes stay uncommitted while direct dispatch, recovery sweeps and inbox
+retention operate on the same tables. The control runs the same business work and maintenance
+without Relayer's transactional statements. A transaction-start counter rejects replay, so retries
+cannot hide failed attempts.
+
+Measured with PostgreSQL 18.6 (`postgres:18-alpine`), EF Core 10.0.14 and Npgsql/provider 10.0.3:
+
+| Transaction path | Control `40001` / `40P01` | Relayer `40001` / `40P01` | Relayer commits |
+| --- | --- | --- | --- |
+| EF Core enqueue | 0 / 0 | 0 / 0 | 512 / 512 |
+| ADO.NET enqueue | 0 / 0 | 0 / 0 | 512 / 512 |
+| EF consumer inbox plus enqueue, distinct inbox keys | 0 / 0 | 0 / 0 | 512 / 512 |
+
+The test also verifies durable business updates, exact sends, inbox keys, a drained outbox and actual
+retention deletions. A separate control deliberately creates a dependency cycle between business
+rows and asserts that the counter observes serialization failures rather than masking retries.
+
+This result covers independent indexed business-row updates and unordered outgoing messages; it
+does not guarantee conflict-free execution for every schema, query plan or workload. Shared index
+pages alone did not add failures in this workload. PostgreSQL Serializable can still abort a unit
+when application reads and writes create dependencies, including reads of the outbox in the business
+transaction. On `40001` (serialization failure) or `40P01` (deadlock), retry the **whole transaction**
+with a fresh scope and DbContext, never only the outbox insert or commit. See
+[PostgreSQL's isolation documentation](https://www.postgresql.org/docs/18/transaction-iso.html#XACT-SERIALIZABLE)
+and the [consumer inbox limits](ef-core-inbox.md#postgresql-serializable-isolation).
+
 ## Several DbContexts
 
 Each context owns its own messages. Saving another context does not consume that buffer. When two

@@ -127,6 +127,26 @@ cannot undo an HTTP call.
 The provider-default path without configured retries retains its original transaction middleware. Retrying contexts additionally
 use native strategy callbacks and a fresh scope per attempt.
 
+## PostgreSQL Serializable isolation
+
+The real-PostgreSQL `SerializableIsolationTests` test uses the consumer's
+`isolationLevel: IsolationLevel.Serializable` option and checks the server's actual isolation level before the inbox
+insert. With 16 concurrent writers in 32 synchronized batches, distinct UUIDv7 inbox keys and one
+outgoing row per transaction, all 512 attempts committed: zero `40001` serialization failures and
+zero `40P01` deadlocks, matching the 512-attempt control without inbox/outbox statements. Direct
+dispatch, recovery sweeps and retention deletes operate while writer transactions remain open.
+A transaction-start counter rejects replay, so conflict retries cannot mask a failed attempt.
+See the [outbox measurement](ef-core-outbox.md#postgresql-serializable-isolation) for versions,
+method and the other enqueue paths.
+
+This bounded result for unrelated business rows and distinct inbox keys is not a guarantee against
+all Serializable conflicts. In particular, a duplicate inbox key committed after a Serializable
+snapshot can make `INSERT ... ON CONFLICT DO NOTHING` raise `40001`, rather than return zero rows.
+That case requires a fresh whole-transaction attempt which sees the committed inbox row. Application
+read/write dependencies can also cause failures. The [isolation option](#transaction-isolation)
+replays these conflicts within a bounded budget in fresh scopes; the provider-default path remains
+Read Committed and does not opt into conflict-specific replay.
+
 ## Boundaries
 
 Use one database boundary per consumer. The middleware owns transaction completion: handlers must
