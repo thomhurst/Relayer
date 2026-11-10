@@ -227,6 +227,43 @@ class ScopeControlTests(unittest.TestCase):
                 verify.assert_not_called()
                 execute.assert_not_called()
 
+    def test_readytorun_control_is_recorded_and_preserves_other_controls(self):
+        for setting, inherited, expected in (("default", "1", "1"), ("on", "0", "1"),
+                                             ("off", "1", "0"), ("default", None, None)):
+            with self.subTest(setting=setting), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                environments = []
+
+                def execute(command, **kwargs):
+                    environments.append(kwargs['env'])
+                    kwargs['stdout'].write(COMPLETE)
+
+                parent = {'DOTNET_PRIVATE_FEED_TOKEN': 'secret'}
+                if inherited is not None:
+                    parent['DOTNET_ReadyToRun'] = inherited
+                original_parent = parent.copy()
+                with patch('sys.argv', ['control', directory, str(root / 'output'),
+                                       '--ready-to-run', setting, '--tiered-compilation', 'off']), \
+                     patch('frozen_scope_control.os.environ', parent), \
+                     patch('frozen_scope_control.verify', return_value='commit') as verify, \
+                     patch('frozen_scope_control.executable', side_effect=lambda path, scoped, method: (path / 'runner.dll', '4')), \
+                     patch('frozen_scope_control.subprocess.run', side_effect=execute):
+                    main()
+                self.assertEqual(len(environments), 8)
+                self.assertEqual(verify.call_count, 6)
+                self.assertTrue(all(env.get('DOTNET_ReadyToRun') == expected for env in environments))
+                self.assertEqual(parent, original_parent)
+                outcomes = json.loads((root / 'output/outcomes.json').read_text())
+                runtime_environment = {'DOTNET_TieredCompilation': '0'}
+                if expected is not None:
+                    runtime_environment['DOTNET_ReadyToRun'] = expected
+                self.assertTrue(all(item['runtimeEnvironment'] == runtime_environment for item in outcomes))
+                self.assertTrue(all(item['meanNs'] == 27 for item in outcomes))
+                self.assertEqual([item['side'] for item in outcomes], ['baseline', 'candidate', 'candidate', 'baseline'] * 2)
+                protocol = json.loads((root / 'output/protocol.json').read_text())
+                self.assertEqual(protocol['readyToRun'], setting)
+                self.assertEqual(protocol['tieredCompilation'], 'off')
+
     def test_invalid_archive_never_launches(self):
         with tempfile.TemporaryDirectory() as directory, \
              patch('sys.argv', ['control', directory, str(Path(directory) / 'output')]), \

@@ -68,6 +68,8 @@ def main():
                         default="ScopeOnly", help="Select the original generated benchmark runner")
     parser.add_argument("--jit-method", default="*",
                         help="Native DOTNET_JitDisasm method filter; requires --jit-disassembly")
+    parser.add_argument("--ready-to-run", choices=("default", "on", "off"), default="default",
+                        help="Diagnostic runtime control; uses native DOTNET_ReadyToRun=1/0")
     args = parser.parse_args()
     if args.jit_method != "*" and not args.jit_disassembly:
         parser.error("--jit-method requires --jit-disassembly")
@@ -87,7 +89,8 @@ def main():
                 "jitMethod": args.jit_method if args.jit_disassembly else None,
                 "captureLimits": "Method filtering reduces concurrent listing output; it does not serialize JIT compilation. Missing, interleaved or precompiled methods remain limitations, not evidence of equality.",
                 "tieredCompilation": args.tiered_compilation,
-                "runtimeControlLimits": "Disabling tiering changes execution, not production configuration. Cross-condition timing is diagnostic only; host/process order remains a confound.",
+                "readyToRun": args.ready_to_run,
+                "runtimeControlLimits": "Changing tiering or ReadyToRun changes execution, not production configuration. Cross-condition timing is diagnostic only; host/process order remains a confound.",
                 "timingUse": "Excluded: JIT diagnostics perturb execution" if args.jit_disassembly else "New ABBA experiment only",
                 "launches": []}
     for scoped in (True, False):
@@ -104,6 +107,8 @@ def main():
         environment = os.environ.copy()
         if args.tiered_compilation == "off":
             environment["DOTNET_TieredCompilation"] = "0"
+        if args.ready_to_run != "default":
+            environment["DOTNET_ReadyToRun"] = "0" if args.ready_to_run == "off" else "1"
         outcome["runtimeEnvironment"] = {key: environment[key] for key in
             ("DOTNET_TieredCompilation", "COMPlus_TieredCompilation",
              "DOTNET_TieredPGO", "COMPlus_TieredPGO", "DOTNET_ReadyToRun", "COMPlus_ReadyToRun")
