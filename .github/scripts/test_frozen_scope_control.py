@@ -178,6 +178,55 @@ class ScopeControlTests(unittest.TestCase):
             self.assertEqual(protocol['tieredCompilation'], 'off')
             self.assertTrue(protocol['jitDisassembly'])
 
+    def test_method_filter_reaches_every_child_without_changing_parent_or_results(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            environments = []
+            listing = ('; Assembly listing for method Dispatcher1:Resolve()\n'
+                       '; Total bytes of code 7\n')
+
+            def execute(command, **kwargs):
+                environment = kwargs['env']
+                environments.append(environment)
+                kwargs['stdout'].write(COMPLETE)
+                # Repeated compilations are raw evidence; never deduplicate them.
+                Path(environment['DOTNET_JitStdOutFile']).write_text(listing * 2)
+
+            parent = {'DOTNET_JitDisasm': '*'}
+            with patch('sys.argv', ['control', directory, str(root / 'output'),
+                                    '--jit-disassembly', '--jit-method', 'Resolve']), \
+                 patch('frozen_scope_control.os.environ', parent), \
+                 patch('frozen_scope_control.verify', return_value='commit') as verify, \
+                 patch('frozen_scope_control.executable', return_value=(root / 'runner.dll', '4')), \
+                 patch('frozen_scope_control.subprocess.run', side_effect=execute):
+                main()
+            self.assertEqual(verify.call_count, 6)
+            self.assertEqual(len(environments), 8)
+            self.assertTrue(all(env['DOTNET_JitDisasm'] == 'Resolve' for env in environments))
+            self.assertEqual(parent, {'DOTNET_JitDisasm': '*'})
+            protocol = json.loads((root / 'output/protocol.json').read_text())
+            self.assertEqual(protocol['jitMethod'], 'Resolve')
+            outcomes = json.loads((root / 'output/outcomes.json').read_text())
+            self.assertTrue(all(item['diagnosticEnvironment']['DOTNET_JitDisasm'] == 'Resolve'
+                                for item in outcomes))
+            self.assertTrue(all('error' not in item and 'meanNs' not in item and
+                                'bytesPerOperation' not in item for item in outcomes))
+            self.assertEqual(len(list((root / 'output').glob('*.asm'))), 8)
+            self.assertTrue(all(path.read_text() == listing * 2
+                                for path in (root / 'output').glob('*.asm')))
+
+    def test_invalid_filter_never_launches_or_verifies_inputs(self):
+        for options in (['--jit-method', 'Resolve'],
+                        ['--jit-disassembly', '--jit-method', '  ']):
+            with self.subTest(options=options), \
+                 patch('sys.argv', ['control', 'inputs', 'output'] + options), \
+                 patch('frozen_scope_control.verify') as verify, \
+                 patch('frozen_scope_control.subprocess.run') as execute:
+                with self.assertRaises(SystemExit):
+                    main()
+                verify.assert_not_called()
+                execute.assert_not_called()
+
     def test_invalid_archive_never_launches(self):
         with tempfile.TemporaryDirectory() as directory, \
              patch('sys.argv', ['control', directory, str(Path(directory) / 'output')]), \

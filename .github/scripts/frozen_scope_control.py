@@ -66,7 +66,13 @@ def main():
                         help="Diagnostic runtime control; off uses native DOTNET_TieredCompilation=0")
     parser.add_argument("--method", choices=("ScopeOnly", "ScopeAndHandlerResolution"),
                         default="ScopeOnly", help="Select the original generated benchmark runner")
+    parser.add_argument("--jit-method", default="*",
+                        help="Native DOTNET_JitDisasm method filter; requires --jit-disassembly")
     args = parser.parse_args()
+    if args.jit_method != "*" and not args.jit_disassembly:
+        parser.error("--jit-method requires --jit-disassembly")
+    if not args.jit_method.strip():
+        parser.error("--jit-method must not be empty")
     benchmark = BENCHMARK.rsplit(".", 1)[0] + "." + args.method
     builds = args.artifact.resolve() / "performance-builds"
     commits = {side: verify(builds / side) for side in SIDES}
@@ -78,6 +84,8 @@ def main():
                 "engine": "Original Default job, native NoAcknowledgementConsoleHost without anonymous-pipe parent",
                 "limits": "New host/process executions, not historical reconstruction. Image-associated differences do not identify a production defect; absent differences do not prove equivalence. No threshold changes or gate pass claim.",
                 "jitDisassembly": args.jit_disassembly,
+                "jitMethod": args.jit_method if args.jit_disassembly else None,
+                "captureLimits": "Method filtering reduces concurrent listing output; it does not serialize JIT compilation. Missing, interleaved or precompiled methods remain limitations, not evidence of equality.",
                 "tieredCompilation": args.tiered_compilation,
                 "runtimeControlLimits": "Disabling tiering changes execution, not production configuration. Cross-condition timing is diagnostic only; host/process order remains a confound.",
                 "timingUse": "Excluded: JIT diagnostics perturb execution" if args.jit_disassembly else "New ABBA experiment only",
@@ -102,7 +110,7 @@ def main():
             if key in environment}
         disassembly = (args.output / f"{index}-{launch['side']}-{launch['scoped']}.asm").resolve()
         if args.jit_disassembly:
-            environment.update(DOTNET_JitDisasm="*", DOTNET_JitDisasmDiffable="1",
+            environment.update(DOTNET_JitDisasm=args.jit_method, DOTNET_JitDisasmDiffable="1",
                                DOTNET_JitStdOutFile=str(disassembly))
             outcome["diagnosticEnvironment"] = {key: environment[key] for key in
                 ("DOTNET_JitDisasm", "DOTNET_JitDisasmDiffable", "DOTNET_JitStdOutFile")}

@@ -1,4 +1,4 @@
-name: Frozen handler-resolution code capture
+name: Frozen filtered handler-resolution code capture
 
 # New historical-input experiment, never a rerun of the performance gate.
 on:
@@ -18,6 +18,12 @@ jobs:
   control:
     runs-on: ubuntu-24.04
     timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        # Native method-name filters: each family gets separate ABBA processes.
+        # Do not combine them: whole-process output interleaved in run 42788193160.
+        method: [Resolve, GetRequiredService, GetService, VisitScopeCache, Dispose, DisposeAsync, WorkloadActionNoUnroll, WorkloadActionUnroll]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
@@ -35,14 +41,20 @@ jobs:
         run: |
           gh run download 42774764169 --name performance-42774764169-1 --dir inputs
       # Separate diagnostic execution; retain every ABBA attempt, never gate timing.
-      - name: Capture original handler-resolution code without tier transitions
+      # https://github.com/dotnet/runtime/blob/v10.0.14/docs/design/coreclr/jit/viewing-jit-dumps.md#note-about-multi-threaded-applications
+      # Filtering reduces output contention; it does not synchronize compilations.
+      # VisitScopeCache may be absent in unscoped captures: retain the explicit
+      # missing-code failure and every other matrix outcome, never infer equality.
+      - name: Capture one method family without tier transitions
         if: success() || failure()
-        run: python3 .github/scripts/frozen_scope_control.py inputs results/code --method ScopeAndHandlerResolution --tiered-compilation off --jit-disassembly
+        env:
+          JIT_METHOD: ${{ matrix.method }}
+        run: python3 .github/scripts/frozen_scope_control.py inputs results/code --method ScopeAndHandlerResolution --tiered-compilation off --jit-disassembly --jit-method "$JIT_METHOD"
       - name: Retain all outcomes and executable inputs
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: frozen-handler-resolution-capture-${{ github.run_id }}-${{ github.run_attempt }}
+          name: frozen-handler-resolution-${{ matrix.method }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             results/
             inputs/
