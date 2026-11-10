@@ -44,6 +44,7 @@ internal sealed class PubSubFixture : ITransportConformanceFixture<GooglePubSubD
     private GooglePubSubConsumer? _worker;
     public TimeSpan? OutageSendTimeout => TimeSpan.FromSeconds(10);
     private bool _observedNativeFailure;
+    private bool _disconnected;
     public bool IsExpectedOutageFailure(Exception error)
     {
         if (IsExpectedPublishFailure(error)) return true;
@@ -152,16 +153,25 @@ internal sealed class PubSubFixture : ITransportConformanceFixture<GooglePubSubD
     public ValueTask SettleAsync(GooglePubSubDelivery incoming, Disposition disposition, CancellationToken token) => _worker!.SettleAsync(incoming, disposition, token);
     public ValueTask<ConformanceDeadLetter> ReadDeadLetterAsync(CancellationToken token) => throw new NotSupportedException("Pub/Sub cannot dead-letter on demand with error attributes.");
     // Closing the proxy drops live TCP streams while preserving the emulator's native endpoint state.
-    public Task DisconnectAsync(CancellationToken token) => Broker.SetConnectedAsync(false, token);
+    public async Task DisconnectAsync(CancellationToken token)
+    {
+        await Broker.SetConnectedAsync(false, token);
+        _disconnected = true;
+    }
     public async Task ReconnectAsync(CancellationToken token)
     {
         await Broker.SetConnectedAsync(true, token);
+        var wasDisconnected = _disconnected;
+        _disconnected = false;
         var failure = _worker?.Completion.Exception;
         if (failure is null) return;
         // Google's client intentionally makes an initial StreamingPull write I/O failure fatal
         // (googleapis/google-cloud-dotnet#16088). Recreate the application explicitly, retaining
         // the real broker, topic and subscription; never add a subscriber retry loop to Relayer.
-        if (!_observedNativeFailure || !IsNativeStreamWriteFailure(failure)) throw failure;
+        if ((!_observedNativeFailure && !wasDisconnected) || !IsNativeStreamWriteFailure(failure)) throw failure;
+        // Reconnect runs with a live application; the outage-send case already observed
+        // its failure during StopAsync and starts the replacement explicitly.
+        var restart = !_observedNativeFailure;
         try { await _provider.DisposeAsync(); }
         catch (Exception error) when (IsObservedSubscriberFailure(error, failure)) { }
         _observedNativeFailure = false;
@@ -170,6 +180,7 @@ internal sealed class PubSubFixture : ITransportConformanceFixture<GooglePubSubD
         RegisterConsumer(_receive!);
         var persisted = await _subscriber.GetSubscriptionAsync(Subscription, cancellationToken: token);
         if (persisted.Topic != Destination) throw new InvalidOperationException("Recovery replaced the durable Pub/Sub endpoint.");
+        if (restart) await Adapter.StartAsync(token);
     }
 
     private static bool IsNativeStreamWriteFailure(Exception error) => error is AggregateException aggregate

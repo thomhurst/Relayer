@@ -82,9 +82,11 @@ public class GooglePubSubTests
     }
 
     [Test]
-    [Arguments(false)]
-    [Arguments(true)]
-    public async Task Fatal_native_initial_write_recreates_application_without_replacing_subscription(bool handshakeFailure)
+    [Arguments(false, false)]
+    [Arguments(true, false)]
+    [Arguments(false, true)]
+    [Arguments(true, true)]
+    public async Task Fatal_native_initial_write_recreates_application_without_replacing_subscription(bool handshakeFailure, bool reconnectWhileRunning)
     {
         using var deadline = new CancellationTokenSource(TimeSpan.FromMinutes(2));
         var token = deadline.Token;
@@ -101,16 +103,17 @@ public class GooglePubSubTests
                 new System.Net.Sockets.SocketException((int)System.Net.Sockets.SocketError.ConnectionReset));
         fixture.InjectInitialWriteFailure(failure);
         var original = fixture.Transport;
+        if (reconnectWhileRunning) await fixture.DisconnectAsync(token);
         await original.StartAsync(token);
         await Assert.That(async () => await fixture.ConsumerCompletion.WaitAsync(token)).Throws<IOException>();
-        await Assert.That(fixture.IsExpectedOutageFailure(failure)).IsTrue();
+        if (!reconnectWhileRunning) await Assert.That(fixture.IsExpectedOutageFailure(failure)).IsTrue();
         await Assert.That(fixture.IsExpectedOutageFailure(new IOException("Unrelated failure"))).IsFalse();
         await Assert.That(fixture.IsExpectedOutageFailure(new System.Net.Http.HttpIOException(
             System.Net.Http.HttpRequestError.InvalidResponse, "A different connection failed."))).IsFalse();
-        await Assert.That(async () => await original.StopAsync(token)).Throws<AggregateException>();
+        if (!reconnectWhileRunning) await Assert.That(async () => await original.StopAsync(token)).Throws<AggregateException>();
         await fixture.ReconnectAsync(token);
         await Assert.That(ReferenceEquals(original, fixture.Transport)).IsFalse();
-        await fixture.Transport.StartAsync(token);
+        if (!reconnectWhileRunning) await fixture.Transport.StartAsync(token);
         await fixture.Transport.SendAsync(new(fixture.Destination, "recovered"u8.ToArray()), token);
         await delivered.Task.WaitAsync(token);
         await fixture.Transport.StopAsync(token);
