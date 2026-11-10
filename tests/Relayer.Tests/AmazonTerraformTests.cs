@@ -71,6 +71,27 @@ public class AmazonTerraformTests
     }
 
     [Test]
+    [Arguments("alias/orders", "false", false)]
+    [Arguments("alias/orders", null, false)]
+    [Arguments(null, "false", true)]
+    [Arguments(null, "true", true)]
+    public async Task Queue_encryption_omits_disabled_sse_only_when_kms_is_configured(string? kmsKey, string? managedSse, bool expectedSse)
+    {
+        using var provider = Create(options =>
+        {
+            var attributes = new Dictionary<string, string>();
+            if (kmsKey is not null) attributes.Add("KmsMasterKeyId", kmsKey);
+            if (managedSse is not null) attributes.Add("SqsManagedSseEnabled", managedSse);
+            options.QueueTopology.Queues.Add(new CreateQueueRequest("queue") { Attributes = attributes });
+        });
+        using var document = JsonDocument.Parse(Export(provider));
+        var queue = document.RootElement.GetProperty("resource").GetProperty("aws_sqs_queue").EnumerateObject().Single().Value;
+        await Assert.That(queue.TryGetProperty("sqs_managed_sse_enabled", out var sse)).IsEqualTo(expectedSse);
+        if (expectedSse) await Assert.That(sse.GetBoolean()).IsEqualTo(managedSse == "true");
+        if (kmsKey is not null) await Assert.That(queue.GetProperty("kms_master_key_id").GetString()).IsEqualTo(kmsKey);
+    }
+
+    [Test]
     public async Task Output_is_independent_of_declaration_and_dictionary_order_and_preserves_json_export()
     {
         using var first = Create(options =>

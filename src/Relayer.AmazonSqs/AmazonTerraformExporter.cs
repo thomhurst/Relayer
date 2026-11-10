@@ -202,6 +202,10 @@ public static class AmazonTerraformExporter
             if (format == 'b')
             {
                 if (value is not ("true" or "false")) throw Error($"{kind} '{name}' attribute '{key}' must be true or false.");
+                // Terraform treats even false SSE-SQS as conflicting with a KMS key.
+                if (kind == "queue" && key == "SqsManagedSseEnabled" && value == "false"
+                    && attributes.TryGetValue("KmsMasterKeyId", out var kmsKey) && !string.IsNullOrEmpty(kmsKey))
+                    continue;
                 body.Add(field, value == "true");
             }
             else if (format == 'n')
