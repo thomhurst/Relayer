@@ -89,7 +89,7 @@ public class SqlServerConsumerBenchmarks
     public async Task Cleanup()
     {
         await _provider.DisposeAsync();
-        await Execute($"DROP TABLE {_table}, [dbo].[{_options.TablePrefix}outbox]");
+        await Execute($"DROP TABLE {_table}, [dbo].[{_options.TablePrefix}outbox], [dbo].[{_options.TablePrefix}outbox_dead], [dbo].[{_options.TablePrefix}leases]");
     }
     public sealed class Probe;
     public sealed class Handler : IHandler<Probe>

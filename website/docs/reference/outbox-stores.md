@@ -8,7 +8,7 @@ integration authors. These contracts, the optional health adapter and [PostgreSQ
 are implemented, together with [PostgreSQL durable reads and fenced claims](postgres-store.md)
 and [EF Core transaction enlistment for PostgreSQL](ef-core-outbox.md).
 [SQL Server durable reads and fenced claims](sqlserver-store.md) are implemented as a separate package;
-SQL Server ADO.NET/Dapper enlistment is also implemented; EF Core, inbox and workers remain planned.
+SQL Server supports ADO.NET/Dapper enlistment, atomic inbox, unordered direct dispatch, leased recovery and retention. EF Core and ordered workers remain planned.
 [Unordered PostgreSQL direct dispatch](direct-dispatch.md) is available for EF commits.
 [Ordered PostgreSQL dispatch and lane leases](ordered-dispatch.md) are implemented separately.
 [Leased recovery and cleanup](postgres-maintenance.md) are available separately.

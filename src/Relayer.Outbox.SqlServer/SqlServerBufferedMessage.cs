@@ -26,13 +26,13 @@ internal sealed class SqlServerBufferedMessage
         ArgumentException.ThrowIfNullOrWhiteSpace(record.Message.Destination);
     }
 
-    internal void Copy(OutboxRecord record, int lanes)
+    internal void Copy(OutboxRecord record, int lanes, bool unordered = false)
     {
         record.Id.TryWriteBytes((byte[])Values[0], bigEndian: true, out _);
         var message = record.Message;
         Values[2] = DBNull.Value;
-        _hasLane = message.OrderingKey is not null;
-        if (message.OrderingKey is { } key)
+        _hasLane = !unordered && message.OrderingKey is not null;
+        if (!unordered && message.OrderingKey is { } key)
         {
             // Hash exactly the same UTF-8 bytes as PostgreSQL, including keys supplied as text.
             _headers.Clear();

@@ -1,13 +1,13 @@
 ---
 title: SQL Server durable store
-description: "SQL Server ADO.NET/Dapper transactions, commit-triggered dispatch, bounded reads and fenced claims."
+description: "SQL Server ADO.NET/Dapper transactions, commit-triggered dispatch, leased recovery, poison isolation and bounded retention."
 ---
 
 `Relayer.Outbox.SqlServer` implements the [durable store contract](outbox-stores.md) using
 `Microsoft.Data.SqlClient` and SQL Server's native connection pooling. It supplies reads, atomic claims,
 renewal, completion, failure persistence, eligible backlog counts and scoped ADO.NET/Dapper transaction
-enlistment, opt-in consumer inbox deduplication and commit-triggered unordered dispatch. **EF Core, ordered workers, lane leases, poison-row movement and
-maintenance remain planned for SQL Server.** PostgreSQL's worker registrations do not accept this provider.
+enlistment, opt-in consumer inbox deduplication, unordered dispatch, leased recovery, poison isolation and retention.
+**EF Core integration and ordered lane dispatch remain planned for SQL Server.** PostgreSQL's worker registrations do not accept this provider.
 Registering a durable store alone does not make `ISender` transactional.
 
 **Native AOT and trimming are currently unsupported for SQL Server runtime operations.** SqlClient 7.1.1
@@ -144,7 +144,7 @@ provider retry strategy or automatic conflict replay: existing failure handling 
 The connection string selects one fixed database per pipeline; outbox options select its deployed schema and prefix at composition.
 Changing schema or prefix requires rebuilding the pipeline; a mismatching scope fails before opening its transaction. Native AOT/trimming restrictions above apply to this boundary too.
 
-Retain inbox keys for as long as messages can be redelivered. SQL Server inbox cleanup is application-owned;
+Retain inbox keys for as long as messages can be redelivered. SQL Server maintenance can clean up inbox keys;
 deleting a key allows that identity to execute again. Outgoing messages still require the separately registered
 dispatcher and recovery described below.
 
@@ -191,12 +191,60 @@ send retains the claim without incrementing send attempts.
 **This worker does not poll or recover rows.** Ordered rows, future schedules, overflow and commits
 after shutdown remain durable. A full or stopped queue logs an error without making an already committed
 transaction fail. Shutdown drains queued work until the host's cancellation deadline. Applications must
-operate their own recovery process until [SQL Server recovery and maintenance](https://github.com/thomhurst/Relayer/issues/331)
-ships. Future scheduled `ISender` calls still fail explicitly: this worker cannot establish scheduling support.
+register the maintenance worker below to recover missed sends. Future scheduled `ISender` calls still fail explicitly: this worker cannot establish scheduling support.
 
 Commit notification is local to this process. It does not enable Service Broker or query notifications,
 create conversation queues or claim cross-process wakeup support. Application-owned native Service Broker
 configuration remains separate from this worker.
+
+## Recovery, poison rows and retention
+
+Deploy `SqlServerOutboxSchema.CreateScript(options)` explicitly, including on existing stores: it now
+creates missing `outbox_dead` and `leases` tables and retention indexes without changing existing columns.
+Register a named worker against the same database, schema, prefix and `MaxDispatchAttempts` as direct dispatch:
+
+```csharp
+services.AddRelayerSqlServerMaintenance("orders", connectionString,
+    new SqlServerMaintenanceOptions
+    {
+        BatchSize = 100,
+        RecoveryDelay = TimeSpan.FromSeconds(30),
+        SweepInterval = TimeSpan.FromSeconds(5),
+        LeaseDuration = TimeSpan.FromSeconds(30),
+        ClaimDuration = TimeSpan.FromSeconds(30),
+        CleanupInterval = TimeSpan.FromMinutes(1),
+        MaxDispatchAttempts = 10,
+        DeadRetention = TimeSpan.FromDays(30),
+        InboxRetention = TimeSpan.FromDays(7)
+    });
+```
+
+An `IConfiguration` overload snapshots the same init-only properties into named Options settings.
+Use `"infinite"` for either retention in configuration, or `null` in code, to disable that cleanup.
+Keep the inbox retention window longer than the application's replay horizon: deleting a key permits
+that message to run again.
+
+Each recovery pass reads at most `BatchSize` due, unordered pending rows older than `RecoveryDelay`,
+using a fixed UUID high-water mark before wrapping. Failed, previously claimed and newly due older rows
+are revisited even while newer rows arrive. Ordered lanes and parked rows remain untouched.
+Stored schedules are respected; this registration does not yet enable future scheduled `ISender` calls.
+Recovery reuses direct dispatch's endpoint grouping, capability cache and fenced claims in one database
+transaction. Native acceptance followed by a crash can replay the original identity: delivery is at least once.
+
+Separate durable `sweeper` and `cleanup` leases use the database clock. Native transaction application
+locks serialize connected passes without waiting behind another leader. Idle leadership expires after
+`LeaseDuration`; graceful shutdown releases owned leases. Choose `ClaimDuration` above database and broker
+latency. These workers poll; they do not enable Service Broker, query notifications or CDC.
+
+Malformed encoded headers are transferred immediately to `outbox_dead`, with the raw payload and an
+actionable `last_error`. Recovery records missing transports and invalid endpoint capabilities as failed
+attempts without stalling unrelated groups. Native send failures are dead-lettered after
+`MaxDispatchAttempts` (default 10), using the same atomic fenced mutation for direct and recovered sends.
+Unordered exhausted rows leave the outbox. An exhausted ordered row stays parked and its dead copy is
+retained while that barrier exists. Completion errors after broker success do not consume send attempts.
+
+Each cleanup pass deletes at most `BatchSize` expired dead rows and `BatchSize` expired inbox keys,
+ordered by their failure or processing time. It never expires pending or parked outbox messages.
 
 ## Storage and UUID ordering
 
