@@ -1,6 +1,6 @@
 ---
 title: Topology
-description: "Declared topology: validate or provision broker entities at startup, and export JSON, AsyncAPI or Service Bus infrastructure."
+description: "Declared topology: validate or provision broker entities at startup, and export JSON, AsyncAPI, Service Bus infrastructure or AWS Terraform documents."
 ---
 
 Declare routes and consumers normally. Relayer builds an inspectable topology from those declarations; it never infers broker entities from CLR names.
@@ -145,7 +145,7 @@ Subscriptions reference their declared topic. Forwarding to another exported que
 
 The exporter rejects nonempty `UserMetadata` (absent from these ARM schemas), entity `AuthorizationRules` (manage credentials separately), slash-containing entity names (unsupported ARM child names), unknown entity statuses, duplicate entities/subscriptions (including queue/topic names or subscription names within the same topic that differ only by case), missing subscription parents, and missing native route/consumer entities with actionable errors before touching the output stream. It never exports connection strings, credentials, processor settings or trusted-session assertions as infrastructure. Processor options and trusted assertions are application settings; the native `RequiresSession` entity property is exported.
 
-The `dotnet relayer topology export --format json|bicep|terraform` tool entry point and SQS/SNS Terraform export remain **planned** ([#502](https://github.com/thomhurst/Relayer/issues/502), [#501](https://github.com/thomhurst/Relayer/issues/501)). Use the runnable application above for Service Bus exports today. Existing `ITopology.ExportJson` behavior is unchanged.
+The `dotnet relayer topology export --format json|bicep|terraform` tool entry point remains **planned** ([#502](https://github.com/thomhurst/Relayer/issues/502)). SQS/SNS Terraform export is available through the explicit API below. Use the runnable application above for Service Bus exports today. Existing `ITopology.ExportJson` behavior is unchanged.
 
 ## AsyncAPI export
 
@@ -174,3 +174,90 @@ Supported format and limits:
 - Schemas describe the registered JSON contract. The exporter does not inspect custom or named transport serializers, schema registries, Protobuf, MessagePack or Avro wire formats. It omits `contentType` rather than claiming that every transport uses JSON. Custom JSON converters inherit .NET's schema coverage and may produce an unconstrained schema.
 - Native headers, CloudEvents header encodings, Kafka tombstone bodies, native routing/bindings and broker-discovered entities are not modeled. Ordering requirements, consumer concurrency and batch size appear as `x-relayer-*` extensions.
 - Export is explicit tooling work, outside message processing. Declaration and registration order determine output order. Identical declarations and metadata produce identical UTF-8 JSON; no timestamps or CLR type names are added. Both document title and application version must be non-empty. The destination remains open.
+
+## AWS Terraform export
+
+Install `Relayer.AmazonSqs` and `Microsoft.Extensions.DependencyInjection`, then call `ExportAmazonTerraform` on `ITopology`. This complete console application exports declarations without starting a host, resolving transport clients or contacting AWS:
+
+```csharp
+using Amazon.SQS.Model;
+using Microsoft.Extensions.DependencyInjection;
+using Relayer;
+using Relayer.AmazonSqs;
+
+var services = new ServiceCollection();
+services.AddRelayer(relayer => relayer.AmazonSqs("aws", transport =>
+{
+    transport.Options.Configure(options => options.Queues.Add(new CreateQueueRequest("q")
+    {
+        Attributes = new() { ["VisibilityTimeout"] = "45" },
+        Tags = new() { ["environment"] = "development" }
+    }));
+}));
+using var provider = services.BuildServiceProvider();
+using var output = File.Create("topology.tf.json");
+provider.GetRequiredService<ITopology>().ExportAmazonTerraform(provider, output,
+    new AmazonTerraformOptions { AccountId = "123456789012", Region = "eu-west-1" });
+```
+
+The generated file uses [Terraform JSON syntax](https://developer.hashicorp.com/terraform/language/syntax/json):
+
+```json
+{
+  "resource": {
+    "aws_sqs_queue": {
+      "r_71": {
+        "name": "q",
+        "visibility_timeout_seconds": 45,
+        "tags": { "environment": "development" }
+      }
+    }
+  }
+}
+```
+
+Configure the HashiCorp AWS provider separately for the **same account, region and partition** as the export. Put this beside the generated file in `provider.tf`, then run `terraform init`, `terraform validate` and `terraform plan` with your normal AWS credentials:
+
+```hcl
+terraform {
+  required_providers {
+    aws = { source = "hashicorp/aws", version = ">= 6.0" }
+  }
+}
+provider "aws" {
+  region              = "eu-west-1"
+  allowed_account_ids = ["123456789012"]
+}
+```
+
+The exporter reads named options from the supplied service provider. Use the provider that owns the topology. Every registered transport must be SQS or SNS; use a separate declaration-only service collection for an AWS-only export from a mixed application. Native client credentials, endpoints, retry settings and other connection configuration are not infrastructure declarations and are not exported. An explicitly configured native region must match the export region. Caller-owned clients are never inspected or called.
+
+### Supported native declarations
+
+Both `AmazonSqsTransportOptions.Queues` and SNS `QueueTopology.Queues` contribute `aws_sqs_queue` resources. SNS `Topics` contribute `aws_sns_topic`, and SQS `Subscriptions` contribute `aws_sns_topic_subscription`. Declare each queue/topic once across the topology; duplicates fail rather than combining conflicting declarations. Resource labels are `r_` followed by lowercase UTF-8 hex of the native name (subscriptions use topic ARN, `|`, then endpoint ARN). Resources, attributes and tags sort ordinally, so insertion order does not affect output. Literal `${` and `%{` sequences are escaped for Terraform, including inside policy strings.
+
+| Declaration | Supported native attributes |
+| --- | --- |
+| Queue | `DelaySeconds`, `MaximumMessageSize`, `MessageRetentionPeriod`, `ReceiveMessageWaitTimeSeconds`, `VisibilityTimeout`, `FifoQueue`, `ContentBasedDeduplication`, `DeduplicationScope`, `FifoThroughputLimit`, `KmsMasterKeyId`, `KmsDataKeyReusePeriodSeconds`, `SqsManagedSseEnabled`, `RedrivePolicy`, `Policy`; native tags |
+| Topic | `DisplayName`, `Policy`, `DeliveryPolicy`, `FifoTopic`, `ContentBasedDeduplication`, `KmsMasterKeyId`, `SignatureVersion`, `TracingConfig`, `FifoThroughputScope`; native tags |
+| SQS subscription | `RawMessageDelivery`, `FilterPolicy`, `FilterPolicyScope`, `RedrivePolicy`, `DeliveryPolicy`, `SubscriptionRoleArn`; explicit topic and queue ARNs |
+
+FIFO names and flags are preserved; the exporter does not infer them. When `MaximumMessageSize` is omitted, the exporter writes `max_message_size = 1048576` to preserve the native SQS 1 MiB default rather than inheriting a Terraform provider's smaller default. Explicit message size limits are preserved. When a queue configures `KmsMasterKeyId` and explicitly disables `SqsManagedSseEnabled`, the exporter omits `sqs_managed_sse_enabled`: Terraform treats even `false` as conflicting with the KMS key. Standalone SSE-SQS settings are preserved. Boolean values must be `true` or `false`, numeric settings must be nonnegative integers, and policy settings must be JSON objects. AWS/provider semantic validation still applies during `plan`/`apply`. `ReturnSubscriptionArn` controls only the native API response and has no Terraform setting.
+
+### SNS relationships and access policies
+
+Use native SNS `Topics`, `Subscriptions` and `QueueTopology` as described in the [SNS transport guide](../transports/amazon-sqs.md), with the same export call. An ARN exactly matching a declared entity in the export account/region/partition becomes a Terraform reference; other ARNs remain explicit external dependencies. For example, topic `t` and queue `q` produce subscription fields equivalent to:
+
+```json
+{
+  "topic_arn": "${aws_sns_topic.r_74.arn}",
+  "endpoint": "${aws_sqs_queue.r_71.arn}",
+  "protocol": "sqs",
+  "raw_message_delivery": true,
+  "depends_on": ["aws_sqs_queue_policy.r_71"]
+}
+```
+
+Queue `Policy` is emitted unchanged as an `aws_sqs_queue_policy` resource, referencing the queue URL and depending on declared topics. Subscriptions wait for exported queue policies. **Supply the policy explicitly**: the exporter never invents or broadens SNS permissions. Policy ARN strings remain literal, so policies must target the configured deployment identity. A queue's `RedrivePolicy` adds a dependency on its declared dead-letter queue when the ARN matches; externally managed dead-letter queues must already exist.
+
+Unsupported native attributes (including queue `RedriveAllowPolicy`, SNS feedback settings and subscription replay settings), topic `DataProtectionPolicy`, non-SQS subscription protocols, malformed ARNs and other transports throw before any bytes are written to the destination. Remove unsupported settings from the exported declarations and manage them explicitly in separate Terraform resources. Streams remain open. The exporter buffers the document before copying it; this is tooling work and adds no per-message processing cost. Existing `ExportJson` output is unchanged.
