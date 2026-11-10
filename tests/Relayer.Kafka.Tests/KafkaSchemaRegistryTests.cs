@@ -129,7 +129,6 @@ public class KafkaSchemaRegistryTests
     }
 
     [Test]
-    [NotInParallel]
     public async Task Named_clusters_use_independent_registries_credentials_and_contracts()
     {
         using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(3));

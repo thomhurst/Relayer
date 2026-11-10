@@ -8,9 +8,6 @@ namespace Relayer.Kafka.Tests;
 public class KafkaFixtureTests
 {
     [Test]
-    // Four concurrent brokers already exercise contention. Keep unrelated Kafka JVMs outside
-    // this test's two-minute budget, as with the multi-broker schema registry contract.
-    [NotInParallel]
     public async Task Concurrent_fixtures_keep_their_published_endpoint_while_the_broker_is_stopped()
     {
         using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(2));
