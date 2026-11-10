@@ -30,6 +30,7 @@ public class OrderedDispatchBenchmarks
 
     [Benchmark]
     public OutgoingMessage MySqlResolveAndProject() => MySqlOrderedDispatcher.Prepare(_row, _transports, _capabilities).Message;
+    [Benchmark]
     public OutgoingMessage SqlServerResolveAndProject() => SqlServerOrderedDispatcher.Prepare(_row, _transports, _capabilities).Message;
 
     [Benchmark]

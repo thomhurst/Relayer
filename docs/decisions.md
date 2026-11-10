@@ -1434,7 +1434,7 @@ Transfer malformed header rows to a raw dead copy under a live fenced claim. Cou
 failures and native send failures; an atomic update/dead-copy/delete transaction dead-letters exhausted
 unordered rows and parks exhausted ordered rows. Retention preserves dead copies of parked barriers.
 The maximum send-attempt setting must match all dispatchers for a store. Completion failures after native
-success do not consume attempts. Future scheduled ISender registration remains separate; D63 adds ordered lane workers.
+success do not consume attempts. Future scheduled ISender registration remains separate; D64 adds ordered lane workers.
 
 **Consequences.** Recovery is at least once; rollback after native acceptance replays the original identity.
 A connected pass can delay its own cleanup, while another replica immediately skips its active leadership.
@@ -1458,6 +1458,7 @@ The explicit upgrade preserves former UUID order for old rows and documents impl
 Exhausted rows park in place, preserving their sequence and key barrier. Management and unordered
 recovery remain #345. Ordered polling does not enable writer scheduling until registration can
 validate a matching scheduling worker.
+
 ## D64. SQL Server ordered dispatch reuses native locks and sequence ranges
 
 **Status.** Accepted.
