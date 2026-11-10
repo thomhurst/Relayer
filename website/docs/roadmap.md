@@ -11,7 +11,7 @@ Relayer is in early development. Track progress in [GitHub issues](https://githu
 
 - [PostgreSQL CDC dispatch](reference/postgres-cdc.md): native logical replication wakes unordered recovery; persistent slots and startup catch-up retain at-least-once delivery. Maintenance handles retries and schedules. SQL Server CDC remains planned.
 
-- [Scoped tenant header propagation](guides/multi-tenancy.md) for sends, requests, replies and single-message consumers. Native scoped tenant stores and authorized durable tenant metadata binding are supported; bounded dispatch remains planned.
+- [Scoped tenant header propagation](guides/multi-tenancy.md) for sends, requests, replies and single-message consumers. Native scoped tenant stores and authorized durable tenant metadata binding are supported; bounded PostgreSQL catalog dispatch is implemented.
 - [Explicit saga process diagrams](guides/saga-diagrams.md), with immutable declarations and deterministic Mermaid export, independent of typed runtime transitions.
 - [NuGet packaging and tag-triggered releases](contributing/releases.md), with shared metadata, git-derived versions, SourceLink, portable symbols and OIDC publishing. This infrastructure does not mean packages have been released.
 - Configuration, named transports, routes and consumers, with startup validation of declarations, options and endpoint capabilities, including [declared scheduling and transaction requirements](guides/sending.md).
@@ -29,7 +29,7 @@ Relayer is in early development. Track progress in [GitHub issues](https://githu
 - [EF Core transaction enlistment for PostgreSQL](reference/ef-core-outbox.md): implicit saves, explicit transactions, atomic rollback, multiple contexts and one batched insert per transaction.
 - [Ordered PostgreSQL dispatch and lane leases](reference/ordered-dispatch.md).
 - [EF Core consumer inbox](reference/ef-core-inbox.md): PostgreSQL deduplication, concurrent redelivery, atomic business/inbox/outbox commits, explicit transaction isolation, bounded conflict replay and duplicate metrics. Automatic for the selected outbox context, opt-in for inbox-only consumers.
-- [Native tenant store selection](reference/tenant-stores.md): database/schema isolation through application-owned scoped factories, including incoming single-message EF consumers without a fallback tenant. Authorized durable tenant metadata binding is implemented; bounded tenant dispatch remains planned.
+- [Native tenant store selection](reference/tenant-stores.md): database/schema isolation through application-owned scoped factories, including incoming single-message EF consumers without a fallback tenant. Authorized durable tenant metadata binding is implemented; bounded PostgreSQL catalog dispatch is implemented.
 - [Saga state transitions](guides/sagas.md): explicit process state, PostgreSQL optimistic concurrency and atomic state/inbox/outbox commits using the existing EF Core boundary. [Durable saga timeouts](guides/saga-timeouts.md) compose typed messages, explicit wait correlation and existing transactional scheduled sends.
 - [PostgreSQL ADO.NET and Dapper transactions](reference/postgres-outbox.md): scoped enlistment, owned message copies and one atomic batched insert on commit.
 - [SQL Server commit-triggered unordered dispatch](reference/sqlserver-store.md#commit-triggered-unordered-dispatch): bounded owned buffers, native batches and fenced outcomes. SQL Server recovery, ordered dispatch and maintenance remain planned.

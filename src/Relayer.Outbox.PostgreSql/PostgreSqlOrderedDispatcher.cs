@@ -102,6 +102,24 @@ internal sealed partial class PostgreSqlOrderedDispatcher : BackgroundService
         }
     }
 
+    // Reuse native membership, readiness probes and fenced lane transactions in one catalog turn.
+    [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
+    internal async ValueTask DispatchPassAsync(CancellationToken cancellationToken)
+    {
+        await _coordinator.RebalanceAsync(cancellationToken).ConfigureAwait(false);
+        await _lane.FindReadyAsync(_coordinator.Assigned, _ready, cancellationToken).ConfigureAwait(false);
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        for (var lane = 0; lane < _options.Lanes; lane++)
+        {
+            if (!_ready[lane] || !_coordinator.Assigned[lane]) continue;
+            deadline.CancelAfter(_options.LeaseDuration / 2);
+            await DispatchLaneAsync(lane, deadline.Token).ConfigureAwait(false);
+            deadline.CancelAfter(Timeout.InfiniteTimeSpan);
+        }
+    }
+
+    internal ValueTask ReleaseAsync(CancellationToken cancellationToken) => _coordinator.ReleaseAsync(cancellationToken);
+
     public override void Dispose()
     {
         base.Dispose();

@@ -1356,3 +1356,29 @@ provider retry strategies and inbox retention workers remain separate work. The 
 the database per pipeline; outbox options fix the schema/prefix at composition. A mismatching reloaded
 scope fails before opening a transaction; restart the pipeline to select a new schema/prefix. D46's trimming/AOT restriction
 continues to apply. See the [SQL Server guide](../website/docs/reference/sqlserver-store.md#atomic-consumer-inbox).
+
+## D60. Bound catalog dispatch by native connection lifetimes
+
+**Context.** Npgsql 10.0.3 `PoolingDataSource` sets `MaxConnections` from that data source's
+`MaxPoolSize`; returning a connection retains its connector in that pool. `NpgsqlDataSource`
+`OpenConnectionAsync` and `CreateCommand` use native pooling/connection ownership. There is no
+aggregate pool limit over independent application-owned sources. Relayer already has fenced direct
+claims, transactional unordered recovery/retention and ordered membership/lane leases. Replacing
+those with tenant-specific implementations would duplicate their durability and ordering semantics.
+
+**Decision.** Add a PostgreSQL `ITenantSource` snapshot of authorized native data sources and explicit
+store options, with one fixed-concurrency scheduler invoking those existing operations serially per
+store. The scheduler's admission limit bounds all catalog connections, including leases and release.
+Do not start hosted workers per tenant, mutate native configuration, build a pool, or wrap native
+connections. Require application-owned native `Pooling=false` dispatcher sources so idle per-source
+pools cannot accumulate physical connections beyond that limit. Writers may use separate native
+pooled sources; existing fixed-store registrations retain their configuration and behavior.
+
+**Consequences.** The physical bound applies to catalog dispatch, not business transactions or other
+workers. Unpooled native connection setup is visible in the catalog benchmark; this opt-in feature
+makes no throughput claim against pooled fixed-store dispatch. Applications that require pooled
+dispatch can continue using fixed-store registrations with explicitly managed per-source budgets.
+Catalog refreshes and turns are finite, bounded by cancellation deadlines. Per-store reusable buffers
+and queues live only while cataloged; removing a store retires queues and releases fenced leases
+under the same admission limit. Native expiry recovers interrupted release. Source ownership,
+authorization, provisioning and immutable snapshot publication remain application responsibilities.

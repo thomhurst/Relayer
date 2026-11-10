@@ -100,6 +100,24 @@ internal sealed class PostgreSqlDirectDispatcher : BackgroundService
         }
     }
 
+    // Catalog scheduling owns execution; it never starts a background task for this store.
+    [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
+    internal async ValueTask DispatchQueuedAsync(CancellationToken cancellationToken)
+    {
+        // One bounded pass: producers cannot keep a tenant on a worker indefinitely.
+        for (var i = 0; i < _options.QueueCapacity && _queue.Reader.TryRead(out var batch); i++)
+        {
+            try { await DispatchAsync(batch, cancellationToken).ConfigureAwait(false); }
+            finally { Return(batch); }
+        }
+    }
+
+    internal void Retire()
+    {
+        _queue.Writer.TryComplete();
+        while (_queue.Reader.TryRead(out var batch)) Return(batch);
+    }
+
     public override async Task StopAsync(CancellationToken cancellationToken)
     {
         _queue.Writer.TryComplete();
