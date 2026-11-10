@@ -109,7 +109,7 @@ services.AddRelayerPostgreSqlMaintenance("orders", dataSource,
     });
 ```
 
-Apply the current [schema script](postgres-schema.md) before upgrading workers or the
+Apply the current [schema script](postgres-schema.md) before enabling sent history in workers or the
 lookup tool; rerunning it adds the history table and index to existing schemas.
 `outbox_sent` stores only ID, destination and `sent_at`, never body, headers or errors.
 A fenced completion deletes the outbox row and inserts this metadata in one PostgreSQL
@@ -130,4 +130,4 @@ copy, allocation or database round trip. When enabled, each completed message ad
 metadata insert/upsert and its primary-key and retention-index writes in the same round
 trip. No body crosses back to the application. The PostgreSQL tenant-dispatch benchmark
 compares enabled and disabled completion including native database I/O.
-[Message lookup](postgres-store.md#find-a-missing-message) reports retained entries as `sent`.
+[Message lookup](postgres-store.md#find-a-missing-message) reports retained entries as `sent` when its `RetainSentMessages` option or CLI `--sent-history` switch is enabled.

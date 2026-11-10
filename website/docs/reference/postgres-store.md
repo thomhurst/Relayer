@@ -158,6 +158,11 @@ export RELAYER_POSTGRES_CONNECTION_STRING='Host=localhost;Database=app;Username=
 dotnet relayer message locate --id 01900000-0000-7000-8000-000000000001
 ```
 
+Sent history is opt-in for lookup too: set `RetainSentMessages = true` on the lookup options
+or pass `--sent-history` to the tool. Deploy the history table first by rerunning
+`PostgreSqlOutboxSchema.CreateScript`; an enabled lookup reports an actionable error if it is missing.
+Default lookups continue to work with older schemas and do not query sent history.
+
 Optional `--schema` and `--prefix` select the writer's tables. Credentials stay in
 the environment. Failures return exit code 1; successful lookups return 0 even
 when the ID is absent. Authorize database/schema access before exposing the API:

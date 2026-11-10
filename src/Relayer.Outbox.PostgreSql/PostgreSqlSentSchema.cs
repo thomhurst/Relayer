@@ -14,6 +14,6 @@ internal static class PostgreSqlSentSchema
         await using var command = source.CreateCommand("SELECT to_regclass(@table) IS NOT NULL");
         command.Parameters.AddWithValue("table", table);
         if (await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) is not true)
-            throw new InvalidOperationException($"RetainSentMessages requires PostgreSQL table {table}. Run PostgreSqlOutboxSchema.CreateScript for this schema and table prefix before starting dispatch.");
+            throw new InvalidOperationException($"RetainSentMessages requires PostgreSQL table {table}. Run PostgreSqlOutboxSchema.CreateScript for this schema and table prefix before enabling sent history.");
     }
 }

@@ -810,7 +810,9 @@ construction, with no extra per-message work. Enabled completion adds one metada
 writes per deleted row, without another round trip or body copy. This is database diagnostic evidence of
 completion after native acceptance, not a broker-delivery or consumer-processing guarantee. The existing
 leased cleanup deletes bounded oldest-first history batches using a positive finite retention duration.
-Lookup reports sent metadata through the existing read-only snapshot. See
+Lookup reports sent metadata through the existing read-only snapshot only when explicitly enabled
+(`RetainSentMessages` or the CLI `--sent-history` switch). Default lookups do not require the history table;
+enabled lookups validate its presence with an actionable schema-deployment error. See
 [sent-history configuration and limits](../website/docs/reference/postgres-maintenance.md#sent-message-history).
 
 **Consequences.** Recovery remains at-least-once; crashes between native acceptance and completion replay the

@@ -204,7 +204,7 @@ public class SentHistoryTests
         using var ordered = new PostgreSqlOrderedDispatcher(source, new() { Lanes = 1, RetainSentMessages = true },
             [new Transport(1)], NullLogger<PostgreSqlOrderedDispatcher>.Instance);
         await ordered.DispatchPassAsync(TimeSpan.MaxValue, default);
-        await Assert.That((await new PostgreSqlMessageLookup(source).FindAsync(id)).State).IsEqualTo("sent");
+        await Assert.That((await new PostgreSqlMessageLookup(source, new() { RetainSentMessages = true }).FindAsync(id)).State).IsEqualTo("sent");
         await Assert.That(await Count(source, "relayer_outbox")).IsEqualTo(0L);
     }
 
@@ -222,7 +222,7 @@ public class SentHistoryTests
             await Assert.That((string)(await columns.ExecuteScalarAsync())!).IsEqualTo("id,destination,sent_at");
         var start = new ProcessStartInfo("dotnet") { RedirectStandardOutput = true, RedirectStandardError = true };
         start.ArgumentList.Add(typeof(RelayerCommand).Assembly.Location);
-        foreach (var argument in new[] { "message", "locate", "--id", id.ToString() }) start.ArgumentList.Add(argument);
+        foreach (var argument in new[] { "message", "locate", "--sent-history", "--id", id.ToString() }) start.ArgumentList.Add(argument);
         start.Environment["RELAYER_POSTGRES_CONNECTION_STRING"] = fixture.ConnectionString;
         using (var process = Process.Start(start)!)
         {
@@ -235,6 +235,7 @@ public class SentHistoryTests
             await Assert.That(await output).Contains("Sent: ");
             await Assert.That(await error).IsEqualTo("");
         }
+        await Assert.That((await new PostgreSqlMessageLookup(source).FindAsync(id)).State).IsEqualTo("not present");
         var settings = new PostgreSqlMaintenanceOptions { RetainSentMessages = true, BatchSize = 1, DeadRetention = null, InboxRetention = null };
         using var first = new PostgreSqlMaintenanceWorker(source, settings, [], NullLogger<PostgreSqlMaintenanceWorker>.Instance);
         using var rival = new PostgreSqlMaintenanceWorker(source, settings, [], NullLogger<PostgreSqlMaintenanceWorker>.Instance);
@@ -245,7 +246,7 @@ public class SentHistoryTests
         await Assert.That(await Count(source, "relayer_outbox_sent")).IsEqualTo(1L);
         await Sql(source, "UPDATE relayer_outbox_sent SET sent_at = clock_timestamp() - interval '10 days'");
         await Assert.That(await rival.CleanupAsync(default)).IsEqualTo(1);
-        await Assert.That((await new PostgreSqlMessageLookup(source).FindAsync(id)).State).IsEqualTo("not present");
+        await Assert.That((await new PostgreSqlMessageLookup(source, new() { RetainSentMessages = true }).FindAsync(id)).State).IsEqualTo("not present");
     }
 
     [Test]

@@ -14,6 +14,12 @@ public class MessageLookupTests
         await using var source = NpgsqlDataSource.Create(fixture.ConnectionString);
         var options = new PostgreSqlOutboxOptions { Schema = "lookup\"schema", TablePrefix = "test_" };
         await PostgreSqlOutboxStoreTests.CreateSchema(source, options);
+        // Existing schemas have no sent-history table. Default API and CLI lookups must still work.
+        await using (var drop = source.CreateCommand("DROP TABLE \"lookup\"\"schema\".test_outbox_sent"))
+            await drop.ExecuteNonQueryAsync();
+        var enabled = new PostgreSqlMessageLookup(source, new() { Schema = options.Schema, TablePrefix = options.TablePrefix, RetainSentMessages = true });
+        var schemaError = await Assert.ThrowsAsync<InvalidOperationException>(async () => await enabled.FindAsync(Guid.NewGuid()));
+        await Assert.That(schemaError!.Message).Contains("PostgreSqlOutboxSchema.CreateScript");
         var table = "\"lookup\"\"schema\".\"test_outbox\"";
         var now = DateTimeOffset.UtcNow;
         var pending = Guid.NewGuid(); var scheduled = Guid.NewGuid(); var claimed = Guid.NewGuid();
@@ -52,6 +58,18 @@ public class MessageLookupTests
             await Assert.That(process.ExitCode).IsEqualTo(0);
             await Assert.That(await stdout).Contains("State: scheduled");
             await Assert.That(await stderr).IsEqualTo("");
+        }
+        start.ArgumentList.Add("--sent-history");
+        using (var process = Process.Start(start)!)
+        {
+            var stdout = process.StandardOutput.ReadToEndAsync();
+            var stderr = process.StandardError.ReadToEndAsync();
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+            try { await process.WaitForExitAsync(timeout.Token); }
+            finally { if (!process.HasExited) process.Kill(entireProcessTree: true); }
+            await Assert.That(process.ExitCode).IsEqualTo(1);
+            await Assert.That(await stderr).Contains("PostgreSqlOutboxSchema.CreateScript");
+            await Assert.That(await stdout).IsEqualTo("");
         }
         var lookup = new PostgreSqlMessageLookup(source, options);
         await Assert.That((await lookup.FindAsync(pending)).State).IsEqualTo("pending");

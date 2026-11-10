@@ -23,17 +23,27 @@ public sealed class PostgreSqlMessageLookup
 {
     private readonly NpgsqlDataSource _source;
     private readonly string _sql;
+    private readonly PostgreSqlOutboxOptions _options;
 
-    /// <summary>Selects an application-owned data source and schema/prefix.</summary>
+    /// <summary>Selects an application-owned data source and schema/prefix. Set RetainSentMessages to include sent history; the history table must be deployed.</summary>
     public PostgreSqlMessageLookup(NpgsqlDataSource source, PostgreSqlOutboxOptions? options = null)
     {
         ArgumentNullException.ThrowIfNull(source);
         _source = source;
         options ??= new();
+        _options = options;
         ArgumentNullException.ThrowIfNull(options.TablePrefix);
         var schema = PostgreSqlOutboxSchema.QuoteIdentifier(options.Schema ?? "public") + ".";
         string Table(string name) => schema + PostgreSqlOutboxSchema.QuoteIdentifier(options.TablePrefix + name);
         var table = Table("outbox");
+        var sent = options.RetainSentMessages ? $"""
+            UNION ALL
+            SELECT 'sent', s.destination, NULL::timestamptz, NULL::uuid, NULL::timestamptz, 0, NULL::text,
+                   NULL::timestamptz, NULL::integer, NULL::text, NULL::timestamptz, NULL::bigint, s.sent_at
+            FROM {Table("outbox_sent")} s WHERE s.id = @id
+                AND NOT EXISTS (SELECT 1 FROM {table} WHERE id = @id)
+                AND NOT EXISTS (SELECT 1 FROM {Table("outbox_dead")} WHERE id = @id)
+            """ : "";
         _sql = $"""
             SELECT CASE WHEN o.status = 'parked' OR EXISTS (SELECT 1 FROM {table} p WHERE p.lane = o.lane AND p.ordering_key = o.ordering_key AND p.seq < o.seq AND p.status = 'parked') THEN 'parked'
                         WHEN o.claim_expires_at > transaction_timestamp() THEN 'claimed'
@@ -48,12 +58,7 @@ public sealed class PostgreSqlMessageLookup
                    d.failed_at, d.lane, l.owner, l.expires_at, NULL::bigint, NULL::timestamptz
             FROM {Table("outbox_dead")} d LEFT JOIN {Table("leases")} l ON l.name = 'lane:' || d.lane::text
             WHERE d.id = @id AND NOT EXISTS (SELECT 1 FROM {table} WHERE id = @id)
-            UNION ALL
-            SELECT 'sent', s.destination, NULL::timestamptz, NULL::uuid, NULL::timestamptz, 0, NULL::text,
-                   NULL::timestamptz, NULL::integer, NULL::text, NULL::timestamptz, NULL::bigint, s.sent_at
-            FROM {Table("outbox_sent")} s WHERE s.id = @id
-                AND NOT EXISTS (SELECT 1 FROM {table} WHERE id = @id)
-                AND NOT EXISTS (SELECT 1 FROM {Table("outbox_dead")} WHERE id = @id);
+            {sent};
             SELECT consumer, processed_at FROM {Table("inbox")} WHERE message_id = @id ORDER BY consumer;
             """;
     }
@@ -62,6 +67,8 @@ public sealed class PostgreSqlMessageLookup
     public async ValueTask<PostgreSqlMessageLocation> FindAsync(Guid messageId, CancellationToken cancellationToken = default)
     {
         if (messageId == Guid.Empty) throw new ArgumentException("Message ID must not be empty.", nameof(messageId));
+        await PostgreSqlSentSchema.ValidateAsync(_source, _options.RetainSentMessages, _options.Schema,
+            _options.TablePrefix, cancellationToken).ConfigureAwait(false);
         await using var connection = await _source.OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
         await using var transaction = await connection.BeginTransactionAsync(IsolationLevel.RepeatableRead, cancellationToken).ConfigureAwait(false);
         await using (var readOnly = new NpgsqlCommand("SET TRANSACTION READ ONLY", connection, transaction))

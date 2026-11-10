@@ -132,6 +132,7 @@ internal sealed partial class PostgreSqlTenantDispatcher : BackgroundService
                 deadline.CancelAfter(_options.TurnTimeout);
                 try
                 {
+                    // Catalog entries can be added after startup; successful validation is cached.
                     await store.Direct.ValidateSchemaAsync(deadline.Token).ConfigureAwait(false);
                     for (var visited = 0; visited < 4; visited++)
                     {
