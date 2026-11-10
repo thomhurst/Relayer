@@ -1,6 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup><OutputType>Exe</OutputType></PropertyGroup>
   <ItemGroup>
+    <Compile Include="../Shared/InboxContractTests.cs" Link="InboxContractTests.cs" />
     <Compile Include="../Shared/OutboxDirectDispatchContractTests.cs" Link="OutboxDirectDispatchContractTests.cs" />
     <Compile Include="../Shared/OutboxStoreContractTests.cs" Link="OutboxStoreContractTests.cs" />
     <Compile Include="../Shared/DockerCommand.cs" Link="DockerCommand.cs" />
@@ -8,6 +9,7 @@
     <PackageReference Include="Dapper" />
     <PackageReference Include="Microsoft.Extensions.Hosting" />
     <PackageReference Include="Microsoft.Extensions.DependencyInjection" />
+    <ProjectReference Include="../../src/Relayer.SourceGenerators/Relayer.SourceGenerators.csproj" ReferenceOutputAssembly="false" OutputItemType="Analyzer" />
     <ProjectReference Include="../../src/Relayer.Outbox.MySql/Relayer.Outbox.MySql.csproj" />
   </ItemGroup>
 </Project>

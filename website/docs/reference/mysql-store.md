@@ -1,6 +1,6 @@
 ---
 title: MySQL durable store
-description: "MySQL transactional enqueue, commit-triggered dispatch, Dapper integration and fenced claims."
+description: "MySQL atomic consumer inbox, transactional enqueue, commit-triggered dispatch, Dapper integration and fenced claims."
 ---
 
 `Relayer.Outbox.MySql` implements the [durable store contract](outbox-stores.md) using
@@ -134,6 +134,58 @@ agree on `Lanes` (default `64`); changing it requires draining or migrating exis
 The enlistment reports no scheduling support until matching due-row workers are implemented.
 Registering this integration alone does not send persisted rows to a broker.
 
+## Atomic consumer inbox
+
+Register `AddRelayerMySqlOutbox` and configure the consumer boundary before any other
+middleware. Deduplication is opt-in with `inbox: true`:
+
+```csharp
+services.AddRelayerMySqlOutbox(options);
+
+// On your single-message ConsumePipelineBuilder, after selecting its generated handler:
+pipeline.MySql(dataSource, "orders", inbox: true);
+```
+
+The boundary opens an InnoDB transaction from the application-owned data source. A handler
+injects the scoped `MySqlOutbox` and `ISender`, uses `outbox.CurrentTransaction.Connection`
+for ADO.NET or Dapper business commands, and sends outgoing messages through `ISender`.
+Return from the handler without committing or disposing the transaction. Relayer commits
+business writes, the inbox key and buffered outgoing rows together before native broker
+settlement and after requesting a complete outcome. Scope disposal happens before settlement;
+it cannot change an outcome that has already committed. Handler calls to commit or roll back
+are rejected. Disposing the transaction prematurely rolls back and fails the attempt.
+
+`MySqlOutboxSchema.CreateScript` also creates the prefixed `inbox` table. Apply its script
+when upgrading an existing installation; it does not alter existing tables. Identity is the
+stable consumer name plus the original nonempty UUIDv7 message ID. Consumer names are exact
+UTF-8 bytes (case and trailing spaces matter), at most 768 bytes; use the same name on every
+replica and restart. Identity bytes ignore the application's `GuidFormat` setting.
+
+The native unique key serializes concurrent duplicate deliveries. `INSERT IGNORE` skips a
+committed key; a competing rollback lets the waiting insert succeed. Validated bounded inputs
+fit the inbox schema, so ignored duplicate inserts are the expected no-op. A duplicate skips
+the handler, commits its read-only outcome, and records `relayer.inbox.duplicates`. This works
+with either native `UseAffectedRows` setting. Inbox commands and UUID scratch buffers are reused
+across delivery scopes by a provider-owned pool, separated by table prefix so configuration
+reloads do not retarget existing scopes. The pool retains the observed concurrency high-water
+mark until provider disposal. Retaining inbox keys retains deduplication;
+application-owned deletion deliberately ends that protection.
+
+Handler errors, cancellation before commit, outbox insert errors, and retry or dead-letter
+requests roll back the complete unit before the existing failure pipeline runs. A lost
+acknowledgement after commit redelivers the same key without repeating business work. A lost
+COMMIT response still propagates as an unknown outcome; redeliver the original identity to
+resolve it through the inbox. There is no separate native retry loop or commit-verification
+connection. Configure ordinary consumer failure handling for complete-attempt retries.
+
+Pass an optional native `IsolationLevel` to `MySql`. InnoDB lock timeouts, deadlocks and other
+native errors propagate to the ordinary failure policy. The same InnoDB, implicit-commit,
+ambient-transaction and command-connection restrictions as transactional enqueue apply.
+The boundary supports single-message ADO.NET/Dapper handlers, with optional unordered commit
+dispatch; it does not provide EF Core integration, saga persistence, batch consumers, ordered
+workers or inbox retention jobs. With `inbox: false` it still owns the atomic business/outbox
+transaction, but every redelivery runs the handler.
+
 ## Commit-triggered unordered dispatch
 
 Register a named worker and select it on the scoped outbox. Register the application's named
@@ -189,7 +241,7 @@ guarantee eventual delivery after a crash.
 ## Remaining integration
 
 Ordered lane ownership is tracked by [#344](https://github.com/thomhurst/Relayer/issues/344),
-recovery/poison/retention by [#345](https://github.com/thomhurst/Relayer/issues/345), and atomic
-inbox integration by [#346](https://github.com/thomhurst/Relayer/issues/346). These remain planned.
+and recovery/poison/retention by [#345](https://github.com/thomhurst/Relayer/issues/345).
+Atomic inbox integration is implemented above; ordered dispatch and recovery remain planned.
 The schema helper is not exposed through `dotnet relayer db` yet. Full SQL Server and MySQL
 parity remains tracked by [#41](https://github.com/thomhurst/Relayer/issues/41).

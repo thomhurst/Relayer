@@ -1,5 +1,6 @@
 using System.Data;
 using System.Data.Common;
+using System.Runtime.CompilerServices;
 using Microsoft.Extensions.Options;
 using MySqlConnector;
 
@@ -12,30 +13,39 @@ public sealed class MySqlOutbox : IOutboxEnlistment, IDisposable, IAsyncDisposab
     private readonly List<BufferedOutboxMessage> _rows = [];
     private readonly MySqlOutboxBatch _batch;
     private readonly int _lanes;
+    private readonly MySqlOutboxOptions _options;
     private readonly RelayerInstrumentation? _instrumentation;
     private readonly MySqlDirectDispatcher? _dispatcher;
     private MySqlOutboxTransaction? _transaction;
     private int _count;
     private bool _disposed;
+    private readonly MySqlInboxPools? _inboxPools;
+    private MySqlInboxPool? _inboxPool;
 
     /// <summary>Creates an enlistment using this scope's validated options.</summary>
     public MySqlOutbox(IOptionsSnapshot<MySqlOutboxOptions> options, RelayerInstrumentation? instrumentation = null)
         : this(options, instrumentation, null) { }
 
     internal MySqlOutbox(IOptionsSnapshot<MySqlOutboxOptions> options, RelayerInstrumentation? instrumentation,
-        MySqlDirectDispatcher? dispatcher)
+        MySqlDirectDispatcher? dispatcher, MySqlInboxPools? inboxPools = null)
     {
         ArgumentNullException.ThrowIfNull(options);
         var value = options.Value;
         ValidateOptions(value);
         if (value.DispatchStoreName is not null && dispatcher is null)
             throw new InvalidOperationException("Resolve a MySQL outbox with DispatchStoreName through its registered service provider.");
+        _inboxPools = inboxPools;
         _dispatcher = dispatcher;
         dispatcher?.ValidateStore(value.TablePrefix);
+        _options = value;
         _lanes = value.Lanes;
         _instrumentation = instrumentation;
         _batch = new(MySqlOutboxBatch.CreateInsertSql(MySqlOutboxSchema.Table(value)));
     }
+
+    /// <summary>The active transaction for ADO.NET/Dapper business commands, or null outside a unit.</summary>
+    /// <remarks>During consumer handling Relayer owns completion. Use Connection to create commands; do not dispose or complete the transaction.</remarks>
+    public DbTransaction? CurrentTransaction => IsActive ? _transaction : null;
 
     /// <inheritdoc />
     public bool IsActive => _transaction is { IsActive: true };
@@ -100,6 +110,31 @@ public sealed class MySqlOutbox : IOutboxEnlistment, IDisposable, IAsyncDisposab
         return ValueTask.CompletedTask;
     }
 
+    [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder<>))]
+    internal async ValueTask<bool> TryInsertInboxAsync(MySqlOutboxTransaction transaction, byte[] consumer,
+        Guid id, CancellationToken cancellationToken)
+    {
+        var pool = _inboxPool ??= _inboxPools?.Get(_options.TablePrefix) ?? new MySqlInboxPool(_options);
+        var scratch = pool.Rent();
+        var command = scratch.Command;
+        try
+        {
+            var native = transaction.Unwrap(transaction.Connection);
+            command.Connection = native.Connection;
+            command.Transaction = native;
+            command.Parameters[0].Value = consumer;
+            id.TryWriteBytes(scratch.Id, bigEndian: true, out _);
+            return await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) == 1;
+        }
+        finally
+        {
+            command.Connection = null;
+            command.Transaction = null;
+            command.Parameters[0].Value = DBNull.Value;
+            pool.Return(scratch);
+        }
+    }
+
     internal MySqlOutboxBatch? Prepare(MySqlTransaction transaction)
     {
         if (_count == 0) return null;
@@ -135,7 +170,7 @@ public sealed class MySqlOutbox : IOutboxEnlistment, IDisposable, IAsyncDisposab
     {
         if (_disposed) return;
         try { _transaction?.Dispose(); }
-        finally { _disposed = true; _batch.Dispose(); }
+        finally { _disposed = true; _batch.Dispose(); if (_inboxPools is null) _inboxPool?.Dispose(); }
     }
 
     /// <inheritdoc />
@@ -146,6 +181,6 @@ public sealed class MySqlOutbox : IOutboxEnlistment, IDisposable, IAsyncDisposab
         {
             if (_transaction is not null) await _transaction.DisposeAsync().ConfigureAwait(false);
         }
-        finally { _disposed = true; _batch.Dispose(); }
+        finally { _disposed = true; _batch.Dispose(); if (_inboxPools is null) _inboxPool?.Dispose(); }
     }
 }

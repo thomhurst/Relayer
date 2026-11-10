@@ -68,6 +68,7 @@ To change a decision, add a new entry that supersedes it rather than editing his
 | [D55](#d55-mysql-direct-dispatch-reuses-native-batches-and-fenced-row-counts) | MySQL commit-triggered direct dispatch | Accepted |
 | [D56](#d56-postgresql-cdc-wakes-existing-unordered-recovery) | PostgreSQL CDC wakes existing unordered recovery | Accepted |
 | [D57](#d57-google-pubsub-uses-prepared-native-api-clients) | Google Pub/Sub uses prepared native API clients | Accepted |
+| [D58](#d58-mysql-consumers-share-the-adonet-outbox-transaction) | MySQL consumers share the ADO.NET outbox transaction | Accepted |
 
 ---
 
@@ -1253,3 +1254,31 @@ binding. Native callback replies queue acknowledgements after durable work; ack 
 handoff, not confirmation of an acknowledgement RPC. Native-required strings and callback Tasks remain
 visible in native comparisons; Relayer pools its own delivery and send state. See the
 [transport guide](../website/docs/transports/google-pubsub.md) for lifecycle, capability and validation limits.
+
+## D58. MySQL consumers share the ADO.NET outbox transaction
+
+**Context.** MySqlConnector 2.6.2 already owns native begin/commit/rollback, cancellation and
+rollback-on-disposal. D48's scoped outbox and command connection already enlist business commands
+and buffered sends in one native transaction. The existing consumer transaction middleware seam
+and settlement pipeline order durability and scope disposal before acknowledgement. PostgreSQL's
+EF Core boundary (D36) provides the behavioral reference, but cannot run on a MySQL ADO.NET scope.
+
+**Decision.** Add an explicit MySQL single-message consumer boundary using those existing pieces.
+Deduplication remains opt-in. InnoDB's primary key on exact consumer bytes and network-order UUIDv7
+identity serializes duplicates; native `INSERT IGNORE` reports an insert independently of
+`CLIENT_FOUND_ROWS`. Strict UTF-8 consumer validation bounds inputs to the schema so truncation is
+not an alternative successful result. Do not add an application lock, native retry loop or commit
+verification mechanism. Native failures propagate to complete-attempt consumer failure handling;
+redelivery of an unknown commit checks the same durable inbox key.
+
+Expose the scoped outbox's current command transaction. Reject handler commit/rollback while the
+consumer owns it, detect premature disposal, and use the existing buffered outbox flush for commit.
+Request completion before commit so disposal cannot reject already durable work. Noncomplete
+outcomes and exceptions dispose the transaction and roll back before normal failure handling.
+
+**Consequences.** The integration supports ADO.NET/Dapper business writes on InnoDB and optional
+unordered direct dispatch. Native implicit commits, DDL and nontransactional business tables remain
+unsupported, as in D48. EF Core, saga persistence, ordered workers and inbox retention remain
+separate work. Existing scoped enlistment/transaction allocations remain visible in comparisons;
+no inbox buffers are allocated on the enqueue-only path. See the
+[MySQL guide](../website/docs/reference/mysql-store.md#atomic-consumer-inbox).

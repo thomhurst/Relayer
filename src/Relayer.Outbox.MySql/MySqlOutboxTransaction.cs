@@ -23,6 +23,15 @@ internal sealed class MySqlOutboxTransaction : DbTransaction
         _isolationLevel = native.IsolationLevel;
     }
 
+    internal bool ConsumerOwned { get; set; }
+
+    private void EnsureCallerOwnership()
+    {
+        if (ConsumerOwned) throw new InvalidOperationException("Relayer owns the MySQL consumer transaction. Return from the handler or request retry/dead-letter instead of completing it.");
+    }
+
+    internal Task CommitConsumerAsync(CancellationToken cancellationToken) => CommitCoreAsync(cancellationToken);
+
     internal bool IsActive
     {
         get
@@ -51,6 +60,7 @@ internal sealed class MySqlOutboxTransaction : DbTransaction
 
     public override void Commit()
     {
+        EnsureCallerOwnership();
         EnsureActive();
         _completing = true;
         try
@@ -62,7 +72,13 @@ internal sealed class MySqlOutboxTransaction : DbTransaction
         finally { Finish(); }
     }
 
-    public override async Task CommitAsync(CancellationToken cancellationToken = default)
+    public override Task CommitAsync(CancellationToken cancellationToken = default)
+    {
+        EnsureCallerOwnership();
+        return CommitCoreAsync(cancellationToken);
+    }
+
+    private async Task CommitCoreAsync(CancellationToken cancellationToken)
     {
         EnsureActive();
         _completing = true;
@@ -79,6 +95,7 @@ internal sealed class MySqlOutboxTransaction : DbTransaction
 
     public override void Rollback()
     {
+        EnsureCallerOwnership();
         EnsureActive();
         _completing = true;
         try { _native.Rollback(); }
@@ -87,6 +104,7 @@ internal sealed class MySqlOutboxTransaction : DbTransaction
 
     public override async Task RollbackAsync(CancellationToken cancellationToken = default)
     {
+        EnsureCallerOwnership();
         EnsureActive();
         _completing = true;
         try { await _native.RollbackAsync(cancellationToken).ConfigureAwait(false); }
