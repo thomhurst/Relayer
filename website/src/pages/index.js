@@ -324,6 +324,7 @@ const status = [
   ['Kafka connectivity and receiver liveness health adapters', 'Implemented', true],
   ['Other native broker health adapters', 'Planned', false],
   ['Ordered PostgreSQL dispatch and lane leases', 'Implemented', true],
+  ['PostgreSQL poison-row limits, key parking and dead-letter management', 'Implemented', true],
   ['PostgreSQL outbox recovery and retention cleanup', 'Implemented', true],
   ['PostgreSQL CDC outbox dispatch', 'Implemented; SQL Server CDC planned', true],
   ['Native scoped tenant store selection', 'Implemented for EF consumers; durable binding and dispatch planned', true],

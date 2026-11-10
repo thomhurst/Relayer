@@ -117,6 +117,7 @@ public sealed class PostgreSqlOutbox : IOutboxEnlistment, IDisposable, IAsyncDis
     internal static void ValidateOptions(PostgreSqlOutboxOptions options)
     {
         _ = PostgreSqlOutboxSchema.CreateScript(options);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(options.MaxDispatchAttempts);
         if (options.Lanes <= 0) throw new ArgumentOutOfRangeException(nameof(options), "Lanes must be positive.");
     }
 

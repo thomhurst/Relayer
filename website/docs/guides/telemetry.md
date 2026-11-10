@@ -174,7 +174,10 @@ The PostgreSQL transaction integrations and dispatch workers also record:
   of each native dispatch attempt. Recovery uses the original durable timestamp. Failed
   native attempts also record lag.
 
-These two store-wide metrics aggregate across stores and transports, without endpoint
+- `relayer.outbox.dead_lettered`: an alert counter incremented after a PostgreSQL poison
+  transition commits. Durable dead storage is authoritative if a crash loses the metric.
+
+These store-wide metrics aggregate across stores and transports, without endpoint
 or message dimensions. The pending counter is a delta, not a database snapshot: it can
 be negative on an instance that recovers rows written elsewhere or before startup.
 Use the [outbox backlog health check](health-checks.md) or durable store count to query

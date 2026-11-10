@@ -108,4 +108,4 @@ queue and drains it within the host's shutdown deadline; cancellation leaves unf
 [Ordered lane dispatch](ordered-dispatch.md) handles rows with ordering keys separately.
 [Leased recovery and cleanup](postgres-maintenance.md) handles due unordered rows left by failure,
 overflow, cancellation, process death or a future `DeliverAt`. Register it explicitly alongside this worker.
-Retry backoff and poison-row handling remain planned. This worker handles immediate commit-triggered sends.
+Retry backoff remains planned. [Poison rows](postgres-store.md#poison-rows-and-key-release) move atomically to dead storage after `storeOptions.MaxDispatchAttempts` failed sends (default 10). This worker handles immediate commit-triggered sends.

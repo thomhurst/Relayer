@@ -69,3 +69,49 @@ and ordering survive storage. Corrupt lengths, unsupported versions and trailing
 Do not populate this column with JSON or empty bytes. EF Core interceptors and PostgreSQL outbox transactions
 write compatible rows through the shared codec and batch writer.
 The store does not generate identities, serialize messages, or rewrite envelopes during reads.
+
+## Poison rows and key release
+
+Dispatch stops retrying after `MaxDispatchAttempts` failed sends (default **10**).
+Set this positive limit on the direct dispatch's `PostgreSqlOutboxOptions` and on the ordered,
+maintenance and CDC worker options. Keep dispatchers for the same store consistent.
+Broker success followed by database completion failure does not consume an attempt.
+
+One fenced statement persists the final error and attempt count and copies the original identity,
+body, headers, transport, destination, tenant and schedule into `relayer_outbox_dead` atomically.
+Unordered rows leave the pending table. An ordered row remains as a `parked` barrier at its original
+insert sequence: later rows with its key wait while unrelated keys continue. A rollback rolls back
+the attempt, dead copy and barrier together.
+
+```csharp
+services.AddRelayerPostgreSqlDeadLetters("orders", dataSource, storeOptions);
+var manager = serviceProvider.GetRequiredKeyedService<IDeadLetterManager>("orders");
+var page = await manager.PeekAsync("orders", maxMessages: 20);
+var details = page.Messages[0].Features.GetRequired<PostgreSqlDeadLetterDetails>();
+await manager.RedriveAsync("orders", message => message.MessageId == selectedId, maxMessages: 1000);
+```
+
+Use the same application-owned data source, schema and prefix as the workers. `List()` exposes the
+configured store as one source. Peek is non-destructive and pages by an opaque cursor.
+`PostgreSqlDeadLetterDetails` exposes the owned original `OutboxRecord` and `FailedAt` timestamp.
+Redrive restores pending rows for existing workers, resets attempts and clears the previous error;
+it never sends directly. Ordered redrive preserves the original sequence before later same-key rows.
+`PurgeAsync` permanently discards dead rows and their barriers, releasing later same-key rows without
+replaying the failed row. Calls scan at most the requested batch (1–1000 rows); filtered redrive can
+change fewer rows. The bound counts scanned rows, not matches. Each call starts at the lowest ID;
+repeating the same filtered call does not advance past unmatched rows. Peek cursors only page inspection,
+not redrive. Select a bound that includes the desired row (up to 1000); this API cannot selectively redrive
+a row beyond that prefix. Drain earlier rows with unfiltered redrive, or explicitly discard them with
+purge, before reaching deeper rows. Neither operation is an inspection-only way to advance the prefix.
+Concurrent management calls skip locked dead rows. Filter errors and database failures roll back the entire batch.
+
+An ordered dead row must still have its original parked row. A missing or changed barrier indicates
+inconsistent durable state; redrive fails with the row ID and rolls back every change in that batch.
+It never invents a new sequence or silently skips the inconsistency. Restore the original durable row
+at its original sequence before retrying, or explicitly purge the dead row if it should be discarded.
+A bounded purge also starts at the lowest ID and can discard earlier rows, so inspect that prefix first.
+
+Dead retention excludes rows with an active parked barrier, retaining their inspection and redrive data
+until explicit redrive or purge. Unordered dead rows remain subject to configured retention.
+`relayer.outbox.dead_lettered` increments after a poison transition commits. A crash around commit
+can lose a measurement; durable management queries remain the source of truth.

@@ -59,6 +59,7 @@ public static partial class PostgreSqlOutboxServiceCollectionExtensions
             Slot = slot, Replication = replication,
             Schema = configuration[nameof(defaults.Schema)],
             TablePrefix = configuration[nameof(defaults.TablePrefix)] ?? defaults.TablePrefix,
+            MaxDispatchAttempts = ReadValue(nameof(defaults.MaxDispatchAttempts), defaults.MaxDispatchAttempts),
             BatchSize = ReadValue(nameof(defaults.BatchSize), defaults.BatchSize),
             ClaimDuration = ReadValue(nameof(defaults.ClaimDuration), defaults.ClaimDuration),
             ReconnectDelay = ReadValue(nameof(defaults.ReconnectDelay), defaults.ReconnectDelay)

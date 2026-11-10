@@ -78,8 +78,7 @@ sending and committing each batch. It stops admitting rows after one quarter of 
 Reads follow the partial `(lane, seq)` pending index, in database-assigned insertion order. Scheduling and existing claims
 never cause the worker to skip a head row. A future or live-claimed head temporarily stalls its lane.
 Later rows with a parked head's ordering key stay parked while other keys can continue, using the parked-key
-index comparing `seq`, so host clock differences cannot let a later same-key row bypass a parked row. This worker does not itself move poison rows or expose redrive management yet.
-Poison handling, retry limits and key-scoped parking are tracked by [#34](https://github.com/thomhurst/Relayer/issues/34).
+index comparing `seq`, so host clock differences cannot let a later same-key row bypass a parked row. After `MaxDispatchAttempts` failures (default 10), this worker atomically dead-letters the row and establishes that barrier. [Inspect, redrive or purge poison rows](postgres-store.md#poison-rows-and-key-release) through the keyed `IDeadLetterManager`.
 
 Messages are sent sequentially through the registered native `ITransport`, preserving original bodies,
 headers, identities and ordering keys. Due delivery timestamps are consumed by the database rather than

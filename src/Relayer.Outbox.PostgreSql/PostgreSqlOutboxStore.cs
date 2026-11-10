@@ -22,6 +22,7 @@ public sealed class PostgreSqlOutboxStore : IOutboxStore
     private readonly string _completeBatch;
     private readonly string _fail;
     private readonly string _count;
+    private readonly ScalarOperation<int> _failure = new(static value => (int)value!);
     private readonly ScalarOperation<bool> _mutation = new(static value => value is true);
     private readonly ScalarOperation<long?> _pendingCount = new(static value => (long?)value);
     private readonly ScalarOperation<long> _completedCount = new(static value => (long)value!);
@@ -38,6 +39,9 @@ public sealed class PostgreSqlOutboxStore : IOutboxStore
         ArgumentNullException.ThrowIfNull(options.TablePrefix);
         var table = PostgreSqlOutboxSchema.QuoteIdentifier(options.Schema ?? "public") + "." +
             PostgreSqlOutboxSchema.QuoteIdentifier(options.TablePrefix + "outbox");
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(options.MaxDispatchAttempts);
+        var dead = PostgreSqlOutboxSchema.QuoteIdentifier(options.Schema ?? "public") + "." +
+            PostgreSqlOutboxSchema.QuoteIdentifier(options.TablePrefix + "outbox_dead");
         var eligible = "status = 'pending' AND (deliver_at IS NULL OR deliver_at <= @now) AND (claim_expires_at IS NULL OR claim_expires_at <= @now)";
         var fenced = "id = @id AND claim_token = @token AND claim_expires_at > @now";
         _read = $"SELECT id, transport, message_type, destination, body, headers, ordering_key, deliver_at, created_at, lane, attempts, last_error, tenant_id FROM {table} WHERE {eligible} AND lane IS NOT DISTINCT FROM @lane AND (@after IS NULL OR id > @after) ORDER BY id LIMIT @limit";
@@ -46,7 +50,7 @@ public sealed class PostgreSqlOutboxStore : IOutboxStore
         _renew = $"UPDATE {table} SET claim_expires_at = GREATEST(claim_expires_at, @expires) WHERE {fenced} RETURNING true";
         _complete = $"DELETE FROM {table} WHERE {fenced} RETURNING true";
         _completeBatch = $"WITH deleted AS (DELETE FROM {table} AS row USING unnest(@ids, @tokens) AS claims(id, token) WHERE row.id = claims.id AND row.claim_token = claims.token AND row.claim_expires_at > @now RETURNING row.id) SELECT count(*) FROM deleted";
-        _fail = $"UPDATE {table} SET attempts = attempts + 1, last_error = @error, claim_token = NULL, claim_expires_at = NULL WHERE {fenced} RETURNING true";
+        _fail = PostgreSqlPoisonSql.Failure(table, dead, fenced, options.MaxDispatchAttempts);
         _count = $"SELECT count(*) FROM {table} WHERE {eligible}";
     }
 
@@ -159,14 +163,19 @@ public sealed class PostgreSqlOutboxStore : IOutboxStore
     }
 
     /// <inheritdoc />
-    public ValueTask<bool> RecordFailureAsync(OutboxClaim claim, string error, DateTimeOffset now,
+    [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder<>))]
+    public async ValueTask<bool> RecordFailureAsync(OutboxClaim claim, string error, DateTimeOffset now,
+        CancellationToken cancellationToken)
+        => await RecordDispatchFailureAsync(claim, error, now, cancellationToken).ConfigureAwait(false) != 0;
+
+    internal ValueTask<int> RecordDispatchFailureAsync(OutboxClaim claim, string error, DateTimeOffset now,
         CancellationToken cancellationToken)
     {
         Validate(claim);
         ArgumentNullException.ThrowIfNull(error);
         var command = CreateMutation(_fail, claim, now);
         Add(command, "error", NpgsqlDbType.Text, error);
-        return _mutation.Start(command, cancellationToken);
+        return _failure.Start(command, cancellationToken);
     }
 
     /// <inheritdoc />

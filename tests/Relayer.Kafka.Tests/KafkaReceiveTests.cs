@@ -455,7 +455,12 @@ public class KafkaReceiveTests
         await Assert.That(await control.ReadHandledAsync(receiver.Completion, token)).IsEqualTo(5);
         await Assert.That(await control.ReadHandledAsync(receiver.Completion, token)).IsEqualTo(3);
         await host.StopAsync(token);
-        await Assert.That(await offsets.GetCommittedOffsetAsync(new(fixture.Destination, 0), token)).IsEqualTo(2L + retainedOffset);
+        // GetCommittedOffsetAsync caches a successful lookup in this native consumer.
+        // Use a fresh observer so the pre-probe lookup cannot hide the final broker commit.
+        await using var finalOffsets = new ConsumerBuilder<byte[], byte[]>().WithBootstrapServers(fixture.Bootstrap)
+            .WithGroupId(fixture.Destination).WithOffsetCommitMode(OffsetCommitMode.Manual).Build();
+        await finalOffsets.InitializeAsync(token);
+        await Assert.That(await finalOffsets.GetCommittedOffsetAsync(new(fixture.Destination, 0), token)).IsEqualTo(2L + retainedOffset);
         await using var dead = new ConsumerBuilder<byte[], byte[]>().WithBootstrapServers(fixture.Bootstrap).Build();
         await dead.InitializeAsync(token);
         var ends = await dead.QueryWatermarkOffsetsAsync(new(fixture.Destination + ".dead-letter", 0), token);
