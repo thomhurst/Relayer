@@ -11,7 +11,6 @@ using Relayer.Transports;
 
 namespace Relayer.GooglePubSub.Tests;
 
-[NotInParallel("PubSubEmulator")]
 public class GooglePubSubConformanceTests
 {
     [Test]
