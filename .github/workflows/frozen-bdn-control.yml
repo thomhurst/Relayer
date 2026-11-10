@@ -9,6 +9,11 @@ on:
       - '.github/scripts/frozen_concurrent_control.py'
       - '.github/workflows/frozen-bdn-control.yml'
   workflow_dispatch:
+    inputs:
+      performance_run:
+        description: Retained Performance run to investigate (empty keeps historical default)
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -32,8 +37,10 @@ jobs:
       - name: Download original images and execute native BenchmarkDotNet ABBA
         env:
           GH_TOKEN: ${{ github.token }}
+          PERFORMANCE_RUN: ${{ inputs.performance_run || '42310409459' }}
         run: |
-          gh run download 42310409459 --name performance-42310409459-1 --dir inputs
+          [[ "$PERFORMANCE_RUN" =~ ^[0-9]+$ ]] || { echo "Invalid Performance run ID: $PERFORMANCE_RUN" >&2; exit 1; }
+          gh run download "$PERFORMANCE_RUN" --name "performance-$PERFORMANCE_RUN-1" --dir inputs
           python3 .github/scripts/frozen_bdn_control.py inputs results/original-engine
       - name: Retain all outcomes and executable inputs
         if: always()
