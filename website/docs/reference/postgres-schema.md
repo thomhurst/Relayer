@@ -59,6 +59,8 @@ and [store registrations](postgres-store.md) must use the same schema and prefix
   `last_error` stores failure details. Status defaults to `pending` and permits `pending` or `parked`.
 - `relayer_outbox_dead` preserves the message and attempt/error data with a required `failed_at` timestamp.
   Dead rows live in this table, outside the eligible backlog.
+- `relayer_outbox_sent` contains only `id`, `destination` and `sent_at` for opt-in diagnostic history.
+  Its `(sent_at, id)` index supports bounded leased cleanup; it never contains bodies or headers.
 - `relayer_inbox` uses `(consumer, message_id)` as its primary key and stores `processed_at`.
 - `relayer_leases` uses `name` as its primary key and stores `owner` and `expires_at`.
 

@@ -21,6 +21,7 @@ public class PostgreSqlTenantDispatchBenchmarks
     private readonly CountingTransport _transport = new();
     private byte[] _headers = [];
 
+    [Params(false, true)] public bool RetainSentMessages { get; set; }
     [Params(1, 16)] public int TenantCount { get; set; }
     [Params(1, 100)] public int MessagesPerTenant { get; set; }
     [Params(1, 4)] public int LaneCount { get; set; }
@@ -41,12 +42,12 @@ public class PostgreSqlTenantDispatchBenchmarks
         for (var i = 0; i < TenantCount; i++)
         {
             var schema = _prefix + "_" + i;
-            var options = new PostgreSqlOutboxOptions { Schema = schema, Lanes = LaneCount };
+            var options = new PostgreSqlOutboxOptions { Schema = schema, Lanes = LaneCount, RetainSentMessages = RetainSentMessages };
             _entries[i] = new(i.ToString(), _source, options);
             using var create = _source.CreateCommand($"CREATE SCHEMA {schema};" + PostgreSqlOutboxSchema.CreateScript(options));
             create.ExecuteNonQuery();
-            _fixed[i] = new(_source, new() { Schema = schema, RecoveryDelay = TimeSpan.Zero }, [_transport], NullLogger<PostgreSqlMaintenanceWorker>.Instance);
-            _ordered[i] = new(_source, new() { Schema = schema, Lanes = LaneCount }, [_transport], NullLogger<PostgreSqlOrderedDispatcher>.Instance);
+            _fixed[i] = new(_source, new() { Schema = schema, RetainSentMessages = RetainSentMessages, RecoveryDelay = TimeSpan.Zero }, [_transport], NullLogger<PostgreSqlMaintenanceWorker>.Instance);
+            _ordered[i] = new(_source, new() { Schema = schema, Lanes = LaneCount, RetainSentMessages = RetainSentMessages }, [_transport], NullLogger<PostgreSqlOrderedDispatcher>.Instance);
         }
         _catalog = new(new Catalog(_entries), new() { MaxConnections = 1, RecoveryDelay = TimeSpan.Zero,
             CleanupInterval = TimeSpan.FromDays(1) }, [_transport], NullLoggerFactory.Instance);
@@ -60,7 +61,7 @@ public class PostgreSqlTenantDispatchBenchmarks
         foreach (var entry in _entries)
         {
             var schema = entry.Options.Schema;
-            using var command = _source.CreateCommand($"TRUNCATE {schema}.relayer_outbox, {schema}.relayer_leases; INSERT INTO {schema}.relayer_outbox (id,lane,ordering_key,transport,destination,message_type,headers,body,created_at) SELECT ('01900000-0000-7000-8000-' || lpad(to_hex(n),12,'0'))::uuid, CASE WHEN n % 2 = 0 THEN n % @lanes ELSE NULL END, CASE WHEN n % 2 = 0 THEN 'key-' || (n % @lanes)::text ELSE NULL END, 'events','orders-' || (n % @destinations)::text,'order;v=1',@headers,@body,clock_timestamp() FROM generate_series(1,@count) AS n");
+            using var command = _source.CreateCommand($"TRUNCATE {schema}.relayer_outbox, {schema}.relayer_outbox_sent, {schema}.relayer_leases; INSERT INTO {schema}.relayer_outbox (id,lane,ordering_key,transport,destination,message_type,headers,body,created_at) SELECT ('01900000-0000-7000-8000-' || lpad(to_hex(n),12,'0'))::uuid, CASE WHEN n % 2 = 0 THEN n % @lanes ELSE NULL END, CASE WHEN n % 2 = 0 THEN 'key-' || (n % @lanes)::text ELSE NULL END, 'events','orders-' || (n % @destinations)::text,'order;v=1',@headers,@body,clock_timestamp() FROM generate_series(1,@count) AS n");
             command.Parameters.AddWithValue("headers", _headers);
             command.Parameters.AddWithValue("body", new byte[256]);
             command.Parameters.AddWithValue("count", MessagesPerTenant);
@@ -92,6 +93,12 @@ public class PostgreSqlTenantDispatchBenchmarks
     [IterationCleanup]
     public void Verify()
     {
+        foreach (var entry in _entries)
+        {
+            using var command = _source.CreateCommand($"SELECT count(*) FROM {entry.Options.Schema}.relayer_outbox_sent");
+            if ((long)command.ExecuteScalar()! != (RetainSentMessages ? MessagesPerTenant : 0))
+                throw new InvalidOperationException("Sent-history capture did not match the configured completion policy.");
+        }
         if (_transport.Count != TenantCount * MessagesPerTenant)
             throw new InvalidOperationException("Dispatch did not send every seeded row.");
     }

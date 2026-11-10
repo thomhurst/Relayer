@@ -802,6 +802,17 @@ Delete sent outbox rows on completion, never pending or parked rows by age. Each
 batches of dead rows by `failed_at` and inbox records by `processed_at`; either retention can be disabled.
 Inbox retention defines a finite deduplication window and must cover the application's replay horizon.
 
+Opt-in PostgreSQL sent history retains only ID, destination and completion time in a separate table.
+Reuse PostgreSQL's data-modifying CTE and `DELETE RETURNING` pattern from poison completion: capture only
+rows removed by the matching live claim, in the same statement and transaction. Direct, ordered, recovery,
+CDC and tenant dispatch share this policy. Disabled workers retain their original completion SQL, chosen at
+construction, with no extra per-message work. Enabled completion adds one metadata insert/upsert and index
+writes per deleted row, without another round trip or body copy. This is database diagnostic evidence of
+completion after native acceptance, not a broker-delivery or consumer-processing guarantee. The existing
+leased cleanup deletes bounded oldest-first history batches using a positive finite retention duration.
+Lookup reports sent metadata through the existing read-only snapshot. See
+[sent-history configuration and limits](../website/docs/reference/postgres-maintenance.md#sent-message-history).
+
 **Consequences.** Recovery remains at-least-once; crashes between native acceptance and completion replay the
 stored identity. A lease-row connection failure cannot retract an in-flight native request. Large backlogs drain
 across multiple bounded passes, and native calls can delay cleanup. Poison handling and retry backoff remain

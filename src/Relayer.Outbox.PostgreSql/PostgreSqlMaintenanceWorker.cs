@@ -24,6 +24,7 @@ internal sealed partial class PostgreSqlMaintenanceWorker : BackgroundService
     private readonly string _read;
     private readonly string _dead;
     private readonly string _inbox;
+    private readonly string _sent;
     private readonly OutboxRecord[] _rows;
     private Guid? _after;
     private Guid? _through;
@@ -49,6 +50,7 @@ internal sealed partial class PostgreSqlMaintenanceWorker : BackgroundService
         _highWaterMark = $"SELECT id FROM {Table("outbox")} WHERE lane IS NULL AND status = 'pending' ORDER BY id DESC LIMIT 1";
         _read = $"SELECT id, transport, message_type, destination, body, headers, ordering_key, deliver_at, created_at, lane, attempts, last_error, tenant_id, seq FROM {Table("outbox")} WHERE lane IS NULL AND status = 'pending' AND created_at <= clock_timestamp() - @age AND (deliver_at IS NULL OR deliver_at <= clock_timestamp()) AND (claim_expires_at IS NULL OR claim_expires_at <= clock_timestamp()) AND (@after IS NULL OR id > @after) AND id <= @through ORDER BY id LIMIT @limit";
         _dead = $"DELETE FROM {Table("outbox_dead")} WHERE id IN (SELECT id FROM {Table("outbox_dead")} WHERE failed_at <= clock_timestamp() - @retention AND NOT EXISTS (SELECT 1 FROM {Table("outbox")} AS parked WHERE parked.id = {Table("outbox_dead")}.id AND parked.status = 'parked') ORDER BY failed_at, id LIMIT @limit)";
+        _sent = $"DELETE FROM {Table("outbox_sent")} WHERE id IN (SELECT id FROM {Table("outbox_sent")} WHERE sent_at <= clock_timestamp() - @retention ORDER BY sent_at, id LIMIT @limit)";
         _inbox = $"DELETE FROM {Table("inbox")} WHERE (consumer, message_id) IN (SELECT consumer, message_id FROM {Table("inbox")} WHERE processed_at <= clock_timestamp() - @retention ORDER BY processed_at, consumer, message_id LIMIT @limit)";
     }
 
@@ -164,6 +166,8 @@ internal sealed partial class PostgreSqlMaintenanceWorker : BackgroundService
     private async ValueTask<int> DeleteExpiredAsync(NpgsqlConnection connection, NpgsqlTransaction transaction, CancellationToken cancellationToken)
     {
         var count = 0;
+        if (_options.RetainSentMessages)
+            count += await DeleteAsync(connection, transaction, _sent, _options.SentRetention, cancellationToken).ConfigureAwait(false);
         if (_options.DeadRetention is { } dead)
             count += await DeleteAsync(connection, transaction, _dead, dead, cancellationToken).ConfigureAwait(false);
         if (_options.InboxRetention is { } inbox)

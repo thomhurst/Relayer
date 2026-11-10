@@ -34,11 +34,12 @@ internal static class RelayerCommand
             var result = await new PostgreSqlMessageLookup(source, new() { Schema = schema, TablePrefix = prefix })
                 .FindAsync(messageId).ConfigureAwait(false);
             output.WriteLine($"Message: {result.MessageId}\nState: {result.State}");
-            if (result.State == "not present") output.WriteLine("May mean never committed or sent and deleted; inbox receipts are independent evidence.");
+            if (result.State == "not present") output.WriteLine("May mean never committed, history disabled, or history expired; inbox receipts are independent evidence.");
             if (result.Destination is not null) output.WriteLine($"Destination: {result.Destination}");
             if (result.DeliverAt is { } due) output.WriteLine($"Due: {due:O}");
             if (result.ClaimToken is { } token) output.WriteLine($"Claim: {token}; expires: {result.ClaimExpiresAt:O}");
             output.WriteLine($"Attempts: {result.Attempts}; last error: {result.LastError}");
+            if (result.SentAt is { } sent) output.WriteLine($"Sent: {sent:O}");
             if (result.FailedAt is { } failed) output.WriteLine($"Failed: {failed:O}");
             if (result.Lane is { } lane) output.WriteLine($"Lane: {lane.ToString(CultureInfo.InvariantCulture)}; owner: {result.LaneOwner}; expires: {result.LaneExpiresAt:O}; earlier rows: {result.EarlierRows?.ToString(CultureInfo.InvariantCulture) ?? "unknown"}");
             foreach (var receipt in result.InboxReceipts) output.WriteLine($"Inbox: {receipt.Consumer}; processed: {receipt.ProcessedAt:O}");

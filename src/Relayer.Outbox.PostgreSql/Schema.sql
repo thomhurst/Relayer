@@ -60,3 +60,11 @@ CREATE TABLE IF NOT EXISTS {{schema}}.{{leases}} (
     owner text NOT NULL,
     expires_at timestamptz NOT NULL
 );
+
+-- Diagnostic metadata only: bodies and headers are never retained after successful completion.
+CREATE TABLE IF NOT EXISTS {{schema}}.{{outbox_sent}} (
+    id uuid PRIMARY KEY CHECK (id <> '00000000-0000-0000-0000-000000000000'),
+    destination text NOT NULL,
+    sent_at timestamptz NOT NULL
+);
+CREATE INDEX IF NOT EXISTS {{outbox_sent_time_idx}} ON {{schema}}.{{outbox_sent}} (sent_at, id);

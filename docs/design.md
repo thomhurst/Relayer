@@ -530,7 +530,7 @@ Cache hits remain read-only; an evicted endpoint is resolved again before claimi
 
 A **sweeper** (also leased) picks up anything that was committed but not dispatched within a threshold, for example because the instance crashed. Postgres `LISTEN/NOTIFY` and SQL Server Service Broker can optionally replace the sweeper's poll.
 
-After dispatch, rows are deleted in batches. One leased **cleanup** job handles retention for the dead table and inbox; pending and parked outbox rows never expire by age (CAP #1811, Rebus.SqlServer #101). D38 records bounded PostgreSQL recovery, leadership and retention semantics.
+After dispatch, rows are deleted in batches. Opt-in PostgreSQL sent history atomically copies only ID, destination and completion time into `relayer_outbox_sent` through the fenced delete statement. One leased **cleanup** job handles retention for that metadata, the dead table and inbox; pending and parked outbox rows never expire by age (CAP #1811, Rebus.SqlServer #101). D38 records bounded PostgreSQL recovery, leadership and retention semantics.
 
 **Poison rows:** after a configurable number of attempts, the row is moved to `relayer_outbox_dead` and an alert metric is raised. For ordered routes, only later rows **with the same ordering key** are parked; the rest of the lane continues. Parked keys can be inspected and released through `IDeadLetterManager`.
 

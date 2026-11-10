@@ -150,7 +150,7 @@ the environment. Failures return exit code 1; successful lookups return 0 even
 when the ID is absent. Authorize database/schema access before exposing the API:
 results include destinations, consumer names, claim tokens and error text.
 
-The state is `pending`, `scheduled`, `claimed`, `parked`, `dead`, or `not present`.
+The state is `pending`, `scheduled`, `claimed`, `parked`, `dead`, `sent`, or `not present`.
 A live claim takes precedence over scheduling. An expired claim is pending or
 scheduled, with its old claim metadata still visible. Parked rows take precedence
 over their dead-table copy; later rows of that ordered key also report `parked`. Scheduled rows include the due time, claimed rows the
@@ -168,8 +168,12 @@ a `parked` result needs poison-key recovery. Inbox receipts identify consumers t
 committed a durable inbox entry. Receipts are returned even without an outbox row
 and remain subject to inbox retention.
 
-`not present` is ambiguous between never committed and sent and deleted.
-Sent-metadata retention is planned separately. Absence proves neither delivery
-nor non-delivery. The lookup observes this PostgreSQL store, not the broker. It
+With [sent-history retention](postgres-maintenance.md#sent-message-history) enabled, `sent`
+reports the destination and `SentAt` (the CLI prints `Sent:`). This records fenced database
+completion after native acceptance, not consumer processing. Live and dead rows take
+precedence if an application reuses an ID. Inbox receipts remain independent.
+
+`not present` includes never committed, history disabled, and history expired. Absence
+proves neither delivery nor non-delivery. The lookup observes this PostgreSQL store, not the broker. It
 uses a read-only, repeatable-read snapshot, never claims or releases rows, and
 never reads message bodies. It adds no work to dispatch.

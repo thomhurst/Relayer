@@ -7,6 +7,9 @@ public sealed class PostgreSqlMaintenanceOptions
     public string? Schema { get; init; }
     /// <summary>Table prefix, identical to every writer and dispatcher.</summary>
     public string TablePrefix { get; init; } = "relayer_";
+    /// <summary>Retain sent IDs, destinations and completion times. Disabled by default; enable on every dispatcher and maintenance worker for this store.</summary>
+    public bool RetainSentMessages { get; init; }
+
     /// <summary>Failed sends before a row is dead-lettered. Must match other dispatchers for this store.</summary>
     public int MaxDispatchAttempts { get; init; } = 10;
     /// <summary>Maximum rows scanned or deleted per pass.</summary>
@@ -26,6 +29,9 @@ public sealed class PostgreSqlMaintenanceOptions
     /// <summary>Retention from processed_at for inbox deduplication. Null retains it indefinitely.</summary>
     public TimeSpan? InboxRetention { get; init; } = TimeSpan.FromDays(7);
 
+    /// <summary>Sent metadata retention from sent_at. Must be positive; cleanup requires RetainSentMessages.</summary>
+    public TimeSpan SentRetention { get; init; } = TimeSpan.FromDays(7);
+
     internal PostgreSqlOutboxOptions Validate()
     {
         if (BatchSize is < 1 or > 10000) throw new ArgumentOutOfRangeException(nameof(BatchSize));
@@ -35,11 +41,12 @@ public sealed class PostgreSqlMaintenanceOptions
         ValidateDelay(SweepInterval, nameof(SweepInterval));
         ValidateDuration(ClaimDuration, nameof(ClaimDuration));
         ValidateDelay(CleanupInterval, nameof(CleanupInterval));
+        ValidateDuration(SentRetention, nameof(SentRetention));
         if (DeadRetention is { } dead) ValidateDuration(dead, nameof(DeadRetention));
         if (InboxRetention is { } inbox) ValidateDuration(inbox, nameof(InboxRetention));
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(MaxDispatchAttempts);
         ArgumentNullException.ThrowIfNull(TablePrefix);
-        var store = new PostgreSqlOutboxOptions { Schema = Schema, TablePrefix = TablePrefix, MaxDispatchAttempts = MaxDispatchAttempts };
+        var store = new PostgreSqlOutboxOptions { Schema = Schema, TablePrefix = TablePrefix, MaxDispatchAttempts = MaxDispatchAttempts, RetainSentMessages = RetainSentMessages };
         _ = PostgreSqlOutboxSchema.CreateScript(store);
         return store;
     }

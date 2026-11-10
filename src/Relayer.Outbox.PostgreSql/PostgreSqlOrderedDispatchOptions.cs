@@ -13,6 +13,9 @@ public sealed class PostgreSqlOrderedDispatchOptions
     public TimeSpan LeaseDuration { get; init; } = TimeSpan.FromSeconds(30);
     /// <summary>Delay between scans, less than one third of the lease duration.</summary>
     public TimeSpan PollInterval { get; init; } = TimeSpan.FromSeconds(1);
+    /// <summary>Retain sent IDs, destinations and completion times. Disabled by default; enable on every dispatcher and maintenance worker for this store.</summary>
+    public bool RetainSentMessages { get; init; }
+
     /// <summary>Failed sends before a row is dead-lettered. Must match other dispatchers for this store.</summary>
     public int MaxDispatchAttempts { get; init; } = 10;
     /// <summary>Maximum sequential sends in one bounded lane transaction.</summary>
@@ -28,7 +31,7 @@ public sealed class PostgreSqlOrderedDispatchOptions
             throw new ArgumentOutOfRangeException(nameof(LeaseDuration));
         if (PollInterval <= TimeSpan.Zero || PollInterval >= LeaseDuration / 3)
             throw new ArgumentOutOfRangeException(nameof(PollInterval), "PollInterval must be positive and less than LeaseDuration / 3.");
-        var store = new PostgreSqlOutboxOptions { Schema = Schema, TablePrefix = TablePrefix, Lanes = Lanes, MaxDispatchAttempts = MaxDispatchAttempts };
+        var store = new PostgreSqlOutboxOptions { Schema = Schema, TablePrefix = TablePrefix, Lanes = Lanes, MaxDispatchAttempts = MaxDispatchAttempts, RetainSentMessages = RetainSentMessages };
         _ = PostgreSqlOutboxSchema.CreateScript(store);
         return store;
     }

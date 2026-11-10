@@ -22,6 +22,9 @@ public sealed class PostgreSqlTenantDispatchOptions
     /// <summary>Inbox retention. Null retains deduplication identities indefinitely.</summary>
     public TimeSpan? InboxRetention { get; init; } = TimeSpan.FromDays(7);
 
+    /// <summary>Sent metadata retention for stores with RetainSentMessages enabled.</summary>
+    public TimeSpan SentRetention { get; init; } = TimeSpan.FromDays(7);
+
     internal void Validate()
     {
         if (MaxConnections is < 1 or > 1024) throw new ArgumentOutOfRangeException(nameof(MaxConnections));
@@ -39,7 +42,7 @@ public sealed class PostgreSqlTenantDispatchOptions
 
     internal PostgreSqlMaintenanceOptions Maintenance(PostgreSqlOutboxOptions store) => new()
     {
-        Schema = store.Schema, TablePrefix = store.TablePrefix, MaxDispatchAttempts = store.MaxDispatchAttempts,
+        Schema = store.Schema, TablePrefix = store.TablePrefix, MaxDispatchAttempts = store.MaxDispatchAttempts, RetainSentMessages = store.RetainSentMessages, SentRetention = SentRetention,
         BatchSize = BatchSize, RecoveryDelay = RecoveryDelay, CleanupInterval = CleanupInterval,
         DeadRetention = DeadRetention, InboxRetention = InboxRetention,
         LeaseDuration = store.LeaseDuration, ClaimDuration = store.LeaseDuration

@@ -13,6 +13,9 @@ public sealed class PostgreSqlChangeCaptureOptions
     public string? Schema { get; init; }
     /// <summary>Table prefix shared with writers.</summary>
     public string TablePrefix { get; init; } = "relayer_";
+    /// <summary>Retain sent IDs, destinations and completion times. Disabled by default; enable on every dispatcher and maintenance worker for this store.</summary>
+    public bool RetainSentMessages { get; init; }
+
     /// <summary>Failed sends before a row is dead-lettered. Must match other dispatchers for this store.</summary>
     public int MaxDispatchAttempts { get; init; } = 10;
     /// <summary>Maximum rows read per database transaction.</summary>
@@ -34,7 +37,7 @@ public sealed class PostgreSqlChangeCaptureOptions
         var recovery = new PostgreSqlMaintenanceOptions
         {
             Schema = Schema, TablePrefix = TablePrefix, BatchSize = BatchSize,
-            MaxDispatchAttempts = MaxDispatchAttempts, ClaimDuration = ClaimDuration, RecoveryDelay = TimeSpan.Zero
+            MaxDispatchAttempts = MaxDispatchAttempts, RetainSentMessages = RetainSentMessages, ClaimDuration = ClaimDuration, RecoveryDelay = TimeSpan.Zero
         };
         _ = recovery.Validate();
         return recovery;

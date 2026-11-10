@@ -40,6 +40,7 @@ public static partial class PostgreSqlOutboxServiceCollectionExtensions
             RecoveryDelay = Read(nameof(defaults.RecoveryDelay), defaults.RecoveryDelay),
             CleanupInterval = Read(nameof(defaults.CleanupInterval), defaults.CleanupInterval),
             DeadRetention = Retention(nameof(defaults.DeadRetention), defaults.DeadRetention),
+            SentRetention = Read(nameof(defaults.SentRetention), defaults.SentRetention),
             InboxRetention = Retention(nameof(defaults.InboxRetention), defaults.InboxRetention)
         });
         T Read<T>(string key, T fallback) where T : IParsable<T>

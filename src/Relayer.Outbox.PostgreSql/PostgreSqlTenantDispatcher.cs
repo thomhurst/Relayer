@@ -237,14 +237,14 @@ internal sealed partial class PostgreSqlTenantDispatcher : BackgroundService
     private PostgreSqlOrderedDispatchOptions OrderedOptions(PostgreSqlOutboxOptions store) => new()
     {
         Schema = store.Schema, TablePrefix = store.TablePrefix, Lanes = store.Lanes,
-        LeaseDuration = store.LeaseDuration, MaxDispatchAttempts = store.MaxDispatchAttempts,
+        LeaseDuration = store.LeaseDuration, MaxDispatchAttempts = store.MaxDispatchAttempts, RetainSentMessages = store.RetainSentMessages,
         BatchSize = _options.BatchSize, PollInterval = store.LeaseDuration / 4
     };
 
     private static bool SameStore(PostgreSqlTenantStore left, PostgreSqlTenantStore right) =>
         ReferenceEquals(left.DataSource, right.DataSource) && (left.Options.Schema ?? "public") == (right.Options.Schema ?? "public") &&
         left.Options.TablePrefix == right.Options.TablePrefix && left.Options.Lanes == right.Options.Lanes &&
-        left.Options.LeaseDuration == right.Options.LeaseDuration && left.Options.MaxDispatchAttempts == right.Options.MaxDispatchAttempts;
+        left.Options.LeaseDuration == right.Options.LeaseDuration && left.Options.MaxDispatchAttempts == right.Options.MaxDispatchAttempts && left.Options.RetainSentMessages == right.Options.RetainSentMessages;
 
     private sealed class Store(PostgreSqlTenantStore entry, PostgreSqlDirectDispatcher direct,
         PostgreSqlMaintenanceWorker maintenance, PostgreSqlOrderedDispatcher ordered) : IDisposable

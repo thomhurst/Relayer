@@ -50,6 +50,13 @@ public sealed class PostgreSqlOutboxStore : IOutboxStore
         _renew = $"UPDATE {table} SET claim_expires_at = GREATEST(claim_expires_at, @expires) WHERE {fenced} RETURNING true";
         _complete = $"DELETE FROM {table} WHERE {fenced} RETURNING true";
         _completeBatch = $"WITH deleted AS (DELETE FROM {table} AS row USING unnest(@ids, @tokens) AS claims(id, token) WHERE row.id = claims.id AND row.claim_token = claims.token AND row.claim_expires_at > @now RETURNING row.id) SELECT count(*) FROM deleted";
+        if (options.RetainSentMessages)
+        {
+            var sent = PostgreSqlOutboxSchema.QuoteIdentifier(options.Schema ?? "public") + "." +
+                PostgreSqlOutboxSchema.QuoteIdentifier(options.TablePrefix + "outbox_sent");
+            _complete = PostgreSqlSentSql.Complete($"DELETE FROM {table} AS row WHERE {fenced}", sent, "@now", false);
+            _completeBatch = PostgreSqlSentSql.Complete($"DELETE FROM {table} AS row USING unnest(@ids, @tokens) AS claims(id, token) WHERE row.id = claims.id AND row.claim_token = claims.token AND row.claim_expires_at > @now", sent, "@now", true);
+        }
         _fail = PostgreSqlPoisonSql.Failure(table, dead, fenced, options.MaxDispatchAttempts);
         _count = $"SELECT count(*) FROM {table} WHERE {eligible}";
     }

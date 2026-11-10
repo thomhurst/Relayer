@@ -94,6 +94,7 @@ public class DatabaseSchemaTests
             ["outbox_dead"] = ["id:uuid", "lane:integer", "ordering_key:text", "transport:text", "destination:text", "message_type:text",
                 "headers:bytea", "body:bytea", "created_at:timestamp with time zone", "deliver_at:timestamp with time zone",
                 "attempts:integer", "last_error:text", "tenant_id:text", "failed_at:timestamp with time zone"],
+            ["outbox_sent"] = ["id:uuid", "destination:text", "sent_at:timestamp with time zone"],
             ["inbox"] = ["consumer:text", "message_id:uuid", "processed_at:timestamp with time zone"],
             ["leases"] = ["name:text", "owner:text", "expires_at:timestamp with time zone"]
         };
