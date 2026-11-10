@@ -88,7 +88,7 @@ services.AddRelayerPostgreSqlDeadLetters("orders", dataSource, storeOptions);
 var manager = serviceProvider.GetRequiredKeyedService<IDeadLetterManager>("orders");
 var page = await manager.PeekAsync("orders", maxMessages: 20);
 var details = page.Messages[0].Features.GetRequired<PostgreSqlDeadLetterDetails>();
-await manager.RedriveAsync("orders", message => message.MessageId == selectedId);
+await manager.RedriveAsync("orders", message => message.MessageId == selectedId, maxMessages: 1000);
 ```
 
 Use the same application-owned data source, schema and prefix as the workers. `List()` exposes the
@@ -98,8 +98,18 @@ Redrive restores pending rows for existing workers, resets attempts and clears t
 it never sends directly. Ordered redrive preserves the original sequence before later same-key rows.
 `PurgeAsync` permanently discards dead rows and their barriers, releasing later same-key rows without
 replaying the failed row. Calls scan at most the requested batch (1–1000 rows); filtered redrive can
-change fewer rows. Concurrent management calls skip locked dead rows. Filter errors and database
-failures roll back the entire batch.
+change fewer rows. The bound counts scanned rows, not matches. Each call starts at the lowest ID;
+repeating the same filtered call does not advance past unmatched rows. Peek cursors only page inspection,
+not redrive. Select a bound that includes the desired row (up to 1000); this API cannot selectively redrive
+a row beyond that prefix. Drain earlier rows with unfiltered redrive, or explicitly discard them with
+purge, before reaching deeper rows. Neither operation is an inspection-only way to advance the prefix.
+Concurrent management calls skip locked dead rows. Filter errors and database failures roll back the entire batch.
+
+An ordered dead row must still have its original parked row. A missing or changed barrier indicates
+inconsistent durable state; redrive fails with the row ID and rolls back every change in that batch.
+It never invents a new sequence or silently skips the inconsistency. Restore the original durable row
+at its original sequence before retrying, or explicitly purge the dead row if it should be discarded.
+A bounded purge also starts at the lowest ID and can discard earlier rows, so inspect that prefix first.
 
 Dead retention excludes rows with an active parked barrier, retaining their inspection and redrive data
 until explicit redrive or purge. Unordered dead rows remain subject to configured retention.

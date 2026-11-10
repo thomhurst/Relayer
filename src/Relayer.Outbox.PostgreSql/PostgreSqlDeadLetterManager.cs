@@ -65,7 +65,7 @@ internal sealed class PostgreSqlDeadLetterManager : IDeadLetterManager
             {
                 command.Parameters.AddWithValue("id", row.Id);
                 var affected = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-                if (!purge && affected != 1) throw new InvalidOperationException("The ordered dead row has no parked barrier. Restore its durable row before redrive.");
+                if (!purge && affected != 1) throw new InvalidOperationException($"Ordered dead row {row.Id:D} has no parked barrier. Restore its durable row at the original sequence before redrive, or explicitly purge the dead row to discard it. The redrive batch was rolled back.");
             }
             using (var command = new NpgsqlCommand($"DELETE FROM {_dead} WHERE id = @id", connection, transaction))
             {

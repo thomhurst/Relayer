@@ -89,6 +89,76 @@ public class PoisonTests
         await Assert.That(await manager.PurgeAsync("store")).IsEqualTo(1);
     }
 
+    [Test]
+    public async Task Filtered_redrive_bounds_scanned_rows_and_requires_a_larger_prefix_for_later_matches()
+    {
+        await using var fixture = new PostgreSqlFixture();
+        await fixture.StartAsync();
+        await using var source = NpgsqlDataSource.Create(fixture.ConnectionString);
+        await PostgreSqlOutboxStoreTests.CreateSchema(source);
+        var options = new PostgreSqlOutboxOptions { MaxDispatchAttempts = 1 };
+        var first = Guid.Parse("00000000-0000-0000-0000-000000000001");
+        var second = Guid.Parse("00000000-0000-0000-0000-000000000002");
+        await MakeDead(source, options, first);
+        await MakeDead(source, options, second);
+        var manager = new PostgreSqlDeadLetterManager("store", source, options);
+        var scanned = 0;
+        bool Match(DeadLetterMessage message) { scanned++; return message.MessageId == second.ToString("D"); }
+        await Assert.That(await manager.RedriveAsync("store", Match, 1)).IsEqualTo(0);
+        await Assert.That(await manager.RedriveAsync("store", Match, 1)).IsEqualTo(0);
+        await Assert.That(scanned).IsEqualTo(2);
+        var page = await manager.PeekAsync("store", 1);
+        await Assert.That((await manager.PeekAsync("store", 1, page.NextCursor)).Messages[0].MessageId).IsEqualTo(second.ToString("D"));
+        await Assert.That(await manager.RedriveAsync("store", Match, 2)).IsEqualTo(1);
+        await Assert.That((await manager.PeekAsync("store")).Messages[0].MessageId).IsEqualTo(first.ToString("D"));
+    }
+
+    [Test]
+    public async Task Missing_ordered_barrier_reports_identity_and_rolls_back_earlier_redrives()
+    {
+        await using var fixture = new PostgreSqlFixture();
+        await fixture.StartAsync();
+        await using var source = NpgsqlDataSource.Create(fixture.ConnectionString);
+        await PostgreSqlOutboxStoreTests.CreateSchema(source);
+        var options = new PostgreSqlOutboxOptions { MaxDispatchAttempts = 1 };
+        var first = Guid.Parse("00000000-0000-0000-0000-000000000001");
+        var broken = Guid.Parse("00000000-0000-0000-0000-000000000002");
+        await MakeDead(source, options, first);
+        await MakeDead(source, options, broken, 0);
+        await using (var command = source.CreateCommand("DELETE FROM relayer_outbox WHERE id = @id"))
+        {
+            command.Parameters.AddWithValue("id", broken);
+            await command.ExecuteNonQueryAsync();
+        }
+        var manager = new PostgreSqlDeadLetterManager("store", source, options);
+        try
+        {
+            await manager.RedriveAsync("store");
+            throw new Exception("Expected inconsistent barrier to fail redrive.");
+        }
+        catch (InvalidOperationException exception)
+        {
+            await Assert.That(exception.Message).Contains(broken.ToString("D"));
+            await Assert.That(exception.Message).Contains("rolled back");
+        }
+        await Assert.That((await manager.PeekAsync("store")).Messages.Count).IsEqualTo(2);
+        var rows = new OutboxRecord[2];
+        await Assert.That(await new PostgreSqlOutboxStore(source, options).ReadPendingAsync(new(null, DateTimeOffset.UtcNow), rows, default)).IsEqualTo(0);
+        // Explicitly discard the damaged prefix; purge does not need to invent a sequence.
+        await Assert.That(await manager.PurgeAsync("store", 2)).IsEqualTo(2);
+        await Assert.That((await manager.PeekAsync("store")).Messages.Count).IsEqualTo(0);
+    }
+
+    private static async Task MakeDead(NpgsqlDataSource source, PostgreSqlOutboxOptions options, Guid id, int? lane = null)
+    {
+        var now = DateTimeOffset.UtcNow;
+        await PostgreSqlOutboxStoreTests.Insert(source, options, id, now, lane: lane);
+        var store = new PostgreSqlOutboxStore(source, options);
+        var claim = new OutboxClaim(id, Guid.NewGuid());
+        await Assert.That(await store.TryClaimAsync(claim, now, now.AddMinutes(1), default)).IsTrue();
+        await store.RecordDispatchFailureAsync(claim, "broker failed", now, default);
+    }
+
     private sealed class FailingTransport : ITransport
     {
         public string Name => "events";

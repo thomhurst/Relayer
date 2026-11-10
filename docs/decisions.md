@@ -1026,6 +1026,12 @@ only concurrent writers from its ordering guarantee; these transactions are not 
 - Ordered lanes read and index pending rows by `(lane, seq)`. The parked-key anti-join compares `seq`. Unordered pending rows keep a partial UUID index and their existing read/recovery cursors.
 - One transaction's rows are inserted in send order, so their `seq` values keep that order. PostgreSQL uses `UNNEST WITH ORDINALITY ORDER BY position`; shared EF contexts merge their reusable rows by a scope-local enqueue position before insertion.
 - `id` remains the stable message identity for the inbox, native message IDs and fenced claims.
+- PostgreSQL ordered redrive requires the original parked row and updates it in place. If it is missing
+  or no longer parked, fail the entire management transaction with the row ID. The final failure transition,
+  redrive and purge lock/update their durable rows transactionally, so this indicates inconsistent state,
+  not an ordinary concurrent management race. Silently skipping it hides a broken ordering invariant;
+  recreating it would assign a new sequence and could reorder the key. Operators must restore the original
+  durable row and sequence or explicitly purge the dead copy to discard it.
 - Other database stores adopt the same rule with their native identity or sequence feature.
 
 **Consequences.** Sequential transactions are dispatched in commit order whatever the host clocks say.
