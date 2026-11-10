@@ -154,6 +154,9 @@ internal sealed class PubSubFixture : ITransportConformanceFixture<GooglePubSubD
     // Closing the proxy drops live TCP streams while preserving the emulator's native endpoint state.
     public async Task DisconnectAsync(CancellationToken token)
     {
+        // StartAsync returns before the native initial write. Cut an established subscriber,
+        // rather than racing that write into the client's documented fatal startup path.
+        await _native.WaitForInitialWriteAsync(token);
         await Broker.SetConnectedAsync(false, token);
         _disconnected = true;
     }
