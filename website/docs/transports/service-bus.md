@@ -270,3 +270,7 @@ These endpoints use source-generated JSON and support Native AOT without adding 
 ## Consumer failure circuit
 
 Set `consumer.Options.CircuitBreaker` to `ConsumerCircuitOptions` to stop queue or session processing when its failure rate crosses a threshold. Native redelivery retains failed deliveries while open, and one half-open probe controls recovery. See [consumer circuit breaking](../guides/failure-handling.md#consumer-circuit-breaking) for configuration, settlement and native delivery-limit behavior.
+
+Abandoning a failed delivery and allowing a rejected delivery's lock to expire both consume native delivery attempts. During a prolonged outage, Service Bus can dead-letter messages at `MaxDeliveryCount` even while the circuit is open. Size `BreakDuration` together with the queue or subscription's `MaxDeliveryCount` and expected outage duration; circuit retention does not override broker limits or message expiry.
+
+If a native circuit stop or recovery start fails, consumption stops and the failure is logged and retained for shutdown. With `AddRelayerServiceBusHealthProviders` and `AddRelayerHealthChecks` registered, consumer health reports the failure as unhealthy. Recreate the application host to resume consumption.

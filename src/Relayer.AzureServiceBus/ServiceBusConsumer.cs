@@ -20,6 +20,7 @@ internal sealed partial class ServiceBusConsumer : IAsyncDisposable
     { SingleReader = true, AllowSynchronousContinuations = false, FullMode = BoundedChannelFullMode.DropWrite });
     private int _pauseRequested;
     private Task? _controlTask;
+    private Exception? _controlFailure;
     private ConsumerCircuit? _circuit;
     private EndpointTelemetry? _telemetry;
     private int _running;
@@ -114,6 +115,8 @@ internal sealed partial class ServiceBusConsumer : IAsyncDisposable
     {
         ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
         cancellationToken.ThrowIfCancellationRequested();
+        if (Volatile.Read(ref _controlFailure) is not null)
+            throw new InvalidOperationException("Recreate the application host after a Service Bus circuit control failure.");
         if (_abort.IsCancellationRequested)
             throw new InvalidOperationException("Recreate the application host after an aborted Service Bus drain.");
         if (Interlocked.CompareExchange(ref _running, 1, 0) != 0)
@@ -143,8 +146,8 @@ internal sealed partial class ServiceBusConsumer : IAsyncDisposable
                 if (Volatile.Read(ref _running) == 0) break;
                 if ((Interlocked.Exchange(ref _pauseRequested, 0) != 0 || _circuit?.State == 1) && started)
                 {
-                    await StopNativeAsync().ConfigureAwait(false);
                     started = false;
+                    await StopNativeAsync().ConfigureAwait(false);
                 }
                 // Recovery may have become available while native stop was draining.
                 if (_circuit?.State != 1 && !started && Volatile.Read(ref _running) != 0)
@@ -157,13 +160,22 @@ internal sealed partial class ServiceBusConsumer : IAsyncDisposable
         catch (OperationCanceledException) when (_abort.IsCancellationRequested && Volatile.Read(ref _running) == 0) { }
         catch (Exception error)
         {
+            Volatile.Write(ref _controlFailure, error);
             Volatile.Write(ref _running, 0);
             if (_logger is { } logger) CircuitControlFailed(logger, error, Declaration.Source);
             throw;
         }
         finally
         {
-            if (started) await StopNativeAsync().ConfigureAwait(false);
+            if (started)
+            {
+                try { await StopNativeAsync().ConfigureAwait(false); }
+                catch (Exception error) when (Volatile.Read(ref _controlFailure) is not null)
+                {
+                    // Preserve the original control failure if cleanup also fails.
+                    if (_logger is { } logger) CircuitControlFailed(logger, error, Declaration.Source);
+                }
+            }
         }
     }
 
@@ -229,7 +241,10 @@ internal sealed partial class ServiceBusConsumer : IAsyncDisposable
 
     internal (bool IsIdle, DateTimeOffset LastProgressAt)? GetHealthState()
     {
-        if (!TrackHealth || Volatile.Read(ref _running) == 0) return null;
+        if (!TrackHealth) return null;
+        if (Volatile.Read(ref _controlFailure) is { } failure)
+            throw new InvalidOperationException("Service Bus circuit control failed. Recreate the application host to resume consumption.", failure);
+        if (Volatile.Read(ref _running) == 0) return null;
         var oldest = long.MaxValue;
         for (var i = 0; i < _active.Length; i++)
         {

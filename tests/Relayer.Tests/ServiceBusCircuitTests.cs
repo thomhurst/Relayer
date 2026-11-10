@@ -9,6 +9,40 @@ namespace Relayer.Tests;
 public sealed class ServiceBusCircuitTests
 {
     [Test]
+    public async Task Recovery_start_failure_remains_visible_to_health_and_shutdown()
+    {
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+        var token = deadline.Token;
+        var clock = new ConsumerCircuitTests.Clock();
+        var client = new ServiceBusReceiveTests.NativeClient();
+        var provider = ServiceBusReceiveTests.Provider(client,
+            consumer => consumer.Options.CircuitBreaker = new() { MinimumThroughput = 1 }, health: true, time: clock);
+        try
+        {
+            await ServiceBusReceiveTests.Start(provider, token);
+            var processor = client.Processors.Single();
+            await processor.Lifecycle.Reader.ReadAsync(token);
+            provider.GetRequiredService<ServiceBusReceiveTests.Control>().Handle = (_, _, _) =>
+                ValueTask.FromException(new InvalidOperationException("offline"));
+            await processor.Emit(ServiceBusReceiveTests.Args(new()));
+            await Assert.That(await processor.Lifecycle.Reader.ReadAsync(token)).IsEqualTo("stop");
+            processor.StartWork = () => Task.FromException(new InvalidOperationException("restart failed"));
+            clock.Recovery.Fire();
+            await Assert.That(await processor.Lifecycle.Reader.ReadAsync(token)).IsEqualTo("start");
+            // Await the faulted control task deterministically before checking its retained health failure.
+            await Assert.That(async () => await ServiceBusReceiveTests.Stop(provider, token)).Throws<InvalidOperationException>();
+            var health = provider.GetRequiredKeyedService<Relayer.HealthChecks.IConsumerHealthProvider>("bus");
+            var declaration = provider.GetRequiredService<RelayerConfiguration>().Transports.Single().Consumers.Single();
+            await Assert.That(async () => await health.GetStateAsync(declaration, token)).Throws<InvalidOperationException>();
+            await Assert.That(async () => await ServiceBusReceiveTests.Start(provider, token)).Throws<InvalidOperationException>();
+        }
+        finally
+        {
+            await Assert.That(async () => await provider.DisposeAsync()).Throws<InvalidOperationException>();
+        }
+    }
+
+    [Test]
     [Arguments(false)]
     [Arguments(true)]
     public async Task Concurrent_failures_are_retained_and_only_one_probe_runs_after_native_drain(bool sessions)
