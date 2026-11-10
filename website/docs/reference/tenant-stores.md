@@ -227,7 +227,9 @@ recovery. Replacing a source or store options retires its previous state; create
 the catalog pass has observed the replacement. Old scopes may leave committed rows for recovery.
 
 Each turn has a `TurnTimeout`, so a failed or contended store cannot monopolize admission indefinitely.
-Native operations and transports must honor cancellation. Failures are logged and other stores keep
+Tenant turns resume with the next dispatch phase after a timeout, so a busy direct queue cannot
+starve recovery, ordered delivery or cleanup. Ordered passes likewise resume at the next lane;
+a failed lane does not stop healthy lanes. Native operations and transports must honor cancellation. Failures are logged and other stores keep
 running. `PollInterval` controls catalog refresh and scheduling latency, `RecoveryDelay` controls
 unordered recovery age, and cleanup follows `CleanupInterval` and the retention settings. A large
 catalog may take several lane lease durations to revisit a store; native ownership is re-established

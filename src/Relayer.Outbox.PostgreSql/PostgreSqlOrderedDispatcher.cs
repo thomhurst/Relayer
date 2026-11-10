@@ -15,6 +15,7 @@ internal sealed partial class PostgreSqlOrderedDispatcher : BackgroundService
     private readonly Dictionary<string, ITransport> _transports = new(StringComparer.Ordinal);
     private readonly OutboxRecord[] _rows;
     private readonly bool[] _ready;
+    private int _nextLane;
     private readonly OrderedDispatchCapabilityCache _capabilities = new();
     private readonly ILogger<PostgreSqlOrderedDispatcher> _logger;
     private readonly TimeProvider _timeProvider;
@@ -108,14 +109,32 @@ internal sealed partial class PostgreSqlOrderedDispatcher : BackgroundService
     {
         await _coordinator.RebalanceAsync(cancellationToken).ConfigureAwait(false);
         await _lane.FindReadyAsync(_coordinator.Assigned, _ready, cancellationToken).ConfigureAwait(false);
-        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        for (var lane = 0; lane < _options.Lanes; lane++)
+        var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        try
         {
-            if (!_ready[lane] || !_coordinator.Assigned[lane]) continue;
-            deadline.CancelAfter(_options.LeaseDuration / 2);
-            await DispatchLaneAsync(lane, deadline.Token).ConfigureAwait(false);
-            deadline.CancelAfter(Timeout.InfiniteTimeSpan);
+            for (var visited = 0; visited < _options.Lanes; visited++)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var lane = _nextLane;
+                // Advance before dispatch: an expired tenant turn resumes at the following lane.
+                _nextLane = (lane + 1) % _options.Lanes;
+                if (!_ready[lane] || !_coordinator.Assigned[lane]) continue;
+                deadline.CancelAfter(_options.LeaseDuration / 2);
+                try { await DispatchLaneAsync(lane, deadline.Token).ConfigureAwait(false); }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
+                catch (Exception error) { DispatchFailed(_logger, error); }
+                finally
+                {
+                    deadline.CancelAfter(Timeout.InfiniteTimeSpan);
+                    if (!deadline.TryReset())
+                    {
+                        deadline.Dispose();
+                        deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                    }
+                }
+            }
         }
+        finally { deadline.Dispose(); }
     }
 
     internal ValueTask ReleaseAsync(CancellationToken cancellationToken) => _coordinator.ReleaseAsync(cancellationToken);

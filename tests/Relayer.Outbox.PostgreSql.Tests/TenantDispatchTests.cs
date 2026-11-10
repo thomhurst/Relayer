@@ -253,6 +253,78 @@ public class TenantDispatchTests
     }
 
     [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Ordered_lanes_progress_after_lane_or_tenant_deadline(bool tenantDeadline)
+    {
+        await using var fixture = new Stores();
+        await fixture.Start(1, lanes: 3, leaseDuration: TimeSpan.FromSeconds(4));
+        var store = fixture.Entries[0];
+        for (var lane = 0; lane < 3; lane++) await Insert(store, lane + 1, lane);
+        var transport = new Transport(async (message, token) =>
+        {
+            if (MessageId(message) == Id(1)) await Task.Delay(Timeout.Infinite, token);
+        });
+        using var worker = new PostgreSqlTenantDispatcher(fixture.Catalog,
+            new() { TurnTimeout = TimeSpan.FromSeconds(tenantDeadline ? 1 : 5), RecoveryDelay = TimeSpan.Zero },
+            [transport], NullLoggerFactory.Instance);
+        await worker.PassAsync(default);
+        if (tenantDeadline) await worker.PassAsync(default);
+        await Assert.That(transport.Sent.Select(x => x.Id).SequenceEqual([Id(2), Id(3)])).IsTrue();
+        await Assert.That(await Count(store, "outbox")).IsEqualTo(1L);
+        await Assert.That(await fixture.Connections()).IsEqualTo(0L);
+        await worker.ReleaseAllAsync();
+    }
+
+    [Test]
+    public async Task Exhausted_direct_turn_resumes_recovery_ordered_dispatch_and_cleanup()
+    {
+        await using var fixture = new Stores();
+        await fixture.Start(1);
+        var store = fixture.Entries[0];
+        await Insert(store, 1, null);
+        await Insert(store, 2, null);
+        await Insert(store, 3, 0);
+        await Sql(store, $"INSERT INTO {Table(store, "inbox")} (consumer,message_id,processed_at) VALUES ('consumer','{Id(1)}',clock_timestamp() - interval '1 day')");
+        var rows = new OutboxRecord[3];
+        var reader = new PostgreSqlOutboxStore(store.DataSource, store.Options);
+        await reader.ReadPendingAsync(new(null, DateTimeOffset.UtcNow), rows, default);
+        var queued = new List<BufferedOutboxMessage> { new() };
+        queued[0].Copy(rows.Single(x => x.Id == Id(1)), 32);
+        var transport = new Transport(async (message, token) =>
+        {
+            if (MessageId(message) == Id(1)) await Task.Delay(Timeout.Infinite, token);
+        });
+        using var worker = new PostgreSqlTenantDispatcher(fixture.Catalog,
+            new() { TurnTimeout = TimeSpan.FromSeconds(1), RecoveryDelay = TimeSpan.Zero, InboxRetention = TimeSpan.FromHours(1), BatchSize = 1 },
+            [transport], NullLoggerFactory.Instance);
+        worker.GetDispatcher(store.TenantId).Committed(queued, 1);
+        // Keep the direct queue busy on every turn, including after canceled durable claims.
+        for (var turn = 0; turn < 4; turn++)
+        {
+            await worker.PassAsync(default);
+            if (turn < 3)
+            {
+                var next = new List<BufferedOutboxMessage> { new() };
+                next[0].Copy(rows.Single(x => x.Id == Id(1)), 32);
+                worker.GetDispatcher(store.TenantId).Committed(next, 1);
+            }
+        }
+        await Assert.That(transport.Sent.Any(x => x.Id == Id(2))).IsTrue();
+        await Assert.That(transport.Sent.Any(x => x.Id == Id(3))).IsTrue();
+        await Assert.That(await Count(store, "inbox")).IsEqualTo(0L);
+        await Assert.That(await fixture.Connections()).IsEqualTo(0L);
+        await worker.ReleaseAllAsync();
+    }
+
+    private static Guid MessageId(OutgoingMessage message)
+    {
+        foreach (var header in message.Headers.Span)
+            if (header.Key == "ce_id") return Guid.Parse(header.Value.ToString());
+        return Guid.Empty;
+    }
+
+    [Test]
     public async Task Configuration_snapshots_native_scheduler_limits_without_reflection()
     {
         var configuration = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
@@ -328,7 +400,7 @@ public class TenantDispatchTests
         private readonly PostgreSqlFixture _fixture = new();
         internal Catalog Catalog { get; } = new();
         internal PostgreSqlTenantStore[] Entries { get; private set; } = [];
-        internal async Task Start(int count, bool databases = false)
+        internal async Task Start(int count, bool databases = false, int lanes = 1, TimeSpan? leaseDuration = null)
         {
             await _fixture.StartAsync();
             Entries = new PostgreSqlTenantStore[count];
@@ -343,7 +415,7 @@ public class TenantDispatchTests
                     settings.Database = $"tenant_{i}";
                 }
                 var source = NpgsqlDataSource.Create(settings.ConnectionString);
-                var options = new PostgreSqlOutboxOptions { Schema = $"tenant_{i}", Lanes = 1 };
+                var options = new PostgreSqlOutboxOptions { Schema = $"tenant_{i}", Lanes = lanes, LeaseDuration = leaseDuration ?? TimeSpan.FromSeconds(30) };
                 Entries[i] = new($"tenant-{i}", source, options);
                 await Sql(Entries[i], $"CREATE SCHEMA tenant_{i}");
                 await Sql(Entries[i], PostgreSqlOutboxSchema.CreateScript(options));

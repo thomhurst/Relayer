@@ -123,13 +123,33 @@ internal sealed partial class PostgreSqlTenantDispatcher : BackgroundService
                 deadline.CancelAfter(_options.TurnTimeout);
                 try
                 {
-                    await store.Direct.DispatchQueuedAsync(deadline.Token).ConfigureAwait(false);
-                    await store.Maintenance.SweepAsync(deadline.Token).ConfigureAwait(false);
-                    await store.Ordered.DispatchPassAsync(deadline.Token).ConfigureAwait(false);
-                    if (DateTimeOffset.UtcNow >= store.NextCleanup)
+                    for (var visited = 0; visited < 4; visited++)
                     {
-                        await store.Maintenance.CleanupAsync(deadline.Token).ConfigureAwait(false);
-                        store.NextCleanup = DateTimeOffset.UtcNow + _options.CleanupInterval;
+                        deadline.Token.ThrowIfCancellationRequested();
+                        var phase = store.NextPhase;
+                        // Persist progress before awaiting so even an exhausted turn rotates fairly.
+                        store.NextPhase = (phase + 1) % 4;
+                        try
+                        {
+                            switch (phase)
+                            {
+                                case 0:
+                                    await store.Direct.DispatchQueuedAsync(deadline.Token).ConfigureAwait(false);
+                                    break;
+                                case 1:
+                                    await store.Maintenance.SweepAsync(deadline.Token).ConfigureAwait(false);
+                                    break;
+                                case 2:
+                                    await store.Ordered.DispatchPassAsync(deadline.Token).ConfigureAwait(false);
+                                    break;
+                                case 3 when DateTimeOffset.UtcNow >= store.NextCleanup:
+                                    await store.Maintenance.CleanupAsync(deadline.Token).ConfigureAwait(false);
+                                    store.NextCleanup = DateTimeOffset.UtcNow + _options.CleanupInterval;
+                                    break;
+                            }
+                        }
+                        catch (OperationCanceledException) when (deadline.IsCancellationRequested) { throw; }
+                        catch (Exception error) { Failed(_logger, store.Entry.TenantId, error); }
                     }
                 }
                 catch (OperationCanceledException) when (token.IsCancellationRequested) { throw; }
@@ -231,6 +251,7 @@ internal sealed partial class PostgreSqlTenantDispatcher : BackgroundService
         internal PostgreSqlMaintenanceWorker Maintenance { get; } = maintenance;
         internal PostgreSqlOrderedDispatcher Ordered { get; } = ordered;
         internal DateTimeOffset NextCleanup { get; set; }
+        internal int NextPhase { get; set; }
         internal bool Retired { get; set; }
         private bool _disposed;
         public void Dispose()

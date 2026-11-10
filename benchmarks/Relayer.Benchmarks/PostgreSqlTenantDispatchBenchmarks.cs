@@ -23,6 +23,7 @@ public class PostgreSqlTenantDispatchBenchmarks
 
     [Params(1, 16)] public int TenantCount { get; set; }
     [Params(1, 100)] public int MessagesPerTenant { get; set; }
+    [Params(1, 4)] public int LaneCount { get; set; }
 
     [GlobalSetup]
     public void Setup()
@@ -39,12 +40,12 @@ public class PostgreSqlTenantDispatchBenchmarks
         for (var i = 0; i < TenantCount; i++)
         {
             var schema = _prefix + "_" + i;
-            var options = new PostgreSqlOutboxOptions { Schema = schema, Lanes = 1 };
+            var options = new PostgreSqlOutboxOptions { Schema = schema, Lanes = LaneCount };
             _entries[i] = new(i.ToString(), _source, options);
             using var create = _source.CreateCommand($"CREATE SCHEMA {schema};" + PostgreSqlOutboxSchema.CreateScript(options));
             create.ExecuteNonQuery();
             _fixed[i] = new(_source, new() { Schema = schema, RecoveryDelay = TimeSpan.Zero }, [_transport], NullLogger<PostgreSqlMaintenanceWorker>.Instance);
-            _ordered[i] = new(_source, new() { Schema = schema, Lanes = 1 }, [_transport], NullLogger<PostgreSqlOrderedDispatcher>.Instance);
+            _ordered[i] = new(_source, new() { Schema = schema, Lanes = LaneCount }, [_transport], NullLogger<PostgreSqlOrderedDispatcher>.Instance);
         }
         _catalog = new(new Catalog(_entries), new() { MaxConnections = 1, RecoveryDelay = TimeSpan.Zero,
             CleanupInterval = TimeSpan.FromDays(1) }, [_transport], NullLoggerFactory.Instance);
@@ -58,10 +59,11 @@ public class PostgreSqlTenantDispatchBenchmarks
         foreach (var entry in _entries)
         {
             var schema = entry.Options.Schema;
-            using var command = _source.CreateCommand($"TRUNCATE {schema}.relayer_outbox, {schema}.relayer_leases; INSERT INTO {schema}.relayer_outbox (id,lane,ordering_key,transport,destination,message_type,headers,body,created_at) SELECT ('01900000-0000-7000-8000-' || lpad(to_hex(n),12,'0'))::uuid, CASE WHEN n % 2 = 0 THEN 0 ELSE NULL END, CASE WHEN n % 2 = 0 THEN 'key' ELSE NULL END, 'events','orders','order;v=1',@headers,@body,clock_timestamp() FROM generate_series(1,@count) AS n");
+            using var command = _source.CreateCommand($"TRUNCATE {schema}.relayer_outbox, {schema}.relayer_leases; INSERT INTO {schema}.relayer_outbox (id,lane,ordering_key,transport,destination,message_type,headers,body,created_at) SELECT ('01900000-0000-7000-8000-' || lpad(to_hex(n),12,'0'))::uuid, CASE WHEN n % 2 = 0 THEN n % @lanes ELSE NULL END, CASE WHEN n % 2 = 0 THEN 'key-' || (n % @lanes)::text ELSE NULL END, 'events','orders','order;v=1',@headers,@body,clock_timestamp() FROM generate_series(1,@count) AS n");
             command.Parameters.AddWithValue("headers", _headers);
             command.Parameters.AddWithValue("body", new byte[256]);
             command.Parameters.AddWithValue("count", MessagesPerTenant);
+            command.Parameters.AddWithValue("lanes", LaneCount);
             command.ExecuteNonQuery();
         }
     }
