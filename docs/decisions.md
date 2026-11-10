@@ -70,6 +70,7 @@ To change a decision, add a new entry that supersedes it rather than editing his
 | [D57](#d57-google-pubsub-uses-prepared-native-api-clients) | Google Pub/Sub uses prepared native API clients | Accepted |
 | [D58](#d58-mysql-consumers-share-the-adonet-outbox-transaction) | MySQL consumers share the ADO.NET outbox transaction | Accepted |
 | [D59](#d59-sql-server-consumers-reuse-the-adonet-outbox-transaction) | SQL Server consumers reuse the ADO.NET outbox transaction | Accepted |
+| [D60](#d60-bound-catalog-dispatch-by-native-connection-lifetimes) | Bound catalog dispatch by native connection lifetimes | Accepted |
 | [D61](#d61-aspire-reuses-native-resource-wiring-and-application-telemetry) | Aspire reuses native resource wiring and application telemetry | Accepted |
 
 ---
