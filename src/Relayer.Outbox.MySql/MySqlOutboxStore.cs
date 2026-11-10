@@ -13,6 +13,8 @@ namespace Relayer.Outbox.MySql;
 public sealed class MySqlOutboxStore : IOutboxStore, IDisposable
 {
     private readonly MySqlDataSource _dataSource;
+    private readonly string _failureSql;
+    private readonly int _failureLimit;
     private readonly MySqlStoreParameters _read;
     private readonly MySqlStoreParameters _claim;
     private readonly MySqlStoreParameters _renew;
@@ -32,13 +34,23 @@ public sealed class MySqlOutboxStore : IOutboxStore, IDisposable
         ValidateDataSource(dataSource);
         _dataSource = dataSource;
         var table = MySqlOutboxSchema.Table(options ?? new());
+        var dead = MySqlOutboxSchema.DeadTable(options ?? new());
+        _failureLimit = (options ?? new()).MaxDispatchAttempts;
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(_failureLimit);
         const string eligible = "status = 'pending' AND (deliver_at IS NULL OR deliver_at <= @now) AND (claim_expires_at IS NULL OR claim_expires_at <= @now)";
         const string fenced = "id = @id AND claim_token = @token AND claim_expires_at > @now";
         _read = new($"SELECT id, transport, message_type, destination, body, headers, ordering_key, deliver_at, created_at, lane, attempts, last_error, tenant_id FROM {table} WHERE {eligible} AND lane <=> CAST(@lane AS SIGNED) AND (@after IS NULL OR id > @after) ORDER BY id LIMIT @limit");
         _claim = new($"UPDATE {table} SET claim_token = @token, claim_expires_at = @expires WHERE id = @id AND {eligible}");
         _renew = new($"UPDATE {table} SET claim_expires_at = GREATEST(claim_expires_at, @expires) WHERE {fenced}");
         _complete = new($"DELETE FROM {table} WHERE {fenced}");
-        _fail = new($"UPDATE {table} SET attempts = attempts + 1, last_error = @error, claim_token = NULL, claim_expires_at = NULL WHERE {fenced}");
+        _fail = new($"UPDATE {table} SET attempts=attempts+1,last_error=@error WHERE {fenced}");
+        _failureSql = $"""
+            INSERT INTO {dead} (id,lane,ordering_key,transport,destination,message_type,headers,body,created_at,deliver_at,attempts,last_error,tenant_id,failed_at)
+            SELECT id,lane,ordering_key,transport,destination,message_type,headers,body,created_at,deliver_at,attempts,last_error,tenant_id,UTC_TIMESTAMP(6)
+            FROM {table} WHERE id=@id AND attempts>=@limit;
+            DELETE FROM {table} WHERE id=@id AND attempts>=@limit AND lane IS NULL;
+            UPDATE {table} SET status=IF(attempts>=@limit,'parked',status),claim_token=NULL,claim_expires_at=NULL WHERE id=@id;
+            """;
         _claimBatch = new($"UPDATE {table} SET claim_token = @token, claim_expires_at = @expires WHERE id = @id AND lane IS NULL AND {eligible}");
         _completeBatch = new($"DELETE FROM {table} WHERE {fenced}");
         _count = new($"SELECT COUNT(*) FROM {table} WHERE {eligible}");
@@ -72,27 +84,51 @@ public sealed class MySqlOutboxStore : IOutboxStore, IDisposable
     }
 
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder<>))]
+    internal async ValueTask<int> ReadRecoveryAsync(MySqlCommand command, Memory<OutboxRecord> destination,
+        CancellationToken cancellationToken)
+    {
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        return await ReadRowsAsync(reader, destination, cancellationToken, isolateMalformed: true).ConfigureAwait(false);
+    }
+
+    [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder<>))]
     internal async ValueTask<int> ReadRowsAsync(MySqlDataReader reader, Memory<OutboxRecord> destination,
-        CancellationToken cancellationToken, bool includeOrderedSequence = false)
+        CancellationToken cancellationToken, bool includeOrderedSequence = false, bool isolateMalformed = false)
     {
         var count = 0;
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
-            if (_headers.Count == count) _headers.Add(new());
-            var slot = _headers[count];
-            var headers = DurableOutboxHeaderCodec.Read(reader.GetFieldValue<byte[]>(5), ref slot.Entries);
             reader.GetBytes(0, 0, _readId, 0, 16);
-            if (includeOrderedSequence)
-                headers = OrderedSequenceHeader.Add(headers.Span, ref slot.OrderedEntries, slot.Sequence, reader.GetInt64(13));
-            var message = new OutgoingMessage(reader.GetString(3), reader.GetFieldValue<byte[]>(4), headers,
-                reader.IsDBNull(6) ? null : new WireString(reader.GetString(6)),
-                reader.IsDBNull(7) ? null : Utc(reader.GetDateTime(7)));
-            destination.Span[count++] = new(new Guid(_readId, bigEndian: true), reader.GetString(1), reader.GetString(2),
-                message, Utc(reader.GetDateTime(8)), reader.IsDBNull(9) ? null : reader.GetInt32(9), reader.GetInt32(10),
-                reader.IsDBNull(11) ? null : reader.GetString(11), reader.IsDBNull(12) ? null : reader.GetString(12));
+            var id = new Guid(_readId, bigEndian: true);
+            try
+            {
+                if (_headers.Count == count) _headers.Add(new());
+                var slot = _headers[count];
+                var headers = DurableOutboxHeaderCodec.Read(reader.GetFieldValue<byte[]>(5), ref slot.Entries);
+                if (includeOrderedSequence)
+                    headers = OrderedSequenceHeader.Add(headers.Span, ref slot.OrderedEntries, slot.Sequence, reader.GetInt64(13));
+                var transport = reader.GetString(1);
+                var type = reader.GetString(2);
+                var target = reader.GetString(3);
+                if (isolateMalformed && (string.IsNullOrWhiteSpace(transport) || string.IsNullOrWhiteSpace(type) || string.IsNullOrWhiteSpace(target)))
+                    throw new InvalidDataException("Transport, message type and destination must be nonempty.");
+                var message = new OutgoingMessage(target, reader.GetFieldValue<byte[]>(4), headers,
+                    reader.IsDBNull(6) ? null : new WireString(reader.GetString(6)),
+                    reader.IsDBNull(7) ? null : Utc(reader.GetDateTime(7)));
+                destination.Span[count++] = new(id, transport, type, message, Utc(reader.GetDateTime(8)),
+                    reader.IsDBNull(9) ? null : reader.GetInt32(9), reader.GetInt32(10),
+                    reader.IsDBNull(11) ? null : reader.GetString(11), reader.IsDBNull(12) ? null : reader.GetString(12));
+            }
+            catch (InvalidDataException error) when (isolateMalformed)
+            {
+                destination.Span[count++] = new(id, "", "", default, default, LastError: "Malformed outbox row: " + error.Message);
+            }
         }
         return count;
     }
+
+    internal ValueTask<bool> QuarantineAsync(OutboxClaim claim, string error, CancellationToken cancellationToken) =>
+        FailAsync(claim, error, DateTimeOffset.UtcNow, 1, cancellationToken);
 
     /// <inheritdoc />
     public ValueTask<bool> TryClaimAsync(OutboxClaim claim, DateTimeOffset now, DateTimeOffset expiresAt,
@@ -125,12 +161,46 @@ public sealed class MySqlOutboxStore : IOutboxStore, IDisposable
     {
         Validate(claim);
         ArgumentNullException.ThrowIfNull(error);
-        return MutateAsync(_fail, claim, now, cancellationToken, error);
+        return FailAsync(claim, error, now, _failureLimit, cancellationToken);
+    }
+
+    // Native transaction makes the raw dead copy and live-row transition indivisible.
+    [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder<>))]
+    private async ValueTask<bool> FailAsync(OutboxClaim claim, string error, DateTimeOffset now, int limit,
+        CancellationToken cancellationToken)
+    {
+        EnsureAvailable(cancellationToken);
+        await using var connection = await _dataSource.OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+        await using var transaction = await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
+        var command = _fail.Command;
+        _fail.Claim(claim);
+        _fail.Now(now);
+        command.Parameters["error"].Value = error;
+        command.Connection = connection;
+        command.Transaction = transaction;
+        // Keep the claim until the raw copy and terminal transition finish under its row lock.
+        var original = command.CommandText;
+        try
+        {
+            if (await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) != 1) return false;
+            command.Parameters["limit"].Value = limit;
+            command.CommandText = _failureSql;
+            await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+            return true;
+        }
+        finally
+        {
+            command.CommandText = original;
+            command.Transaction = null;
+            command.Connection = null;
+            command.Parameters["error"].Value = DBNull.Value;
+        }
     }
 
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder<>))]
     private async ValueTask<bool> MutateAsync(MySqlStoreParameters operation, OutboxClaim claim, DateTimeOffset now,
-        CancellationToken cancellationToken, string? error = null)
+        CancellationToken cancellationToken)
     {
         EnsureAvailable(cancellationToken);
         operation.Claim(claim);
@@ -140,7 +210,6 @@ public sealed class MySqlOutboxStore : IOutboxStore, IDisposable
         command.Connection = connection;
         try
         {
-            if (error is not null) command.Parameters["error"].Value = error;
             // Native affected-row behavior can report zero when renewal does not change the expiry.
             // CLIENT_FOUND_ROWS (UseAffectedRows=false) is validated during registration/construction.
             return await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) == 1;

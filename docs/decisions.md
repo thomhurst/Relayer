@@ -1470,9 +1470,10 @@ capability cache and sequence-header projection. No parallel notification engine
 **Consequences.** Live lanes are fenced across workers, including slow or cancelling sends.
 Native statement-level auto-increment locking remains unchanged; no per-key writer lock is added.
 The explicit upgrade preserves former UUID order for old rows and documents implicit DDL commits.
-Exhausted rows park in place, preserving their sequence and key barrier. Management and unordered
-recovery remain #345. Ordered polling does not enable writer scheduling until registration can
-validate a matching scheduling worker.
+Exhausted rows park in place, preserving their sequence and key barrier. Unordered recovery and
+maintenance are provided by D65; parked-row repair remains application-owned SQL. Ordered polling
+does not enable writer scheduling until registration can validate a matching scheduling worker.
+
 
 ## D64. SQL Server ordered dispatch reuses native locks and sequence ranges
 
@@ -1512,3 +1513,30 @@ unordered recovery and retention follow D62. Ordered membership uses a separate 
 so existing maintenance `leases` rows keep their native uniqueidentifier ownership schema. D46's SqlClient AOT/trimming
 boundary remains explicit. Ordered flushes add one native range RPC per transaction; lane reads/claims
 and header preparation have dedicated managed and real-database benchmark coverage.
+
+## D65. MySQL maintenance uses native session admission and existing dispatch
+
+**Context.** Durable MySQL rows outlive missed commit notifications and crashed senders. MySqlConnector
+2.6.2 supplies native transactions, commands, batches and pooled connections, but no application
+outbox recovery runtime. MySQL Event Scheduler executes SQL, not application transport sends.
+
+**Decision.** Use separate database-time sweeper/cleanup leases, with zero-wait native `GET_LOCK`
+session admission scoped to database/table prefix. Hold admission across one bounded pass and
+explicitly release it before returning the pooled connection. Connected passes cannot overlap
+after idle leadership expiry. Row claims remain independently fenced autocommit mutations;
+leadership does not replace row ownership. Session loss and broker uncertainty retain the existing
+at-least-once boundary. Support one writable primary, not independent multi-primary servers.
+
+Recover due unordered rows through D55's dispatcher and a fixed upper UUID boundary, revisiting
+retries despite continuous inserts. Preserve ordered lanes and parked barriers. Quarantine malformed
+rows using a raw dead copy under a live claim. InnoDB transactions atomically record failed attempts,
+copy exhausted rows to dead storage, then delete unordered rows or park ordered rows. Failed
+completion after broker acceptance never consumes attempts. Bound indexed dead/inbox retention
+independently; preserve parked rows and their dead copies. Ordered decoding isolates malformed
+rows through the existing lane failure/parking path, retaining the original sequence and raw payload.
+
+**Consequences.** Maintenance is explicit, named, immutable configuration and needs at least two
+pooled connections. No Event Scheduler privilege or server change is required. Native transports
+still own broker retry, ordering and settlement. Deployment adds dead/lease tables without changing
+existing definitions. Registration alone does not advertise new writer scheduling capabilities.
+

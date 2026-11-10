@@ -5,7 +5,7 @@ description: "MySQL atomic consumer inbox, transactional enqueue, commit-trigger
 
 `Relayer.Outbox.MySql` implements the [durable store contract](outbox-stores.md) using
 MySqlConnector and MySQL 8.4+ InnoDB. It supplies bounded reads, atomic claims, renewal,
-completion, failure persistence and eligible backlog counts. Scoped ADO.NET transactions
+completion, failure persistence, leased recovery, bounded retention and eligible backlog counts. Scoped ADO.NET transactions
 commit business writes and buffered sends together. An optional hosted worker dispatches due unordered messages after commit.
 
 ## Deployment and registration
@@ -51,7 +51,7 @@ ordering keys and tenant IDs survive reads.
 Eligibility means pending, due at the supplied UTC instant, and without a live claim. Counts
 span all lanes. A conditional InnoDB update claims one eligible row atomically. Renewal never
 shortens expiry; renewal, completion and failure require the matching token and a live claim.
-Failure increments attempts and releases the claim. Repeated or stale mutations return `false`.
+Failure increments attempts and releases the claim. At `MaxDispatchAttempts` (default `10`), an InnoDB transaction copies the raw row to dead storage and deletes an unordered row, or parks an ordered row in place. Keep this limit identical across stores and workers. Repeated or stale mutations return `false`.
 
 Dates use UTC `DATETIME(6)` values with microsecond precision. Await each operation before the
 next operation on the same store. Finish using borrowed rows before another read. Database
@@ -232,10 +232,7 @@ Size `ClaimDuration` for the slowest expected database and broker operation.
 Queue overflow or a stopped worker logs an error and leaves rows durable without failing an
 already committed transaction. Graceful shutdown drains accepted work until the host's shutdown
 deadline; cancellation leaves unfinished rows durable. Ordered rows and future-due rows are not
-queued. This worker does not poll after restart, retry failed rows, or recover overflow: recovery
-remains planned in [#345](https://github.com/thomhurst/Relayer/issues/345). Use it only with an
-application-owned recovery path until that worker ships; enqueue/notification alone does not
-guarantee eventual delivery after a crash.
+queued. Register maintenance below to recover missed notifications, failures and crashes.
 
 ## Ordered dispatch
 
@@ -277,16 +274,16 @@ ownership, including shutdown. Size leases for expected send and database latenc
 A future-due or live-claimed head blocks later rows. Database due checks remove `deliver_at`
 from the native send. Failures persist attempts and errors, commit a successful prefix and retry
 on later scans. At `MaxDispatchAttempts`, the original row parks with its sequence intact;
-only later rows for that exact key are blocked, while other keys continue. Until management
-in [#345](https://github.com/thomhurst/Relayer/issues/345) ships, inspect and repair parked rows
-through application-owned SQL. Resume by updating the original row to
+only later rows for that exact key are blocked, while other keys continue. Malformed headers and
+empty required routing fields also consume attempts and park the original raw row. Inspect and repair
+parked rows through application-owned SQL. Resume by updating the original row to
 `status = 'pending', attempts = 0`; deleting and reinserting it would change its order.
 
 Completion requires the same token and an unexpired claim. Cancellation, connection loss or
 uncertain completion rolls back the batch; broker sends can be duplicated. Delivery remains
 at least once. Shutdown releases this member's leases after outstanding sends finish; crashes
-leave leases to expire. Ordered rows are polled after restart. Unordered recovery and retention
-remain planned. Writer scheduling capabilities remain false; registration does not enable
+leave leases to expire. Ordered rows are polled after restart. Register the separate maintenance
+worker below for unordered recovery and retention. Writer scheduling capabilities remain false; registration does not enable
 delayed `ISender` calls.
 
 ### Upgrade existing tables
@@ -299,10 +296,65 @@ MySQL DDL commits implicitly: this multi-step upgrade is neither transactional n
 After any failure, finish or restore the backup before restarting. Fresh databases use
 `CreateScript`, which does not alter existing tables.
 
+## Recovery, poison rows and retention
+
+Apply `MySqlOutboxSchema.CreateScript(options)` during upgrade: it creates missing `dead` and `leases`
+tables without altering existing definitions. Register maintenance with the same application-owned
+data source, prefix and attempt limit as other stores and dispatchers:
+
+```csharp
+services.AddRelayerMySqlMaintenance("orders", dataSource, new MySqlMaintenanceOptions
+{
+    TablePrefix = "orders_",
+    MaxDispatchAttempts = 10,
+    BatchSize = 100,
+    RecoveryDelay = TimeSpan.FromSeconds(30),
+    SweepInterval = TimeSpan.FromSeconds(5),
+    ClaimDuration = TimeSpan.FromSeconds(30),
+    LeaseDuration = TimeSpan.FromSeconds(30),
+    CleanupInterval = TimeSpan.FromMinutes(1),
+    DeadRetention = TimeSpan.FromDays(30),
+    InboxRetention = TimeSpan.FromDays(7)
+});
+```
+
+The overload taking an `IConfiguration` section snapshots immutable named options through the
+Options pattern. Use `infinite` for either retention setting to retain records indefinitely.
+Invalid settings, duplicate names and a pooled `MaximumPoolSize` below two fail before connecting.
+Workers do not create tables.
+Keep the data source alive until workers stop. Allow at least two pooled connections: one
+native session admits a pass while the existing dispatcher claims and sends rows.
+
+Separate database-time `sweeper` and `cleanup` leases elect leaders across instances. Native
+`GET_LOCK(..., 0)` admission avoids waiting behind a connected pass even after its idle lease
+expires. Named locks are explicitly released before returning pooled sessions. A crashed process
+releases its session lock; rivals recover after leadership and row claims expire. Graceful
+shutdown releases this worker's leases. Use one writable MySQL primary: named locks are local
+to that server and are unsuitable for independent multi-primary writers.
+
+Each bounded recovery pass selects due, old-enough **unordered** pending rows without live claims.
+A fixed upper UUID boundary ensures failed, scheduled and previously claimed rows are revisited
+while new rows keep arriving. Ordered lanes and parked barriers stay untouched. The existing
+direct dispatcher performs native sends and fenced completion; there is no second sender.
+Native send failures consume attempts; failed completion after a successful send does not.
+Expired claims and an unknown broker outcome can duplicate delivery, as with direct dispatch.
+
+Malformed headers or empty routing fields are copied **raw** to dead storage under a live claim,
+with an actionable `last_error` and error log; valid rows continue in the same pass. An unregistered
+transport or invalid destination consumes recovery attempts and eventually reaches dead storage.
+Direct notifications leave invalid routes unclaimed for recovery to inspect.
+
+Cleanup deletes at most `BatchSize` expired dead rows and `BatchSize` expired inbox keys per pass,
+using database UTC time and the `failed_at` / `processed_at` indexes. Pending rows, parked ordered
+barriers and their dead copies are retained. Deleting an inbox key ends deduplication protection;
+choose retention beyond the broker's redelivery window.
+
+MySQL Event Scheduler executes scheduled SQL but cannot call application transports. It is
+neither enabled nor required; recovery uses bounded application passes.
+
 ## Remaining integration
 
-Unordered recovery, poison management and retention remain tracked by
-[#345](https://github.com/thomhurst/Relayer/issues/345). Atomic inbox and ordered dispatch
-are implemented; inbox retention remains application-owned. The schema helper is not exposed
+Atomic inbox, ordered dispatch, leased unordered recovery, poison handling and bounded retention
+are implemented. Parked-row repair remains application-owned SQL. The schema helper is not exposed
 through `dotnet relayer db` yet. Full parity is tracked by
 [#41](https://github.com/thomhurst/Relayer/issues/41).

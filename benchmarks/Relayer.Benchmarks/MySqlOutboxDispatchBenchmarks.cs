@@ -32,6 +32,7 @@ public class MySqlOutboxDispatchBenchmarks
         BufferOnly();
         TransferAndGroup();
         TransferAndGroup();
+        RecoveryTransferAndGroup();
     }
 
     [Benchmark(Baseline = true)]
@@ -44,6 +45,18 @@ public class MySqlOutboxDispatchBenchmarks
             bytes += _source[i].ToMessage().Body.Length;
             _source[i].Clear();
         }
+        return bytes;
+    }
+
+    [Benchmark]
+    public int RecoveryTransferAndGroup()
+    {
+        for (var i = 0; i < Rows; i++) _source[i].Copy(_records[i], 32);
+        _batch.Take(_source, Rows, _now, recovered: true);
+        _batch.Sort();
+        var bytes = 0;
+        for (var i = 0; i < _batch.Count; i++) bytes += _batch.Rows[i].ToMessage().Body.Length;
+        _batch.Clear();
         return bytes;
     }
 

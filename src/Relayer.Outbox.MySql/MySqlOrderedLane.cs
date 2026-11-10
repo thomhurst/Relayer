@@ -59,7 +59,7 @@ internal sealed class MySqlOrderedLane : IDisposable
         try
         {
             await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
-            return await _reader.ReadRowsAsync(reader, rows, cancellationToken, includeOrderedSequence: true).ConfigureAwait(false);
+            return await _reader.ReadRowsAsync(reader, rows, cancellationToken, includeOrderedSequence: true, isolateMalformed: true).ConfigureAwait(false);
         }
         finally { command.Transaction = null; command.Connection = null; }
     }

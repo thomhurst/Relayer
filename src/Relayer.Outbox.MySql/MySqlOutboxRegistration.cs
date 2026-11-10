@@ -69,6 +69,7 @@ public static class MySqlOutboxRegistration
         {
             TablePrefix = configuration?[nameof(defaults.TablePrefix)] ?? defaults.TablePrefix,
             DispatchStoreName = configuration?[nameof(defaults.DispatchStoreName)] ?? defaults.DispatchStoreName,
+            MaxDispatchAttempts = Read(nameof(defaults.MaxDispatchAttempts), defaults.MaxDispatchAttempts),
             Lanes = Read(nameof(defaults.Lanes), defaults.Lanes)
         };
 

@@ -9,12 +9,12 @@ internal sealed class OutboxDispatchBatch
     internal List<BufferedOutboxMessage> Rows { get; } = [];
     internal int Count { get; private set; }
 
-    internal void Take(List<BufferedOutboxMessage> source, int count, DateTimeOffset now)
+    internal void Take(List<BufferedOutboxMessage> source, int count, DateTimeOffset now, bool recovered = false)
     {
         for (var i = 0; i < count; i++)
         {
             var row = source[i];
-            if (row.Lane is not null || row.DeliverAt > now) continue;
+            if (!recovered && (row.Lane is not null || row.DeliverAt > now)) continue;
             if (Count == Rows.Count) Rows.Add(new());
             source[i] = Rows[Count];
             Rows[Count++] = row;
