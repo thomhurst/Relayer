@@ -21,6 +21,13 @@ public sealed class AzureServiceBusTransportOptions
     /// <summary>Native queue declarations. Names must match send destinations.</summary>
     public IList<CreateQueueOptions> Queues { get; } = [];
 
+    /// <summary>
+    /// Entity names whose native RequiresSession=true declarations are trusted in Validate and None modes.
+    /// Use a queue name or "topic/Subscriptions/subscription". Provision still verifies native settings.
+    /// This assertion does not enable sessions at the broker or verify externally managed subscriptions.
+    /// </summary>
+    public ISet<string> TrustedSessionEntities { get; } = new HashSet<string>(StringComparer.Ordinal);
+
     /// <summary>Native topic declarations. Names must match send destinations.</summary>
     public IList<CreateTopicOptions> Topics { get; } = [];
 

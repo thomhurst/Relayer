@@ -40,13 +40,13 @@ For single and batch sends, the serializer's `content-type` header maps to nativ
 
 `Validate` is the default. Send destinations use an empty native message batch to open an authenticated send link, then dispose the batch and sender. No probe message is sent. Receive-only queues and declared subscriptions use native peek operations, which do not lock, consume or settle a message. Receive-only topic consumers validate their subscriptions without opening a topic send link. Send destinations need Send rights; receive checks need Listen rights. Validate never constructs or calls the administration client, even when one is supplied.
 
-This verifies endpoint accessibility and existence. It cannot compare entity settings or distinguish a queue from a topic through a send link. [Service Bus requires Manage rights to read entity descriptions](https://learn.microsoft.com/en-us/azure/service-bus-messaging/service-bus-sas#rights-required-for-service-bus-operations). Native entity options specify what Provision should create and compare. Validate reports declared `RequiresSession = true` as unresolved and fails startup; it never infers session support from a name or silently grants ordering capabilities. Manage permission is never an automatic fallback.
+This verifies endpoint accessibility and existence. It cannot compare entity settings or distinguish a queue from a topic through a send link. [Service Bus requires Manage rights to read entity descriptions](https://learn.microsoft.com/en-us/azure/service-bus-messaging/service-bus-sas#rights-required-for-service-bus-operations). Native entity options specify what Provision should create and compare. Unless explicitly trusted with `TrustedSessionEntities` (below), Validate reports declared `RequiresSession = true` as unresolved and fails startup. It never infers session support from a name. Manage permission is never an automatic fallback.
 
 Use `bus.TopologyMode = TopologyMode.Provision` explicitly to create missing entities through the native administration APIs and verify their properties. Existing queues, topics and subscriptions are never updated or deleted. Remaining differences name the entity, property, expected value and actual value. Relayer handles a concurrent create by reading and comparing the winning entity. Other SDK failures and cancellation propagate.
 
 Provision uses `AdministrationClient` when supplied. With an owned connection-string client it otherwise creates a native administration client using that connection string. With a caller-owned messaging client, supply an administration client explicitly; Relayer cannot extract credentials from the messaging client. The Service Bus emulator has a separate management endpoint: use its HTTP connection string for the administration client. Native administration clients are caller-owned and the SDK does not require disposal.
 
-`TopologyMode.None` skips all checks and writes. Native scheduling and batching remain available. Portable send ordering capabilities stay unresolved in Validate and None, so portable `OrderingKey` requires Provision with verified session declarations. Consumers support native immediate abandon and dead-lettering. No transaction support or namespace-dependent message-size limit is advertised.
+`TopologyMode.None` skips all checks and writes. Native scheduling and batching remain available. Portable `OrderingKey` requires either Provision with verified session declarations or explicit trust in Validate and None. Consumers support native immediate abandon and dead-lettering. No transaction support or namespace-dependent message-size limit is advertised.
 
 ## Register receiving
 
@@ -127,7 +127,23 @@ Emulator entities created through the administration endpoint do not survive an 
 
 ## Sessions, scheduling and native callbacks
 
-For native ordered queue sends, declare `CreateQueueOptions("orders") { RequiresSession = true }`, choose Provision and configure `route.OrderingKey(order => order.CustomerId)`. For a topic, declare its session-enabled subscriptions; every declared subscription must require sessions before the topic advertises ordering. Relayer maps the resolved ordering key to native `SessionId`. Broker sessions and the receiver determine ordering; Relayer adds no ordering layer.
+For native ordered queue sends, declare `CreateQueueOptions("orders") { RequiresSession = true }`, choose Provision (or explicitly trust the entity below) and configure `route.OrderingKey(order => order.CustomerId)`. For a topic, declare its session-enabled subscriptions; every declared subscription must require sessions before the topic advertises ordering. Relayer maps the resolved ordering key to native `SessionId`. Broker sessions and the receiver determine ordering; Relayer adds no ordering layer.
+
+For externally provisioned topology and a runtime identity without Manage rights, explicitly trust each native session declaration:
+
+```csharp
+bus.Options.Configure(options =>
+{
+    options.Queues.Add(new CreateQueueOptions("orders") { RequiresSession = true });
+    options.TrustedSessionEntities.Add("orders");
+});
+bus.Send<Order>("orders", route => route.OrderingKey(order => order.CustomerId));
+```
+
+This works with the default `TopologyMode.Validate` and with `None`. The queue advertises ordering by key, so ordered outbox sends retain their key and receive lanes through the existing outbox integration. Validate still opens its Send link without an administration call. For a topic, set `RequiresSession = true` on **every declared subscription** and trust each full path, for example `options.TrustedSessionEntities.Add("events/Subscriptions/audit")`. A send-only application does not peek trusted subscriptions; a declared consumer still needs Listen rights and validates its receive link. Undeclared subscriptions cannot be discovered with Send rights, so the application owns the completeness of these declarations.
+
+Trust is an assertion, not broker configuration or verification. Names must match session-enabled native queue or subscription declarations. Provision always compares the actual `RequiresSession` setting and reports drift, even for trusted entities. Without trust, Validate/None retain the unresolved-ordering error. A broker rejects a message without `SessionId` sent to a session-enabled queue or subscription; a message **with** `SessionId` is accepted by a non-session entity, so a false assertion can silently lose ordering. Topic fan-out follows each subscription's native behavior. Keep infrastructure definitions and declarations aligned; send-only startup cannot detect this mismatch.
+
 
 `SendOptions.DeliverAt` becomes native `ScheduledEnqueueTime`. Native callbacks run once for each message before native admission:
 

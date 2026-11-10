@@ -277,12 +277,112 @@ public class ServiceBusSendTests
     }
 
     [Test]
+    [Arguments(TopologyMode.Validate)]
+    [Arguments(TopologyMode.None)]
+    public async Task Trusted_session_queue_supports_typed_ordered_sends_and_outbox_lanes(TopologyMode mode)
+    {
+        var client = new NativeClient();
+        var admin = new NativeAdministration();
+        var enlistment = new LaneEnlistment();
+        var services = new ServiceCollection();
+        services.AddScoped<IOutboxEnlistment>(_ => enlistment);
+        services.AddRelayer(builder =>
+        {
+            builder.AddMessageTypesFromThisAssembly();
+            builder.ServiceBus("bus", bus =>
+            {
+                bus.TopologyMode = mode;
+                bus.Options.Configure(options =>
+                {
+                    options.Client = client;
+                    options.AdministrationClient = admin;
+                    options.Queues.Add(new("orders") { RequiresSession = true });
+                    options.TrustedSessionEntities.Add("orders");
+                });
+                bus.Send<First>("orders", route => route.OrderingKey(static _ => "customer"));
+            });
+        });
+        await using var provider = services.BuildServiceProvider();
+        var transport = provider.GetServices<ITransport>().Single();
+        var report = await transport.ApplyTopologyAsync(mode, default);
+        await Assert.That(report.Differences.Count).IsEqualTo(0);
+        await Assert.That(admin.Calls).IsEqualTo(0);
+        await Assert.That(transport.GetCapabilities("orders").OrderedByKey).IsTrue();
+        await using var scope = provider.CreateAsyncScope();
+        var sender = scope.ServiceProvider.GetRequiredService<ISender>();
+        await sender.SendNowAsync(new First());
+        await Assert.That(client.Senders[0].Sent.Single().SessionId).IsEqualTo("customer");
+        await sender.SendViaOutboxAsync(new First());
+        await Assert.That(enlistment.Message.OrderingKey!.Value.Span.SequenceEqual("customer"u8)).IsTrue();
+        await Assert.That(enlistment.Message.Lane).IsNotNull();
+    }
+
+    [Test]
+    [Arguments(TopologyMode.Validate)]
+    [Arguments(TopologyMode.None)]
+    public async Task Topic_ordering_requires_trust_for_every_session_subscription(TopologyMode mode)
+    {
+        var client = new NativeClient();
+        var options = Options(client);
+        options.Subscriptions.Add(new("events", "audit") { RequiresSession = true });
+        options.Subscriptions.Add(new("events", "billing") { RequiresSession = true });
+        options.TrustedSessionEntities.Add("events/Subscriptions/audit");
+        await using (var partial = new ServiceBusSendTransport("bus", client, false, options, ["events"], mode))
+            await Assert.That(partial.GetCapabilities("events").OrderedByKey).IsFalse();
+        options.TrustedSessionEntities.Add("events/Subscriptions/billing");
+        await using var trusted = new ServiceBusSendTransport("bus", client, false, options, ["events"], mode);
+        await Assert.That(trusted.GetCapabilities("events").OrderedByKey).IsTrue();
+        var report = await trusted.ApplyTopologyAsync(mode, default);
+        await Assert.That(report.Differences.Count).IsEqualTo(0);
+        await Assert.That(client.Receiver.Peeks).IsEqualTo(0); // Send-only startup never requests Listen.
+        options.Subscriptions[1].RequiresSession = false;
+        await using var mixed = new ServiceBusSendTransport("bus", client, false, options, ["events"], mode);
+        await Assert.That(mixed.GetCapabilities("events").OrderedByKey).IsFalse();
+    }
+
+    [Test]
+    [Arguments(TopologyMode.Validate)]
+    [Arguments(TopologyMode.None)]
+    public async Task Untrusted_session_send_keeps_error_and_names_trust_option(TopologyMode mode)
+    {
+        var client = new NativeClient();
+        await using var transport = new ServiceBusSendTransport("bus", client, false, Options(client, true), ["orders"], mode);
+        await Assert.That(async () => await transport.SendAsync(new("orders", default, orderingKey: new WireString("customer")), default))
+            .Throws<InvalidOperationException>().WithMessageContaining("TrustedSessionEntities");
+    }
+
+    [Test]
+    [Arguments("missing")]
+    [Arguments("orders")]
+    [Arguments("events")]
+    public async Task Trust_requires_a_session_enabled_native_entity_declaration(string entity)
+    {
+        var options = Options(new NativeClient());
+        options.TrustedSessionEntities.Add(entity);
+        await Assert.That(() => ServiceBusSendTransport.ValidateDeclarations("bus", options, ["orders"]))
+            .Throws<InvalidOperationException>().WithMessageContaining("RequiresSession=true");
+    }
+
+    private sealed class LaneEnlistment : IOutboxEnlistment
+    {
+        public bool IsActive => true;
+        internal BufferedOutboxMessage Message { get; } = new();
+        public ValueTask EnlistAsync(OutboxRecord record, CancellationToken cancellationToken)
+        {
+            BufferedOutboxMessage.Validate(record);
+            Message.Copy(record, 8);
+            return ValueTask.CompletedTask;
+        }
+    }
+
+    [Test]
     public async Task Provision_creates_only_missing_entities_reports_drift_and_propagates_sdk_failures()
     {
         var client = new NativeClient();
         var admin = new NativeAdministration();
         var options = Options(client, true);
         options.Subscriptions.Add(new("events", "audit") { RequiresSession = true });
+        options.TrustedSessionEntities.Add("orders");
         var topology = new ServiceBusTopology("bus", client, options, admin);
         var report = await topology.ApplyAsync(TopologyMode.Provision, default);
         await Assert.That(admin.Created.SequenceEqual(new[] { "orders", "events", "events/Subscriptions/audit" })).IsTrue();
@@ -295,6 +395,20 @@ public class ServiceBusSendTests
         using var stop = new CancellationTokenSource();
         stop.Cancel();
         await Assert.That(async () => await topology.ApplyAsync(TopologyMode.Provision, stop.Token)).Throws<OperationCanceledException>();
+    }
+
+    [Test]
+    public async Task Provision_reports_a_false_trusted_session_assertion()
+    {
+        var client = new NativeClient();
+        var admin = new NativeAdministration();
+        var options = Options(client);
+        var topology = new ServiceBusTopology("bus", client, options, admin);
+        await topology.ApplyAsync(TopologyMode.Provision, default);
+        options.Queues[0].RequiresSession = true;
+        options.TrustedSessionEntities.Add("orders");
+        var report = await topology.ApplyAsync(TopologyMode.Provision, default);
+        await Assert.That(report.Differences.Single()).Contains("RequiresSession expected 'True', actual 'False'");
     }
 
     [Test]
