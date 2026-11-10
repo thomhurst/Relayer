@@ -138,7 +138,8 @@ public sealed partial class ConsumePipeline
                         {
                             // A handler's successful native settlement is final, even when later handler work fails.
                             if (error is OperationCanceledException && _context.CancellationToken.IsCancellationRequested ||
-                                _context.ObservedDisposition.Kind == DispositionKind.SettledByHandler)
+                                _context.ObservedDisposition.Kind == DispositionKind.SettledByHandler ||
+                                ReferenceEquals(_context.ScopeCleanupError, error))
                                 ExceptionDispatchInfo.Throw(error);
                             _context.Settlement.Clear();
                             _failure = error;

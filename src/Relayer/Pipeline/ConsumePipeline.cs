@@ -221,7 +221,8 @@ public sealed partial class ConsumePipeline
                     catch (OperationCanceledException) when (context.CancellationToken.IsCancellationRequested) { throw; }
                     catch (Exception error)
                     {
-                        if (context.ObservedDisposition.Kind == DispositionKind.SettledByHandler) throw;
+                        if (context.ObservedDisposition.Kind == DispositionKind.SettledByHandler ||
+                            ReferenceEquals(context.ScopeCleanupError, error)) throw;
                         context.Settlement.Clear();
                         failure = attemptFailure = error;
                         LogFailure(context, error);

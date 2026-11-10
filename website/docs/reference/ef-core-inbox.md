@@ -68,6 +68,8 @@ return. Before committing, the boundary requests `Complete` when no outcome is p
 for duplicates. The one-request-per-attempt rule then rejects further requests during scope disposal
 with `InvalidOperationException`; disposal cannot retry or dead-letter already committed work. A
 disposal error prevents native settlement, and redelivery acknowledges the committed duplicate.
+This also applies with native EF retries enabled: cleanup errors propagate without retrying the
+transaction or entering the consumer handler-failure policy, even when the error is transient.
 An acknowledgement failure after commit leaves durable data
 intact, and redelivery skips the handler. Commit failures with an unknown outcome remain safe to
 redeliver: the committed inbox row determines whether the handler runs again.

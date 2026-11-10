@@ -69,19 +69,29 @@ public class InboxTests : InboxContractTests
     }
 
     [Test]
-    [Arguments(false, false, "retry")]
-    [Arguments(false, false, "deadletter")]
-    [Arguments(false, true, "retry")]
-    [Arguments(false, true, "deadletter")]
-    [Arguments(true, false, "retry")]
-    [Arguments(true, false, "deadletter")]
-    [Arguments(true, true, "retry")]
-    [Arguments(true, true, "deadletter")]
-    public async Task Settlement_requests_during_disposal_cannot_change_a_committed_outcome(bool failures, bool duplicate, string request)
+    [Arguments(false, false, false, "retry")]
+    [Arguments(false, false, false, "deadletter")]
+    [Arguments(false, false, true, "retry")]
+    [Arguments(false, false, true, "deadletter")]
+    [Arguments(false, true, false, "retry")]
+    [Arguments(false, true, false, "deadletter")]
+    [Arguments(false, true, true, "retry")]
+    [Arguments(false, true, true, "deadletter")]
+    [Arguments(true, false, false, "retry")]
+    [Arguments(true, false, false, "deadletter")]
+    [Arguments(true, false, true, "retry")]
+    [Arguments(true, false, true, "deadletter")]
+    [Arguments(true, true, false, "retry")]
+    [Arguments(true, true, false, "deadletter")]
+    [Arguments(true, true, true, "retry")]
+    [Arguments(true, true, true, "deadletter")]
+    [Arguments(true, false, false, "transient")]
+    [Arguments(true, true, false, "transient")]
+    public async Task Settlement_requests_during_disposal_cannot_change_a_committed_outcome(bool nativeRetries, bool failures, bool duplicate, string request)
     {
         await using var database = new Database();
         await database.Start();
-        await using var provider = database.Services(outbox: true);
+        await using var provider = database.Services(outbox: true, retries: nativeRetries);
         var control = provider.GetRequiredService<Control>();
         var failurePipeline = failures ? new FailurePipeline(provider, "events", "source", "orders", new()) : null;
         var settled = 0;
@@ -91,12 +101,17 @@ public class InboxTests : InboxContractTests
         using var context = pipeline.RentContext(message);
         control.OnDispose = () =>
         {
+            if (request == "transient") throw new NpgsqlException("Transient cleanup failure", new TimeoutException());
             var settlement = context.Features.GetRequired<ISettlementFeature>();
             if (request == "retry") settlement.Retry(TimeSpan.Zero);
             else settlement.DeadLetter("Rejected during disposal");
         };
-        await Assert.That(async () => await pipeline.ProcessAsync(context)).Throws<InvalidOperationException>()
-            .WithMessage("Only one settlement request is allowed per processing attempt.");
+        if (request == "transient")
+            await Assert.That(async () => await pipeline.ProcessAsync(context)).Throws<NpgsqlException>()
+                .WithMessage("Transient cleanup failure");
+        else
+            await Assert.That(async () => await pipeline.ProcessAsync(context)).Throws<InvalidOperationException>()
+                .WithMessage("Only one settlement request is allowed per processing attempt.");
         control.OnDispose = null;
         await Assert.That(settled).IsEqualTo(duplicate ? 1 : 0);
         await Assert.That(await database.Count("inbox")).IsEqualTo(1L);
@@ -223,6 +238,41 @@ public class InboxTests : InboxContractTests
         await Assert.That(fault.Commits).IsEqualTo(1);
         await Assert.That(control.Invocations).IsEqualTo(1);
         await Assert.That(provider.GetRequiredService<Transport>().Sends).IsEqualTo(1);
+        await Assert.That(settled).IsEqualTo(1);
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Verification_scope_cleanup_errors_propagate_without_replaying_work(bool committed)
+    {
+        await using var database = new Database();
+        await database.Start();
+        var fault = new LostCommitResponse();
+        await using var provider = database.Services(outbox: true, retries: true, interceptor: committed ? fault : null);
+        var control = provider.GetRequiredService<Control>();
+        if (!committed) control.AfterSave = _ => throw new NpgsqlException("Unknown transaction outcome", new IOException());
+        var disposals = 0;
+        control.OnDispose = () =>
+        {
+            if (++disposals == 2) throw new NpgsqlException("Verification cleanup failure", new TimeoutException());
+        };
+        var failures = new FailurePipeline(provider, "events", "source", "orders", new());
+        var settled = 0;
+        var pipeline = Pipeline(provider, failures: failures).Settle(_ => { settled++; return default; }).Build();
+        var message = Message();
+        await Assert.That(async () => await Deliver(pipeline, message)).Throws<NpgsqlException>()
+            .WithMessage("Verification cleanup failure");
+        control.OnDispose = null;
+        control.AfterSave = null;
+        await Assert.That(settled).IsEqualTo(0);
+        await Assert.That(fault.Transactions).IsEqualTo(committed ? 1 : 0);
+        await Assert.That(control.Invocations).IsEqualTo(1);
+        await Assert.That(await database.Count("inbox")).IsEqualTo(committed ? 1L : 0L);
+        await Assert.That(await database.Count("outbox")).IsEqualTo(committed ? 1L : 0L);
+        await Assert.That(await database.Orders()).IsEqualTo(committed ? 1L : 0L);
+        await Deliver(pipeline, message);
+        await Assert.That(control.Invocations).IsEqualTo(committed ? 1 : 2);
         await Assert.That(settled).IsEqualTo(1);
     }
 
