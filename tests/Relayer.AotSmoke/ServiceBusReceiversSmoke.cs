@@ -40,6 +40,13 @@ internal static class ServiceBusReceiversSmoke
         var health = provider.GetRequiredKeyedService<IConsumerHealthProvider>("aot-servicebus");
         if ((await health.GetStateAsync(consumer, default))?.IsIdle != true)
             throw new InvalidOperationException("Service Bus receiver liveness failed under Native AOT.");
+        var deadLetters = provider.GetRequiredKeyedService<IDeadLetterManager>("aot-servicebus");
+        if (deadLetters.List().Single().Id != "orders") throw new InvalidOperationException("Missing AOT DLQ source.");
+        var page = await deadLetters.PeekAsync("orders");
+        if (page.Messages.Single().Features.GetRequired<ServiceBusReceivedMessage>().MessageId != "dead")
+            throw new InvalidOperationException("Service Bus DLQ snapshot failed under Native AOT.");
+        if (await deadLetters.RedriveAsync("orders", message => message.MessageId == "dead") != 1 || client.Sender.Sends != 1)
+            throw new InvalidOperationException("Service Bus DLQ redrive failed under Native AOT.");
         foreach (var service in hosted.Reverse()) await service.StopAsync(default);
     }
 
@@ -61,6 +68,9 @@ internal static class ServiceBusReceiversSmoke
         internal NativeReceiver Receiver { get; } = new();
         public override ServiceBusProcessor CreateProcessor(string queueName, ServiceBusProcessorOptions options) => Processor;
         public override ServiceBusReceiver CreateReceiver(string queueName) => Receiver;
+        public override ServiceBusReceiver CreateReceiver(string queueName, ServiceBusReceiverOptions options) => Receiver;
+        internal NativeSender Sender { get; } = new();
+        public override ServiceBusSender CreateSender(string queueOrTopicName) => Sender;
     }
     private sealed class NativeProcessor : ServiceBusProcessor
     {
@@ -69,9 +79,20 @@ internal static class ServiceBusReceiversSmoke
         public override Task StopProcessingAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;
         public override Task CloseAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;
     }
+    private sealed class NativeSender : ServiceBusSender
+    {
+        internal int Sends;
+        public override Task SendMessageAsync(ServiceBusMessage message, CancellationToken cancellationToken = default)
+        { Sends++; return Task.CompletedTask; }
+        public override ValueTask DisposeAsync() => default;
+    }
     private sealed class NativeReceiver : ServiceBusReceiver
     {
         internal int Completed;
+        public override Task<IReadOnlyList<ServiceBusReceivedMessage>> PeekMessagesAsync(int maxMessages, long? fromSequenceNumber = null, CancellationToken cancellationToken = default)
+            => Task.FromResult<IReadOnlyList<ServiceBusReceivedMessage>>([ServiceBusModelFactory.ServiceBusReceivedMessage(new BinaryData("{}"), messageId: "dead")]);
+        public override Task<IReadOnlyList<ServiceBusReceivedMessage>> ReceiveMessagesAsync(int maxMessages, TimeSpan? maxWaitTime = null, CancellationToken cancellationToken = default)
+            => PeekMessagesAsync(maxMessages, cancellationToken: cancellationToken);
         public override Task CompleteMessageAsync(ServiceBusReceivedMessage message, CancellationToken cancellationToken = default)
         { Completed++; return Task.CompletedTask; }
         public override Task<ServiceBusReceivedMessage> PeekMessageAsync(long? fromSequenceNumber = null, CancellationToken cancellationToken = default)

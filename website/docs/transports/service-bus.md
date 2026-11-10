@@ -181,3 +181,31 @@ handler, 305 B with eight concurrent workers, and -48 B for a singleton handler.
 the native-required Task and application lifetime costs above; they are diagnostic measurements,
 not universal runtime sizes. `ServiceBusReceiveBenchmarks` pins the raw-client comparison, and
 `FailureConsumerScopeBenchmarks` and the consume-pipeline allocation tests pin scope behavior.
+
+## Inspect and redrive dead letters
+
+Each named Service Bus transport registers a keyed `IDeadLetterManager`. It lists configured consumer sources, not every entity in the namespace. Queue IDs are queue names; subscription IDs are `topic/Subscriptions/subscription`. Redrive sends to the queue or original topic.
+
+```csharp
+using Microsoft.Extensions.DependencyInjection;
+
+var manager = provider.GetRequiredKeyedService<IDeadLetterManager>("orders");
+var sources = manager.List();
+var page = await manager.PeekAsync("orders", maxMessages: 20, cancellationToken: token);
+var next = await manager.PeekAsync("orders", 20, page.NextCursor, token);
+
+var redriven = await manager.RedriveAsync("orders",
+    message => message.MessageId == selectedMessageId,
+    maxMessages: 20, cancellationToken: token);
+var removed = await manager.PurgeAsync("orders", maxMessages: 20, cancellationToken: token);
+```
+
+Peek is non-destructive and returns owned body snapshots. `Features.GetRequired<ServiceBusReceivedMessage>()` exposes native metadata, including application properties, sequence number and dead-letter reason. Peek cursors are opaque, source-specific continuations; stop when a page is empty. Pages are not a transactionally consistent snapshot.
+
+Redrive and purge receive **one native PeekLock batch**, bounded to 1–100 deliveries (default 20); the broker can return fewer. Redrive filters that batch, not the entire queue. Unmatched deliveries are abandoned unchanged. Repeat maintenance calls deliberately; do not loop until a filtered call returns zero and assume that the source has no other matches. Deferred DLQ messages require the native deferred-receive API and are not included in these maintenance batches. Session-enabled entities use the same native dead-letter subqueue access.
+
+Redrive uses the SDK's received-message copy constructor, preserving body, message ID, session/partition keys, application properties, failure history and creation trace context. It clears broker lifetime timestamps so the original TTL applies to the new enqueue. The send must succeed before the original is completed. A failed send or filter leaves the original in the DLQ; locks can remain until expiry after a failed operation. If the send succeeds and completion fails, repeating can duplicate the message. Keep handlers idempotent. Native duplicate detection can suppress a re-send with the same message ID within its configured window; choose the namespace/entity policy accordingly. Redriving a subscription sends to its **topic**, so every matching subscription can receive the copy.
+
+Purge permanently completes received DLQ messages without sending a copy. Concurrent consumers or administrators can change results, and cancellation or failure can leave partial progress. Exceptions propagate; these APIs do not promise atomic maintenance or an exact message count. Use an application timeout appropriate for the entity's native lock duration, and avoid long-running filters. Relayer does not run a parallel lock-renewal loop. The manager shares the transport client and never disposes a caller-owned client.
+
+The optional `MapRelayerDeadLetters()` HTTP integration and Kafka manager remain planned ([#372](https://github.com/thomhurst/Relayer/issues/372), [#371](https://github.com/thomhurst/Relayer/issues/371)). Applications must authorize any management surface they expose.

@@ -39,7 +39,7 @@ Relayer is in early development. Track progress in [GitHub issues](https://githu
 - [RabbitMQ Streams connection and topology](transports/rabbitmq-streams.md): owned native stream systems, existence validation and create-only native stream specifications. Message execution remains blocked on native recovery of failed processing offsets.
 - [NATS JetStream native connection and topology](transports/nats.md): named native options, owned connections and non-destructive stream/consumer provisioning. Message execution and full read-only configuration equivalence checks remain planned; the native byte-backed header API is an upstream prerequisite for allocation-free sends.
 - Generated batch handler execution, durable partial-failure decisions, and validated native/client-side receive executors for transport authors.
-- Typed failure classification, in-process retries, delayed redelivery and dead-letter copies with error history.
+- Typed failure classification, in-process retries, delayed redelivery and dead-letter copies with error history. [Service Bus dead-letter management](transports/service-bus.md#inspect-and-redrive-dead-letters) provides bounded peek, filtered redrive and purge; Kafka management and optional HTTP endpoints remain planned.
 - Manual settlement requests through `ISettlementFeature`, with exception precedence and durable capability fallbacks.
 - Declared topology with validate and provision modes, JSON export and [AsyncAPI 3.0.0 export](guides/topology.md#asyncapi-export) using source-generated JSON contract schemas. Protocol bindings and custom wire-format schemas remain unsupported.
 - The [in-memory transport](transports/in-memory.md), with native queue and partitioned log semantics.
