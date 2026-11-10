@@ -154,6 +154,15 @@ internal sealed class PubSubFixture : ITransportConformanceFixture<GooglePubSubD
     // Closing the proxy drops live TCP streams while preserving the emulator's native endpoint state.
     public async Task DisconnectAsync(CancellationToken token)
     {
+        // StartAsync returns before the native initial write. Cut an established subscriber,
+        // rather than racing that write into the client's documented fatal startup path.
+        await _native.WaitForInitialWriteAsync(token);
+        await DisconnectBeforeStartAsync(token);
+    }
+
+    // Fatal-initial-write tests deliberately disconnect before any subscriber exists.
+    internal async Task DisconnectBeforeStartAsync(CancellationToken token)
+    {
         await Broker.SetConnectedAsync(false, token);
         _disconnected = true;
     }
@@ -192,7 +201,8 @@ internal sealed class PubSubFixture : ITransportConformanceFixture<GooglePubSubD
                 && ContainsDisconnectedConnection(cause)));
 
     private static bool ContainsDisconnectedConnection(Exception error) =>
-        error is System.Net.Sockets.SocketException { SocketErrorCode: System.Net.Sockets.SocketError.ConnectionReset or System.Net.Sockets.SocketError.ConnectionAborted }
+        error is System.Net.Sockets.SocketException { SocketErrorCode: System.Net.Sockets.SocketError.ConnectionReset or System.Net.Sockets.SocketError.ConnectionAborted
+            or System.Net.Sockets.SocketError.Shutdown }
         || error is System.Net.Http.HttpIOException { HttpRequestError: System.Net.Http.HttpRequestError.InvalidResponse or System.Net.Http.HttpRequestError.ResponseEnded }
         || (error.InnerException is { } inner && ContainsDisconnectedConnection(inner));
 

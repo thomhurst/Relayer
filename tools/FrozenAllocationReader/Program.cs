@@ -8,6 +8,28 @@ if (args.Length != 1 && !wholeProcess) throw new ArgumentException("Expected one
 var etlx = TraceLog.CreateFromEventPipeDataFile(args[0], args[0] + ".etlx");
 using var log = new TraceLog(etlx);
 if (log.EventsLost != 0) throw new InvalidDataException($"Trace lost {log.EventsLost} events; recollect before interpreting owners.");
+// Keep runtime/module records from the entire capture: rundown can occur outside
+// measurement markers. Payloads are recorded as supplied by TraceEvent, not inferred
+// from the machine running this reader or from runtimeconfig requests.
+var identityRecords = 0;
+foreach (var ev in log.Events)
+{
+    if (!RuntimeIdentityScope.Includes(ev.ProviderName, ev.EventName)) continue;
+    var payload = new Dictionary<string, string?>();
+    foreach (var name in ev.PayloadNames) payload.Add(name, ev.PayloadByName(name)?.ToString());
+    Console.WriteLine(JsonSerializer.Serialize(new
+    {
+        kind = "runtime-module-event", processId = ev.ProcessID, ev.ProviderName,
+        ev.EventName, timeMilliseconds = ev.TimeStampRelativeMSec, payload
+    }));
+    identityRecords++;
+}
+Console.WriteLine(JsonSerializer.Serialize(new
+{
+    kind = "runtime-module-coverage", identityRecords,
+    limits = "Only captured CLR runtime/module events. Missing fields remain absent; paths, versions and PDB signatures do not prove loaded binary bytes or historical execution identity."
+}));
+var observedFrames = new HashSet<(int Process, string Method, string? Module)>();
 var starts = new List<(int Process, int Thread, double Time)>();
 var stops = new List<(int Process, int Thread, double Time)>();
 foreach (var ev in log.Events)
@@ -35,7 +57,18 @@ foreach (var ev in log.Events)
     }
     var frames = new List<string>();
     for (var frame = log.GetCallStackForEvent(ev); frame is not null; frame = frame.Caller)
+    {
         frames.Add(frame.CodeAddress.FullMethodName);
+        var address = frame.CodeAddress;
+        if (observedFrames.Add((ev.ProcessID, address.FullMethodName, address.ModuleFilePath)))
+            Console.WriteLine(JsonSerializer.Serialize(new
+            {
+                kind = "sampled-frame-module", processId = ev.ProcessID,
+                method = address.FullMethodName, modulePath = address.ModuleFilePath,
+                pdbSignature = address.ModuleFile?.PdbSignature,
+                pdbAge = address.ModuleFile?.PdbAge
+            }));
+    }
     if (frames.Count == 0) samplesWithoutStacks++;
     if (frames.Any(string.IsNullOrWhiteSpace)) samplesWithUnnamedFrames++;
     var stack = string.Join("\n", frames);

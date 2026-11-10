@@ -11,6 +11,8 @@ internal sealed class PubSubShutdownInterceptor : Interceptor
     private readonly ConcurrentQueue<string> _violations = new();
     private readonly ConcurrentDictionary<string, byte> _acks = new();
     internal IOException? InitialWriteFailure;
+    private volatile TaskCompletionSource _initialWrite = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    internal Task WaitForInitialWriteAsync(CancellationToken token) => _initialWrite.Task.WaitAsync(token);
     private int _streams;
     private int _closedStreams;
     private int _publisherClosed;
@@ -63,6 +65,7 @@ internal sealed class PubSubShutdownInterceptor : Interceptor
     internal void ReceiverClosed()
     {
         Interlocked.Exchange(ref _receiverClosed, 1);
+        _initialWrite = new(TaskCreationOptions.RunContinuationsAsynchronously);
         if (Volatile.Read(ref _settling) != 0) _violations.Enqueue("Subscriber closed before settlement RPCs completed");
     }
 
@@ -113,6 +116,7 @@ internal sealed class PubSubShutdownInterceptor : Interceptor
             if (message is StreamingPullRequest { Subscription.Length: > 0 }
                 && Interlocked.Exchange(ref owner.InitialWriteFailure, null) is { } failure) throw failure;
             await native.WriteAsync(message);
+            if (message is StreamingPullRequest { Subscription.Length: > 0 }) owner._initialWrite.TrySetResult();
             if (message is StreamingPullRequest pull)
                 foreach (var ack in pull.AckIds) owner._acks.TryAdd(ack, 0);
         }
