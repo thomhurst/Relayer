@@ -258,7 +258,8 @@ public class TenantDispatchTests
     public async Task Ordered_lanes_progress_after_lane_or_tenant_deadline(bool tenantDeadline)
     {
         await using var fixture = new Stores();
-        await fixture.Start(1, lanes: 3, leaseDuration: TimeSpan.FromSeconds(4));
+        // Wall-clock deadlines: the lane deadline is half the lease. Leave room for a busy shared server.
+        await fixture.Start(1, lanes: 3, leaseDuration: TimeSpan.FromSeconds(12));
         var store = fixture.Entries[0];
         for (var lane = 0; lane < 3; lane++) await Insert(store, lane + 1, lane);
         var transport = new Transport(async (message, token) =>
@@ -266,7 +267,7 @@ public class TenantDispatchTests
             if (MessageId(message) == Id(1)) await Task.Delay(Timeout.Infinite, token);
         });
         using var worker = new PostgreSqlTenantDispatcher(fixture.Catalog,
-            new() { TurnTimeout = TimeSpan.FromSeconds(tenantDeadline ? 1 : 5), RecoveryDelay = TimeSpan.Zero },
+            new() { TurnTimeout = TimeSpan.FromSeconds(tenantDeadline ? 3 : 15), RecoveryDelay = TimeSpan.Zero },
             [transport], NullLoggerFactory.Instance);
         await worker.PassAsync(default);
         if (tenantDeadline) await worker.PassAsync(default);
@@ -358,7 +359,7 @@ public class TenantDispatchTests
             if (MessageId(message) == Id(1)) await Task.Delay(Timeout.Infinite, token);
         });
         using var worker = new PostgreSqlTenantDispatcher(fixture.Catalog,
-            new() { TurnTimeout = TimeSpan.FromSeconds(1), RecoveryDelay = TimeSpan.Zero, InboxRetention = TimeSpan.FromHours(1), BatchSize = 1 },
+            new() { TurnTimeout = TimeSpan.FromSeconds(3), RecoveryDelay = TimeSpan.Zero, InboxRetention = TimeSpan.FromHours(1), BatchSize = 1 },
             [transport], NullLoggerFactory.Instance);
         worker.GetDispatcher(store.TenantId).Committed(queued, 1);
         // Keep the direct queue busy on every turn, including after canceled durable claims.

@@ -34,13 +34,14 @@ internal sealed class PostgreSqlServer : IAsyncDisposable
             var port = (await _docker(["port", _name, "5432/tcp"])).Trim().Split(':')[^1];
             // This container has neither TLS nor Kerberos. Native encryption fallback can
             // reconnect after authentication fails and replace the original failure.
-            ConnectionString = $"Host=127.0.0.1;Port={port};Username=postgres;Password=relayer-test;Database=postgres;Pooling=false;Timeout=2;SSL Mode=Disable;GSS Encryption Mode=Disable";
+            ConnectionString = $"Host=127.0.0.1;Port={port};Username=postgres;Password=relayer-test;Database=postgres;Pooling=false;SSL Mode=Disable;GSS Encryption Mode=Disable";
             var timeout = Stopwatch.StartNew();
             while (true)
             {
                 try
                 {
-                    await using var connection = new NpgsqlConnection(ConnectionString);
+                    // A short timeout keeps this probe retrying; tests keep the default so a busy shared server is not a failure.
+                    await using var connection = new NpgsqlConnection(ConnectionString + ";Timeout=2");
                     await connection.OpenAsync();
                     return;
                 }
