@@ -1434,7 +1434,7 @@ Transfer malformed header rows to a raw dead copy under a live fenced claim. Cou
 failures and native send failures; an atomic update/dead-copy/delete transaction dead-letters exhausted
 unordered rows and parks exhausted ordered rows. Retention preserves dead copies of parked barriers.
 The maximum send-attempt setting must match all dispatchers for a store. Completion failures after native
-success do not consume attempts. Future scheduled ISender registration and ordered lane workers remain separate.
+success do not consume attempts. Future scheduled ISender registration remains separate; D63 adds ordered lane workers.
 
 **Consequences.** Recovery is at least once; rollback after native acceptance replays the original identity.
 A connected pass can delay its own cleanup, while another replica immediately skips its active leadership.
@@ -1491,7 +1491,8 @@ Never restart it during ordinary operation; gaps and unordered concurrent writer
 **Consequences.** Connected owners cannot knowingly overlap a lane, even if its lease expires during a
 still-locked send transaction. Broken connections and uncertain native sends can still duplicate delivery;
 no broker ordering or settlement is emulated. Exhausted ordered rows park in place with their original
-sequence/error and a key-scoped barrier. SQL Server dead-letter management, unordered recovery and
-retention remain separate work; no unfinished management API is advertised. D46's SqlClient AOT/trimming
+sequence/error and a key-scoped barrier. SQL Server dead-letter management remains separate work;
+unordered recovery and retention follow D62. Ordered membership uses a separate `ordered_leases` table
+so existing maintenance `leases` rows keep their native uniqueidentifier ownership schema. D46's SqlClient AOT/trimming
 boundary remains explicit. Ordered flushes add one native range RPC per transaction; lane reads/claims
 and header preparation have dedicated managed and real-database benchmark coverage.

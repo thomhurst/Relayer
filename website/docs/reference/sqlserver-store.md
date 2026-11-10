@@ -21,8 +21,8 @@ Schema SQL/options remain AOT safe. This restriction is specific to this optiona
 
 Write the initial schema with your application's deployment tooling. Initial creation is idempotent and
 does not validate or upgrade an existing table. Schema evolution and rollback remain application-owned.
-This script creates the outbox and inbox tables, pending/ordered indexes and a filtered `(lane, seq)` parked-row index, native insert sequence and lease table.
-Existing outbox definitions are unchanged; use the explicit upgrade below for pre-sequence tables. It does not create a dead-letter table.
+This script creates the outbox and inbox tables, pending/ordered indexes and a filtered `(lane, seq)` parked-row index, native insert sequence, maintenance leases and a separate `ordered_leases` membership table.
+Existing outbox definitions are unchanged; use the explicit upgrade below for pre-sequence tables. It also creates the dead-letter table and retention indexes.
 
 ```csharp
 using Microsoft.Extensions.DependencyInjection;
@@ -300,7 +300,8 @@ lane count. A configuration-section overload binds these immutable settings thro
 reflection; native SqlClient runtime trimming/AOT restrictions still apply. Register unordered direct dispatch
 separately. Ordered dispatch does not require `DispatchStoreName`.
 
-The database clock controls membership, lane leases, schedules and fenced message claims. Members
+The database clock controls membership, lane leases, schedules and fenced message claims. Ordered
+membership uses `ordered_leases`, separate from the maintenance `leases` table. Members
 rebalance lanes into fair shares; each worker stops renewing lanes outside its share. A new owner may
 wait up to `LeaseDuration` for the previous owner's lease to expire. A lane transaction
 locks its ownership row across sequential native sends, preventing another connected worker from stealing
@@ -328,7 +329,7 @@ Native transport ordering and settlement are unchanged; destinations must advert
 Stop all writers and workers. Execute `SqlServerOutboxSchema.UpgradeOrderedDispatchScript(options)` in
 one explicit, application-owned transaction, then commit before restarting. The script refuses autocommit
 and already-upgraded tables. It assigns existing rows their historical UUID order because their original
-insert order cannot be recovered, creates the ordered index and lease table, and continues the sequence
+insert order cannot be recovered, creates the ordered index and `ordered_leases` table, and continues the sequence
 after the migrated maximum. Test your deployment/rollback procedure on a database copy first.
 
 ```csharp

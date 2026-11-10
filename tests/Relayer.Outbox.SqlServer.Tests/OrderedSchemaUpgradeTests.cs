@@ -17,6 +17,37 @@ public sealed class OrderedSchemaUpgradeTests(SqlServerFixture database)
     }
 
     [Test]
+    public async Task Ordered_membership_preserves_existing_maintenance_lease_schema()
+    {
+        var data = new StoreData(database);
+        await using var connection = new SqlConnection(database.ConnectionString);
+        await connection.OpenAsync();
+        var owner = Guid.NewGuid();
+        await using (var existing = new SqlCommand($"""
+            CREATE TABLE {SqlServerOutboxSchema.LeaseTable(data.Options)} (
+                name varchar(16) COLLATE Latin1_General_100_BIN2 NOT NULL PRIMARY KEY,
+                owner uniqueidentifier NOT NULL, expires_at datetimeoffset(7) NOT NULL);
+            INSERT INTO {SqlServerOutboxSchema.LeaseTable(data.Options)} VALUES ('sweeper', @owner, DATEADD(hour, 1, SYSUTCDATETIME()));
+            """, connection))
+        {
+            existing.Parameters.AddWithValue("owner", owner);
+            await existing.ExecuteNonQueryAsync();
+        }
+        await data.Create();
+        var coordinator = new SqlServerLaneCoordinator(database.ConnectionString, new()
+        { TablePrefix = data.Options.TablePrefix, Lanes = 1 });
+        await coordinator.RebalanceAsync(default);
+        await using (var transaction = (SqlTransaction)await connection.BeginTransactionAsync())
+        {
+            await Assert.That(await coordinator.AcquireAsync(connection, transaction, 0, default)).IsTrue();
+            await transaction.CommitAsync();
+        }
+        await coordinator.ReleaseAsync(default);
+        await using var read = new SqlCommand($"SELECT owner FROM {SqlServerOutboxSchema.LeaseTable(data.Options)} WHERE name = 'sweeper'", connection);
+        await Assert.That((Guid)(await read.ExecuteScalarAsync())!).IsEqualTo(owner);
+    }
+
+    [Test]
     public async Task Explicit_upgrade_preserves_historical_UUID_order_and_continues_native_sequence()
     {
         // Exercise both identifier and SQL literal escaping through the dynamic migration batches.

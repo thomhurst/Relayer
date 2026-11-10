@@ -70,7 +70,7 @@ public class SqlServerOrderedDispatchBenchmarks
         _rows.Dispose();
         await using var connection = new SqlConnection(_connectionString);
         await connection.OpenAsync();
-        await using var drop = new SqlCommand($"DROP TABLE IF EXISTS {_table}, [dbo].[{_options.TablePrefix}inbox], [dbo].[{_options.TablePrefix}leases]; DROP SEQUENCE IF EXISTS [dbo].[{_options.TablePrefix}outbox_sequence]", connection);
+        await using var drop = new SqlCommand($"DROP TABLE IF EXISTS {_table}, [dbo].[{_options.TablePrefix}inbox], [dbo].[{_options.TablePrefix}leases], [dbo].[{_options.TablePrefix}ordered_leases], [dbo].[{_options.TablePrefix}outbox_dead]; DROP SEQUENCE IF EXISTS [dbo].[{_options.TablePrefix}outbox_sequence]", connection);
         await drop.ExecuteNonQueryAsync();
     }
 

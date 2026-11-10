@@ -38,7 +38,16 @@ public sealed class OrderedDispatchTests(SqlServerFixture database)
         }
         var transport = new RecordingTransport();
         using var worker = Worker(data, transport, batchSize: 128);
-        await Assert.That(await worker.DispatchLaneAsync(0, default)).IsEqualTo(128);
+        // A bounded dispatch may stop at its admission deadline on a busy database.
+        // Drain with a progress assertion; ordering must hold across batch boundaries too.
+        var dispatched = 0;
+        while (dispatched < expected.Count)
+        {
+            var sent = await worker.DispatchLaneAsync(0, default);
+            await Assert.That(sent).IsGreaterThan(0);
+            dispatched += sent;
+        }
+        await Assert.That(dispatched).IsEqualTo(128);
         await Assert.That(transport.Ids.SequenceEqual(expected)).IsTrue();
         await Assert.That(transport.Sequences.Count).IsEqualTo(128);
         var sequences = transport.Sequences.ToArray();
@@ -273,7 +282,7 @@ public sealed class OrderedDispatchTests(SqlServerFixture database)
         using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(20));
         await using var connection = await Open();
         await using var query = new SqlCommand("SELECT COUNT_BIG(*) FROM sys.dm_exec_requests r CROSS APPLY sys.dm_exec_sql_text(r.sql_handle) t WHERE r.wait_type LIKE 'LCK%' AND t.text LIKE @pattern", connection);
-        query.Parameters.Add("@pattern", SqlDbType.NVarChar, -1).Value = "%" + prefix + "leases%";
+        query.Parameters.Add("@pattern", SqlDbType.NVarChar, -1).Value = "%" + prefix + "ordered_leases%";
         while ((long)(await query.ExecuteScalarAsync(deadline.Token))! == 0)
             await Task.Delay(10, deadline.Token);
     }
