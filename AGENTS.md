@@ -51,10 +51,15 @@ Rules for code on the per-message path (pipeline, middleware, dispatch, serializ
 
 ```powershell
 dotnet build -c Release
-dotnet test -c Release
-dotnet run -c Release --project benchmarks/Relayer.Benchmarks
+dotnet test -c Release --project tests/Relayer.Tests --treenode-filter "/*/*/ClassName/*"
+dotnet run -c Release --project benchmarks/Relayer.Benchmarks -- --filter "*ClassName*"
 ```
 
+- Run the narrowest tests that cover your change, never the whole suite. The full suite and the benchmarks are slow, and CI runs every test on each ready PR; that run is the validation for everything outside your change.
+  - Pick the test project that owns the code you touched (`--project tests/<Project>`) and filter to the classes you added or changed and those that exercise the changed code. Run a whole test project only when the change is broad within it, such as a shared fixture, a base class or the pipeline core.
+  - Do not run a bare `dotnet test -c Release` locally. Do not rerun tests when nothing they cover has changed since the last pass (docs, comments, PR text, review replies, a rebase without conflicts in the code under test).
+  - A fix for a review finding or a CI failure reruns the tests for that fix only.
+  - Run a benchmark only when [Performance requirements](#performance-requirements) calls for one, and then only the affected class through `--filter`. Never run the benchmark project without a filter.
 - Tests use TUnit. Filter with `--treenode-filter "/*/*/ClassName/TestName"` (`/<Assembly>/<Namespace>/<Class>/<Test>` segments; wildcards and `(A|B)` alternation work within a segment). With MTP, pass test options directly, without an extra `--` or VSTest's `--filter`.
 - Features require unit tests; transport behavior changes require tests against the real broker or its emulator where one exists, and every transport must pass the transport conformance suite ([design §15](docs/design.md#15-roadmap)).
 - Investigate intermittent test failures instead of rerunning CI to obtain green. Use deterministic synchronization for timing-dependent tests.

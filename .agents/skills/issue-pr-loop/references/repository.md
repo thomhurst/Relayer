@@ -4,6 +4,7 @@ Read [AGENTS.md](../../../../AGENTS.md) for validation, public contracts, and pe
 
 - Issues carry `phase-*` and `area: *` labels. Within a priority, prefer the earliest phase: later phases build on the core.
 - Transport work against a real broker or emulator uses Docker/Testcontainers; stop only resources created for this work.
+- Validate narrowly, as [AGENTS.md](../../../../AGENTS.md#build-and-test) describes: run only the test classes that cover the change, in the test project that owns them. Never run the whole test suite or unfiltered benchmarks in a unit; CI on the ready PR is the full run.
 - Add a benchmark only when [AGENTS.md](../../../../AGENTS.md#performance-requirements) requires one: the change materially moves steady-state per-message cost. Most bug fixes do not; state the one-line per-message cost in the PR instead.
 
 The mechanics this loop defers to:
