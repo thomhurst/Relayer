@@ -312,3 +312,9 @@ kafka.Options.Configure(options =>
 ```
 
 Use the same native TLS/SASL settings on all three builders when the cluster requires them. Provision topics externally and grant the native read, group-offset, produce, metadata and DeleteRecords permissions needed by the operations you expose. A dead-letter topic shared by different source topics has an ambiguous redrive destination, so resolving its manager fails with an actionable error; configure separate dead-letter topics for those consumers.
+
+### Optional HTTP management
+
+`Relayer.AspNetCore` exposes this named Kafka manager through the [shared HTTP management endpoints](service-bus.md#optional-http-management). Pass the Kafka transport's registered name to `MapRelayerDeadLetters`, and use a configured dead-letter topic as `source`. Apply the application's authentication and authorization policy as shown there; mapping alone does not secure inspection or destructive operations.
+
+The HTTP API returns message IDs and base64-encoded body bytes, without native feature objects. A tombstone and an empty body both appear as empty bytes; use `IDeadLetterManager` directly to inspect `KafkaDeadLetterFeature.Record.Value`. HTTP redrive preserves tombstones and follows the same group-offset and filter rules above, and HTTP purge permanently deletes partition prefixes for all groups.
