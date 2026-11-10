@@ -98,6 +98,31 @@ class ProfileLaunchTests(unittest.TestCase):
             self.assertTrue(protocol["instrumented"])
             self.assertTrue(protocol["exact_invocations"])
 
+    def test_exact_driver_rejects_other_regions_and_profiles(self):
+        for extra in (["--exact-invocations"], ["--exact-releases"], ["--exact-roundtrips"],
+                      ["--trace-tool", "trace", "--profile-reader", "reader"]):
+            with self.subTest(extra=extra), patch("sys.argv", ["control", "inputs", "probe", "output", "--exact-driver", *extra]), self.assertRaises(SystemExit):
+                main()
+
+    def test_exact_driver_uses_separate_processes_and_protocol(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for side in ("baseline", "candidate", "baseline-after"):
+                image = root / "performance-builds" / side / "builds/net10.0/Relayer.Benchmarks-DefaultJob-1/bin/Release/net10.0/Relayer.Benchmarks.dll"
+                image.parent.mkdir(parents=True)
+                image.touch()
+            output = root / "results"
+            with patch("sys.argv", ["control", str(root), "probe.dll", str(output), "--exact-driver"]), patch("frozen_concurrent_control.verify", return_value="frozen"), patch("frozen_concurrent_control.subprocess.run") as execute:
+                main()
+            self.assertEqual(execute.call_count, 4)
+            for call in execute.call_args_list:
+                self.assertEqual(call.args[0][-1], "--exact-driver")
+                self.assertNotIn("collect", call.args[0])
+            protocol = json.loads((output / "protocol.json").read_text())
+            self.assertTrue(protocol["instrumented"])
+            self.assertTrue(protocol["exact_driver"])
+            self.assertIn("other threads", protocol["driver_boundary"])
+
     def test_exact_releases_use_separate_processes_and_protocol(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
