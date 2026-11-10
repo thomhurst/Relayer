@@ -8,6 +8,7 @@
 
   <ItemGroup>
     <ProjectReference Include="../../src/Relayer.GooglePubSub/Relayer.GooglePubSub.csproj" />
+    <ProjectReference Include="../../src/Relayer.Nats/Relayer.Nats.csproj" />
     <ProjectReference Include="../../src/Relayer.Outbox.SqlServer/Relayer.Outbox.SqlServer.csproj" />
     <ProjectReference Include="../../src/Relayer.Sagas.EntityFrameworkCore/Relayer.Sagas.EntityFrameworkCore.csproj" />
     <ProjectReference Include="..\..\src\Relayer.AzureServiceBus\Relayer.AzureServiceBus.csproj" />

@@ -307,7 +307,7 @@ const status = [
   ['RabbitMQ topology, confirmed sends, receive/settlement and health', 'Implemented', true],
   ['RabbitMQ Streams native connection and topology', 'Implemented; message execution blocked upstream', true],
   ['Google Cloud Pub/Sub native publishing, streaming pull, durable poison copies and topology', 'Implemented; prepared-client Native AOT coverage', true],
-  ['NATS JetStream native connection and topology', 'Implemented; message execution blocked upstream', true],
+  ['NATS JetStream', 'Execution implemented; performance validation pending', true],
   ['Apache Pulsar transport', 'Planned; native UTF-8 properties and Native AOT prerequisites', false],
   ['AsyncAPI topology and JSON contract export', 'Implemented; protocol bindings unsupported', true],
   ['Kafka parallel receive via Dekaf', 'In progress', false],
