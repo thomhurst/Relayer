@@ -5,6 +5,7 @@ on:
   pull_request:
     paths:
       - 'tools/FrozenConcurrentProbe/**'
+      - 'tools/FrozenMeasurementEvents.cs'
       - 'tools/FrozenAllocationReader/**'
       - 'Directory.Packages.props'
       - '.github/scripts/frozen_concurrent_control.py'
@@ -64,6 +65,7 @@ jobs:
             results/
             inputs/
             tools/FrozenConcurrentProbe/
+            tools/FrozenMeasurementEvents.cs
             tools/FrozenAllocationReader/
             .diagnostic-tools/
             .github/scripts/frozen_concurrent_control.py

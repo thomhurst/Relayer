@@ -437,3 +437,14 @@ original fixture, native scheduler and diagnostic driver together; its schedulin
 differs from full delivery. Variation here cannot identify the historical excess,
 and its totals must never be subtracted from end-to-end totals. The strict gate
 and production performance requirements remain unchanged.
+
+The fixture workflow also collects a **separate instrumented ABBA** using the same
+`Relayer-FrozenMeasurement` phase events and `FrozenAllocationReader` as the full
+delivery control. Markers remain outside the inclusive allocation counter; the
+reader excludes setup and warmup. Retained measured-region stacks can distinguish
+original handler, signal-channel and diagnostic-driver allocations within this
+isolated workload. Weighted samples and missing-stack counts retain their existing
+limits: these profiles cannot attribute the historical end-to-end excess, and
+neither sample weights nor isolated totals may be subtracted from full delivery.
+Untraced and instrumented results remain separate. Failed extraction preserves
+raw captures, and every ABBA launch is attempted even after another launch fails.

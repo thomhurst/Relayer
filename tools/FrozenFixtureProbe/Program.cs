@@ -47,12 +47,15 @@ static class FixtureControl
             GC.Collect();
             GC.WaitForPendingFinalizers();
             GC.Collect();
+            // Keep phase markers outside the inclusive counter, as in the full-delivery probe.
+            FrozenMeasurementEvents.Log.MeasurementStart();
             var allocated = GC.GetTotalAllocatedBytes(precise: true);
             var start = System.Diagnostics.Stopwatch.GetTimestamp();
             long sum = 0;
             for (var i = 0; i < measuredBatches; i++) sum += await Batch();
             var seconds = System.Diagnostics.Stopwatch.GetElapsedTime(start).TotalSeconds;
             var bytes = GC.GetTotalAllocatedBytes(precise: true) - allocated;
+            FrozenMeasurementEvents.Log.MeasurementStop();
             if (sum != measuredBatches * 8L * 42) throw new InvalidOperationException($"Unexpected sum: {sum}.");
             Console.WriteLine(JsonSerializer.Serialize(new
             {
