@@ -7,6 +7,22 @@ namespace Relayer.Nats.Tests;
 public class NatsAllocationTests
 {
     [Test]
+    public async Task Failure_copy_clears_publish_option_deduplication_and_reset_restores_normal_sends()
+    {
+        var headers = new NatsPublishHeaders(false) { IsFailureCopy = true };
+        var context = new NatsMsgContext("dead", headers: headers);
+        var writer = new ArrayBufferWriter<byte>();
+        // Native PublishAsync applies NatsJSPubOpts.MsgId before invoking this serializer hook.
+        headers["Nats-Msg-Id"] = "configured-id";
+        headers.Serialize(writer, ReadOnlyMemory<byte>.Empty, context);
+        await Assert.That(headers.ContainsKey("Nats-Msg-Id")).IsFalse();
+        headers.Reset();
+        headers["Nats-Msg-Id"] = "ordinary-send";
+        headers.Serialize(writer, ReadOnlyMemory<byte>.Empty, context);
+        await Assert.That(headers["Nats-Msg-Id"].ToString()).IsEqualTo("ordinary-send");
+    }
+
+    [Test]
     public async Task Utf8_header_conversion_matches_the_native_string_requirement()
     {
         var utf8 = "changing-event-identifier"u8.ToArray();

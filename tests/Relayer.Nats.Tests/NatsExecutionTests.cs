@@ -15,7 +15,10 @@ public class NatsExecutionTests
     {
         using var deadline = new CancellationTokenSource(TimeSpan.FromMinutes(2));
         var token = deadline.Token;
-        await using var broker = await NatsTopologyTests.Broker.StartAsync(token);
+        var broker = await NatsSessionBroker.Current.WaitAsync(token);
+        var events = TestContext.Current!.Isolation.GetIsolatedName("events");
+        var orders = TestContext.Current!.Isolation.GetIsolatedName("orders");
+        var deadSubject = TestContext.Current!.Isolation.GetIsolatedName("dead");
         var control = new ExecutionControl();
         var builder = Host.CreateApplicationBuilder();
         builder.Services.AddSingleton(control);
@@ -30,15 +33,15 @@ public class NatsExecutionTests
                 transport.Options.Configure(options =>
                 {
                     options.ConnectionOptions = broker.Options();
-                    options.Streams.Add(new("events") { Configuration = new("events", ["orders", "dead"]) });
-                    options.Consumers.Add(new("events", "worker") { Configuration = new("worker") { FilterSubject = "orders" } });
+                    options.Streams.Add(new(events) { Configuration = new(events, [orders, deadSubject]) });
+                    options.Consumers.Add(new(events, "worker") { Configuration = new("worker") { FilterSubject = orders } });
                 });
-                transport.Send<ExecutionMessage>("orders");
+                transport.Send<ExecutionMessage>(orders);
                 transport.Consume("worker", consumer =>
                 {
-                    consumer.Options.Stream = "events";
+                    consumer.Options.Stream = events;
                     consumer.Options.Settings = new() { MaxMsgs = 1, Expires = TimeSpan.FromSeconds(1), DrainOnCancel = true };
-                    consumer.Options.Failure = new() { RetryDelays = new[] { TimeSpan.Zero }, DeadLetterEndpoint = "dead" };
+                    consumer.Options.Failure = new() { RetryDelays = new[] { TimeSpan.Zero }, DeadLetterEndpoint = deadSubject };
                     consumer.Handler<ExecutionHandler>();
                 });
             });
@@ -48,29 +51,31 @@ public class NatsExecutionTests
         await host.StartAsync(token);
         await using var native = new NatsConnection(broker.Options());
         var js = new NatsJSContext(native);
-        await js.CreateConsumerAsync("events", new("dead_reader") { FilterSubject = "dead" }, token);
+        await js.CreateConsumerAsync(events, new("dead_reader") { FilterSubject = deadSubject }, token);
         var poison = new byte[] { 1, 2, 3 };
         var poisonHeaders = new NatsPublishHeaders(false)
         {
             ["original"] = "preserved",
+            ["Nats-Msg-Id"] = "original-poison-id",
             TraceParent = "00-11111111111111111111111111111111-2222222222222222-01",
         };
-        var ack = await js.PublishAsync("orders", new ReadOnlyMemory<byte>(poison), poisonHeaders,
+        var ack = await js.PublishAsync(orders, new ReadOnlyMemory<byte>(poison), poisonHeaders,
             headers: poisonHeaders, cancellationToken: token);
         ack.EnsureSuccess();
         using var scope = host.Services.CreateScope();
         await scope.ServiceProvider.GetRequiredService<ISender>().SendNowAsync(new ExecutionMessage(42),
             options => options.Nats(headers => headers["custom"] = "native"), token);
         await control.Completed.Task.WaitAsync(token);
-        var dead = await js.GetConsumerAsync("events", "dead_reader", token);
+        var dead = await js.GetConsumerAsync(events, "dead_reader", token);
         var copy = await dead.NextAsync(NatsRawSerializer<byte[]>.Default, cancellationToken: token);
         await Assert.That(copy).IsNotNull();
         await Assert.That(copy!.Data).IsEquivalentTo(poison);
         await Assert.That(copy.Headers!["original"].ToString()).IsEqualTo("preserved");
+        await Assert.That(copy.Headers.ContainsKey("Nats-Msg-Id")).IsFalse();
         await Assert.That(copy.Headers["traceparent"].ToString()).IsEqualTo("00-11111111111111111111111111111111-2222222222222222-01");
         await copy.AckAsync(new() { DoubleAck = true }, token);
         await host.StopAsync(token);
-        var settled = await js.GetConsumerAsync("events", "worker", token);
+        var settled = await js.GetConsumerAsync(events, "worker", token);
         await Assert.That(settled.Info.NumAckPending).IsEqualTo(0L);
         await Assert.That(settled.Info.AckFloor.ConsumerSeq).IsEqualTo(2UL);
         await Assert.That(control.Attempts).IsEqualTo(2);
@@ -80,23 +85,25 @@ public class NatsExecutionTests
     {
         using var deadline = new CancellationTokenSource(TimeSpan.FromMinutes(1));
         var token = deadline.Token;
-        await using var broker = await NatsTopologyTests.Broker.StartAsync(token);
+        var broker = await NatsSessionBroker.Current.WaitAsync(token);
+        var events = TestContext.Current!.Isolation.GetIsolatedName("events");
+        var orders = TestContext.Current!.Isolation.GetIsolatedName("orders");
         var services = new ServiceCollection();
         services.AddRelayer(relayer => relayer.Nats("failure", transport =>
         {
             transport.Options.Configure(options =>
             {
                 options.ConnectionOptions = broker.Options();
-                options.Streams.Add(new("events") { Configuration = new("events", ["orders"]) });
-                options.Consumers.Add(new("events", "worker") { Configuration = new("worker") });
+                options.Streams.Add(new(events) { Configuration = new(events, [orders]) });
+                options.Consumers.Add(new(events, "worker") { Configuration = new("worker") });
             });
-            transport.Send<ExecutionMessage>("orders");
+            transport.Send<ExecutionMessage>(orders);
         }));
         await using var provider = services.BuildServiceProvider();
         var adapter = (NatsNativeTransport)provider.GetRequiredService<Relayer.Transports.ITransport>();
         await adapter.ApplyTopologyAsync(TopologyMode.Provision, token);
         NatsConnection? ownedConnection = null;
-        var worker = adapter.AddConsumer("events", "worker", new() { MaxMsgs = 1, DrainOnCancel = true, Expires = TimeSpan.FromSeconds(1) }, 2);
+        var worker = adapter.AddConsumer(events, "worker", new() { MaxMsgs = 1, DrainOnCancel = true, Expires = TimeSpan.FromSeconds(1) }, 2);
         worker.Receive = (delivery, _) =>
         {
             ownedConnection = (NatsConnection)delivery.Message.Connection!;
@@ -105,7 +112,7 @@ public class NatsExecutionTests
         await adapter.StartAsync(token);
         await using var native = new NatsConnection(broker.Options());
         var js = new NatsJSContext(native);
-        var ack = await js.PublishAsync("orders", new byte[] { 42 }, NatsRawSerializer<byte[]>.Default, cancellationToken: token);
+        var ack = await js.PublishAsync(orders, new byte[] { 42 }, NatsRawSerializer<byte[]>.Default, cancellationToken: token);
         ack.EnsureSuccess();
         await Assert.That(async () => await worker.Completion.WaitAsync(token)).Throws<InvalidOperationException>();
         await Assert.That(async () => await adapter.DisposeAsync()).Throws<InvalidOperationException>();

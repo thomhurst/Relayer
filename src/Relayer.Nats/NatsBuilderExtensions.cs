@@ -90,7 +90,13 @@ internal sealed class NatsHostedService(IServiceProvider provider, string name) 
         var headers = new KeyValuePair<string, WireString>[message.Headers?.Count ?? 0];
         var index = 0;
         if (message.Headers is { } source)
-            foreach (var pair in source) headers[index++] = new(pair.Key, new(pair.Value.ToString()));
-        return new(message.Subject, message.Data, headers);
+            foreach (var pair in source)
+            {
+                // JetStream deduplication is stream-wide, including another subject in that stream.
+                if (string.Equals(pair.Key, "Nats-Msg-Id", StringComparison.OrdinalIgnoreCase)) continue;
+                headers[index++] = new(pair.Key, new(pair.Value.ToString()));
+            }
+        return new(message.Subject, message.Data, headers.AsMemory(0, index), options: new SendOptions().Nats(
+            static native => ((NatsPublishHeaders)native).IsFailureCopy = true));
     }
 }
