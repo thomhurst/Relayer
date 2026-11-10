@@ -9,7 +9,6 @@ using MySqlConnector;
 
 namespace Relayer.Outbox.MySql.Tests;
 
-[NotInParallel("MySQL")]
 public class AdoNetEnlistmentTests
 {
     [Test]
@@ -186,7 +185,7 @@ public class AdoNetEnlistmentTests
         try
         {
             using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(15));
-            await using var observer = database.Source.CreateCommand("SELECT count(*) FROM performance_schema.data_lock_waits");
+            await using var observer = database.Source.CreateCommand("SELECT count(*) FROM performance_schema.data_lock_waits w JOIN performance_schema.data_locks l ON l.ENGINE_LOCK_ID = w.REQUESTING_ENGINE_LOCK_ID WHERE l.OBJECT_SCHEMA = DATABASE()");
             while (Convert.ToInt64(await observer.ExecuteScalarAsync(timeout.Token)) == 0)
                 await Task.Delay(10, timeout.Token);
         }

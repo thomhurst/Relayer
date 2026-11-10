@@ -246,7 +246,7 @@ public class InboxTests : InboxContractTests
             using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(20));
             while (true)
             {
-                await using var command = Fixture.Source.CreateCommand("SELECT COUNT(*) FROM performance_schema.data_lock_waits");
+                await using var command = Fixture.Source.CreateCommand("SELECT COUNT(*) FROM performance_schema.data_lock_waits w JOIN performance_schema.data_locks l ON l.ENGINE_LOCK_ID = w.REQUESTING_ENGINE_LOCK_ID WHERE l.OBJECT_SCHEMA = DATABASE()");
                 if (Convert.ToInt64(await command.ExecuteScalarAsync(timeout.Token)) > 0) return;
                 await Task.Delay(10, timeout.Token);
             }

@@ -232,7 +232,7 @@ public sealed class MaintenanceTests
         await data.Insert(Guid.CreateVersion7(), DateTimeOffset.UtcNow.AddDays(-1));
         using var stop = new CancellationTokenSource();
         var resource = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(
-            System.Text.Encoding.UTF8.GetBytes("relayer:" + MySqlOutboxSchema.LeaseTable(new()))))[..48] + ":sweeper";
+            System.Text.Encoding.UTF8.GetBytes(data.Database + ":" + MySqlOutboxSchema.LeaseTable(new()))))[..48] + ":sweeper";
         var transport = new Transport(async _ =>
         {
             await using var connection = await data.Source.OpenConnectionAsync();

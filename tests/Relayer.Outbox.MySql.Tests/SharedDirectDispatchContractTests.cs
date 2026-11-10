@@ -152,10 +152,11 @@ public sealed class SharedDirectDispatchContractTests : OutboxDirectDispatchCont
         await using var scope = fixture.Provider!.CreateAsyncScope();
         var outbox = scope.ServiceProvider.GetRequiredService<MySqlOutbox>();
         await using var connection = await fixture.Source.OpenConnectionAsync();
+        var database = connection.Database;
         await connection.ChangeDatabaseAsync("mysql");
         await Assert.That(async () => await outbox.BeginTransactionAsync(connection)).Throws<InvalidOperationException>();
         await Assert.That(outbox.IsActive).IsFalse();
-        await connection.ChangeDatabaseAsync("relayer");
+        await connection.ChangeDatabaseAsync(database);
         await using var transaction = await outbox.BeginTransactionAsync(connection);
         await outbox.EnlistAsync(Record(1), default);
         await transaction.CommitAsync();
