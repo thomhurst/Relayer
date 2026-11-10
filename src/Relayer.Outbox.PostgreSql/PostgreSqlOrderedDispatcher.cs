@@ -15,6 +15,7 @@ internal sealed partial class PostgreSqlOrderedDispatcher : BackgroundService
     private readonly Dictionary<string, ITransport> _transports = new(StringComparer.Ordinal);
     private readonly OutboxRecord[] _rows;
     private readonly bool[] _ready;
+    private int _nextLane;
     private readonly OrderedDispatchCapabilityCache _capabilities = new();
     private readonly ILogger<PostgreSqlOrderedDispatcher> _logger;
     private readonly TimeProvider _timeProvider;
@@ -102,6 +103,45 @@ internal sealed partial class PostgreSqlOrderedDispatcher : BackgroundService
         }
     }
 
+    // Reuse native membership, readiness probes and fenced lane transactions in one catalog turn.
+    [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
+    internal async ValueTask DispatchPassAsync(TimeSpan remainingTurn, CancellationToken cancellationToken)
+    {
+        var started = _timeProvider.GetTimestamp();
+        await _coordinator.RebalanceAsync(cancellationToken).ConfigureAwait(false);
+        await _lane.FindReadyAsync(_coordinator.Assigned, _ready, cancellationToken).ConfigureAwait(false);
+        var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        try
+        {
+            for (var visited = 0; visited < _options.Lanes; visited++)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var lane = _nextLane;
+                // Advance before dispatch: an expired tenant turn resumes at the following lane.
+                _nextLane = (lane + 1) % _options.Lanes;
+                if (!_ready[lane] || !_coordinator.Assigned[lane]) continue;
+                deadline.CancelAfter(_options.LeaseDuration / 2);
+                var remaining = remainingTurn - _timeProvider.GetElapsedTime(started);
+                if (remaining <= TimeSpan.Zero) return;
+                try { await DispatchLaneAsync(lane, deadline.Token, remaining / 2).ConfigureAwait(false); }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
+                catch (Exception error) { DispatchFailed(_logger, error); }
+                finally
+                {
+                    deadline.CancelAfter(Timeout.InfiniteTimeSpan);
+                    if (!deadline.TryReset())
+                    {
+                        deadline.Dispose();
+                        deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                    }
+                }
+            }
+        }
+        finally { deadline.Dispose(); }
+    }
+
+    internal ValueTask ReleaseAsync(CancellationToken cancellationToken) => _coordinator.ReleaseAsync(cancellationToken);
+
     public override void Dispose()
     {
         base.Dispose();
@@ -110,11 +150,13 @@ internal sealed partial class PostgreSqlOrderedDispatcher : BackgroundService
 
     // One connection and lease-row transaction lock per batch. Never run concurrent sends within a lane.
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder<>))]
-    internal async ValueTask<int> DispatchLaneAsync(int lane, CancellationToken cancellationToken)
+    internal async ValueTask<int> DispatchLaneAsync(int lane, CancellationToken cancellationToken, TimeSpan? turnAdmissionBudget = null)
     {
         var started = _timeProvider.GetTimestamp();
         // Reserve half the hard deadline for the final admitted send and its database commit.
         var admissionBudget = _options.LeaseDuration / 4;
+        if (turnAdmissionBudget is { } turnBudget && turnBudget < admissionBudget)
+            admissionBudget = turnBudget;
         await using var connection = await _source.OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
         await using var transaction = await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
         if (!await _coordinator.AcquireAsync(connection, transaction, lane, cancellationToken).ConfigureAwait(false)) return 0;

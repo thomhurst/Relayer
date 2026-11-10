@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -81,6 +82,7 @@ internal sealed partial class PostgreSqlMaintenanceWorker : BackgroundService
     }
 
     internal ValueTask<int> SweepAsync(CancellationToken cancellationToken) => RunAsync("sweeper", false, cancellationToken);
+    internal ValueTask<int> SweepAsync(TimeSpan turnBudget, CancellationToken cancellationToken) => RunAsync("sweeper", false, cancellationToken, turnBudget);
     internal ValueTask<int> CleanupAsync(CancellationToken cancellationToken) => RunAsync("cleanup", true, cancellationToken);
 
     // The native replication slot serializes CDC readers. Fenced row claims still arbitrate with
@@ -100,8 +102,9 @@ internal sealed partial class PostgreSqlMaintenanceWorker : BackgroundService
         } while (_through is not null);
     }
 
-    private async ValueTask<int> RunAsync(string name, bool cleanup, CancellationToken cancellationToken)
+    private async ValueTask<int> RunAsync(string name, bool cleanup, CancellationToken cancellationToken, TimeSpan? turnBudget = null)
     {
+        var started = turnBudget.HasValue ? Stopwatch.GetTimestamp() : 0;
         await using var connection = await _source.OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
         await using var transaction = await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
         // Keep this row locked until the native sends or retention deletes finish. Connected owners never overlap.
@@ -112,7 +115,7 @@ internal sealed partial class PostgreSqlMaintenanceWorker : BackgroundService
         if (await lease.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) is not true) return 0;
         var count = cleanup
             ? await DeleteExpiredAsync(connection, transaction, cancellationToken).ConfigureAwait(false)
-            : await DispatchAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
+            : await DispatchAsync(connection, transaction, cancellationToken, turnBudget - (turnBudget.HasValue ? Stopwatch.GetElapsedTime(started) : TimeSpan.Zero)).ConfigureAwait(false);
         // Start the idle lease at completion, not at the start of a potentially slow broker call.
         await using var renew = new NpgsqlCommand(_renew, connection, transaction);
         renew.Parameters.AddWithValue("name", name);
@@ -124,8 +127,9 @@ internal sealed partial class PostgreSqlMaintenanceWorker : BackgroundService
         return count;
     }
 
-    private async ValueTask<int> DispatchAsync(NpgsqlConnection connection, NpgsqlTransaction transaction, CancellationToken cancellationToken)
+    private async ValueTask<int> DispatchAsync(NpgsqlConnection connection, NpgsqlTransaction transaction, CancellationToken cancellationToken, TimeSpan? turnBudget = null)
     {
+        var started = turnBudget.HasValue ? Stopwatch.GetTimestamp() : 0;
         if (_through is null)
         {
             await using var boundary = new NpgsqlCommand(_highWaterMark, connection, transaction);
@@ -144,7 +148,10 @@ internal sealed partial class PostgreSqlMaintenanceWorker : BackgroundService
             // A fixed boundary forces wrapping even while newer rows arrive, revisiting failed or newly eligible rows.
             if (count == 0) _through = null;
             _store.UseDispatchTransaction(connection, transaction);
-            await _dispatcher.DispatchRecoveredAsync(_rows.AsMemory(0, count), cancellationToken, propagateDatabaseFailures: true).ConfigureAwait(false);
+            // Preserve native destination batching; stop before another group and reserve time to commit.
+            // The UUID boundary still wraps, so unadmitted durable rows are revisited.
+            await _dispatcher.DispatchRecoveredAsync(_rows.AsMemory(0, count), cancellationToken, propagateDatabaseFailures: true, admissionBudget: turnBudget.HasValue
+                ? (turnBudget.Value - Stopwatch.GetElapsedTime(started)) / 2 : null).ConfigureAwait(false);
             return count;
         }
         finally

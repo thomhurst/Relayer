@@ -1,4 +1,5 @@
 using System.Collections.Frozen;
+using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using System.Threading.Channels;
 using Microsoft.Extensions.Hosting;
@@ -100,6 +101,24 @@ internal sealed class PostgreSqlDirectDispatcher : BackgroundService
         }
     }
 
+    // Catalog scheduling owns execution; it never starts a background task for this store.
+    [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
+    internal async ValueTask DispatchQueuedAsync(CancellationToken cancellationToken)
+    {
+        // One bounded pass: producers cannot keep a tenant on a worker indefinitely.
+        for (var i = 0; i < _options.QueueCapacity && _queue.Reader.TryRead(out var batch); i++)
+        {
+            try { await DispatchAsync(batch, cancellationToken).ConfigureAwait(false); }
+            finally { Return(batch); }
+        }
+    }
+
+    internal void Retire()
+    {
+        _queue.Writer.TryComplete();
+        while (_queue.Reader.TryRead(out var batch)) Return(batch);
+    }
+
     public override async Task StopAsync(CancellationToken cancellationToken)
     {
         _queue.Writer.TryComplete();
@@ -112,12 +131,14 @@ internal sealed class PostgreSqlDirectDispatcher : BackgroundService
 
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
     private async ValueTask DispatchAsync(OutboxDispatchBatch batch, CancellationToken cancellationToken,
-        bool propagateDatabaseFailures = false)
+        bool propagateDatabaseFailures = false, TimeSpan? admissionBudget = null)
     {
+        var admissionStarted = admissionBudget.HasValue ? Stopwatch.GetTimestamp() : 0;
         batch.Sort();
         var offset = 0;
         while (offset < batch.Count)
         {
+            if (admissionBudget is { } budget && Stopwatch.GetElapsedTime(admissionStarted) >= budget) break;
             var first = batch.Rows[offset];
             ITransport transport;
             int limit;
@@ -214,13 +235,13 @@ internal sealed class PostgreSqlDirectDispatcher : BackgroundService
     // Recovery owns a separate dispatcher instance, so these buffers never overlap the commit queue.
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
     internal async ValueTask DispatchRecoveredAsync(ReadOnlyMemory<OutboxRecord> rows, CancellationToken cancellationToken,
-        bool propagateDatabaseFailures = false)
+        bool propagateDatabaseFailures = false, TimeSpan? admissionBudget = null)
     {
         _recoveredPoison = 0;
         var batch = PrepareRecovered(rows.Span);
         // An aborted PostgreSQL transaction can accept COMMIT as ROLLBACK. Recovery must observe
         // database errors before its caller commits or advances the replication checkpoint.
-        try { await DispatchAsync(batch, cancellationToken, propagateDatabaseFailures).ConfigureAwait(false); }
+        try { await DispatchAsync(batch, cancellationToken, propagateDatabaseFailures, admissionBudget).ConfigureAwait(false); }
         finally { batch.Clear(); }
     }
 

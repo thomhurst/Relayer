@@ -59,7 +59,7 @@ there is no separate Relayer `IOutboxStoreResolver`. With `AddRelayerTenancy`, s
 Authorize the incoming identifier in the scoped native factory before selecting the store. The
 boundary validates the selected context before its transaction, including each native retry scope.
 
-`ITenantSource` dispatch enumeration and a shared tenant connection budget remain planned under
-[#38](https://github.com/thomhurst/Relayer/issues/38). The wire header is preserved in outbox payloads;
+[`ITenantSource` catalog dispatch](../reference/tenant-stores.md#dispatch-a-tenant-catalog) shares a bounded
+connection budget across PostgreSQL tenant stores. The wire header is preserved in outbox payloads;
 the separate durable `tenant_id` column is populated and validated through an application-authorized
 [scoped tenant binding](../reference/tenant-stores.md#durable-tenant-binding).

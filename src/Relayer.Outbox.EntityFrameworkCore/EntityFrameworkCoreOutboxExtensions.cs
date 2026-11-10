@@ -74,9 +74,20 @@ public static class EntityFrameworkCoreOutboxExtensions
             options.TenantBinding.ValidateContext(tenant);
         }
         var outbox = services.GetRequiredService<EntityFrameworkCoreOutbox>();
-        var dispatcher = options.DispatchStoreName is { } name
-            ? services.GetRequiredKeyedService<PostgreSqlDirectDispatcher>(name) : null;
-        var configuration = new OutboxConfiguration(options, dispatcher, services.GetServices<PostgreSqlSchedulingRegistration>());
+        PostgreSqlDirectDispatcher? dispatcher = null;
+        IEnumerable<PostgreSqlSchedulingRegistration> workers = services.GetServices<PostgreSqlSchedulingRegistration>();
+        if (options.DispatchStoreName is { } name)
+        {
+            dispatcher = services.GetKeyedService<PostgreSqlDirectDispatcher>(name);
+            if (dispatcher is null && services.GetService<PostgreSqlTenantDispatcher>() is { } catalog)
+            {
+                dispatcher = catalog.GetDispatcher(name, out var catalogWorkers);
+                workers = catalogWorkers;
+            }
+            if (dispatcher is null)
+                throw new InvalidOperationException($"PostgreSQL dispatch store '{name}' is not registered.");
+        }
+        var configuration = new OutboxConfiguration(options, dispatcher, workers);
         ((IDbContextOptionsBuilderInfrastructure)builder).AddOrUpdateExtension(configuration);
         builder.AddInterceptors(new OutboxSaveChangesInterceptor(outbox, configuration),
             new OutboxTransactionInterceptor(outbox, configuration));
