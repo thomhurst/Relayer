@@ -3,9 +3,12 @@ title: Aspire integration
 description: "Connect Relayer transports to Aspire resources and show health, traces and metrics in the dashboard."
 ---
 
-`Relayer.Aspire` reads connections supplied by Aspire's native `WithReference` and
-subscribes OpenTelemetry to Relayer's existing ActivitySource and Meter. It does not
-create another broker client or change delivery, settlement or outbox transactions.
+`Relayer.Kafka` and `Relayer.AzureServiceBus` provide typed `UseAspireConnection`
+extensions that read connections supplied by Aspire's native `WithReference`.
+The optional `Relayer.Aspire` package subscribes OpenTelemetry to Relayer's existing
+ActivitySource and Meter and references no transport packages. Applications reference
+only the transports they use. These integrations do not create another broker client
+or change delivery, settlement or outbox transactions.
 While packages are unpublished, use project references from a repository checkout.
 
 ## AppHost resources
@@ -39,7 +42,6 @@ Never commit production credentials.
 Keep the existing transport APIs, handlers and native options:
 
 ```csharp
-using Relayer.Aspire;
 using Relayer.AzureServiceBus;
 using Relayer.Kafka;
 
@@ -84,6 +86,7 @@ Reference `Relayer.Kafka.HealthChecks` and `Relayer.AzureServiceBus.HealthChecks
 from the application and register the existing adapters explicitly:
 
 ```csharp
+using Relayer.Aspire;
 using Relayer.HealthChecks;
 
 builder.Services.AddRelayerHealthChecks();

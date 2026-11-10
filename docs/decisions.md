@@ -1394,11 +1394,12 @@ and its `Relayer` ActivitySource/Meter. The original package table proposed an
 `Aspire.Hosting` dependency without an application-side connection contract.
 
 **Decision.** Keep AppHost resource declaration on Aspire's native APIs. `Relayer.Aspire`
-is an optional application-side package: typed `UseAspireConnection` methods configure
-the existing named transport options from `ConnectionStrings`, and
-`AddRelayerInstrumentation` subscribes the application's existing OpenTelemetry providers.
-It depends on the supported transports and OpenTelemetry hosting rather than pulling
-AppHost orchestration into the application. Native configuration callbacks stay reachable.
+is an optional, transport-neutral application-side package: `AddRelayerInstrumentation`
+subscribes the application's existing OpenTelemetry providers. Typed `UseAspireConnection`
+methods live in each existing transport package and configure its named options from
+`ConnectionStrings`. Applications therefore acquire only their chosen native clients;
+`Relayer.Aspire` depends on core and OpenTelemetry hosting, with no transport or AppHost
+orchestration dependencies. Native configuration callbacks stay reachable.
 Health registration and HTTP readiness probes use existing APIs directly. Outbox resource
 connections go to the existing database adapters; schema, transaction enlistment and workers
 remain explicit. No native resource, exporter, client, health runtime or transaction is reimplemented.

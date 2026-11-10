@@ -811,7 +811,7 @@ hashes can change frozen dispatch-table layouts across unchanged processes.
 | `Relayer.Outbox.MongoDB` | MongoDB outbox and inbox | `MongoDB.Driver` |
 | `Relayer.Serialization.*` | Protobuf, Avro, MessagePack | The respective library |
 | `Relayer.Testing` / `.Testing.Containers` | Harness and fixtures | `Testcontainers` |
-| `Relayer.Aspire` | Aspire connection configuration and OpenTelemetry subscription (D61); native AppHost resources and existing health adapters | Kafka and Service Bus transports, `OpenTelemetry.Extensions.Hosting` |
+| `Relayer.Aspire` | OpenTelemetry subscription (D61); connections use extensions in the existing transport packages, native AppHost resources and existing health adapters | Relayer core, `OpenTelemetry.Extensions.Hosting` |
 | `Relayer.AzureServiceBus.HealthChecks` | Optional Service Bus native probes and receiver-owned liveness | `Relayer.AzureServiceBus`, `Relayer.HealthChecks` |
 | `Relayer.HealthChecks` | Connectivity, consumer liveness and outbox backlog health integration | `Microsoft.Extensions.Diagnostics.HealthChecks` |
 | `Relayer.Kafka.HealthChecks` | Optional native Kafka connectivity and receiver liveness adapters | `Relayer.Kafka`, `Relayer.HealthChecks` |
