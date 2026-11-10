@@ -40,7 +40,9 @@ scopes. Relayer's interceptors must share the current `ISender` scope's outbox c
 context selection and shared transactions have the same owner. Resetting a pooled context cannot
 rebind those interceptors to the next scope. With DI scope validation enabled, pooled registration may
 therefore fail while resolving scoped services from the root provider; otherwise Relayer rejects the
-pooled options when EF initializes the context. Use `AddDbContext` for both outbox and EF consumer
+root-bound interceptors during the options callback, including when an unpooled context has already
+initialized EF's shared internal service provider. Manually configuring outbox options also requires
+an application scope's provider. Use `AddDbContext` for both outbox and EF consumer
 contexts. Npgsql connection pooling is independent and remains supported.
 
 Application-owned scoped factories can select native stores for manually initiated units and explicitly

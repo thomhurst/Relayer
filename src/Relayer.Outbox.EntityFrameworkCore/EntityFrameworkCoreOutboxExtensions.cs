@@ -19,6 +19,7 @@ public static class EntityFrameworkCoreOutboxExtensions
         if (services.Any(static descriptor => descriptor.ServiceType == typeof(IOutboxEnlistment)) &&
             !services.Any(static descriptor => descriptor.ServiceType == typeof(EntityFrameworkCoreOutbox)))
             throw new InvalidOperationException("A different IOutboxEnlistment is already registered. Configure one scoped outbox integration.");
+        services.TryAddSingleton<RootProvider>(static provider => new(provider));
         services.TryAddSingleton<DefaultOutboxCapabilities>();
         services.TryAddScoped<EntityFrameworkCoreOutbox>(static provider =>
         {
@@ -54,6 +55,13 @@ public static class EntityFrameworkCoreOutboxExtensions
         ArgumentNullException.ThrowIfNull(builder);
         ArgumentNullException.ThrowIfNull(services);
         OutboxConfiguration.ValidatePooling(builder.Options);
+        // Pooled options callbacks run at the root before EF adds MaxPoolSize. Reject capturing
+        // that provider even when DI scope validation is disabled or EF's provider cache is warm.
+        if (ReferenceEquals(services.GetRequiredService<IServiceProvider>(),
+                services.GetRequiredService<RootProvider>().Provider))
+            throw new InvalidOperationException("Relayer EF Core interceptors must bind to the current ISender scope, " +
+                "not the root service provider. Use AddDbContext instead of AddDbContextPool or AddPooledDbContextFactory " +
+                "and configure AddRelayerOutbox with its scoped provider.");
         if (builder.Options.FindExtension<CoreOptionsExtension>()?.Interceptors is { } interceptors)
             foreach (var interceptor in interceptors)
                 if (interceptor is OutboxSaveChangesInterceptor)
@@ -80,6 +88,11 @@ public static class EntityFrameworkCoreOutboxExtensions
                 if (interceptor is OutboxSaveChangesInterceptor save)
                     return save.Outbox.Select(context, save.Configuration);
         throw new InvalidOperationException("Configure this DbContext with AddRelayerOutbox before calling EnlistRelayerOutbox.");
+    }
+
+    private sealed class RootProvider(IServiceProvider provider)
+    {
+        public IServiceProvider Provider { get; } = provider;
     }
 
     private sealed class OutboxOptionsValidator : IValidateOptions<EntityFrameworkCoreOutboxOptions>

@@ -581,6 +581,11 @@ that provider to interceptors. Supporting pooling would require an explicit per-
 and corresponding ownership/reset contract, rather than merely moving interceptor fields. Keep both
 outbox and consumer boundaries non-pooled so their ownership contract stays uniform. Validate final EF
 options as well as the options callback, since EF sets `MaxPoolSize` after invoking that callback.
+A singleton root-provider marker also rejects root-bound interceptors inside the callback, including
+when DI scope validation is disabled. This guard is necessary because EF validates options extensions
+only when building an internal service provider, not when reusing a cached one
+([EF 10.0.14 source](https://github.com/dotnet/efcore/blob/v10.0.14/src/EFCore/Internal/ServiceProviderCache.cs)).
+The marker retains only its owning root provider; it never captures an application scope.
 This restriction concerns DbContext pooling only; native Npgsql connection pooling remains supported.
 
 
