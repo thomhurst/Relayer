@@ -319,44 +319,58 @@ public class NatsExecutionTests
     }
 
     [Test]
-    public async Task Native_failure_stops_sibling_receivers_and_cleanup_closes_the_owned_connection()
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Failed_processing_leaves_native_redelivery_running(bool unsupportedSettlement)
     {
         using var deadline = new CancellationTokenSource(TimeSpan.FromMinutes(1));
         var token = deadline.Token;
         var broker = await NatsSessionBroker.Current.WaitAsync(token);
-        var events = TestContext.Current!.Isolation.GetIsolatedName("events");
-        var orders = TestContext.Current!.Isolation.GetIsolatedName("orders");
+        var events = TestContext.Current!.Isolation.GetIsolatedName("failure_events");
+        var subject = TestContext.Current!.Isolation.GetIsolatedName("failure_orders");
+        var missing = TestContext.Current!.Isolation.GetIsolatedName("missing_dead_letter");
         var services = new ServiceCollection();
         services.AddRelayer(relayer => relayer.Nats("failure", transport =>
         {
             transport.Options.Configure(options =>
             {
                 options.ConnectionOptions = broker.Options();
-                options.Streams.Add(new(events) { Configuration = new(events, [orders]) });
-                options.Consumers.Add(new(events, "worker") { Configuration = new("worker") });
+                options.Streams.Add(new(events) { Configuration = new(events, [subject]) });
+                options.Consumers.Add(new(events, "worker") { Configuration = new("worker") { AckWait = TimeSpan.FromMilliseconds(200) } });
             });
-            transport.Send<ExecutionMessage>(orders);
+            transport.Send<ExecutionMessage>(subject);
         }));
         await using var provider = services.BuildServiceProvider();
         var adapter = (NatsNativeTransport)provider.GetRequiredService<Relayer.Transports.ITransport>();
         await adapter.ApplyTopologyAsync(TopologyMode.Provision, token);
-        NatsConnection? ownedConnection = null;
-        var worker = adapter.AddConsumer(events, "worker", new() { MaxMsgs = 1, DrainOnCancel = true, Expires = TimeSpan.FromSeconds(1) }, 2);
-        worker.Receive = (delivery, _) =>
-        {
-            ownedConnection = (NatsConnection)delivery.Message.Connection!;
-            return ValueTask.FromException<Disposition>(new InvalidOperationException("injected native callback failure"));
-        };
-        await adapter.StartAsync(token);
         await using var native = new NatsConnection(broker.Options());
         var js = new NatsJSContext(native);
-        var ack = await js.PublishAsync(orders, new byte[] { 42 }, NatsRawSerializer<byte[]>.Default, cancellationToken: token);
-        ack.EnsureSuccess();
-        await Assert.That(async () => await worker.Completion.WaitAsync(token)).Throws<InvalidOperationException>();
-        await Assert.That(async () => await adapter.DisposeAsync()).Throws<InvalidOperationException>();
-        await Assert.That(ownedConnection).IsNotNull();
-        await Assert.That(async () => await ownedConnection!.PingAsync(token)).Throws<ObjectDisposedException>();
-        await native.PingAsync(token);
+        var worker = adapter.AddConsumer(events, "worker", new() { MaxMsgs = 1, DrainOnCancel = true, Expires = TimeSpan.FromSeconds(1) }, 2);
+        var redelivered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var calls = 0;
+        worker.Receive = async (delivery, processing) =>
+        {
+            if (Interlocked.Increment(ref calls) == 1)
+            {
+                if (unsupportedSettlement) return Disposition.Redeliver(TimeSpan.Zero);
+                // A real failure-copy publication to a subject outside every stream fails.
+                // Leave the original unacknowledged so native AckWait can redeliver it.
+                (await js.PublishAsync(missing, delivery.Message.Data,
+                    NatsRawSerializer<ReadOnlyMemory<byte>>.Default, cancellationToken: processing)).EnsureSuccess();
+                throw new InvalidOperationException("Expected native publication to fail.");
+            }
+            if (delivery.Message.Metadata!.Value.NumDelivered > 1) redelivered.TrySetResult();
+            return Disposition.Complete;
+        };
+        await adapter.StartAsync(token);
+        (await js.PublishAsync(subject, new byte[] { 42 }, NatsRawSerializer<byte[]>.Default, cancellationToken: token)).EnsureSuccess();
+        await Task.WhenAny(redelivered.Task, worker.Completion).WaitAsync(token);
+        if (worker.Completion.IsCompleted) await worker.Completion;
+        await redelivered.Task.WaitAsync(token);
+        await adapter.StopAsync(token);
+        var consumer = await js.GetConsumerAsync(events, "worker", token);
+        await Assert.That(consumer.Info.NumAckPending).IsEqualTo(0L);
+        await Assert.That(calls).IsEqualTo(2);
     }
 
 }
