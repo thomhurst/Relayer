@@ -722,7 +722,7 @@ Relayer-specific instruments, for which the conventions define nothing:
   - `Provision` creates missing entities (development).
   - `Validate` checks that entities exist and fails fast with a diff (**default**). It needs only least-privilege permissions (MassTransit #5613, EasyNetQ #1000).
   - `None` skips checks entirely.
-- Export: `dotnet relayer topology export --format json|bicep|terraform` emits the topology for infrastructure-as-code (NSB #7370, MassTransit #2799).
+- Export: JSON and the Service Bus Bicep/Terraform API are implemented; see [infrastructure export](https://relayer.tomlonghurst.dev/docs/guides/topology#service-bus-infrastructure-export). Infrastructure export reads the existing named native declarations without resolving adapters or connecting to a broker. Service Bus artifacts target an existing namespace using ARM resource schemas (Terraform uses AzAPI); unsupported native declarations fail before output. The planned `dotnet relayer topology export --format json|bicep|terraform` command and SQS/SNS Terraform exporter complete the tooling scope (NSB #7370, MassTransit #2799).
 - Entity names come from a naming convention you can override per endpoint. Nothing is auto-created with surprising names.
 
 ---
