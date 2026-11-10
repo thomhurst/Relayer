@@ -1,9 +1,9 @@
 ---
-title: Amazon SQS
-description: "Named native SQS sending, FIFO groups, timers, batch failures and queue topology."
+title: Amazon SQS and SNS
+description: "Native SQS and SNS sending, FIFO groups, batches and create-only topology."
 ---
 
-`Relayer.AmazonSqs` implements native SQS queue sending with AWS SDK v4. Receiver composition and full LocalStack transport conformance remain planned in [#224](https://github.com/thomhurst/Relayer/issues/224), SNS topics/subscriptions in [#225](https://github.com/thomhurst/Relayer/issues/225), and connectivity/liveness health adapters with receivers in [#224](https://github.com/thomhurst/Relayer/issues/224). Consumer declarations fail at startup until receivers are implemented.
+`Relayer.AmazonSqs` implements native SQS queue sending and SNS topic publishing with AWS SDK v4. Receiver composition and full LocalStack transport conformance remain planned in [#224](https://github.com/thomhurst/Relayer/issues/224), and connectivity/liveness health adapters with receivers in [#224](https://github.com/thomhurst/Relayer/issues/224). Consumer declarations fail at startup until receivers are implemented.
 
 ## Register sending
 
@@ -34,7 +34,7 @@ await sender.SendAsync(new OrderPlaced(customerId));
 
 Messages need a stable `[Message]` identity and a source-generated JSON context. Start the host before sending. Every route destination must match a declared **queue name**, not a URL. Relayer resolves native queue URLs at startup. Named options support the [Options pattern](../guides/configuration.md).
 
-The native `AmazonSQSConfig` passes unchanged to an owned client, which uses the AWS credential chain. Alternatively, set `SqsClient` to an existing `IAmazonSQS`; its configuration and credentials stay caller-owned, and Relayer never disposes it. Do not mutate captured configuration after startup. `Sns` remains reserved for the planned SNS adapter.
+The native `AmazonSQSConfig` passes unchanged to an owned client, which uses the AWS credential chain. Alternatively, set `SqsClient` to an existing `IAmazonSQS`; its configuration and credentials stay caller-owned, and Relayer never disposes it. Do not mutate captured configuration after startup. Use the separate typed `AmazonSns` declaration below for SNS topics.
 
 ## Queue topology
 
@@ -84,7 +84,7 @@ Even HTTP 200 responses can contain failed entries. `AmazonSqsBatchException.Res
 
 Native send attempts count actual entries in `messaging.client.sent.messages`; each SDK call records `messaging.client.operation.duration` through acknowledgement or failure, including partial batch failure. Preparation failures and empty batches record neither metric.
 
-Send spans use `messaging.system = aws_sqs`, `aws.sqs.queue.url`, and the native response's `aws.request_id`. Native AWS exceptions retain their request IDs. Creation context stays in message attributes. SNS telemetry and SQS `delete` settlement spans arrive with their respective adapters.
+Send spans use `messaging.system = aws_sqs`, `aws.sqs.queue.url`, and the native response's `aws.request_id`. Native AWS exceptions retain their request IDs. Creation context stays in message attributes. SNS spans use `aws.sns`; SQS `delete` settlement spans remain planned with receivers.
 
 ## Performance validation
 
@@ -97,3 +97,72 @@ dotnet run -c Release --project benchmarks/Relayer.Benchmarks -- --filter "*SqsS
 Native request, entry and attribute containers are pooled per concurrent operation. SQS requires a text body, so decoding serialized UTF-8 bytes allocates a native-body string on each send. Nonempty UTF-8 header values and group keys also allocate strings. Under the approved native-boundary allocation policy (D52), these required `SendMessageRequest.MessageBody`, `MessageAttributeValue.StringValue`, and `MessageGroupId` strings count as native-client cost when the equivalent raw-client preparation allocates at least as much. All other pipeline allocations remain subject to the zero-allocation requirement. The 5% throughput budget is unchanged; the serialized-send benchmark does not establish the full default-JSON pipeline budget.
 
 `SqsBindingBenchmarks` isolates these conversions without network, SDK response, or serializer allocations. It writes the default binary-mode envelope with changing IDs/timestamps and a 256-byte body on each invocation, for both standard messages and FIFO messages with a UTF-8 group key. Run it with `--filter "*SqsBindingBenchmarks*"` to pin Relayer's additional allocation cost against equivalent raw-client preparation, independently of native request overhead. The earlier default-envelope probe reported 856 B/message on each path (0 additional B); that historical report is not a measurement of every payload or configuration.
+
+## SNS topic publishing
+
+Use the same package and sender API with an explicit SNS transport and native topic declarations:
+
+```csharp
+relayer.AmazonSns("events", sns =>
+{
+    sns.Options.Configure(options =>
+    {
+        options.Sns = new Amazon.SimpleNotificationService.AmazonSimpleNotificationServiceConfig
+        {
+            RegionEndpoint = Amazon.RegionEndpoint.EUWest2,
+        };
+        options.Topics.Add(new Amazon.SimpleNotificationService.Model.CreateTopicRequest("orders"));
+    });
+    sns.Send<OrderPlaced>("orders");
+});
+```
+
+Routes target declared topic **names**. The SDK's native topic paginator resolves topic ARNs at startup. `SnsClient` accepts a caller-owned `IAmazonSimpleNotificationService`, which Relayer never disposes. Otherwise `Sns` passes unchanged to the native client, using the AWS credential chain. Multiple named SQS and SNS transports can coexist.
+
+SNS FIFO topics require a `.fifo` name and native `FifoTopic = "true"` attribute. Route ordering keys become `MessageGroupId`; the configured CloudEvents identity header becomes `MessageDeduplicationId`, including replay and custom header prefixes. All CloudEvents routes to the same FIFO topic need matching identity bindings. Without an envelope identity, configure native deduplication explicitly or use the topic's content-based deduplication. SNS provides no native scheduling or tombstones; use the durable outbox for future delivery.
+
+`SendOptions.AmazonSns(Action<PublishRequest>)` exposes the native outgoing request for single sends and batch entries. For example, set `Subject` or native message attributes. Portable destination, group key and envelope headers take precedence; callbacks run once per message and must not retain borrowed requests. Plain topic publishing rejects `TargetArn`, `PhoneNumber` and `MessageStructure`, which would change destination or wire format. Bodies must be valid UTF-8. Raw SQS delivery accepts at most **10 attributes**, so the SNS adapter enforces that total including CloudEvents and tracing rather than dropping metadata.
+
+Native `PublishBatch` splits at destination changes, 10 messages or the aggregate **256 KiB** limit including attributes. Individual messages also have a 256 KiB limit. `AmazonSnsBatchException.Response` exposes the original native successful and failed entries, and `BatchOffset` identifies the native batch within its destination group. Successful entries are never automatically resent; later batches stop after a failure. Native FIFO ordering and deduplication govern delivery.
+
+### SNS topics, subscriptions and queue policies
+
+`Topics` contains native `CreateTopicRequest` declarations with attributes and tags. `Subscriptions` contains native `SubscribeRequest` declarations with explicit topic and queue ARNs, `Protocol = "sqs"`, and `Attributes["RawMessageDelivery"] = "true"`. Raw delivery preserves the serialized body and CloudEvents message attributes on the queue. Other subscription protocols and wrapped SNS notification bodies are rejected at startup.
+
+For example, inside `sns.Options.Configure(options => ...)`, declare the queue and subscription with your actual region and account ARNs:
+
+```csharp
+var topicArn = "arn:aws:sns:eu-west-2:123456789012:orders";
+var queueArn = "arn:aws:sqs:eu-west-2:123456789012:orders";
+options.QueueTopology.Sqs = new Amazon.SQS.AmazonSQSConfig
+{
+    RegionEndpoint = Amazon.RegionEndpoint.EUWest2,
+};
+options.QueueTopology.Queues.Add(new Amazon.SQS.Model.CreateQueueRequest("orders")
+{
+    Attributes = new()
+    {
+        ["Policy"] = $$"""
+            {"Version":"2012-10-17","Statement":[{"Effect":"Allow",
+            "Principal":{"Service":"sns.amazonaws.com"},"Action":"sqs:SendMessage",
+            "Resource":"{{queueArn}}","Condition":{"ArnEquals":{"aws:SourceArn":"{{topicArn}}"}}}]}
+            """,
+    },
+});
+options.Subscriptions.Add(new Amazon.SimpleNotificationService.Model.SubscribeRequest
+{
+    TopicArn = topicArn,
+    Protocol = "sqs",
+    Endpoint = queueArn,
+    ReturnSubscriptionArn = true,
+    Attributes = new() { ["RawMessageDelivery"] = "true" },
+});
+```
+
+`QueueTopology` reuses SQS declarations and policy validation described above. Its optional `SqsClient` is caller-owned. Set its region/configuration independently from SNS. Policies are explicit infrastructure input; Relayer does not infer or broaden permissions. Queues managed elsewhere can omit `QueueTopology` and supply only the subscription ARNs, with the required queue permissions already provisioned.
+
+Default `Validate` uses read APIs for topics, tags, subscriptions and optional queues, and reports missing resources or declared attribute drift. `Provision` creates only missing topics, queues and subscriptions with the native declarations. It never updates policies, subscription attributes, tags or existing resources; reconcile reported differences through infrastructure configuration. `None` skips topology checks; startup still resolves declared topics. Unconfirmed subscriptions are reported rather than treated as ready. There is no SNS receiver: consume from the subscribed SQS queue using its native client until Relayer's SQS receiver ships.
+
+SNS send spans and native metrics use `messaging.system = aws.sns`, with `aws.sns.topic.arn` and native `aws.request_id` on sends. Duration covers each native request through acknowledgement or failure; partial batch failures remain failures, and native attempt counts include each submitted entry.
+
+`SnsSendBenchmarks` compares acknowledged single and batch publishing against raw AWS requests with `MemoryDiagnoser`, including optional metrics. Set `RELAYER_SNS_SERVICE_URL` for LocalStack or use the native AWS credential chain in a test account. `SnsBindingBenchmarks` isolates default envelope/body conversion for standard and FIFO sends. Required native `PublishRequest.Message`, `MessageAttributeValue.StringValue` and UTF-8 `MessageGroupId` strings are native-client cost under D52; request, entry and attribute containers are reused. The same 5% throughput budget applies; local measurements are diagnostic and serialized-send benchmarks do not establish the complete default-JSON pipeline budget.

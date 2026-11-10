@@ -11,7 +11,7 @@ namespace Relayer.AmazonSqs;
 /// <summary>Registers named native SQS send transports.</summary>
 public static class AmazonSqsBuilderExtensions
 {
-    /// <summary>Declares SQS queue sending and topology. Receivers and SNS are not implemented yet.</summary>
+    /// <summary>Declares SQS queue sending and topology. Receivers are not implemented yet; use AmazonSns for topic sending.</summary>
     public static IRelayerBuilder AmazonSqs(this IRelayerBuilder builder, string name,
         Action<TransportBuilder<AmazonSqsTransportOptions, AmazonSqsRouteOptions, AmazonSqsConsumerOptions>> configure)
     {
