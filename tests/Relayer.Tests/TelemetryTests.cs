@@ -184,6 +184,7 @@ public class TelemetryTests
             ["relayer.critical_time"] = (typeof(Histogram<double>), "s"),
             ["relayer.retries"] = (typeof(Counter<long>), "{retry}"),
             ["relayer.dead_lettered"] = (typeof(Counter<long>), "{message}"),
+            ["relayer.outbox.dead_lettered"] = (typeof(Counter<long>), "{message}"),
             ["relayer.outbox.pending"] = (typeof(UpDownCounter<long>), "{message}"),
             ["relayer.outbox.dispatch_lag"] = (typeof(Histogram<double>), "s"),
             ["relayer.inbox.duplicates"] = (typeof(Counter<long>), "{message}"),
