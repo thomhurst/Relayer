@@ -69,7 +69,7 @@ public class MaintenanceTests
             await using var observer = NpgsqlDataSource.Create(fixture.ConnectionString);
             while (true)
             {
-                await using var waiting = observer.CreateCommand("SELECT count(*) FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND query LIKE 'INSERT INTO %leases%'");
+                await using var waiting = observer.CreateCommand("SELECT count(*) FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND query LIKE 'INSERT INTO %leases%' AND datname = current_database()");
                 if ((long)(await waiting.ExecuteScalarAsync(timeout.Token))! > 0) break;
                 await Task.Yield();
             }

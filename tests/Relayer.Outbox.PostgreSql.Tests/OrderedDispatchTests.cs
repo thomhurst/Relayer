@@ -225,7 +225,7 @@ public class OrderedDispatchTests
         await entered.Task.WaitAsync(cancellation.Token);
         try
         {
-            await using var terminate = source.CreateCommand("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE state = 'idle in transaction' AND query LIKE 'UPDATE %SET claim_token%'");
+            await using var terminate = source.CreateCommand("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE state = 'idle in transaction' AND query LIKE 'UPDATE %SET claim_token%' AND datname = current_database()");
             await terminate.ExecuteNonQueryAsync(cancellation.Token);
         }
         finally { release.TrySetResult(); }
@@ -633,7 +633,7 @@ public class OrderedDispatchTests
     {
         while (true)
         {
-            await using var command = source.CreateCommand("SELECT count(*) FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND query LIKE 'INSERT INTO %leases%'");
+            await using var command = source.CreateCommand("SELECT count(*) FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND query LIKE 'INSERT INTO %leases%' AND datname = current_database()");
             if ((long)(await command.ExecuteScalarAsync(cancellationToken))! > 0) return;
             await Task.Yield();
         }

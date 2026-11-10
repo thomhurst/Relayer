@@ -39,7 +39,6 @@ public class PostgreSqlConnectionTests
         await Assert.That(settings.SslMode).IsEqualTo(SslMode.Disable);
         await Assert.That(settings.GssEncryptionMode).IsEqualTo(GssEncryptionMode.Disable);
         await Assert.That(settings.Pooling).IsFalse();
-        await Assert.That(settings.Timeout).IsEqualTo(2);
     }
 
     [Test]

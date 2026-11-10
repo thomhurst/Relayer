@@ -1,82 +1,97 @@
-using System.Diagnostics;
 using Npgsql;
 
 namespace Relayer.Outbox.PostgreSql.Tests;
 
+// One database per fixture on the session's shared server, so tests run in parallel
+// without seeing each other's tables, sessions or replication slots.
 internal sealed class PostgreSqlFixture : IAsyncDisposable
 {
-    private readonly string _name = "relayer-schema-test-" + Guid.NewGuid().ToString("N");
-    private readonly Func<string[], Task<string>> _docker;
-    private readonly Action<Exception> _reportCleanupFailure;
-    private bool _startupAttempted;
+    private NpgsqlDataSource? _admin;
+    public string Database { get; } = TestContext.Current!.Isolation.GetIsolatedName(Guid.NewGuid().ToString("N")[..8]);
     public string ConnectionString { get; private set; } = "";
 
-    public PostgreSqlFixture() : this(new DockerCommand().RunAsync, ReportCleanupFailure) { }
-
-    internal PostgreSqlFixture(Func<string[], Task<string>> docker, Action<Exception> reportCleanupFailure)
+    public async Task StartAsync()
     {
-        _docker = docker;
-        _reportCleanupFailure = reportCleanupFailure;
-    }
-
-    public async Task StartAsync(bool logicalReplication = false)
-    {
-        // The daemon can create the container even if the CLI never returns its ID.
-        _startupAttempted = true;
-        try
-        {
-            await _docker(["run", "--detach", "--rm", "--name", _name, "--publish", "127.0.0.1::5432",
-                "--env", "POSTGRES_PASSWORD=relayer-test", "postgres:18-alpine",
-                .. logicalReplication ? new[] { "-c", "wal_level=logical" } : []]);
-            var port = (await _docker(["port", _name, "5432/tcp"])).Trim().Split(':')[^1];
-            // This container has neither TLS nor Kerberos. Native encryption fallback can
-            // reconnect after authentication fails and replace the original failure.
-            ConnectionString = $"Host=127.0.0.1;Port={port};Username=postgres;Password=relayer-test;Database=postgres;Pooling=false;Timeout=2;SSL Mode=Disable;GSS Encryption Mode=Disable";
-            var timeout = Stopwatch.StartNew();
-            while (true)
-            {
-                try
-                {
-                    await using var connection = new NpgsqlConnection(ConnectionString);
-                    await connection.OpenAsync();
-                    return;
-                }
-                catch (NpgsqlException) when (timeout.Elapsed < TimeSpan.FromSeconds(60))
-                {
-                    await Task.Delay(200);
-                }
-            }
-        }
-        catch (Exception exception)
-        {
-            exception.Data["DockerContainerName"] = _name;
-            Console.Error.WriteLine($"PostgreSQL fixture startup failed. After Docker recovers, clean up with: docker rm --force --volumes {_name}");
-            throw;
-        }
+        var session = await PostgreSqlSession.Current;
+        _admin = session.Admin;
+        await Execute($"CREATE DATABASE {Database}");
+        ConnectionString = session.Server.ConnectionString.Replace("Database=postgres", "Database=" + Database);
     }
 
     public async ValueTask DisposeAsync()
     {
-        if (!_startupAttempted) return;
-        _startupAttempted = false;
+        if (_admin is null) return;
         try
         {
-            await _docker(["rm", "--force", "--volumes", _name]);
+            // Includes databases a test created with this one's name as their prefix.
+            var databases = new List<string>();
+            await using (var command = _admin.CreateCommand("SELECT datname FROM pg_database WHERE starts_with(datname, $1)"))
+            {
+                command.Parameters.AddWithValue(Database);
+                await using var reader = await command.ExecuteReaderAsync();
+                while (await reader.ReadAsync()) databases.Add(reader.GetString(0));
+            }
+            foreach (var database in databases) await Execute($"DROP DATABASE {database} WITH (FORCE)");
         }
         catch (Exception exception)
         {
-            var failure = new InvalidOperationException(
-                $"PostgreSQL fixture cleanup failed. After Docker recovers, run: docker rm --force --volumes {_name}", exception);
             // Throwing here would replace an exception unwinding through await using.
-            _reportCleanupFailure(failure);
+            var failure = new InvalidOperationException($"Could not drop PostgreSQL test database {Database}.", exception);
+            Console.Error.WriteLine(failure);
+            TestContext.Current!.StateBag.GetOrAdd("PostgreSqlFixture.CleanupFailures", static _ => new List<Exception>()).Add(failure);
         }
     }
 
-    private static void ReportCleanupFailure(Exception failure)
+    private async Task Execute(string sql)
     {
-        Console.Error.WriteLine(failure);
-        var context = TestContext.Current ?? throw new InvalidOperationException("Fixture cleanup requires a TUnit test context.", failure);
-        var failures = context.StateBag.GetOrAdd("PostgreSqlFixture.CleanupFailures", static _ => new List<Exception>());
-        failures.Add(failure);
+        await using var command = _admin!.CreateCommand(sql);
+        await command.ExecuteNonQueryAsync();
+    }
+}
+
+public static class PostgreSqlSession
+{
+    // Started by the first test that needs a database, so filtered runs of pure unit tests start no container.
+    private static Lazy<Task<Session>> _shared = new(StartAsync);
+
+    internal static Task<Session> Current => Volatile.Read(ref _shared).Value;
+
+    // Admin is pooled, unlike the tests' own connections: creating and dropping databases should not add connection churn.
+    internal sealed record Session(PostgreSqlServer Server, NpgsqlDataSource Admin, List<Exception> CleanupFailures);
+
+    private static async Task<Session> StartAsync()
+    {
+        var failures = new List<Exception>();
+        var server = new PostgreSqlServer(new DockerCommand().RunAsync, failure =>
+        {
+            Console.Error.WriteLine(failure);
+            failures.Add(failure);
+        });
+        try
+        {
+            await server.StartAsync();
+            return new(server, NpgsqlDataSource.Create(server.ConnectionString.Replace("Pooling=false", "Pooling=true")), failures);
+        }
+        catch
+        {
+            await server.DisposeAsync();
+            throw;
+        }
+    }
+
+    [After(TestSession)]
+    public static async Task StopAsync()
+    {
+        // Like TUnit's own per-session instances, a later session in this process starts afresh.
+        var shared = Interlocked.Exchange(ref _shared, new(StartAsync));
+        if (!shared.IsValueCreated) return;
+        // Wait for a startup still in flight (every test may have given up on it) so its container is not left behind.
+        Session session;
+        try { session = await shared.Value; }
+        // A failed startup already removed its container and failed the tests that needed it.
+        catch { return; }
+        await session.Admin.DisposeAsync();
+        await session.Server.DisposeAsync();
+        if (session.CleanupFailures.Count > 0) throw new AggregateException("PostgreSQL server cleanup failed.", session.CleanupFailures);
     }
 }

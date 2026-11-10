@@ -482,9 +482,9 @@ public class TenantStoreSelectionTests
                 var settings = new NpgsqlConnectionStringBuilder(_fixture.ConnectionString) { SearchPath = schema };
                 if (separateDatabases)
                 {
-                    await using var create = new NpgsqlCommand($"CREATE DATABASE {id}", admin);
+                    await using var create = new NpgsqlCommand($"CREATE DATABASE {_fixture.Database}_{id}", admin);
                     await create.ExecuteNonQueryAsync();
-                    settings.Database = id;
+                    settings.Database = $"{_fixture.Database}_{id}";
                 }
                 var store = new TenantStore(id, NpgsqlDataSource.Create(settings.ConnectionString), schema);
                 _stores.Add(store);

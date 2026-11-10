@@ -466,7 +466,7 @@ public class AdoNetEnlistmentTests
         var commit = transaction.CommitAsync(cancellation.Token);
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(15));
         // Cancel only after PostgreSQL confirms the insert is waiting on our held lock.
-        while (await database.Scalar("SELECT count(*) FROM pg_stat_activity WHERE wait_event='advisory'") == 0)
+        while (await database.Scalar("SELECT count(*) FROM pg_stat_activity WHERE wait_event='advisory' AND datname = current_database()") == 0)
             await Task.Delay(10, timeout.Token);
         cancellation.Cancel();
         await Assert.That(async () => await commit).Throws<OperationCanceledException>();

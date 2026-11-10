@@ -213,7 +213,7 @@ public class TenantDispatchTests
         {
             while (true)
             {
-                await using var observer = fixture.Entries[0].DataSource.CreateCommand("SELECT count(*) FROM pg_stat_activity WHERE wait_event_type='Lock' AND query LIKE 'INSERT INTO %leases%'");
+                await using var observer = fixture.Entries[0].DataSource.CreateCommand($"SELECT count(*) FROM pg_stat_activity WHERE wait_event_type='Lock' AND query LIKE 'INSERT INTO %leases%' AND application_name='{fixture.Application}'");
                 if ((long)(await observer.ExecuteScalarAsync(timeout.Token))! > 0) break;
                 await Task.Yield();
             }
@@ -258,7 +258,8 @@ public class TenantDispatchTests
     public async Task Ordered_lanes_progress_after_lane_or_tenant_deadline(bool tenantDeadline)
     {
         await using var fixture = new Stores();
-        await fixture.Start(1, lanes: 3, leaseDuration: TimeSpan.FromSeconds(4));
+        // Wall-clock deadlines: the lane deadline is half the lease. Leave room for a busy shared server.
+        await fixture.Start(1, lanes: 3, leaseDuration: TimeSpan.FromSeconds(12));
         var store = fixture.Entries[0];
         for (var lane = 0; lane < 3; lane++) await Insert(store, lane + 1, lane);
         var transport = new Transport(async (message, token) =>
@@ -266,7 +267,7 @@ public class TenantDispatchTests
             if (MessageId(message) == Id(1)) await Task.Delay(Timeout.Infinite, token);
         });
         using var worker = new PostgreSqlTenantDispatcher(fixture.Catalog,
-            new() { TurnTimeout = TimeSpan.FromSeconds(tenantDeadline ? 1 : 5), RecoveryDelay = TimeSpan.Zero },
+            new() { TurnTimeout = TimeSpan.FromSeconds(tenantDeadline ? 3 : 15), RecoveryDelay = TimeSpan.Zero },
             [transport], NullLoggerFactory.Instance);
         await worker.PassAsync(default);
         if (tenantDeadline) await worker.PassAsync(default);
@@ -358,7 +359,7 @@ public class TenantDispatchTests
             if (MessageId(message) == Id(1)) await Task.Delay(Timeout.Infinite, token);
         });
         using var worker = new PostgreSqlTenantDispatcher(fixture.Catalog,
-            new() { TurnTimeout = TimeSpan.FromSeconds(1), RecoveryDelay = TimeSpan.Zero, InboxRetention = TimeSpan.FromHours(1), BatchSize = 1 },
+            new() { TurnTimeout = TimeSpan.FromSeconds(3), RecoveryDelay = TimeSpan.Zero, InboxRetention = TimeSpan.FromHours(1), BatchSize = 1 },
             [transport], NullLoggerFactory.Instance);
         worker.GetDispatcher(store.TenantId).Committed(queued, 1);
         // Keep the direct queue busy on every turn, including after canceled durable claims.
@@ -477,6 +478,8 @@ public class TenantDispatchTests
     private sealed class Stores : IAsyncDisposable
     {
         private readonly PostgreSqlFixture _fixture = new();
+        // The server is shared: count only this test's sessions.
+        internal string Application { get; } = "tenant-dispatch-" + Guid.NewGuid().ToString("N");
         internal Catalog Catalog { get; } = new();
         internal PostgreSqlTenantStore[] Entries { get; private set; } = [];
         internal async Task Start(int count, bool databases = false, int lanes = 1, TimeSpan? leaseDuration = null)
@@ -485,13 +488,13 @@ public class TenantDispatchTests
             Entries = new PostgreSqlTenantStore[count];
             for (var i = 0; i < count; i++)
             {
-                var settings = new NpgsqlConnectionStringBuilder(_fixture.ConnectionString) { ApplicationName = "tenant-dispatch-test" };
+                var settings = new NpgsqlConnectionStringBuilder(_fixture.ConnectionString) { ApplicationName = Application };
                 if (databases)
                 {
                     await using var admin = NpgsqlDataSource.Create(_fixture.ConnectionString);
-                    await using var create = admin.CreateCommand($"CREATE DATABASE tenant_{i}");
+                    await using var create = admin.CreateCommand($"CREATE DATABASE {_fixture.Database}_tenant_{i}");
                     await create.ExecuteNonQueryAsync();
-                    settings.Database = $"tenant_{i}";
+                    settings.Database = $"{_fixture.Database}_tenant_{i}";
                 }
                 var source = NpgsqlDataSource.Create(settings.ConnectionString);
                 var options = new PostgreSqlOutboxOptions { Schema = $"tenant_{i}", Lanes = lanes, LeaseDuration = leaseDuration ?? TimeSpan.FromSeconds(30) };
@@ -504,7 +507,7 @@ public class TenantDispatchTests
         internal async Task<long> Connections()
         {
             await using var observer = NpgsqlDataSource.Create(_fixture.ConnectionString);
-            await using var command = observer.CreateCommand("SELECT count(*) FROM pg_stat_activity WHERE application_name='tenant-dispatch-test'");
+            await using var command = observer.CreateCommand($"SELECT count(*) FROM pg_stat_activity WHERE application_name='{Application}'");
             return (long)(await command.ExecuteScalarAsync())!;
         }
         internal async Task WaitForNoConnections(CancellationToken cancellationToken = default)
@@ -516,7 +519,7 @@ public class TenantDispatchTests
             await using var observer = new NpgsqlConnection(_fixture.ConnectionString);
             await observer.OpenAsync(timeout.Token);
             await using var command = new NpgsqlCommand(
-                "SELECT count(*) FROM pg_stat_activity WHERE application_name='tenant-dispatch-test'", observer);
+                $"SELECT count(*) FROM pg_stat_activity WHERE application_name='{Application}'", observer);
             while ((long)(await command.ExecuteScalarAsync(timeout.Token))! != 0)
                 await Task.Delay(10, timeout.Token);
         }
