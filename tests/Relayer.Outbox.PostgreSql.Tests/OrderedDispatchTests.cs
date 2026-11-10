@@ -301,6 +301,34 @@ public class OrderedDispatchTests
     }
 
     [Test]
+    public async Task Catalog_pass_uses_remaining_turn_for_batch_admission()
+    {
+        await using var fixture = new PostgreSqlFixture();
+        await fixture.StartAsync();
+        await using var source = NpgsqlDataSource.Create(fixture.ConnectionString);
+        await PostgreSqlOutboxStoreTests.CreateSchema(source);
+        for (var number = 1; number <= 3; number++) await Insert(source, Id(number), 0);
+        var clock = new BudgetClock();
+        var transport = new RecordingTransport((_, _) =>
+        {
+            clock.Advance(TimeSpan.FromMilliseconds(600));
+            return ValueTask.CompletedTask;
+        });
+        using var worker = new PostgreSqlOrderedDispatcher(source,
+            new PostgreSqlOrderedDispatchOptions { Lanes = 1 }, [transport],
+            NullLogger<PostgreSqlOrderedDispatcher>.Instance, clock);
+        for (var sent = 1; sent <= 3; sent++)
+        {
+            await worker.DispatchPassAsync(TimeSpan.FromSeconds(1), default);
+            await Assert.That(transport.Ids.Count).IsEqualTo(sent);
+            await using var count = source.CreateCommand("SELECT count(*) FROM relayer_outbox");
+            await Assert.That((long)(await count.ExecuteScalarAsync())!).IsEqualTo(3L - sent);
+        }
+        await Assert.That(transport.Ids.SequenceEqual([Id(1), Id(2), Id(3)])).IsTrue();
+        await worker.ReleaseAsync(default);
+    }
+
+    [Test]
     public async Task Hosted_worker_drains_backlog_without_waiting_for_poll_timer()
     {
         await using var fixture = new PostgreSqlFixture();

@@ -75,7 +75,7 @@ public class PostgreSqlTenantDispatchBenchmarks
             for (var i = 0; i < _fixed.Length; i++)
             {
                 await _fixed[i].SweepAsync(default);
-                await _ordered[i].DispatchPassAsync(default);
+                await _ordered[i].DispatchPassAsync(TimeSpan.MaxValue, default);
             }
     }
 

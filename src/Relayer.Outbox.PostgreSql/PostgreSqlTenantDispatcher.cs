@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Npgsql;
@@ -120,6 +121,7 @@ internal sealed partial class PostgreSqlTenantDispatcher : BackgroundService
             {
                 if (store.Retired) { await ReleaseAsync(store).ConfigureAwait(false); return; }
                 using var deadline = CancellationTokenSource.CreateLinkedTokenSource(token);
+                var turnStarted = Stopwatch.GetTimestamp();
                 deadline.CancelAfter(_options.TurnTimeout);
                 try
                 {
@@ -140,7 +142,7 @@ internal sealed partial class PostgreSqlTenantDispatcher : BackgroundService
                                     await store.Maintenance.SweepAsync(deadline.Token).ConfigureAwait(false);
                                     break;
                                 case 2:
-                                    await store.Ordered.DispatchPassAsync(deadline.Token).ConfigureAwait(false);
+                                    await store.Ordered.DispatchPassAsync(_options.TurnTimeout - Stopwatch.GetElapsedTime(turnStarted), deadline.Token).ConfigureAwait(false);
                                     break;
                                 case 3 when DateTimeOffset.UtcNow >= store.NextCleanup:
                                     await store.Maintenance.CleanupAsync(deadline.Token).ConfigureAwait(false);

@@ -277,6 +277,27 @@ public class TenantDispatchTests
     }
 
     [Test]
+    public async Task Ordered_batches_commit_progress_within_a_short_tenant_turn()
+    {
+        await using var fixture = new Stores();
+        await fixture.Start(1);
+        var store = fixture.Entries[0];
+        for (var number = 1; number <= 3; number++) await Insert(store, number, 0);
+        var transport = new Transport(async (_, token) => await Task.Delay(TimeSpan.FromMilliseconds(600), token));
+        using var worker = new PostgreSqlTenantDispatcher(fixture.Catalog,
+            new() { TurnTimeout = TimeSpan.FromSeconds(1), RecoveryDelay = TimeSpan.Zero },
+            [transport], NullLoggerFactory.Instance);
+        for (var remaining = 2; remaining >= 0; remaining--)
+        {
+            await worker.PassAsync(default);
+            await Assert.That(await Count(store, "outbox")).IsEqualTo((long)remaining);
+        }
+        await Assert.That(transport.Sent.Select(x => x.Id).SequenceEqual([Id(1), Id(2), Id(3)])).IsTrue();
+        await Assert.That(await fixture.Connections()).IsEqualTo(0L);
+        await worker.ReleaseAllAsync();
+    }
+
+    [Test]
     public async Task Exhausted_direct_turn_resumes_recovery_ordered_dispatch_and_cleanup()
     {
         await using var fixture = new Stores();

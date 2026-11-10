@@ -227,6 +227,10 @@ recovery. Replacing a source or store options retires its previous state; create
 the catalog pass has observed the replacement. Old scopes may leave committed rows for recovery.
 
 Each turn has a `TurnTimeout`, so a failed or contended store cannot monopolize admission indefinitely.
+Ordered batches stop admitting messages after half the remaining turn budget (or the existing lease-based
+admission budget, whichever is shorter), reserving time for the final admitted send and database commit.
+This lets completed sends drain a lane when a turn is shorter than a full batch. A send that itself
+exceeds the deadline can still roll back the batch and be retried under at-least-once delivery.
 Tenant turns resume with the next dispatch phase after a timeout, so a busy direct queue cannot
 starve recovery, ordered delivery or cleanup. Ordered passes likewise resume at the next lane;
 a failed lane does not stop healthy lanes. Native operations and transports must honor cancellation. Failures are logged and other stores keep

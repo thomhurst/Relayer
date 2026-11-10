@@ -105,8 +105,9 @@ internal sealed partial class PostgreSqlOrderedDispatcher : BackgroundService
 
     // Reuse native membership, readiness probes and fenced lane transactions in one catalog turn.
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
-    internal async ValueTask DispatchPassAsync(CancellationToken cancellationToken)
+    internal async ValueTask DispatchPassAsync(TimeSpan remainingTurn, CancellationToken cancellationToken)
     {
+        var started = _timeProvider.GetTimestamp();
         await _coordinator.RebalanceAsync(cancellationToken).ConfigureAwait(false);
         await _lane.FindReadyAsync(_coordinator.Assigned, _ready, cancellationToken).ConfigureAwait(false);
         var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -120,7 +121,9 @@ internal sealed partial class PostgreSqlOrderedDispatcher : BackgroundService
                 _nextLane = (lane + 1) % _options.Lanes;
                 if (!_ready[lane] || !_coordinator.Assigned[lane]) continue;
                 deadline.CancelAfter(_options.LeaseDuration / 2);
-                try { await DispatchLaneAsync(lane, deadline.Token).ConfigureAwait(false); }
+                var remaining = remainingTurn - _timeProvider.GetElapsedTime(started);
+                if (remaining <= TimeSpan.Zero) return;
+                try { await DispatchLaneAsync(lane, deadline.Token, remaining / 2).ConfigureAwait(false); }
                 catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
                 catch (Exception error) { DispatchFailed(_logger, error); }
                 finally
@@ -147,11 +150,13 @@ internal sealed partial class PostgreSqlOrderedDispatcher : BackgroundService
 
     // One connection and lease-row transaction lock per batch. Never run concurrent sends within a lane.
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder<>))]
-    internal async ValueTask<int> DispatchLaneAsync(int lane, CancellationToken cancellationToken)
+    internal async ValueTask<int> DispatchLaneAsync(int lane, CancellationToken cancellationToken, TimeSpan? turnAdmissionBudget = null)
     {
         var started = _timeProvider.GetTimestamp();
         // Reserve half the hard deadline for the final admitted send and its database commit.
         var admissionBudget = _options.LeaseDuration / 4;
+        if (turnAdmissionBudget is { } turnBudget && turnBudget < admissionBudget)
+            admissionBudget = turnBudget;
         await using var connection = await _source.OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
         await using var transaction = await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
         if (!await _coordinator.AcquireAsync(connection, transaction, lane, cancellationToken).ConfigureAwait(false)) return 0;
