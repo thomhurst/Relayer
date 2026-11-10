@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <Description>MongoDB native transaction enlistment and durable outbox storage for Relayer.</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="MongoDB.Driver" />
+    <ProjectReference Include="../Relayer/Relayer.csproj" />
+    <InternalsVisibleTo Include="Relayer.Outbox.MongoDB.Tests" />
+    <InternalsVisibleTo Include="Relayer.Benchmarks" />
+  </ItemGroup>
+</Project>

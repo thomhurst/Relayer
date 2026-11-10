@@ -28,6 +28,7 @@
     <Project Path="src/Relayer.Outbox.EntityFrameworkCore/Relayer.Outbox.EntityFrameworkCore.csproj" />
     <Project Path="src/Relayer.Outbox.MySql/Relayer.Outbox.MySql.csproj" />
     <Project Path="src/Relayer.Outbox.PostgreSql/Relayer.Outbox.PostgreSql.csproj" />
+    <Project Path="src/Relayer.Outbox.MongoDB/Relayer.Outbox.MongoDB.csproj" />
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/Relayer.Aspire.Tests/Relayer.Aspire.Tests.csproj" />
@@ -51,6 +52,8 @@
     <Project Path="tests/Relayer.Tracing.Tests/Relayer.Tracing.Tests.csproj" />
     <Project Path="tests/Relayer.Outbox.MySql.Tests/Relayer.Outbox.MySql.Tests.csproj" />
     <Project Path="tests/Relayer.Outbox.PostgreSql.Tests/Relayer.Outbox.PostgreSql.Tests.csproj" />
+    <Project Path="tests/Relayer.Outbox.MongoDB.Tests/Relayer.Outbox.MongoDB.Tests.csproj" />
+    <Project Path="tests/Relayer.Outbox.MongoDB.AotSmoke/Relayer.Outbox.MongoDB.AotSmoke.csproj" />
     <Project Path="tests/Relayer.SourceGenerators.Tests/Relayer.SourceGenerators.Tests.csproj" />
   </Folder>
   <Folder Name="/benchmarks/">

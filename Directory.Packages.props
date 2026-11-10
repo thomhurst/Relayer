@@ -56,6 +56,7 @@
   <ItemGroup Label="Outbox">
     <PackageVersion Include="Microsoft.Data.SqlClient" Version="7.1.1" />
     <PackageVersion Include="System.Security.Cryptography.Pkcs" Version="10.0.14" />
+    <PackageVersion Include="MongoDB.Driver" Version="3.13.0" />
     <PackageVersion Include="Microsoft.EntityFrameworkCore.Relational" Version="10.0.14" />
     <PackageVersion Include="Npgsql" Version="10.0.3" />
     <PackageVersion Include="MySqlConnector" Version="2.6.2" />
@@ -63,6 +64,7 @@
   </ItemGroup>
 
   <ItemGroup Label="Testing and benchmarks">
+    <PackageVersion Include="Testcontainers.MongoDb" Version="4.16.0" />
     <PackageVersion Include="Dapper" Version="2.1.89" />
     <PackageVersion Include="Microsoft.Extensions.Hosting" Version="10.0.14" />
     <PackageVersion Include="Microsoft.Extensions.DependencyInjection" Version="10.0.14" />

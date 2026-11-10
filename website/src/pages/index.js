@@ -318,6 +318,7 @@ const status = [
   ['PostgreSQL durable reads and fenced claims', 'Implemented store operations', true],
   ['SQL Server outbox transactions and durable stores', 'ADO.NET/Dapper enlistment, atomic consumer inbox, fenced claims and unordered commit dispatch implemented; leased recovery, poison isolation and retention implemented; ordered lane workers implemented; EF Core planned', true],
   ['MySQL store, transactions and recovery', 'Implemented ADO.NET/Dapper, atomic inbox, unordered/ordered sends, poison handling and retention', true],
+  ['MongoDB persistence and native transactions', 'Under development; upstream AOT gate', false],
 
   ['EF Core transaction enlistment for PostgreSQL', 'Implemented enqueue path', true],
   ['PostgreSQL ADO.NET and Dapper transactions', 'Implemented enqueue path', true],

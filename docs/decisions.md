@@ -77,6 +77,7 @@ To change a decision, add a new entry that supersedes it rather than editing his
 | [D64](#d64-sql-server-ordered-dispatch-reuses-native-locks-and-sequence-ranges) | SQL Server ordered dispatch reuses native locks and sequence ranges | Accepted |
 | [D65](#d65-mysql-maintenance-uses-native-session-admission-and-existing-dispatch) | MySQL maintenance uses native session admission and existing dispatch | Accepted |
 | [D66](#d66-durable-local-work-reuses-outbox-rows-and-native-postgresql-transactions) | Durable local work reuses outbox rows and native PostgreSQL transactions | Accepted |
+| [D68](#d68-mongodb-enlistment-writes-through-the-active-native-session) | MongoDB enlistment writes through the active native session | Accepted |
 
 ---
 
@@ -1589,3 +1590,34 @@ in #459. They must carry row identity and claim token into each attempt and roll
 Native row locks serialize deletion with competing claims. Rollback restores both business work and the row;
 a successful deletion remains provisional until commit. This permits atomic completion only for work in
 that same transaction, not exactly-once external effects. Existing broker dispatch and settlement are unchanged.
+
+## D68. MongoDB enlistment writes through the active native session
+
+**Context.** MongoDB transactions are native session operations rather than ADO.NET transactions. Replacing
+their commit or retry protocol would hide native semantics. Relayer must own borrowed payload bytes before a
+send completes, and an association must not silently follow a session into a different transaction.
+
+**Decision.** Associate one active application-owned `IClientSessionHandle` with the scoped outbox through
+`EnlistTransaction`. Write outgoing rows immediately into that native transaction, consuming a reusable BSON
+buffer before completing each send. The application owns native commit, abort, disposal and complete-unit
+retry. An association captures the native transaction number; a reused session cannot reactivate it. A native
+`WithTransactionAsync` callback creates and disposes an association on every invocation. Operations remain
+sequential, as required by the driver. Collection, client and transaction configuration are not replaced.
+
+Use the driver's `RawBsonDocument` and `ByteArrayBuffer` to submit a fixed-schema BSON buffer. The native
+`BsonBinaryWriter.WriteBytes(byte[])` API cannot write arbitrary `ReadOnlyMemory<byte>` slices without an
+exact-sized array copy. Encode that fixed storage document into reusable capacity instead, avoiding temporary
+body/header arrays and reflection-based class maps. Native session, transaction, retry and write protocols
+remain entirely with the driver; this encoder does not implement those capabilities.
+
+Persist UUIDs in standard binary byte order and instant fields as UTC ticks, preserving UUIDv7 ordering and
+sub-millisecond claim boundaries. Explicit deployment creates indexed collections; named scoped stores implement
+the shared durable read/claim protocol. Native BSON command responses require constructor roots for built-in
+dynamic serializers under Native AOT, without replacing global configuration. Driver 3.13.0 still emits AOT
+and trimming diagnostics, so strict publish remains a release blocker rather than weakening the repository gate.
+
+**Consequences.** Business writes and outbox writes share native commit/abort visibility. Each send uses a native
+insert round trip; no extra application-side durable-write batch or commit interception is required. This is a
+new provider, not a change to PostgreSQL batching. Native driver allocations remain separate from the reusable
+Relayer codec. MongoDB inbox, direct dispatch, ordered leases, recovery and retention are separate integrations;
+storage registration alone does not start workers or advertise scheduling.
