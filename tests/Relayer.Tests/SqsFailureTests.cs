@@ -7,6 +7,40 @@ namespace Relayer.Tests;
 public sealed class SqsFailureTests
 {
     [Test]
+    [Arguments("ce_id", "ce_id", false)]
+    [Arguments("ce_id", "custom_id", true)]
+    [Arguments("missing_id", "ce_id", true)]
+    public async Task Fifo_copy_uses_native_fallback_only_when_a_bound_identity_is_missing(string sourceHeader, string deadHeader, bool needsFallback)
+    {
+        using var client = new SqsReceiveTests.ReceiveClient();
+        using var delivery = new SqsDelivery(client, "url");
+        var message = SqsReceiveTests.Message("body", 1);
+        message.Attributes["MessageDeduplicationId"] = "native-id";
+        message.Attributes["MessageGroupId"] = "group";
+        delivery.Prepare(message, TimeProvider.System.GetTimestamp(), null);
+        var context = new CopyContext();
+        context.Features.Set(new NativeMessage<SqsDelivery> { Message = delivery });
+        var copy = SqsHostedService.Copy(context, sourceHeader, deadHeader);
+        var state = new SqsSendState("0");
+        state.Prepare(copy, "dead.fifo", true, deadHeader);
+        await Assert.That(state.Request.MessageDeduplicationId).IsEqualTo(deadHeader == "ce_id" ? "id" : "native-id");
+        if (needsFallback)
+            await Assert.That(() => copy.ValidateForOutbox()).Throws<InvalidOperationException>();
+        else copy.ValidateForOutbox();
+    }
+
+    private sealed class CopyContext : MessageContext
+    {
+        public override string MessageId => "id";
+        public override MessageType MessageType => default;
+        public override MessageHeaders Headers => MessageHeaders.Empty;
+        public override int Attempt => 1;
+        public override IServiceProvider Services => throw new NotSupportedException();
+        public override MessageFeatures Features { get; } = new();
+        public override CancellationToken CancellationToken => default;
+    }
+
+    [Test]
     public async Task Failed_poison_copy_never_deletes_the_original()
     {
         using var client = new SqsReceiveTests.ReceiveClient { SendFailure = new IOException("DLQ unavailable") };
@@ -15,6 +49,38 @@ public sealed class SqsFailureTests
         await client.Deliveries.Writer.WriteAsync(SqsReceiveTests.Message("{\"Value\":1}", 1));
         await client.NextPoll.Task.WaitAsync(TimeSpan.FromSeconds(10));
         await Assert.That(client.Deletes).IsEqualTo(0);
+        await host.StopAsync();
+    }
+
+    [Test]
+    public async Task Native_attribute_capacity_failure_retains_original_instead_of_dropping_metadata()
+    {
+        using var client = new SqsReceiveTests.ReceiveClient();
+        using var host = Host(client);
+        await host.StartAsync();
+        var message = SqsReceiveTests.Message("{\"Value\":1}", 1);
+        for (var index = 0; index < 6; index++)
+            message.MessageAttributes.Add("application-" + index, new() { DataType = "String", StringValue = "value" });
+        await client.Deliveries.Writer.WriteAsync(message);
+        await client.NextPoll.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        await Assert.That(client.Deletes).IsEqualTo(0);
+        await Assert.That(message.MessageAttributes.Count).IsEqualTo(8);
+        await Assert.That(client.Sends).IsEqualTo(0);
+        await host.StopAsync();
+    }
+
+    [Test]
+    public async Task Invalid_native_receive_count_reaches_poison_copy_instead_of_failing_before_pipeline()
+    {
+        using var client = new SqsReceiveTests.ReceiveClient();
+        using var host = Host(client);
+        await host.StartAsync();
+        var message = SqsReceiveTests.Message("{\"Value\":1}", 1);
+        message.Attributes["ApproximateReceiveCount"] = "invalid";
+        await client.Deliveries.Writer.WriteAsync(message);
+        await client.NextPoll.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        await Assert.That(client.Deletes).IsEqualTo(1);
+        await Assert.That(client.Sends).IsEqualTo(1);
         await host.StopAsync();
     }
 

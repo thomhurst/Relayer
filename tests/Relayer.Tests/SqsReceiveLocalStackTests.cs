@@ -87,6 +87,25 @@ public sealed class SqsReceiveLocalStackTests
             await Assert.That(copy.MessageAttributes[FailureHeaders.Redeliveries].StringValue).IsEqualTo("1");
             await Assert.That(control.Attempts.ToArray()).IsEquivalentTo(new[] { 1, 2 });
             await client.DeleteMessageAsync(deadUrl, copy.ReceiptHandle, token);
+            if (fifo)
+            {
+                // A malformed envelope still needs native deduplication on a FIFO poison copy.
+                var sourceUrlForPoison = (await client.GetQueueUrlAsync(source, token)).QueueUrl;
+                await client.SendMessageAsync(new SendMessageRequest
+                {
+                    QueueUrl = sourceUrlForPoison, MessageBody = "malformed", MessageGroupId = "malformed-group",
+                    MessageDeduplicationId = "native-poison-id",
+                }, token);
+                var malformed = await client.ReceiveMessageAsync(new ReceiveMessageRequest
+                {
+                    QueueUrl = deadUrl, WaitTimeSeconds = 10, MessageAttributeNames = ["All"], MessageSystemAttributeNames = ["All"],
+                }, token);
+                var malformedCopy = malformed.Messages.Single();
+                await Assert.That(malformedCopy.Body).IsEqualTo("malformed");
+                await Assert.That(malformedCopy.Attributes["MessageDeduplicationId"]).IsEqualTo("native-poison-id");
+                await Assert.That(malformedCopy.MessageAttributes.ContainsKey(FailureHeaders.History)).IsTrue();
+                await client.DeleteMessageAsync(deadUrl, malformedCopy.ReceiptHandle, token);
+            }
             await Send(2);
             await control.Healthy.Task.WaitAsync(token);
             await Send(3);

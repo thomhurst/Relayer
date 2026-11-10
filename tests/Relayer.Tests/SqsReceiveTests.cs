@@ -37,6 +37,20 @@ public sealed class SqsReceiveTests
     }
 
     [Test]
+    public async Task Receive_errors_retry_without_permanently_losing_worker()
+    {
+        using var client = new ReceiveClient { PollFailure = new AmazonSQSException("temporarily denied") };
+        var handled = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        await using var consumer = new SqsConsumer(Declaration(), client, "url", (_, _) =>
+        { handled.TrySetResult(); return default; });
+        await consumer.StartAsync(default);
+        await client.Deliveries.Writer.WriteAsync(Message("body", 1));
+        await handled.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        await Assert.That(client.Polls >= 2).IsTrue();
+        await consumer.StopAsync(default);
+    }
+
+    [Test]
     public async Task Visibility_uses_original_monotonic_receive_deadline_and_never_deletes_on_failed_retry()
     {
         using var client = new ReceiveClient();
@@ -181,16 +195,22 @@ public sealed class SqsReceiveTests
         internal readonly Channel<Message> Deliveries = Channel.CreateUnbounded<Message>();
         internal readonly ConcurrentQueue<int> Visibility = new();
         internal int Deletes;
+        internal int Sends;
+        internal Exception? PollFailure;
         internal int Polls;
         internal Exception? ConnectivityFailure;
         internal string? Redrive;
         internal Exception? SendFailure;
         internal readonly TaskCompletionSource NextPoll = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        public override Task<SendMessageResponse> SendMessageAsync(SendMessageRequest request, CancellationToken cancellationToken = default) =>
-            SendFailure is { } error ? Task.FromException<SendMessageResponse>(error) : Task.FromResult(new SendMessageResponse());
+        public override Task<SendMessageResponse> SendMessageAsync(SendMessageRequest request, CancellationToken cancellationToken = default)
+        {
+            Interlocked.Increment(ref Sends);
+            return SendFailure is { } error ? Task.FromException<SendMessageResponse>(error) : Task.FromResult(new SendMessageResponse());
+        }
         public override async Task<ReceiveMessageResponse> ReceiveMessageAsync(ReceiveMessageRequest request, CancellationToken cancellationToken = default)
         {
             if (Interlocked.Increment(ref Polls) == 2) NextPoll.TrySetResult();
+            if (Interlocked.Exchange(ref PollFailure, null) is { } failure) throw failure;
             return new() { Messages = [await Deliveries.Reader.ReadAsync(cancellationToken)] };
         }
         public override Task<DeleteMessageResponse> DeleteMessageAsync(DeleteMessageRequest request, CancellationToken cancellationToken = default)

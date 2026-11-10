@@ -1,5 +1,3 @@
-using System.Net;
-using Amazon.Runtime;
 using Amazon.SQS;
 using Amazon.SQS.Model;
 using Microsoft.Extensions.Logging;
@@ -92,24 +90,22 @@ internal sealed partial class SqsConsumer : IAsyncDisposable
     private async Task RunAsync(int slot, ReceiveMessageRequest request, CancellationToken poll, CancellationToken abort)
     {
         using var delivery = new SqsDelivery(_client, _url, _time);
+        var retrySeconds = 1;
         while (!poll.IsCancellationRequested)
         {
             ReceiveMessageResponse response;
             var receivedAt = _time.GetTimestamp();
             try { response = await _client.ReceiveMessageAsync(request, poll).ConfigureAwait(false); }
             catch (OperationCanceledException) when (poll.IsCancellationRequested) { break; }
-            catch (Exception error) when (IsTransient(error))
-            {
-                if (_logger is { } logger) PollFailed(logger, error, Declaration.Source);
-                try { await Task.Delay(TimeSpan.FromSeconds(1), _time, poll).ConfigureAwait(false); }
-                catch (OperationCanceledException) when (poll.IsCancellationRequested) { break; }
-                continue;
-            }
             catch (Exception error)
             {
-                if (_logger is { } logger) PollStopped(logger, error, Declaration.Source);
-                throw;
+                if (_logger is { } logger) PollFailed(logger, error, Declaration.Source);
+                try { await Task.Delay(TimeSpan.FromSeconds(retrySeconds), _time, poll).ConfigureAwait(false); }
+                catch (OperationCanceledException) when (poll.IsCancellationRequested) { break; }
+                retrySeconds = Math.Min(retrySeconds * 2, 30);
+                continue;
             }
+            retrySeconds = 1;
             if (response.Messages is not { Count: > 0 }) continue;
             // A poll that won the stop race still drains its returned message before clients close.
             try
@@ -127,10 +123,6 @@ internal sealed partial class SqsConsumer : IAsyncDisposable
             finally { if (TrackHealth) Volatile.Write(ref _active[slot], 0); delivery.Clear(); }
         }
     }
-
-    private static bool IsTransient(Exception error) => error is HttpRequestException or IOException or TimeoutException or TaskCanceledException ||
-        error is AmazonServiceException native && (native.StatusCode >= HttpStatusCode.InternalServerError ||
-            native.StatusCode == HttpStatusCode.TooManyRequests || native.ErrorCode is "RequestThrottled" or "ThrottlingException" || native.InnerException is HttpRequestException or IOException);
 
     internal async Task StopAsync(CancellationToken token)
     {
@@ -155,8 +147,6 @@ internal sealed partial class SqsConsumer : IAsyncDisposable
         return oldest == long.MaxValue ? (true, _time.GetUtcNow()) : (false, new(oldest, TimeSpan.Zero));
     }
 
-    [LoggerMessage(Level = LogLevel.Error, Message = "SQS receive worker stopped for {Source}. Correct the native client failure and recreate the host.")]
-    private static partial void PollStopped(ILogger logger, Exception exception, string source);
     [LoggerMessage(Level = LogLevel.Warning, Message = "SQS long poll failed for {Source}; the next native poll will retry connectivity.")]
     private static partial void PollFailed(ILogger logger, Exception exception, string source);
     [LoggerMessage(Level = LogLevel.Error, Message = "SQS handling failed for {Source}; the message remains available for native redelivery.")]

@@ -52,10 +52,14 @@ public sealed class SqsDelivery : IDisposable
             _buffer = ArrayPool<byte>.Shared.Rent(needed);
         }
         Body = _buffer.AsMemory(0, Encoding.UTF8.GetBytes(body, _buffer));
-        DeliveryCount = message.Attributes?.TryGetValue("ApproximateReceiveCount", out var count) == true
-            ? int.Parse(count, CultureInfo.InvariantCulture) : 1;
-        ArgumentOutOfRangeException.ThrowIfLessThan(DeliveryCount, 1);
+        DeliveryCount = 1;
         _invalidRedeliveries = null;
+        if (message.Attributes?.TryGetValue("ApproximateReceiveCount", out var count) == true)
+        {
+            if (int.TryParse(count, NumberStyles.None, CultureInfo.InvariantCulture, out var parsed) && parsed > 0)
+                DeliveryCount = parsed;
+            else _invalidRedeliveries = "invalid native receive count";
+        }
         var prior = 0;
         if (message.MessageAttributes?.TryGetValue(FailureHeaders.Redeliveries, out var attribute) == true &&
             (!int.TryParse(attribute.StringValue, NumberStyles.None, CultureInfo.InvariantCulture, out prior) ||

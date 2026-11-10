@@ -29,7 +29,8 @@ internal sealed class SqsHostedService(IServiceProvider provider, string name) :
                 var endpoint = new MessagingEndpoint { System = "aws_sqs", Destination = consumer.Source };
                 var settlement = new SqsSettlement(tracing, endpoint);
                 var failures = new FailurePipeline(provider, name, consumer.Source, consumer.Source,
-                    consumer.Options.Failure, Copy, provider.GetService<IFailureScheduler>());
+                    consumer.Options.Failure, context => Copy(context, _transport.GetIdentityHeader(consumer.Source),
+                        _transport.GetIdentityHeader(consumer.Options.Failure.DeadLetterEndpoint!)), provider.GetService<IFailureScheduler>());
                 var pipeline = new ConsumePipelineBuilder(provider.GetRequiredService<IServiceScopeFactory>(),
                     provider.GetRequiredService<MessageTypeRegistry>(), provider.GetMessageSerializer(name), failures,
                     provider.GetService<IFailureClassifier>());
@@ -48,7 +49,7 @@ internal sealed class SqsHostedService(IServiceProvider provider, string name) :
         await _transport.StartAsync(cancellationToken).ConfigureAwait(false);
     }
 
-    internal static OutgoingMessage Copy(MessageContext context)
+    internal static OutgoingMessage Copy(MessageContext context, string sourceIdentityHeader = "ce_id", string deadIdentityHeader = "ce_id")
     {
         var delivery = context.AmazonSqs();
         var attributes = delivery.Message.MessageAttributes;
@@ -62,10 +63,20 @@ internal sealed class SqsHostedService(IServiceProvider provider, string name) :
                 else (native ??= new(StringComparer.Ordinal)).Add(attribute.Key, attribute.Value);
             }
         SendOptions? options = null;
-        if (native is not null)
+        // Normal envelope copies remain persistable. A malformed/differently bound FIFO
+        // identity needs the original native fallback, which cannot be stored by an outbox.
+        var hasSourceIdentity = attributes?.TryGetValue(sourceIdentityHeader, out var sourceIdentity) == true &&
+            !string.IsNullOrWhiteSpace(sourceIdentity.StringValue);
+        var hasDeadIdentity = attributes?.TryGetValue(deadIdentityHeader, out var deadIdentity) == true &&
+            !string.IsNullOrWhiteSpace(deadIdentity.StringValue);
+        var deduplication = hasSourceIdentity && hasDeadIdentity ? null :
+            delivery.Message.Attributes?.GetValueOrDefault("MessageDeduplicationId");
+        if (native is not null || deduplication is not null)
             options = new SendOptions().ConfigureNative<SendMessageRequest>(request =>
             {
-                foreach (var attribute in native) request.MessageAttributes[attribute.Key] = attribute.Value;
+                if (native is not null)
+                    foreach (var attribute in native) request.MessageAttributes[attribute.Key] = attribute.Value;
+                request.MessageDeduplicationId = deduplication;
             });
         WireString? group = delivery.Message.Attributes?.TryGetValue("MessageGroupId", out var key) == true ? new(key) : null;
         return new(delivery.QueueUrl, delivery.Body, headers.ToArray(), group, options: options);

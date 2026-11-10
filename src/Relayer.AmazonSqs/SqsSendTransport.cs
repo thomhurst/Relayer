@@ -103,6 +103,7 @@ internal sealed class SqsSendTransport : ITransport, ITransportSendTracing
     public string Name { get; }
     private Endpoint GetEndpoint(string destination) => _endpoints.TryGetValue(destination, out var endpoint) ? endpoint
         : throw new InvalidOperationException($"SQS transport '{Name}': undeclared destination '{destination}'.");
+    internal string GetIdentityHeader(string destination) => GetEndpoint(destination).IdentityHeader;
     public TransportCapabilities GetCapabilities(string endpoint) => GetEndpoint(endpoint).Capabilities;
     public SendTracing? GetSendTracing(string destination) => GetEndpoint(destination).Tracing;
 
