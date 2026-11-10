@@ -112,6 +112,22 @@ public class GooglePubSubSendTests
     }
 
     [Test]
+    public async Task Failure_copy_omits_reserved_service_attributes_without_mutating_delivery()
+    {
+        var message = new PubsubMessage { OrderingKey = "key", Data = Google.Protobuf.ByteString.CopyFromUtf8("body") };
+        message.Attributes.Add("googclient_deliveryattempt", "2");
+        message.Attributes.Add("goog", "reserved");
+        message.Attributes.Add("ce-type", "orders");
+        message.Attributes.Add("application", "value");
+        var copy = GooglePubSubHostedService.Copy(message);
+        await Assert.That(copy.Headers.Length).IsEqualTo(2);
+        await Assert.That(copy.Headers.ToArray().All(header => !header.Key.StartsWith("goog", StringComparison.Ordinal))).IsTrue();
+        await Assert.That(copy.OrderingKey!.Value.ToString()).IsEqualTo("key");
+        await Assert.That(copy.Body.Span.SequenceEqual(message.Data.Span)).IsTrue();
+        await Assert.That(message.Attributes.Count).IsEqualTo(4);
+    }
+
+    [Test]
     public async Task Pool_retains_concurrency_beyond_one_page()
     {
         var pool = new GooglePubSubPool<object>(static () => new());

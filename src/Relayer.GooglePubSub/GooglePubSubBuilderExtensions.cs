@@ -78,10 +78,19 @@ internal sealed class GooglePubSubHostedService(IServiceProvider provider, strin
 
     private static OutgoingMessage Copy(MessageContext context)
     {
-        var message = context.GooglePubSub().Message;
-        var headers = new KeyValuePair<string, WireString>[message.Attributes.Count];
+        return Copy(context.GooglePubSub().Message);
+    }
+
+    internal static OutgoingMessage Copy(Google.Cloud.PubSub.V1.PubsubMessage message)
+    {
+        var count = 0;
+        foreach (var header in message.Attributes)
+            if (!header.Key.StartsWith("goog", StringComparison.Ordinal)) count++;
+        var headers = new KeyValuePair<string, WireString>[count];
         var index = 0;
-        foreach (var header in message.Attributes) headers[index++] = new(header.Key, new(header.Value));
+        foreach (var header in message.Attributes)
+            if (!header.Key.StartsWith("goog", StringComparison.Ordinal))
+                headers[index++] = new(header.Key, new(header.Value));
         return new("copy", message.Data.Memory, headers, message.OrderingKey.Length == 0 ? null : new WireString(message.OrderingKey));
     }
 }

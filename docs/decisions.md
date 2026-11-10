@@ -1202,6 +1202,7 @@ later capture and can grow retained WAL. Operations must monitor retention and r
 SQL Server CDC remains planned. Debezium can use explicit column mappings and connector-specific binary
 header/payload handling, with a separate slot and one delivery owner; it does not inherit Relayer's lane,
 scheduling or settlement protocol. See the [CDC reference](../website/docs/reference/postgres-cdc.md).
+
 ## D57. Google Pub/Sub uses prepared native API clients
 
 **Context.** Google.Cloud.PubSub.V1 3.39.0 already provides PublisherClientImpl batching, ordering and
