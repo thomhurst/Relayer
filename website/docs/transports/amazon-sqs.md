@@ -78,6 +78,8 @@ FIFO ordering comes from SQS's invisible-message-group semantics, including acro
 
 `context.AmazonSqs()` exposes the borrowed native `Message`, `IAmazonSQS`, queue URL and receive request ID. Keep these references within the handler lifetime. Use the portable settlement feature for completion, retry or dead-letter decisions so settlement follows durable work.
 
+Consumers use the default `ce_` CloudEvents headers. For a custom send binding such as `new HeaderNames("event_")`, set `consumer.Options.HeaderNames` to the same binding. The receiver uses it for envelope decoding and preserves those attributes in failure copies.
+
 Visibility retries round positive delays up to whole seconds. Their ceiling is the original receive request's remaining twelve-hour budget, measured with monotonic time, including polling and SDK retries; changing visibility never restarts it. A delay that no longer fits fails without deletion. Configured delays beyond native support require the existing durable `IFailureScheduler` outbox fallback and fail startup without one.
 
 SQS visibility changes cannot update attributes. The binding combines `ApproximateReceiveCount - 1` with any redelivery count on a previous durable copy, so retry policies terminate without a process-local retry cache. Previously stored history is preserved; the eventual copy adds the current delivery's in-process failure history. Errors from earlier visibility deliveries cannot be reconstructed from SQS (contributor decision D67).

@@ -14,9 +14,11 @@ namespace Relayer.Tests;
 public sealed class SqsReceiveLocalStackTests
 {
     [Test]
-    [Arguments(false)]
-    [Arguments(true)]
-    public async Task Production_receiver_retries_poison_copies_then_deletes_and_reports_native_health(bool fifo)
+    [Arguments(false, "ce_")]
+    [Arguments(true, "ce_")]
+    [Arguments(false, "event_")]
+    [Arguments(true, "event_")]
+    public async Task Production_receiver_retries_poison_copies_then_deletes_and_reports_native_health(bool fifo, string prefix)
     {
         using var deadline = new CancellationTokenSource(TimeSpan.FromMinutes(3));
         var token = deadline.Token;
@@ -24,6 +26,7 @@ public sealed class SqsReceiveLocalStackTests
         using var client = broker.Client();
         var source = "receiver-" + Guid.NewGuid().ToString("N") + (fifo ? ".fifo" : "");
         var dead = "dead-" + Guid.NewGuid().ToString("N") + (fifo ? ".fifo" : "");
+        var names = new HeaderNames(prefix);
         var control = new Control();
         var builder = Host.CreateApplicationBuilder();
         builder.Services.AddSingleton(control);
@@ -43,6 +46,7 @@ public sealed class SqsReceiveLocalStackTests
                 sqs.Consume(source, consumer =>
                 {
                     consumer.Handler<Handler>();
+                    consumer.Options.HeaderNames = names;
                     consumer.Options.ConfigureReceive = request => { request.WaitTimeSeconds = 1; request.VisibilityTimeout = 60; };
                     consumer.Options.Failure = new() { DeadLetterEndpoint = dead, RedeliveryDelays = new[] { TimeSpan.FromSeconds(1) }, Jitter = 0 };
                 });
@@ -62,13 +66,14 @@ public sealed class SqsReceiveLocalStackTests
             {
                 var headers = new KeyValuePair<string, WireString>[]
                 {
-                    new("ce_id", new("event-" + value)), new("ce_type", new("sqs.receive;v=1")),
+                    new(names.Id, new("event-" + value)), new(names.Type, new("sqs.receive;v=1")),
                     new("content-type", new("application/json")), new("traceparent", new("00-0123456789abcdef0123456789abcdef-0123456789abcdef-01")),
                 };
                 await transport.SendAsync(new(source, Encoding.UTF8.GetBytes("{\"Value\":" + value + "}"), headers,
                     fifo ? new WireString("group") : null,
                     options: new SendOptions().AmazonSqs(request =>
                     {
+                        request.MessageDeduplicationId = fifo ? "event-" + value : null;
                         request.MessageAttributes["native-binary"] = new() { DataType = "Binary", BinaryValue = new MemoryStream(new byte[] { 1, 2, 3 }) };
                         request.MessageAttributes["native-number"] = new() { DataType = "Number", StringValue = "42" };
                     })), token);
@@ -79,7 +84,7 @@ public sealed class SqsReceiveLocalStackTests
             { QueueUrl = deadUrl, WaitTimeSeconds = 10, MessageAttributeNames = ["All"] }, token);
             var copy = poisoned.Messages.Single();
             await Assert.That(copy.Body).IsEqualTo("{\"Value\":1}");
-            await Assert.That(copy.MessageAttributes["ce_id"].StringValue).IsEqualTo("event-1");
+            await Assert.That(copy.MessageAttributes[names.Id].StringValue).IsEqualTo("event-1");
             await Assert.That(copy.MessageAttributes["native-binary"].BinaryValue.ToArray()).IsEquivalentTo(new byte[] { 1, 2, 3 });
             await Assert.That(copy.MessageAttributes["native-number"].DataType).IsEqualTo("Number");
             await Assert.That(copy.MessageAttributes["native-number"].StringValue).IsEqualTo("42");

@@ -37,6 +37,7 @@ internal sealed partial class SqsConsumer : IAsyncDisposable
     internal static void ValidateDeclaration(string name, AmazonSqsTransportOptions transport, ConsumerDefinition<AmazonSqsConsumerOptions> consumer)
     {
         ArgumentNullException.ThrowIfNull(consumer.Options.Failure);
+        ArgumentNullException.ThrowIfNull(consumer.Options.HeaderNames);
         if (!transport.Queues.Any(queue => queue.QueueName == consumer.Source))
             throw new InvalidOperationException($"SQS consumer '{consumer.Source}' on '{name}' needs a native CreateQueueRequest declaration.");
         if (consumer.BatchSize != 1) throw new NotSupportedException("SQS consumers currently require single-message handlers (BatchSize=1).");

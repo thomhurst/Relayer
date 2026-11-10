@@ -29,7 +29,7 @@ internal sealed class SqsHostedService(IServiceProvider provider, string name) :
                 var endpoint = new MessagingEndpoint { System = "aws_sqs", Destination = consumer.Source };
                 var settlement = new SqsSettlement(tracing, endpoint);
                 var failures = new FailurePipeline(provider, name, consumer.Source, consumer.Source,
-                    consumer.Options.Failure, context => Copy(context, _transport.GetIdentityHeader(consumer.Source),
+                    consumer.Options.Failure, context => Copy(context, consumer.Options.HeaderNames.Id,
                         _transport.GetIdentityHeader(consumer.Options.Failure.DeadLetterEndpoint!)), provider.GetService<IFailureScheduler>());
                 var pipeline = new ConsumePipelineBuilder(provider.GetRequiredService<IServiceScopeFactory>(),
                     provider.GetRequiredService<MessageTypeRegistry>(), provider.GetMessageSerializer(name), failures,
@@ -38,7 +38,7 @@ internal sealed class SqsHostedService(IServiceProvider provider, string name) :
                 pipeline.Tracing(tracing, endpoint).Telemetry(telemetry).Settle(settlement.SettleAsync);
                 foreach (var handler in handlers.Descriptors)
                     if (consumer.Handlers.Contains(handler.HandlerType)) pipeline.Handler(handler);
-                var receive = new ReceivePipeline<SqsDelivery, SqsMessageBinding>(pipeline.Build(consumer.Concurrency), new(), consumer.Concurrency);
+                var receive = new ReceivePipeline<SqsDelivery, SqsMessageBinding>(pipeline.Build(consumer.Concurrency), consumer.Options.HeaderNames, consumer.Concurrency);
                 receivers.Add(new(consumer, _transport.Client, _transport.GetUrl(consumer.Source), receive.ProcessSettledAsync,
                     provider.GetService<TimeProvider>(), provider.GetService<ILoggerFactory>()?.CreateLogger<SqsConsumer>())
                     { TrackHealth = _transport.HealthTracking });

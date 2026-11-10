@@ -46,6 +46,8 @@ public sealed class AmazonSqsRouteOptions;
 /// <summary>Native long-poll request settings and durable failure handling.</summary>
 public sealed class AmazonSqsConsumerOptions
 {
+    /// <summary>CloudEvents header binding used by this queue. Match the sending route's HeaderNames.</summary>
+    public HeaderNames HeaderNames { get; set; } = new();
     /// <summary>Configures each worker's native ReceiveMessageRequest once before polling. QueueUrl, one-message receives and all attributes are required.</summary>
     public Action<ReceiveMessageRequest>? ConfigureReceive { get; set; }
     /// <summary>Retry policy and explicit dead-letter copy destination. Native redrive cannot attach failure metadata.</summary>
