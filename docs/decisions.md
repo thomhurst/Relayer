@@ -67,6 +67,7 @@ To change a decision, add a new entry that supersedes it rather than editing his
 | [D54](#d54-service-bus-processors-drain-durable-work-before-settlement) | Service Bus processors drain durable work before settlement | Accepted |
 | [D55](#d55-mysql-direct-dispatch-reuses-native-batches-and-fenced-row-counts) | MySQL commit-triggered direct dispatch | Accepted |
 | [D56](#d56-postgresql-cdc-wakes-existing-unordered-recovery) | PostgreSQL CDC wakes existing unordered recovery | Accepted |
+| [D57](#d57-google-pubsub-uses-prepared-native-api-clients) | Google Pub/Sub uses prepared native API clients | Accepted |
 
 ---
 
@@ -1201,3 +1202,40 @@ later capture and can grow retained WAL. Operations must monitor retention and r
 SQL Server CDC remains planned. Debezium can use explicit column mappings and connector-specific binary
 header/payload handling, with a separate slot and one delivery owner; it does not inherit Relayer's lane,
 scheduling or settlement protocol. See the [CDC reference](../website/docs/reference/postgres-cdc.md).
+
+## D57. Google Pub/Sub uses prepared native API clients
+
+**Context.** Google.Cloud.PubSub.V1 3.39.0 already provides PublisherClientImpl batching, ordering and
+retry behavior, and SubscriberClientImpl streaming recovery, flow control, lease extension and callback
+Ack/Nack settlement. Its public constructors accept prepared native API clients. The convenience builders
+retain Google authentication/JSON and reflective gRPC transport selection that fail strict AOT publishing,
+even with GrpcNetClientAdapter selected. This limitation is tracked in
+[google-cloud-dotnet #13328](https://github.com/googleapis/google-cloud-dotnet/issues/13328).
+
+**Decision.** Require caller-owned PublisherServiceApiClient and SubscriberServiceApiClient instances.
+Pass native publisher/subscriber settings unchanged through their native Clone operations; create native
+high-level runtimes through their public constructors. Expose API clients and topic publishers through a
+keyed typed service and the native delivery feature. Applications own channel and authentication setup.
+Do not wrap authentication, add another reconnect/flow-control engine, suppress AOT warnings or weaken D4.
+The strict AOT smoke uses managed gRPC public constructors and generated JSON against the emulator;
+production authentication paths need separate application validation.
+
+Nack cannot change broker attributes, and native DeadLetterPolicy cannot supply on-demand dead-lettering
+with Relayer error history. Keep these capabilities unavailable to the core durable failure policy. Reuse
+the existing core retry and acknowledged dead-letter-copy path, with explicit destination topics. Native
+Nack remains the SDK's unchanged response to callback failures. PublisherClient.PublishAsync has no
+cancellation parameter: hold borrowed storage through completion, then observe cancellation. Never
+simulate scheduling, transactions or settlement guarantees the broker does not provide.
+
+The service limits attribute values to 1,024 UTF-8 bytes. Frame larger logical Relayer error histories
+losslessly across reserved relayer.failure.history.part.N attributes with a relayer.failure.history.parts
+count, and reconstruct only on an error-history lookup. This is Relayer metadata serialization, not a
+second broker delivery mechanism. Check the native 100-attribute and key/value limits on failure copies;
+if complete metadata cannot fit, fail without acknowledging or silently truncating the original.
+
+**Consequences.** Native send batching and streaming concurrency remain native; declaration Concurrency
+must equal the native maximum outstanding element count. Pub/Sub CloudEvents use the native ce- attribute
+binding. Native callback replies queue acknowledgements after durable work; ack spans describe that
+handoff, not confirmation of an acknowledgement RPC. Native-required strings and callback Tasks remain
+visible in native comparisons; Relayer pools its own delivery and send state. See the
+[transport guide](../website/docs/transports/google-pubsub.md) for lifecycle, capability and validation limits.

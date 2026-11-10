@@ -52,6 +52,19 @@ public class TracingTests
     }
 
     [Test]
+    public async Task Subscription_identity_is_available_to_settlement_sampling()
+    {
+        using var capture = new Capture();
+        var endpoint = new MessageOperationTracing(capture.Tracing, new()
+        {
+            System = "gcp_pubsub", Destination = "orders", Subscription = "billing",
+        }, MessagingOperation.Settle, "ack");
+        using var activity = endpoint.Start();
+        await Assert.That(capture.SampleTags["messaging.destination.subscription.name"]).IsEqualTo("billing");
+        await Assert.That(activity!.GetTagItem("messaging.destination.subscription.name")).IsEqualTo("billing");
+    }
+
+    [Test]
     public async Task Process_links_to_creation_and_uses_it_as_parent_without_ambient_span()
     {
         using var capture = new Capture();

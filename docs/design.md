@@ -797,6 +797,7 @@ hashes can change frozen dispatch-table layouts across unchanged processes.
 | `Relayer.RabbitMQ` | RabbitMQ transport | `RabbitMQ.Client` (7.x) |
 | `Relayer.RabbitMQ.Streams` | RabbitMQ Streams connection/topology foundation; message execution planned | `RabbitMQ.Stream.Client` (1.x) |
 | `Relayer.Nats` | NATS JetStream connection/topology foundation; message execution planned | `NATS.Client.JetStream` (3.x) |
+| `Relayer.GooglePubSub` | Native publishing, streaming pull, durable failure copies and topology | `Google.Cloud.PubSub.V1` (3.x), generated Protobuf messages |
 | `Relayer.Sagas` / `.EntityFrameworkCore` | Saga state transitions and optional EF Core persistence | `Relayer`; EF package adds `Microsoft.EntityFrameworkCore.Relational` |
 | `Relayer.Outbox.EntityFrameworkCore` | EF Core outbox and inbox | `Microsoft.EntityFrameworkCore.Relational` |
 | `Relayer.Outbox.PostgreSql` / `.SqlServer` / `.MySql` | ADO.NET outbox and inbox (`NpgsqlDataSource` supported) | The provider's driver |
@@ -807,7 +808,7 @@ hashes can change frozen dispatch-table layouts across unchanged processes.
 | `Relayer.AzureServiceBus.HealthChecks` | Optional Service Bus native probes and receiver-owned liveness | `Relayer.AzureServiceBus`, `Relayer.HealthChecks` |
 | `Relayer.HealthChecks` | Connectivity, consumer liveness and outbox backlog health integration | `Microsoft.Extensions.Diagnostics.HealthChecks` |
 | `Relayer.Kafka.HealthChecks` | Optional native Kafka connectivity and receiver liveness adapters | `Relayer.Kafka`, `Relayer.HealthChecks` |
-| Later | `Relayer.GooglePubSub`, `Relayer.Pulsar` | — |
+| Later | `Relayer.Pulsar` | — |
 
 Transports target the latest major version of their native client. Updating clients is part of the release cadence (Rebus #1204, Rebus.RabbitMq #137, CAP #1573).
 
@@ -817,7 +818,8 @@ Transports target the latest major version of their native client. Updating clie
 
 - **Sagas / process managers** (`Relayer.Sagas`): explicit state classes, optimistic concurrency (no hand-written lock providers), built on the inbox and outbox for idempotency, timeouts through the scheduler, and diagram export (Rebus #341, #1136, #1205; SlimMessageBus #384). [Diagram declarations and export](https://relayer.tomlonghurst.dev/docs/guides/saga-diagrams) and [transactional state transitions](https://relayer.tomlonghurst.dev/docs/guides/sagas) are implemented. The optional `Relayer.Sagas.EntityFrameworkCore` integration uses the existing PostgreSQL EF Core consumer boundary, native `xmin` concurrency and generated handler dispatch. These are post-v1 extensions under D20. [Durable process timeouts](https://relayer.tomlonghurst.dev/docs/guides/saga-timeouts) compose typed handlers, explicit wait correlation and existing transactional scheduled sends with the PostgreSQL due-row dispatcher.
 - **Request/response** is implemented for explicit endpoints with mandatory timeouts, bounded process-local correlation, and `replyto`/`correlationid` CloudEvents extensions (D41). It reuses the send and consume pipelines; arbitrary reply destinations and temporary queues remain unsupported. See the [request/response guide](https://relayer.tomlonghurst.dev/docs/guides/request-response).
-- **Additional transports:** NATS JetStream connection/topology management is implemented, while message execution waits for a native byte-backed header API ([status](../website/docs/transports/nats.md)). RabbitMQ Streams connection/topology management is implemented, while execution waits for native failed-offset recovery ([status](../website/docs/transports/rabbitmq-streams.md)). Pulsar remains planned pending native UTF-8 property and Native AOT prerequisites ([status](../website/docs/transports/pulsar.md)). Google Pub/Sub and the Azure Service Bus emulator profile remain planned.
+- **Google Pub/Sub:** [Native publishing, streaming pull and topology](../website/docs/transports/google-pubsub.md) use prepared native API clients (D57), native flow control and core durable dead-letter copies. The generated JSON path has a Native AOT emulator round trip.
+- **Additional transports:** NATS JetStream connection/topology management is implemented, while message execution waits for a native byte-backed header API ([status](../website/docs/transports/nats.md)). RabbitMQ Streams connection/topology management is implemented, while execution waits for native failed-offset recovery ([status](../website/docs/transports/rabbitmq-streams.md)). Pulsar remains planned pending native UTF-8 property and Native AOT prerequisites ([status](../website/docs/transports/pulsar.md)). The Azure Service Bus emulator profile remains planned.
 - **Outbox dispatch from CDC** (§6.4): PostgreSQL unordered capture is implemented; SQL Server remains planned.
 
 ---

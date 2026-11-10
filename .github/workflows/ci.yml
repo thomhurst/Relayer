@@ -128,6 +128,8 @@ jobs:
           docker pull postgres:18-alpine
           docker pull mcr.microsoft.com/mssql/server:2022-CU14-ubuntu-22.04
           docker pull mysql:8.4
+          docker pull gcr.io/google.com/cloudsdktool/google-cloud-cli@sha256:112c21f8f6e04b03b393b3c34fb943a1f443e839f18c6492c364ac2e6c3ff935
+          docker pull ghcr.io/shopify/toxiproxy@sha256:5d3dae09bc185dcc5ff6cf43abf6062a4a720aff0c4306a471e773acdcd107aa
           dotnet test --no-build -c Release
 
       - name: Pack and verify NuGet artifacts
@@ -140,6 +142,30 @@ jobs:
         run: |
           dotnet publish tests/Relayer.AotSmoke -c Release -r linux-x64 -o .artifacts/aot-smoke
           .artifacts/aot-smoke/Relayer.AotSmoke
+
+      - name: Google Pub/Sub Native AOT smoke test
+        if: steps.solution.outputs.present == 'true'
+        env:
+          PUBSUB_EMULATOR_HOST: 127.0.0.1:8085
+        run: |
+          dotnet publish tests/Relayer.GooglePubSub.AotSmoke -c Release -r linux-x64 -o .artifacts/pubsub-aot
+          container=$(docker run -d -p 127.0.0.1:8085:8085 \
+            gcr.io/google.com/cloudsdktool/google-cloud-cli@sha256:112c21f8f6e04b03b393b3c34fb943a1f443e839f18c6492c364ac2e6c3ff935 \
+            gcloud beta emulators pubsub start --project=relayer-test --host-port=0.0.0.0:8085 --quiet)
+          trap 'docker rm -f "$container" >/dev/null' EXIT
+          ready=false
+          for attempt in {1..60}; do
+            if docker logs "$container" 2>&1 | grep -q 'Server started, listening on 8085'; then
+              ready=true
+              break
+            fi
+            sleep 1
+          done
+          if [ "$ready" != true ]; then
+            docker logs "$container"
+            exit 1
+          fi
+          .artifacts/pubsub-aot/Relayer.GooglePubSub.AotSmoke
 
   # Tests for the issue/PR loop's merge gate and the Claude review helper. They run here, not in
   # their own workflow, so `CI Passed` (and therefore auto-merge) waits for them.

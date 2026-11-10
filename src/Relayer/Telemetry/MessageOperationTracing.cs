@@ -57,8 +57,9 @@ public sealed class MessageOperationTracing
         if (operation == MessagingOperation.Process)
         {
             Add(tags, "messaging.consumer.group.name", endpoint.ConsumerGroup);
-            Add(tags, "messaging.destination.subscription.name", endpoint.Subscription);
         }
+        if (operation is MessagingOperation.Process or MessagingOperation.Settle)
+            Add(tags, "messaging.destination.subscription.name", endpoint.Subscription);
         foreach (var tag in endpoint.Attributes.Span) tags.Add(tag.Key, tag.Value);
         _tags = tags.ToArray();
         _states[0] = new(_tags);

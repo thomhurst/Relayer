@@ -301,6 +301,7 @@ const status = [
   ['SQS native sending and queue topology', 'Implemented', true],
   ['RabbitMQ native topology, confirmed sends and optional delays', 'Implemented', true],
   ['RabbitMQ Streams native connection and topology', 'Implemented; message execution blocked upstream', true],
+  ['Google Cloud Pub/Sub native publishing, streaming pull, durable poison copies and topology', 'Implemented; prepared-client Native AOT coverage', true],
   ['NATS JetStream native connection and topology', 'Implemented; message execution blocked upstream', true],
   ['Apache Pulsar transport', 'Planned; native UTF-8 properties and Native AOT prerequisites', false],
   ['AsyncAPI topology and JSON contract export', 'Implemented; protocol bindings unsupported', true],

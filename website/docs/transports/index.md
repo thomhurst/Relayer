@@ -15,6 +15,7 @@ A transport is an adapter over one native client. Each transport package depends
 | `Relayer.RabbitMQ.Streams` | RabbitMQ Streams | `RabbitMQ.Stream.Client` | [Native connection and stream topology](rabbitmq-streams.md) implemented; message execution blocked on native failed-offset recovery |
 | `Relayer.Nats` | NATS JetStream | `NATS.Client.JetStream` | [Native connection and topology](nats.md) implemented; message execution blocked on native byte-backed headers |
 | `Relayer.Pulsar` (planned) | Apache Pulsar | Client assessment: DotPulsar 5.3.4 | [Implementation blocked on native UTF-8 properties and Native AOT compatibility](pulsar.md); no adapter implemented |
+| `Relayer.GooglePubSub` | [Google Cloud Pub/Sub](google-pubsub.md) | `Google.Cloud.PubSub.V1` | Native publishing, streaming pull, durable failure copies and topology implemented; prepared-client AOT coverage |
 
 Every transport, including third-party ones, must pass the transport conformance suite: send, receive, settle, retry, dead-letter, delay, ordering, trace propagation and reconnect.
 
