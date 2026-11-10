@@ -16,6 +16,7 @@ public class KafkaConformanceTests
     [Arguments(TransportConformanceCase.TracePropagation)]
     [Arguments(TransportConformanceCase.CreationContextCopies)]
     [Arguments(TransportConformanceCase.Reconnect)]
+    [Arguments(TransportConformanceCase.SendDuringOutage)]
     public async Task Kafka_passes(TransportConformanceCase scenario)
     {
         var suite = new TransportConformanceSuite<KafkaDelivery, KafkaMessageBinding>(KafkaFixture.CreateAsync, TimeSpan.FromMinutes(2));
@@ -35,6 +36,8 @@ internal sealed class KafkaFixture : ITransportConformanceFixture<KafkaDelivery>
             options.TimestampFormat = "HH:mm:ss.fff ";
         }));
     internal string Bootstrap => Broker.Bootstrap;
+    public TimeSpan? OutageSendTimeout => TimeSpan.FromSeconds(5);
+    public bool IsExpectedOutageFailure(Exception error) => error is Dekaf.Errors.KafkaTimeoutException or Dekaf.Errors.KafkaException { IsRetriable: true };
     public string Destination { get; } = "relayer-" + Guid.NewGuid().ToString("N");
     public ITransport Transport => _transport;
     public string MessagingSystem => "kafka";

@@ -20,6 +20,10 @@ public interface ITransportConformanceFixture<TIncoming> : IAsyncDisposable
     string SettlementOperation { get; }
     /// <summary>The adapter's CloudEvents binding names.</summary>
     HeaderNames HeaderNames { get; }
+    /// <summary>Native outage send budget, or null when this fixture cannot inject a real broker outage.</summary>
+    TimeSpan? OutageSendTimeout => null;
+    /// <summary>Recognizes native connectivity failures expected while the broker is stopped.</summary>
+    bool IsExpectedOutageFailure(Exception error) => false;
     /// <summary>Registers the supplied core receive pipeline before the first start.</summary>
     void RegisterConsumer(Func<TIncoming, CancellationToken, ValueTask<Disposition>> receive);
     /// <summary>Applies a decision using production native settlement, including its instrumentation.</summary>
@@ -59,6 +63,8 @@ public enum TransportConformanceCase
     Reconnect,
     /// <summary>Graceful stop drains in-flight processing without failure logs or native lifecycle violations.</summary>
     CleanShutdown,
+    /// <summary>Outage sends and shutdown finish within deadlines, then acknowledged delivery resumes.</summary>
+    SendDuringOutage,
 }
 
 /// <summary>A successful scenario, or an explicit capability-based skip. Contract failures throw.</summary>

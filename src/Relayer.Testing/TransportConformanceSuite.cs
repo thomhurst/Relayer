@@ -2,6 +2,7 @@ using System.Buffers;
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Text;
+using System.Text.Json;
 using System.Threading.Channels;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
@@ -76,7 +77,8 @@ public sealed class TransportConformanceSuite<TIncoming, TBinding>
         if (scenario == TransportConformanceCase.CleanShutdown && fixture is not ITransportShutdownConformanceFixture)
             throw new InvalidOperationException("CleanShutdown requires ITransportShutdownConformanceFixture with native lifecycle evidence and fixture-local logging.");
         var capabilities = fixture.Transport.GetCapabilities(fixture.Destination);
-        var skip = SkipReason(scenario, capabilities);
+        var skip = scenario == TransportConformanceCase.SendDuringOutage && fixture.OutageSendTimeout is null
+            ? "Fixture has no bounded broker-outage send contract." : SkipReason(scenario, capabilities);
         if (skip is not null) return new(scenario, skip);
 
         var received = Channel.CreateUnbounded<Delivery>();
@@ -151,7 +153,7 @@ public sealed class TransportConformanceSuite<TIncoming, TBinding>
             orderRelease.TrySetResult();
             // Cleanup has its own bounded budget, even when the scenario deadline expired.
             using var cleanupDeadline = new CancellationTokenSource(TimeSpan.FromSeconds(10));
-            try { await fixture.Transport.StopAsync(cleanupDeadline.Token).ConfigureAwait(false); }
+            try { await fixture.Transport.StopAsync(cleanupDeadline.Token).WaitAsync(TimeSpan.FromSeconds(15)).ConfigureAwait(false); }
             catch (Exception cleanup) when (failure is not null)
             {
                 throw new AggregateException("Transport conformance and transport shutdown both failed.", failure, cleanup);
@@ -188,6 +190,17 @@ public sealed class TransportConformanceSuite<TIncoming, TBinding>
             // A native client must not retain the caller's borrowed buffers after SendAsync completes.
             Array.Clear(body);
             Array.Clear(headers);
+        }
+        async Task<bool> OutageSend(int value, CancellationToken outageToken)
+        {
+            var body = Encoding.UTF8.GetBytes($"{{\"Value\":{value}}}");
+            try
+            {
+                await fixture.Transport.SendAsync(new(fixture.Destination, body, Headers(fixture.HeaderNames, false)), outageToken).ConfigureAwait(false);
+                return true;
+            }
+            catch (OperationCanceledException) when (outageToken.IsCancellationRequested && !token.IsCancellationRequested) { return false; }
+            catch (Exception error) when (!token.IsCancellationRequested && fixture.IsExpectedOutageFailure(error)) { return false; }
         }
         Task Stop()
         {
@@ -294,6 +307,48 @@ public sealed class TransportConformanceSuite<TIncoming, TBinding>
                 {
                     Require(send.Kind == ActivityKind.Client, "A stored creation context must not create a producer span.");
                     Require(send.Links.Any(link => MatchesCreation(link.Context)), "Copy send span lost its creation link.");
+                }
+                break;
+            case TransportConformanceCase.SendDuringOutage:
+                await Send(0).ConfigureAwait(false);
+                CheckBody(await Next().ConfigureAwait(false), 0);
+                await Stop().ConfigureAwait(false);
+                await Start().ConfigureAwait(false);
+                progress.Phase = "broker disconnect";
+                await fixture.DisconnectAsync(token).ConfigureAwait(false);
+                progress.Phase = "outage sends";
+                using (var outage = CancellationTokenSource.CreateLinkedTokenSource(token))
+                {
+                    var budget = fixture.OutageSendTimeout!.Value;
+                    Require(budget > TimeSpan.Zero, "Outage send budget must be positive.");
+                    outage.CancelAfter(budget);
+                    var pending = Enumerable.Range(1, 3).Select(value => OutageSend(value, outage.Token)).ToArray();
+                    var acknowledged = await Task.WhenAll(pending).WaitAsync(budget + TimeSpan.FromSeconds(5), token).ConfigureAwait(false);
+                    progress.Phase = "offline shutdown";
+                    using var offlineShutdown = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+                    try
+                    {
+                        await fixture.Transport.StopAsync(offlineShutdown.Token).WaitAsync(TimeSpan.FromSeconds(15), token).ConfigureAwait(false);
+                    }
+                    catch (OperationCanceledException) when (offlineShutdown.IsCancellationRequested && !token.IsCancellationRequested) { }
+                    progress.Phase = "broker reconnect";
+                    await fixture.ReconnectAsync(token).ConfigureAwait(false);
+                    await Start().ConfigureAwait(false);
+                    await Send(4).ConfigureAwait(false);
+                    // A failed/cancelled native send may still arrive. Duplicates are legal;
+                    // every successfully acknowledged send and the recovery marker must arrive.
+                    var required = new HashSet<int> { 4 };
+                    for (var i = 0; i < acknowledged.Length; i++)
+                        if (acknowledged[i]) required.Add(i + 1);
+                    while (required.Count != 0)
+                    {
+                        var message = await Next().ConfigureAwait(false);
+                        using var document = JsonDocument.Parse(message.Body);
+                        var value = document.RootElement.GetProperty("Value").GetInt32();
+                        CheckBody(message, value);
+                        Require(value is >= 1 and <= 4, "Unexpected outage delivery body.");
+                        required.Remove(value);
+                    }
                 }
                 break;
             case TransportConformanceCase.Reconnect:

@@ -10,6 +10,36 @@ namespace Relayer.Tests;
 public sealed class ServiceBusConformanceTests
 {
     [Test]
+    public async Task Provision_restores_an_administration_created_queue_lost_on_emulator_restart()
+    {
+        await using var broker = await ServiceBusReceiveBroker.StartAsync([]);
+        using var deadline = new CancellationTokenSource(TimeSpan.FromMinutes(3));
+        var token = deadline.Token;
+        var queue = "reprovision-" + Guid.NewGuid().ToString("N");
+        await using var client = new ServiceBusClient(broker.ConnectionString);
+        var admin = new ServiceBusAdministrationClient(broker.AdministrationConnectionString);
+        var options = new AzureServiceBusTransportOptions { Client = client };
+        options.Queues.Add(new(queue) { DefaultMessageTimeToLive = TimeSpan.FromHours(1),
+            MaxSizeInMegabytes = 100, DuplicateDetectionHistoryTimeWindow = TimeSpan.FromMinutes(10) });
+        await using var transport = new ServiceBusSendTransport("reprovision", client, false, options,
+            [queue], TopologyMode.Provision, admin);
+        await Assert.That((await transport.ApplyTopologyAsync(TopologyMode.Provision, token)).Differences.Count).IsEqualTo(0);
+        await Assert.That((await admin.QueueExistsAsync(queue, token)).Value).IsTrue();
+        await broker.DisconnectAsync(token);
+        await broker.ReconnectAsync(token);
+        // This queue was never in startup config. Assert actual loss before testing restoration.
+        await Assert.That((await admin.QueueExistsAsync(queue, token)).Value).IsFalse();
+        await Assert.That((await transport.ApplyTopologyAsync(TopologyMode.Provision, token)).Differences.Count).IsEqualTo(0);
+        await Assert.That((await admin.QueueExistsAsync(queue, token)).Value).IsTrue();
+        await transport.SendAsync(new(queue, new byte[] { 42 }, ReadOnlyMemory<KeyValuePair<string, WireString>>.Empty), token);
+        await using var receiver = client.CreateReceiver(queue);
+        var message = await receiver.ReceiveMessageAsync(TimeSpan.FromSeconds(30), token)
+            ?? throw new InvalidOperationException("Restored queue did not deliver.");
+        await Assert.That(message.Body.ToMemory().ToArray()).IsEquivalentTo(new byte[] { 42 });
+        await receiver.CompleteMessageAsync(message, token);
+    }
+
+    [Test]
     public async Task Service_bus_emulator_passes_queue_and_session_transport_contracts()
     {
         // Session ordering runs separately; native shutdown evidence is tracked in #384.
@@ -53,6 +83,8 @@ internal sealed class ServiceBusConformanceFixture<TIncoming> : ITransportConfor
     private readonly ConsumerDefinition<ServiceBusConsumerOptions> _declaration;
     private readonly bool _sessions;
     private readonly ActivityListener _nativeInstrumentation;
+    public TimeSpan? OutageSendTimeout => TimeSpan.FromSeconds(5);
+    public bool IsExpectedOutageFailure(Exception error) => error is ServiceBusException { IsTransient: true };
     public string Destination { get; }
     public ITransport Transport => _transport;
     public string MessagingSystem => "servicebus";
