@@ -86,6 +86,7 @@ internal sealed class PubSubFixture : ITransportConformanceFixture<GooglePubSubD
         services.AddSingleton(tracing);
         _provider = services.BuildServiceProvider();
         Adapter = (GooglePubSubTransport)_provider.GetRequiredService<ITransport>();
+        NativePublisherShutdown.Observe(Adapter.PublisherFor(Destination), _native);
     }
 
     // These prepared-client constructors are production's native seam. Google only exposes
@@ -152,7 +153,6 @@ internal sealed class PubSubFixture : ITransportConformanceFixture<GooglePubSubD
         try { await _provider.DisposeAsync(); }
         finally
         {
-            _native.PublisherClosed();
             try { await Broker.DisposeAsync(); }
             finally
             {

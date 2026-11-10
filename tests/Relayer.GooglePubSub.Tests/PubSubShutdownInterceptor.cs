@@ -91,8 +91,15 @@ internal sealed class PubSubShutdownInterceptor : Interceptor
         if (_acks.Count != 1) throw new InvalidOperationException($"Expected one broker-confirmed native Ack, observed {_acks.Count}.");
         if (Volatile.Read(ref _streams) == 0) throw new InvalidOperationException("No real StreamingPull RPC was instrumented.");
         if (_receiverClosed == 0) throw new InvalidOperationException("Native subscriber stop was not observed.");
-        if (requireClosure && (_closedStreams != _streams || _publisherClosed == 0))
+        if (requireClosure) AssertPublisherClosed();
+        if (requireClosure && _closedStreams != _streams)
             throw new InvalidOperationException("Native Pub/Sub streams or publisher remained open after disposal.");
+    }
+
+    internal void AssertPublisherClosed()
+    {
+        if (Volatile.Read(ref _publisherClosed) == 0)
+            throw new InvalidOperationException("Native Pub/Sub publisher remained open after disposal.");
     }
 
     private sealed class Writer<T>(IClientStreamWriter<T> native, PubSubShutdownInterceptor owner) : IClientStreamWriter<T>

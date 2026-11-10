@@ -45,6 +45,21 @@ public class PubSubShutdownInterceptorTests
         await Assert.That(failure!.Message).Contains("before admitted RPCs completed");
     }
 
+    [Test]
+    public async Task Publisher_closure_requires_the_real_native_shutdown_callback()
+    {
+        var observer = new PubSubShutdownInterceptor();
+        // No RPC is needed to close an unused real native publisher.
+        using var channel = Grpc.Net.Client.GrpcChannel.ForAddress("http://localhost:1");
+        var api = new PublisherServiceApiClientImpl(new Publisher.PublisherClient(channel), null, null);
+        await using var publisher = new PublisherClientImpl(TopicName.FromProjectTopic("probe", "probe"),
+            [api], new PublisherClient.Settings(), static () => Task.CompletedTask);
+        NativePublisherShutdown.Observe(publisher, observer);
+        await Assert.That(() => observer.AssertPublisherClosed()).Throws<InvalidOperationException>();
+        await publisher.DisposeAsync();
+        observer.AssertPublisherClosed();
+    }
+
     private static ClientInterceptorContext<T, Empty> Context<T>() where T : class => new(
         new Method<T, Empty>(MethodType.Unary, "probe", "probe",
             Marshallers.Create<T>(static _ => [], static _ => throw new NotSupportedException()),
