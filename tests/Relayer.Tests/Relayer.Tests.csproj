@@ -38,6 +38,7 @@
   </ItemGroup>
 
   <ItemGroup>
+    <Compile Include="../../tools/FrozenAllocationReader/AllocationGroups.cs" Link="Fixtures/AllocationGroups.cs" />
     <Compile Include="../../tools/FrozenFixtureProbe/InvocationAllocations.cs" Link="Fixtures/InvocationAllocations.cs" />
     <Compile Include="../../tests/Shared/SendDurationCapture.cs" Link="Fixtures/SendDurationCapture.cs" />
   </ItemGroup>
