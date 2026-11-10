@@ -6,13 +6,13 @@ using Relayer.Transports;
 
 namespace Relayer.RabbitMQ;
 
-/// <summary>Registers native RabbitMQ connections, topology and confirmed outgoing sends.</summary>
+/// <summary>Registers native RabbitMQ connections, topology, confirmed sends and durable consumers.</summary>
 public static class RabbitMqBuilderExtensions
 {
     /// <summary>Configures native basic properties for one send. The object is borrowed until send completion.</summary>
     public static SendOptions RabbitMQ(this SendOptions options, Action<BasicProperties> configure) => options.ConfigureNative(configure);
 
-    /// <summary>Registers a named RabbitMQ connection. Receive execution remains planned.</summary>
+    /// <summary>Registers a named RabbitMQ connection and explicitly declared consumers.</summary>
     public static IRelayerBuilder RabbitMQ(this IRelayerBuilder builder, string name,
         Action<TransportBuilder<RabbitMqTransportOptions, RabbitMqRouteOptions, RabbitMqConsumerOptions>> configure)
     {
@@ -27,11 +27,12 @@ public static class RabbitMqBuilderExtensions
         builder.Services.AddSingleton<ITransport>(provider =>
         {
             var definition = provider.GetRequiredService<RelayerConfiguration>().Transports.Single(item => item.Name == name);
-            if (definition.Consumers.Count != 0)
-                throw new NotSupportedException($"RabbitMQ transport '{name}': receive execution is not implemented yet.");
+            foreach (var declaration in definition.Consumers)
+                RabbitMqConsumer.Validate((ConsumerDefinition<RabbitMqConsumerOptions>)declaration);
             return new RabbitMqNativeTransport(name,
                 provider.GetRequiredService<IOptionsMonitor<RabbitMqTransportOptions>>().Get(name),
-                definition.Routes.Select(route => route.Destination), provider.GetRequiredService<MessageTracing>(), provider.GetRequiredService<RelayerInstrumentation>());
+                definition.Routes.Select(route => route.Destination).Concat(definition.Consumers.SelectMany(declaration =>
+                    new[] { declaration.Source, ((ConsumerDefinition<RabbitMqConsumerOptions>)declaration).Options.Failure.DeadLetterEndpoint ?? ":" + declaration.Source + ".dead-letter" })), provider.GetRequiredService<MessageTracing>(), provider.GetRequiredService<RelayerInstrumentation>());
         });
         builder.Services.AddSingleton<IHostedService>(provider => new RabbitMqHostedService(provider, name));
         return builder;
@@ -41,12 +42,17 @@ public static class RabbitMqBuilderExtensions
 /// <summary>RabbitMQ route configuration. Destinations select the native exchange and routing key.</summary>
 public sealed class RabbitMqRouteOptions;
 
-/// <summary>Reserved for native RabbitMQ receive composition.</summary>
-public sealed class RabbitMqConsumerOptions;
-
-internal sealed class RabbitMqHostedService(IServiceProvider provider, string name) : IHostedService
+/// <summary>Native consumer channel, QoS and failure configuration.</summary>
+public sealed class RabbitMqConsumerOptions
 {
-    private ITransport Transport => provider.GetServices<ITransport>().Single(transport => transport.Name == name);
-    public Task StartAsync(CancellationToken cancellationToken) => Transport.StartAsync(cancellationToken);
-    public Task StopAsync(CancellationToken cancellationToken) => Transport.StopAsync(cancellationToken);
+    /// <summary>Native channel options. ConsumerDispatchConcurrency must match Concurrency.</summary>
+    public CreateChannelOptions ChannelOptions { get; set; } = new(false, false, consumerDispatchConcurrency: 1);
+    /// <summary>Native per-consumer prefetch count; zero means unlimited.</summary>
+    public ushort PrefetchCount { get; set; } = 1;
+    /// <summary>Native exclusive-consumer flag.</summary>
+    public bool Exclusive { get; set; }
+    /// <summary>Native consume arguments passed unchanged.</summary>
+    public IDictionary<string, object?>? Arguments { get; set; }
+    /// <summary>Retries and durable poison-message copies. Default destination is source + ".dead-letter".</summary>
+    public FailureOptions Failure { get; set; } = new();
 }
