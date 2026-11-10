@@ -395,10 +395,11 @@ public class KafkaReceiveTests
     }
 
     [Test]
-    [Arguments(false, false)]
-    [Arguments(true, false)]
-    [Arguments(false, true)]
-    public async Task Circuit_retains_failed_offset_reopens_on_failed_probe_and_recovers_without_dead_letter(bool stopOpen, bool retry)
+    [Arguments(false, false, false)]
+    [Arguments(true, false, false)]
+    [Arguments(false, true, false)]
+    [Arguments(false, false, true)]
+    public async Task Circuit_retains_failed_offset_and_preserves_permanent_dead_letter_handling(bool stopOpen, bool retry, bool permanentPoison)
     {
         using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(2));
         var token = timeout.Token;
@@ -422,16 +423,19 @@ public class KafkaReceiveTests
         await host.StartAsync(token);
         var receiver = host.Services.GetRequiredKeyedService<KafkaProducerTransport>("events").Consumers[0];
         await fixture.Transport.StartAsync(token);
+        var retainedOffset = permanentPoison ? 1L : 0L;
+        if (permanentPoison) await fixture.Transport.SendAsync(Message(fixture.Destination, 6), token);
         await fixture.Transport.SendAsync(Message(fixture.Destination, 5), token);
         await State(1);
         await fixture.Transport.SendAsync(Message(fixture.Destination, 3), token);
         await using var offsets = new ConsumerBuilder<byte[], byte[]>().WithBootstrapServers(fixture.Bootstrap)
             .WithGroupId(fixture.Destination).WithOffsetCommitMode(OffsetCommitMode.Manual).Build();
         await offsets.InitializeAsync(token);
-        await Assert.That(await offsets.GetCommittedOffsetAsync(new(fixture.Destination, 0), token) is null or < 0).IsTrue();
+        var committedBeforeProbe = await offsets.GetCommittedOffsetAsync(new(fixture.Destination, 0), token);
+        await Assert.That(committedBeforeProbe is null || committedBeforeProbe <= retainedOffset).IsTrue();
         // A replay control request drains the borrowed batch while preserving the open circuit.
         await host.Services.GetRequiredKeyedService<IKafkaConsumerControl>("events")
-            .SeekAsync(fixture.Destination, new TopicPartitionOffset(fixture.Destination, 0, 0), token);
+            .SeekAsync(fixture.Destination, new TopicPartitionOffset(fixture.Destination, 0, retainedOffset), token);
         await Assert.That(control.CircuitAttempts).IsEqualTo(retry ? 2 : 1);
         if (stopOpen)
         {
@@ -451,11 +455,11 @@ public class KafkaReceiveTests
         await Assert.That(await control.ReadHandledAsync(receiver.Completion, token)).IsEqualTo(5);
         await Assert.That(await control.ReadHandledAsync(receiver.Completion, token)).IsEqualTo(3);
         await host.StopAsync(token);
-        await Assert.That(await offsets.GetCommittedOffsetAsync(new(fixture.Destination, 0), token)).IsEqualTo(2L);
+        await Assert.That(await offsets.GetCommittedOffsetAsync(new(fixture.Destination, 0), token)).IsEqualTo(2L + retainedOffset);
         await using var dead = new ConsumerBuilder<byte[], byte[]>().WithBootstrapServers(fixture.Bootstrap).Build();
         await dead.InitializeAsync(token);
         var ends = await dead.QueryWatermarkOffsetsAsync(new(fixture.Destination + ".dead-letter", 0), token);
-        await Assert.That(ends.High).IsEqualTo(0L);
+        await Assert.That(ends.High).IsEqualTo(retainedOffset);
 
         async Task State(int expected)
         {
@@ -465,18 +469,19 @@ public class KafkaReceiveTests
 
     internal sealed class CircuitClock : TimeProvider
     {
-        private readonly List<ManualTimer> _timers = [];
+        private ManualTimer? _recovery;
         public override ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period)
-        {
-            var timer = new ManualTimer(callback, state);
-            _timers.Add(timer);
-            return timer;
-        }
-        internal void Recover() => _timers[1].Fire();
-        private sealed class ManualTimer(TimerCallback callback, object? state) : ITimer
+            => new ManualTimer(this, callback, state);
+        internal void Recover() => (_recovery ?? throw new InvalidOperationException("No recovery is scheduled.")).Fire();
+        private sealed class ManualTimer(CircuitClock clock, TimerCallback callback, object? state) : ITimer
         {
             private bool _disposed;
-            public bool Change(TimeSpan dueTime, TimeSpan period) => !_disposed;
+            public bool Change(TimeSpan dueTime, TimeSpan period)
+            {
+                if (_disposed) return false;
+                if (dueTime != Timeout.InfiniteTimeSpan && period == Timeout.InfiniteTimeSpan) clock._recovery = this;
+                return true;
+            }
             public void Dispose() => _disposed = true;
             public ValueTask DisposeAsync() { Dispose(); return default; }
             internal void Fire() { if (!_disposed) callback(state); }
@@ -589,6 +594,7 @@ public sealed class KafkaReceiveHandler(KafkaReceiveControl control) : IHandler<
             await control.Release.Task.WaitAsync(cancellationToken);
             throw new InvalidOperationException("retry me");
         }
+        if (message.Number == 6) throw new MessageEnvelopeException("permanent poison");
         if (message.Number == 5)
         {
             Interlocked.Increment(ref control.CircuitAttempts);

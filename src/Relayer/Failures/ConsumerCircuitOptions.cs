@@ -46,7 +46,8 @@ internal sealed class ConsumerCircuitDelivery : IDisposable
     }
     internal bool Complete(bool failed)
     {
-        Retained = _policy.Complete(_probe, failed);
+        var opened = _policy.Complete(_probe, failed);
+        Retained = failed && opened;
         RecordState();
         return Retained;
     }

@@ -271,7 +271,7 @@ public sealed partial class ConsumePipeline
                     continue;
                 }
                 if (!Enum.IsDefined(action)) throw new InvalidOperationException("IFailureClassifier returned an undefined FailureAction.");
-                if (_failures!.Circuit?.Complete(true) == true)
+                if (_failures!.Circuit?.Complete(action == FailureAction.Retry) == true)
                 {
                     // The serial adapter retains this native delivery and suppresses settlement.
                     context.FailureDisposition = Disposition.Redeliver(TimeSpan.Zero);
