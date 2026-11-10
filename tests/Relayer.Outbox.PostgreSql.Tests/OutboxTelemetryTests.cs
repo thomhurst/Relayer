@@ -82,7 +82,9 @@ public class OutboxTelemetryTests
         var rows = new OutboxRecord[count];
         var read = await store.ReadPendingAsync(new(mode == "ordered" ? 0 : null, DateTimeOffset.UtcNow), rows, default);
         await Assert.That(read).IsEqualTo(count);
-        var persistedHeaders = rows.Select(row => Snapshot(row.Message)).ToArray();
+        var persistedHeaders = rows.Select(row => Snapshot(row.Message) + (mode == "ordered"
+            ? "|" + OutboxHeaders.Sequence + "=" + row.InsertSequence!.Value.ToString(System.Globalization.CultureInfo.InvariantCulture)
+            : "")).ToArray();
         var persistedContexts = rows.Select(row => Read(row.Message)).ToArray();
         await Assert.That(persistedContexts.Select(c => c.SpanId)).IsEquivalentTo(creates.Select(a => a.SpanId));
         // A different dispatch activity must never replace a creation context in durable headers.
@@ -123,6 +125,7 @@ public class OutboxTelemetryTests
         // Consume only after dispatch completes, without any ambient activity.
         var transport = (InMemoryTransport)provider.GetServices<ITransport>().Single();
         var receivedHeaders = new ConcurrentQueue<string>();
+        var receivedSequences = new ConcurrentQueue<long?>();
         var pipeline = new ConsumePipelineBuilder(provider.GetRequiredService<IServiceScopeFactory>(),
             provider.GetRequiredService<MessageTypeRegistry>(), provider.GetRequiredService<IMessageSerializer>(),
             static (_, error, _) => ValueTask.FromException(error))
@@ -130,6 +133,7 @@ public class OutboxTelemetryTests
             .Tracing(tracing, new() { System = InMemoryTransport.MessagingSystem, Destination = "orders" })
             .Settle(context =>
             {
+                receivedSequences.Enqueue(context.OutboxSequence);
                 var native = context.Features.GetRequired<NativeMessage<InMemoryDelivery>>();
                 native.Message.Complete();
                 native.Disposition = Disposition.SettledByHandler;
@@ -151,6 +155,7 @@ public class OutboxTelemetryTests
         await Assert.That(processes.Select(a => a.Links.Single().Context.SpanId)).IsEquivalentTo(creates.Select(a => a.SpanId));
         await Assert.That(processes.All(a => a.TraceId == requestTrace && creates.Any(c => c.SpanId == a.ParentSpanId))).IsTrue();
         await Assert.That(receivedHeaders).IsEquivalentTo(persistedHeaders);
+        await Assert.That(receivedSequences).IsEquivalentTo(rows.Select(row => mode == "ordered" ? row.InsertSequence : null));
     }
 
     [Test]
