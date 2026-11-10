@@ -60,6 +60,7 @@ const sidebars = {
     },
     'roadmap',
     'contributing/documentation',
+    'contributing/testing',
     'contributing/performance',
     'contributing/releases',
   ],

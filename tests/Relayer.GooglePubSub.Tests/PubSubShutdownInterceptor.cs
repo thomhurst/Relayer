@@ -10,6 +10,7 @@ internal sealed class PubSubShutdownInterceptor : Interceptor
 {
     private readonly ConcurrentQueue<string> _violations = new();
     private readonly ConcurrentDictionary<string, byte> _acks = new();
+    internal IOException? InitialWriteFailure;
     private int _streams;
     private int _closedStreams;
     private int _publisherClosed;
@@ -109,6 +110,8 @@ internal sealed class PubSubShutdownInterceptor : Interceptor
         public async Task WriteAsync(T message)
         {
             if (Volatile.Read(ref _closed) != 0) owner._violations.Enqueue("Ack, renewal or receive request after stream closure");
+            if (message is StreamingPullRequest { Subscription.Length: > 0 }
+                && Interlocked.Exchange(ref owner.InitialWriteFailure, null) is { } failure) throw failure;
             await native.WriteAsync(message);
             if (message is StreamingPullRequest pull)
                 foreach (var ack in pull.AckIds) owner._acks.TryAdd(ack, 0);

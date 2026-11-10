@@ -31,6 +31,19 @@ public sealed class OutageConformanceTests
     }
 
     [Test]
+    public async Task Outage_reconnects_after_recognized_native_shutdown_failure()
+    {
+        await Assert.That((await Suite("shutdown-failure").RunAsync(TransportConformanceCase.SendDuringOutage)).Skipped).IsFalse();
+    }
+
+    [Test]
+    public async Task Outage_rejects_unrecognized_shutdown_failure()
+    {
+        await Assert.That(async () => await Suite("unexpected-shutdown").RunAsync(TransportConformanceCase.SendDuringOutage))
+            .Throws<AggregateException>().WithMessageContaining("offline shutdown");
+    }
+
+    [Test]
     public async Task Fixture_without_real_fault_injection_explicitly_skips_outage()
     {
         var suite = new TransportConformanceSuite<InMemoryDelivery, InMemoryMessageBinding>(
@@ -48,6 +61,8 @@ public sealed class OutageConformanceTests
     {
         private readonly InMemoryFixture _inner = new(tracing);
         private bool _offline;
+        private bool _shutdownFailed;
+        private bool _recovered;
         private int _outageSends;
         private int _warmupSettlements;
         private readonly TaskCompletionSource _warmupRedelivered = new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -78,10 +93,23 @@ public sealed class OutageConformanceTests
             return _inner.SettleAsync(incoming, disposition, token);
         }
         public ValueTask<ConformanceDeadLetter> ReadDeadLetterAsync(CancellationToken token) => _inner.ReadDeadLetterAsync(token);
-        public Task StartAsync(CancellationToken token) => _inner.Transport.StartAsync(token);
-        public Task StopAsync(CancellationToken token) => _inner.Transport.StopAsync(token);
+        public Task StartAsync(CancellationToken token)
+        {
+            if (_shutdownFailed && !_recovered) throw new InvalidOperationException("Faulted application was not recovered.");
+            return _inner.Transport.StartAsync(token);
+        }
+        public async Task StopAsync(CancellationToken token)
+        {
+            await _inner.Transport.StopAsync(token);
+            if (_offline && mode == "unexpected-shutdown") throw new InvalidOperationException("Unexpected shutdown defect.");
+            if (_offline && mode == "shutdown-failure")
+            {
+                _shutdownFailed = true;
+                throw new IOException("Expected disconnected native shutdown.");
+            }
+        }
         public async Task DisconnectAsync(CancellationToken token) { await _inner.DisconnectAsync(token); _offline = true; }
-        public Task ReconnectAsync(CancellationToken token) { token.ThrowIfCancellationRequested(); _offline = false; return Task.CompletedTask; }
+        public Task ReconnectAsync(CancellationToken token) { token.ThrowIfCancellationRequested(); _offline = false; _recovered = true; return Task.CompletedTask; }
         public async ValueTask SendAsync(OutgoingMessage message, CancellationToken token)
         {
             if (_offline)

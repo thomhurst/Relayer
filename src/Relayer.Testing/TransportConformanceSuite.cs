@@ -337,6 +337,10 @@ public sealed class TransportConformanceSuite<TIncoming, TBinding>
                         await fixture.Transport.StopAsync(offlineShutdown.Token).WaitAsync(TimeSpan.FromSeconds(15), token).ConfigureAwait(false);
                     }
                     catch (OperationCanceledException) when (offlineShutdown.IsCancellationRequested && !token.IsCancellationRequested) { }
+                    // Some native clients fault permanently on a disconnected stream's initial write.
+                    // The fixture must observe that exact native failure and recreate its application
+                    // on reconnect; acknowledged-message checks below still apply to the same endpoint.
+                    catch (Exception error) when (!token.IsCancellationRequested && fixture.IsExpectedOutageFailure(error)) { }
                     progress.Phase = "broker reconnect";
                     await fixture.ReconnectAsync(token).ConfigureAwait(false);
                     await Start().ConfigureAwait(false);
