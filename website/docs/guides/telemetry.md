@@ -48,9 +48,51 @@ NativeHeaderWriter.SetHeader(nativeMessage, names.CorrelationId, correlationId);
 
 Scope identities are captured in a read-only snapshot only when a generated failure log is emitted. Successful deliveries do not format identities or read optional correlation headers merely because Error logging is enabled. Typed deliveries reuse the precomputed wire type string; native malformed fields remain available without envelope parsing. A provider can retain the scope snapshot for asynchronous export after the context is cleared or reused. Snapshot, scope-push and enumeration allocations occur only on the failure path. Exceptions from logging providers are contained so they cannot replace the delivery error or bypass durable failure handling.
 
+## Tracing registration and primitives
+
+`AddRelayer` automatically registers one `MessageTracing` source owner per service provider. Subscribe with your OpenTelemetry provider's `AddSource(RelayerTelemetry.ActivitySourceName)`. Repeated registration shares the source within that provider; separate providers own separate sources named `Relayer`:
+
+```csharp
+services.AddRelayer(relayer => { /* Declare transports and handlers here. */ });
+services.AddOptions<TracingOptions>().Bind(configuration.GetSection("Relayer:Tracing"));
+services.AddSingleton<IActivityEnricher, ApplicationEnricher>();
+```
+
+`ApplicationEnricher` is your implementation of `IActivityEnricher`. `TracingOptions` uses init-only properties. `CreationContextAsParent` and `CreateSpansForBatches` default to true; `IncludeBodySize` defaults to false. The source is named `Relayer` and carries schema URL `https://opentelemetry.io/schemas/1.44.0`. Tracing and metrics share the single `RelayerTelemetry.SemanticConventionsVersion` pin. The source follows [semantic conventions 1.44.0](https://github.com/open-telemetry/semantic-conventions/blob/v1.44.0/docs/messaging/messaging-spans.md).
+
+Changes to the shared conventions pin require a release note and a mapping review.
+
+For the built-in integrations, see [send tracing](sending.md#send-tracing), [delivery and settlement tracing](#delivery-and-settlement-tracing), and [outbox tracing and metrics](#outbox-tracing-and-metrics). The primitives below support custom transport composition.
+
+Adapters compose operations once at startup, using native metadata rather than the configured transport instance name:
+
+```csharp
+var tracing = provider.GetRequiredService<MessageTracing>();
+var endpoint = new MessagingEndpoint
+{
+    System = "kafka",
+    Destination = "orders",
+    ConsumerGroup = "billing",
+    ServerAddress = "broker",
+    ServerPort = 9092,
+};
+var process = new MessageOperationTracing(tracing, endpoint, MessagingOperation.Process);
+var commit = new MessageOperationTracing(tracing, endpoint, MessagingOperation.Settle, "commit");
+```
+
+`Start(in MessageTraceData)` returns an `Activity` to dispose after the operation finishes, or null when no span is created. It validates batch metadata independently of listeners, then returns null before tag or link work when no listener is attached. Batch counts must be positive, and `Create` never accepts batch metadata, even for an existing creation context. Single processing links to `MessageTraceData.CreationContext`; absent an ambient activity, that context is also the parent unless disabled. An ambient activity always takes precedence. Set `BatchCount` for batch operations and supply one `ActivityLink` per message in `Links`. Batch processing uses links only and never chooses a message as parent. Batch spans omit single-message attributes, even when a batch contains one message.
+
+Prefer the existing [send tracing seam](../transports/authoring.md#send-tracing) for custom adapters. For primitive batch sending, check `tracing.Options.CreateSpansForBatches`. When true, start and dispose a `Create` operation per message that has no creation context, then start a batch `Send` operation with links to those contexts. When false, skip the create operations; a send without existing creation contexts or links is a producer, and its context becomes the creation context for every new message. A send with an existing creation context or links is a client span. Settle operations are client spans with the native operation name; start them while processing is current so settlement remains inside the process duration.
+
+Use `MessageCreationContext.Read<TMessage, TReader>(message, names)` with the adapter's header binding to read remote W3C context. UTF-8 values are decoded on demand. `WriteIfAbsent<TMessage, TBinding>(message, names, context)` writes only when traceparent is absent, preserving external, resend, and dead-letter headers byte for byte, even when invalid. The binding implements both `IMessageHeaderReader<TMessage>` and `IMessageHeaderWriter<TMessage>`. Preserve the chosen context through retries and use it when writing the envelope. The native client's instrumentation must also preserve it. The tracing source is not needed for propagation.
+
+Call `MessageOperationTracing.Fail(activity, errorType)` on failure. Pass a native error code, a cached exception type name, or `_OTHER` (also used for missing or whitespace error types); this avoids reflection on the message path. Log the exception with its trace IDs in the owning pipeline; the helper emits no exception event. Enrichers run only for recorded spans, must support concurrency, and should not throw. Enricher exceptions are ignored so diagnostics do not interrupt delivery. They can add native per-message attributes or rename spans. Supply partition IDs in `MessageTraceData` so samplers see them at span start.
+
+`TracingBenchmarks` measures these primitives with no listener, dropped spans and recorded spans; `CreationContextBenchmarks` measures header decoding separately. These do not measure native broker overhead or establish the throughput budget against a real broker. `SendTracingBenchmarks` and `ConsumeTracingBenchmarks` cover pipeline integration. Tracing tests run in a dedicated executable because TUnit's HTML reporter attaches a listener to every activity source, which would change sampling and invalidate no-listener measurements.
+
 ## Delivery and settlement tracing
 
-`AddRelayer` registers the DI-owned `MessageTracing` source automatically. Subscribe with your OpenTelemetry provider's `AddSource(RelayerTelemetry.ActivitySourceName)`. The source is named `Relayer` and publishes `RelayerTelemetry.SchemaUrl`. Configure `TracingOptions` through the Options pattern; setting `CreationContextAsParent = false` disables creation-context parenting, and `IncludeBodySize = true` records serialized body sizes.
+The [provider-owned tracing source](#tracing-registration-and-primitives) supplies delivery and settlement spans; setting `CreationContextAsParent = false` disables creation-context parenting, and `IncludeBodySize = true` records serialized body sizes.
 
 Compose tracing once per consumer, alongside the metrics recorder:
 
