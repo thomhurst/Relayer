@@ -22,7 +22,7 @@ internal sealed class PostgreSqlOrderedLane : IDisposable
         var table = PostgreSqlOutboxSchema.QuoteIdentifier(options.Schema ?? "public") + "." +
             PostgreSqlOutboxSchema.QuoteIdentifier(options.TablePrefix + "outbox");
         // Read scheduled and claimed heads too. Parked keys are excluded without parking the rest of the lane.
-        _read = $"SELECT id, transport, message_type, destination, body, headers, ordering_key, deliver_at, created_at, lane, attempts, last_error, tenant_id FROM {table} AS pending WHERE lane = @lane AND status = 'pending' AND NOT EXISTS (SELECT 1 FROM {table} AS parked WHERE parked.lane = @lane AND parked.status = 'parked' AND parked.ordering_key = pending.ordering_key AND parked.seq < pending.seq) ORDER BY seq LIMIT @limit";
+        _read = $"SELECT id, transport, message_type, destination, body, headers, ordering_key, deliver_at, created_at, lane, attempts, last_error, tenant_id, seq FROM {table} AS pending WHERE lane = @lane AND status = 'pending' AND NOT EXISTS (SELECT 1 FROM {table} AS parked WHERE parked.lane = @lane AND parked.status = 'parked' AND parked.ordering_key = pending.ordering_key AND parked.seq < pending.seq) ORDER BY seq LIMIT @limit";
         // Probe only each assigned lane's first non-parked head. Re-read under the lease lock before sending.
         _ready = $"SELECT requested.lane FROM unnest(@lanes) AS requested(lane) CROSS JOIN LATERAL (SELECT deliver_at, claim_expires_at FROM {table} AS pending WHERE pending.lane = requested.lane AND status = 'pending' AND NOT EXISTS (SELECT 1 FROM {table} AS parked WHERE parked.lane = requested.lane AND parked.status = 'parked' AND parked.ordering_key = pending.ordering_key AND parked.seq < pending.seq) ORDER BY seq LIMIT 1) AS head WHERE (head.deliver_at IS NULL OR head.deliver_at <= clock_timestamp()) AND (head.claim_expires_at IS NULL OR head.claim_expires_at <= clock_timestamp())";
         var fenced = "id = @id AND claim_token = @token AND claim_expires_at > clock_timestamp()";
@@ -56,7 +56,7 @@ internal sealed class PostgreSqlOrderedLane : IDisposable
         using var command = new NpgsqlCommand(_read, connection, transaction);
         command.Parameters.AddWithValue("lane", lane);
         command.Parameters.AddWithValue("limit", rows.Length);
-        return await _reader.ReadRowsAsync(command, rows, cancellationToken).ConfigureAwait(false);
+        return await _reader.ReadRowsAsync(command, rows, cancellationToken, includeOrderedSequence: true).ConfigureAwait(false);
     }
 
     internal ValueTask<bool> ClaimAsync(NpgsqlConnection connection, NpgsqlTransaction transaction,

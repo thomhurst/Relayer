@@ -39,6 +39,7 @@ public class PostgreSqlOutboxStoreTests
         await Assert.That(rows[0].Message.Destination).IsEqualTo("orders");
         await Assert.That(rows[0].Message.OrderingKey!.Value.ToString()).IsEqualTo("customer-é");
         await Assert.That(rows[0].Message.Body.ToArray()).IsEquivalentTo(new byte[] { 0, 255, 1 });
+        await Assert.That(rows[0].InsertSequence).IsEqualTo(2L);
         await Assert.That(rows[0].Message.Headers.Length).IsEqualTo(3);
         await Assert.That(rows[0].Message.Headers.Span[0].Key).IsEqualTo("duplicate");
         await Assert.That(rows[0].Message.Headers.Span[1].Key).IsEqualTo("duplicate");
@@ -51,6 +52,8 @@ public class PostgreSqlOutboxStoreTests
         await Assert.That(rows[0].Id).IsEqualTo(third);
         await Assert.That(await store.ReadPendingAsync(new(3, now), rows, default)).IsEqualTo(1);
         await Assert.That(rows[0].Lane).IsEqualTo(3);
+        await Assert.That(rows[0].InsertSequence).IsEqualTo(4L);
+        await Assert.That(rows[0].Message.Headers.Length).IsEqualTo(3);
         await Assert.That(await store.ReadPendingAsync(new(4, now), rows, default)).IsEqualTo(0);
         await Assert.That(await store.ReadPendingAsync(new(null, now), Memory<OutboxRecord>.Empty, default)).IsEqualTo(0);
     }

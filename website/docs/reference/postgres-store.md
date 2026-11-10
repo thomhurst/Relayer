@@ -68,6 +68,12 @@ and ordering survive storage. Corrupt lengths, unsupported versions and trailing
 
 Do not populate this column with JSON or empty bytes. EF Core interceptors and PostgreSQL outbox transactions
 write compatible rows through the shared codec and batch writer.
+`OutboxRecord.InsertSequence` exposes the database-assigned `seq` value on PostgreSQL reads,
+including unordered rows. It has ordering meaning only for sequential transactions on the same
+ordering key, source table and tenant. Public store reads preserve the persisted headers;
+[ordered dispatch](ordered-dispatch.md#guard-a-projection-against-stale-delivery) adds the sequence
+header when sending ordered rows.
+
 The store does not generate identities, serialize messages, or rewrite envelopes during reads.
 
 ## Poison rows and key release

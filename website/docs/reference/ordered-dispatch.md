@@ -90,6 +90,57 @@ rows for retry. Up to `BatchSize` accepted sends can replay when their batch doe
 The single dispatch loop reuses mutation commands and typed parameters across rows and batches. Each
 successful row still uses one conditional claim UPDATE and one fenced DELETE around its native send.
 
+## Guard a projection against stale delivery
+
+Ordered PostgreSQL rows carry their database insert sequence in the reserved
+`relayer.outbox.sequence` header. The dispatcher replaces any producer-supplied value with the row's
+sequence, including on retries. `context.OutboxSequence` reads the positive `long` lazily from native
+text or UTF-8 headers; it returns `null` when the header is missing or malformed. Unordered dispatch
+does not add this header; a producer-supplied value on an unordered route has no ordering meaning.
+Other producers and stores may omit it.
+
+Compare values only for the **same ordering key, outbox table and tenant**. Values increase for
+strictly sequential transactions, including when the later commit has a smaller UUIDv7. They are
+not gap-free, are not comparable across tables or tenants, and give no defined order to genuinely
+concurrent transactions. Do not reset the source identity sequence. When rebuilding or switching a
+source table, rebuild the projection's stored sequence too.
+
+Keep the version guard and projection update in one atomic database statement. For example, a
+handler for a full-state `OrderUpdated` event can use PostgreSQL's conditional upsert (the projection
+has a primary key on `(tenant_id, order_id)` and a `last_sequence bigint NOT NULL` column):
+
+```csharp
+[Message("order.updated")]
+public sealed record OrderUpdated(string TenantId, string OrderId, string Status);
+
+public sealed class OrderProjectionHandler(NpgsqlDataSource projections) : IHandler<OrderUpdated>
+{
+    public async ValueTask HandleAsync(OrderUpdated message, MessageContext context,
+        CancellationToken cancellationToken)
+    {
+        var sequence = context.OutboxSequence
+            ?? throw new InvalidOperationException("This projection requires an ordered outbox sequence.");
+        await using var command = projections.CreateCommand("""
+            INSERT INTO order_projection (tenant_id, order_id, status, last_sequence)
+            VALUES (@tenant, @id, @status, @sequence)
+            ON CONFLICT (tenant_id, order_id) DO UPDATE
+            SET status = EXCLUDED.status, last_sequence = EXCLUDED.last_sequence
+            WHERE order_projection.last_sequence < EXCLUDED.last_sequence
+            """);
+        command.Parameters.AddWithValue("tenant", message.TenantId);
+        command.Parameters.AddWithValue("id", message.OrderId);
+        command.Parameters.AddWithValue("status", message.Status);
+        command.Parameters.AddWithValue("sequence", sequence);
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+}
+```
+
+Here every event for an order uses that order's ordering key and comes from one source outbox table.
+A duplicate or older event leaves the stored state unchanged. This example assumes full-state events;
+rejecting an older delta cannot reconstruct a missed intermediate change. Use an application business
+version when concurrent writers need a domain-defined order.
+
 ## Failure boundaries
 
 Ordering means ascending database-assigned `seq` among rows visible to a lane scan, using the broker's own

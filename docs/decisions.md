@@ -1059,6 +1059,7 @@ only concurrent writers from its ordering guarantee; these transactions are not 
 - The outbox table gains `seq`, a database-assigned identity value set when the row is inserted.
 - Ordered lanes read and index pending rows by `(lane, seq)`. The parked-key anti-join compares `seq`. Unordered pending rows keep a partial UUID index and their existing read/recovery cursors.
 - One transaction's rows are inserted in send order, so their `seq` values keep that order. PostgreSQL uses `UNNEST WITH ORDINALITY ORDER BY position`; shared EF contexts merge their reusable rows by a scope-local enqueue position before insertion.
+- Ordered PostgreSQL dispatch carries `seq` as the reserved `relayer.outbox.sequence` decimal header, replacing producer-supplied copies. `MessageContext.OutboxSequence` parses it lazily; missing or malformed values are absent. Unordered dispatch does not add it. Consumers compare it only within one ordering key, source table and tenant; it is not a business version for concurrent writers.
 - `id` remains the stable message identity for the inbox, native message IDs and fenced claims.
 - PostgreSQL ordered redrive requires the original parked row and updates it in place. If it is missing
   or no longer parked, fail the entire management transaction with the row ID. The final failure transition,
