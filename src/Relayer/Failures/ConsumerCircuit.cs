@@ -24,12 +24,7 @@ internal sealed class ConsumerCircuit : IDisposable
         TimeSpan breakDuration, TimeProvider time, Action? probeAvailable = null)
     {
         ArgumentNullException.ThrowIfNull(time);
-        if (!double.IsFinite(failureRatio) || failureRatio <= 0 || failureRatio > 1)
-            throw new ArgumentOutOfRangeException(nameof(failureRatio));
-        if (minimumThroughput < 1 || minimumThroughput > CountMask)
-            throw new ArgumentOutOfRangeException(nameof(minimumThroughput));
-        ValidateDuration(samplingDuration, nameof(samplingDuration));
-        ValidateDuration(breakDuration, nameof(breakDuration));
+        Validate(failureRatio, minimumThroughput, samplingDuration, breakDuration);
         _failureRatio = failureRatio;
         _minimumThroughput = minimumThroughput;
         _breakDuration = breakDuration;
@@ -133,6 +128,16 @@ internal sealed class ConsumerCircuit : IDisposable
         if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
         _sampling.Dispose();
         _recovery.Dispose();
+    }
+
+    internal static void Validate(double failureRatio, int minimumThroughput, TimeSpan samplingDuration, TimeSpan breakDuration)
+    {
+        if (!double.IsFinite(failureRatio) || failureRatio <= 0 || failureRatio > 1)
+            throw new ArgumentOutOfRangeException(nameof(failureRatio));
+        if (minimumThroughput < 1 || minimumThroughput > CountMask)
+            throw new ArgumentOutOfRangeException(nameof(minimumThroughput));
+        ValidateDuration(samplingDuration, nameof(samplingDuration));
+        ValidateDuration(breakDuration, nameof(breakDuration));
     }
 
     private static void ValidateDuration(TimeSpan duration, string name)

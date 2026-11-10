@@ -3,7 +3,7 @@ title: Kafka
 description: "Named Kafka producers and serial consumers backed by Dekaf, with durable failure handling."
 ---
 
-`Relayer.Kafka` implements producers and serial consumer groups on [Dekaf](https://github.com/thomhurst/Dekaf). Consumers use the core failure pipeline and acknowledge offsets after durable handling, including dead-letter copies. Optional health adapters are available in `Relayer.Kafka.HealthChecks`. Typed tombstones use native null values and the original message's wire identity. Parallel partition scheduling, drain-on-revoke, topology management and transactions remain planned.
+`Relayer.Kafka` implements producers and serial consumer groups on [Dekaf](https://github.com/thomhurst/Dekaf). Consumers use the core failure pipeline and acknowledge offsets after durable handling, including dead-letter copies. Optional [consumer circuit breaking](../guides/failure-handling.md#consumer-circuit-breaking) pauses native consumption and retains failed records during dependency outages. Optional health adapters are available in `Relayer.Kafka.HealthChecks`. Typed tombstones use native null values and the original message's wire identity. Parallel partition scheduling, drain-on-revoke, topology management and transactions remain planned.
 
 ## Register a producer
 

@@ -39,8 +39,9 @@ internal sealed class KafkaHostedService(IServiceProvider provider, string name)
                 provider.GetRequiredService<MessageTypeRegistry>(), provider.GetMessageSerializer(name), failures,
                 provider.GetService<IFailureClassifier>());
             var endpoint = new MessagingEndpoint { System = "kafka", Destination = consumer.Source, ConsumerGroup = consumer.Options.Group };
-            pipeline.Tracing(tracing, endpoint).Telemetry(provider.GetRequiredService<RelayerInstrumentation>().CreateEndpoint(new()
-            { System = "kafka", Destination = consumer.Source, ConsumerGroup = consumer.Options.Group }));
+            var telemetry = provider.GetRequiredService<RelayerInstrumentation>().CreateEndpoint(new()
+            { System = "kafka", Destination = consumer.Source, ConsumerGroup = consumer.Options.Group });
+            pipeline.Tracing(tracing, endpoint).Telemetry(telemetry);
             foreach (var handler in handlers.Descriptors)
                 if (consumer.Handlers.Contains(handler.HandlerType)) pipeline.Handler(handler);
             var receive = new ReceivePipeline<KafkaDelivery, KafkaMessageBinding>(pipeline.Build(1), new(), 1);
@@ -51,8 +52,11 @@ internal sealed class KafkaHostedService(IServiceProvider provider, string name)
             // Offset ownership belongs to durable processing, never polling or native auto-commit.
             native.WithGroupId(consumer.Options.Group!).SubscribeTo(consumer.Source)
                 .WithOffsetCommitMode(OffsetCommitMode.Manual).WithAutoOffsetStore(false).AddRebalanceListener(ownership);
-            _nativeTransport.Consumers.Add(new(native.Build(), receive.ProcessAsync, tracing, endpoint, ownership,
-                health?.Register(declaration)));
+            var receiver = new KafkaConsumer(native.Build(), receive.ProcessAsync, tracing, endpoint, ownership,
+                health?.Register(declaration));
+            _nativeTransport.Consumers.Add(receiver);
+            if (consumer.Options.CircuitBreaker is { } circuit)
+                failures.Circuit = receiver.ConfigureCircuit(circuit, telemetry, provider.GetService<TimeProvider>() ?? TimeProvider.System);
         }
         await _transport.StartAsync(cancellationToken).ConfigureAwait(false);
         await base.StartAsync(cancellationToken).ConfigureAwait(false);

@@ -22,6 +22,30 @@ public class KafkaConfigurationTests
             .Throws<NotSupportedException>().WithMessageContaining("RetryDelays");
     }
 
+    [Test]
+    [Arguments(0)]
+    [Arguments(1)]
+    [Arguments(2)]
+    [Arguments(3)]
+    public async Task Invalid_circuit_options_fail_before_building_native_clients(int invalid)
+    {
+        var services = new ServiceCollection();
+        services.AddRelayer(builder => builder.Kafka("events", kafka => kafka.Consume("orders", consumer =>
+        {
+            consumer.Options.Group = "orders";
+            consumer.Options.CircuitBreaker = new()
+            {
+                FailureRatio = invalid == 0 ? double.NaN : .5,
+                MinimumThroughput = invalid == 1 ? 0 : 10,
+                SamplingDuration = invalid == 2 ? TimeSpan.Zero : TimeSpan.FromSeconds(10),
+                BreakDuration = invalid == 3 ? TimeSpan.MaxValue : TimeSpan.FromSeconds(5),
+            };
+            consumer.Handler<KafkaReceiveHandler>();
+        })));
+        await using var provider = services.BuildServiceProvider();
+        await Assert.That(() => provider.GetServices<ITransport>().ToArray()).Throws<ArgumentOutOfRangeException>();
+    }
+
     private sealed class UnexpectedScheduler : IFailureScheduler
     {
         public ValueTask ScheduleAsync(string transportName, OutgoingMessage message, CancellationToken cancellationToken) =>

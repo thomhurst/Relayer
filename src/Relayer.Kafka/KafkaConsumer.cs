@@ -19,6 +19,17 @@ internal sealed class KafkaConsumer : IAsyncDisposable
     private readonly KafkaOwnership _ownership;
     private readonly KafkaWorkerHealth? _health;
     private readonly KafkaReplay _replay = new();
+    private ConsumerCircuitDelivery? _circuit;
+
+    internal ConsumerCircuitDelivery ConfigureCircuit(ConsumerCircuitOptions options, EndpointTelemetry telemetry, TimeProvider time)
+    {
+        _circuit = new(options, telemetry, _replay.Wake, time);
+        _ownership.Assigned = partitions =>
+        {
+            if (_circuit.State == 1) _native.Pause(partitions.ToArray());
+        };
+        return _circuit;
+    }
     internal string Topic { get; }
     internal string? Group { get; }
     internal Task Completion { get; private set; } = Task.CompletedTask;
@@ -82,6 +93,8 @@ internal sealed class KafkaConsumer : IAsyncDisposable
                     }
                 }
                 finally { _replay.EndPolling(); }
+                _circuit?.RecordState();
+                if (_circuit is { State: 2 }) _native.Resume(_native.Assignment.ToArray());
                 // The native stream has released its borrowed batch before any seek.
                 // Neither polling nor old checkpoint commits can overlap control.
                 while (_replay.TryRead(out var request))
@@ -118,7 +131,19 @@ internal sealed class KafkaConsumer : IAsyncDisposable
             if (version != _ownership.Version || !_native.Assignment.Contains(partition))
             { complete = false; break; }
             var record = records.Current;
+            if (_circuit is { } circuit && !circuit.TryEnter())
+            {
+                Hold(new(partition.Topic, partition.Partition, record.Offset));
+                return 0;
+            }
             var disposition = await _receive(new(record, partitionId), cancellationToken).ConfigureAwait(false);
+            if (_circuit is { Retained: true })
+            {
+                Hold(new(partition.Topic, partition.Partition, record.Offset));
+                return 0;
+            }
+            if (_circuit is { State: 0 } && _native.Paused.Count != 0)
+                _native.Resume(_native.Assignment.ToArray());
             if (disposition.Kind is not (DispositionKind.Complete or DispositionKind.SettledByHandler))
                 throw new InvalidOperationException("Kafka receive must complete durable failure handling before returning Complete. Kafka has no native redelivery or dead-letter settlement.");
             _health?.Progress();
@@ -138,6 +163,13 @@ internal sealed class KafkaConsumer : IAsyncDisposable
         _offset[0] = checkpoint;
         await CommitAsync(_offset, count, cancellationToken).ConfigureAwait(false);
         return count;
+    }
+
+    private void Hold(TopicPartitionOffset offset)
+    {
+        _native.Pause(_native.Assignment.ToArray());
+        if (_native.Assignment.Contains(new TopicPartition(offset.Topic, offset.Partition))) _native.Seek(offset);
+        _replay.Wake();
     }
 
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
@@ -212,6 +244,7 @@ internal sealed class KafkaConsumer : IAsyncDisposable
         _abort.Cancel();
         try { await Completion.ConfigureAwait(false); }
         catch (Exception) when (Completion.IsFaulted || Completion.IsCanceled) { /* Hosted service reports failures. */ }
+        _circuit?.Dispose();
         await _native.DisposeAsync().ConfigureAwait(false);
         _stop.Dispose();
         _abort.Dispose();
@@ -221,9 +254,10 @@ internal sealed class KafkaConsumer : IAsyncDisposable
 internal sealed class KafkaOwnership : IRebalanceListener
 {
     private int _version;
+    internal Action<IEnumerable<TopicPartition>>? Assigned { get; set; }
     internal int Version => Volatile.Read(ref _version);
     public ValueTask OnPartitionsAssignedAsync(IEnumerable<TopicPartition> partitions, CancellationToken cancellationToken)
-    { Interlocked.Increment(ref _version); return default; }
+    { Interlocked.Increment(ref _version); Assigned?.Invoke(partitions); return default; }
     public ValueTask OnPartitionsRevokedAsync(IEnumerable<TopicPartition> partitions, CancellationToken cancellationToken)
     { Interlocked.Increment(ref _version); return default; }
     public ValueTask OnPartitionsLostAsync(IEnumerable<TopicPartition> partitions, CancellationToken cancellationToken)

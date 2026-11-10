@@ -31,6 +31,7 @@ public static class KafkaBuilderExtensions
                     throw new NotSupportedException($"Kafka consumer '{consumer.Source}': use Concurrency(1) and single-message handlers. Parallel partition scheduling and batch handlers are not implemented yet (#22).");
                 if (!consumer.Options.Failure.RedeliveryDelays.IsEmpty)
                     throw new NotSupportedException($"Kafka consumer '{consumer.Source}': durable redelivery cannot yet persist native tombstones and null-valued headers, even with IFailureScheduler. Use RetryDelays for in-process retries and dead-letter copies instead.");
+                consumer.Options.CircuitBreaker?.Validate();
                 endpoints.Add(consumer.Source);
                 endpoints.Add(consumer.Options.Failure.DeadLetterEndpoint ?? consumer.Source + ".dead-letter");
             }
@@ -67,4 +68,6 @@ public sealed class KafkaConsumerOptions
     public string? Group { get; set; }
     /// <summary>Core retry and dead-letter policy. The default dead-letter topic is source + ".dead-letter".</summary>
     public FailureOptions Failure { get; set; } = new();
+    /// <summary>Optional native pause/resume protection. Disabled when null.</summary>
+    public ConsumerCircuitOptions? CircuitBreaker { get; set; }
 }
