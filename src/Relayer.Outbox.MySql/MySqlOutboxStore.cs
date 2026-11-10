@@ -121,7 +121,7 @@ public sealed class MySqlOutboxStore : IOutboxStore, IDisposable
             }
             catch (InvalidDataException error) when (isolateMalformed)
             {
-                destination.Span[count++] = new(id, "", "", default, default, LastError: "Malformed outbox row: " + error.Message);
+                destination.Span[count++] = new(id, "", "", default, default, Attempts: reader.GetInt32(10), LastError: "Malformed outbox row: " + error.Message);
             }
         }
         return count;

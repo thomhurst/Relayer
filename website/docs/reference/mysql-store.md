@@ -343,6 +343,8 @@ Malformed headers or empty routing fields are copied **raw** to dead storage und
 with an actionable `last_error` and error log; valid rows continue in the same pass. An unregistered
 transport or invalid destination consumes recovery attempts and eventually reaches dead storage.
 Direct notifications leave invalid routes unclaimed for recovery to inspect.
+Malformed ordered rows retain their persisted attempt count, so parking at the configured retry
+limit records the outbox poison counter once.
 
 Cleanup deletes at most `BatchSize` expired dead rows and `BatchSize` expired inbox keys per pass,
 using database UTC time and the `failed_at` / `processed_at` indexes. Pending rows, parked ordered

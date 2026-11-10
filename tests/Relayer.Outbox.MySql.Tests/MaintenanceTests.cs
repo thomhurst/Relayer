@@ -1,3 +1,4 @@
+using System.Diagnostics.Metrics;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -155,12 +156,23 @@ public sealed class MaintenanceTests
         await data.Insert(Guid.CreateVersion7(), DateTimeOffset.UtcNow.AddDays(-1), lane: 0);
         await data.Execute("UPDATE relayer_outbox SET headers=X'FF',ordering_key='poison'");
         await data.Insert(Guid.CreateVersion7(), DateTimeOffset.UtcNow.AddDays(-1), lane: 0);
+        using var instrumentation = new RelayerInstrumentation();
+        long poisonCount = 0;
+        using var listener = new MeterListener();
+        listener.InstrumentPublished = (instrument, meterListener) =>
+        {
+            if (instrument == instrumentation.OutboxPoison) meterListener.EnableMeasurementEvents(instrument);
+        };
+        listener.SetMeasurementEventCallback<long>((_, count, _, _) => Interlocked.Add(ref poisonCount, count));
+        listener.Start();
         var transport = new Transport();
         using var ordered = new MySqlOrderedDispatcher(data.Source, new() { Lanes = 1, MaxDispatchAttempts = 2 },
-            [transport], NullLogger<MySqlOrderedDispatcher>.Instance);
+            [transport], NullLogger<MySqlOrderedDispatcher>.Instance, instrumentation: instrumentation);
         await Assert.That(await ordered.DispatchLaneAsync(0, default)).IsEqualTo(0);
         await Assert.That(await ordered.DispatchLaneAsync(0, default)).IsEqualTo(0);
+        await Assert.That(poisonCount).IsEqualTo(1L);
         await Assert.That(await ordered.DispatchLaneAsync(0, default)).IsEqualTo(1);
+        await Assert.That(poisonCount).IsEqualTo(1L);
         await Assert.That(transport.Sent).IsEqualTo(1);
         await Assert.That(await Scalar(data, "SELECT COUNT(*) FROM relayer_outbox WHERE status='parked' AND headers=X'FF' AND last_error LIKE '%Malformed%'")).IsEqualTo(1L);
     }
