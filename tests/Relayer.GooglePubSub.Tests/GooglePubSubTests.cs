@@ -10,7 +10,6 @@ using Relayer.Transports;
 
 namespace Relayer.GooglePubSub.Tests;
 
-[NotInParallel("PubSubEmulator")]
 public class GooglePubSubTests
 {
     [Test]
@@ -154,8 +153,10 @@ public class GooglePubSubTests
         using var deadline = new CancellationTokenSource(TimeSpan.FromMinutes(2));
         var token = deadline.Token;
         await using var broker = await PubSubBroker.StartAsync(token);
-        var topic = "projects/relayer-test/topics/orders";
-        var subscription = "projects/relayer-test/subscriptions/orders";
+        // The emulator is shared: name this test's topics and subscriptions uniquely.
+        var name = TestContext.Current!.Isolation.GetIsolatedName("orders");
+        var topic = "projects/relayer-test/topics/" + name;
+        var subscription = "projects/relayer-test/subscriptions/" + name;
         var deadLetter = topic + "-dead";
         var deadSubscription = subscription + "-dead";
         var handled = new PubSubControl();
