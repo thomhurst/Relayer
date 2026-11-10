@@ -1,4 +1,5 @@
 using System.Runtime.CompilerServices;
+using System.Runtime.ExceptionServices;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.Extensions.DependencyInjection;
@@ -33,6 +34,8 @@ internal sealed class RetryingEntityFrameworkCoreConsumer<TContext>(EntityFramew
                 static (_, state, cancellation) => state.Owner.AttemptAsync(state.Operation, cancellation),
                 inbox ? static (_, state, cancellation) => state.Owner.VerifyAsync(state.Operation, cancellation) : null,
                 context.CancellationToken).ConfigureAwait(false);
+            // Cleanup belongs outside both native retries and handler-failure policy.
+            if (incoming.ScopeCleanupError is { } cleanup) ExceptionDispatchInfo.Throw(cleanup);
         }
         catch
         {
@@ -82,8 +85,14 @@ internal sealed class RetryingEntityFrameworkCoreConsumer<TContext>(EntityFramew
             finally
             {
                 try { await scope.DisposeAsync().ConfigureAwait(false); }
+                catch (Exception error) { context.ScopeCleanupError = error; }
                 finally { sender?.EndAttempt(); }
             }
+            return true;
+        }
+        catch when (context.ScopeCleanupError is not null)
+        {
+            // Stop the strategy even if cleanup replaced a failed transaction. InvokeAsync propagates it.
             return true;
         }
         catch
@@ -102,6 +111,7 @@ internal sealed class RetryingEntityFrameworkCoreConsumer<TContext>(EntityFramew
         var context = operation.Context;
         var services = context.Services;
         var scope = services.GetRequiredService<IServiceScopeFactory>().CreateAsyncScope();
+        var committed = false;
         try
         {
             try
@@ -114,14 +124,19 @@ internal sealed class RetryingEntityFrameworkCoreConsumer<TContext>(EntityFramew
                 await using var command = new NpgsqlCommand(operation.Configuration.InboxExistsSql, connection);
                 command.Parameters.Add(new NpgsqlParameter<string>("consumer", consumer));
                 command.Parameters.Add(new NpgsqlParameter<Guid>("id", operation.MessageId));
-                var committed = (bool)(await command.ExecuteScalarAsync(cancellation).ConfigureAwait(false))!;
+                committed = (bool)(await command.ExecuteScalarAsync(cancellation).ConfigureAwait(false))!;
                 // Inbox rows commit only on the completion path.
                 if (committed && context.Settlement.Request is null) context.Settlement.Complete();
-                return new(committed, true);
             }
-            finally { await scope.DisposeAsync().ConfigureAwait(false); }
+            finally
+            {
+                try { await scope.DisposeAsync().ConfigureAwait(false); }
+                catch (Exception error) { context.ScopeCleanupError = error; }
+            }
         }
+        catch when (context.ScopeCleanupError is not null) { }
         finally { context.SetServices(services); }
+        return new(committed || context.ScopeCleanupError is not null, true);
     }
 
     private sealed class Operation

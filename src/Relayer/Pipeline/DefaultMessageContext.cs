@@ -72,6 +72,7 @@ public sealed class DefaultMessageContext : MessageContext, IDisposable
     internal HeaderNames EnvelopeNames => _receive?.EnvelopeNames ?? _owner.EnvelopeNames;
     internal string? TracePartitionId => _receive?.TracePartitionId;
     internal void EnrichActivity(System.Diagnostics.Activity activity) => _receive?.EnrichActivity(activity);
+    internal Exception? ScopeCleanupError { get; set; }
     internal Exception? LoggedSettlementError { get; set; }
     internal void LogSettlementFailure(Exception error) => _owner.LogSettlementFailure(this, error);
     internal bool TryConsumeNativeSettlementError(Exception error) => _receive?.TryConsumeLoggedSettlementError(error) == true;
@@ -216,6 +217,7 @@ public sealed class DefaultMessageContext : MessageContext, IDisposable
         _demand = ScopeDemand.None;
         Dispatch = null!;
         LoggedSettlementError = null;
+        ScopeCleanupError = null;
         Features.Clear();
         _owner.Return(this);
     }
