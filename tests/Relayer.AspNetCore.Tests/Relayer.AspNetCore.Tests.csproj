@@ -1,0 +1,8 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><OutputType>Exe</OutputType></PropertyGroup>
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+    <PackageReference Include="TUnit" />
+    <ProjectReference Include="../../src/Relayer.AspNetCore/Relayer.AspNetCore.csproj" />
+  </ItemGroup>
+</Project>
