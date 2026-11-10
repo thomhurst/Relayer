@@ -53,8 +53,7 @@ public static class EntityFrameworkCoreOutboxExtensions
     {
         ArgumentNullException.ThrowIfNull(builder);
         ArgumentNullException.ThrowIfNull(services);
-        if (builder.Options.FindExtension<CoreOptionsExtension>()?.MaxPoolSize is not null)
-            throw new InvalidOperationException("Relayer outbox requires scoped DbContexts. Use AddDbContext instead of AddDbContextPool.");
+        OutboxConfiguration.ValidatePooling(builder.Options);
         if (builder.Options.FindExtension<CoreOptionsExtension>()?.Interceptors is { } interceptors)
             foreach (var interceptor in interceptors)
                 if (interceptor is OutboxSaveChangesInterceptor)

@@ -59,9 +59,7 @@ public static class EntityFrameworkCoreConsumerExtensions
         if (context.Database.ProviderName != "Npgsql.EntityFrameworkCore.PostgreSQL")
             throw new InvalidOperationException("EF Core consumers currently require the Npgsql PostgreSQL provider.");
         var nativeOptions = context.GetService<IDbContextOptions>();
-        var core = nativeOptions.FindExtension<CoreOptionsExtension>();
-        if (core?.MaxPoolSize is not null)
-            throw new InvalidOperationException("EF Core consumers require scoped DbContexts. Use AddDbContext instead of AddDbContextPool.");
+        OutboxConfiguration.ValidatePooling(nativeOptions);
         var outbox = nativeOptions.FindExtension<OutboxConfiguration>();
         if (outbox is not null && explicitOptions)
             throw new InvalidOperationException("Configure schema and prefix on AddRelayerOutbox; the consumer inbox uses that same configuration.");

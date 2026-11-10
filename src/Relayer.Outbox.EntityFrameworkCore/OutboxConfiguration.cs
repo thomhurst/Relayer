@@ -12,7 +12,15 @@ internal sealed class OutboxConfiguration : IDbContextOptionsExtension
     // CoreOptionsExtension.Interceptors: its IEnumerable can allocate an iterator on every attempt.
     public DbContextOptionsExtensionInfo Info => _info ??= new ConfigurationInfo(this);
     public void ApplyServices(IServiceCollection services) { }
-    public void Validate(IDbContextOptions options) { }
+    public void Validate(IDbContextOptions options) => ValidatePooling(options);
+
+    internal static void ValidatePooling(IDbContextOptions options)
+    {
+        if (options.FindExtension<CoreOptionsExtension>()?.MaxPoolSize is not null)
+            throw new InvalidOperationException("Relayer EF Core integration does not support pooled DbContexts: " +
+                "pooled options cannot bind interceptors to the current ISender scope. " +
+                "Use AddDbContext instead of AddDbContextPool or AddPooledDbContextFactory.");
+    }
 
     private sealed class ConfigurationInfo(IDbContextOptionsExtension extension) : DbContextOptionsExtensionInfo(extension)
     {

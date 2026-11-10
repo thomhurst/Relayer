@@ -567,6 +567,23 @@ Commit goes through IDbContextTransaction, including UseTransaction wrappers. Di
 ambient TransactionScope, pooled contexts and concurrent use of a scope are outside this integration.
 Schema deployment, dispatch, inbox, leases and health polling remain separate concerns.
 
+**Pooling assessment (#356).** EF Core 10.0.14's
+[`AddPoolingOptions`](https://github.com/dotnet/efcore/blob/v10.0.14/src/EFCore/Extensions/EntityFrameworkServiceCollectionExtensions.cs#L342-L365)
+registers singleton options and invokes their callback with the root provider. Relayer's interceptors
+capture the scoped `EntityFrameworkCoreOutbox` also used by `ISender`, including cross-context selection,
+shared-transaction participants, buffered sends and scoped dispatch configuration. With scope validation
+this resolution fails; without it the root captures a coordinator that subsequent delivery scopes do not use.
+Keying buffers by context or transaction does not reconnect that coordinator to the current sender scope.
+EF's [`GetResettableServices`](https://github.com/dotnet/efcore/blob/v10.0.14/src/EFCore/DbContext.cs#L917-L973)
+resets services in its internal provider, not arbitrary options interceptors; even a reset hook would only
+clear state, not supply the next lease's application provider. Pool lease setup likewise does not pass
+that provider to interceptors. Supporting pooling would require an explicit per-lease scope-binding API
+and corresponding ownership/reset contract, rather than merely moving interceptor fields. Keep both
+outbox and consumer boundaries non-pooled so their ownership contract stays uniform. Validate final EF
+options as well as the options callback, since EF sets `MaxPoolSize` after invoking that callback.
+This restriction concerns DbContext pooling only; native Npgsql connection pooling remains supported.
+
+
 ## D32. PostgreSQL outbox transactions own commit and expose a compatible command connection
 
 **Context.** A DbTransaction subclass can flush buffered messages before native commit, but NpgsqlCommand's

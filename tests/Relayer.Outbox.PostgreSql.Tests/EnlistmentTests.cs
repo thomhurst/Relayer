@@ -18,6 +18,28 @@ public class EnlistmentTests
     [Test]
     [Arguments(false)]
     [Arguments(true)]
+    public async Task Pooled_outbox_options_reject_root_captured_interceptors(bool factory)
+    {
+        var services = new ServiceCollection().AddRelayerEntityFrameworkCoreOutbox();
+        if (factory)
+            services.AddPooledDbContextFactory<OrdersContext>((sp, options) =>
+                options.UseNpgsql("Host=unused").AddRelayerOutbox(sp));
+        else
+            services.AddDbContextPool<OrdersContext>((sp, options) =>
+                options.UseNpgsql("Host=unused").AddRelayerOutbox(sp));
+        // Without scope validation EF can build the options, but must not silently capture a root coordinator.
+        await using var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = false });
+        await using var scope = provider.CreateAsyncScope();
+        await Assert.That(() =>
+        {
+            using var context = scope.ServiceProvider.GetRequiredService<OrdersContext>();
+            _ = context.Database.ProviderName;
+        }).Throws<InvalidOperationException>().WithMessageContaining("current ISender scope");
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
     public async Task Implicit_saves_and_explicit_commits_are_atomic_and_batched(bool synchronous)
     {
         await using var database = new Database();
