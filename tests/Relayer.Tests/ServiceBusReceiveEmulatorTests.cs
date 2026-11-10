@@ -28,7 +28,7 @@ public sealed class ServiceBusReceiveEmulatorTests
         await using var broker = await ServiceBusReceiveBroker.StartAsync(token, ["receive-orders"], ["receive-sessions"], includeTopic: true);
         await using var client = new ServiceBusClient(broker.ConnectionString, new ServiceBusClientOptions
         {
-            RetryOptions = new() { MaxRetries = 0, TryTimeout = TimeSpan.FromSeconds(3) },
+            RetryOptions = new() { MaxRetries = 0 },
         });
 
         var services = new ServiceCollection();
@@ -78,7 +78,6 @@ public sealed class ServiceBusReceiveEmulatorTests
         var probe = provider.GetRequiredKeyedService<ITransportHealthProbe>("bus");
         var liveness = provider.GetRequiredKeyedService<IConsumerHealthProvider>("bus");
         var declarations = provider.GetRequiredService<RelayerConfiguration>().Transports.Single().Consumers;
-        await Assert.That((await probe.CheckAsync(token)).Status).IsEqualTo(HealthStatus.Healthy);
         foreach (var declaration in declarations)
             await Assert.That((await liveness.GetStateAsync(declaration, token))!.Value.IsIdle).IsTrue();
 
@@ -92,6 +91,8 @@ public sealed class ServiceBusReceiveEmulatorTests
         for (var i = 0; i < 4; i++) delivered.Add(await control.Received.Reader.ReadAsync(token));
         await Assert.That(delivered.Order().ToArray()).IsEquivalentTo(new[] { 1, 10, 20, 21 });
         await Assert.That(control.SessionValues.ToArray()).IsEquivalentTo(new[] { 20, 21 });
+        // Real deliveries establish AMQP readiness before the native connectivity assertion.
+        await Assert.That((await probe.CheckAsync(token)).Status).IsEqualTo(HealthStatus.Healthy);
 
         // An active worker holds graceful shutdown until its work and settlement complete.
         control.Release = new(TaskCreationOptions.RunContinuationsAsynchronously);

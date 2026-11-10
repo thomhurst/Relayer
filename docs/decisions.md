@@ -1161,6 +1161,7 @@ shutdown, expiry and post-send database errors leave durable work with the same 
 boundary as D33. Ordered dispatch, inbox and recovery remain separate deliverables; no eventual
 delivery guarantee is inferred from commit notification alone. See the
 [MySQL reference](../website/docs/reference/mysql-store.md#commit-triggered-unordered-dispatch).
+
 ## D56. PostgreSQL CDC wakes existing unordered recovery
 
 **Status:** Accepted.
