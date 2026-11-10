@@ -199,7 +199,10 @@ public class TenancyTests
         var nativeBytes = GC.GetAllocatedBytesForCurrentThread() - start;
         start = GC.GetAllocatedBytesForCurrentThread();
         for (var i = 0; i < 1000; i++) await receive.ProcessAsync(incoming);
-        await Assert.That(GC.GetAllocatedBytesForCurrentThread() - start).IsEqualTo(nativeBytes);
+        // End the measured region before entering assertion infrastructure (including
+        // first-use generic initialization), just as for the native control above.
+        var receiveBytes = GC.GetAllocatedBytesForCurrentThread() - start;
+        await Assert.That(receiveBytes).IsEqualTo(nativeBytes);
     }
 
     private static ServiceProvider Provider(bool outbox = false, bool tenancy = true)

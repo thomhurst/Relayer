@@ -102,7 +102,7 @@ public class GooglePubSubTests
                 new System.Net.Sockets.SocketException((int)System.Net.Sockets.SocketError.ConnectionReset));
         fixture.InjectInitialWriteFailure(failure);
         var original = fixture.Transport;
-        if (reconnectWhileRunning) await fixture.DisconnectAsync(token);
+        if (reconnectWhileRunning) await fixture.DisconnectBeforeStartAsync(token);
         await original.StartAsync(token);
         await Assert.That(async () => await fixture.ConsumerCompletion.WaitAsync(token)).Throws<IOException>();
         if (!reconnectWhileRunning) await Assert.That(fixture.IsExpectedOutageFailure(failure)).IsTrue();

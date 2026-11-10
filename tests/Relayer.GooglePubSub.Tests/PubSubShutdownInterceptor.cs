@@ -11,7 +11,7 @@ internal sealed class PubSubShutdownInterceptor : Interceptor
     private readonly ConcurrentQueue<string> _violations = new();
     private readonly ConcurrentDictionary<string, byte> _acks = new();
     internal IOException? InitialWriteFailure;
-    private TaskCompletionSource _initialWrite = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private volatile TaskCompletionSource _initialWrite = new(TaskCreationOptions.RunContinuationsAsynchronously);
     internal Task WaitForInitialWriteAsync(CancellationToken token) => _initialWrite.Task.WaitAsync(token);
     private int _streams;
     private int _closedStreams;
