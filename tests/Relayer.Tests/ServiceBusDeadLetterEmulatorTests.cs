@@ -8,9 +8,9 @@ public sealed class ServiceBusDeadLetterEmulatorTests
     [Test]
     public async Task Queue_subscription_and_session_DLQs_support_peek_redrive_and_purge()
     {
+        await using var broker = await ServiceBusReceiveBroker.StartAsync(["dlq-orders"], ["dlq-sessions"], includeTopic: true);
         using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(5));
         var token = timeout.Token;
-        await using var broker = await ServiceBusReceiveBroker.StartAsync(["dlq-orders"], ["dlq-sessions"], includeTopic: true);
         await using var client = new ServiceBusClient(broker.ConnectionString);
         foreach (var (entity, subscription, session) in new[]
         {
