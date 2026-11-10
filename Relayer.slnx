@@ -21,6 +21,7 @@
     <Project Path="src/Relayer.AmazonSqs/Relayer.AmazonSqs.csproj" />
     <Project Path="src/Relayer.Outbox.SqlServer/Relayer.Outbox.SqlServer.csproj" />
     <Project Path="src/Relayer.RabbitMQ/Relayer.RabbitMQ.csproj" />
+    <Project Path="src/Relayer.RabbitMQ.HealthChecks/Relayer.RabbitMQ.HealthChecks.csproj" />
     <Project Path="src/Relayer.Nats/Relayer.Nats.csproj" />
     <Project Path="src/Relayer.RabbitMQ.Streams/Relayer.RabbitMQ.Streams.csproj" />
     <Project Path="src/Relayer.Outbox.EntityFrameworkCore/Relayer.Outbox.EntityFrameworkCore.csproj" />

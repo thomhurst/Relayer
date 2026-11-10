@@ -36,6 +36,8 @@ Scenario failures identify the case and active phase, such as `send 2`, `receive
 
 The reference fixture and executable tests live in [`tests/Relayer.Conformance.Tests`](https://github.com/thomhurst/Relayer/tree/main/tests/Relayer.Conformance.Tests). Queue and partitioned log modes both run every case. Separate tests verify capability skips and prove that missing send tracing or overwritten creation headers fail.
 
+RabbitMQ runs receive/settle, immediate requeue, consumer restart, tracing, broker recovery, outage sends and clean shutdown against a real broker. Native metadata-preserving dead-lettering, delayed requeue and ordering-by-key remain capability skips; separate RabbitMQ tests cover confirmed poison copies and native DLX routing.
+
 The Kafka adapter runs its supported cases against Kafka in Testcontainers, including sends and consumer shutdown while the broker process is stopped. Service Bus runs queue delivery, immediate redelivery, native dead-lettering, scheduling, tracing, creation-context copies and emulator restart recovery, plus native session ordering. Service Bus explicitly skips positive delayed redelivery because native abandon has no delay. Its receive recovery fixtures put owned endpoints in the emulator startup configuration: administration-created entities do not persist across an emulator restart. A separate provisioning test creates a queue through administration, proves it is missing after restart, reapplies `Provision`, and verifies native send/receive/complete on the restored queue. Startup-config persistence alone is not evidence of provisioning. `Provision` is reapplied through `ApplyTopologyAsync`; native connection recovery does not automatically recreate deleted entities. Kafka currently supports only `TopologyMode.None`, so its restart test preserves externally managed topics rather than claiming reprovisioning. See [Service Bus validation boundaries](service-bus.md#health).
 
 ## Contracts
@@ -85,3 +87,10 @@ Opt into `SendDuringOutage` by supplying `ITransportConformanceFixture.OutageSen
 The fixture must return from `DisconnectAsync` only after connectivity is interrupted. After restarting consumers, the suite observes a successful round trip before disconnecting so the outage interrupts an established receiver rather than racing its initial connection. The suite then attempts three concurrent sends and passes a deadline token to the adapter. Configure a native publish/retry deadline as well when the native API cannot cancel admitted sends: the Pub/Sub fixture uses the native API client's publish expiration. An independent watchdog fails a send that ignores its budget. The suite then requests offline shutdown with a ten-second token and a fifteen-second watchdog, restores the broker, restarts consumers and sends a recovery marker.
 
 Successful send acknowledgements must result in delivery after recovery. Failed or cancelled sends can still have been accepted by a broker, so their arrival and duplicate deliveries are allowed. The post-restart warm-up may also redeliver during recovery because observing its handler does not prove that native settlement finished before disconnect. The test does not retract messages, replace native retry policies, impose cross-message ordering, or reinterpret native acknowledgements.
+
+
+Native span destinations can differ from route addresses. Fixtures can override `SendDestinationName` and
+`ProcessDestinationName`; both default to `Destination`. RabbitMQ uses exchange/routing-key for sends and
+additionally includes the queue for process and settlement spans. `IMessageBinding.GetProcessTracing` can
+return a cached process operation when the actual native destination is only known at delivery time;
+null uses the consumer's startup operation. Keep operation caches bounded.

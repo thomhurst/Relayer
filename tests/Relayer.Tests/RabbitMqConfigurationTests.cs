@@ -49,7 +49,7 @@ public class RabbitMqConfigurationTests
     }
 
     [Test]
-    public async Task Send_declarations_resolve_without_connecting_and_consumers_fail_early()
+    public async Task Send_and_consume_declarations_resolve_without_connecting()
     {
         var services = new ServiceCollection();
         services.AddRelayer(builder => builder.RabbitMQ("rabbit", rabbit => rabbit.Send<Sample>("orders")));
@@ -59,7 +59,18 @@ public class RabbitMqConfigurationTests
         var consumers = new ServiceCollection();
         consumers.AddRelayer(builder => builder.RabbitMQ("rabbit", rabbit => rabbit.Consume("orders", consumer => consumer.Handler<SampleHandler>())));
         await using var consumerProvider = consumers.BuildServiceProvider();
-        await Assert.That(() => consumerProvider.GetRequiredService<ITransport>()).Throws<NotSupportedException>();
+        await Assert.That(consumerProvider.GetRequiredService<ITransport>().Name).IsEqualTo("rabbit");
+    }
+
+    [Test]
+    public async Task Default_failure_destination_uses_the_default_exchange_for_queue_names_containing_colons()
+    {
+        var services = new ServiceCollection();
+        services.AddRelayer(builder => builder.RabbitMQ("rabbit", rabbit =>
+            rabbit.Consume("orders:eu", consumer => consumer.Handler<SampleHandler>())));
+        await using var provider = services.BuildServiceProvider();
+        var transport = provider.GetRequiredService<ITransport>();
+        await Assert.That(transport.GetCapabilities(":orders:eu.dead-letter").DeadLetter).IsFalse();
     }
 
     [Test]
@@ -101,6 +112,46 @@ public class RabbitMqConfigurationTests
             }
         });
         await Assert.That(() => provider.GetRequiredService<ITransport>()).Throws<ArgumentException>();
+    }
+
+    [Test]
+    [Arguments(0)]
+    [Arguments(1)]
+    [Arguments(2)]
+    public async Task Unsupported_consumer_declarations_fail_before_connecting(int scenario)
+    {
+        var services = new ServiceCollection();
+        services.AddRelayer(builder => builder.RabbitMQ("rabbit", rabbit =>
+        {
+            rabbit.Options.Configure(options => options.ConnectionFactory.HostName = "does-not-exist.invalid");
+            rabbit.Consume("orders", consumer =>
+            {
+                consumer.Handler<SampleHandler>();
+                if (scenario == 0) consumer.Concurrency(2);
+                if (scenario == 1) consumer.Batch(2, TimeSpan.FromSeconds(1));
+                if (scenario == 2) consumer.Options.Failure = new() { RedeliveryDelays = new[] { TimeSpan.Zero } };
+            });
+        }));
+        await using var provider = services.BuildServiceProvider();
+        await Assert.That(() => provider.GetRequiredService<ITransport>()).Throws<Exception>();
+    }
+
+    [Test]
+    public async Task Native_endpoint_tracing_cache_is_bounded_and_warm_hits_allocate_nothing()
+    {
+        using var tracing = new MessageTracing(Options.Create(new TracingOptions()), []);
+        var cache = new RabbitMqEndpointCache(tracing, "queue");
+        var original = cache.Get("exchange", "key");
+        // Warm the native tuple/string equality paths as well as the first cache miss.
+        for (var i = 0; i < 1000; i++) cache.Get("exchange", "key");
+        var before = GC.GetAllocatedBytesForCurrentThread();
+        for (var i = 0; i < 1000; i++) cache.Get("exchange", "key");
+        var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+        await Assert.That(allocated).IsEqualTo(0L);
+        for (var i = 0; i < RabbitMqEndpointCache.Capacity; i++) cache.Get("exchange", i.ToString());
+        await Assert.That(cache.Get("exchange", "key")).IsNotSameReferenceAs(original);
+        var recent = cache.Get("exchange", "key");
+        await Assert.That(cache.Get("exchange", "key")).IsSameReferenceAs(recent);
     }
 
     internal static ServiceProvider Provider(Action<RabbitMqTransportOptions> configure)

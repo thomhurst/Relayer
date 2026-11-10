@@ -1,9 +1,9 @@
 ---
 title: RabbitMQ
-description: "Confirmed RabbitMQ publishing, optional native delays and explicit topology validation."
+description: "Native RabbitMQ consumers, confirmed publishing, optional health and explicit topology validation."
 ---
 
-`Relayer.RabbitMQ` wraps RabbitMQ.Client 7. Named connection lifecycle and exchange, queue and queue-binding declarations are implemented. Confirmed outgoing sends, binary CloudEvents headers, send telemetry and verified delayed-exchange scheduling are implemented. **Consuming and native health adapters remain planned.** The complete transport conformance suite will run when those adapters are available.
+`Relayer.RabbitMQ` wraps RabbitMQ.Client 7. Named connection lifecycle and exchange, queue and queue-binding declarations are implemented. Confirmed outgoing sends, binary CloudEvents headers, send telemetry and verified delayed-exchange scheduling are implemented. Native consumers, durable failure handling, acknowledgement telemetry and optional connectivity/liveness adapters are implemented. The real-broker conformance suite covers restart, requeue, tracing, broker recovery, outage sends and graceful drain; absent native capabilities are explicitly skipped.
 
 ## Provision native topology
 
@@ -42,7 +42,7 @@ services.AddRelayer(relayer => relayer.RabbitMQ("orders", rabbit =>
 
 Run the application host to apply topology during startup. Relayer declares exchanges first, queues second and bindings last. RabbitMQ checks declaration equivalence: an existing entity with incompatible properties produces an actionable startup difference. Relayer never deletes or changes existing entities. Provisioning can create some entities before another declaration fails; it is not transactional.
 
-Unspecified exchange properties provision a durable, non-auto-delete direct exchange. Unspecified queue properties provision a durable, non-exclusive, non-auto-delete queue. Specify native arguments directly, including DLX and queue-type arguments. RabbitMQ owns routing and dead-lettering. Declaring a DLX does not enable Relayer receive settlement or its error-metadata dead-letter capability yet.
+Unspecified exchange properties provision a durable, non-auto-delete direct exchange. Unspecified queue properties provision a durable, non-exclusive, non-auto-delete queue. Specify native arguments directly, including DLX and queue-type arguments. RabbitMQ owns routing and dead-lettering. Native DLX settlement cannot retain Relayer error metadata; the default policy uses a confirmed dead-letter copy before acknowledging the source.
 
 Queues need explicit names. Server-generated queue names and binding the default exchange are not supported by these declarations. Routing keys may be empty. Exchange and queue names occupy separate namespaces.
 
@@ -72,7 +72,7 @@ Each named registration owns one connection, created lazily during topology appl
 
 `ConnectionFactory` is passed through unchanged. Configure TLS, endpoints, heartbeats, native automatic recovery, topology recovery and `ICredentialsProvider` on that factory. Relayer does not implement another credential-refresh or recovery loop. Configure options before startup; live connection reconfiguration is not implemented.
 
-`Consume` declarations fail before opening a connection until the receive adapter is implemented. Error-metadata dead-letter support remains unavailable. Full transport composition is tracked under [RabbitMQ transport #40](https://github.com/thomhurst/Relayer/issues/40).
+Consumers use their native queue name as the source. The consumer source and failure destination are registered internally for confirmed failure copies. Declare or provision those queues explicitly.
 
 ## Confirmed sends
 
@@ -106,7 +106,7 @@ Set native channel settings through `PublisherChannelOptions` (`CreateChannelOpt
 
 CloudEvents attributes use AMQP `cloudEvents:` headers. The serializer's `content-type` becomes native `BasicProperties.ContentType`. Existing creation `traceparent` and `tracestate` are preserved even when the native publisher instrumentation is enabled. The pinned client only accepts strings or exact byte arrays for textual field-table values; Relayer reuses exact-length buffers for borrowed UTF-8 slices. Each publisher keeps at most 256 header position/length buffers and 256 decoded content types in FIFO caches. Cache hits allocate 0 B. A UTF-8 slice miss allocates one exact-length byte array; a content-type miss allocates a decoded string and a UTF-8 key array. Evicted shapes allocate again when reused. These conversions are native-client boundary costs under D52: the pinned client requires arrays or strings. Retention is bounded by entry count, not bytes; large values still retain large buffers. The temporary header cache will be removed when native memory-backed headers ship (rabbitmq/rabbitmq-dotnet-client#2144). Send metrics remain available when message tracing is absent. The sent-message counter records each native publish attempt, including failed publishes, regardless of tracing; validation and preparation failures do not count. Send duration starts after acquiring a publisher channel, so it includes channel recovery and confirmation but excludes waiting for a free publisher. Send completion sources are retained at the observed concurrency high-water mark, including when continuations complete on another thread.
 
-Host shutdown stops new admission and drains publishers before closing their connection. A cancellation during shutdown closes the connection to release native operations. Always start the application host before sending.
+Host shutdown cancels consumers and drains their durable work while publishing channels remain available, then drains publishers before closing the connection. A cancellation during shutdown closes the connection to release native operations. Always start the application host before sending.
 
 ## Native delays and the outbox fallback
 
@@ -137,4 +137,89 @@ The plugin stores delayed messages using its own native durability and routing g
 
 Enable source `Relayer` and meter `Relayer`. Send destinations use `{exchange}:{routing key}`, including `:orders` for a default-exchange queue. Routing key, system, destination and configured server address/port are available to samplers when spans start. Single sends preserve message creation links and use the common CloudEvents attributes. Sends record attempt counts and client operation duration, including native confirmation time; failures carry the bounded `_OTHER` error type.
 
-RabbitMQ.Client 7.2.2 already owns transport-level publisher instrumentation. Enable `RabbitMQ.Client.Publisher` for those additional child spans; Relayer neither replaces it nor changes `RabbitMQActivitySource`'s process-wide configuration. Receive instrumentation (`RabbitMQ.Client.Subscriber`) belongs to the native client; Relayer's receive adapter remains planned.
+RabbitMQ.Client 7.2.2 already owns transport-level publisher instrumentation. Enable `RabbitMQ.Client.Publisher` for those additional child spans; Relayer neither replaces it nor changes `RabbitMQActivitySource`'s process-wide configuration. `RabbitMQ.Client.Subscriber` supplies native delivery spans. Relayer adds durable process and actual ack/nack operations through the shared `Relayer` source without changing native tracing configuration.
+
+
+## Receive and settle
+
+```csharp
+services.AddRelayer(relayer =>
+{
+    relayer.AddMessageTypesFromThisAssembly();
+    relayer.RabbitMQ("orders", rabbit =>
+    {
+        rabbit.Options.Configure(options =>
+        {
+            options.ConnectionFactory = nativeConnectionFactory;
+            options.Queues.Add(new("orders"));
+            options.Queues.Add(new("orders.dead-letter"));
+        });
+        rabbit.Consume("orders", consumer =>
+        {
+            consumer.Concurrency(4);
+            consumer.Options.ChannelOptions = new CreateChannelOptions(
+                publisherConfirmationsEnabled: false,
+                publisherConfirmationTrackingEnabled: false,
+                consumerDispatchConcurrency: 4);
+            consumer.Options.PrefetchCount = 32;
+            consumer.Handler<OrderPlacedHandler>();
+        });
+    });
+});
+```
+
+Use single-message handlers. `ChannelOptions` passes through unchanged; its native `ConsumerDispatchConcurrency`
+must match `Concurrency`. Startup rejects mismatches and batch handlers. Defaults are one callback and a
+prefetch count of one. RabbitMQ.Client owns dispatch concurrency, prefetch backpressure, automatic connection
+and topology recovery, and native cancellation. `Exclusive` and `Arguments` pass to `BasicConsumeAsync`.
+Queue routing stays native.
+
+`RabbitMqMessageBinding` borrows the body and reads headers lazily. `context.RabbitMQ()` exposes the original
+`BasicDeliverEventArgs` through `Message` and its native `IChannel` through `Channel`. Retain neither after
+the callback. Direct native settlement must set
+`context.Features.GetRequired<NativeMessage<RabbitMqDelivery>>().Disposition = Disposition.SettledByHandler`
+after success to prevent a second settlement. Prefer the common settlement API when native access is unnecessary.
+
+Relayer acknowledges after handling, scoped disposal and durable failure handling finish. Default poison
+handling sends to `source + ".dead-letter"`, waits for its publisher confirm, then acknowledges the original.
+Set `consumer.Options.Failure.DeadLetterEndpoint` to use another declared destination. Copies retain CloudEvents,
+creation context and native headers, and add common error metadata. A failed or unroutable copy leaves the
+source unacknowledged and faults the hosted receiver; closing the channel permits native redelivery. Provision
+a durable failure queue or exchange/binding before starting consumers.
+
+Use `Failure.RetryDelays` for in-process backoff. Native nack can requeue immediately or use the configured DLX
+with `requeue: false`; it cannot rewrite headers or retain Relayer error metadata. The `DeadLetter` capability
+therefore stays false and configured durable `RedeliveryDelays` fail startup. Explicit immediate requeue retains
+native semantics, including potentially repeated deliveries without an attempt count. The native `Redelivered`
+flag is exposed unchanged and is never treated as a delivery counter. Native delayed sends do not add delayed nack.
+
+Graceful stop waits for native cancel-ok and active callbacks before closing their settlement channel. The host's
+stop deadline cancels processing. Unexpected callback failure reaches the hosted service and leaves uncertain
+work unacknowledged. Automatic recovery remains owned by RabbitMQ.Client.
+
+Process and settle destinations are `{exchange}:{routing key}:{queue}`, including `:orders:orders` for the
+default exchange. Samplers receive the actual destination at process start. Spans include routing key and
+delivery tag; settlement names are `ack` and `nack`. A FIFO cache retains at most 256 native exchange/routing-key
+tracing operations per consumer. Misses allocate; evicted routes are composed again. The handler/failure pipeline
+is composed once at startup.
+
+A suspended consumer callback must return `Task`. D52 treats that task as native-client boundary cost, measured
+against the equivalent raw callback. The upstream [8.0 consumer API proposal](https://github.com/rabbitmq/rabbitmq-dotnet-client/issues/964) discusses a `ValueTask` boundary. `RabbitMqReceiveBenchmarks` compares native JSON receive/ack with the
+registered pipeline using `MemoryDiagnoser`. Warm pipeline, body binding, endpoint lookup and optional health
+tracking add no per-message objects of their own.
+
+## Health
+
+Reference `Relayer.RabbitMQ.HealthChecks` alongside `Relayer.HealthChecks` and register before host startup:
+
+```csharp
+services.AddRelayerRabbitMqHealthProviders("orders"); // Exact transport name.
+services.AddRelayerHealthChecks();
+```
+
+Connectivity reads the existing native connection's `IsOpen` state. It never connects independently or publishes,
+consumes, settles or declares probe messages. Closed/recovering connections report unhealthy. Liveness is
+unavailable before startup, during native recovery and after shutdown; idle receivers explicitly report healthy.
+Active receivers report the oldest callback's activation time across concurrent workers, so newer completions
+cannot hide a stalled older callback. `ConsumerStallTimeout` determines when that snapshot becomes unhealthy.
+Health tracking is enabled only by this optional registration.

@@ -12,6 +12,10 @@ internal sealed partial class RabbitMqNativeTransport : ITransport
     private IConnection? _connection;
     private bool _disposed;
 
+    internal RabbitMqTransportOptions Options => _options;
+    internal List<RabbitMqConsumer> Consumers { get; } = [];
+    internal bool HealthTracking { get; set; }
+    internal bool IsConnected => _connection?.IsOpen == true;
     public string Name { get; }
 
     public TransportCapabilities GetCapabilities(string endpoint)
@@ -44,7 +48,7 @@ internal sealed partial class RabbitMqNativeTransport : ITransport
         {
             ObjectDisposedException.ThrowIf(_disposed, this);
             _connection ??= await _factory.CreateConnectionAsync(cancellationToken).ConfigureAwait(false);
-            if (_publishers is not null || _endpoints.Count == 0) return;
+            if (_publishers is not null) return;
             var publishers = System.Threading.Channels.Channel.CreateBounded<RabbitMqPublisher>(
                 new System.Threading.Channels.BoundedChannelOptions(_publisherCount)
                 { AllowSynchronousContinuations = false });
@@ -54,9 +58,16 @@ internal sealed partial class RabbitMqNativeTransport : ITransport
                     publishers.Writer.TryWrite(new(await _connection.CreateChannelAsync(
                         _publisherChannelOptions, cancellationToken).ConfigureAwait(false)));
                 Volatile.Write(ref _publishers, publishers);
+                foreach (var consumer in Consumers)
+                {
+                    consumer.TrackHealth = HealthTracking;
+                    await consumer.StartAsync(_connection, cancellationToken).ConfigureAwait(false);
+                }
             }
             catch
             {
+                Volatile.Write(ref _publishers, null);
+                foreach (var consumer in Consumers) await consumer.StopAsync(cancellationToken).ConfigureAwait(false);
                 while (publishers.Reader.TryRead(out var publisher))
                     await publisher.Channel.DisposeAsync().ConfigureAwait(false);
                 throw;
@@ -79,17 +90,20 @@ internal sealed partial class RabbitMqNativeTransport : ITransport
         {
             if (_disposed) return;
             _disposed = true;
-            await CloseAsync().ConfigureAwait(false);
+            try { await CloseAsync().ConfigureAwait(false); }
+            finally { foreach (var consumer in Consumers) consumer.DisposeCancellation(); }
         }
         finally { _lifecycle.Release(); }
     }
 
     private async ValueTask CloseAsync(CancellationToken cancellationToken = default)
     {
-        var publishers = Interlocked.Exchange(ref _publishers, null);
+        System.Threading.Channels.Channel<RabbitMqPublisher>? publishers = null;
         var connection = _connection;
         try
         {
+            foreach (var consumer in Consumers) await consumer.StopAsync(cancellationToken).ConfigureAwait(false);
+            publishers = Interlocked.Exchange(ref _publishers, null);
             if (publishers is not null)
             {
                 // Stop admission first. Drain borrowed channels before disposing the connection.
@@ -102,6 +116,7 @@ internal sealed partial class RabbitMqNativeTransport : ITransport
         }
         finally
         {
+            publishers ??= Interlocked.Exchange(ref _publishers, null);
             publishers?.Writer.TryComplete();
             _connection = null;
             if (connection is not null) await connection.DisposeAsync().ConfigureAwait(false);

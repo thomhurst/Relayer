@@ -14,6 +14,10 @@ public interface ITransportConformanceFixture<TIncoming> : IAsyncDisposable
     ITransport Transport { get; }
     /// <summary>The isolated native destination and source.</summary>
     string Destination { get; }
+    /// <summary>The native send span destination, when its semantic format differs from the route address.</summary>
+    string SendDestinationName => Destination;
+    /// <summary>The native process and settlement span destination, when its format differs from the send destination.</summary>
+    string ProcessDestinationName => Destination;
     /// <summary>The expected OpenTelemetry messaging.system, for example kafka or servicebus.</summary>
     string MessagingSystem { get; }
     /// <summary>The native completion operation, for example ack, complete or commit.</summary>

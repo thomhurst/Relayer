@@ -47,10 +47,14 @@ Connectivity opens native send links or peeks receive endpoints without sending,
 settling probe messages. Receiver snapshots report the oldest active callback's activation time;
 stopped processors report unavailable state.
 
+For RabbitMQ, reference `Relayer.RabbitMQ.HealthChecks` and call
+`services.AddRelayerRabbitMqHealthProviders("orders-broker")` before host startup. It reads existing native
+connection state without probe messages and reports the oldest active callback or explicit idle state.
+See [RabbitMQ health](../transports/rabbitmq.md#health).
+
 Without adapters, configured transports, consumers and stores report unhealthy.
 Remaining native broker adapter work is tracked with the
 [SQS/SNS](https://github.com/thomhurst/Relayer/issues/39),
-[RabbitMQ](https://github.com/thomhurst/Relayer/issues/40) and
 [outbox foundation](https://github.com/thomhurst/Relayer/issues/28) implementations:
 
 ```csharp

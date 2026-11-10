@@ -6,6 +6,7 @@
 
   <ItemGroup>
     <InternalsVisibleTo Include="Relayer.Tests" />
+    <InternalsVisibleTo Include="Relayer.RabbitMQ.HealthChecks" />
     <InternalsVisibleTo Include="Relayer.Benchmarks" />
   </ItemGroup>
 

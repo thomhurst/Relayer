@@ -21,6 +21,10 @@ public interface IMessageBinding<TIncoming> : IMessageHeaderReader<TIncoming>
     /// <remarks>Called only when the Relayer source has a listener.</remarks>
     static virtual string? GetPartitionId(TIncoming message) => null;
 
+    /// <summary>A cached process operation for a native delivery whose destination is only known at receive time.</summary>
+    /// <remarks>Return null to use the consumer's startup operation. The operation must use the application's MessageTracing owner and process semantic conventions.</remarks>
+    static virtual MessageOperationTracing? GetProcessTracing(TIncoming message) => null;
+
     /// <summary>Adds native message attributes such as key, offset, tombstone or delivery count to a recorded operation.</summary>
     /// <remarks>Called only when all activity data is requested. Do not retain the borrowed native delivery.</remarks>
     static virtual void EnrichActivity(System.Diagnostics.Activity activity, TIncoming message) { }

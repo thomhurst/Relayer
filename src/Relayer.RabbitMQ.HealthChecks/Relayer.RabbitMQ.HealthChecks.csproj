@@ -1,0 +1,9 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <Description>Optional native RabbitMQ connectivity and receiver liveness adapters for Relayer health checks.</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../Relayer.RabbitMQ/Relayer.RabbitMQ.csproj" />
+    <ProjectReference Include="../Relayer.HealthChecks/Relayer.HealthChecks.csproj" />
+  </ItemGroup>
+</Project>

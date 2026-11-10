@@ -26,6 +26,7 @@
     <ProjectReference Include="..\..\src\Relayer.AzureServiceBus\Relayer.AzureServiceBus.csproj" />
     <ProjectReference Include="..\..\src\Relayer.AmazonSqs\Relayer.AmazonSqs.csproj" />
     <ProjectReference Include="..\..\src\Relayer.RabbitMQ\Relayer.RabbitMQ.csproj" />
+    <ProjectReference Include="../../src/Relayer.RabbitMQ.HealthChecks/Relayer.RabbitMQ.HealthChecks.csproj" />
     <!-- In-repo consumers must reference the generator explicitly; the NuGet package bundles it. -->
     <ProjectReference Include="..\..\src\Relayer.SourceGenerators\Relayer.SourceGenerators.csproj"
                       ReferenceOutputAssembly="false"

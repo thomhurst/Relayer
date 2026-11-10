@@ -8,7 +8,7 @@ internal sealed class ConsumeTracing(MessageTracing tracing, MessagingEndpoint e
     private readonly MessageOperationTracing _process = new(tracing, endpoint, MessagingOperation.Process);
     internal ILogger Logger => tracing.Logger;
 
-    internal Activity? Start(DefaultMessageContext context) => Start(tracing, _process, context, linkCreation: true);
+    internal Activity? Start(DefaultMessageContext context) => Start(tracing, context.ProcessTracing ?? _process, context, linkCreation: true);
 
     internal KeyValuePair<string, object?>[] CreateBatchTags() => _process.CreateBatchTags();
 

@@ -70,6 +70,7 @@ public sealed class DefaultMessageContext : MessageContext, IDisposable
     internal void NextAttempt() => _attempt = checked(Attempt + 1);
     internal ConsumeDelegate Dispatch { get; set; } = null!;
     internal HeaderNames EnvelopeNames => _receive?.EnvelopeNames ?? _owner.EnvelopeNames;
+    internal MessageOperationTracing? ProcessTracing => _receive?.ProcessTracing;
     internal string? TracePartitionId => _receive?.TracePartitionId;
     internal void EnrichActivity(System.Diagnostics.Activity activity) => _receive?.EnrichActivity(activity);
     internal Exception? ScopeCleanupError { get; set; }

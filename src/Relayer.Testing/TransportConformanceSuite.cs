@@ -95,7 +95,7 @@ public sealed class TransportConformanceSuite<TIncoming, TBinding>
             provider.GetRequiredService<MessageTypeRegistry>(), provider.GetRequiredService<IMessageSerializer>(),
             static (_, error, _) => ValueTask.FromException(error))
             .Handler(provider.GetRequiredService<HandlerRegistry>().GetHandler<ConformanceMessage, ConformanceHandler>())
-            .Tracing(tracing, new() { System = fixture.MessagingSystem, Destination = fixture.Destination })
+            .Tracing(tracing, new() { System = fixture.MessagingSystem, Destination = fixture.ProcessDestinationName })
             .Settle(async context =>
             {
                 var native = context.Features.GetRequired<NativeMessage<TIncoming>>();
@@ -383,13 +383,13 @@ public sealed class TransportConformanceSuite<TIncoming, TBinding>
         var settlements = all.Where(span => Equals(span.GetTagItem("messaging.operation.type"), "settle")).ToArray();
         Require(settlements.Length > 0, "Expected native settlement spans.");
         Require(send.Kind == ActivityKind.Producer && process.Kind == ActivityKind.Consumer, "Messaging span kinds changed.");
-        Require(send.OperationName == $"send {fixture.Destination}" && process.OperationName == $"process {fixture.Destination}", "Messaging span names changed.");
+        Require(send.OperationName == $"send {fixture.SendDestinationName}" && process.OperationName == $"process {fixture.ProcessDestinationName}", "Messaging span names changed.");
         Require(ActivityContext.TryParse(delivery.TraceParent, delivery.TraceState, out var creation) && creation.TraceId == send.TraceId && creation.SpanId == send.SpanId,
             "Native instrumentation overwrote the producer creation context.");
         Require(process.Links.Any(link => link.Context.TraceId == send.TraceId && link.Context.SpanId == send.SpanId), "Process span lost its creation link.");
         foreach (var settle in settlements)
         {
-            Require(settle.Kind == ActivityKind.Client && settle.OperationName == $"{fixture.SettlementOperation} {fixture.Destination}", "Native settlement span name or kind changed.");
+            Require(settle.Kind == ActivityKind.Client && settle.OperationName == $"{fixture.SettlementOperation} {fixture.ProcessDestinationName}", "Native settlement span name or kind changed.");
             if (fixture.Transport.GetCapabilities(fixture.Destination).ConsumptionModel == ConsumptionModel.Queue)
                 Require(settle.ParentSpanId == process.SpanId && settle.TraceId == process.TraceId, "Native queue settlement must run inside the process span.");
             // Log commits may be amortized outside the process span (D13).
