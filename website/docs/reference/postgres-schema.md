@@ -54,7 +54,8 @@ and [store registrations](postgres-store.md) must use the same schema and prefix
 ## Tables and constraints
 
 - `relayer_outbox` preserves the original UUID, transport, destination, stable message type, serialized headers
-  and body, creation time, optional ordering key, lane, delivery time and tenant ID. Attempts default to zero;
+  and body, creation time, optional ordering key, lane, delivery time and tenant ID. `seq bigint GENERATED ALWAYS AS IDENTITY`
+  records database insertion order for ordered dispatch; the UUID remains the primary key. Attempts default to zero;
   `last_error` stores failure details. Status defaults to `pending` and permits `pending` or `parked`.
 - `relayer_outbox_dead` preserves the message and attempt/error data with a required `failed_at` timestamp.
   Dead rows live in this table, outside the eligible backlog.
@@ -66,8 +67,10 @@ Message IDs and claim tokens cannot be empty UUIDs. A claim token and its expiry
 present. The [PostgreSQL store](postgres-store.md) enforces conditional, live-token updates; columns and constraints alone
 do not implement [fencing](outbox-stores.md#claims-and-outcomes).
 
-The outbox has a partial `(lane, ordering_key, id)` index for parked-key barriers, a partial `(lane, id)` index for `status = 'pending'` and a partial `deliver_at` index for non-null
-schedules. The inbox has a `processed_at` retention index. Primary keys create their normal unique indexes.
+The outbox has a partial `(lane, ordering_key, seq)` index for parked-key barriers, a partial `(lane, seq)` index for `status = 'pending'` and a partial `deliver_at` index for non-null
+schedules. The pending sequence index covers ordered rows (`lane IS NOT NULL`); a separate partial `id` index
+covers unordered pending rows (`lane IS NULL`) for recovery without changing UUID scan cursors.
+The inbox has a `processed_at` retention index. Primary keys create their normal unique indexes.
 
 Creation uses `IF NOT EXISTS` for schemas, tables and indexes. Running the script again preserves existing data.
 It creates missing objects; it does **not** repair incompatible tables or upgrade an older schema. Review existing
@@ -97,6 +100,38 @@ history. It rejects other providers. Relayer tables stay outside the application
 no entity mapping, `DbSet`, `EnsureCreated` call or transaction interceptor is required. Keep schema evolution
 in explicit SQL migration operations. There is no automatic destructive `Down`: choose a retention policy
 before writing a rollback that drops durable messages. Back up durable data before a schema change.
+
+## Upgrade existing tables to insert-sequence ordering
+
+Schema creation does not add `seq` to an older table. Stop all application writers and dispatchers before
+upgrading, and run the following SQL from an application-owned EF migration or deployment transaction:
+
+```csharp
+migrationBuilder.Sql(PostgreSqlOutboxSchema.CreateInsertSequenceMigrationScript(
+    new PostgreSqlOutboxOptions { Schema = "messaging", TablePrefix = "orders_" }));
+```
+
+`CreateInsertSequenceMigrationScript` returns explicit SQL; it never runs a migration automatically.
+Use the same schema and prefix as the existing store. Run it once, in one transaction. It locks the outbox,
+adds and backfills `seq`, enables a native identity sequence above the backfilled range, and replaces the
+pending and parked indexes with `(lane, seq)` and `(lane, ordering_key, seq)`. For example, its default-table
+SQL begins with:
+
+```sql
+LOCK TABLE "public"."relayer_outbox" IN ACCESS EXCLUSIVE MODE;
+ALTER TABLE "public"."relayer_outbox" ADD COLUMN seq bigint;
+WITH numbered AS (
+    SELECT id, row_number() OVER (ORDER BY id) AS position FROM "public"."relayer_outbox"
+)
+UPDATE "public"."relayer_outbox" AS target
+SET seq = numbered.position FROM numbered WHERE target.id = numbered.id;
+```
+
+The complete generated script also sets `NOT NULL`, adds `GENERATED ALWAYS AS IDENTITY`, advances the
+sequence, rebuilds both ordered indexes and preserves unordered recovery with a partial UUID index. Existing rows keep their previous UUID order; the database cannot
+recover their historical insertion order. New rows follow insertion order independently of host clocks.
+Restart only upgraded workers after the migration commits. Keep the identity sequence's default cache
+of one and do not reset it. Unordered direct dispatch and maintenance retain their existing UUID cursors.
 
 ## Eligible backlog predicate
 

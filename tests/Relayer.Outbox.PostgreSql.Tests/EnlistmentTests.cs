@@ -166,13 +166,16 @@ public class EnlistmentTests
         await joined.Database.UseTransactionAsync(shared.GetDbTransaction());
         using (orders.EnlistRelayerOutbox()) await sender.SendAsync(new Probe(5));
         using (joined.EnlistRelayerOutbox()) await sender.SendAsync(new Probe(6));
+        using (orders.EnlistRelayerOutbox()) await sender.SendAsync(new Probe(7));
         orders.Add(new Order { Id = 30 });
         joined.Add(new Order { Id = 40 });
         await orders.SaveChangesAsync();
         await joined.SaveChangesAsync();
         await Assert.That(await database.Scalar("SELECT count(*) FROM orders")).IsEqualTo(1L);
         await shared.CommitAsync();
-        await Assert.That(await database.Count()).IsEqualTo(4L);
+        await Assert.That(await database.Count()).IsEqualTo(5L);
+        await Assert.That(await database.Scalar($"SELECT (string_agg(get_byte(body, 0)::text, ',' ORDER BY seq) = '1,3,5,6,7')::int::bigint FROM {Database.Table}"))
+            .IsEqualTo(1L);
         await Assert.That(await database.Scalar("SELECT count(*) FROM batch_log")).IsEqualTo(3L);
         await Assert.That(await database.Scalar("SELECT count(*) FROM orders")).IsEqualTo(3L);
     }

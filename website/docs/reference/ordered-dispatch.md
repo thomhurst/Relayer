@@ -75,10 +75,10 @@ fenced row outcomes finish. A competing owner cannot take over while that transa
 even after lease expiry. The worker sets a deadline of half the lease duration for acquiring, reading,
 sending and committing each batch. It stops admitting rows after one quarter of the lease duration, reserving the remaining deadline for the final admitted send and commit. Slow healthy batches therefore commit a confirmed prefix instead of repeatedly replaying it. A single send must still fit the configured hard deadline. It awaits cancellation completion before freeing borrowed payloads.
 
-Reads follow the partial `(lane, id)` pending index, in PostgreSQL UUID order. Scheduling and existing claims
+Reads follow the partial `(lane, seq)` pending index, in database-assigned insertion order. Scheduling and existing claims
 never cause the worker to skip a head row. A future or live-claimed head temporarily stalls its lane.
 Later rows with a parked head's ordering key stay parked while other keys can continue, using the parked-key
-index. This worker does not itself move poison rows or expose redrive management yet.
+index comparing `seq`, so host clock differences cannot let a later same-key row bypass a parked row. This worker does not itself move poison rows or expose redrive management yet.
 Poison handling, retry limits and key-scoped parking are tracked by [#34](https://github.com/thomhurst/Relayer/issues/34).
 
 Messages are sent sequentially through the registered native `ITransport`, preserving original bodies,
@@ -93,9 +93,19 @@ successful row still uses one conditional claim UPDATE and one fenced DELETE aro
 
 ## Failure boundaries
 
-Ordering means ascending IDs among rows visible to a lane scan, using the broker's own key-ordering semantics.
-UUIDv7 IDs do not establish commit order between concurrent business transactions. Applications needing a
-business order across concurrent writers must serialize those writes.
+Ordering means ascending database-assigned `seq` among rows visible to a lane scan, using the broker's own
+key-ordering semantics. UUIDv7 remains the stable message identity, not the ordering cursor. Two strictly
+sequential transactions dispatch in commit order even when the later message has a smaller UUID because
+application clocks differ. Rows in one transaction receive sequence values in send order, including sends
+interleaved across EF contexts sharing that transaction.
+
+Genuinely concurrent transactions still have no defined order: sequence allocation precedes commit, so a
+lower-sequence row may become visible after a higher one has already dispatched. Applications needing a
+business order across concurrent writers must serialize those business writes and use idempotent,
+version-guarded consumers. Sequence values may have gaps; retain the identity sequence's default cache
+of one and never reset it. Upgrade existing tables with the explicit [sequence migration](postgres-schema.md#upgrade-existing-tables-to-insert-sequence-ordering)
+before starting upgraded workers. Existing rows retain their former UUID order during that migration;
+their historical insertion order cannot be reconstructed.
 
 Delivery remains at-least-once. A crash after the broker accepts a message but before database commit replays
 that identity. Cancellation and database fencing cannot retract a native request already accepted by the

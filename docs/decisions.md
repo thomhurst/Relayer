@@ -60,7 +60,7 @@ To change a decision, add a new entry that supersedes it rather than editing his
 | [D47](#d47-sql-server-outbox-transactions-reuse-native-bulk-copy) | SQL Server outbox transactions reuse native bulk copy | Accepted |
 | [D48](#d48-mysql-enqueue-owns-native-transactions-and-reuses-mysqlbatch) | MySQL enqueue owns native transactions and reuses MySqlBatch | Accepted |
 | [D49](#d49-sql-server-commit-dispatch-reuses-native-rpc-batches) | SQL Server commit dispatch reuses native RPC batches | Accepted |
-| [D50](#d50-ordered-lanes-follow-a-database-assigned-insert-sequence) | Ordered lanes follow a database-assigned insert sequence | Proposed |
+| [D50](#d50-ordered-lanes-follow-a-database-assigned-insert-sequence) | Ordered lanes follow a database-assigned insert sequence | Accepted |
 | [D51](#d51-the-ef-core-consumer-boundary-takes-an-isolation-level-and-replays-conflicts) | The EF Core consumer boundary takes an isolation level and replays conflicts | Proposed |
 | [D52](#d52-allocations-a-native-api-requires-count-as-native-client-cost) | Allocations a native API requires count as native-client cost | Accepted |
 | [D53](#d53-singleton-only-consumers-open-delivery-scopes-on-demand) | Singleton-only consumers open delivery scopes on demand | Accepted |
@@ -644,7 +644,7 @@ allocations without weakening that boundary. Native execution, materialization a
 outside the managed command-binding benchmark.
 
 **Consequences.** Database failure or uncertain completion rolls back the batch, so accepted sends can replay.
-Ordering describes ascending visible UUIDs, not concurrent writers' commit order. When a database connection
+Ordering follows the database-assigned insert sequence among visible rows (D50), not concurrent writers' commit order. When a database connection
 fails while a native request is in flight, that request can arrive late: neither cancellation nor the lease can
 retract it. Native ordering semantics and the at-least-once contract remain unchanged. Strict fencing of native
 requests requires broker support and is not emulated. Idempotent consumers remain necessary.
@@ -987,7 +987,7 @@ benchmarks isolate Relayer's reusable copy/swap/group work; database and native 
 
 ## D50. Ordered lanes follow a database-assigned insert sequence
 
-**Status.** Proposed; not implemented. Tracked by [#353](https://github.com/thomhurst/Relayer/issues/353).
+**Status.** Accepted. Implemented for PostgreSQL; SQL Server and MySQL ordered dispatch must adopt the same rule in #330 and #344.
 
 **Context.** D34 reads each lane in ascending `id` order. The `id` is a UUIDv7 created on the application
 host when the message is sent, while its row is inserted at flush, immediately before commit (D31, D32).
@@ -998,8 +998,8 @@ only concurrent writers from its ordering guarantee; these transactions are not 
 
 **Decision.** Refine D34's read order while retaining its lane leases, locks, deadlines and fencing.
 - The outbox table gains `seq`, a database-assigned identity value set when the row is inserted.
-- Ordered lanes read and index pending rows by `(lane, seq)`. The parked-key anti-join compares `seq`.
-- One transaction's rows are inserted in send order, so their `seq` values keep that order.
+- Ordered lanes read and index pending rows by `(lane, seq)`. The parked-key anti-join compares `seq`. Unordered pending rows keep a partial UUID index and their existing read/recovery cursors.
+- One transaction's rows are inserted in send order, so their `seq` values keep that order. PostgreSQL uses `UNNEST WITH ORDINALITY ORDER BY position`; shared EF contexts merge their reusable rows by a scope-local enqueue position before insertion.
 - `id` remains the stable message identity for the inbox, native message IDs and fenced claims.
 - Other database stores adopt the same rule with their native identity or sequence feature.
 
@@ -1009,7 +1009,7 @@ their `seq` values also follow commit order. A sequence is non-transactional: it
 business transaction can wait on, and it cannot raise a serialization failure. Transactions that are
 genuinely concurrent still have no defined order, and a row committed late can still be dispatched after
 a higher `seq`; idempotent, version-guarded consumers remain necessary. Existing tables need an explicit
-SQL migration (D30). Identity values can have gaps.
+SQL migration (D30). The upgrade preserves existing rows' former UUID order because historical insertion order is unavailable; it must run with writers and dispatchers stopped, in one application-owned transaction. Identity values can have gaps; keep the sequence's default cache of one and do not reset it.
 
 **Alternatives rejected.**
 - A per-key advisory lock held from flush to commit gives strict commit order, but makes same-key writers queue

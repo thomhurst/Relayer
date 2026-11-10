@@ -2,6 +2,7 @@ CREATE SCHEMA IF NOT EXISTS {{schema}};
 
 CREATE TABLE IF NOT EXISTS {{schema}}.{{outbox}} (
     id uuid PRIMARY KEY CHECK (id <> '00000000-0000-0000-0000-000000000000'),
+    seq bigint GENERATED ALWAYS AS IDENTITY,
     lane integer CHECK (lane >= 0),
     ordering_key text,
     transport text NOT NULL,
@@ -20,9 +21,11 @@ CREATE TABLE IF NOT EXISTS {{schema}}.{{outbox}} (
     CHECK ((claim_token IS NULL) = (claim_expires_at IS NULL))
 );
 
-CREATE INDEX IF NOT EXISTS {{outbox_pending_idx}} ON {{schema}}.{{outbox}} (lane, id)
-    WHERE status = 'pending';
-CREATE INDEX IF NOT EXISTS {{outbox_parked_idx}} ON {{schema}}.{{outbox}} (lane, ordering_key, id)
+CREATE INDEX IF NOT EXISTS {{outbox_pending_idx}} ON {{schema}}.{{outbox}} (lane, seq)
+    WHERE status = 'pending' AND lane IS NOT NULL;
+CREATE INDEX IF NOT EXISTS {{outbox_unordered_idx}} ON {{schema}}.{{outbox}} (id)
+    WHERE status = 'pending' AND lane IS NULL;
+CREATE INDEX IF NOT EXISTS {{outbox_parked_idx}} ON {{schema}}.{{outbox}} (lane, ordering_key, seq)
     WHERE status = 'parked';
 CREATE INDEX IF NOT EXISTS {{outbox_scheduled_idx}} ON {{schema}}.{{outbox}} (deliver_at)
     WHERE deliver_at IS NOT NULL;

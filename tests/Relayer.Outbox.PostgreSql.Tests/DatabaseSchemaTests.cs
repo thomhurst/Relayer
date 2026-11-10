@@ -42,11 +42,53 @@ public class DatabaseSchemaTests
         }
     }
 
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Insert_sequence_migration_preserves_old_UUID_order_and_continues_after_existing_rows(bool populated)
+    {
+        await using var fixture = new PostgreSqlFixture();
+        await fixture.StartAsync();
+        await using var connection = new NpgsqlConnection(fixture.ConnectionString);
+        await connection.OpenAsync();
+        var options = new PostgreSqlOutboxOptions { Schema = "quote'\";--{{schema}}", TablePrefix = "{{outbox}}_'" };
+        var oldSchema = PostgreSqlOutboxSchema.CreateScript(options)
+            .Replace("    seq bigint GENERATED ALWAYS AS IDENTITY,\n", "", StringComparison.Ordinal)
+            .Replace("(lane, seq)", "(lane, id)", StringComparison.Ordinal)
+            .Replace(" AND lane IS NOT NULL", "", StringComparison.Ordinal)
+            .Replace("(lane, ordering_key, seq)", "(lane, ordering_key, id)", StringComparison.Ordinal);
+        await Execute(connection, oldSchema);
+        await Execute(connection, "DROP INDEX " + Table(options, "outbox_unordered_idx"));
+        var table = Table(options, "outbox");
+        var insert = $"INSERT INTO {table} (id, transport, destination, message_type, headers, body, created_at) VALUES ";
+        const string rest = ", 'events', 'orders', 'probe', ''::bytea, ''::bytea, clock_timestamp())";
+        if (populated)
+        {
+            await Execute(connection, insert + "('01900000-0000-7000-8000-000000000002'" + rest);
+            await Execute(connection, insert + "('01900000-0000-7000-8000-000000000001'" + rest);
+        }
+        await using (var transaction = await connection.BeginTransactionAsync())
+        {
+            await Execute(connection, PostgreSqlOutboxSchema.CreateInsertSequenceMigrationScript(options));
+            await transaction.CommitAsync();
+        }
+        await Execute(connection, insert + "('01900000-0000-7000-8000-000000000003'" + rest);
+        await Assert.That(await Scalar<long>(connection, $"SELECT seq FROM {table} WHERE id = '01900000-0000-7000-8000-000000000003'"))
+            .IsEqualTo(populated ? 3L : 1L);
+        if (populated)
+            await Assert.That(await Scalar<string>(connection, $"SELECT string_agg(id::text, ',' ORDER BY seq) FROM {table}"))
+                .IsEqualTo("01900000-0000-7000-8000-000000000001,01900000-0000-7000-8000-000000000002,01900000-0000-7000-8000-000000000003");
+        await VerifyCatalog(connection, options);
+        await Assert.That(await Scalar<string>(connection,
+            $"SELECT attidentity::text FROM pg_attribute WHERE attrelid = '{table.Replace("'", "''", StringComparison.Ordinal)}'::regclass AND attname = 'seq'"))
+            .IsEqualTo("a");
+    }
+
     private static async Task VerifyCatalog(NpgsqlConnection connection, PostgreSqlOutboxOptions options)
     {
         var expected = new Dictionary<string, string[]>
         {
-            ["outbox"] = ["id:uuid", "lane:integer", "ordering_key:text", "transport:text", "destination:text", "message_type:text",
+            ["outbox"] = ["id:uuid", "seq:bigint", "lane:integer", "ordering_key:text", "transport:text", "destination:text", "message_type:text",
                 "headers:bytea", "body:bytea", "created_at:timestamp with time zone", "deliver_at:timestamp with time zone",
                 "attempts:integer", "last_error:text", "tenant_id:text", "status:text", "claim_token:uuid", "claim_expires_at:timestamp with time zone"],
             ["outbox_dead"] = ["id:uuid", "lane:integer", "ordering_key:text", "transport:text", "destination:text", "message_type:text",
@@ -58,12 +100,12 @@ public class DatabaseSchemaTests
         foreach (var (table, columns) in expected)
         {
             await using var command = new NpgsqlCommand("""
-                SELECT string_agg(column_name || ':' || data_type, ',' ORDER BY ordinal_position)
+                SELECT string_agg(column_name || ':' || data_type, ',' ORDER BY column_name)
                 FROM information_schema.columns WHERE table_schema = @schema AND table_name = @table
                 """, connection);
             command.Parameters.AddWithValue("schema", options.Schema ?? "public");
             command.Parameters.AddWithValue("table", options.TablePrefix + table);
-            await Assert.That((string)(await command.ExecuteScalarAsync())!).IsEqualTo(string.Join(',', columns));
+            await Assert.That((string)(await command.ExecuteScalarAsync())!).IsEqualTo(string.Join(',', columns.Order(StringComparer.Ordinal)));
         }
         await using var indexes = new NpgsqlCommand("SELECT indexdef FROM pg_indexes WHERE schemaname = @schema AND tablename = @table", connection);
         indexes.Parameters.AddWithValue("schema", options.Schema ?? "public");
@@ -71,10 +113,11 @@ public class DatabaseSchemaTests
         await using var reader = await indexes.ExecuteReaderAsync();
         var definitions = new List<string>();
         while (await reader.ReadAsync()) definitions.Add(reader.GetString(0));
-        await Assert.That(definitions.Count).IsEqualTo(4);
-        await Assert.That(definitions.Any(x => x.Contains("(lane, id) WHERE (status = 'pending'::text)"))).IsTrue();
+        await Assert.That(definitions.Count).IsEqualTo(5);
+        await Assert.That(definitions.Any(x => x.Contains("(lane, seq) WHERE ((status = 'pending'::text) AND (lane IS NOT NULL))"))).IsTrue();
+        await Assert.That(definitions.Any(x => x.Contains("(id) WHERE ((status = 'pending'::text) AND (lane IS NULL))"))).IsTrue();
         await Assert.That(definitions.Any(x => x.Contains("(deliver_at) WHERE (deliver_at IS NOT NULL)"))).IsTrue();
-        await Assert.That(definitions.Any(x => x.Contains("(lane, ordering_key, id) WHERE (status = 'parked'::text)"))).IsTrue();
+        await Assert.That(definitions.Any(x => x.Contains("(lane, ordering_key, seq) WHERE (status = 'parked'::text)"))).IsTrue();
     }
 
     private static async Task VerifyRowsAndHealth(NpgsqlConnection connection, PostgreSqlOutboxOptions options)

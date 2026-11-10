@@ -11,6 +11,8 @@ internal sealed class BufferedOutboxMessage
     internal string Destination { get; private set; } = "";
     internal string MessageType { get; private set; } = "";
     internal Guid Id { get; private set; }
+    // Scope-local enqueue position when several EF contexts share one transaction.
+    internal long EnqueueOrder { get; set; }
     internal DateTimeOffset CreatedAt { get; private set; }
     internal string? TenantId { get; private set; }
     internal DateTimeOffset? DeliverAt { get; private set; }

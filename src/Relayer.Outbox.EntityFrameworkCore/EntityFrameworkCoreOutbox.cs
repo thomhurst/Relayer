@@ -1,4 +1,5 @@
 using System.Data.Common;
+using System.Runtime.InteropServices;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Storage;
 using Relayer.Outbox.PostgreSql;
@@ -12,6 +13,9 @@ internal sealed class EntityFrameworkCoreOutbox(bool supportsScheduling = false,
     private readonly List<OutboxContext> _contexts = [];
     private readonly PostgreSqlOutboxBatch _batch = new();
     private Selection? _selection;
+    private long _enqueueOrder;
+    private readonly List<BufferedOutboxMessage> _sharedRows = [];
+    private static readonly Comparison<BufferedOutboxMessage> SendOrder = static (left, right) => left.EnqueueOrder.CompareTo(right.EnqueueOrder);
 
     private OutboxConfiguration? _activeConfiguration;
     public bool SupportsScheduling => _activeConfiguration?.SupportsScheduling ?? supportsScheduling;
@@ -32,7 +36,7 @@ internal sealed class EntityFrameworkCoreOutbox(bool supportsScheduling = false,
     {
         cancellationToken.ThrowIfCancellationRequested();
         var target = Target() ?? throw new InvalidOperationException("Select an EF Core outbox context or begin an EF Core transaction before sending.");
-        target.Add(record);
+        target.Add(record, checked(++_enqueueOrder));
         return ValueTask.CompletedTask;
     }
 
@@ -120,6 +124,7 @@ internal sealed class EntityFrameworkCoreOutbox(bool supportsScheduling = false,
     {
         OutboxConfiguration? configuration = null;
         var count = 0;
+        var participants = 0;
         foreach (var state in _contexts)
         {
             if (!ReferenceEquals(state.Transaction, transaction)) continue;
@@ -128,14 +133,30 @@ internal sealed class EntityFrameworkCoreOutbox(bool supportsScheduling = false,
                 throw new InvalidOperationException("DbContexts sharing a transaction must use identical outbox schema, prefix and lane settings.");
             configuration = state.Configuration;
             count = checked(count + state.Count);
+            if (state.Count != 0) participants++;
         }
         if (count == 0) return null;
         _batch.Prepare(transaction, configuration!.InsertSql);
+        // A single context already buffers in send order. Shared transactions can interleave
+        // sends across contexts; merge their reusable rows before the database assigns seq.
         foreach (var state in _contexts)
             if (ReferenceEquals(state.Transaction, transaction))
-                for (var i = 0; i < state.Count; i++) _batch.Add(state.Rows[i]);
+                for (var i = 0; i < state.Count; i++)
+                    if (participants == 1) _batch.Add(state.Rows[i]);
+                    else _sharedRows.Add(state.Rows[i]);
+        if (participants > 1)
+        {
+            try
+            {
+                SortSendOrder(CollectionsMarshal.AsSpan(_sharedRows));
+                for (var i = 0; i < _sharedRows.Count; i++) _batch.Add(_sharedRows[i]);
+            }
+            finally { _sharedRows.Clear(); }
+        }
         return _batch;
     }
+
+    internal static void SortSendOrder(Span<BufferedOutboxMessage> rows) => rows.Sort(SendOrder);
 
     public void Dispose()
     {
@@ -204,7 +225,7 @@ internal sealed class OutboxContext(DbContext context, OutboxConfiguration confi
             throw new InvalidOperationException("This DbContext no longer participates in its live shared transaction. Complete that transaction before reusing the context.");
     }
 
-    internal void Add(OutboxRecord record)
+    internal void Add(OutboxRecord record, long enqueueOrder)
     {
         if (Failed) throw new InvalidOperationException("Roll back the failed outbox transaction before sending again.");
         if (record.Message.DeliverAt is not null && !(record.Message.OrderingKey is not null
@@ -213,6 +234,7 @@ internal sealed class OutboxContext(DbContext context, OutboxConfiguration confi
         BufferedOutboxMessage.Validate(record);
         if (Count == Rows.Count) Rows.Add(new());
         Rows[Count].Copy(record, Configuration.Lanes);
+        Rows[Count].EnqueueOrder = enqueueOrder;
         Count++;
     }
 

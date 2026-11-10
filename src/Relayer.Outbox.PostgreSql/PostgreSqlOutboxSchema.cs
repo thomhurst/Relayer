@@ -8,12 +8,21 @@ public static class PostgreSqlOutboxSchema
     /// <summary>Returns idempotent SQL for a new schema. This does not upgrade existing table definitions.</summary>
     /// <remarks>Null schema means public. Identifiers are quoted and must fit PostgreSQL's 63-byte limit.</remarks>
     public static string CreateScript(PostgreSqlOutboxOptions? options = null)
+        => Render("Schema.sql", options);
+
+    /// <summary>Returns SQL to upgrade a pre-sequence outbox table. Stop writers and dispatchers first.</summary>
+    /// <remarks>Existing rows retain their former UUID order; historical insertion order cannot be recovered.
+    /// Run once in an application-owned migration transaction before starting upgraded workers.</remarks>
+    public static string CreateInsertSequenceMigrationScript(PostgreSqlOutboxOptions? options = null)
+        => Render("InsertSequenceMigration.sql", options);
+
+    private static string Render(string resource, PostgreSqlOutboxOptions? options)
     {
         options ??= new PostgreSqlOutboxOptions();
         var schema = QuoteIdentifier(options.Schema ?? "public");
         ArgumentNullException.ThrowIfNull(options.TablePrefix);
         using var stream = typeof(PostgreSqlOutboxSchema).Assembly.GetManifestResourceStream(
-            "Relayer.Outbox.PostgreSql.Schema.sql")!;
+            "Relayer.Outbox.PostgreSql." + resource)!;
         using var reader = new StreamReader(stream);
         var template = reader.ReadToEnd();
 
@@ -30,7 +39,12 @@ public static class PostgreSqlOutboxSchema
             result.Append(template, position, start - position);
             var end = template.IndexOf("}}", start, StringComparison.Ordinal);
             var token = template[(start + 2)..end];
-            result.Append(token == "schema" ? schema : QuoteIdentifier(options.TablePrefix + token));
+            result.Append(token switch
+            {
+                "schema" => schema,
+                "outbox_literal" => "'" + (schema + "." + QuoteIdentifier(options.TablePrefix + "outbox")).Replace("'", "''", StringComparison.Ordinal) + "'",
+                _ => QuoteIdentifier(options.TablePrefix + token)
+            });
             position = end + 2;
         }
         return result.ToString();
