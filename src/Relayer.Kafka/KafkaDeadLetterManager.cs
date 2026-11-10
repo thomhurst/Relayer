@@ -86,17 +86,24 @@ internal sealed class KafkaDeadLetterManager : IDeadLetterManager
         var changed = 0;
         for (var scanned = 0; scanned < maxMessages; scanned++)
         {
-            var record = await reader.ConsumeOneAsync(TimeSpan.FromSeconds(1), cancellationToken).ConfigureAwait(false);
-            if (record is null) break;
+            var record = await reader.ConsumeOneAsync(Timeout.InfiniteTimeSpan, cancellationToken).ConfigureAwait(false);
+            if (record is null) continue;
             var value = record.Value;
             var partition = new TopicPartition(source, value.Partition);
-            if (value.IsPartitionEof) { reader.Pause([partition]); scanned--; continue; }
+            if (value.IsPartitionEof)
+            {
+                reader.Pause([partition]);
+                if (reader.Paused.Count == reader.Assignment.Count) break;
+                scanned--;
+                continue;
+            }
             var version = ownership.Version;
             var snapshot = Snapshot(value);
             if (filter is not null && !filter(snapshot))
             {
                 // Kafka commits partition prefixes. Never commit beyond an unmatched original.
                 reader.Pause([partition]);
+                if (reader.Paused.Count == reader.Assignment.Count) break;
                 continue;
             }
             var owned = snapshot.Features.GetRequired<KafkaDeadLetterFeature>().Record;
