@@ -19,39 +19,17 @@ public partial class ServiceBusBindingTests
     {
         // LinkStateLost retains the underlying AMQP exception, which MessageLockLost omits.
         using var sdkLogs = AzureEventSourceListener.CreateConsoleLogger(EventLevel.Warning);
-        await using var network = new NetworkBuilder().Build();
-        var databaseBuilder = new MsSqlBuilder("mcr.microsoft.com/mssql/server:2022-CU14-ubuntu-22.04")
-            .WithNetwork(network)
-            .WithNetworkAliases(ServiceBusBuilder.DatabaseNetworkAlias);
-        var emulatorBuilder = new ServiceBusBuilder("mcr.microsoft.com/azure-messaging/servicebus-emulator:1.1.2")
-            .WithAcceptLicenseAgreement(true)
-            .WithConfig(Path.Combine(AppContext.BaseDirectory, "servicebus-config.json"));
-        if (OperatingSystem.IsLinux())
-        {
-            // Keep every published dependency port outside Linux's outbound ephemeral range,
-            // matching the Kafka fixture's mitigation for moby/moby#54079.
-            databaseBuilder = databaseBuilder.WithPortBinding("20000-29999", "1433");
-            emulatorBuilder = emulatorBuilder.WithPortBinding("20000-29999", "5672")
-                .WithPortBinding("20000-29999", "5300");
-        }
-        await using var database = databaseBuilder.Build();
-        await using var emulator = emulatorBuilder
-            .WithMsSqlContainer(network, database, ServiceBusBuilder.DatabaseNetworkAlias).Build();
-        // Image pulls and dependency readiness have their own bounded setup budget.
-        using (var provisioning = new CancellationTokenSource(TimeSpan.FromMinutes(15)))
-        {
-            try { await emulator.StartAsync(provisioning.Token); }
-            catch (OperationCanceledException error) when (provisioning.IsCancellationRequested)
-            {
-                throw new TimeoutException("Service Bus emulator provisioning exceeded 15 minutes (image pulls and container readiness).", error);
-            }
-        }
+        var stack = await SharedBrokers.ServiceBus.Value;
+        var emulator = stack.Emulator;
         using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(5));
         var token = timeout.Token;
+        // Both cases share the emulator: each settles on its own queue.
+        var queue = TestContext.Current!.Isolation.GetIsolatedName("settlement");
+        await stack.CreateQueueAsync(queue, false, token);
         await using var client = new ServiceBusClient(emulator.GetConnectionString());
-        await using var sender = client.CreateSender("settlement");
-        await using var receiver = client.CreateReceiver("settlement");
-        await using var deadLetters = client.CreateReceiver("settlement", new ServiceBusReceiverOptions { SubQueue = SubQueue.DeadLetter });
+        await using var sender = client.CreateSender(queue);
+        await using var receiver = client.CreateReceiver(queue);
+        await using var deadLetters = client.CreateReceiver(queue, new ServiceBusReceiverOptions { SubQueue = SubQueue.DeadLetter });
         await using var provider = Provider();
         var control = provider.GetRequiredService<Control>();
         var pipeline = Pipeline(provider);

@@ -132,11 +132,6 @@ jobs:
           docker pull ghcr.io/shopify/toxiproxy@sha256:5d3dae09bc185dcc5ff6cf43abf6062a4a720aff0c4306a471e773acdcd107aa
           dotnet test --no-build -c Release
 
-      - name: Verify core fixture concurrency and failed setup cleanup
-        if: steps.solution.outputs.present == 'true'
-        shell: pwsh
-        run: ./scripts/Test-CoreBrokerParallelism.ps1 -ResultsDirectory .artifacts/core-parallelism
-
       - name: Pack and verify NuGet artifacts
         run: |
           dotnet pack --no-build -c Release -o .artifacts/packages

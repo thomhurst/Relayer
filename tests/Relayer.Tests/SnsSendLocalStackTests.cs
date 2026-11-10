@@ -15,15 +15,8 @@ public class SnsSendLocalStackTests
     {
         using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(3));
         var token = timeout.Token;
-        var containerBuilder = new ContainerBuilder("localstack/localstack:4.10.0")
-            .WithEnvironment("SERVICES", "sqs,sns")
-            .WithPortBinding(4566, true)
-            .WithWaitStrategy(Wait.ForUnixContainer().UntilMessageIsLogged("Ready\\."));
-        if (OperatingSystem.IsLinux()) containerBuilder = containerBuilder.WithPortBinding("20000-29999", "4566");
-        await using var container = containerBuilder.Build();
         var externalUrl = Environment.GetEnvironmentVariable("RELAYER_SNS_SERVICE_URL");
-        if (externalUrl is null) await container.StartAsync(token);
-        var url = externalUrl ?? $"http://{container.Hostname}:{container.GetMappedPublicPort(4566)}";
+        var url = externalUrl ?? await SharedBrokers.LocalStackUrlAsync(token);
         using var sns = new AmazonSimpleNotificationServiceClient(new BasicAWSCredentials("test", "test"), new AmazonSimpleNotificationServiceConfig { ServiceURL = url, AuthenticationRegion = "us-east-1" });
         using var sqs = new AmazonSQSClient(new BasicAWSCredentials("test", "test"), new AmazonSQSConfig { ServiceURL = url, AuthenticationRegion = "us-east-1" });
         var name = "relayer-" + Guid.NewGuid().ToString("N");

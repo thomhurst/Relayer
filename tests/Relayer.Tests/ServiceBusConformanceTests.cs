@@ -13,7 +13,7 @@ public sealed class ServiceBusConformanceTests
     [Test]
     public async Task Provision_restores_an_administration_created_queue_lost_on_emulator_restart()
     {
-        await using var broker = await ServiceBusReceiveBroker.StartAsync([]);
+        await using var broker = await ServiceBusReceiveBroker.StartAsync([], dedicated: true);
         using var deadline = new CancellationTokenSource(TimeSpan.FromMinutes(3));
         var token = deadline.Token;
         var queue = "reprovision-" + Guid.NewGuid().ToString("N");
@@ -49,7 +49,7 @@ public sealed class ServiceBusConformanceTests
             .ToDictionary(scenario => scenario, _ => "conformance-" + Guid.NewGuid().ToString("N"));
         var sessionDestination = "conformance-session-" + Guid.NewGuid().ToString("N");
         // Provisioning owns its deadline; broker assertions get their full operation budget.
-        await using var broker = await ServiceBusReceiveBroker.StartAsync(destinations.Values.ToArray(), [sessionDestination]);
+        await using var broker = await ServiceBusReceiveBroker.StartAsync(destinations.Values.ToArray(), [sessionDestination], dedicated: true);
         using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(8));
         var token = timeout.Token;
         var destination = "";

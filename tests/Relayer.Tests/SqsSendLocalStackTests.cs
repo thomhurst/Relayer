@@ -13,17 +13,10 @@ public class SqsSendLocalStackTests
     {
         using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(3));
         var token = timeout.Token;
-        var containerBuilder = new ContainerBuilder("localstack/localstack:4.10.0")
-            .WithEnvironment("SERVICES", "sqs")
-            .WithPortBinding(4566, true)
-            .WithWaitStrategy(Wait.ForUnixContainer().UntilMessageIsLogged("Ready\\."));
-        if (OperatingSystem.IsLinux()) containerBuilder = containerBuilder.WithPortBinding("20000-29999", "4566");
-        await using var container = containerBuilder.Build();
         var externalUrl = Environment.GetEnvironmentVariable("RELAYER_SQS_SERVICE_URL");
-        if (externalUrl is null) await container.StartAsync(token);
         using var client = new AmazonSQSClient(new BasicAWSCredentials("test", "test"), new AmazonSQSConfig
         {
-            ServiceURL = externalUrl ?? $"http://{container.Hostname}:{container.GetMappedPublicPort(4566)}",
+            ServiceURL = externalUrl ?? await SharedBrokers.LocalStackUrlAsync(token),
             AuthenticationRegion = "us-east-1",
         });
         var standard = "relayer-" + Guid.NewGuid().ToString("N");

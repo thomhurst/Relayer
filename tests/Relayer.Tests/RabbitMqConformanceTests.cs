@@ -23,7 +23,10 @@ public class RabbitMqConformanceTests
     [Arguments(TransportConformanceCase.SendDuringOutage)]
     public async Task RabbitMQ_passes(TransportConformanceCase scenario)
     {
-        var suite = new TransportConformanceSuite<RabbitMqDelivery, RabbitMqMessageBinding>(RabbitMqFixture.CreateAsync, TimeSpan.FromMinutes(3));
+        var suite = new TransportConformanceSuite<RabbitMqDelivery, RabbitMqMessageBinding>(
+            // These two stop the broker.
+            (tracing, token) => RabbitMqFixture.CreateAsync(tracing, token,
+                scenario is TransportConformanceCase.Reconnect or TransportConformanceCase.SendDuringOutage), TimeSpan.FromMinutes(3));
         var result = await suite.RunAsync(scenario);
         await Assert.That(result.Skipped).IsEqualTo(scenario is TransportConformanceCase.DeadLetter or TransportConformanceCase.Delay
             or TransportConformanceCase.RedeliveryDelay or TransportConformanceCase.OrderingByKey);
@@ -67,9 +70,9 @@ internal sealed class RabbitMqFixture : ITransportConformanceFixture<RabbitMqDel
         _transport = new("rabbit", new() { ConnectionFactory = _factory, PublisherCount = 1 }, [Destination], tracing);
         _settlement = new(tracing, new() { System = "rabbitmq", Destination = ProcessDestinationName });
     }
-    internal static async ValueTask<ITransportConformanceFixture<RabbitMqDelivery>> CreateAsync(MessageTracing tracing, CancellationToken token)
+    internal static async ValueTask<ITransportConformanceFixture<RabbitMqDelivery>> CreateAsync(MessageTracing tracing, CancellationToken token, bool dedicated)
     {
-        var broker = await RabbitMqTopologyTests.Broker.StartAsync(token);
+        var broker = await RabbitMqTopologyTests.Broker.StartAsync(token, dedicated: dedicated);
         var fixture = new RabbitMqFixture(broker, tracing);
         try
         {
