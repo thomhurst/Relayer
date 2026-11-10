@@ -1009,6 +1009,12 @@ the caller's connection open. Immutable options bind explicitly and validate on 
 nesting, ambient transactions and concurrent scope use are rejected or unsupported. D46's explicit
 SqlClient trimming/AOT restriction also applies to enlistment construction and registration.
 
+For #481, retain SqlClient 7.1.1's independent 30-second `BulkCopyTimeout` default
+([native source](https://github.com/dotnet/SqlClient/blob/v7.1.1/src/Microsoft.Data.SqlClient/src/Microsoft/Data/SqlClient/SqlBulkCopy.cs#L174)).
+Do not infer it from connection-string or individual business-command timeouts: those configure
+`SqlCommand`, and a transaction can contain commands with different deadlines. Document this limit
+explicitly. This decision leaves native behavior unchanged and introduces no timeout or retry engine.
+
 **Consequences.** Business writes and sends are atomic. Failure, cancellation and disposal release the
 buffer and dispose the uncommitted native transaction. A lost commit acknowledgement remains an unknown
 outcome. Cancellation remains native: some server-side bulk-copy waits may require the server response or

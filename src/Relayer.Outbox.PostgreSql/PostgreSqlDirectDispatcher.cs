@@ -149,14 +149,14 @@ internal sealed class PostgreSqlDirectDispatcher : BackgroundService
 
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
     private async ValueTask DispatchAsync(OutboxDispatchBatch batch, CancellationToken cancellationToken,
-        bool propagateDatabaseFailures = false, TimeSpan? admissionBudget = null)
+        bool propagateDatabaseFailures = false, TimeSpan? admissionBudget = null, TimeProvider? admissionTimeProvider = null)
     {
-        var admissionStarted = admissionBudget.HasValue ? Stopwatch.GetTimestamp() : 0;
+        var admissionStarted = admissionBudget.HasValue ? (admissionTimeProvider?.GetTimestamp() ?? Stopwatch.GetTimestamp()) : 0;
         batch.Sort();
         var offset = 0;
         while (offset < batch.Count)
         {
-            if (admissionBudget is { } budget && Stopwatch.GetElapsedTime(admissionStarted) >= budget) break;
+            if (admissionBudget is { } budget && (admissionTimeProvider?.GetElapsedTime(admissionStarted) ?? Stopwatch.GetElapsedTime(admissionStarted)) >= budget) break;
             var first = batch.Rows[offset];
             ITransport transport;
             int limit;
@@ -253,13 +253,13 @@ internal sealed class PostgreSqlDirectDispatcher : BackgroundService
     // Recovery owns a separate dispatcher instance, so these buffers never overlap the commit queue.
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
     internal async ValueTask DispatchRecoveredAsync(ReadOnlyMemory<OutboxRecord> rows, CancellationToken cancellationToken,
-        bool propagateDatabaseFailures = false, TimeSpan? admissionBudget = null)
+        bool propagateDatabaseFailures = false, TimeSpan? admissionBudget = null, TimeProvider? admissionTimeProvider = null)
     {
         _recoveredPoison = 0;
         var batch = PrepareRecovered(rows.Span);
         // An aborted PostgreSQL transaction can accept COMMIT as ROLLBACK. Recovery must observe
         // database errors before its caller commits or advances the replication checkpoint.
-        try { await DispatchAsync(batch, cancellationToken, propagateDatabaseFailures, admissionBudget).ConfigureAwait(false); }
+        try { await DispatchAsync(batch, cancellationToken, propagateDatabaseFailures, admissionBudget, admissionTimeProvider).ConfigureAwait(false); }
         finally { batch.Clear(); }
     }
 

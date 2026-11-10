@@ -325,10 +325,17 @@ public class TenantDispatchTests
             await Insert(store, number, null);
             await Sql(store, $"UPDATE {Table(store, "outbox")} SET destination = 'destination-{number}' WHERE id = '{Id(number)}'");
         }
-        var transport = new Transport(async (_, token) => await Task.Delay(TimeSpan.FromMilliseconds(600), token));
+        var clock = new AdmissionClock();
+        var transport = new Transport((_, _) =>
+        {
+            // Exhaust admission after one destination without consuming the real
+            // tenant deadline needed for SQL setup and transaction commit.
+            clock.Advance(TimeSpan.FromMinutes(1));
+            return default;
+        });
         using var worker = new PostgreSqlTenantDispatcher(fixture.Catalog,
-            new() { TurnTimeout = TimeSpan.FromSeconds(1), RecoveryDelay = TimeSpan.Zero },
-            [transport], NullLoggerFactory.Instance);
+            new() { TurnTimeout = TimeSpan.FromSeconds(30), RecoveryDelay = TimeSpan.Zero },
+            [transport], NullLoggerFactory.Instance, recoveryTimeProvider: clock);
         await worker.PassAsync(default);
         await Assert.That(await Count(store, "outbox")).IsEqualTo(2L);
         // Each remaining group needs one pass; an empty boundary pass wraps the UUID cursor.

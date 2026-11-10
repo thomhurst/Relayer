@@ -12,6 +12,7 @@ namespace Relayer.Outbox.PostgreSql;
 internal sealed partial class PostgreSqlMaintenanceWorker : BackgroundService
 {
     private readonly NpgsqlDataSource _source;
+    private readonly TimeProvider? _admissionTimeProvider;
     private readonly PostgreSqlMaintenanceOptions _options;
     private readonly PostgreSqlOutboxStore _store;
     private readonly PostgreSqlDirectDispatcher _dispatcher;
@@ -31,9 +32,10 @@ internal sealed partial class PostgreSqlMaintenanceWorker : BackgroundService
 
     internal PostgreSqlMaintenanceWorker(NpgsqlDataSource source, PostgreSqlMaintenanceOptions options,
         IEnumerable<ITransport> transports, ILogger<PostgreSqlMaintenanceWorker> logger,
-        ILogger<PostgreSqlDirectDispatcher>? dispatchLogger = null, RelayerInstrumentation? instrumentation = null)
+        ILogger<PostgreSqlDirectDispatcher>? dispatchLogger = null, RelayerInstrumentation? instrumentation = null, TimeProvider? admissionTimeProvider = null)
     {
         _source = source;
+        _admissionTimeProvider = admissionTimeProvider;
         _options = options;
         var store = options.Validate();
         _store = new(source, store);
@@ -161,7 +163,7 @@ internal sealed partial class PostgreSqlMaintenanceWorker : BackgroundService
             // Preserve native destination batching; stop before another group and reserve time to commit.
             // The UUID boundary still wraps, so unadmitted durable rows are revisited.
             await _dispatcher.DispatchRecoveredAsync(_rows.AsMemory(0, count), cancellationToken, propagateDatabaseFailures: true, admissionBudget: turnBudget.HasValue
-                ? (turnBudget.Value - Stopwatch.GetElapsedTime(started)) / 2 : null).ConfigureAwait(false);
+                ? (turnBudget.Value - Stopwatch.GetElapsedTime(started)) / 2 : null, admissionTimeProvider: _admissionTimeProvider).ConfigureAwait(false);
             return count;
         }
         finally
