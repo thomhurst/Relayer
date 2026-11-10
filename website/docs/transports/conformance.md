@@ -59,7 +59,7 @@ The copy contract exercises the adapter boundary used by outbox dispatch, schedu
 
 ## Graceful stop
 
-`CleanShutdown` sends one message and holds its handler at an asynchronous gate. Once the handler has entered, the suite starts a bounded graceful stop, rejects an already-completed stop while processing is still held, releases the handler and awaits shutdown. No sleeps or process-wide log capture are used. The fixture must also implement `ITransportShutdownConformanceFixture`; absence of this evidence is a failure, never a capability skip.
+`CleanShutdown` sends one message and holds its handler at an asynchronous gate. Once the handler has entered, the suite starts a bounded graceful stop, rejects an already-completed stop while processing is still held, releases the handler and awaits shutdown. A synchronous completion observer also rejects asynchronous stop completion before the full in-flight consumer pipeline, including settlement, finishes. No sleeps or process-wide log capture are used. The fixture must also implement `ITransportShutdownConformanceFixture`; absence of this evidence is a failure, never a capability skip.
 
 Give each fixture its own `ConformanceLogCapture` and expose it as `Logs`. Register that provider with every logger factory used by the adapter and its native clients **before** creating them, with a minimum level of `Warning` or lower. Keep the capture available after fixture disposal. The suite rejects `Error` and `Critical` entries and warning-level `OperationCanceledException` entries, including those emitted during disposal. Informational cancellation messages are allowed. A transport with no logging, such as the in-memory transport, still exposes its own empty capture.
 

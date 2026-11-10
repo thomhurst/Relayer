@@ -102,7 +102,15 @@ public sealed class TransportConformanceSuite<TIncoming, TBinding>
                 native.Disposition = Disposition.SettledByHandler;
             }).Build(32);
         var receive = new ReceivePipeline<TIncoming, TBinding>(pipeline, fixture.HeaderNames, 32);
-        fixture.RegisterConsumer(receive.ProcessAsync);
+        var shutdown = new ShutdownProgress();
+        fixture.RegisterConsumer(async (incoming, cancellation) =>
+        {
+            var disposition = await receive.ProcessAsync(incoming, cancellation).ConfigureAwait(false);
+            if (Volatile.Read(ref shutdown.StopTask)?.IsCompleted == true)
+                Volatile.Write(ref shutdown.StopFinishedFirst, 1);
+            Volatile.Write(ref shutdown.ConsumerFinished, 1);
+            return disposition;
+        });
         var attempts = 0;
         var redeliverAt = DateTimeOffset.MinValue;
         var orderRelease = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -131,7 +139,7 @@ public sealed class TransportConformanceSuite<TIncoming, TBinding>
         try
         {
             await fixture.Transport.StartAsync(token).ConfigureAwait(false);
-            await RunScenarioAsync(scenario, fixture, received.Reader, spans, () => redeliverAt, orderRelease, progress, token).ConfigureAwait(false);
+            await RunScenarioAsync(scenario, fixture, received.Reader, spans, () => redeliverAt, orderRelease, progress, shutdown, token).ConfigureAwait(false);
         }
         catch (Exception error)
         {
@@ -164,7 +172,7 @@ public sealed class TransportConformanceSuite<TIncoming, TBinding>
 
     private static async Task RunScenarioAsync(TransportConformanceCase scenario, ITransportConformanceFixture<TIncoming> fixture,
         ChannelReader<Delivery> received, ConcurrentQueue<Activity> spans, Func<DateTimeOffset> redeliverAt,
-        TaskCompletionSource orderRelease, ScenarioProgress progress, CancellationToken token)
+        TaskCompletionSource orderRelease, ScenarioProgress progress, ShutdownProgress shutdown, CancellationToken token)
     {
         async Task<Delivery> Next()
         {
@@ -199,16 +207,18 @@ public sealed class TransportConformanceSuite<TIncoming, TBinding>
                 CheckBody(await Next().ConfigureAwait(false), 1);
                 progress.Phase = "in-flight transport shutdown";
                 var stopping = Stop();
-                try
+                Volatile.Write(ref shutdown.StopTask, stopping);
+                // Observe at completion; the consumer also checks the task in case native
+                // task options force this observer to run asynchronously.
+                var observedStop = stopping.ContinueWith(static (completed, state) =>
                 {
-                    if (stopping.IsCompleted)
-                    {
-                        await stopping.ConfigureAwait(false);
-                        Require(false, "Stop completed while the handler was still executing.");
-                    }
-                }
-                finally { orderRelease.TrySetResult(); }
-                await stopping.ConfigureAwait(false);
+                    completed.GetAwaiter().GetResult();
+                    var progress = (ShutdownProgress)state!;
+                    Require(Volatile.Read(ref progress.ConsumerFinished) != 0 && Volatile.Read(ref progress.StopFinishedFirst) == 0,
+                        "StopAsync completed before the in-flight consumer finished.");
+                }, shutdown, CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+                orderRelease.TrySetResult();
+                await observedStop.ConfigureAwait(false);
                 progress.Phase = "native shutdown verification";
                 await ((ITransportShutdownConformanceFixture)fixture).VerifyShutdownAsync(token).ConfigureAwait(false);
                 break;
@@ -367,6 +377,12 @@ public sealed class TransportConformanceSuite<TIncoming, TBinding>
         if (!condition) throw new InvalidOperationException($"Transport conformance: {message}");
     }
     private sealed record Delivery(byte[] Body, string? TraceParent, string? TraceState, int? Attempt, DateTimeOffset ReceivedAt);
+    private sealed class ShutdownProgress
+    {
+        internal int ConsumerFinished;
+        internal int StopFinishedFirst;
+        internal Task? StopTask;
+    }
     private sealed class ScenarioProgress
     {
         internal string Phase { get; set; } = "scenario setup";

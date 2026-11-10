@@ -41,10 +41,22 @@ public class ShutdownConformanceTests
             .Throws<InvalidOperationException>();
     }
 
-    private sealed class BrokenFixture(MessageTracing tracing, bool earlyStop, bool disposalError, bool nativeViolation)
+    [Test]
+    public async Task Asynchronous_early_stop_fails_before_native_verification()
+    {
+        var suite = new TransportConformanceSuite<InMemoryDelivery, InMemoryMessageBinding>((tracing, _) =>
+            new ValueTask<ITransportConformanceFixture<InMemoryDelivery>>(new BrokenFixture(tracing, false, false, false, asynchronousEarlyStop: true)));
+        var error = await Assert.That(async () => await suite.RunAsync(TransportConformanceCase.CleanShutdown))
+            .Throws<InvalidOperationException>();
+        await Assert.That(error!.InnerException!.Message).Contains("StopAsync completed before the in-flight consumer finished");
+    }
+
+    private sealed class BrokenFixture(MessageTracing tracing, bool earlyStop, bool disposalError, bool nativeViolation, bool asynchronousEarlyStop = false)
         : ITransportConformanceFixture<InMemoryDelivery>, ITransportShutdownConformanceFixture, ITransport
     {
         private readonly InMemoryFixture _inner = new(tracing);
+        private readonly TaskCompletionSource _settlementRelease = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private int _stopCalls;
         public ConformanceLogCapture Logs => _inner.Logs;
         public ITransport Transport => this;
         public string Name => _inner.Transport.Name;
@@ -53,7 +65,12 @@ public class ShutdownConformanceTests
         public string SettlementOperation => _inner.SettlementOperation;
         public HeaderNames HeaderNames => _inner.HeaderNames;
         public void RegisterConsumer(Func<InMemoryDelivery, CancellationToken, ValueTask<Disposition>> receive) => _inner.RegisterConsumer(receive);
-        public ValueTask SettleAsync(InMemoryDelivery incoming, Disposition disposition, CancellationToken token) => _inner.SettleAsync(incoming, disposition, token);
+        public async ValueTask SettleAsync(InMemoryDelivery incoming, Disposition disposition, CancellationToken token)
+        {
+            // Hold native completion until cleanup, so scheduling cannot hide the premature stop.
+            if (asynchronousEarlyStop) await _settlementRelease.Task.WaitAsync(token);
+            await _inner.SettleAsync(incoming, disposition, token);
+        }
         public ValueTask<ConformanceDeadLetter> ReadDeadLetterAsync(CancellationToken token) => _inner.ReadDeadLetterAsync(token);
         public Task DisconnectAsync(CancellationToken token) => _inner.DisconnectAsync(token);
         public Task ReconnectAsync(CancellationToken token) => _inner.ReconnectAsync(token);
@@ -62,7 +79,16 @@ public class ShutdownConformanceTests
         public ValueTask SendBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken token) => _inner.Transport.SendBatchAsync(messages, token);
         public ValueTask<TopologyReport> ApplyTopologyAsync(TopologyMode mode, CancellationToken token) => _inner.Transport.ApplyTopologyAsync(mode, token);
         public Task StartAsync(CancellationToken token) => _inner.Transport.StartAsync(token);
-        public Task StopAsync(CancellationToken token) => earlyStop ? Task.CompletedTask : _inner.Transport.StopAsync(token);
+        public async Task StopAsync(CancellationToken token)
+        {
+            if (asynchronousEarlyStop && Interlocked.Increment(ref _stopCalls) == 1)
+            {
+                await Task.Yield();
+                return;
+            }
+            _settlementRelease.TrySetResult();
+            if (!earlyStop) await _inner.Transport.StopAsync(token);
+        }
         public ValueTask VerifyShutdownAsync(CancellationToken token) => nativeViolation
             ? ValueTask.FromException(new InvalidOperationException("settlement after native close"))
             : _inner.VerifyShutdownAsync(token);
