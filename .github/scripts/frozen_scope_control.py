@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fixed ABBA replay of run 42772012652 ScopeOnly images, never a gate retry."""
+"""Fixed ABBA replay of retained scope benchmark images, never a gate retry."""
 import argparse
 import json
 import os

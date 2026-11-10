@@ -160,7 +160,7 @@ class ScopeControlTests(unittest.TestCase):
                                     '--tiered-compilation', 'off', '--jit-disassembly']), \
                  patch('frozen_scope_control.os.environ', parent), \
                  patch('frozen_scope_control.verify', return_value='commit') as verify, \
-                 patch('frozen_scope_control.executable', side_effect=lambda path, scoped: (path / 'runner.dll', '4')), \
+                 patch('frozen_scope_control.executable', side_effect=lambda path, scoped, method="ScopeOnly": (path / 'runner.dll', '4')), \
                  patch('frozen_scope_control.subprocess.run', side_effect=execute):
                 main()
             self.assertEqual(verify.call_count, 6)
