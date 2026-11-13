@@ -1,0 +1,78 @@
+name: Frozen net10 allocation stack control
+
+# #537: keep allocation stack capture on the retained image's runtime major.
+# These are separate instrumented executions, never a rerun of the Performance gate.
+# The profiled ABBA closes the runtime-major gap in earlier marker-delimited stacks.
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/frozen-net10-profile-control.yml'
+  workflow_dispatch:
+    inputs:
+      performance_run:
+        description: Retained net10 Performance run for separate sampled allocation stacks
+        type: string
+        default: "43124385683"
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  owners:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      PERFORMANCE_RUN: ${{ inputs.performance_run || '43124385683' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
+        with:
+          dotnet-version: |
+            10.0.403
+            11.0.100
+      - name: Record host and build net10 probe
+        run: |
+          mkdir -p results
+          dotnet --info > results/runtime.txt
+          uname -a > results/host.txt
+          python3 -m unittest discover -s .github/scripts -p test_frozen_concurrent_control.py > results/launcher-tests.log 2>&1
+          # The global property overrides the probe's net11 default without changing
+          # historical tools or rebuilding any retained workload assembly.
+          dotnet restore tools/FrozenConcurrentProbe -p:TargetFramework=net10.0 > results/probe-restore.log 2>&1
+          dotnet build tools/FrozenConcurrentProbe -c Release -p:TargetFramework=net10.0 --no-restore > results/probe-build.log 2>&1
+          # The reader runs out of process; its framework does not select the probe runtime.
+          dotnet build tools/FrozenAllocationReader -c Release > results/reader-build.log 2>&1
+          dotnet tool install dotnet-trace --tool-path .diagnostic-tools --version 10.0.750501 > results/trace-install.log 2>&1
+      - name: Download exact original inputs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          [[ "$PERFORMANCE_RUN" =~ ^[0-9]+$ ]] || { echo "Invalid run ID: $PERFORMANCE_RUN" >&2; exit 1; }
+          gh run download "$PERFORMANCE_RUN" --name "performance-$PERFORMANCE_RUN-1" --dir inputs
+      - name: Capture separate net10 marker-delimited original-waiter allocation stacks
+        if: always()
+        run: |
+          # Reuse the same frozen images and phase markers, now with the net10 probe.
+          # This ABBA has no regional wrappers or source-identity tracking. Weighted
+          # allocation ticks suggest owner families, not exact objects or historical
+          # ownership; never subtract their weights from inclusive byte counters.
+          # Keep every raw trace for re-extraction and retain failed outcomes too.
+          python3 .github/scripts/frozen_concurrent_control.py inputs tools/FrozenConcurrentProbe/bin/Release/net10.0/FrozenConcurrentProbe.dll results/bdn-await-profiled --bdn-await --trace-tool .diagnostic-tools/dotnet-trace --profile-reader tools/FrozenAllocationReader/bin/Release/net11.0/FrozenAllocationReader.dll --keep-traces
+      - name: Retain all outcomes and executable inputs
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: frozen-net10-profile-control-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            results/
+            inputs/
+            tools/FrozenConcurrentProbe/
+            tools/FrozenFixtureProbe/InvocationAllocations.cs
+            tools/FrozenMeasurementEvents.cs
+            tools/FrozenAllocationReader/
+            .diagnostic-tools/
+            .github/scripts/frozen_concurrent_control.py
+            .github/scripts/test_frozen_concurrent_control.py
+            .github/workflows/frozen-net10-profile-control.yml
+          retention-days: 90
