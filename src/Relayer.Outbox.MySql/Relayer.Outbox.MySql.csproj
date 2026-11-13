@@ -3,6 +3,7 @@
     <Description>MySQL transactional outbox enqueue, durable reads and fenced claims for Relayer.</Description>
   </PropertyGroup>
   <ItemGroup>
+    <Compile Include="../Shared/OutboxTransactionLifecycle.cs" Link="OutboxTransactionLifecycle.cs" />
     <PackageReference Include="MySqlConnector" />
     <ProjectReference Include="../Relayer/Relayer.csproj" />
     <InternalsVisibleTo Include="Relayer.Outbox.MySql.Tests" />
