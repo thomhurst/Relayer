@@ -50,7 +50,7 @@ public sealed class OrderedDispatchTests(SqlServerFixture database)
     [Arguments(true)]
     public async Task Bulk_flush_preserves_send_order_and_sequential_commits_despite_reversed_UUIDs(bool synchronous)
     {
-        var data = new StoreData(database, new() { Lanes = 1, TablePrefix = "s_" + Guid.NewGuid().ToString("N") + "_" });
+        var data = new StoreData(database, new() { Lanes = 1, TablePrefix = TestContext.Current!.Isolation.GetIsolatedName("s") + "_" });
         await data.Create();
         await using var services = new ServiceCollection().AddRelayerSqlServerOutbox(data.Options).BuildServiceProvider();
         await using var scope = services.CreateAsyncScope();
