@@ -24,6 +24,9 @@ public sealed class SendTracingCompletionFixture : IDisposable
     private int _next;
     private long _workerBytes;
 
+    public long CallerBytes { get; private set; }
+    public long WorkerBytes => _workerBytes;
+
     public SendTracingCompletionFixture(bool batch, bool listener)
     {
         _batch = batch;
@@ -73,7 +76,8 @@ public sealed class SendTracingCompletionFixture : IDisposable
                 _pending[i].GetAwaiter().GetResult();
             }
         }
-        return allocated + GC.GetAllocatedBytesForCurrentThread() - start + _workerBytes;
+        CallerBytes = allocated + GC.GetAllocatedBytesForCurrentThread() - start;
+        return CallerBytes + _workerBytes;
     }
 
     private async Task AwaitAll()
