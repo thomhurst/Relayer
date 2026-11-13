@@ -70,6 +70,8 @@ Delay arrays bind with the standard configuration binder. For example:
 consumer.Failures(configuration.GetSection("OrdersFailure").Get<FailureOptions>()!);
 ```
 
+`FailureOptions` also supports Options-pattern registration with `services.AddOptions<FailureOptions>().Bind(section)` and resolution through `IOptions<FailureOptions>.Value`.
+
 A missing or null `RetryDelays` selects the default three retries. A missing or null `CopyTimeout` selects 30 seconds; an explicit zero remains invalid. An empty array disables them. Configured arrays replace the defaults rather than append to them. Enable the .NET configuration binding source generator when binding in a trimmed or Native AOT application. The policy is captured at registration and composed at startup; configuration reload does not rebuild active consumers.
 
 PostgreSQL local endpoints use their fenced outbox row recovery policy (`PostgreSqlOutboxOptions`). They reject a separate `Failures` policy at startup; per-consumer `Classify` is supported. Circuit breaking remains a native adapter option on Kafka and Azure Service Bus, where pause/resume executors are implemented.

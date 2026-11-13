@@ -2,6 +2,7 @@ using System.Threading.Channels;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Options;
 using Relayer.InMemory;
 using Relayer.Transports;
 
@@ -9,6 +10,31 @@ namespace Relayer.Tests;
 
 public class ConsumerFailurePolicyTests
 {
+    [Test]
+    public async Task Options_pattern_binds_failure_policy()
+    {
+        var configuration = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
+        {
+            ["Failure:RetryDelays:0"] = "00:00:02",
+            ["Failure:RedeliveryDelays:0"] = "00:01:00",
+            ["Failure:Jitter"] = "0",
+            ["Failure:DeadLetterEndpoint"] = "errors",
+            ["Failure:CopyTimeout"] = "00:00:10",
+        }).Build();
+        var services = new ServiceCollection();
+        services.AddOptions<FailureOptions>().Bind(configuration.GetSection("Failure"));
+        await using var provider = services.BuildServiceProvider();
+
+        var policy = provider.GetRequiredService<IOptions<FailureOptions>>().Value;
+        await Assert.That(policy.RetryDelays!.Length).IsEqualTo(1);
+        await Assert.That(policy.RetryDelays[0]).IsEqualTo(TimeSpan.FromSeconds(2));
+        await Assert.That(policy.RedeliveryDelays.Length).IsEqualTo(1);
+        await Assert.That(policy.RedeliveryDelays[0]).IsEqualTo(TimeSpan.FromMinutes(1));
+        await Assert.That(policy.Jitter).IsEqualTo(0);
+        await Assert.That(policy.DeadLetterEndpoint).IsEqualTo("errors");
+        await Assert.That(policy.CopyTimeout).IsEqualTo(TimeSpan.FromSeconds(10));
+    }
+
     [Test]
     public async Task Bound_policy_replaces_default_delays_and_is_reusable_across_consumer_types()
     {
