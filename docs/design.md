@@ -673,7 +673,7 @@ Each transport adapter adds the attributes and destination format that its syste
 
 - **Kafka:** `messaging.kafka.message.key` (not set when the key is null), `messaging.kafka.offset`, `messaging.kafka.message.tombstone` (only when true) and `messaging.kafka.cluster.id`. Settlement is `commit`.
 - **Azure Service Bus:** `messaging.servicebus.message.delivery_count` (when greater than 0), `messaging.servicebus.message.enqueued_time`, and `messaging.servicebus.disposition_status` on settle spans. Operation names are `send` or `schedule`, `process`, and `complete`, `abandon`, `defer` or `dead_letter`.
-- **RabbitMQ:** the destination is `{exchange}:{routing key}` on send spans and `{exchange}:{routing key}:{queue}` on process spans. Also `messaging.rabbitmq.destination.routing_key` (when not empty) and `messaging.rabbitmq.message.delivery_tag`. Settlement is `ack` or `nack`.
+- **RabbitMQ:** the destination is `{exchange}:{routing key}` on send spans and the consumed queue on process and settle spans. Also `messaging.rabbitmq.destination.routing_key` (when not empty) and `messaging.rabbitmq.message.delivery_tag`. Settlement is `ack` or `nack`. Queue-scoped receive operations are composed once; routing keys enrich recorded receive spans after sampling and are not receive sampler inputs.
 - **Amazon SQS and SNS:** `aws.sqs.queue.url` for SQS, `aws.sns.topic.arn` for SNS, and `aws.request_id`. SQS settlement is `delete`.
 
 Attributes that only Relayer defines use the `relayer.` prefix and never the `messaging.` prefix. Enrichers (`IActivityEnricher`) can add tags or rename spans without forking (MassTransit #4383). They run only when the span is recorded.

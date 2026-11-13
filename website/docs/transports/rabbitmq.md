@@ -202,15 +202,18 @@ other unrecoverable native callback errors still fault the receiver. Failed pois
 connection shutdown faults the receiver and reaches the hosted service even when no handler is active.
 Normal host shutdown does not fault completion. Automatic recovery remains owned by RabbitMQ.Client.
 
-Process and settle destinations are `{exchange}:{routing key}:{queue}`, including `:orders:orders` for the
-default exchange. Samplers receive the actual destination at process start. Spans include routing key and
-delivery tag; settlement names are `ack` and `nack`. A FIFO cache retains at most 256 native exchange/routing-key
-tracing operations per consumer. Misses allocate; evicted routes are composed again. The handler/failure pipeline
-is composed once at startup.
+Process and settle destinations are the consumed queue, with names `process {queue}`, `ack {queue}` and
+`nack {queue}`. Each consumer composes these operations once at startup; distinct exchanges or routing keys
+create no tracing cache entries. Samplers receive the queue destination, system, operation and configured
+server address/port at span creation. The delivered routing key is added only when the span requests data,
+along with the delivery tag; it is not a sampler input. This replaces the previous
+`{exchange}:{routing key}:{queue}` destination and routing-key sampler attributes, keeping span names bounded
+for wildcard bindings such as `order.#`. Send telemetry retains its exchange/routing-key destination.
+The handler/failure pipeline is composed once at startup.
 
 A suspended consumer callback must return `Task`. D52 treats that task as native-client boundary cost, measured
 against the equivalent raw callback. The upstream [8.0 consumer API proposal](https://github.com/rabbitmq/rabbitmq-dotnet-client/issues/964) discusses a `ValueTask` boundary. `RabbitMqReceiveBenchmarks` compares native JSON receive/ack with the
-registered pipeline using `MemoryDiagnoser`. Warm pipeline, body binding, endpoint lookup and optional health
+registered pipeline using `MemoryDiagnoser`. Both fixed and high-cardinality routing keys use equivalent native JSON/ack work. Warm pipeline, body binding and optional health
 tracking add no per-message objects of their own.
 
 ## Health

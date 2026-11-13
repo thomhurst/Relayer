@@ -15,7 +15,11 @@ namespace Relayer.Benchmarks;
 [MemoryDiagnoser]
 public class RabbitMqReceiveBenchmarks
 {
-    private const int Records = 128;
+    private const int Records = 512;
+    [Params(false, true)]
+    public bool HighCardinality { get; set; }
+    private string[] _routingKeys = null!;
+    private string _exchange = null!;
     private IConnection _connection = null!;
     private IChannel _publisher = null!;
     private IChannel? _raw;
@@ -40,7 +44,12 @@ public class RabbitMqReceiveBenchmarks
         _connection = await factory.CreateConnectionAsync();
         _publisher = await _connection.CreateChannelAsync(new(true, true));
         _queue = "relayer-receive-benchmark-" + Guid.NewGuid().ToString("N");
-        await _publisher.QueueDeclareAsync(_queue, false, false, false);
+        await _publisher.QueueDeclareAsync(_queue, true, false, false);
+        _exchange = _queue;
+        await _publisher.ExchangeDeclareAsync(_exchange, "topic");
+        await _publisher.QueueBindAsync(_queue, _exchange, "order.#");
+        _routingKeys = new string[Records];
+        for (var i = 0; i < Records; i++) _routingKeys[i] = HighCardinality ? "order." + i : "order.fixed";
         _properties = new() { Persistent = true, ContentType = "application/json", Headers = new Dictionary<string, object?>
         { ["cloudEvents:id"] = "benchmark", ["cloudEvents:type"] = "benchmarks.rabbit-receive;v=1" } };
         var services = new ServiceCollection();
@@ -81,7 +90,7 @@ public class RabbitMqReceiveBenchmarks
         _count = 0;
         _completion = new(TaskCreationOptions.RunContinuationsAsynchronously);
         for (var i = 0; i < Records; i++)
-            await _publisher.BasicPublishAsync("", _queue, true, _properties, "{\"Value\":42}"u8.ToArray());
+            await _publisher.BasicPublishAsync(_exchange, _routingKeys[i], true, _properties, "{\"Value\":42}"u8.ToArray());
     }
     [Benchmark(Baseline = true, OperationsPerInvoke = Records)]
     public async Task<int> RawClient()
@@ -134,6 +143,7 @@ public class RabbitMqReceiveBenchmarks
         if (_publisher is not null)
         {
             await _publisher.QueueDeleteAsync(_queue, false, false);
+            await _publisher.ExchangeDeleteAsync(_exchange);
             await _publisher.DisposeAsync();
         }
         if (_connection is not null) await _connection.DisposeAsync();
