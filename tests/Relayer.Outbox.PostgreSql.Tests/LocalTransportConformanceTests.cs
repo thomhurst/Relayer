@@ -98,7 +98,10 @@ public class LocalTransportConformanceTests(PostgreSqlLocalSessionFixture server
                 if (_direct is not null) return;
                 _direct = new(source, new(), new(), [local], logs.CreateLogger<PostgreSqlDirectDispatcher>());
                 _recovery = new(source, new() { RecoveryDelay = TimeSpan.Zero, SweepInterval = TimeSpan.FromMilliseconds(20) }, [local], logs.CreateLogger<PostgreSqlMaintenanceWorker>());
-                _ordered = new(source, new() { Lanes = 1, PollInterval = TimeSpan.FromMilliseconds(20) }, [local], logs.CreateLogger<PostgreSqlOrderedDispatcher>());
+                // OrderingByKey holds the first handler while all sends commit. The worker
+                // cancels a turn at half its lease, which must exceed the suite's 30-second deadline
+                // so slow sends cannot roll back and redeliver the observed first row.
+                _ordered = new(source, new() { Lanes = 1, PollInterval = TimeSpan.FromMilliseconds(20), LeaseDuration = TimeSpan.FromMinutes(2) }, [local], logs.CreateLogger<PostgreSqlOrderedDispatcher>());
                 local.Dispatcher = _direct;
                 await _direct.StartAsync(token);
                 await _ordered.StartAsync(token);
