@@ -65,7 +65,6 @@ public class KafkaBrokerTests
             builder.UseJsonSerializer(KafkaJson.Default);
             builder.Kafka("events", kafka =>
             {
-                kafka.TopologyMode = TopologyMode.None;
                 kafka.Options.Configure(options =>
                 {
                     options.BootstrapServers.Add(bootstrap);
@@ -87,8 +86,7 @@ public class KafkaBrokerTests
         await Assert.That(log.Categories.Any(category => category.StartsWith("Dekaf", StringComparison.Ordinal))).IsTrue();
         await Assert.That(transport.GetCapabilities(topic).MaxBatchSize).IsEqualTo(int.MaxValue);
         await Assert.That(transport.GetCapabilities(topic).DeadLetter).IsFalse();
-        await Assert.That(async () => await transport.ApplyTopologyAsync(TopologyMode.Validate, token))
-            .Throws<NotSupportedException>().WithMessageContaining("TopologyMode.None");
+        await Assert.That((await transport.ApplyTopologyAsync(TopologyMode.Validate, token)).Differences.Count).IsEqualTo(0);
         await Assert.That(async () => await transport.SendAsync(new("unknown", default), token))
             .Throws<InvalidOperationException>().WithMessageContaining("undeclared topic");
         await Assert.That(async () => await transport.SendAsync(new(topic, default, deliverAt: DateTimeOffset.UtcNow), token))

@@ -3,7 +3,7 @@ title: Kafka
 description: "Named Kafka producers and serial consumers backed by Dekaf, with durable failure handling."
 ---
 
-`Relayer.Kafka` implements producers and serial consumer groups on [Dekaf](https://github.com/thomhurst/Dekaf). Consumers use the core failure pipeline and acknowledge offsets after durable handling, including dead-letter copies. Optional [consumer circuit breaking](../guides/failure-handling.md#consumer-circuit-breaking) pauses native consumption and retains failed records during dependency outages. Optional health adapters are available in `Relayer.Kafka.HealthChecks`. Typed tombstones use native null values and the original message's wire identity. Parallel partition scheduling, drain-on-revoke, topology management and transactions remain planned.
+`Relayer.Kafka` implements producers and serial consumer groups on [Dekaf](https://github.com/thomhurst/Dekaf). Consumers use the core failure pipeline and acknowledge offsets after durable handling, including dead-letter copies. Optional [consumer circuit breaking](../guides/failure-handling.md#consumer-circuit-breaking) pauses native consumption and retains failed records during dependency outages. Optional health adapters are available in `Relayer.Kafka.HealthChecks`. Typed tombstones use native null values and the original message's wire identity. Parallel partition scheduling, drain-on-revoke, topic provisioning and transactions remain planned.
 
 ## Register a producer
 
@@ -17,8 +17,7 @@ services.AddRelayer(relayer =>
     relayer.UseJsonSerializer(AppJsonContext.Default);
     relayer.Kafka("events", kafka =>
     {
-        // Create and manage topics externally until topology management is implemented.
-        kafka.TopologyMode = TopologyMode.None;
+        // Create topics externally; the default Validate mode checks their existence.
         kafka.Options.Configure(options =>
         {
             options.BootstrapServers.Add("localhost:9092");
@@ -46,7 +45,7 @@ Route `OrderingKey` selectors accept strings or `IUtf8SpanFormattable` values. R
 
 The serialized transport batch seam delegates same-topic batches to Dekaf's `ProduceAllAsync` in input order and awaits all admitted operations. Dekaf owns batching, per-key ordering and partial failures. Mixed-topic batches send in input order with individual acknowledgments. Native byte limits still apply; a batch is not atomic. Cancellation may stop waiting after Kafka has accepted a message, so an exception does not prove that nothing was delivered.
 
-Kafka has no native scheduled send or dead-letter operation. Scheduled direct sends fail with an actionable error. Topic validation and provisioning also fail until implemented; use `TopologyMode.None` with externally managed topics.
+Kafka has no native scheduled send or dead-letter operation. Scheduled direct sends fail with an actionable error. The default `TopologyMode.Validate` checks all declared send, receive and dead-letter topics through Dekaf’s native admin topic listing without creating missing topics. Missing or inaccessible topics produce actionable startup differences. Create topics externally; `Provision` remains unsupported. `TopologyMode.None` skips the admin check when external deployment tooling owns validation. Configure admin authentication with `options.ConfigureAdmin`; producer and consumer authentication settings do not configure the admin client. Validation checks existence only, not partition counts, replication factors or topic configuration.
 
 ## Register a consumer
 
@@ -112,7 +111,7 @@ services.AddRelayer(relayer =>
     relayer.AddMessageTypesFromThisAssembly();
     relayer.Kafka("west", kafka =>
     {
-        kafka.TopologyMode = TopologyMode.None;
+        // Provision topics externally; default Validate checks that they exist.
         kafka.Options.Configure(options => options.BootstrapServers.Add(westBootstrap));
         kafka.UseSerializer(provider => new KafkaJsonSchemaSerializer(
                 provider.GetRequiredKeyedService<ISchemaRegistryClient>("west"))
@@ -126,7 +125,7 @@ services.AddRelayer(relayer =>
     });
     relayer.Kafka("east", kafka =>
     {
-        kafka.TopologyMode = TopologyMode.None;
+        // Provision topics externally; default Validate checks that they exist.
         kafka.Options.Configure(options => options.BootstrapServers.Add(eastBootstrap));
         kafka.UseSerializer(provider => new KafkaJsonSchemaSerializer(
                 provider.GetRequiredKeyedService<ISchemaRegistryClient>("east"))

@@ -15,7 +15,7 @@ builder.Services.AddRelayer(relayer =>
     relayer.Kafka("events", kafka =>
     {
         kafka.UseAspireConnection(builder.Configuration, "kafka");
-        kafka.TopologyMode = TopologyMode.None; // Kafka topology validation is not implemented.
+        kafka.TopologyMode = TopologyMode.None; // Skip validation for this local broker with automatic topic creation.
         kafka.Send<KafkaOrder>("orders");
     });
     relayer.ServiceBus("commands", bus =>

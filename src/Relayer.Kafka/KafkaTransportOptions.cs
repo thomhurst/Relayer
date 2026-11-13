@@ -16,7 +16,7 @@ public sealed class KafkaTransportOptions
     /// <remarks>Keep the supplied key and record-header serializers to preserve wire bodies and creation headers.</remarks>
     public Action<ProducerBuilder<WireString?, (ReadOnlyMemory<byte> Body, Dekaf.Serialization.Headers Headers)?>>? ConfigureProducer { get; set; }
 
-    /// <summary>Customises the native admin client used by dead-letter management, including authentication.</summary>
+    /// <summary>Customises the native admin client used by topology validation and dead-letter management, including authentication.</summary>
     public Action<AdminClientBuilder>? ConfigureAdmin { get; set; }
 
     /// <summary>Customises each Dekaf consumer builder. Keep raw byte deserializers; Relayer disables automatic commits and offset storage afterward.</summary>
