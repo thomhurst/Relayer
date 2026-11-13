@@ -46,7 +46,7 @@ internal sealed class PubSubFixture : ITransportConformanceFixture<GooglePubSubD
     private bool _disconnected;
     public bool IsExpectedOutageFailure(Exception error)
     {
-        if (IsExpectedPublishFailure(error)) return true;
+        if (IsExpectedPublishFailure(error, _disconnected)) return true;
         if (_worker?.Completion.Exception is not { } failure || !IsNativeStreamWriteFailure(failure)
             || !IsObservedSubscriberFailure(error, failure)) return false;
         _observedNativeFailure = true;
@@ -195,10 +195,18 @@ internal sealed class PubSubFixture : ITransportConformanceFixture<GooglePubSubD
         ? aggregate.InnerExceptions.All(IsNativeStreamWriteFailure)
         : error is IOException && ContainsDisconnectedConnection(error);
 
-    internal static bool IsExpectedPublishFailure(Exception error) => error is RpcException rpc
+    internal static bool IsExpectedPublishFailure(Exception error, bool disconnected = false) => error is RpcException rpc
         && (rpc.StatusCode is StatusCode.Unavailable or StatusCode.DeadlineExceeded
             || (rpc.StatusCode == StatusCode.Internal && rpc.Status.DebugException is { } cause
-                && ContainsDisconnectedConnection(cause)));
+                && (ContainsDisconnectedConnection(cause)
+                    // Observed on net11.0 with SDK 11.0.100 in CI run 43368433359
+                    // (job 131698298994); the log does not record the runtime patch.
+                    // dotnet/runtime v11.0.0 HttpConnectionPool.Http2.cs ReturnHttp2Connection
+                    // constructs HttpRequestException(message) with no inner exception and
+                    // HttpRequestError.Unknown; neither gives a specific discriminator.
+                    // Keep the exact wording fail-closed and only in our deliberate outage.
+                    || (disconnected && cause is System.Net.Http.HttpRequestException
+                        && cause.Message == "An HTTP/2 connection could not be established because the server did not complete the HTTP/2 handshake."))));
 
     private static bool ContainsDisconnectedConnection(Exception error) =>
         error is System.Net.Sockets.SocketException { SocketErrorCode: System.Net.Sockets.SocketError.ConnectionReset or System.Net.Sockets.SocketError.ConnectionAborted
