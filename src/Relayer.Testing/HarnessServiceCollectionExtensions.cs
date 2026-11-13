@@ -18,7 +18,7 @@ public static class HarnessServiceCollectionExtensions
         if (services.Any(item => item.ServiceType == typeof(ITransport) && !item.IsKeyedService && item.Lifetime != ServiceLifetime.Singleton))
             throw new InvalidOperationException("Harness observation requires singleton ITransport registrations.");
 
-        services.AddSingleton<RelayerHarness>();
+        services.AddSingleton(static provider => new RelayerHarness(provider, provider.GetRequiredService<MessageTypeRegistry>()));
         services.AddSingleton<IRelayerObserver>(static provider => provider.GetRequiredService<RelayerHarness>());
         services.Insert(0, ServiceDescriptor.Singleton<ISendMiddleware>(static provider => provider.GetRequiredService<RelayerHarness>()));
         for (var i = 0; i < services.Count; i++)

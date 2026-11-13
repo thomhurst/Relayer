@@ -40,8 +40,9 @@ await harness.WaitForIdleAsync(deadline.Token);
 
 var logicalSend = harness.Sent[0];
 var received = harness.Consumed[0];
-var serializer = host.Services.GetRequiredService<Relayer.Serialization.IMessageSerializer>();
-var order = received.Read<OrderPlaced>(serializer);
+var orders = harness.GetConsumed<OrderPlaced>();
+var sentOrders = harness.GetSent<OrderPlaced>();
+var order = harness.Read<OrderPlaced>(received);
 ```
 
 The collections return snapshots safe to enumerate while other work runs:
@@ -58,7 +59,11 @@ Publish/subscribe observation uses the same `ISender.SendAsync` API. A send rout
 
 Consume failures remain observable when native settlement already logged the exception; logging configuration does not change `Failed`. A traced settlement failure is recorded once per consume boundary. Dispatch observation reads each route's configured envelope header names, including routes that share a destination with different bindings.
 
-Receive and dispatch bodies are copied before native storage can be reused. `HarnessMessage.Read<T>(serializer)` deserializes those copies with your configured serializer. Logical sends retain the original message object in `Message`; do not mutate that object during assertions. Wire IDs and types can be null for malformed or raw native messages. Transport and destination names on receive observations are correlated with sends in the same provider; unsolicited external deliveries may not have those names.
+`GetSent<T>()`, `GetDispatched<T>()` and `GetConsumed<T>()` return materialized typed snapshots. They filter by the exact registered wire name and version before deserializing, so mixed message types, unknown types and missing identities are skipped. Register the requested type through `AddMessageTypesFromThisAssembly` or `MessageTypes.Add<T>()`; querying an unregistered type throws.
+
+Use `harness.Read<T>(observation)` for an individual observation, including `Failed[i].Message` or `DeadLettered[i].Message`. Its wire identity must match the requested registered type. Typed reads use the observation's named transport serializer, falling back to the provider's default when no name is available. `HarnessMessage.Read<T>(serializer)` remains available when you want to select the serializer explicitly.
+
+Receive and dispatch bodies are copied before native storage can be reused. Typed results and retained observations survive `Reset()`. Logical sends retain the original message object in `Message`; do not mutate that object during assertions. Wire IDs and types can be null for malformed or raw native messages. Transport and destination names on receive observations are correlated with sends in the same provider; unsolicited external deliveries may not have those names.
 
 ## Deterministic idle and reset
 
