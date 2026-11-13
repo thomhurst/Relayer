@@ -122,6 +122,34 @@ class ReceiveWindowCorrelationTests(unittest.TestCase):
 
 @unittest.skipUnless(os.environ.get("TEST_NATIVE_PROFILER"), "Native profiler fixture paths not supplied")
 class NativeAllocationFixtureTests(unittest.TestCase):
+    def test_opt_in_stacks_preserve_multithreaded_known_counts_and_call_sites(self):
+        from read_allocation_stacks import validate
+        profiler = str(Path(os.environ["TEST_NATIVE_PROFILER"]).resolve())
+        fixture = str(Path(os.environ["TEST_NATIVE_FIXTURE"]).resolve())
+        evidence = Path(os.environ["TEST_NATIVE_OUTPUT"])
+        evidence.mkdir(parents=True, exist_ok=True)
+        report = (evidence / "stack-windows.jsonl").resolve()
+        stacks = (evidence / "stack-windows-stacks.jsonl").resolve()
+        environment = dict(os.environ, CORECLR_ENABLE_PROFILING="1",
+                           CORECLR_PROFILER="{32B7EF07-25E8-4AC7-B011-9A4321D702C8}",
+                           CORECLR_PROFILER_PATH=profiler, RELAYER_ALLOCATION_PROFILER=profiler,
+                           RELAYER_ALLOCATION_OUTPUT=str(report), RELAYER_ALLOCATION_STACKS=str(stacks))
+        result = subprocess.run(["dotnet", fixture, "1024", "--windows"], env=environment,
+                                capture_output=True, text=True, timeout=60)
+        (evidence / "stack-windows.log").write_text(result.stdout + result.stderr)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        actual = read(report)
+        snapshot = validate([json.loads(line) for line in stacks.read_text().splitlines()], actual)
+        for name in ("FixtureMessage", "FixtureTypes+Box`1[FixtureMessage]"):
+            class_id = next(row["classId"] for row in actual["types"] if row["type"] == name)
+            for index in (0, 1):
+                rows = [row for row in snapshot["allocations"] if row["classId"] == class_id and row["index"] == index]
+                self.assertEqual(sum(row["objects"] for row in rows), 1024)
+                self.assertEqual(sum(row["bytes"] for row in rows), 1024 * 24)
+                self.assertEqual(len({row["thread"] for row in rows}), 4 if index == 0 else 1)
+                for row in rows:
+                    self.assertTrue(any("g__FillRange|" in snapshot["frames"][frame] for frame in row["frames"]), row)
+
     def test_exact_counts_exclude_warmup_and_resolve_generic_arguments(self):
         profiler = str(Path(os.environ["TEST_NATIVE_PROFILER"]).resolve())
         fixture = str(Path(os.environ["TEST_NATIVE_FIXTURE"]).resolve())

@@ -17,7 +17,8 @@ paths; native locking and metadata resolution also change scheduling. Counts do 
 the historical Performance run, establish production throughput, prove a candidate regression,
 or permit subtraction from other controls. Object sizes are the runtime's `GetObjectSize2`
 values, not a claim to account for every byte of allocation-context/alignment overhead.
-No allocation stacks are collected. Retained workload assemblies are never rebuilt or wrapped.
+Default captures collect no allocation stacks; the parallel workflow's opt-in managed
+stack mode is described below. Retained workload assemblies are never rebuilt or wrapped.
 
 The dedicated workflow builds the native profiler and .NET 10 external probe, runs known-type
 fixture checks, verifies all original input inventories, and runs the existing original-BDN-waiter
@@ -186,7 +187,7 @@ These are all-thread process envelopes: allocations from unrelated parallel test
 checkpoint bookkeeping and work outside the fixture's counters are included.
 Callback overhead and marker calls alter scheduling. Type presence in a window
 therefore identifies candidates, not the allocating owner of a counter excess;
-there are no stacks, and the capture does not reproduce historical scheduling or
+default captures have no stacks, and the capture does not reproduce historical scheduling or
 permit subtraction across separate executions. Preserve any unfavorable window
 and obtain stacks for a reproduced candidate before proposing a production or
 runtime correction. A passing parallel capture still cannot close #687.
@@ -202,3 +203,25 @@ The before/after hashes and original artifact remain in every outcome's archive.
 This is a new parallel execution of the same inputs, not historical scheduling
 replay or a rerun of the failed CI check. A passing result still does not assign
 an owner to an earlier counter excess.
+
+
+### Optional managed allocation stacks
+
+After a candidate reproduces, dispatch the parallel workflow with `stacks=true`
+(and optionally the existing `ci_run_id`, `ci_run_attempt` and `framework`).
+`RELAYER_ALLOCATION_STACKS` names a separate JSONL report. The profiler uses the
+CLR's synchronous `DoStackSnapshot` on the allocating thread, reusing the exact
+allocation callbacks and checkpoint boundaries. It records managed function IDs,
+resolved method names, allocation thread IDs and per-window/class/stack counts.
+The reader checks every stack count against that execution's original callback
+report; snapshot failures, missing frames and mismatched totals fail validation
+while the workflow retains all raw reports and executable inputs. A known-count
+fixture verifies allocating call sites on four worker threads and the caller.
+
+This opt-in mode changes scheduling and callback overhead further. Inlined frames
+and native call sites are absent, and unresolved method names remain explicit in
+the validated report. All-thread checkpoint envelopes include unrelated parallel
+work; even matching object sizes cannot be subtracted from fixture thread counters.
+A new stack-enabled run is neither historical replay nor proof of ownership for a
+previous failure. Default captures still collect no stacks. No assertions, warmup,
+measurement counts, GC settings or test parallelism change.

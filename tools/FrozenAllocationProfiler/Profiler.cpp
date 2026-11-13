@@ -10,6 +10,7 @@
 #include <mutex>
 #include <sstream>
 #include <string>
+#include <tuple>
 
 namespace {
 constexpr GUID ProfilerId = {0x32b7ef07,0x25e8,0x4ac7,{0xb0,0x11,0x9a,0x43,0x21,0xd7,0x02,0xc8}};
@@ -23,6 +24,13 @@ std::vector<Window> windows;
 bool windowsCompleted = false;
 std::map<ClassID, Count> previousCounts;
 ICorProfilerInfo12* info = nullptr;
+// Optional synchronous CLR snapshots, taken on the allocating thread. Native
+// memory only; no managed instrumentation or cross-thread suspension is used.
+std::string stackPath;
+using StackKey = std::tuple<size_t, ThreadID, ClassID, HRESULT, std::vector<FunctionID>>;
+std::map<StackKey, Count> stackCounts;
+std::map<FunctionID, std::string> frameNames;
+unsigned long long stackFailures = 0;
 // Native BDN events are delivered synchronously on the emitting thread by the
 // profiler EventPipe API (pinned dotnet/samples EventPipeProfiler.cpp).
 bool nativeTail = false, benchmarkStarted = false, benchmarkStopped = false, iterationOpen = false;
@@ -40,6 +48,31 @@ FunctionID selectedFunction = 0;
 int writeReport();
 std::string narrow(const WCHAR* value);
 std::string definitionName(IMetaDataImport*, mdTypeDef, unsigned depth = 0);
+
+HRESULT STDMETHODCALLTYPE snapshotFrame(FunctionID function, UINT_PTR, COR_PRF_FRAME_INFO,
+    ULONG32, BYTE[], void* state)
+{
+    static_cast<std::vector<FunctionID>*>(state)->push_back(function);
+    return S_OK;
+}
+
+std::string functionName(FunctionID function)
+{
+    if (!function) return "<native-transition>";
+    ClassID type; ModuleID module; mdToken token;
+    if (FAILED(info->GetFunctionInfo(function, &type, &module, &token))) return "<unresolved-function>";
+    IMetaDataImport* metadata = nullptr;
+    if (FAILED(info->GetModuleMetaData(module, ofRead, IID_IMetaDataImport,
+        reinterpret_cast<IUnknown**>(&metadata)))) return "<unresolved-function>";
+    mdTypeDef owner; WCHAR name[2048]; ULONG length; DWORD flags, implFlags;
+    PCCOR_SIGNATURE signature; ULONG signatureLength, rva;
+    auto hr = metadata->GetMethodProps(token, &owner, name, 2048, &length, &flags,
+        &signature, &signatureLength, &rva, &implFlags);
+    auto result = SUCCEEDED(hr) && length <= 2048
+        ? definitionName(metadata, owner) + "." + narrow(name) : "<unresolved-function>";
+    metadata->Release();
+    return result;
+}
 
 // Slowpath hooks use the runtime's ABI-preserving stubs, as in dotnet/runtime's
 // native SlowPathELTProfiler. Do not substitute the fastpath hooks with C++ bodies.
@@ -151,6 +184,11 @@ public:
         if (FAILED(hr)) return hr;
         nativeTail = std::getenv("RELAYER_ALLOCATION_BDN_TAIL") != nullptr;
         DWORD mask = COR_PRF_MONITOR_OBJECT_ALLOCATED | COR_PRF_ENABLE_OBJECT_ALLOCATED;
+        if (const char* path = std::getenv("RELAYER_ALLOCATION_STACKS")) {
+            if (!*path) return E_INVALIDARG;
+            stackPath = path;
+            mask |= COR_PRF_ENABLE_STACK_SNAPSHOT;
+        }
         const char* type = std::getenv("RELAYER_ALLOCATION_TYPE");
         const char* method = std::getenv("RELAYER_ALLOCATION_METHOD");
         if ((type != nullptr) != (method != nullptr)) return E_INVALIDARG;
@@ -202,6 +240,18 @@ public:
         // never asynchronously from the P/Invoke boundary that writes the report.
         if (count.name.empty()) count.name = typeName(type);
         ++count.objects; count.bytes += size;
+        if (!stackPath.empty()) {
+            ThreadID thread = 0;
+            std::vector<FunctionID> frames;
+            auto hr = info->GetCurrentThreadID(&thread);
+            if (SUCCEEDED(hr)) hr = info->DoStackSnapshot(0, snapshotFrame, COR_PRF_SNAPSHOT_DEFAULT,
+                &frames, nullptr, 0);
+            if (FAILED(hr) || frames.empty() || !thread) ++stackFailures;
+            for (const auto function : frames)
+                if (frameNames.find(function) == frameNames.end()) frameNames.emplace(function, functionName(function));
+            auto& stack = stackCounts[StackKey{windows.size(), thread, type, hr, std::move(frames)}];
+            ++stack.objects; stack.bytes += size;
+        }
         return S_OK;
     }
     HRESULT STDMETHODCALLTYPE ExceptionUnwindFunctionEnter(FunctionID function) override {
@@ -304,6 +354,27 @@ int writeReport()
     if (!path) return 0;
     std::ofstream output(path, std::ios::out | std::ios::trunc);
     if (!output) return 0;
+    bool stacksWritten = true;
+    if (!stackPath.empty()) {
+        std::ofstream stacks(stackPath, std::ios::out | std::ios::trunc);
+        for (const auto& frame : frameNames)
+            stacks << "{\"kind\":\"frame\",\"functionId\":" << frame.first << ",\"name\":\"" << frame.second << "\"}\n";
+        unsigned long long objects = 0, bytes = 0;
+        for (const auto& entry : stackCounts) {
+            const auto& [index, thread, type, hr, frames] = entry.first;
+            stacks << "{\"kind\":\"allocation-stack\",\"index\":" << index << ",\"thread\":" << thread
+                   << ",\"classId\":" << type << ",\"snapshotResult\":" << static_cast<long long>(hr)
+                   << ",\"objects\":" << entry.second.objects << ",\"bytes\":" << entry.second.bytes << ",\"frames\":[";
+            for (size_t i = 0; i < frames.size(); ++i) { if (i) stacks << ','; stacks << frames[i]; }
+            stacks << "]}\n";
+            objects += entry.second.objects; bytes += entry.second.bytes;
+        }
+        stacks << "{\"kind\":\"stack-coverage\",\"objects\":" << objects << ",\"bytes\":" << bytes
+               << ",\"failures\":" << stackFailures
+               << ",\"limits\":\"Managed frames on the allocating thread in this new instrumented execution. Inlining, native frames and unresolved names limit attribution. Window envelopes include unrelated parallel work; object bytes are not thread-counter bytes.\"}\n";
+        stacks.flush();
+        stacksWritten = stacks.good() && !stackFailures;
+    }
     if (nativeTail) {
         for (const auto& event : engineEvents)
             output << "{\"kind\":\"engine-event\",\"id\":" << event.id << ",\"thread\":" << event.thread
@@ -334,9 +405,11 @@ int writeReport()
            << ",\"windows\":" << windows.size()
            << ",\"methodEntries\":" << methodEntries << ",\"methodLeaves\":" << methodLeaves
            << ",\"boundary\":\"" << (selectedMethod.empty() ? "external-marker" : "method-enter-leave") << "\""
-           << ",\"limits\":\"Exact CLR ObjectAllocated callbacks in this separate instrumented region; callbacks change fast paths and scheduling. Native-tail mode includes final timed cleanup/logging and extra-stat setup/work/cleanup, not exact MeasureWithGc. No stacks, historical replay or cross-control subtraction.\"}\n";
+           << ",\"limits\":\"Exact CLR ObjectAllocated callbacks in this separate instrumented region; callbacks change fast paths and scheduling. Native-tail mode includes final timed cleanup/logging and extra-stat setup/work/cleanup, not exact MeasureWithGc. "
+           << (stackPath.empty() ? "No stacks. " : "Managed stacks are in the separate opt-in report. ")
+           << "No historical replay or cross-control subtraction.\"}\n";
     output.flush();
-    return output.good() && !failures && objects ? 1 : 0;
+    return output.good() && stacksWritten && !failures && objects ? 1 : 0;
 }
 }
 

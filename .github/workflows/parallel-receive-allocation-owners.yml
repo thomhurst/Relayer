@@ -23,6 +23,10 @@ on:
         type: choice
         options: [both, net10.0, net11.0]
         default: 'both'
+      stacks:
+        description: 'Capture managed allocation stacks in a new instrumented execution'
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -131,6 +135,7 @@ jobs:
         run: |
           python3 -m unittest discover -s .github/scripts -p test_native_allocations.py > results/native-tests.log 2>&1
           python3 -m unittest discover -s .github/scripts -p test_parallel_receive_allocations.py > results/correlation-tests.log 2>&1
+          python3 -m unittest discover -s .github/scripts -p test_allocation_stacks.py > results/stack-reader-tests.log 2>&1
       - name: Prepare core broker images
         # No test filter, scheduling throttle, GC change, threshold change or retry.
         # Keep Testcontainers image acquisition outside test lifecycle deadlines.
@@ -141,13 +146,20 @@ jobs:
         env:
           CORECLR_ENABLE_PROFILING: '1'
           CORECLR_PROFILER: '{32B7EF07-25E8-4AC7-B011-9A4321D702C8}'
+          CAPTURE_STACKS: ${{ inputs.stacks }}
         run: |
           export CORECLR_PROFILER_PATH="$PWD/.artifacts/exact-profiler/libFrozenAllocationProfiler.so"
           export RELAYER_ALLOCATION_PROFILER="$CORECLR_PROFILER_PATH"
           export RELAYER_ALLOCATION_OUTPUT="$PWD/results/parallel-objects.jsonl"
+          if [ "$CAPTURE_STACKS" = true ]; then
+            export RELAYER_ALLOCATION_STACKS="$PWD/results/allocation-stacks.jsonl"
+          fi
           failed=0
           dotnet --fx-version "$CAPTURE_RUNTIME" "$TEST_IMAGE/Relayer.Tests.dll" --output Detailed > results/parallel-tests.log 2>&1 || failed=1
           python3 .github/scripts/read_parallel_receive_allocations.py results/parallel-objects.jsonl results/parallel-tests.log > results/validated-parallel-types.json || failed=1
+          if [ "$CAPTURE_STACKS" = true ]; then
+            python3 .github/scripts/read_allocation_stacks.py results/allocation-stacks.jsonl results/parallel-objects.jsonl > results/validated-stacks.json || failed=1
+          fi
           sha256sum --check results/test-inputs-before.sha256 > results/test-inputs-after.log 2>&1 || failed=1
           exit "$failed"
       - name: Inventory every outcome and executable input
