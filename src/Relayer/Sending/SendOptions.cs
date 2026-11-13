@@ -24,6 +24,9 @@ public sealed class SendOptions
         target._nativeConfigurators.AddRange(_nativeConfigurators);
     }
 
+    internal bool CanRetain => Headers.EnsureCapacity(0) <= 128 &&
+        (_nativeConfigurators?.Capacity ?? 0) <= 16;
+
     internal void Reset()
     {
         Headers.Clear();
