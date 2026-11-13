@@ -66,6 +66,119 @@ public class ConfigurationAnalyzerTests
     }
 
     [Test]
+    [Arguments("Order")]
+    [Arguments("Tombstone<Order>")]
+    public async Task Explicit_identity_covers_routes_and_handlers_even_after_use(string messageType)
+    {
+        await Verify(Imports + Handler.Replace("[Message(\"order\")] ", "")
+            .Replace("IHandler<Order>", $"IHandler<{messageType}>")
+            .Replace("HandleAsync(Order message", $"HandleAsync({messageType} message") + $$"""
+            static class Setup
+            {
+                public static void Add(Broker broker, IRelayerBuilder builder)
+                {
+                    broker.Send<{{messageType}}>("orders");
+                    builder.Handler<H>();
+                    builder.MessageTypes.Add<Order>("orders.placed");
+                }
+            }
+            """, "");
+    }
+
+    [Test]
+    public async Task Unrelated_Add_does_not_supply_message_identity()
+    {
+        await Verify(Imports + """
+            public record Order;
+            class Other { public void Add<T>(string name) {} }
+            static class Setup
+            {
+                public static void Add(Broker broker)
+                {
+                    new Other().Add<Order>("orders.placed");
+                    broker.Send<Order>("orders");
+                }
+            }
+            """, "RLY001");
+    }
+
+    [Test]
+    [Arguments("Order<int>")]
+    [Arguments("Tombstone<Order<int>>")]
+    public async Task Explicit_identity_only_covers_the_exact_closed_generic_type(string registeredRoute)
+    {
+        var diagnostics = await Analyze(Imports + $$"""
+            public record Order<T>;
+            static class Setup
+            {
+                public static void Add(Broker broker, IRelayerBuilder builder)
+                {
+                    builder.MessageTypes.Add<Order<int>>("orders.integer");
+                    broker.Send<{{registeredRoute}}>("integers");
+                    broker.Send<Order<string>>("strings");
+                }
+            }
+            """);
+        await Assert.That(Ids(diagnostics)).IsEqualTo("RLY001");
+        await Assert.That(diagnostics[0].GetMessage()).Contains("Order<string>");
+    }
+
+    [Test]
+    public async Task Generic_helper_registration_is_not_inferred_for_closed_types()
+    {
+        await Verify(Imports + """
+            public record Order;
+            static class Setup
+            {
+                public static void Add(Broker broker, IRelayerBuilder builder)
+                {
+                    Register<Order>(builder);
+                    broker.Send<Order>("orders");
+                }
+                static void Register<T>(IRelayerBuilder builder) => builder.MessageTypes.Add<T>("orders.placed");
+            }
+            """, "RLY001");
+    }
+
+    [Test]
+    public async Task Registration_in_a_referenced_assembly_is_not_visible()
+    {
+        var external = Compile(Imports + """
+            public record Order;
+            public static class Identities
+            {
+                public static void Add(IRelayerBuilder builder) => builder.MessageTypes.Add<Order>("orders.placed");
+            }
+            """).WithAssemblyName("External");
+        using var stream = new MemoryStream();
+        await Assert.That(external.Emit(stream).Success).IsTrue();
+        var compilation = Compile(Imports + """
+            static class Setup
+            {
+                public static void Add(Broker broker, IRelayerBuilder builder)
+                {
+                    Identities.Add(builder);
+                    broker.Send<Order>("orders");
+                }
+            }
+            """).AddReferences(MetadataReference.CreateFromImage(stream.ToArray()));
+        var diagnostics = await compilation.WithAnalyzers([new ConfigurationAnalyzer()]).GetAnalyzerDiagnosticsAsync();
+        await Assert.That(Ids(diagnostics)).IsEqualTo("RLY001");
+    }
+
+    [Test]
+    public async Task Explicit_identity_in_another_source_file_covers_referenced_message_types()
+    {
+        var compilation = Compile(Imports + """
+            static class Setup { public static void Add(Broker broker) => broker.Send<int>("orders"); }
+            """).AddSyntaxTrees(CSharpSyntaxTree.ParseText(Imports + """
+            static class Identities { public static void Add(IRelayerBuilder builder) => builder.MessageTypes.Add<int>("integer"); }
+            """));
+        var diagnostics = await compilation.WithAnalyzers([new ConfigurationAnalyzer()]).GetAnalyzerDiagnosticsAsync();
+        await Assert.That(diagnostics.Length).IsEqualTo(0);
+    }
+
+    [Test]
     [Arguments("1", "RLY002,RLY002")]
     [Arguments("2", "")]
     public async Task Duplicate_identity_includes_default_version_and_partial_types(string version, string expected)

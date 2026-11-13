@@ -22,6 +22,14 @@ Register message types explicitly, or with the source-generated method that list
 services.AddRelayer(relayer => relayer.AddMessageTypesFromThisAssembly());
 ```
 
+For contracts without `[Message]`, including generated or referenced contracts, supply the stable identity explicitly:
+
+```csharp
+services.AddRelayer(relayer => relayer.MessageTypes.Add<OrderPlaced>("orders.placed"));
+```
+
+Analyzer [RLY001](../reference/diagnostics.md#rly001) accepts a statically visible `MessageTypeRegistry.Add<T>` call anywhere in the same compilation. It covers that exact type and its tombstone wrapper, including closed generic contracts. Registrations inside referenced assemblies or generic helpers are not inferred; see the diagnostic guidance for suppression when registration happens elsewhere. Explicit identity registration does not generate JSON metadata: provide a source-generated JSON context or a custom serializer as described below.
+
 ## Serialization
 
 Message types and all their containing types must be accessible within the assembly and non-file-local, for example `internal` or `public`. Inaccessible `[Message]` declarations produce [RLYM002](../reference/diagnostics.md#rlym002) and are excluded from generated registration and JSON metadata.
