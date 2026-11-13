@@ -20,6 +20,7 @@ internal sealed class NatsNativeTransport : ITransport, ITransportSendTracing
     private NatsJSContext? _context;
     private bool _disposed;
     private bool _started;
+    private bool _stopping;
     private static readonly TransportCapabilities Capabilities = new();
     private readonly FrozenDictionary<string, Endpoint> _endpoints;
     private readonly FrozenSet<(string Stream, string Name)> _declaredConsumers;
@@ -93,7 +94,14 @@ internal sealed class NatsNativeTransport : ITransport, ITransportSendTracing
         try
         {
             ObjectDisposedException.ThrowIf(_disposed, this);
-            if (_started) return;
+            if (_started && !_stopping) return;
+            if (_stopping)
+            {
+                // A bounded stop may return before native drain completes. Finish that
+                // lifecycle before replacing the connection and starting fresh pull loops.
+                await StopConsumersAsync(cancellationToken, restarting: true).ConfigureAwait(false);
+                await CloseAsync().ConfigureAwait(false);
+            }
             EnsureConnection();
             try
             {
@@ -116,6 +124,7 @@ internal sealed class NatsNativeTransport : ITransport, ITransportSendTracing
         await _lifecycle.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
+            _stopping = true;
             try { await StopConsumersAsync(cancellationToken).ConfigureAwait(false); }
             finally
             {
@@ -138,12 +147,17 @@ internal sealed class NatsNativeTransport : ITransport, ITransportSendTracing
         finally { _lifecycle.Release(); }
     }
 
-    private async Task StopConsumersAsync(CancellationToken token)
+    private async Task StopConsumersAsync(CancellationToken token, bool restarting = false)
     {
         Exception? failure = null;
         foreach (var consumer in Consumers)
         {
             try { await consumer.StopAsync(token).ConfigureAwait(false); }
+            catch (OperationCanceledException) when (restarting && consumer.Completion.IsCanceled && !token.IsCancellationRequested)
+            {
+                // The previous stop canceled processing; its completed cancellation is
+                // expected. Native faults and cancellation of this start still propagate.
+            }
             catch (Exception error) { failure ??= error; }
         }
         if (failure is not null) ExceptionDispatchInfo.Capture(failure).Throw();
@@ -162,6 +176,7 @@ internal sealed class NatsNativeTransport : ITransport, ITransportSendTracing
         _connection = null;
         _context = null;
         _started = false;
+        _stopping = false;
         if (connection is not null) await connection.DisposeAsync().ConfigureAwait(false);
     }
 

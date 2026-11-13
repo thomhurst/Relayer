@@ -45,6 +45,7 @@ internal sealed class NatsFixture : ITransportConformanceFixture<NatsDelivery>, 
     private readonly NatsJSContext _js;
     private readonly ActivityListener _nativeInstrumentation;
     private NatsConsumerWorker? _worker;
+    private INatsConnection? _receiver;
     private readonly TaskCompletionSource _disconnected = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private readonly TaskCompletionSource _reopened = new(TaskCreationOptions.RunContinuationsAsynchronously);
     internal NatsNativeTransport Adapter { get; }
@@ -62,7 +63,7 @@ internal sealed class NatsFixture : ITransportConformanceFixture<NatsDelivery>, 
     {
         _broker = broker;
         _ownsBroker = ownsBroker;
-        _logs = LoggerFactory.Create(builder => builder.AddProvider(Logs));
+        _logs = LoggerFactory.Create(builder => builder.AddProvider(Logs).AddSimpleConsole().SetMinimumLevel(LogLevel.Debug));
         var options = broker.Options() with { LoggerFactory = _logs };
         _admin = new(options);
         _js = new(_admin);
@@ -112,7 +113,11 @@ internal sealed class NatsFixture : ITransportConformanceFixture<NatsDelivery>, 
     public void RegisterConsumer(Func<NatsDelivery, CancellationToken, ValueTask<Disposition>> receive)
     {
         _worker = Adapter.AddConsumer(_stream, "orders", new() { MaxMsgs = 32, DrainOnCancel = true }, 1);
-        _worker.Receive = receive;
+        _worker.Receive = (delivery, token) =>
+        {
+            _receiver = delivery.Message.Connection;
+            return receive(delivery, token);
+        };
     }
     public ValueTask SettleAsync(NatsDelivery incoming, Disposition disposition, CancellationToken token) => _worker!.SettleAsync(incoming, disposition, token);
     public ValueTask<ConformanceDeadLetter> ReadDeadLetterAsync(CancellationToken token) => throw new NotSupportedException("JetStream has no native dead-letter operation with error headers.");
@@ -136,7 +141,24 @@ internal sealed class NatsFixture : ITransportConformanceFixture<NatsDelivery>, 
     }
     public async ValueTask DisposeAsync()
     {
-        try { await _provider.DisposeAsync(); }
+        try
+        {
+            if (_ownsBroker)
+            {
+                // Snapshot after scenario shutdown, before closing the admin connection.
+                // A fresh token keeps diagnostics useful after the scenario deadline.
+                Console.WriteLine($"NATS after scenario shutdown {_stream}/orders: worker={_worker?.Completion.Status}; receiver={_receiver?.ConnectionState}; admin={_admin.ConnectionState}; worker failure={_worker?.Completion.Exception}");
+                using var diagnosticDeadline = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+                try
+                {
+                    var consumer = await _js.GetConsumerAsync(_stream, "orders", diagnosticDeadline.Token);
+                    var info = consumer.Info;
+                    Console.WriteLine($"NATS consumer: pending={info.NumPending}; ack pending={info.NumAckPending}; waiting pulls={info.NumWaiting}; delivered={info.Delivered.ConsumerSeq}; ack floor={info.AckFloor.ConsumerSeq}");
+                }
+                catch (Exception error) { Console.WriteLine($"NATS consumer diagnostics failed: {error}"); }
+            }
+            await _provider.DisposeAsync();
+        }
         finally
         {
             await _admin.DisposeAsync();
