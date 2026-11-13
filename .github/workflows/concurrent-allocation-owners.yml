@@ -30,6 +30,7 @@ jobs:
             10.0.x
             11.0.100
       - name: Build and record executable inputs
+        id: inputs
         run: |
           mkdir -p results
           dotnet --info > results/runtime.txt
@@ -68,6 +69,7 @@ jobs:
           TEST_NATIVE_OUTPUT: results/fixture
         run: python3 -m unittest discover -s .github/scripts -p test_native_allocations.py > results/native-tests.log 2>&1
       - name: Capture every outcome against the same original fixture image
+        if: ${{ always() && steps.inputs.outcome == 'success' }}
         run: |
           failed=0
           dotnet test --no-build -c Release -f net11.0 --project tests/Relayer.Tests --treenode-filter '/*/*/ConcurrentReceiveAllocationTests/*' --output Detailed > results/test.log 2>&1 || failed=1
