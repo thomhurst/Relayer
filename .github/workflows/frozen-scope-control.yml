@@ -1,4 +1,4 @@
-name: Frozen scope native contention events
+name: Frozen scope native parent control
 
 # New historical-input experiment, never a rerun of the performance gate.
 on:
@@ -8,7 +8,9 @@ on:
       - '.github/scripts/test_frozen_scope_control.py'
       - '.github/scripts/frozen_concurrent_control.py'
       - '.github/workflows/frozen-scope-control.yml'
-      - 'tools/FrozenScopeSampleReader/**'
+      - 'tools/FrozenNativeHost/**'
+      - '.github/scripts/frozen_bdn_control.py'
+      - '.github/scripts/test_frozen_bdn_control.py'
       - 'tools/FrozenAllocationReader/RuntimeIdentityScope.cs'
   workflow_dispatch:
 
@@ -34,36 +36,26 @@ jobs:
           dotnet --info > results/runtime.txt
           uname -a > results/host.txt
           python3 -m unittest discover -s .github/scripts -p test_frozen_scope_control.py > results/launcher-tests.log 2>&1
-          dotnet build tools/FrozenScopeSampleReader -c Release > results/reader-build.log 2>&1
+          dotnet build tools/FrozenNativeHost -c Release > results/parent-build.log 2>&1
+          python3 -m unittest discover -s .github/scripts -p test_frozen_bdn_control.py > results/native-launcher-tests.log 2>&1
       - name: Download original images for code attribution
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh run download 42772012652 --name performance-42772012652-1 --dir inputs
-      # Sample labels concentrated in Monitor.Enter_Slowpath cannot establish
-      # contention. Test native contention events with the sampling profiler absent.
-      # Retain every launch/event; never compare instrumented timings.
-      - name: Capture native contention without the sampling profiler
-        run: python3 .github/scripts/frozen_scope_control.py inputs results/sampling --counterbalanced --eventpipe-contention
-      - name: Parse every retained trace even after launch failure
-        if: always()
-        run: |
-          failed=0
-          shopt -s nullglob
-          traces=(results/sampling/*-samples.nettrace)
-          if (( ${#traces[@]} != 16 )); then
-            echo "Expected sixteen native sample captures" >&2
-            failed=1
-          fi
-          for trace in "${traces[@]}"; do
-            dotnet tools/FrozenScopeSampleReader/bin/Release/net11.0/FrozenScopeSampleReader.dll "$trace" --contention > "$trace.jsonl" 2> "$trace.reader.log" || failed=1
-          done
-          exit "$failed"
+      # Prior console-parent captures cannot reproduce the historical parent protocol.
+      # One original-image native-parent ABBA tests this bundled intervention;
+      # retain every outcome, without attributing historical causality or pipe cost.
+      - name: Execute original scoped runner through native BDN parent
+        run: >-
+          python3 .github/scripts/frozen_bdn_control.py inputs results/native-scope
+          --case scope-only --runtime-version 10.0.15
+          --native-executor tools/FrozenNativeHost/bin/Release/net10.0/FrozenNativeHost.dll
       - name: Retain all outcomes and executable inputs
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: frozen-scope-contention-${{ github.run_id }}-${{ github.run_attempt }}
+          name: frozen-scope-native-parent-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             .github/workflows/frozen-scope-control.yml
             results/
@@ -73,7 +65,8 @@ jobs:
             .github/scripts/test_frozen_bdn_control.py
             .github/scripts/frozen_bdn_control.py
             .github/scripts/frozen_concurrent_control.py
-            tools/FrozenScopeSampleReader/*.cs
-            tools/FrozenScopeSampleReader/*.csproj
+            tools/FrozenNativeHost/Program.cs
+            tools/FrozenNativeHost/FrozenNativeHost.csproj
+            tools/FrozenNativeHost/bin/Release/net10.0/
             tools/FrozenAllocationReader/RuntimeIdentityScope.cs
           retention-days: 90

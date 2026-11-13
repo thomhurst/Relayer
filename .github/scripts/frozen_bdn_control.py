@@ -16,6 +16,7 @@ LAUNCHES = ("baseline", "candidate", "candidate", "baseline")
 # Explicit original generated runner selectors; ConsumptionModel.Queue=0, Log=1.
 CASES = {
     "concurrent": ("EndToEndBenchmarks", "ConcurrentRoundTrip", None, 8),
+    "scope-only": ("ConsumePipelineBenchmarks", "ScopeOnly", "instance.ScopedHandler = true;", 1),
     "scoped-dispatch": ("ConsumePipelineBenchmarks", "DirectScopedDispatch", "instance.ScopedHandler = true;", 1),
     "log-composed": ("InMemoryTransportBenchmarks", "ComposedRoundTrip", "instance.Mode = (Relayer.Transports.ConsumptionModel)(1);", 1),
     "queue-composed": ("InMemoryTransportBenchmarks", "ComposedRoundTrip", "instance.Mode = (Relayer.Transports.ConsumptionModel)(0);", 1),
@@ -88,7 +89,7 @@ def main():
     parser.add_argument("--case", choices=tuple(CASES), default="concurrent",
                         help="Select an original generated runner and parameter, preserving its native job.")
     parser.add_argument("--native-executor", type=Path,
-                        help="Opt-in concurrent or scoped-dispatch replay with BenchmarkDotNet native anonymous-pipe parent (FrozenNativeHost.dll).")
+                        help="Opt-in concurrent, scoped-dispatch or scoped ScopeOnly replay with BenchmarkDotNet native anonymous-pipe parent (FrozenNativeHost.dll).")
     parser.add_argument("--trace-tool", type=Path,
                         help="Separate instrumented replay; retain whole-process raw allocation profiles.")
     parser.add_argument("--runtime-version", choices=("10.0.14", "10.0.15"),
@@ -101,8 +102,8 @@ def main():
                         help="Separate exact CLR callback counts in the selected native boundary.")
     args = parser.parse_args()
     from frozen_scope_control import result as timing_result
-    if args.native_executor and (args.case not in ("concurrent", "scoped-dispatch") or args.trace_tool):
-        parser.error("Native parent supports concurrent or scoped-dispatch replay without an external trace launcher")
+    if args.native_executor and (args.case not in ("concurrent", "scoped-dispatch", "scope-only") or args.trace_tool):
+        parser.error("Native parent supports concurrent, scoped-dispatch or scoped ScopeOnly replay without an external trace launcher")
     if args.allocation_profiler and args.case != "concurrent":
         parser.error("Exact allocation callbacks support only the concurrent benchmark")
     owner, method, parameter, operations = CASES[args.case]

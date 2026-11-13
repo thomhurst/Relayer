@@ -56,6 +56,39 @@ class OriginalRunnerTests(unittest.TestCase):
             {"path": path.relative_to(root).as_posix()} for path in (source, image)]}))
         return source, image
 
+    def test_scoped_scope_runner_selection_and_native_parent(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for side in ("baseline", "candidate"):
+                source, image = self.fixture(root / "performance-builds" / side)
+                source.write_text(source.read_text().replace("EndToEndBenchmarks", "ConsumePipelineBenchmarks")
+                                  .replace("ConcurrentRoundTrip()", "ScopeOnly()")
+                                  .replace("OperationsPerInvoke = 8", "OperationsPerInvoke = 1")
+                                  .replace("workloadDelegate =", "instance.ScopedHandler = true; workloadDelegate ="))
+                self.assertEqual(executable(root / "performance-builds" / side, "scope-only"), (image.resolve(), "10"))
+            output = root / "results"
+            calls = []
+
+            def execute(command, **kwargs):
+                calls.append(command)
+                self.assertEqual(command[-1], "scope-only")
+                Path(command[-2]).write_text(json.dumps({"FoundExecutable": True, "ExitCode": 0,
+                    "IsSuccess": True, "Errors": []}))
+                Path(command[-3]).write_text(COMPLETE.replace("65536", "9"))
+
+            with patch("sys.argv", ["control", str(root), str(output), "--case", "scope-only",
+                                    "--native-executor", str(root / "host.dll")]), \
+                 patch("frozen_bdn_control.verify", return_value="frozen"), \
+                 patch("frozen_bdn_control.subprocess.run", side_effect=execute):
+                main()
+            self.assertEqual(len(calls), 4)
+            outcomes = json.loads((output / "outcomes.json").read_text())
+            self.assertTrue(all(row["operations"] == 9 for row in outcomes))
+            self.assertTrue(all("bytesPerMessage" not in row for row in outcomes))
+            protocol = json.loads((output / "protocol.json").read_text())
+            self.assertEqual(protocol["operationsPerInvoke"], 1)
+            self.assertEqual(protocol["parameter"], "instance.ScopedHandler = true;")
+
     def test_discovers_runner_from_inventoried_generated_source(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
