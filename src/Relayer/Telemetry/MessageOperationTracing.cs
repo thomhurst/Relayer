@@ -11,7 +11,7 @@ public sealed class MessageOperationTracing
     private readonly MessagingOperation _operation;
     private readonly string _name;
     private readonly KeyValuePair<string, object?>[] _tags;
-    private readonly SamplingState?[] _states = new SamplingState[64];
+    private readonly SlotPool<SamplingState> _states = new(capacity: 64);
 
     /// <summary>Precomputes the span name and constant sampling attributes.</summary>
     /// <param name="tracing">The application's source owner.</param>
@@ -63,7 +63,7 @@ public sealed class MessageOperationTracing
             Add(tags, "messaging.destination.subscription.name", endpoint.Subscription);
         foreach (var tag in endpoint.Attributes.Span) tags.Add(tag.Key, tag.Value);
         _tags = tags.ToArray();
-        _states[0] = new(_tags);
+        _states.TryReturn(new(_tags));
     }
 
     /// <summary>Starts an activity, or returns null without tag work or allocations when no listener is attached.</summary>
@@ -232,17 +232,14 @@ public sealed class MessageOperationTracing
 
     private SamplingState Rent()
     {
-        for (var i = 0; i < _states.Length; i++)
-            if (Interlocked.Exchange(ref _states[i], null) is { } state) return state;
-        return new(_tags);
+        return _states.TryRent() ?? new(_tags);
     }
 
     private void Return(SamplingState state)
     {
         state.Tags[^1] = default;
         state.Links.Clear();
-        for (var i = 0; i < _states.Length; i++)
-            if (Interlocked.CompareExchange(ref _states[i], state, null) is null) return;
+        _states.TryReturn(state);
     }
 
     private sealed class SamplingState

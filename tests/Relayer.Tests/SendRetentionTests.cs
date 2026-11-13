@@ -99,9 +99,14 @@ public class SendRetentionTests
         foreach (var sender in reused) sender.EndAttempt();
     }
 
-    private static List<object> Stored(SendRoute<int> route) =>
-        ((Array)typeof(SendRoute<int>).GetField("_operations", BindingFlags.Instance | BindingFlags.NonPublic)!
-            .GetValue(route)!).Cast<object?>().Where(item => item is not null).Cast<object>().ToList();
+    private static List<object> Stored(SendRoute<int> route)
+    {
+        const BindingFlags flags = BindingFlags.Instance | BindingFlags.NonPublic;
+        var pool = typeof(SendRoute<int>).GetField("_operations", flags)!.GetValue(route)!;
+        var page = pool.GetType().GetField("_first", flags)!.GetValue(pool)!;
+        var slots = (object?[])page.GetType().GetField("Slots", flags)!.GetValue(page)!;
+        return slots.Where(item => item is not null).Cast<object>().ToList();
+    }
 
     private static SendRoute<int> Route(Sink sink, IOrderingKeySelector<int>? key = null, string source = "/tests") =>
         new(sink, "orders", new("test.retention", 1), new() { Source = source }, key, new SizedSerializer(),

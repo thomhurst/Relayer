@@ -43,27 +43,23 @@ public sealed class TenantContext : IDisposable
 
 internal sealed class TenantContextPool
 {
-    private readonly TenantContext?[] _items;
+    private readonly SlotPool<TenantContext> _items;
 
     internal TenantContextPool(int capacity)
     {
-        _items = new TenantContext[capacity];
-        for (var i = 0; i < _items.Length; i++) _items[i] = new(this);
+        _items = new(capacity, capacity);
+        for (var i = 0; i < capacity; i++) _items.TryReturn(new(this), i);
     }
 
     internal TenantContext Rent()
     {
-        TenantContext? context = null;
-        for (var i = 0; i < _items.Length && context is null; i++)
-            context = Interlocked.Exchange(ref _items[i], null);
-        context ??= new(this);
+        var context = _items.TryRent() ?? new(this);
         context.Activate();
         return context;
     }
 
     internal void Return(TenantContext context)
     {
-        for (var i = 0; i < _items.Length; i++)
-            if (Interlocked.CompareExchange(ref _items[i], context, null) is null) return;
+        _items.TryReturn(context);
     }
 }

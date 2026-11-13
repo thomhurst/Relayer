@@ -20,7 +20,7 @@ internal sealed class BatchExecution
     private readonly string _spanName;
     private readonly string _destination;
     private readonly KeyValuePair<string, object?>[] _batchCountTags;
-    private readonly State?[] _states;
+    private readonly SlotPool<State> _states;
     internal int Size { get; }
 
     internal BatchExecution(IServiceScopeFactory scopes, BatchDispatcher dispatch, MessageType identity,
@@ -41,8 +41,8 @@ internal sealed class BatchExecution
         _spanName = "process " + consumer.Source;
         _batchCountTags = new KeyValuePair<string, object?>[Size];
         for (var i = 0; i < Size; i++) _batchCountTags[i] = new("messaging.batch.message_count", i + 1);
-        _states = new State[consumer.Concurrency];
-        for (var i = 0; i < _states.Length; i++) _states[i] = new State(Size, _destination, _tracing);
+        _states = new(consumer.Concurrency, consumer.Concurrency);
+        for (var i = 0; i < consumer.Concurrency; i++) _states.TryReturn(new State(Size, _destination, _tracing), i);
     }
 
     [RuntimeAsyncMethodGeneration(false)]
@@ -223,8 +223,7 @@ internal sealed class BatchExecution
                 Array.Clear(state.Active);
                 Array.Clear(state.Errors);
                 state.Links.Clear();
-                for (var i = 0; i < _states.Length; i++)
-                    if (Interlocked.CompareExchange(ref _states[i], state, null) is null) break;
+                _states.TryReturn(state);
             }
         }
     }
@@ -266,8 +265,7 @@ internal sealed class BatchExecution
 
     private State Rent()
     {
-        for (var i = 0; i < _states.Length; i++)
-            if (Interlocked.Exchange(ref _states[i], null) is { } state) return state;
+        if (_states.TryRent() is { } state) return state;
         return new State(Size, _destination, _tracing);
     }
 

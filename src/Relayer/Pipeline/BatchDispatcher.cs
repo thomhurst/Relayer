@@ -16,7 +16,7 @@ internal sealed class BatchDispatcher<TMessage> : BatchDispatcher
     private readonly BatchHandlerDescriptor<TMessage> _descriptor;
     private readonly SerializedReader<TMessage> _reader;
     private readonly FrozenDictionary<MessageType, UpcastReader<TMessage>>? _upcastReaders;
-    private readonly State?[] _states;
+    private readonly SlotPool<State> _states;
     private readonly int _size;
 
     internal BatchDispatcher(BatchHandlerDescriptor<TMessage> descriptor, IMessageSerializer serializer, int size, int concurrency,
@@ -27,8 +27,8 @@ internal sealed class BatchDispatcher<TMessage> : BatchDispatcher
         if (readers.Count != 0)
             _upcastReaders = readers.ToFrozenDictionary(pair => pair.Key, pair => (UpcastReader<TMessage>)pair.Value);
         _size = size;
-        _states = new State[concurrency];
-        for (var i = 0; i < concurrency; i++) _states[i] = new State(size);
+        _states = new(concurrency, concurrency);
+        for (var i = 0; i < concurrency; i++) _states.TryReturn(new State(size), i);
     }
 
     [RuntimeAsyncMethodGeneration(false)]
@@ -75,15 +75,13 @@ internal sealed class BatchDispatcher<TMessage> : BatchDispatcher
             state.End();
             Array.Clear(state.Items, 0, state.Count);
             state.Count = 0;
-            for (var i = 0; i < _states.Length; i++)
-                if (Interlocked.CompareExchange(ref _states[i], state, null) is null) break;
+            _states.TryReturn(state);
         }
     }
 
     private State Rent()
     {
-        for (var i = 0; i < _states.Length; i++)
-            if (Interlocked.Exchange(ref _states[i], null) is { } state) return state;
+        if (_states.TryRent() is { } state) return state;
         return new State(_size);
     }
 

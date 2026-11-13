@@ -7,45 +7,31 @@ namespace Relayer;
 internal sealed class SenderPool(SendPipeline pipeline)
 {
     private readonly SendPipeline _pipeline = pipeline;
-    private Segment? _senders;
+    private SlotPool<PooledSender>? _senders;
 
     internal void Enable()
     {
         if (Volatile.Read(ref _senders) is null)
-            Interlocked.CompareExchange(ref _senders, new Segment(this), null);
+            Interlocked.CompareExchange(ref _senders, CreatePool(), null);
     }
 
     internal Sender Rent(IOutboxEnlistment? outbox, TenantContext? tenant = null)
     {
         var first = Volatile.Read(ref _senders);
         if (first is null) return new Sender(_pipeline, outbox) { Tenant = tenant };
-        for (var i = 0; i < first.Items.Length; i++)
-        {
-            if (Volatile.Read(ref first.Items[i]) is null ||
-                Interlocked.Exchange(ref first.Items[i], null) is not { } sender) continue;
-            sender.Outbox = outbox;
-            sender.Tenant = tenant;
-            return sender;
-        }
-        return new PooledSender(this, _pipeline) { Outbox = outbox, Tenant = tenant };
+        var sender = first.TryRentGuarded() ?? new PooledSender(this, _pipeline);
+        sender.Outbox = outbox;
+        sender.Tenant = tenant;
+        return sender;
     }
 
-    private void Return(PooledSender sender)
-    {
-        var segment = _senders!;
-        for (var i = 0; i < segment.Items.Length; i++)
-            if (Volatile.Read(ref segment.Items[i]) is null &&
-                Interlocked.CompareExchange(ref segment.Items[i], sender, null) is null) return;
-        // Overflow senders become collectible after the attempt instead of retaining peak concurrency.
-    }
+    private void Return(PooledSender sender) => _senders!.TryReturnGuarded(sender);
 
-    private sealed class Segment
+    private SlotPool<PooledSender> CreatePool()
     {
-        internal readonly PooledSender?[] Items = new PooledSender[64];
-        internal Segment(SenderPool owner)
-        {
-            for (var i = 0; i < Items.Length; i++) Items[i] = new(owner, owner._pipeline);
-        }
+        var pool = new SlotPool<PooledSender>(capacity: 64);
+        for (var i = 0; i < 64; i++) pool.TryReturn(new(this, _pipeline), i);
+        return pool;
     }
 
     private sealed class PooledSender(SenderPool owner, SendPipeline pipeline) : Sender(pipeline)
