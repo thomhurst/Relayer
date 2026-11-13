@@ -75,7 +75,9 @@ try
     Console.WriteLine(JsonSerializer.Serialize(new
     {
         instrumentation = nativeAllocations is not null ? "native-object-allocation-callbacks" : exactRoundTrips ? "exact-synchronous-roundtrip-calls" : "none",
-        exactRegion = "One original ConcurrentRoundTrip delegate call per record (eight messages), before awaiting its returned ValueTask. Calling-thread work only; excludes other threads and later continuations. No type or historical attribution; do not subtract from other controls.",
+        exactRegion = nativeAllocations is not null
+            ? "Process-wide CLR ObjectAllocated callbacks from native Begin after warmup through native End after all measured deliveries complete, including counter and timing boundaries. Reports heap objects and runtime sizes by type; no stacks or historical attribution. Do not subtract from other controls."
+            : "One original ConcurrentRoundTrip delegate call per record (eight messages), before awaiting its returned ValueTask. Calling-thread work only; excludes other threads and later continuations. No type or historical attribution; do not subtract from other controls.",
         invocationAllocations = invocationReport,
         image, completionBoundary = bdnAwait ? "original-BenchmarkDotNet-AwaitHelper.GetResult" : "asynchronous-await",
         limits = "Fixed-count diagnostic, not original adaptive BDN replay or historical allocation-owner attribution.",
