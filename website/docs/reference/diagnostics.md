@@ -1,6 +1,6 @@
 ---
 title: Diagnostics
-description: "Compile-time analyzers RLY001 to RLY004 and generator errors RLYH001 and RLYM001 to RLYM005: what each reports and how to fix it."
+description: "Compile-time analyzers RLY001 to RLY004 and generator errors RLYH001 and RLYM001 to RLYM007: what each reports and how to fix it."
 ---
 
 Relayer ships compile-time analyzers and an IDE code fix in its NuGet package. They inspect symbols, not naming conventions, and add no runtime work. Startup validation still checks the complete configuration, including declarations assembled through helpers or other assemblies.
@@ -17,6 +17,8 @@ Relayer ships compile-time analyzers and an IDE code fix in its NuGet package. T
 | [RLYM003](#rlym003) | Error | A `[Message]` type is ref-like. |
 | [RLYM004](#rlym004) | Error | A declared message type is static. |
 | [RLYM005](#rlym005) | Error | A declared message name is null. |
+| [RLYM006](#rlym006) | Error | A message name is empty or whitespace. |
+| [RLYM007](#rlym007) | Error | A message version is below 1. |
 
 ## RLY001
 
@@ -87,6 +89,14 @@ A static class cannot be a wire message because generated registration and JSON 
 ## RLYM005
 
 A `[Message]` name cannot be `null`, including `null!` (the null-forgiving operator does not supply a value). Replace it with a permanent wire identity, such as `[Message("orders.placed")]`. The generator reports the error at the attribute and excludes the invalid declaration from registration and JSON metadata; other valid messages still generate normally. An assembly containing only invalid declarations produces no message registration or JSON context.
+
+## RLYM006
+
+`[Message]` names must contain at least one non-whitespace character, matching the runtime `MessageTypeRegistry.Add<TMessage>` contract. Replace an empty or whitespace-only name with a stable wire name such as `[Message("orders.placed")]`. Valid names are preserved exactly, including surrounding whitespace. Invalid declarations are excluded from generated registration and JSON metadata.
+
+## RLYM007
+
+`[Message]` versions must be at least 1, matching the runtime `MessageTypeRegistry.Add<TMessage>` contract. Remove `Version` to use the default 1, or specify a positive version such as `[Message("orders.placed", Version = 2)]`. Invalid declarations are excluded from generated registration and JSON metadata. Explicit runtime registration retains the same validation guards.
 
 ## Suppression and generated code
 

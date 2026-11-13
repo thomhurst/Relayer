@@ -46,6 +46,18 @@ public sealed class MessageTypeGenerator : IIncrementalGenerator
         "Relayer", DiagnosticSeverity.Error, isEnabledByDefault: true,
         helpLinkUri: "https://relayer.tomlonghurst.dev/docs/reference/diagnostics#rlym005");
 
+    private static readonly DiagnosticDescriptor InvalidMessageName = new(
+        "RLYM006", "Message name is empty or whitespace",
+        "Message '{0}' must have a name containing at least one non-whitespace character",
+        "Relayer", DiagnosticSeverity.Error, isEnabledByDefault: true,
+        helpLinkUri: "https://relayer.tomlonghurst.dev/docs/reference/diagnostics#rlym006");
+
+    private static readonly DiagnosticDescriptor InvalidMessageVersion = new(
+        "RLYM007", "Message version is below 1",
+        "Message '{0}' must have a version of at least 1",
+        "Relayer", DiagnosticSeverity.Error, isEnabledByDefault: true,
+        helpLinkUri: "https://relayer.tomlonghurst.dev/docs/reference/diagnostics#rlym007");
+
     public void Initialize(IncrementalGeneratorInitializationContext context)
     {
         var refLikeMessages = context.SyntaxProvider.ForAttributeWithMetadataName(
@@ -77,6 +89,14 @@ public sealed class MessageTypeGenerator : IIncrementalGenerator
                 spc.ReportDiagnostic(Diagnostic.Create(NullMessageName,
                     Location.Create(nullNameLocation.FilePath, nullNameLocation.Span, nullNameLocation.LineSpan), model.FullyQualifiedName));
             }
+            if (model.InvalidIdentityLocation is { } identityLocation)
+            {
+                var attributeLocation = Location.Create(identityLocation.FilePath, identityLocation.Span, identityLocation.LineSpan);
+                if (string.IsNullOrWhiteSpace(model.Name))
+                    spc.ReportDiagnostic(Diagnostic.Create(InvalidMessageName, attributeLocation, model.FullyQualifiedName));
+                if (model.Version < 1)
+                    spc.ReportDiagnostic(Diagnostic.Create(InvalidMessageVersion, attributeLocation, model.FullyQualifiedName));
+            }
             if (model.InaccessibleLocation is { } inaccessibleLocation)
             {
                 spc.ReportDiagnostic(Diagnostic.Create(model.IsStatic ? StaticMessage : InaccessibleMessage,
@@ -88,7 +108,7 @@ public sealed class MessageTypeGenerator : IIncrementalGenerator
                     Location.Create(location.FilePath, location.Span, location.LineSpan), model.FullyQualifiedName));
             }
         });
-        var messages = declarations.Where(static m => m.OpenGenericLocation is null && m.InaccessibleLocation is null && m.NullNameLocation is null).Collect();
+        var messages = declarations.Where(static m => m.OpenGenericLocation is null && m.InaccessibleLocation is null && m.NullNameLocation is null && m.InvalidIdentityLocation is null).Collect();
 
         context.RegisterSourceOutput(messages, static (spc, models) => Emit(spc, models));
         context.RegisterSourceOutput(messages.Combine(context.CompilationProvider),
@@ -142,7 +162,15 @@ public sealed class MessageTypeGenerator : IIncrementalGenerator
                 break;
             }
         }
-        return new MessageModel(fullyQualifiedName, name, version, openGenericLocation);
+        DiagnosticLocation? invalidIdentityLocation = null;
+        if (string.IsNullOrWhiteSpace(name) || version < 1)
+        {
+            var location = attribute.ApplicationSyntaxReference!.GetSyntax().GetLocation();
+            invalidIdentityLocation = new DiagnosticLocation(location.GetLineSpan().Path,
+                location.SourceSpan, location.GetLineSpan().Span);
+        }
+        return new MessageModel(fullyQualifiedName, name, version, openGenericLocation,
+            InvalidIdentityLocation: invalidIdentityLocation);
     }
 
     private static void Emit(SourceProductionContext context, ImmutableArray<MessageModel> models)
@@ -239,7 +267,7 @@ public sealed class MessageTypeGenerator : IIncrementalGenerator
         && compilation.IsSymbolAccessibleWithin(type, compilation.Assembly)
         && (type.ContainingType is null || CanReference(type.ContainingType, compilation));
 
-    private sealed record MessageModel(string FullyQualifiedName, string Name, int Version, DiagnosticLocation? OpenGenericLocation = null, DiagnosticLocation? InaccessibleLocation = null, bool IsStatic = false, DiagnosticLocation? NullNameLocation = null);
+    private sealed record MessageModel(string FullyQualifiedName, string Name, int Version, DiagnosticLocation? OpenGenericLocation = null, DiagnosticLocation? InaccessibleLocation = null, bool IsStatic = false, DiagnosticLocation? NullNameLocation = null, DiagnosticLocation? InvalidIdentityLocation = null);
 
     private sealed record DiagnosticLocation(string FilePath, TextSpan Span, LinePositionSpan LineSpan);
 

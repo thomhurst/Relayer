@@ -51,6 +51,50 @@ public class MessageTypeGeneratorTests
     }
 
     [Test]
+    [Arguments("\"\"", "RLYM006")]
+    [Arguments("\"   \"", "RLYM006")]
+    [Arguments("\"\\t\\r\\n\\u2003\"", "RLYM006")]
+    [Arguments("\"orders.placed\", Version = 0", "RLYM007")]
+    [Arguments("\"orders.placed\", Version = -1", "RLYM007")]
+    public async Task Invalid_identity_constants_are_diagnosed_and_excluded(string arguments, string diagnosticId)
+    {
+        foreach (var includeValid in new[] { false, true })
+        {
+            var source = $"[Relayer.Message({arguments})] public sealed record Invalid(int Id);";
+            if (includeValid)
+                source += "[Relayer.Message(\" valid \")] public sealed record Valid(int Id);";
+            var references = ((string)AppContext.GetData("TRUSTED_PLATFORM_ASSEMBLIES")!)
+                .Split(Path.PathSeparator).Select(static p => MetadataReference.CreateFromFile(p)).ToList();
+            references.Add(MetadataReference.CreateFromFile(typeof(MessageAttribute).Assembly.Location));
+            var tree = CSharpSyntaxTree.ParseText(source, path: "Message.cs");
+            var compilation = CSharpCompilation.Create("InvalidIdentityConsumer", [tree], references,
+                new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
+            GeneratorDriver driver = CSharpGeneratorDriver.Create(new MessageTypeGenerator());
+            driver = driver.RunGeneratorsAndUpdateCompilation(compilation, out var output, out var diagnostics);
+
+            await Assert.That(diagnostics.Length).IsEqualTo(1);
+            var diagnostic = diagnostics[0];
+            await Assert.That(diagnostic.Id).IsEqualTo(diagnosticId);
+            await Assert.That(diagnostic.Severity).IsEqualTo(DiagnosticSeverity.Error);
+            await Assert.That(tree.GetText().ToString(diagnostic.Location.SourceSpan))
+                .IsEqualTo($"Relayer.Message({arguments})");
+            await Assert.That(diagnostic.Descriptor.HelpLinkUri)
+                .IsEqualTo($"https://relayer.tomlonghurst.dev/docs/reference/diagnostics#{diagnosticId.ToLowerInvariant()}");
+            var generated = string.Join("\n", driver.GetRunResult().GeneratedTrees.Select(t => t.ToString()));
+            await Assert.That(generated).DoesNotContain("global::Invalid");
+            if (includeValid)
+            {
+                await Assert.That(generated).Contains("Add<global::Valid>(\" valid \", 1)");
+                await Assert.That(generated).Contains("typeof(global::Valid)");
+            }
+            else
+                await Assert.That(driver.GetRunResult().GeneratedTrees.Length).IsEqualTo(0);
+            await Assert.That(string.Join("\n", output.GetDiagnostics().Where(d => d.Severity == DiagnosticSeverity.Error)))
+                .IsEqualTo("");
+        }
+    }
+
+    [Test]
     public async Task Inaccessible_messages_are_diagnosed_without_generated_source_errors()
     {
         var references = ((string)AppContext.GetData("TRUSTED_PLATFORM_ASSEMBLIES")!)
