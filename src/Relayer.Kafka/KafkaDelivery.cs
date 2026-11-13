@@ -8,7 +8,7 @@ namespace Relayer.Kafka;
 /// <summary>A borrowed Kafka record, valid only while the receive callback runs.</summary>
 public readonly record struct KafkaDelivery(ConsumeResult<byte[], byte[]> Result, string PartitionId);
 
-/// <summary>Reads the native Kafka binary CloudEvents binding without copying headers or body.</summary>
+/// <summary>Reads the native Kafka binary CloudEvents binding. Header snapshots follow native client ownership.</summary>
 public readonly struct KafkaMessageBinding : IMessageBinding<KafkaDelivery>
 {
     /// <inheritdoc />

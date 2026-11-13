@@ -453,6 +453,47 @@ the CI gate with their adapter and retain raw results for both paths. Never use
 an in-memory result as a substitute for any of Kafka, Azure Service Bus, Amazon
 SQS/SNS or RabbitMQ.
 
+### Kafka header allocation attribution
+
+`KafkaHeaderAllocationBenchmarks` isolates header access from fetching, JSON,
+DI scopes, handlers and offset commits. Setup produces the same two-header
+CloudEvents record as `KafkaReceiveBenchmarks` and holds its real native fetch
+batch until cleanup. The controls compare no header access, one native lookup,
+four independent native lookups, four lookups sharing one native snapshot, and
+four lookups through `KafkaMessageBinding`:
+
+```sh
+RELAYER_KAFKA_BOOTSTRAP_SERVERS=localhost:19092 dotnet run -c Release --project benchmarks/Relayer.Benchmarks -- --filter '*KafkaHeaderAllocationBenchmarks*' --job short --exporters fulljson --keepFiles
+```
+
+Dekaf 1.27.0 creates a new lazy list each time `ConsumeResult.Headers` is read.
+Indexing the list materializes a safe header array and a copy of its value bytes.
+The normal executable receive success path looks up the event type, event ID,
+failure-attempt count and redelivery count separately. Even an absent counter
+causes materialization while scanning the two existing headers. The payload-only
+raw receive benchmark does not read headers, so its allocation difference includes
+these native snapshots as well as any other differences in work.
+
+The independent native and binding controls reproduce the repeated snapshots;
+the shared-list control demonstrates that only one snapshot is needed for these
+four reads. Repeated avoidable copies remain Relayer's responsibility under D52,
+even though the allocating methods belong to the native client.
+[#671](https://github.com/thomhurst/Relayer/issues/671) tracks sharing the native
+view for one delivery. A borrowed native lookup API is requested in
+[Dekaf #4120](https://github.com/thomhurst/Dekaf/issues/4120); existing snapshots
+must continue owning their bytes after the fetch is released.
+
+To collect separate allocation profiles of the complete receive comparison, set
+`RELAYER_KAFKA_ALLOCATION_PROFILE=1` and filter `*KafkaReceiveBenchmarks*`.
+This enables BenchmarkDotNet's GC-verbose EventPipe diagnostic execution in
+addition to its ordinary MemoryDiagnoser execution. Whole-process profiles include
+setup, warmup and cleanup, so use their stacks to locate owners, not their sample
+weights as exact measured bytes. Keep the raw/native and composed reports and
+profiled timings separate. The held-batch controls deliberately exclude fetching
+and settlement; their timings cannot establish receive throughput or the 5% budget.
+The attribution identifies repeated header snapshots without establishing that
+Kafka receive meets the zero-allocation budget.
+
 ### Frozen concurrent investigation
 
 `Frozen concurrent allocation investigation` runs a separate diagnostic on native Ubuntu x64 against the retained executables from runs 42306276036, 42312305889 and 42310409459. It verifies every retained build inventory before executing an external cached-delegate probe. Each run uses separate baseline/candidate/candidate/baseline processes, 4096 warmup batches and exactly 32768 measured batches of eight messages. All outcomes, runtime identity, probe and original inputs are uploaded for 90 days, including failed launches. The workflow runs when its tooling changes in a pull request and can also be dispatched deliberately. It requires the original artifacts to remain available.

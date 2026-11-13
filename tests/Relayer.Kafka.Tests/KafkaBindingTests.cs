@@ -23,8 +23,10 @@ public class KafkaBindingTests
     }
 
     [Test]
-    public async Task Warm_binding_borrows_storage_without_allocating()
+    public async Task Caller_owned_header_binding_reuses_storage_without_allocating()
     {
+        // The public native constructor uses caller-owned headers; live fetch batches
+        // materialize native snapshots, covered by KafkaHeaderAllocationBenchmarks.
         var incoming = Record(false, false);
         for (var i = 0; i < 1000; i++) Read(incoming);
         var before = GC.GetAllocatedBytesForCurrentThread();
