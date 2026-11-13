@@ -185,7 +185,7 @@ handling sends to `source + ".dead-letter"`, waits for its publisher confirm, th
 Set `consumer.Options.Failure.DeadLetterEndpoint` to use another declared destination. Copies retain CloudEvents,
 creation context, native headers and native correlation/reply destinations, and add common error metadata. A failed or unroutable copy is logged and leaves the
 source unacknowledged for a one-second backoff, then uses native `basic.nack` with `requeue: true`. The host
-continues running. A delivery already settled successfully by native handler code is never settled again if later processing throws. Optional consumer health remains unhealthy while any delivery is in failure backoff, and reports the last failure until subsequent processing succeeds. Provision
+continues running. A delivery already settled successfully by native handler code is never settled again if later processing throws. Optional consumer health remains unhealthy while any delivery is in failure backoff, and reports the last failure until subsequent processing succeeds. Successful processing clears the prior failure even when the requeue callback is still finishing; health remains unhealthy until all failure backoffs have ended. Provision
 a durable failure queue or exchange/binding before starting consumers.
 
 Use `Failure.RetryDelays` for in-process backoff. Native nack can requeue immediately or use the configured DLX

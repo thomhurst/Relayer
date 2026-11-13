@@ -160,9 +160,17 @@ public class RabbitMqReceiveTests
         var declaration = new ConsumerDefinition<RabbitMqConsumerOptions>("backoff", options, [], 2, 1, TimeSpan.Zero);
         var calls = 0;
         var succeeded = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var redelivered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var finishRedelivery = new TaskCompletionSource<Disposition>(TaskCreationOptions.RunContinuationsAsynchronously);
         var consumer = new RabbitMqConsumer(declaration, options, (_, _) =>
         {
-            if (Interlocked.Increment(ref calls) == 1) throw new InvalidOperationException("copy failed");
+            var call = Interlocked.Increment(ref calls);
+            if (call == 1) throw new InvalidOperationException("copy failed");
+            if (call == 3)
+            {
+                redelivered.TrySetResult();
+                return new(finishRedelivery.Task);
+            }
             succeeded.TrySetResult();
             return new(Disposition.Complete);
         }, tracing, clock);
@@ -179,11 +187,16 @@ public class RabbitMqReceiveTests
             await Assert.That(() => consumer.GetHealthState()).Throws<InvalidOperationException>();
         }
         finally { timer.Fire(); }
-        await WaitAsync(() =>
+        try
         {
-            try { return Task.FromResult(consumer.GetHealthState()?.IsIdle == true); }
-            catch (InvalidOperationException) { return Task.FromResult(false); }
-        }, token);
+            await redelivered.Task.WaitAsync(token);
+            // Hold redelivery pending until the original nack callback has drained. The second
+            // delivery already succeeded during backoff, so only the active delivery remains.
+            await WaitAsync(() => Task.FromResult(consumer.ActiveCallbackCount == 1), token);
+            await Assert.That(consumer.GetHealthState()!.Value.IsIdle).IsFalse();
+        }
+        finally { finishRedelivery.TrySetResult(Disposition.Complete); }
+        await WaitAsync(() => Task.FromResult(consumer.GetHealthState()?.IsIdle == true), token);
         await Assert.That(consumer.Completion.IsCompleted).IsFalse();
         await transport.StopAsync(token);
     }
