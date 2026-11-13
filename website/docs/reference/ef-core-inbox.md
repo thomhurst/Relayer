@@ -3,7 +3,7 @@ title: EF Core consumer inbox
 description: "Deduplicate deliveries and commit handler changes and outgoing messages in one PostgreSQL transaction."
 ---
 
-`Relayer.Outbox.EntityFrameworkCore` supplies a database boundary for single-message consumers using
+`Relayer.Outbox.PostgreSql.EntityFrameworkCore` supplies a database boundary for single-message consumers using
 the Npgsql EF Core provider. Each handling attempt owns one transaction. An inbox insert claims
 `(consumer, message_id)` before the handler runs. The insert, saved business changes and any outgoing
 outbox rows commit together after the handler and all inner middleware finish. Native settlement

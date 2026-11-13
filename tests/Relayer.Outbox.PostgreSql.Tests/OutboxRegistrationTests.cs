@@ -1,5 +1,6 @@
 using System.Buffers;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Options;
@@ -12,6 +13,57 @@ namespace Relayer.Outbox.PostgreSql.Tests;
 
 public class OutboxRegistrationTests
 {
+    [Test]
+    public async Task Neutral_EF_assembly_has_no_database_client_dependency()
+    {
+        var references = typeof(EntityFrameworkCoreOutboxOptions).Assembly.GetReferencedAssemblies();
+        await Assert.That(references.Any(static reference => reference.Name is "Npgsql" or "Relayer.Outbox.PostgreSql"
+            or "Relayer.Outbox.PostgreSql.EntityFrameworkCore")).IsFalse();
+        await Assert.That(typeof(EntityFrameworkCoreOutboxExtensions).Assembly.GetName().Name)
+            .IsEqualTo("Relayer.Outbox.PostgreSql.EntityFrameworkCore");
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Unsupported_provider_is_rejected_when_options_are_configured_or_initialized(bool providerFirst)
+    {
+        var services = new ServiceCollection().AddRelayerEntityFrameworkCoreOutbox();
+        await using var provider = services.BuildServiceProvider();
+        using var scope = provider.CreateScope();
+        var builder = new DbContextOptionsBuilder();
+        if (providerFirst)
+        {
+            ((IDbContextOptionsBuilderInfrastructure)builder).AddOrUpdateExtension(new UnsupportedProvider());
+            await Assert.That(() => builder.AddRelayerOutbox(scope.ServiceProvider))
+                .Throws<InvalidOperationException>().WithMessageContaining("Configure UseNpgsql");
+        }
+        else
+        {
+            builder.AddRelayerOutbox(scope.ServiceProvider);
+            ((IDbContextOptionsBuilderInfrastructure)builder).AddOrUpdateExtension(new UnsupportedProvider());
+            await Assert.That(() => { using var db = new DbContext(builder.Options); _ = db.Model; })
+                .Throws<InvalidOperationException>()
+                .WithMessageContaining("Configure UseNpgsql");
+        }
+    }
+
+    // A native provider options extension is enough: failure must precede provider service/connection use.
+    private sealed class UnsupportedProvider : IDbContextOptionsExtension
+    {
+        public DbContextOptionsExtensionInfo Info => new ProviderInfo(this);
+        public void ApplyServices(IServiceCollection services) { }
+        public void Validate(IDbContextOptions options) { }
+        private sealed class ProviderInfo(IDbContextOptionsExtension extension) : DbContextOptionsExtensionInfo(extension)
+        {
+            public override bool IsDatabaseProvider => true;
+            public override string LogFragment => "unsupported";
+            public override int GetServiceProviderHashCode() => 0;
+            public override void PopulateDebugInfo(IDictionary<string, string> debugInfo) { }
+            public override bool ShouldUseSameServiceProvider(DbContextOptionsExtensionInfo other) => other is ProviderInfo;
+        }
+    }
+
     [Test]
     [Arguments(false)]
     [Arguments(true)]

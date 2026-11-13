@@ -6,7 +6,7 @@ using NpgsqlTypes;
 namespace Relayer.Outbox.PostgreSql;
 
 // Column storage is reused across commits. Parameter count is fixed, including large transactions.
-internal sealed class PostgreSqlOutboxBatch : IDisposable
+internal sealed class PostgreSqlOutboxBatch : IOutboxBatch
 {
     internal static string CreateInsertSql(string table) => $"""
         INSERT INTO {table}
@@ -45,12 +45,17 @@ internal sealed class PostgreSqlOutboxBatch : IDisposable
         _command.Parameters.AddWithValue("tenants", NpgsqlDbType.Array | NpgsqlDbType.Text, _tenants);
     }
 
-    internal void Prepare(DbTransaction transaction, string insertSql)
+    public void Prepare(DbTransaction transaction, string insertSql)
     {
         Clear();
         _command.Connection = (NpgsqlConnection)transaction.Connection!;
         _command.Transaction = (NpgsqlTransaction)transaction;
         _command.CommandText = insertSql;
+    }
+
+    public void AddRange(ReadOnlySpan<BufferedOutboxMessage> rows)
+    {
+        foreach (var row in rows) Add(row);
     }
 
     internal void Add(BufferedOutboxMessage row)
@@ -68,7 +73,7 @@ internal sealed class PostgreSqlOutboxBatch : IDisposable
         _tenants.Add(row.TenantId);
     }
 
-    internal void Execute()
+    public void Execute()
     {
         try { _command.ExecuteNonQuery(); }
         finally { Clear(); }
@@ -76,7 +81,7 @@ internal sealed class PostgreSqlOutboxBatch : IDisposable
 
     [RuntimeAsyncMethodGeneration(false)]
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
-    internal async ValueTask ExecuteAsync(CancellationToken cancellationToken)
+    public async ValueTask ExecuteAsync(CancellationToken cancellationToken)
     {
         try { await _command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false); }
         finally { Clear(); }

@@ -1,7 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <Description>Entity Framework Core outbox and inbox for Relayer.</Description>
+    <Description>Provider-neutral Entity Framework Core transaction coordination for Relayer outbox and inbox integrations.</Description>
   </PropertyGroup>
 
   <ItemGroup>
@@ -10,12 +10,12 @@
 
   <ItemGroup>
     <InternalsVisibleTo Include="Relayer.Benchmarks" />
+    <InternalsVisibleTo Include="Relayer.Outbox.PostgreSql.EntityFrameworkCore" />
     <InternalsVisibleTo Include="Relayer.Sagas.EntityFrameworkCore" />
   </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\Relayer\Relayer.csproj" />
-    <ProjectReference Include="..\Relayer.Outbox.PostgreSql\Relayer.Outbox.PostgreSql.csproj" />
   </ItemGroup>
 
 </Project>

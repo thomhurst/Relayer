@@ -1784,3 +1784,28 @@ In-memory consumers use only native redelivery for retries, including manual set
 Copies budget against the destination's declared `MaxMessageBytes`, subtracting portable body, headers and ordering key. Native settlements budget body and failure headers against the source declaration, because the lazy header SPI cannot enumerate original properties. If even the first/latest summary cannot fit, omit only the history header and retain counters. Native overhead, hidden properties, native callbacks and attribute counts remain broker-enforced; application data is never removed to make room. Native send failure still prevents settlement.
 
 **Consequences.** Full exception diagnostics belong in application logs/traces. All new work runs on failure/manual settlement paths; the successful receive and send paths are unchanged. See the site's [failure handling contract](../website/docs/guides/failure-handling.md).
+
+
+## D76. EF transaction coordination is independent of the database provider
+
+**Decision.** Keep EF transaction ownership, savepoints, buffer lifetime, inbox/settlement coordination
+and execution-strategy replay in `Relayer.Outbox.EntityFrameworkCore`. Put PostgreSQL configuration,
+commands, conflict classification and public registration/migration extensions in
+`Relayer.Outbox.PostgreSql.EntityFrameworkCore`, which depends on the neutral package and
+`Relayer.Outbox.PostgreSql`. The neutral package never references a native database client.
+
+The PostgreSQL integration continues to use the existing Npgsql batch, dispatcher, SQL schema and
+EF execution strategies/interceptors; the provider seam does not introduce a transaction or retry engine.
+Other providers can supply their native operations without adding reverse dependencies to coordination.
+`Relayer.Sagas.EntityFrameworkCore` remains intentionally PostgreSQL-only: its state contract uses
+PostgreSQL `xmin`, and its consumer composes the PostgreSQL inbox/outbox registration. It therefore
+depends on `Relayer.Outbox.PostgreSql.EntityFrameworkCore`; making saga persistence portable is
+separate work, not a consequence of making transaction coordination provider-neutral.
+Unsupported providers fail at options configuration when known, otherwise at native EF options validation.
+Tenant-selected contexts retain delivery-scope validation before opening a transaction.
+
+**Pre-release compatibility.** PostgreSQL applications must replace their EF outbox package reference
+with `Relayer.Outbox.PostgreSql.EntityFrameworkCore` and rebuild because registration types move
+assemblies. Existing namespaces, option types and method call sites remain. SQL Server and MySQL EF
+support is still planned; the site's [support matrix](../website/docs/reference/outbox-stores.md#database-integration-support)
+is the source of truth for available combinations.

@@ -2,7 +2,7 @@
   <ItemGroup>
     <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" />
     <ProjectReference Include="../../src/Relayer.Kafka/Relayer.Kafka.csproj" />
-    <ProjectReference Include="../../src/Relayer.Outbox.EntityFrameworkCore/Relayer.Outbox.EntityFrameworkCore.csproj" />
+    <ProjectReference Include="../../src/Relayer.Outbox.PostgreSql.EntityFrameworkCore/Relayer.Outbox.PostgreSql.EntityFrameworkCore.csproj" />
     <ProjectReference Include="../../src/Relayer.SourceGenerators/Relayer.SourceGenerators.csproj" OutputItemType="Analyzer" ReferenceOutputAssembly="false" />
   </ItemGroup>
 </Project>

@@ -27,6 +27,7 @@
     <Project Path="src/Relayer.Nats/Relayer.Nats.csproj" />
     <Project Path="src/Relayer.RabbitMQ.Streams/Relayer.RabbitMQ.Streams.csproj" />
     <Project Path="src/Relayer.Outbox.EntityFrameworkCore/Relayer.Outbox.EntityFrameworkCore.csproj" />
+    <Project Path="src/Relayer.Outbox.PostgreSql.EntityFrameworkCore/Relayer.Outbox.PostgreSql.EntityFrameworkCore.csproj" />
     <Project Path="src/Relayer.Outbox.MySql/Relayer.Outbox.MySql.csproj" />
     <Project Path="src/Relayer.Outbox.PostgreSql/Relayer.Outbox.PostgreSql.csproj" />
   </Folder>

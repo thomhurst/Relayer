@@ -4,7 +4,7 @@ description: "Explicit PostgreSQL process state using the EF Core consumer inbox
 ---
 
 `Relayer.Sagas` supplies typed process execution. Install `Relayer.Sagas.EntityFrameworkCore`
-to persist explicit process managers inside the existing
+to persist explicit PostgreSQL process managers inside the existing
 [EF Core consumer transaction](../reference/ef-core-inbox.md). A process is an ordinary state
 class and a generated `IHandler<T>` dispatcher. There is no scanning, independent transaction,
 lock provider, second inbox or second outbox.
@@ -106,8 +106,13 @@ services.AddRelayer(relayer =>
 });
 ```
 
-Import `Relayer.Outbox.EntityFrameworkCore` for outbox registration. `Saga<TContext,TState>` is
-the first middleware, replaces the ordinary `EntityFrameworkCore<TContext>` declaration, and
+The `Relayer.Sagas.EntityFrameworkCore` package is PostgreSQL-only and transitively references
+`Relayer.Outbox.PostgreSql.EntityFrameworkCore`, which owns the outbox registration extensions.
+Import their namespace, `Relayer.Outbox.EntityFrameworkCore`, for outbox registration.
+The provider-neutral transaction coordinator does not make saga persistence portable: the state
+contract requires PostgreSQL `xmin`. SQL Server and MySQL saga persistence are not implemented.
+
+`Saga<TContext,TState>` is the first middleware, replaces the ordinary `EntityFrameworkCore<TContext>` declaration, and
 validates the state key, native row version and selected outbox at composition. Use one state type
 per process consumer; that consumer can handle several message types for the same state.
 

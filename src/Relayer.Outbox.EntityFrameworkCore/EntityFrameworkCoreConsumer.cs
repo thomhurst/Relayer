@@ -4,7 +4,6 @@ using System.Runtime.CompilerServices;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.Extensions.DependencyInjection;
-using Npgsql;
 
 namespace Relayer.Outbox.EntityFrameworkCore;
 
@@ -17,7 +16,7 @@ internal sealed class EntityFrameworkCoreConsumer<TContext>(string consumer, boo
     internal bool ScopedValidation => scopedValidation;
 
     internal EntityFrameworkCoreConsumerSettings Resolve(DbContext db) => scopedValidation
-        ? EntityFrameworkCoreConsumerExtensions.Validate(db, inbox, configuration, explicitOptions, requireOutbox)
+        ? OutboxConfiguration.ValidateConsumer(db, inbox, configuration, explicitOptions, requireOutbox)
         : new(inbox, outbox, configuration);
 
     public ValueTask InvokeAsync(MessageContext context, ConsumeDelegate next)
@@ -42,12 +41,9 @@ internal sealed class EntityFrameworkCoreConsumer<TContext>(string consumer, boo
                 // An outbox context can bind reloaded options in a new scope. Its interceptor has registered
                 // the exact configuration with this transaction; never write the inbox to a different schema.
                 var current = settings.Outbox ? context.Services.GetRequiredService<EntityFrameworkCoreOutbox>().Get(db, settings.Configuration).Configuration : settings.Configuration;
-                await using var command = new NpgsqlCommand(current.InboxInsertSql,
-                    (NpgsqlConnection)db.Database.GetDbConnection(), (NpgsqlTransaction)transaction.GetDbTransaction());
-                command.Parameters.Add(new NpgsqlParameter<string>("consumer", consumer));
-                command.Parameters.Add(new NpgsqlParameter<Guid>("id", messageId));
-                // The unique key waits for an overlapping transaction. A rollback lets this insert succeed.
-                if (await command.ExecuteNonQueryAsync(cancellation).ConfigureAwait(false) == 0)
+                // The native provider insert waits on the unique key for overlapping transactions.
+                if (await current.InsertInboxAsync(db.Database.GetDbConnection(), transaction.GetDbTransaction(),
+                        consumer, messageId, cancellation).ConfigureAwait(false) == 0)
                 {
                     RequestCompletion(context);
                     await transaction.CommitAsync(cancellation).ConfigureAwait(false);

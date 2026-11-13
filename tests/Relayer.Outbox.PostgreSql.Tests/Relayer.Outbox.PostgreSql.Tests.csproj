@@ -20,7 +20,7 @@
   <ItemGroup>
     <ProjectReference Include="../Relayer.Outbox.CrashProbe/Relayer.Outbox.CrashProbe.csproj" />
     <ProjectReference Include="../../src/Relayer.Outbox.PostgreSql/Relayer.Outbox.PostgreSql.csproj" />
-    <ProjectReference Include="../../src/Relayer.Outbox.EntityFrameworkCore/Relayer.Outbox.EntityFrameworkCore.csproj" />
+    <ProjectReference Include="../../src/Relayer.Outbox.PostgreSql.EntityFrameworkCore/Relayer.Outbox.PostgreSql.EntityFrameworkCore.csproj" />
     <ProjectReference Include="../../src/Relayer.HealthChecks/Relayer.HealthChecks.csproj" />
     <ProjectReference Include="../../src/Relayer.Testing/Relayer.Testing.csproj" />
     <ProjectReference Include="../../src/Relayer.SourceGenerators/Relayer.SourceGenerators.csproj"

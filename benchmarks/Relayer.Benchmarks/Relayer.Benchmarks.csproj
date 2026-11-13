@@ -25,7 +25,7 @@
     <ProjectReference Include="..\..\src\Relayer.Outbox.PostgreSql\Relayer.Outbox.PostgreSql.csproj" />
     <ProjectReference Include="../../src/Relayer.Outbox.MySql/Relayer.Outbox.MySql.csproj" />
     <ProjectReference Include="..\..\src\Relayer\Relayer.csproj" />
-    <ProjectReference Include="..\..\src\Relayer.Outbox.EntityFrameworkCore\Relayer.Outbox.EntityFrameworkCore.csproj" />
+    <ProjectReference Include="..\..\src\Relayer.Outbox.PostgreSql.EntityFrameworkCore\Relayer.Outbox.PostgreSql.EntityFrameworkCore.csproj" />
     <ProjectReference Include="../../src/Relayer.Kafka/Relayer.Kafka.csproj" />
     <ProjectReference Include="../../src/Relayer.RabbitMQ/Relayer.RabbitMQ.csproj" />
     <ProjectReference Include="../../src/Relayer.Kafka.SchemaRegistry/Relayer.Kafka.SchemaRegistry.csproj" />

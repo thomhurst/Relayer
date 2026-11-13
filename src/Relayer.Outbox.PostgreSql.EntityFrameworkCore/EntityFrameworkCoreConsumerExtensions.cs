@@ -2,7 +2,6 @@ using Relayer.Transports;
 using Relayer.Pipeline;
 using System.Data;
 using Microsoft.EntityFrameworkCore;
-using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace Relayer.Outbox.EntityFrameworkCore;
@@ -49,14 +48,14 @@ public static class EntityFrameworkCoreConsumerExtensions
         // tenant, so do not invoke them during composition. Fixed-store consumers retain early validation.
         if (services.GetService<TenantContext>() is not null)
         {
-            var fallback = new OutboxConfiguration(options ?? new());
+            var fallback = new PostgreSqlOutboxConfiguration(options ?? new());
             var scoped = new EntityFrameworkCoreConsumer<TContext>(consumer, inbox, false, fallback,
                 instrumentation, isolationLevel, scopedValidation: true, explicitOptions: options is not null,
                 requireOutbox: requireOutbox);
             return new RetryingEntityFrameworkCoreConsumer<TContext>(scoped, consumer, conflictRetries: isolationLevel is not null);
         }
         var context = services.GetRequiredService<TContext>();
-        var settings = Validate(context, inbox, new OutboxConfiguration(options ?? new()), options is not null, requireOutbox);
+        var settings = OutboxConfiguration.ValidateConsumer(context, inbox, new PostgreSqlOutboxConfiguration(options ?? new()), options is not null, requireOutbox);
         var boundary = new EntityFrameworkCoreConsumer<TContext>(consumer, settings.Inbox, settings.Outbox,
             settings.Configuration, instrumentation, isolationLevel);
         var nativeRetries = context.Database.CreateExecutionStrategy().RetriesOnFailure;
@@ -64,22 +63,4 @@ public static class EntityFrameworkCoreConsumerExtensions
             ? new RetryingEntityFrameworkCoreConsumer<TContext>(boundary, consumer, conflictRetries: !nativeRetries)
             : boundary;
     }
-
-    internal static EntityFrameworkCoreConsumerSettings Validate(DbContext context, bool inbox,
-        OutboxConfiguration fallback, bool explicitOptions, bool requireOutbox)
-    {
-        if (context.Database.ProviderName != "Npgsql.EntityFrameworkCore.PostgreSQL")
-            throw new InvalidOperationException("EF Core consumers currently require the Npgsql PostgreSQL provider.");
-        var nativeOptions = context.GetService<IDbContextOptions>();
-        OutboxConfiguration.ValidatePooling(nativeOptions);
-        var outbox = nativeOptions.FindExtension<OutboxConfiguration>();
-        if (outbox is not null && explicitOptions)
-            throw new InvalidOperationException("Configure schema and prefix on AddRelayerOutbox; the consumer inbox uses that same configuration.");
-        if (requireOutbox && outbox is null)
-            throw new InvalidOperationException("Saga consumers require AddRelayerOutbox on the selected scoped DbContext. State, inbox and outgoing messages must share one transaction.");
-        outbox?.TenantBinding?.Validate();
-        return new(inbox || outbox is not null, outbox is not null, outbox ?? fallback);
-    }
 }
-
-internal readonly record struct EntityFrameworkCoreConsumerSettings(bool Inbox, bool Outbox, OutboxConfiguration Configuration);

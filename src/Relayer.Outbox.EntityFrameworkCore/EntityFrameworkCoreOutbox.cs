@@ -3,7 +3,6 @@ using System.Data.Common;
 using System.Runtime.InteropServices;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Storage;
-using Relayer.Outbox.PostgreSql;
 
 namespace Relayer.Outbox.EntityFrameworkCore;
 
@@ -12,7 +11,7 @@ internal sealed class EntityFrameworkCoreOutbox(bool supportsScheduling = false,
     RelayerInstrumentation? instrumentation = null) : IOutboxEnlistment, IDisposable
 {
     private readonly List<OutboxContext> _contexts = [];
-    private readonly PostgreSqlOutboxBatch _batch = new();
+    private IOutboxBatch? _batch;
     private Selection? _selection;
     private long _enqueueOrder;
     private readonly List<BufferedOutboxMessage> _sharedRows = [];
@@ -45,8 +44,7 @@ internal sealed class EntityFrameworkCoreOutbox(bool supportsScheduling = false,
     {
         foreach (var state in _contexts)
             if (ReferenceEquals(state.Context, context)) return state;
-        if (context.Database.ProviderName != "Npgsql.EntityFrameworkCore.PostgreSQL")
-            throw new InvalidOperationException("EF Core outbox enlistment currently requires the Npgsql PostgreSQL provider.");
+        configuration.ValidateProvider(context.Database.ProviderName);
         var created = new OutboxContext(context, configuration);
         _contexts.Add(created);
         return created;
@@ -111,7 +109,7 @@ internal sealed class EntityFrameworkCoreOutbox(bool supportsScheduling = false,
             try
             {
                 instrumentation?.AddOutboxPending(state.Count);
-                state.Configuration.Dispatcher?.Committed(state.Rows, state.Count);
+                state.Configuration.Committed(state.Rows, state.Count);
             }
             finally { state.Clear(); }
         }
@@ -123,7 +121,7 @@ internal sealed class EntityFrameworkCoreOutbox(bool supportsScheduling = false,
             if (ReferenceEquals(state.Transaction, transaction)) state.Failed = true;
     }
 
-    internal PostgreSqlOutboxBatch? Prepare(DbTransaction transaction)
+    internal IOutboxBatch? Prepare(DbTransaction transaction)
     {
         OutboxConfiguration? configuration = null;
         var count = 0;
@@ -141,20 +139,23 @@ internal sealed class EntityFrameworkCoreOutbox(bool supportsScheduling = false,
             if (state.Count != 0) participants++;
         }
         if (count == 0) return null;
+        _batch ??= configuration!.CreateBatch();
         _batch.Prepare(transaction, configuration!.InsertSql);
         // A single context already buffers in send order. Shared transactions can interleave
         // sends across contexts; merge their reusable rows before the database assigns seq.
         foreach (var state in _contexts)
             if (ReferenceEquals(state.Transaction, transaction))
-                for (var i = 0; i < state.Count; i++)
-                    if (participants == 1) _batch.Add(state.Rows[i]);
-                    else _sharedRows.Add(state.Rows[i]);
+            {
+                if (participants == 1) _batch.AddRange(CollectionsMarshal.AsSpan(state.Rows)[..state.Count]);
+                else
+                    for (var i = 0; i < state.Count; i++) _sharedRows.Add(state.Rows[i]);
+            }
         if (participants > 1)
         {
             try
             {
                 SortSendOrder(CollectionsMarshal.AsSpan(_sharedRows));
-                for (var i = 0; i < _sharedRows.Count; i++) _batch.Add(_sharedRows[i]);
+                _batch.AddRange(CollectionsMarshal.AsSpan(_sharedRows));
             }
             finally { _sharedRows.Clear(); }
         }
@@ -166,7 +167,7 @@ internal sealed class EntityFrameworkCoreOutbox(bool supportsScheduling = false,
     public void Dispose()
     {
         foreach (var state in _contexts) state.Clear();
-        _batch.Dispose();
+        _batch?.Dispose();
     }
 
     private sealed class Selection(EntityFrameworkCoreOutbox owner, OutboxContext state, Selection? previous) : IDisposable
@@ -274,7 +275,7 @@ internal sealed class OutboxContext(DbContext context, OutboxConfiguration confi
         if (Failed) throw new InvalidOperationException("Roll back the failed outbox transaction before sending again.");
         if (record.Message.DeliverAt is not null && !(record.Message.OrderingKey is not null
                 ? Configuration.SupportsOrderedScheduling : Configuration.SupportsScheduling))
-            throw new InvalidOperationException("Scheduled EF Core outbox sends require a matching due-row dispatch worker for the selected DbContext schema, table prefix and ordered lane count. Register PostgreSQL maintenance or ordered dispatch for that store.");
+            throw new InvalidOperationException("Scheduled EF Core outbox sends require a matching due-row dispatch worker for the selected DbContext schema, table prefix and ordered lane count. Register matching maintenance or ordered dispatch for that store.");
         if (Configuration.TenantBinding is { } tenant)
         {
             try { record = tenant.Bind(record); }

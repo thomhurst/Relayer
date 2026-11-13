@@ -1,18 +1,22 @@
+using System.Data.Common;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.Extensions.DependencyInjection;
-using Relayer.Outbox.PostgreSql;
 
 namespace Relayer.Outbox.EntityFrameworkCore;
 
-internal sealed class OutboxConfiguration : IDbContextOptionsExtension
+// Provider implementations supply native commands; coordination stays independent of a database client.
+internal abstract class OutboxConfiguration : IDbContextOptionsExtension
 {
     private DbContextOptionsExtensionInfo? _info;
-
-    // Native options carry the already-created configuration. Delivery validation must not enumerate
-    // CoreOptionsExtension.Interceptors: its IEnumerable can allocate an iterator on every attempt.
     public DbContextOptionsExtensionInfo Info => _info ??= new ConfigurationInfo(this);
     public void ApplyServices(IServiceCollection services) { }
-    public void Validate(IDbContextOptions options) => ValidatePooling(options);
+    public void Validate(IDbContextOptions options)
+    {
+        ValidatePooling(options);
+        ValidateProvider(options);
+    }
 
     internal static void ValidatePooling(IDbContextOptions options)
     {
@@ -28,43 +32,39 @@ internal sealed class OutboxConfiguration : IDbContextOptionsExtension
         public override string LogFragment => "";
         public override int GetServiceProviderHashCode() => 0;
         public override void PopulateDebugInfo(IDictionary<string, string> debugInfo) { }
-        // Configuration affects commands, not EF's internal service registrations. Do not create an
-        // internal service provider per tenant/schema or retain tenant services in a global cache.
+        // Settings affect commands only; never retain tenant services in a per-store EF provider cache.
         public override bool ShouldUseSameServiceProvider(DbContextOptionsExtensionInfo other) => other is ConfigurationInfo;
     }
 
-    internal OutboxTenantBinding? TenantBinding { get; }
-    internal string Table { get; }
-    internal int Lanes { get; }
-    internal string InsertSql { get; }
-    internal PostgreSqlDirectDispatcher? Dispatcher { get; }
-    internal bool SupportsScheduling { get; }
-    internal bool SupportsOrderedScheduling { get; }
-    internal string InboxInsertSql { get; }
-    internal string InboxExistsSql { get; }
+    internal OutboxTenantBinding? TenantBinding { get; init; }
+    internal string Table { get; init; } = null!;
+    internal int Lanes { get; init; }
+    internal bool SupportsScheduling { get; init; }
+    internal bool SupportsOrderedScheduling { get; init; }
+    internal abstract void ValidateProvider(string? providerName);
+    internal abstract void ValidateProvider(IDbContextOptions options);
+    internal abstract OutboxConfiguration? FindConfiguration(IDbContextOptions options);
+    internal abstract IOutboxBatch CreateBatch();
+    internal string InsertSql { get; init; } = null!;
+    internal abstract void Committed(List<BufferedOutboxMessage> rows, int count);
+    internal abstract IExecutionStrategy CreateConflictStrategy(DbContext context);
+    internal abstract ValueTask<int> InsertInboxAsync(DbConnection connection, DbTransaction transaction, string consumer, Guid id, CancellationToken cancellationToken);
+    internal abstract ValueTask<bool> InboxExistsAsync(DbConnection connection, string consumer, Guid id, CancellationToken cancellationToken);
 
-    internal OutboxConfiguration(EntityFrameworkCoreOutboxOptions options, PostgreSqlDirectDispatcher? dispatcher = null, IEnumerable<PostgreSqlSchedulingRegistration>? workers = null)
+    internal static EntityFrameworkCoreConsumerSettings ValidateConsumer(DbContext context, bool inbox,
+        OutboxConfiguration fallback, bool explicitOptions, bool requireOutbox)
     {
-        TenantBinding = options.TenantBinding;
-        TenantBinding?.Validate();
-        // Reuse the schema's validation, including generated identifier lengths, at registration time.
-        _ = PostgreSqlOutboxSchema.CreateScript(new() { Schema = options.Schema, TablePrefix = options.TablePrefix });
-        if (options.Lanes <= 0) throw new ArgumentOutOfRangeException(nameof(options), "Lanes must be positive.");
-        Table = PostgreSqlOutboxSchema.QuoteIdentifier(options.Schema ?? "public") + "." +
-            PostgreSqlOutboxSchema.QuoteIdentifier(options.TablePrefix + "outbox");
-        Lanes = options.Lanes;
-        if (options.DispatchStoreName is not null) ArgumentException.ThrowIfNullOrWhiteSpace(options.DispatchStoreName);
-        dispatcher?.ValidateStore(options.Schema, options.TablePrefix);
-        Dispatcher = dispatcher;
-        if (workers is not null)
-        {
-            SupportsScheduling = PostgreSqlSchedulingRegistration.Supports(workers, options.Schema, options.TablePrefix);
-            SupportsOrderedScheduling = PostgreSqlSchedulingRegistration.Supports(workers, options.Schema, options.TablePrefix, options.Lanes);
-        }
-        var inbox = PostgreSqlOutboxSchema.QuoteIdentifier(options.Schema ?? "public") + "." +
-            PostgreSqlOutboxSchema.QuoteIdentifier(options.TablePrefix + "inbox");
-        InboxExistsSql = $"SELECT EXISTS (SELECT 1 FROM {inbox} WHERE consumer = @consumer AND message_id = @id)";
-        InboxInsertSql = $"INSERT INTO {inbox} (consumer, message_id, processed_at) VALUES (@consumer, @id, clock_timestamp()) ON CONFLICT (consumer, message_id) DO NOTHING";
-        InsertSql = PostgreSqlOutboxBatch.CreateInsertSql(Table);
+        fallback.ValidateProvider(context.Database.ProviderName);
+        var nativeOptions = context.GetService<IDbContextOptions>();
+        ValidatePooling(nativeOptions);
+        var outbox = fallback.FindConfiguration(nativeOptions);
+        if (outbox is not null && explicitOptions)
+            throw new InvalidOperationException("Configure schema and prefix on AddRelayerOutbox; the consumer inbox uses that same configuration.");
+        if (requireOutbox && outbox is null)
+            throw new InvalidOperationException("Saga consumers require AddRelayerOutbox on the selected scoped DbContext. State, inbox and outgoing messages must share one transaction.");
+        outbox?.TenantBinding?.Validate();
+        return new(inbox || outbox is not null, outbox is not null, outbox ?? fallback);
     }
 }
+
+internal readonly record struct EntityFrameworkCoreConsumerSettings(bool Inbox, bool Outbox, OutboxConfiguration Configuration);
