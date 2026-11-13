@@ -2,6 +2,8 @@ using Relayer.Transports;
 using Relayer.Pipeline;
 using System.Buffers;
 using Relayer.InMemory;
+using Microsoft.Extensions.DependencyInjection;
+using Relayer.Serialization;
 
 namespace Relayer.Testing;
 
@@ -9,6 +11,18 @@ namespace Relayer.Testing;
 /// <remarks>Snapshots allocate intentionally. Register only in tests. One instance observes every named transport in its provider.</remarks>
 public sealed class RelayerHarness : ISendMiddleware, IRelayerObserver
 {
+    private readonly IServiceProvider? _services;
+    private readonly MessageTypeRegistry? _messageTypes;
+
+    /// <summary>Creates standalone work tracking. Typed reads require AddRelayerHarness registration.</summary>
+    public RelayerHarness() { }
+
+    internal RelayerHarness(IServiceProvider services, MessageTypeRegistry messageTypes)
+    {
+        _services = services;
+        _messageTypes = messageTypes;
+    }
+
     private readonly object _gate = new();
     private readonly List<HarnessMessage> _sent = [];
     private readonly List<HarnessMessage> _dispatched = [];
@@ -29,6 +43,57 @@ public sealed class RelayerHarness : ISendMiddleware, IRelayerObserver
     public IReadOnlyList<HarnessFailure> Failed { get { lock (_gate) return _failed.ToArray(); } }
     /// <summary>Successful native dead-letter operations.</summary>
     public IReadOnlyList<HarnessDeadLetter> DeadLettered { get { lock (_gate) return _deadLettered.ToArray(); } }
+
+    /// <summary>Reads successful logical sends of the registered message identity.</summary>
+    public IReadOnlyList<TMessage> GetSent<TMessage>() => ReadMessages<TMessage>(Sent);
+
+    /// <summary>Reads successful native sends of the registered message identity.</summary>
+    public IReadOnlyList<TMessage> GetDispatched<TMessage>() => ReadMessages<TMessage>(Dispatched);
+
+    /// <summary>Reads consume attempts of the registered message identity, including redeliveries.</summary>
+    public IReadOnlyList<TMessage> GetConsumed<TMessage>() => ReadMessages<TMessage>(Consumed);
+
+    /// <summary>Reads an observation using this provider's serializer for its named transport.</summary>
+    /// <remarks>The observation must have the requested registered wire identity. Logical sends return their original object.</remarks>
+    public TMessage Read<TMessage>(HarnessMessage observation)
+    {
+        ArgumentNullException.ThrowIfNull(observation);
+        var identity = GetIdentity<TMessage>();
+        if (!string.Equals(observation.WireType, identity, StringComparison.Ordinal))
+            throw new InvalidOperationException($"The observation has wire type '{observation.WireType}', not '{identity}'.");
+        return ReadCore<TMessage>(observation);
+    }
+
+    private string GetIdentity<TMessage>()
+    {
+        if (_messageTypes is null)
+            throw new InvalidOperationException("Resolve RelayerHarness from services registered with AddRelayerHarness to use typed reads.");
+        if (!_messageTypes.TryGetMessageType(typeof(TMessage), out var identity))
+            throw new InvalidOperationException($"Register message type '{typeof(TMessage)}' with AddMessageTypesFromThisAssembly or MessageTypes.Add before reading observations.");
+        return identity.ToString();
+    }
+
+    private IReadOnlyList<TMessage> ReadMessages<TMessage>(IReadOnlyList<HarnessMessage> observations)
+    {
+        var identity = GetIdentity<TMessage>();
+        var messages = new List<TMessage>();
+        foreach (var observation in observations)
+            if (string.Equals(observation.WireType, identity, StringComparison.Ordinal)
+                && observation.Matches<TMessage>())
+                messages.Add(ReadCore<TMessage>(observation));
+        return messages.ToArray();
+    }
+
+    private TMessage ReadCore<TMessage>(HarnessMessage observation)
+    {
+        if (observation.Message is TMessage message) return message;
+        if (observation.Message is not null)
+            throw new InvalidOperationException($"The logical observation contains '{observation.Message.GetType()}', not '{typeof(TMessage)}'.");
+        var serializer = observation.TransportName is { } name
+            ? _services!.GetMessageSerializer(name)
+            : _services!.GetRequiredService<IMessageSerializer>();
+        return observation.Read<TMessage>(serializer);
+    }
 
     /// <summary>Waits for observed operations and queued in-memory messages to finish, without polling.</summary>
     /// <remarks>Start producers first. Future external arrivals are not observable. Use TrackWork across external producer or outbox scheduling gaps.</remarks>
@@ -66,7 +131,8 @@ public sealed class RelayerHarness : ISendMiddleware, IRelayerObserver
         {
             var operation = (ISendOperation)context;
             var message = new HarnessMessage(context.MessageId, context.MessageType.ToString(), default,
-                operation.TransportName, operation.Destination, message: context.Message, usesOutbox: operation.UsesOutbox);
+                operation.TransportName, operation.Destination, message: context.Message, usesOutbox: operation.UsesOutbox,
+                isTombstone: context.Message is ITombstone, tombstoneKey: (context.Message as ITombstone)?.Key);
             lock (_gate) _identities[context.MessageId] = message;
             try
             {
@@ -128,16 +194,17 @@ public sealed class RelayerHarness : ISendMiddleware, IRelayerObserver
     }
 
     private HarnessMessage Snapshot(DefaultMessageContext context) => Correlate(context.GetLogMessageId(),
-        context.GetLogMessageType(), context.Body.ToArray(), context.Attempt);
+        context.GetLogMessageType(), context.Body.ToArray(), context.Attempt,
+        isTombstone: context.IsTombstone, tombstoneKey: context.TombstoneKey);
 
     internal HarnessMessage Correlate(string? id, string? wireType, ReadOnlyMemory<byte> body, int attempt = 1,
-        string? transportName = null, string? destination = null)
+        string? transportName = null, string? destination = null, bool isTombstone = false, WireString? tombstoneKey = null)
     {
         lock (_gate)
         {
             var original = id is not null && _identities.TryGetValue(id, out var known) ? known : null;
             return new(id, wireType, body, transportName ?? original?.TransportName,
-                destination ?? original?.Destination, attempt);
+                destination ?? original?.Destination, attempt, isTombstone: isTombstone, tombstoneKey: tombstoneKey);
         }
     }
 

@@ -9,7 +9,7 @@ public sealed class HarnessMessage
 {
     internal HarnessMessage(string? messageId, string? wireType, ReadOnlyMemory<byte> body,
         string? transportName = null, string? destination = null, int attempt = 1,
-        object? message = null, bool usesOutbox = false)
+        object? message = null, bool usesOutbox = false, bool isTombstone = false, WireString? tombstoneKey = null)
     {
         MessageId = messageId;
         WireType = wireType;
@@ -19,6 +19,10 @@ public sealed class HarnessMessage
         Attempt = attempt;
         Message = message;
         UsesOutbox = usesOutbox;
+        IsTombstone = isTombstone;
+        TombstoneKey = tombstoneKey is { } key
+            ? key.Text is { } text ? new WireString(text) : new WireString(key.Utf8.ToArray())
+            : null;
     }
 
     /// <summary>The stable ID, or null for a malformed or raw envelope without an ID.</summary>
@@ -38,11 +42,25 @@ public sealed class HarnessMessage
     /// <summary>Whether the logical send uses an active outbox transaction.</summary>
     public bool UsesOutbox { get; }
 
+    /// <summary>Whether the native value is a keyed deletion.</summary>
+    public bool IsTombstone { get; }
+    /// <summary>An owned copy of the native deletion key, when present.</summary>
+    public WireString? TombstoneKey { get; }
+
+    internal bool Matches<TMessage>() => Message is { } message
+        ? message is TMessage
+        : IsTombstone == (default(TMessage) is ITombstone);
+
     /// <summary>Reads a logical object or deserializes an owned receive/dispatch snapshot.</summary>
     public TMessage Read<TMessage>(IMessageSerializer serializer)
     {
         ArgumentNullException.ThrowIfNull(serializer);
-        return Message is TMessage message ? message : serializer.Deserialize<TMessage>(new ReadOnlySequence<byte>(Body));
+        if (Message is TMessage message) return message;
+        if (!Matches<TMessage>())
+            throw new InvalidOperationException($"The observation does not contain a compatible '{typeof(TMessage)}' value kind.");
+        if (IsTombstone && default(TMessage) is ITombstone factory)
+            return (TMessage)factory.Create(TombstoneKey ?? throw new InvalidOperationException("A typed tombstone requires a non-null native key."));
+        return serializer.Deserialize<TMessage>(new ReadOnlySequence<byte>(Body));
     }
 }
 

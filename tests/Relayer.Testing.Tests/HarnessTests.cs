@@ -16,6 +16,154 @@ public class HarnessTests
     private static TaskCompletionSource Signal() => new(TaskCreationOptions.RunContinuationsAsynchronously);
 
     [Test]
+    public async Task Typed_queries_filter_mixed_identities_and_keep_owned_results_after_reset()
+    {
+        await using var fixture = await Fixture.Start();
+        var sent = new Probe(42);
+        await fixture.Send(sent);
+        using (var scope = fixture.Provider.CreateScope())
+            await scope.ServiceProvider.GetRequiredService<ISender>().SendAsync(new OtherProbe(7));
+        await fixture.Idle();
+        await Assert.That(fixture.Harness.GetSent<Probe>().Single()).IsSameReferenceAs(sent);
+        await Assert.That(fixture.Harness.GetSent<OtherProbe>().Single().Value).IsEqualTo(7);
+        var consumed = fixture.Harness.GetConsumed<Probe>();
+        var snapshot = fixture.Harness.Consumed.Single(item => item.WireType == "harness.probe;v=1");
+        await Assert.That(consumed.Single().Value).IsEqualTo(42);
+        await Assert.That(fixture.Harness.GetConsumed<OtherProbe>().Single().Value).IsEqualTo(7);
+        await Assert.That(fixture.Harness.GetDispatched<Probe>().Single().Value).IsEqualTo(42);
+        fixture.Harness.Reset();
+        await fixture.Send(new Probe(99));
+        await fixture.Idle();
+        await Assert.That(consumed.Single().Value).IsEqualTo(42);
+        await Assert.That(fixture.Harness.Read<Probe>(snapshot).Value).IsEqualTo(42);
+        await Assert.That(fixture.Harness.GetConsumed<Probe>().Single().Value).IsEqualTo(99);
+        await Assert.That(() => fixture.Harness.Read<OtherProbe>(snapshot)).Throws<InvalidOperationException>();
+        await Assert.That(() => fixture.Harness.GetSent<string>()).Throws<InvalidOperationException>();
+    }
+
+    [Test]
+    public async Task Typed_logical_reads_distinguish_payloads_and_tombstones_with_the_same_identity()
+    {
+        var services = new ServiceCollection();
+        services.AddRelayer(builder =>
+        {
+            builder.AddMessageTypesFromThisAssembly();
+            builder.UseSendMiddleware<LogicalSendOnly>();
+            builder.InMemory("logical", transport =>
+            {
+                transport.Send<Probe>("probes");
+                transport.Options.Configure(options => options.Endpoints["probes"] = new()
+                {
+                    Capabilities = new() { Tombstones = true },
+                });
+            });
+        });
+        services.AddRelayerHarness();
+        await using var provider = services.BuildServiceProvider();
+        using var scope = provider.CreateScope();
+        var sender = scope.ServiceProvider.GetRequiredService<ISender>();
+        var payload = new Probe(42);
+        var deletion = Tombstone.For<Probe>("key");
+        await sender.SendAsync(payload);
+        await sender.SendAsync(deletion);
+        var harness = provider.GetRequiredService<RelayerHarness>();
+        await Assert.That(harness.GetSent<Probe>().Single()).IsSameReferenceAs(payload);
+        await Assert.That(harness.GetSent<Tombstone<Probe>>().Single()).IsEqualTo(deletion);
+        await Assert.That(harness.Read<Tombstone<Probe>>(harness.Sent[1])).IsEqualTo(deletion);
+        await Assert.That(() => harness.Read<Probe>(harness.Sent[1])).Throws<InvalidOperationException>();
+        await Assert.That(() => harness.Read<Tombstone<Probe>>(harness.Sent[0])).Throws<InvalidOperationException>();
+    }
+
+    [Test]
+    public async Task Typed_serialized_reads_preserve_tombstones_and_owned_binary_keys()
+    {
+        await using var fixture = await Fixture.Create(tombstones: true);
+        var transport = fixture.Provider.GetServices<ITransport>().Single(item => item.Name == "first");
+        var key = new byte[] { 0xff, 0x00, 0x80 };
+        var headers = new KeyValuePair<string, WireString>[] { new("ce_type", new("harness.probe;v=1")), new("ce_id", new("deletion")) };
+        await fixture.Send(new Probe(42));
+        await transport.SendAsync(new("probes", default, headers, orderingKey: new WireString(key), isTombstone: true), default);
+        var provider = fixture.Provider;
+        var pipeline = new ConsumePipelineBuilder(provider.GetRequiredService<IServiceScopeFactory>(),
+            provider.GetRequiredService<MessageTypeRegistry>(), fixture.Serializer, static (_, _, _) => default)
+            .Handler(provider.GetRequiredService<HandlerRegistry>().Descriptors.Single(item => item.HandlerType == typeof(ProbeHandler)))
+            .Build(1);
+        var receive = new ReceivePipeline<OutgoingMessage, TombstoneBinding>(pipeline, new(), 1);
+        var body = new ArrayBufferWriter<byte>();
+        fixture.Serializer.Serialize(new Probe(7), body);
+        await receive.ProcessAsync(new("probes", body.WrittenMemory, headers));
+        await receive.ProcessAsync(new("probes", default, headers, orderingKey: new WireString(key), isTombstone: true));
+        var dispatched = fixture.Harness.Dispatched.Single(item => item.IsTombstone);
+        var consumed = fixture.Harness.Consumed.Single(item => item.IsTombstone);
+        Array.Clear(key);
+        await Assert.That(fixture.Harness.GetDispatched<Probe>().Single().Value).IsEqualTo(42);
+        await Assert.That(fixture.Harness.GetConsumed<Probe>().Single().Value).IsEqualTo(7);
+        await Assert.That(fixture.Harness.GetDispatched<Tombstone<Probe>>().Single().Key.Utf8.ToArray()).IsEquivalentTo(new byte[] { 0xff, 0x00, 0x80 });
+        await Assert.That(fixture.Harness.GetConsumed<Tombstone<Probe>>().Single().Key.Utf8.ToArray()).IsEquivalentTo(new byte[] { 0xff, 0x00, 0x80 });
+        await Assert.That(() => fixture.Harness.Read<Probe>(consumed)).Throws<InvalidOperationException>();
+        await Assert.That(() => fixture.Harness.Read<Tombstone<Probe>>(fixture.Harness.Consumed[0])).Throws<InvalidOperationException>();
+        await fixture.StartServices();
+        await fixture.Idle();
+        fixture.Harness.Reset();
+        await Assert.That(fixture.Harness.Read<Tombstone<Probe>>(consumed).Key.Utf8.ToArray()).IsEquivalentTo(new byte[] { 0xff, 0x00, 0x80 });
+        await Assert.That(dispatched.Read<Tombstone<Probe>>(fixture.Serializer).Key.Utf8.ToArray()).IsEquivalentTo(new byte[] { 0xff, 0x00, 0x80 });
+    }
+
+    private readonly struct TombstoneBinding : IMessageBinding<OutgoingMessage>
+    {
+        public static ReadOnlySequence<byte> GetBody(OutgoingMessage message) => new(message.Body);
+        public static int? GetDeliveryCount(OutgoingMessage message) => 1;
+        public static bool IsTombstone(OutgoingMessage message) => message.IsTombstone;
+        public static WireString? GetTombstoneKey(OutgoingMessage message) => message.OrderingKey;
+        public static bool TryGetHeader(OutgoingMessage message, string name, out WireString value)
+        {
+            foreach (var header in message.Headers.Span)
+                if (header.Key == name) { value = header.Value; return true; }
+            value = default;
+            return false;
+        }
+    }
+
+    public sealed class LogicalSendOnly : ISendMiddleware
+    {
+        public ValueTask InvokeAsync(SendContext context, SendDelegate next) => default;
+    }
+
+    [Test]
+    public async Task Typed_queries_skip_raw_and_other_version_bodies_before_deserialization()
+    {
+        await using var fixture = await Fixture.Create();
+        var transport = fixture.Provider.GetServices<ITransport>().Single(item => item.Name == "first");
+        await transport.SendAsync(new("probes", "invalid JSON"u8.ToArray()), default);
+        await transport.SendAsync(new("probes", "invalid JSON"u8.ToArray(),
+            new KeyValuePair<string, WireString>[] { new("ce_type", new("harness.probe;v=2")) }), default);
+        await fixture.Send(new Probe(5));
+        await Assert.That(fixture.Harness.GetDispatched<Probe>().Single().Value).IsEqualTo(5);
+        await Assert.That(fixture.Harness.GetDispatched<OtherProbe>().Count).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task Typed_reads_use_named_serializers_and_keep_providers_isolated()
+    {
+        await using var first = await Fixture.Start(serializerMarker: 11);
+        await using var second = await Fixture.Start(serializerMarker: 22);
+        await Task.WhenAll(first.Send(new Probe(1)), second.Send(new Probe(2)));
+        using (var scope = first.Provider.CreateScope())
+            await scope.ServiceProvider.GetRequiredService<ISender>().SendAsync(new OtherProbe(3));
+        await Task.WhenAll(first.Idle(), second.Idle());
+        var serializer = (MarkedSerializer)first.Provider.GetMessageSerializer("first");
+        var reads = serializer.Reads;
+        await Assert.That(first.Harness.GetSent<Probe>().Single().Value).IsEqualTo(1);
+        await Assert.That(serializer.Reads).IsEqualTo(reads);
+        await Assert.That(first.Harness.GetConsumed<Probe>().Single().Value).IsEqualTo(1);
+        await Assert.That(first.Harness.GetDispatched<Probe>().Single().Value).IsEqualTo(1);
+        await Assert.That(first.Harness.Read<Probe>(first.Harness.Consumed.Single(item => item.TransportName == "first")).Value).IsEqualTo(1);
+        await Assert.That(first.Harness.GetConsumed<OtherProbe>().Single().Value).IsEqualTo(3);
+        await Assert.That(second.Harness.GetConsumed<Probe>().Single().Value).IsEqualTo(2);
+        await Assert.That(second.Harness.GetDispatched<Probe>().Single().Value).IsEqualTo(2);
+    }
+
+    [Test]
     public async Task Round_trip_records_owned_snapshots_and_reset_clears_all_state()
     {
         await using var fixture = await Fixture.Start();
@@ -88,7 +236,7 @@ public class HarnessTests
         await Assert.That(fixture.Harness.Failed[0].Error).IsSameReferenceAs(error);
         await Assert.That(fixture.Harness.DeadLettered.Count).IsEqualTo(1);
         await Assert.That(fixture.Harness.DeadLettered[0].Error.Reason).IsEqualTo("Processing failed");
-        await Assert.That(fixture.Harness.DeadLettered[0].Message.Read<Probe>(fixture.Serializer).Value).IsEqualTo(1);
+        await Assert.That(fixture.Harness.Read<Probe>(fixture.Harness.DeadLettered[0].Message).Value).IsEqualTo(1);
         fixture.Harness.Reset();
         await Assert.That(fixture.Harness.Failed.Count).IsEqualTo(0);
         await Assert.That(fixture.Harness.DeadLettered.Count).IsEqualTo(0);
@@ -306,7 +454,7 @@ public class HarnessTests
         Array.Clear(headers);
         await fixture.Idle();
         await Assert.That(fixture.Harness.Dispatched.Count).IsEqualTo(1);
-        await Assert.That(fixture.Harness.Dispatched[0].Read<Probe>(fixture.Serializer).Value).IsEqualTo(31);
+        await Assert.That(fixture.Harness.GetDispatched<Probe>().Single().Value).IsEqualTo(31);
         await Assert.That(fixture.Harness.Sent.Count).IsEqualTo(0);
     }
 
@@ -415,6 +563,8 @@ public class HarnessTests
         var harness = provider.GetRequiredService<RelayerHarness>();
         await harness.WaitForIdleAsync().WaitAsync(Limit);
         await Assert.That(harness.Consumed.Count).IsEqualTo(2);
+        await Assert.That(harness.GetConsumed<Probe>().Select(message => message.Value).ToArray()).IsEquivalentTo(new[] { 1, 1 });
+        await Assert.That(harness.Read<Probe>(harness.Failed[0].Message).Value).IsEqualTo(1);
         await Assert.That(harness.Failed.Count).IsEqualTo(1);
         await Assert.That(harness.Failed[0].Message.MessageId).IsEqualTo("two");
     }
@@ -455,7 +605,7 @@ public class HarnessTests
         private bool _started;
 
         internal static Task<Fixture> Create(ProbeControl? control = null, bool log = false,
-            TestOutbox? outbox = null, TimeProvider? clock = null, ILoggerFactory? logging = null, TimeSpan? maxRedeliveryDelay = null, FailureOptions? failures = null)
+            TestOutbox? outbox = null, TimeProvider? clock = null, ILoggerFactory? logging = null, TimeSpan? maxRedeliveryDelay = null, FailureOptions? failures = null, byte? serializerMarker = null, bool tombstones = false)
         {
             var services = new ServiceCollection();
             services.AddSingleton(control ?? new ProbeControl());
@@ -467,13 +617,15 @@ public class HarnessTests
                 builder.InMemory("first", transport =>
                 {
                     transport.Send<Probe>("probes");
+                    if (serializerMarker is { } marker)
+                        transport.UseSerializer(provider => new MarkedSerializer(provider.GetRequiredService<IMessageSerializer>(), marker));
                     transport.Options.Configure(options =>
                     {
                         options.Endpoints["probes"] = new() { Capabilities = new()
                         {
                             ConsumptionModel = log ? ConsumptionModel.Log : ConsumptionModel.Queue,
                             DeadLetter = true, MaxDeliveryDelay = TimeSpan.MaxValue, MaxRedeliveryDelay = maxRedeliveryDelay ?? TimeSpan.MaxValue,
-                            MaxBatchSize = 100,
+                            MaxBatchSize = 100, OrderedByKey = tombstones, Tombstones = tombstones,
                         } };
                     });
                     transport.Consume("probes", consumer => { consumer.Handler<ProbeHandler>(); if (failures is not null) consumer.Failures(failures); consumer.Options.Group = log ? "one" : null; });
@@ -493,9 +645,9 @@ public class HarnessTests
         }
 
         internal static async Task<Fixture> Start(ProbeControl? control = null, bool log = false,
-            TestOutbox? outbox = null, TimeProvider? clock = null, ILoggerFactory? logging = null, TimeSpan? maxRedeliveryDelay = null, FailureOptions? failures = null)
+            TestOutbox? outbox = null, TimeProvider? clock = null, ILoggerFactory? logging = null, TimeSpan? maxRedeliveryDelay = null, FailureOptions? failures = null, byte? serializerMarker = null)
         {
-            var fixture = await Create(control, log, outbox, clock, logging, maxRedeliveryDelay, failures);
+            var fixture = await Create(control, log, outbox, clock, logging, maxRedeliveryDelay, failures, serializerMarker);
             await fixture.StartServices();
             return fixture;
         }
@@ -521,6 +673,24 @@ public class HarnessTests
             if (_started)
                 foreach (var service in provider.GetServices<IHostedService>().Reverse()) await service.StopAsync(default);
             await provider.DisposeAsync();
+        }
+    }
+
+    private sealed class MarkedSerializer(IMessageSerializer inner, byte marker) : IMessageSerializer
+    {
+        public string ContentType => inner.ContentType;
+        public int Reads { get; private set; }
+        public void Serialize<TMessage>(TMessage message, IBufferWriter<byte> destination)
+        {
+            destination.GetSpan(1)[0] = marker;
+            destination.Advance(1);
+            inner.Serialize(message, destination);
+        }
+        public TMessage Deserialize<TMessage>(ReadOnlySequence<byte> source)
+        {
+            if (source.FirstSpan[0] != marker) throw new InvalidOperationException("Wrong provider's serializer.");
+            Reads++;
+            return inner.Deserialize<TMessage>(source.Slice(1));
         }
     }
 

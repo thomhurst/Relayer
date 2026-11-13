@@ -18,7 +18,7 @@ public static class HarnessServiceCollectionExtensions
         if (services.Any(item => item.ServiceType == typeof(ITransport) && !item.IsKeyedService && item.Lifetime != ServiceLifetime.Singleton))
             throw new InvalidOperationException("Harness observation requires singleton ITransport registrations.");
 
-        services.AddSingleton<RelayerHarness>();
+        services.AddSingleton(static provider => new RelayerHarness(provider, provider.GetRequiredService<MessageTypeRegistry>()));
         services.AddSingleton<IRelayerObserver>(static provider => provider.GetRequiredService<RelayerHarness>());
         services.Insert(0, ServiceDescriptor.Singleton<ISendMiddleware>(static provider => provider.GetRequiredService<RelayerHarness>()));
         for (var i = 0; i < services.Count; i++)
@@ -138,6 +138,7 @@ internal sealed class HarnessTransport : ITransport, ITransportSendTracing, ITra
             }
             if (candidateId is not null && candidateType is not null) break;
         }
-        return _harness.Correlate(id, type, message.Body.ToArray(), transportName: Name, destination: message.Destination);
+        return _harness.Correlate(id, type, message.Body.ToArray(), transportName: Name, destination: message.Destination,
+            isTombstone: message.IsTombstone, tombstoneKey: message.IsTombstone ? message.OrderingKey : null);
     }
 }
