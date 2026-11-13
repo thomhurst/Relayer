@@ -36,7 +36,7 @@ public sealed class SharedDirectDispatchContractTests(SqlServerFixture database)
         var transport = new RecordingTransport();
         await using var fixture = new Fixture(ConnectionString, transport);
         await fixture.Start(10, 10);
-        await fixture.Sql($"CREATE TRIGGER [dbo].[fail_{Guid.NewGuid():N}] ON {fixture.Table} INSTEAD OF DELETE AS THROW 51000, 'completion unavailable', 1;");
+        await fixture.Sql($"CREATE TRIGGER [dbo].[fail_{TestContext.Current!.Isolation.GetIsolatedName("completion")}] ON {fixture.Table} INSTEAD OF DELETE AS THROW 51000, 'completion unavailable', 1;");
         var record = Record(1);
         await fixture.CommitAsync(record);
         await fixture.StopAsync();
@@ -172,7 +172,7 @@ public sealed class SharedDirectDispatchContractTests(SqlServerFixture database)
         var claimed = new bool[claims.Length];
         await store.ClaimBatchAsync(claims, claimed, now, now.AddMinutes(5), default);
         await Assert.That(claimed.All(value => value)).IsTrue();
-        await fixture.Sql($"CREATE TRIGGER [dbo].[count_{Guid.NewGuid():N}] ON {fixture.Table} AFTER DELETE AS BEGIN DECLARE @counts TABLE (id int); INSERT INTO @counts VALUES (1), (2), (3), (4); END;");
+        await fixture.Sql($"CREATE TRIGGER [dbo].[count_{TestContext.Current!.Isolation.GetIsolatedName("delete")}] ON {fixture.Table} AFTER DELETE AS BEGIN DECLARE @counts TABLE (id int); INSERT INTO @counts VALUES (1), (2), (3), (4); END;");
         var stale = claims[1];
         claims[1] = new(stale.MessageId, Guid.NewGuid());
         await Assert.That(await store.CompleteBatchAsync(claims, now, default)).IsEqualTo(2L);
@@ -212,7 +212,7 @@ public sealed class SharedDirectDispatchContractTests(SqlServerFixture database)
     {
         private readonly SqlServerOutboxOptions _options = new()
         {
-            TablePrefix = "dispatch_" + Guid.NewGuid().ToString("N") + "_",
+            TablePrefix = TestContext.Current!.Isolation.GetIsolatedName("dispatch") + "_",
             DispatchStoreName = "store"
         };
         private ServiceProvider? _provider;

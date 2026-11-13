@@ -206,7 +206,7 @@ public sealed class MaintenanceTests(SqlServerFixture database)
     [Test]
     public async Task Failure_threshold_transfers_unordered_rows_and_fences_stale_tokens()
     {
-        var data = new StoreData(database, new() { TablePrefix = "poison_" + Guid.NewGuid().ToString("N") + "_", MaxDispatchAttempts = 2 });
+        var data = new StoreData(database, new() { TablePrefix = TestContext.Current!.Isolation.GetIsolatedName("poison") + "_", MaxDispatchAttempts = 2 });
         await data.Create();
         var id = Guid.CreateVersion7();
         await data.Insert(id, DateTimeOffset.UtcNow);
@@ -226,7 +226,7 @@ public sealed class MaintenanceTests(SqlServerFixture database)
     [Test]
     public async Task Exhausted_ordered_row_parks_and_cleanup_preserves_its_dead_barrier()
     {
-        var data = new StoreData(database, new() { TablePrefix = "park_" + Guid.NewGuid().ToString("N") + "_", MaxDispatchAttempts = 1 });
+        var data = new StoreData(database, new() { TablePrefix = TestContext.Current!.Isolation.GetIsolatedName("park") + "_", MaxDispatchAttempts = 1 });
         await data.Create();
         var id = Guid.CreateVersion7();
         await data.Insert(id, DateTimeOffset.UtcNow, lane: 3);
@@ -246,7 +246,7 @@ public sealed class MaintenanceTests(SqlServerFixture database)
     [Test]
     public async Task Unregistered_transport_consumes_recovery_attempts_without_stalling_other_groups()
     {
-        var data = new StoreData(database, new() { TablePrefix = "missing_" + Guid.NewGuid().ToString("N") + "_", MaxDispatchAttempts = 2 });
+        var data = new StoreData(database, new() { TablePrefix = TestContext.Current!.Isolation.GetIsolatedName("missing") + "_", MaxDispatchAttempts = 2 });
         await data.Create();
         var id = Guid.CreateVersion7();
         await data.Insert(id, DateTimeOffset.UtcNow.AddDays(-1));
