@@ -145,7 +145,7 @@ Subscriptions reference their declared topic. Forwarding to another exported que
 
 The exporter rejects nonempty `UserMetadata` (absent from these ARM schemas), entity `AuthorizationRules` (manage credentials separately), slash-containing entity names (unsupported ARM child names), unknown entity statuses, duplicate entities/subscriptions (including queue/topic names or subscription names within the same topic that differ only by case), missing subscription parents, and missing native route/consumer entities with actionable errors before touching the output stream. It never exports connection strings, credentials, processor settings or trusted-session assertions as infrastructure. Processor options and trusted assertions are application settings; the native `RequiresSession` entity property is exported.
 
-The `dotnet relayer topology export --format json|bicep|terraform` tool entry point remains **planned** ([#502](https://github.com/thomhurst/Relayer/issues/502)). SQS/SNS Terraform export is available through the explicit API below. Use the runnable application above for Service Bus exports today. Existing `ITopology.ExportJson` behavior is unchanged.
+The same exporters are available through the [command-line export](#command-line-export) contract below. Existing `ITopology.ExportJson` behavior is unchanged.
 
 ## AsyncAPI export
 
@@ -261,3 +261,82 @@ Use native SNS `Topics`, `Subscriptions` and `QueueTopology` as described in the
 Queue `Policy` is emitted unchanged as an `aws_sqs_queue_policy` resource, referencing the queue URL and depending on declared topics. Subscriptions wait for exported queue policies. **Supply the policy explicitly**: the exporter never invents or broadens SNS permissions. Policy ARN strings remain literal, so policies must target the configured deployment identity. A queue's `RedrivePolicy` adds a dependency on its declared dead-letter queue when the ARN matches; externally managed dead-letter queues must already exist.
 
 Unsupported native attributes (including queue `RedriveAllowPolicy`, SNS feedback settings and subscription replay settings), topic `DataProtectionPolicy`, non-SQS subscription protocols, malformed ARNs and other transports throw before any bytes are written to the destination. Remove unsupported settings from the exported declarations and manage them explicitly in separate Terraform resources. Streams remain open. The exporter buffers the document before copying it; this is tooling work and adds no per-message processing cost. Existing `ExportJson` output is unchanged.
+
+
+## Command-line export
+
+Install the existing managed .NET tool (requires the .NET 10 SDK/runtime or later):
+
+```bash
+dotnet tool install --global dotnet-relayer --prerelease
+dotnet relayer --help
+```
+
+The input is an **explicit, trusted, untrimmed managed application assembly**, not an `ExportJson` snapshot. JSON snapshots intentionally omit native settings and cannot reconstruct infrastructure. Build a small class-library project alongside your application, reference the same Relayer package versions as the tool, and share your application's registration method. Keep the `.deps.json` and dependencies from the build/publish output beside the assembly. No entry point is executed or assembly scanning performed: `--type` selects exactly one type declaring `public static IServiceProvider CreateTopologyServices()` with no arguments. Return type must be `IServiceProvider`, not its concrete implementation. The tool owns and disposes the returned provider.
+
+For a standalone Service Bus example:
+
+```bash
+dotnet new classlib -n TopologyDeclarations -f net10.0
+cd TopologyDeclarations
+dotnet add package Relayer.AzureServiceBus --prerelease
+dotnet add package Microsoft.Extensions.DependencyInjection --version 10.0.14
+```
+
+Replace `Class1.cs` with:
+
+```csharp
+using Microsoft.Extensions.DependencyInjection;
+using Relayer;
+using Relayer.AzureServiceBus;
+
+namespace Example;
+
+public static class Declarations
+{
+    public static IServiceProvider CreateTopologyServices()
+    {
+        var services = new ServiceCollection();
+        // In a real application, call the same explicit registration method used by its host.
+        services.AddRelayer(r => r.ServiceBus("events", t => t.Options.Configure(o =>
+        {
+            o.Queues.Add(new("orders"));
+            o.Topics.Add(new("order-events"));
+            o.Subscriptions.Add(new("order-events", "billing") { MaxDeliveryCount = 5 });
+        })));
+        return services.BuildServiceProvider();
+    }
+}
+```
+
+Build and export from that project directory. `CopyLocalLockFileAssemblies` copies package dependencies beside the declaration assembly so the tool can resolve them:
+
+```bash
+dotnet build -c Release -p:CopyLocalLockFileAssemblies=true
+dotnet relayer topology export --assembly bin/Release/net10.0/TopologyDeclarations.dll --type Example.Declarations --format json > topology.json
+dotnet relayer topology export --assembly bin/Release/net10.0/TopologyDeclarations.dll --type Example.Declarations --format bicep --transport events > topology.bicep
+dotnet relayer topology export --assembly bin/Release/net10.0/TopologyDeclarations.dll --type Example.Declarations --format terraform --transport events > topology.tf
+```
+
+JSON is byte-for-byte the existing `ITopology.ExportJson` document for the complete declaration, including all transports and their routes/consumers. This example has no routes or consumers:
+
+```json
+{
+  "schemaVersion": 1,
+  "transports": [
+    { "name": "events", "mode": "Validate", "routes": [], "consumers": [] }
+  ]
+}
+```
+
+Bicep and Service Bus Terraform select one named Service Bus transport via `--transport`; they generate the native resources and deployment parameters [shown above](#service-bus-infrastructure-export). AWS Terraform exports the complete SQS/SNS-only declaration through the existing [AWS exporter](#aws-terraform-export). For an AWS declaration assembly, replace the factory's Service Bus registration with the `AmazonSns` registration in that section (return its service provider instead of invoking the exporter directly), then run:
+
+```bash
+dotnet relayer topology export --assembly bin/Release/net10.0/TopologyDeclarations.dll --type Example.Declarations --format terraform --account-id 123456789012 --region eu-west-1 > topology.tf.json
+```
+
+AWS accepts optional `--partition aws` (for example `aws-cn` or `aws-us-gov`). Omit `--transport` for AWS. Its `.tf.json` resources, policies, native settings and provider ownership are the same as the API's representative artifact above. Split mixed Azure/AWS declarations into separate declaration providers for AWS infrastructure export; JSON can still inspect mixed declarations.
+
+The factory is application code executed with your permissions. It must only register declarations and build a provider: **do not start a host or consumers, resolve runtime adapters/clients, or contact a broker**. The tool does none of those operations itself. No broker credentials are required. The CLI loads managed code and is not Native AOT or trimming compatible; AOT applications can share registration source with this separate managed declaration project. Runtime libraries and their JSON export keep their AOT support.
+
+Unsupported formats, declarations, unknown/repeated/incomplete options, invalid AWS identity, missing assemblies/types/factories and export failures return exit code 1 with an actionable stderr message. The tool buffers the whole validated artifact before writing stdout; failure emits no partial artifact. Shell redirection can still create an empty file on failure. To replace an existing deployment artifact, redirect to a temporary path and rename it only after exit code 0. `db script` and `message locate` commands remain available.
