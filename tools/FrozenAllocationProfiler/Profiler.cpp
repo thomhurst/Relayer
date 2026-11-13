@@ -157,7 +157,11 @@ std::string typeName(ClassID id, unsigned depth = 0)
         return (elementId ? typeName(elementId, depth + 1) : "<primitive:" + std::to_string(element) + ">") + "[rank=" + std::to_string(rank) + "]";
     ModuleID module; mdTypeDef token; ClassID parent; ULONG actual;
     ClassID arguments[32];
-    if (FAILED(info->GetClassIDInfo2(id, &module, &token, &parent, 32, &actual, arguments)) || actual > 32) {
+    auto classResult = info->GetClassIDInfo2(id, &module, &token, &parent, 32, &actual, arguments);
+    if (FAILED(classResult) || actual > 32) {
+        std::fprintf(stderr, "GetClassIDInfo2 failed: 0x%x, class %llu, type arguments %u\n",
+            static_cast<unsigned>(classResult), static_cast<unsigned long long>(id),
+            SUCCEEDED(classResult) ? actual : 0);
         ++failures; return "<unresolved-class>";
     }
     IMetaDataImport* metadata = nullptr;

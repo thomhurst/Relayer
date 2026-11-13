@@ -225,3 +225,12 @@ work; even matching object sizes cannot be subtracted from fixture thread counte
 A new stack-enabled run is neither historical replay nor proof of ownership for a
 previous failure. Default captures still collect no stacks. No assertions, warmup,
 measurement counts, GC settings or test parallelism change.
+
+Failed full-parallel captures remain evidence, not validated attribution. In run
+43460895321, one class allocated through `AsyncHelpers.AllocContinuation` had
+unavailable class metadata, and two snapshots returned `E_FAIL` with no frames.
+The pinned .NET 11 `GetClassIDInfo2` implementation returns
+`CORPROF_E_DATAINCOMPLETE` for continuations without metadata; the allocation
+stack alone does not prove that was this call’s HRESULT. Class-lookup failures
+therefore log the exact HRESULT, ClassID and returned argument count for the
+next diagnostic execution. The readers still reject incomplete reports.
