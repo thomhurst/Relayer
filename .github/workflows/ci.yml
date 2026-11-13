@@ -180,10 +180,40 @@ jobs:
           python3 .github/scripts/verify_packages.py .artifacts/packages --commit "$GITHUB_SHA"
 
       - name: Native AOT smoke test
+        id: aot-smoke
+        shell: bash
         if: steps.solution.outputs.present == 'true'
         run: |
-          dotnet publish tests/Relayer.AotSmoke -c Release -f ${{ matrix.framework }} -r linux-x64 -o .artifacts/aot-smoke
-          .artifacts/aot-smoke/Relayer.AotSmoke
+          mkdir -p .artifacts/ci-aot-failure
+          # Keep the original publish/run exit codes and logs; do not rebuild a failed image.
+          dotnet publish tests/Relayer.AotSmoke -c Release -f ${{ matrix.framework }} -r linux-x64 -o .artifacts/aot-smoke 2>&1 | tee .artifacts/ci-aot-failure/publish.log
+          .artifacts/aot-smoke/Relayer.AotSmoke 2>&1 | tee .artifacts/ci-aot-failure/smoke.log
+
+      - name: Collect failing Native AOT inputs
+        if: failure() && steps.aot-smoke.outcome == 'failure'
+        run: |
+          dotnet --info > .artifacts/ci-aot-failure/runtime.txt
+          uname -a > .artifacts/ci-aot-failure/host.txt
+          git rev-parse HEAD > .artifacts/ci-aot-failure/commit.txt
+          git archive --format=zip HEAD -o .artifacts/ci-aot-failure/source.zip
+          # The publish directory includes the exact executable and native debug symbols.
+          # A publish failure may have no directory; retain its build log and inputs anyway.
+          if [ -d .artifacts/aot-smoke ]; then
+            find .artifacts/aot-smoke -type f -print0 | sort -z | xargs -0 -r sha256sum \
+              > .artifacts/ci-aot-failure/binaries.sha256
+            # Tar preserves executable permissions that artifact ZIP downloads otherwise lose.
+            tar -czf .artifacts/ci-aot-failure/native-image.tar.gz .artifacts/aot-smoke
+          fi
+
+      - name: Retain failing Native AOT inputs
+        if: failure() && steps.aot-smoke.outcome == 'failure'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ci-aot-failure-${{ matrix.framework }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .artifacts/ci-aot-failure/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 14
 
       - name: Native AOT dead-letter HTTP smoke
         if: steps.solution.outputs.present == 'true'
