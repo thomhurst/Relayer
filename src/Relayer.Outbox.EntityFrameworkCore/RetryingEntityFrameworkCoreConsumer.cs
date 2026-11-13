@@ -4,7 +4,6 @@ using System.Runtime.ExceptionServices;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.Extensions.DependencyInjection;
-using Npgsql;
 
 namespace Relayer.Outbox.EntityFrameworkCore;
 
@@ -31,9 +30,9 @@ internal sealed class RetryingEntityFrameworkCoreConsumer<TContext>(EntityFramew
                 await boundary.InvokeAsync(context, next, db, settings).ConfigureAwait(false);
                 return;
             }
-            strategy = conflictRetries && !native.RetriesOnFailure ? new PostgreSqlConflictExecutionStrategy(db) : native;
+            strategy = conflictRetries && !native.RetriesOnFailure ? settings.Configuration.CreateConflictStrategy(db) : native;
         }
-        else strategy = conflictRetries ? new PostgreSqlConflictExecutionStrategy(db) : db.Database.CreateExecutionStrategy();
+        else strategy = conflictRetries ? settings.Configuration.CreateConflictStrategy(db) : db.Database.CreateExecutionStrategy();
         var messageId = settings.Inbox ? EntityFrameworkCoreConsumer<TContext>.ParseMessageId(context.MessageId) : default;
         Operation? operation = null;
         for (var i = 0; i < _operations.Length; i++)
@@ -142,12 +141,8 @@ internal sealed class RetryingEntityFrameworkCoreConsumer<TContext>(EntityFramew
                 var settings = boundary.Resolve(db);
                 if (settings.Inbox != operation.Inbox || settings.Outbox != operation.Outbox)
                     throw new InvalidOperationException("The verification DbContext must keep the attempted inbox and outbox capabilities.");
-                var connection = (NpgsqlConnection)db.Database.GetDbConnection();
-                await connection.OpenAsync(cancellation).ConfigureAwait(false);
-                await using var command = new NpgsqlCommand(operation.Configuration.InboxExistsSql, connection);
-                command.Parameters.Add(new NpgsqlParameter<string>("consumer", consumer));
-                command.Parameters.Add(new NpgsqlParameter<Guid>("id", operation.MessageId));
-                committed = (bool)(await command.ExecuteScalarAsync(cancellation).ConfigureAwait(false))!;
+                committed = await operation.Configuration.InboxExistsAsync(db.Database.GetDbConnection(),
+                    consumer, operation.MessageId, cancellation).ConfigureAwait(false);
                 // Inbox rows commit only on the completion path.
                 if (committed && context.Settlement.Request is null) context.Settlement.Complete();
             }

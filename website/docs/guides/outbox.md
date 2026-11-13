@@ -9,7 +9,7 @@ at-least-once: a crash after broker acceptance but before the row is completed c
 The inbox deduplicates incoming messages by consumer name and original message ID.
 
 This guide uses PostgreSQL and EF Core with Kafka. Reference `Relayer.Kafka`,
-`Relayer.Outbox.EntityFrameworkCore` and the Npgsql EF Core provider. Packages are not published
+`Relayer.Outbox.PostgreSql.EntityFrameworkCore` and the Npgsql EF Core provider. Packages are not published
 yet; use project references from a repository checkout. The runnable
 [Kafka and EF Core sample](samples.md) shows the complete host and business model.
 

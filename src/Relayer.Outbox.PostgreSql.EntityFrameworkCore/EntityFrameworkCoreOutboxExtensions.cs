@@ -88,7 +88,13 @@ public static class EntityFrameworkCoreOutboxExtensions
             if (dispatcher is null)
                 throw new InvalidOperationException($"PostgreSQL dispatch store '{name}' is not registered.");
         }
-        var configuration = new OutboxConfiguration(options, dispatcher, workers);
+        var configuration = new PostgreSqlOutboxConfiguration(options, dispatcher, workers);
+        foreach (var extension in builder.Options.Extensions)
+            if (extension.Info.IsDatabaseProvider)
+            {
+                configuration.Validate(builder.Options);
+                break;
+            }
         ((IDbContextOptionsBuilderInfrastructure)builder).AddOrUpdateExtension(configuration);
         builder.AddInterceptors(new OutboxSaveChangesInterceptor(outbox, configuration),
             new OutboxTransactionInterceptor(outbox, configuration));
@@ -117,7 +123,7 @@ public static class EntityFrameworkCoreOutboxExtensions
     {
         public ValidateOptionsResult Validate(string? name, EntityFrameworkCoreOutboxOptions options)
         {
-            try { _ = new OutboxConfiguration(options); return ValidateOptionsResult.Success; }
+            try { _ = new PostgreSqlOutboxConfiguration(options); return ValidateOptionsResult.Success; }
             catch (ArgumentException error) { return ValidateOptionsResult.Fail(error.Message); }
         }
     }

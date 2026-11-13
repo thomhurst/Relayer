@@ -41,6 +41,7 @@
     <InternalsVisibleTo Include="Relayer.Outbox.MySql.Tests" />
     <InternalsVisibleTo Include="Relayer.Outbox.PostgreSql" />
     <InternalsVisibleTo Include="Relayer.Outbox.EntityFrameworkCore" />
+    <InternalsVisibleTo Include="Relayer.Outbox.PostgreSql.EntityFrameworkCore" />
     <InternalsVisibleTo Include="Relayer.Outbox.SqlServer" />
     <InternalsVisibleTo Include="Relayer.Testing" />
   </ItemGroup>

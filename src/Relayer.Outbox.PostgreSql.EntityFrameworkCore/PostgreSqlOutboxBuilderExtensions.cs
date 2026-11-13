@@ -44,7 +44,7 @@ public static class PostgreSqlOutboxBuilderExtensions
             LeaseDuration = writer.LeaseDuration, MaxDispatchAttempts = writer.MaxDispatchAttempts
         };
         // Validate before mutating the service collection.
-        _ = new OutboxConfiguration(writer);
+        _ = new PostgreSqlOutboxConfiguration(writer);
         _ = ordered.Validate();
         var services = builder.Services;
         services.AddRelayerEntityFrameworkCoreOutbox();

@@ -3,6 +3,8 @@ title: MySQL durable store
 description: "MySQL atomic consumer inbox, transactional enqueue, commit-triggered dispatch, Dapper integration and fenced claims."
 ---
 
+See the [database integration support matrix](outbox-stores.md#database-integration-support) for EF Core and ADO.NET inbox/outbox availability.
+
 `Relayer.Outbox.MySql` implements the [durable store contract](outbox-stores.md) using
 MySqlConnector and MySQL 8.4+ InnoDB. It supplies bounded reads, atomic claims, renewal,
 completion, failure persistence, leased recovery, bounded retention and eligible backlog counts. Scoped ADO.NET transactions

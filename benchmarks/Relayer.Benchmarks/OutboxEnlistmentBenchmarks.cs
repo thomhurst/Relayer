@@ -31,7 +31,7 @@ public class OutboxEnlistmentBenchmarks
         _context = new DbContext(options.Options);
         _selection = _context.EnlistRelayerOutbox();
         _outbox = _scope.ServiceProvider.GetRequiredService<IOutboxEnlistment>();
-        _state = ((EntityFrameworkCoreOutbox)_outbox).Get(_context, new OutboxConfiguration(new()));
+        _state = ((EntityFrameworkCoreOutbox)_outbox).Get(_context, new PostgreSqlOutboxConfiguration(new()));
         KeyValuePair<string, WireString>[] headers =
         [
             new("ce_id", new WireString("00000000-0000-7000-8000-000000000001"u8.ToArray())),

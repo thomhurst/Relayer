@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <Description>PostgreSQL provider for Relayer's EF Core outbox and inbox.</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" />
+    <InternalsVisibleTo Include="Relayer.Benchmarks" />
+    <InternalsVisibleTo Include="Relayer.Sagas.EntityFrameworkCore" />
+    <InternalsVisibleTo Include="Relayer.Outbox.PostgreSql.Tests" />
+    <ProjectReference Include="../Relayer.Outbox.EntityFrameworkCore/Relayer.Outbox.EntityFrameworkCore.csproj" />
+    <ProjectReference Include="../Relayer.Outbox.PostgreSql/Relayer.Outbox.PostgreSql.csproj" />
+  </ItemGroup>
+</Project>

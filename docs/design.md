@@ -822,8 +822,9 @@ hashes can change frozen dispatch-table layouts across unchanged processes.
 | `Relayer.RabbitMQ.Streams` | RabbitMQ Streams native lifecycle (see roadmap for execution support) | `RabbitMQ.Stream.Client` (1.x) |
 | `Relayer.Nats` | NATS JetStream native execution | `NATS.Client.JetStream` (3.x) |
 | `Relayer.GooglePubSub` | Native publishing, streaming pull, durable failure copies and topology | `Google.Cloud.PubSub.V1` (3.x), generated Protobuf messages |
-| `Relayer.Sagas` / `.EntityFrameworkCore` | Saga state transitions and optional EF Core persistence | `Relayer`; EF package adds `Microsoft.EntityFrameworkCore.Relational` |
-| `Relayer.Outbox.EntityFrameworkCore` | EF Core outbox and inbox | `Microsoft.EntityFrameworkCore.Relational` |
+| `Relayer.Sagas` / `.EntityFrameworkCore` | Saga state transitions and optional EF Core persistence | `Relayer`; EF package adds PostgreSQL EF inbox/outbox integration |
+| `Relayer.Outbox.EntityFrameworkCore` | Provider-neutral EF Core transaction coordination | `Microsoft.EntityFrameworkCore.Relational` |
+| `Relayer.Outbox.PostgreSql.EntityFrameworkCore` | PostgreSQL EF Core outbox/inbox registrations and native operations | EF coordination and PostgreSQL outbox packages |
 | `Relayer.Outbox.PostgreSql` / `.SqlServer` / `.MySql` | ADO.NET outbox and inbox (`NpgsqlDataSource` supported) | The provider's driver |
 | `Relayer.Outbox.MongoDB` | MongoDB outbox and inbox | `MongoDB.Driver` |
 | `Relayer.Serialization.*` | Protobuf, Avro, MessagePack | The respective library |

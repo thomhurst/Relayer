@@ -3,7 +3,16 @@ title: EF Core transaction enlistment
 description: "Persist outgoing messages atomically with PostgreSQL business changes using EF Core interceptors."
 ---
 
-`Relayer.Outbox.EntityFrameworkCore` implements transaction enlistment for the Npgsql EF Core provider.
+Reference `Relayer.Outbox.PostgreSql.EntityFrameworkCore` for the Npgsql EF Core integration.
+It depends on `Relayer.Outbox.EntityFrameworkCore` for provider-neutral transaction coordination and on
+`Relayer.Outbox.PostgreSql` for native PostgreSQL persistence and dispatch. The neutral package has no
+Npgsql or PostgreSQL package dependency; installing it alone does not configure a database provider.
+
+The provider split moves registration and migration extensions into the PostgreSQL EF package.
+Existing `using Relayer.Outbox.EntityFrameworkCore;` declarations and method call sites remain valid;
+update the package/project reference and rebuild. Unsupported providers fail while configuring options
+when already known, or when EF initializes completed options if configured later, before database I/O.
+See the [database integration support matrix](outbox-stores.md#database-integration-support).
 It buffers serialized sends, copies borrowed memory before each send completes, and writes one batched
 PostgreSQL `INSERT` immediately before commit. The insert uses the same connection and transaction as
 the business data. No `SaveChanges` override or outbox entity mapping is required.

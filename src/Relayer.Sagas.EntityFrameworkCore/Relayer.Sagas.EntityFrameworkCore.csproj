@@ -4,6 +4,6 @@
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="../Relayer.Sagas/Relayer.Sagas.csproj" />
-    <ProjectReference Include="../Relayer.Outbox.EntityFrameworkCore/Relayer.Outbox.EntityFrameworkCore.csproj" />
+    <ProjectReference Include="../Relayer.Outbox.PostgreSql.EntityFrameworkCore/Relayer.Outbox.PostgreSql.EntityFrameworkCore.csproj" />
   </ItemGroup>
 </Project>

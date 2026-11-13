@@ -3,6 +3,8 @@ title: SQL Server durable store
 description: "SQL Server ADO.NET/Dapper transactions, commit-triggered dispatch, leased recovery, poison isolation and bounded retention."
 ---
 
+See the [database integration support matrix](outbox-stores.md#database-integration-support) for EF Core and ADO.NET inbox/outbox availability.
+
 `Relayer.Outbox.SqlServer` implements the [durable store contract](outbox-stores.md) using
 `Microsoft.Data.SqlClient` and SQL Server's native connection pooling. It supplies reads, atomic claims,
 renewal, completion, failure persistence, eligible backlog counts and scoped ADO.NET/Dapper transaction

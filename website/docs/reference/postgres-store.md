@@ -3,6 +3,8 @@ title: PostgreSQL durable store
 description: "Register PostgreSQL outbox reads, atomic claims, fenced outcomes and backlog health queries."
 ---
 
+See the [database integration support matrix](outbox-stores.md#database-integration-support) for EF Core and ADO.NET inbox/outbox availability.
+
 `Relayer.Outbox.PostgreSql` implements `IOutboxStore` over the [shared PostgreSQL schema](postgres-schema.md).
 It supplies durable reads, atomic claims, renewal, completion, failure persistence and eligible backlog counts.
 [EF Core transaction enlistment](ef-core-outbox.md) and [ADO.NET/Dapper transactions](postgres-outbox.md)

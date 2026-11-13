@@ -33,7 +33,7 @@ a matching `.snupkg` containing portable PDBs. Debuggers can retrieve the source
 The packages are `Relayer`, `Relayer.Testing`, `Relayer.HealthChecks`, `Relayer.Kafka`,
 `Relayer.Kafka.HealthChecks`, `Relayer.AzureServiceBus`, `Relayer.AmazonSqs`, `Relayer.RabbitMQ`,
 `Relayer.RabbitMQ.Streams`, `Relayer.Nats`,
-`Relayer.Outbox.PostgreSql`, `Relayer.Outbox.EntityFrameworkCore`, `Relayer.Sagas`,
+`Relayer.Outbox.PostgreSql`, `Relayer.Outbox.EntityFrameworkCore`, `Relayer.Outbox.PostgreSql.EntityFrameworkCore`, `Relayer.Sagas`,
 `Relayer.Sagas.EntityFrameworkCore` and the `dotnet-relayer` tool.
 `Relayer.Kafka.SchemaRegistry`, `Relayer.Serialization.Protobuf` and `Relayer.Kafka.Serialization.Avro` are optional integration packages.
 `Relayer.Sagas` provides [process diagram declarations and export](../guides/saga-diagrams.md) and

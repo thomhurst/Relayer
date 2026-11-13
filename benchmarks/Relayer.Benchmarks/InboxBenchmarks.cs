@@ -43,7 +43,7 @@ public class InboxBenchmarks
         await using (var create = new NpgsqlCommand(PostgreSqlOutboxSchema.CreateScript(new() { Schema = _schema }),
             (NpgsqlConnection)_db.Database.GetDbConnection()))
             await create.ExecuteNonQueryAsync();
-        var configuration = new OutboxConfiguration(options);
+        var configuration = new PostgreSqlOutboxConfiguration(options);
         _insert = configuration.InboxInsertSql;
         _middleware = new EntityFrameworkCoreConsumer<DbContext>("benchmark", true, false, configuration,
             _provider.GetRequiredService<RelayerInstrumentation>());

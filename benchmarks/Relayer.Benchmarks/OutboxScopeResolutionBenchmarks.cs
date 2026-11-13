@@ -21,7 +21,7 @@ public class OutboxScopeResolutionBenchmarks
         // Reproduce the previous factory, including snapshot validation and SQL generation per scope.
         legacy.AddScoped<EntityFrameworkCoreOutbox>(static provider =>
         {
-            var configuration = new OutboxConfiguration(
+            var configuration = new PostgreSqlOutboxConfiguration(
                 provider.GetRequiredService<IOptionsSnapshot<EntityFrameworkCoreOutboxOptions>>().Value,
                 workers: provider.GetServices<PostgreSqlSchedulingRegistration>());
             return new(configuration.SupportsScheduling, configuration.SupportsOrderedScheduling);

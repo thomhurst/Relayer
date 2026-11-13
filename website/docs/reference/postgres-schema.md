@@ -4,7 +4,7 @@ description: "Create the shared outbox, dead outbox, inbox and lease tables with
 ---
 
 Relayer implements PostgreSQL schema creation in `Relayer.Outbox.PostgreSql`, plus an EF Core migration
-extension in `Relayer.Outbox.EntityFrameworkCore`. Schema creation does **not** enable durable sending,
+extension in `Relayer.Outbox.PostgreSql.EntityFrameworkCore`. Schema creation does **not** enable durable sending,
 transaction enlistment, dispatch, lease acquisition, poison-row handling or inbox deduplication by itself.
 Register [EF Core transaction enlistment](ef-core-outbox.md) separately to persist outgoing rows.
 [Ordered dispatch and lease acquisition](ordered-dispatch.md) and [unordered direct dispatch](direct-dispatch.md)
@@ -81,7 +81,7 @@ definitions before adopting tables with the same names. Future schema changes re
 ## EF Core migration path
 
 Use a PostgreSQL application migration with the Npgsql EF Core provider. Reference
-`Relayer.Outbox.EntityFrameworkCore` and add this call to its `Up` method:
+`Relayer.Outbox.PostgreSql.EntityFrameworkCore` and add this call to its `Up` method:
 
 ```csharp
 using Relayer.Outbox.EntityFrameworkCore;
