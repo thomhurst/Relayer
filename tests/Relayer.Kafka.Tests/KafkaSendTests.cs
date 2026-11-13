@@ -79,6 +79,33 @@ public class KafkaSendTests
     }
 
     [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Serialization_preserves_duplicate_order_null_values_and_body(bool populated)
+    {
+        var serializer = new KafkaValueSerializer();
+        var output = new ArrayBufferWriter<byte>();
+        var native = new Headers();
+        if (populated)
+            native.Add("duplicate", "old-first").Add("keep", "native").Add("duplicate", "old-last")
+                .Add("traceparent", "native-parent").Add("tracestate", "native=state");
+        var application = new Headers().Add("duplicate", "first").Add("traceparent", "creation-parent")
+            .Add("duplicate", (byte[]?)null).Add("duplicate", "last");
+        byte[] body = [1, 2, 3];
+
+        serializer.Serialize((body, application), ref output, new() { Headers = native });
+
+        await Assert.That(output.WrittenMemory.ToArray()).IsEquivalentTo(body);
+        var offset = populated ? 1 : 0;
+        await Assert.That(native.Count).IsEqualTo(offset + application.Count);
+        if (populated) await Assert.That(native[0].Key).IsEqualTo("keep");
+        for (var i = 0; i < application.Count; i++)
+            await Assert.That(native[offset + i]).IsEqualTo(application[i]);
+        await Assert.That(native[offset + 2].IsValueNull).IsTrue();
+        await Assert.That(native.GetFirstAsString("tracestate")).IsNull();
+    }
+
+    [Test]
     public async Task Borrows_utf8_memory_encodes_text_and_clears_native_headers_between_sends()
     {
         var state = new KafkaSendState();
@@ -98,7 +125,9 @@ public class KafkaSendTests
     }
 
     [Test]
-    public async Task Warm_send_preparation_and_native_serialization_allocate_zero_bytes()
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Warm_send_preparation_and_native_serialization_allocate_zero_bytes(bool populated)
     {
         var state = new KafkaSendState();
         var serializer = new KafkaValueSerializer();
@@ -111,6 +140,7 @@ public class KafkaSendTests
         for (var i = 0; i < 1000; i++)
         {
             output.Clear();
+            if (!populated) nativeHeaders.Clear();
             state.Prepare(message);
             keySerializer.Serialize(state.Key, ref output, context);
             serializer.Serialize((message.Body, state.Headers), ref output, context);
@@ -120,6 +150,7 @@ public class KafkaSendTests
         for (var i = 0; i < 1000; i++)
         {
             output.Clear();
+            if (!populated) nativeHeaders.Clear();
             state.Prepare(message);
             keySerializer.Serialize(state.Key, ref output, context);
             serializer.Serialize((message.Body, state.Headers), ref output, context);
