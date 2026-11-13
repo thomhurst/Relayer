@@ -106,4 +106,5 @@ jobs:
             Directory.Build.targets
             Directory.Packages.props
             global.json
+          include-hidden-files: true
           retention-days: 90
