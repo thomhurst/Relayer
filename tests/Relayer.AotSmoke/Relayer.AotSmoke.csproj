@@ -8,6 +8,10 @@
     <TrimmerSingleWarn>false</TrimmerSingleWarn>
   </PropertyGroup>
   <ItemGroup>
+    <ProjectReference Include="../Relayer.TestContracts.Orders/Relayer.TestContracts.Orders.csproj" />
+    <ProjectReference Include="../Relayer.TestContracts.Billing/Relayer.TestContracts.Billing.csproj" />
+  </ItemGroup>
+  <ItemGroup>
     <RuntimeHostConfigurationOption Include="MessagePack.Security.UseNonReflectiveObjectComparer" Value="true" Trim="true" />
     <PackageReference Include="Microsoft.Extensions.DependencyInjection" />
     <PackageReference Include="Microsoft.Extensions.Configuration" />

@@ -17,6 +17,25 @@ using Relayer.Outbox.PostgreSql;
 using Relayer.Serialization;
 using Relayer.Transports;
 
+using (var contractsProvider = new ServiceCollection().AddRelayer(builder =>
+{
+    builder.AddOrdersContracts();
+    builder.AddBillingContracts();
+    builder.AddMessageTypesFromThisAssembly();
+}).BuildServiceProvider())
+{
+    var contractsSerializer = contractsProvider.GetRequiredService<IMessageSerializer>();
+    var contractsBuffer = new ArrayBufferWriter<byte>();
+    contractsSerializer.Serialize(new Relayer.TestContracts.Orders.Order(42), contractsBuffer);
+    if (contractsSerializer.Deserialize<Relayer.TestContracts.Orders.Order>(new ReadOnlySequence<byte>(contractsBuffer.WrittenMemory)).MessageId != 42)
+        throw new InvalidOperationException("Referenced orders contract roundtrip failed.");
+    contractsBuffer.Clear();
+    contractsSerializer.Serialize(new Relayer.TestContracts.Billing.Payment(7), contractsBuffer);
+    if (contractsSerializer.Deserialize<Relayer.TestContracts.Billing.Payment>(new ReadOnlySequence<byte>(contractsBuffer.WrittenMemory)).MessageId != 7)
+        throw new InvalidOperationException("Referenced billing contract roundtrip failed.");
+}
+Console.WriteLine("Cross-assembly generated message registration passed under Native AOT.");
+
 using (var asynchronousReceive = new Relayer.TestFixtures.ConcurrentReceiveFixture())
 {
     for (var i = 0; i < 4; i++) asynchronousReceive.Run(Relayer.TestFixtures.ConcurrentReceiveFixture.Mode.Receive);

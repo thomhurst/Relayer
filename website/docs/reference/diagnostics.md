@@ -103,3 +103,7 @@ A `[Message]` name cannot be `null`, including `null!` (the null-forgiving opera
 ## Suppression and generated code
 
 Use `dotnet_diagnostic.<ID>.severity` in `.editorconfig`, or a targeted `#pragma warning disable <ID>` for intentionally invalid test fixtures. Generated code is excluded. Diagnostics run concurrently, with all mutable state scoped to one compilation.
+
+## RLYM008 — Invalid exported message registration name {#rlym008}
+
+`[assembly: GenerateMessageTypes("AddOrderMessages")]` exports an explicit public registration extension for a contracts library. Supply a non-empty C# identifier that is not a keyword or `AddMessageTypesFromThisAssembly`. Choose distinct names for libraries used together, for example `AddOrderMessages` and `AddBillingMessages`. Invalid names stop generation of the exported method; local registration remains available.

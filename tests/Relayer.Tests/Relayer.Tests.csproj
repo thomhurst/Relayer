@@ -6,6 +6,10 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <ProjectReference Include="../Relayer.TestContracts.Orders/Relayer.TestContracts.Orders.csproj" />
+    <ProjectReference Include="../Relayer.TestContracts.Billing/Relayer.TestContracts.Billing.csproj" />
+  </ItemGroup>
+  <ItemGroup>
     <None Update="servicebus-config.json" CopyToOutputDirectory="PreserveNewest" />
     <!-- The SDK's messaging ActivitySource is opt-in. Set it at process startup, never mutate a global switch in a test. -->
     <RuntimeHostConfigurationOption Include="Azure.Experimental.EnableActivitySource" Value="true" />

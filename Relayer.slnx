@@ -31,6 +31,8 @@
     <Project Path="src/Relayer.Outbox.PostgreSql/Relayer.Outbox.PostgreSql.csproj" />
   </Folder>
   <Folder Name="/tests/">
+    <Project Path="tests/Relayer.TestContracts.Orders/Relayer.TestContracts.Orders.csproj" />
+    <Project Path="tests/Relayer.TestContracts.Billing/Relayer.TestContracts.Billing.csproj" />
     <Project Path="tests/Relayer.Aspire.Tests/Relayer.Aspire.Tests.csproj" />
     <Project Path="tests/Relayer.AspNetCore.AotSmoke/Relayer.AspNetCore.AotSmoke.csproj" />
     <Project Path="tests/Relayer.AspNetCore.Tests/Relayer.AspNetCore.Tests.csproj" />
