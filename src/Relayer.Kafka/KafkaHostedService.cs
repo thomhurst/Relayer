@@ -42,6 +42,7 @@ internal sealed class KafkaHostedService(IServiceProvider provider, string name)
             var telemetry = provider.GetRequiredService<RelayerInstrumentation>().CreateEndpoint(new()
             { System = "kafka", Destination = consumer.Source, ConsumerGroup = consumer.Options.Group });
             pipeline.Tracing(tracing, endpoint).Telemetry(telemetry);
+            pipeline.ConfigureConsumer(provider, consumer);
             foreach (var handler in handlers.Descriptors)
                 if (consumer.Handlers.Contains(handler.HandlerType)) pipeline.Handler(handler);
             var receive = new ReceivePipeline<KafkaDelivery, KafkaMessageBinding>(pipeline.Build(1), new(), 1);

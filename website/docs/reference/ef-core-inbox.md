@@ -11,17 +11,28 @@ still runs through the consume pipeline after commit and asynchronous scope disp
 
 Create the [PostgreSQL schema](postgres-schema.md) first. Register an ordinary scoped DbContext and
 the [EF Core outbox](ef-core-outbox.md), using the same scoped provider as the handler's `ISender`.
-Compose the consumer explicitly at startup:
+Attach the boundary to the consumer declaration:
 
 ```csharp
+using Relayer;
+using Relayer.Kafka;
 using Relayer.Outbox.EntityFrameworkCore;
 
-var pipeline = new ConsumePipelineBuilder(scopeFactory, messageTypes, serializer, failures)
-    .Handler(handlers.GetHandler<OrderPlaced, OrderPlacedHandler>())
-    .EntityFrameworkCore<OrdersDbContext>("orders.billing")
-    .Use(otherMiddleware)
-    .Settle(SettleNativeMessageAsync)
-    .Build();
+services.AddRelayer(relayer =>
+{
+    relayer.AddMessageTypesFromThisAssembly();
+    relayer.Kafka("events", kafka =>
+    {
+        kafka.Options.Configure(o => o.BootstrapServers.Add("localhost:9092"));
+        kafka.Consume("orders", consumer =>
+        {
+            consumer.Options.Group = "billing";
+            consumer.EntityFrameworkCore<OrdersDbContext>("orders.billing");
+            consumer.Use<MyConsumeMiddleware>();
+            consumer.Handler<OrderPlacedHandler>();
+        });
+    });
+});
 ```
 
 `EntityFrameworkCore<TContext>` must be the first middleware registration, so the transaction
@@ -29,6 +40,10 @@ surrounds all subsequent middleware. The selected context comes from the deliver
 no assembly scanning or handler dependency inspection occurs. Its identity is an application-declared
 consumer name, distinct from the message type. Keep the name stable across restarts and replicas.
 Different consumer names can process the same message independently.
+
+The transport builds the pipeline and retains its native failure and settlement behavior.
+See [consume middleware](../guides/handlers.md#consume-middleware) for ordering, singleton lifetime,
+global registration and the startup configuration hook. Low-level manual composition remains available.
 
 When that context has `AddRelayerOutbox`, the inbox is enabled automatically and uses that context's
 schema and table prefix. Outbox registration on another context does not enable it. `SendAsync`
@@ -43,7 +58,7 @@ committed rows remain pending.
 For a scoped Npgsql DbContext without `AddRelayerOutbox`, opt in explicitly on that consumer:
 
 ```csharp
-builder.EntityFrameworkCore<OrdersDbContext>("orders.billing", inbox: true);
+consumer.EntityFrameworkCore<OrdersDbContext>("orders.billing", inbox: true);
 ```
 
 Without `inbox: true`, this declaration still owns the transaction but does not deduplicate.
@@ -57,7 +72,7 @@ Omitting `isolationLevel` keeps the provider default (normally Read Committed on
 Pass the native `System.Data.IsolationLevel` when the handler needs a stronger invariant:
 
 ```csharp
-builder.EntityFrameworkCore<OrdersDbContext>("orders.billing",
+consumer.EntityFrameworkCore<OrdersDbContext>("orders.billing",
     isolationLevel: System.Data.IsolationLevel.Serializable);
 ```
 

@@ -9,6 +9,26 @@ namespace Relayer.Tests;
 public class BatchPipelineTests
 {
     [Test]
+    public async Task Batch_composition_rejects_declared_single_message_middleware()
+    {
+        await using var provider = Provider();
+        var declaration = new ConsumerBuilder<object>(new ServiceCollection(), new HandlerRegistry(), "source");
+        declaration.ConfigurePipeline(pipeline => pipeline.Use(new SingleMiddleware()));
+        var builder = new ConsumePipelineBuilder(provider.GetRequiredService<IServiceScopeFactory>(),
+            provider.GetRequiredService<MessageTypeRegistry>(), provider.GetRequiredService<IMessageSerializer>(),
+            static (_, error, _) => ValueTask.FromException(error));
+        builder.ConfigureConsumer(provider, declaration.Build());
+        await Assert.That(() => builder.BuildBatch(
+            provider.GetRequiredService<HandlerRegistry>().GetBatchHandler<Payload, Handler>(), Definition(provider)))
+            .Throws<InvalidOperationException>().WithMessageContaining("single-message handlers and middleware");
+    }
+
+    private sealed class SingleMiddleware : IConsumeMiddleware
+    {
+        public ValueTask InvokeAsync(MessageContext context, ConsumeDelegate next) => next(context);
+    }
+
+    [Test]
     public async Task Batch_composition_rejects_single_message_metrics()
     {
         await using var provider = Provider();

@@ -67,6 +67,7 @@ internal sealed class NatsHostedService(IServiceProvider provider, string name) 
                 { System = "nats", Destination = consumer.Options.Stream, Subscription = consumer.Source }));
             var worker = _transport.AddConsumer(consumer.Options.Stream, consumer.Source, consumer.Options.Settings, consumer.Concurrency);
             pipeline.Settle(worker.SettleContextAsync);
+            pipeline.ConfigureConsumer(provider, consumer);
             foreach (var handler in registry.Descriptors)
                 if (consumer.Handlers.Contains(handler.HandlerType)) pipeline.Handler(handler);
             var receive = new ReceivePipeline<NatsDelivery, NatsBinding>(pipeline.Build(consumer.Concurrency), new("ce-"), consumer.Concurrency);

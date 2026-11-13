@@ -103,6 +103,8 @@ public interface IConsumerDefinition
     public string Source { get; }
     /// <summary>Explicit handler types for generated dispatch, in registration order.</summary>
     public IReadOnlyList<Type> Handlers { get; }
+    /// <summary>Startup-only pipeline configuration, in declaration order.</summary>
+    public IReadOnlyList<Action<ConsumePipelineBuilder>> PipelineConfiguration => Array.Empty<Action<ConsumePipelineBuilder>>();
     /// <summary>The maximum number of concurrent handler invocations.</summary>
     public int Concurrency { get; }
     /// <summary>The maximum number of messages per batch; 1 disables batching.</summary>
@@ -115,9 +117,10 @@ public interface IConsumerDefinition
 public sealed class ConsumerDefinition<TConsumerOptions> : IConsumerDefinition where TConsumerOptions : class
 {
     internal ConsumerDefinition(string source, TConsumerOptions options, Type[] handlers,
-        int concurrency, int batchSize, TimeSpan batchWait)
+        int concurrency, int batchSize, TimeSpan batchWait, Action<ConsumePipelineBuilder>[]? pipelineConfiguration = null)
     {
         Source = source;
+        PipelineConfiguration = Array.AsReadOnly(pipelineConfiguration ?? []);
         Options = options;
         Handlers = Array.AsReadOnly(handlers);
         Concurrency = concurrency;
@@ -135,6 +138,9 @@ public sealed class ConsumerDefinition<TConsumerOptions> : IConsumerDefinition w
     public int BatchSize { get; }
     /// <inheritdoc />
     public TimeSpan BatchWait { get; }
+
+    /// <inheritdoc />
+    public IReadOnlyList<Action<ConsumePipelineBuilder>> PipelineConfiguration { get; }
 
     /// <summary>The transport-specific consumer options, unchanged.</summary>
     public TConsumerOptions Options { get; }

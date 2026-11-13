@@ -18,6 +18,7 @@ with the delivery's service scope.
 ```csharp
 using Microsoft.EntityFrameworkCore;
 using Relayer;
+using Relayer.Kafka;
 using Relayer.Sagas.EntityFrameworkCore;
 
 public sealed class OrderState : EntityFrameworkCoreSagaData
@@ -90,15 +91,18 @@ services.AddRelayer(relayer =>
 {
     relayer.MessageTypes.Add<ItemReceived>("orders.item-received");
     relayer.MessageTypes.Add<OrderReady>("orders.ready");
-    relayer.Handler<OrderProcess>();
-    // Configure the real transport and the OrderReady send route here.
+    relayer.Kafka("events", kafka =>
+    {
+        kafka.Options.Configure(o => o.BootstrapServers.Add("localhost:9092"));
+        kafka.Send<OrderReady>("orders.ready");
+        kafka.Consume("orders.item-received", consumer =>
+        {
+            consumer.Options.Group = "order-process";
+            consumer.Saga<OrdersDbContext, OrderState>("orders.process");
+            consumer.Handler<OrderProcess>();
+        });
+    });
 });
-
-var pipeline = new ConsumePipelineBuilder(scopeFactory, messageTypes, serializer, failures)
-    .Handler(handlers.GetHandler<ItemReceived, OrderProcess>())
-    .Saga<OrdersDbContext, OrderState>("orders.process")
-    .Settle(SettleNativeMessageAsync)
-    .Build();
 ```
 
 Import `Relayer.Outbox.EntityFrameworkCore` for outbox registration. `Saga<TContext,TState>` is

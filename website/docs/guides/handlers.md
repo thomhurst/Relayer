@@ -23,6 +23,35 @@ A handler with no scoped dependencies can be registered as a singleton before `A
 
 `MessageContext` gives you the message ID, the stable `MessageType`, lazily read `Headers`, the delivery `Attempt` (starting at 1), the scoped `Services`, the `CancellationToken` and the `Features` collection that exposes the native message. The context is borrowed for the duration of the call; do not keep a reference to it.
 
+## Consume middleware
+
+Attach `IConsumeMiddleware` to a fluent consumer with `Use<T>()`, or register it on every declared
+consumer with `relayer.UseConsumeMiddleware<T>()` inside `AddRelayer`:
+
+```csharp
+relayer.UseConsumeMiddleware<AuditMiddleware>();
+relayer.InMemory("local", transport => transport.Consume("orders", consumer =>
+{
+    consumer.Use<ValidationMiddleware>();
+    consumer.Handler<OrderPlacedHandler>();
+}));
+```
+
+Consumer middleware runs first in declaration order, then global middleware in registration order,
+regardless of where the transport was declared. The first middleware is outermost. Return or await
+`next(context)` before completing; do not retain the borrowed context or run handling in the background.
+Middleware instances registered this way are DI-owned singletons, must support concurrent calls,
+and cannot capture scoped dependencies. Resolve delivery services through `context.Services`.
+
+Attach the [EF Core inbox](../reference/ef-core-inbox.md) or [saga boundary](sagas.md) first on the
+consumer, so it surrounds local and global middleware. Existing pipeline extensions can also be
+attached through `consumer.ConfigurePipeline(pipeline => ...)`, for example ADO.NET transaction
+and inbox boundaries. Callbacks run once during transport startup; the native transport still owns
+receive, failure handling and settlement. Invalid transaction ordering fails at composition.
+Single-message middleware is unsupported for batch handlers and fails at composition too.
+Consumer registrations freeze when the consumer callback returns; global registrations freeze when
+`AddRelayer` returns.
+
 ## Batch handlers
 
 A batch handler receives several messages at once. Each message can succeed or fail independently. Without buffered direct sends, only failed items enter the failure pipeline:

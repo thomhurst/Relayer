@@ -36,6 +36,7 @@ internal sealed class SqsHostedService(IServiceProvider provider, string name) :
                     provider.GetService<IFailureClassifier>());
                 var telemetry = provider.GetRequiredService<RelayerInstrumentation>().CreateEndpoint(new() { System = "aws_sqs", Destination = consumer.Source });
                 pipeline.Tracing(tracing, endpoint).Telemetry(telemetry).Settle(settlement.SettleAsync);
+                pipeline.ConfigureConsumer(provider, consumer);
                 foreach (var handler in handlers.Descriptors)
                     if (consumer.Handlers.Contains(handler.HandlerType)) pipeline.Handler(handler);
                 var receive = new ReceivePipeline<SqsDelivery, SqsMessageBinding>(pipeline.Build(consumer.Concurrency), consumer.Options.HeaderNames, consumer.Concurrency);

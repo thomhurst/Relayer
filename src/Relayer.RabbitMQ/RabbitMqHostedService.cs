@@ -75,6 +75,7 @@ internal sealed class RabbitMqReceiveComposer
         var telemetry = _provider.GetRequiredService<RelayerInstrumentation>().CreateEndpoint(new()
         { System = "rabbitmq", Destination = _consumer.Source, ServerAddress = endpoint.ServerAddress, ServerPort = endpoint.ServerPort });
         pipeline.Tracing(tracing, endpoint).Telemetry(telemetry).Settle(settlement.SettleAsync);
+        pipeline.ConfigureConsumer(_provider, _consumer);
         foreach (var handler in _provider.GetRequiredService<HandlerRegistry>().Descriptors)
             if (_consumer.Handlers.Contains(handler.HandlerType)) pipeline.Handler(handler);
         return new(pipeline.Build(_consumer.Concurrency), new("cloudEvents:"), _consumer.Concurrency);
