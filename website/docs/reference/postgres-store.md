@@ -154,9 +154,9 @@ from repeatedly backing off healthy neighbours. A partially successful batch can
 sends during isolation, consistent with at-least-once delivery. Cancellation stops isolation; expired
 claims remain for recovery. Successful batches retain the existing batch send and completion path. The first single-send `Retry` stops isolation and applies fenced durable backoff to the remaining claims with the same error. An outage therefore costs at most one failed batch send and one failed single send per pass; `DeadLetter` and `Discard` allow isolation to continue. Expired or replaced claims cannot be updated and remain eligible for recovery under the existing fencing rules.
 
-Ordered preparation errors (missing transport, key or ordering capability) and explicit low-level
+Local-handler failures classified as `Retry`, ordered preparation errors (missing transport, key or ordering capability) and explicit low-level
 `RecordFailureAsync` calls retain the positive `MaxDispatchAttempts` budget (default **10**).
-Configure that limit consistently on store and worker options; classified retryable sends never exhaust it.
+Configure that limit consistently on store and worker options; classified retryable native sends never exhaust it. Local-handler retries dead-letter at the limit and park their ordered key.
 Broker success followed by database completion failure does not consume an attempt.
 
 One fenced statement persists the final error and attempt count and copies the original identity,

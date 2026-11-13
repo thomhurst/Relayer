@@ -1729,7 +1729,8 @@ signals such as Azure.Messaging.ServiceBus 7.21.0's
 [`ServiceBusException.IsTransient`](https://github.com/Azure/azure-sdk-for-net/blob/4e4c19469fe598b9f28a73d065514106985e7560/sdk/servicebus/Azure.Messaging.ServiceBus/src/Primitives/ServiceBusException.cs),
 verified from the pinned package's checksum-matched source. Unclassified native failures still use the
 existing default classifier, so non-contract errors retry indefinitely until repaired or covered by a
-permanent rule. `MaxDispatchAttempts` does not bound `Retry`; applications must configure native
+permanent rule. `MaxDispatchAttempts` still bounds local-handler `Retry` failures, including ordered poison barriers.
+It does not bound native-send `Retry`; applications must configure native
 permanent-error rules and monitor pending rows. A retrying ordered head blocks its key until recovery.
 
 Existing native batch behavior was checked in ServiceBusSendTransport, KafkaProducerTransport,

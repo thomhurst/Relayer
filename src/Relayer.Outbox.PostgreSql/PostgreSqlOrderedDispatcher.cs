@@ -208,6 +208,7 @@ internal sealed partial class PostgreSqlOrderedDispatcher : BackgroundService
                     var claim = new OutboxClaim(row.Id, Guid.NewGuid());
                     if (!await _lane.ClaimAsync(connection, transaction, claim, cancellationToken).ConfigureAwait(false)) break;
                     var preparedForSend = false;
+                    var nativeSend = false;
                     try
                     {
                         var prepared = Prepare(row, _transports, _capabilities);
@@ -221,6 +222,7 @@ internal sealed partial class PostgreSqlOrderedDispatcher : BackgroundService
                         else
                         {
                             preparedForSend = true;
+                            nativeSend = true;
                             await prepared.Transport.SendAsync(prepared.Message, cancellationToken).ConfigureAwait(false);
                         }
                     }
@@ -239,9 +241,9 @@ internal sealed partial class PostgreSqlOrderedDispatcher : BackgroundService
                         if (action is not (FailureAction.Retry or FailureAction.DeadLetter))
                             throw new InvalidOperationException("The dispatch failure classifier returned an unknown action.");
                         var permanent = action == FailureAction.DeadLetter;
-                        if (!await _lane.FailAsync(connection, transaction, claim, error.Message, cancellationToken, permanent, retryable: preparedForSend).ConfigureAwait(false))
+                        if (!await _lane.FailAsync(connection, transaction, claim, error.Message, cancellationToken, permanent, retryable: nativeSend).ConfigureAwait(false))
                             throw new InvalidOperationException("Ordered outbox claim expired while recording a dispatch failure.", error);
-                        poisoned = permanent || (!preparedForSend && row.Attempts + 1 >= _options.MaxDispatchAttempts);
+                        poisoned = permanent || (!nativeSend && row.Attempts + 1 >= _options.MaxDispatchAttempts);
                         DispatchFailed(_logger, error);
                         break;
                     }

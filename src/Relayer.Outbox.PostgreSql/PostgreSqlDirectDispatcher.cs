@@ -276,7 +276,8 @@ internal sealed class PostgreSqlDirectDispatcher : BackgroundService
                                 if (await RecordSendFailureAsync(batch, i, singleError, cancellationToken, propagateDatabaseFailures).ConfigureAwait(false) == FailureAction.Retry)
                                     retryError = singleError; // A retryable failure ends this isolation pass.
                             }
-                            else await RecordSendFailureAsync(batch, i, error, cancellationToken, propagateDatabaseFailures).ConfigureAwait(false);
+                            else await RecordSendFailureAsync(batch, i, error, cancellationToken, propagateDatabaseFailures,
+                                retryable: PostgreSqlLocalTransport.Find(transport) is null).ConfigureAwait(false);
                         }
                         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
                         catch (Exception failure) when (!propagateDatabaseFailures) { DirectDispatchLog.Failed(_logger, failure); }
@@ -305,7 +306,7 @@ internal sealed class PostgreSqlDirectDispatcher : BackgroundService
     }
 
     private async ValueTask<FailureAction> RecordSendFailureAsync(OutboxDispatchBatch batch, int index, Exception error,
-        CancellationToken cancellationToken, bool propagateDatabaseFailures, FailureAction? knownAction = null)
+        CancellationToken cancellationToken, bool propagateDatabaseFailures, FailureAction? knownAction = null, bool retryable = true)
     {
         BufferedOutboxMessage? row = null;
         for (var i = 0; i < batch.Count; i++)
@@ -322,7 +323,7 @@ internal sealed class PostgreSqlDirectDispatcher : BackgroundService
         if (action is not (FailureAction.Retry or FailureAction.DeadLetter))
             throw new InvalidOperationException("The dispatch failure classifier returned an unknown action.");
         if (await _store.RecordDispatchFailureAsync(_claims[index], error.Message, DateTimeOffset.UtcNow,
-            cancellationToken, permanent: action == FailureAction.DeadLetter, retryable: true).ConfigureAwait(false) == 2)
+            cancellationToken, permanent: action == FailureAction.DeadLetter, retryable: retryable).ConfigureAwait(false) == 2)
         {
             if (propagateDatabaseFailures) _recoveredPoison++;
             else _instrumentation?.RecordOutboxPoison();
