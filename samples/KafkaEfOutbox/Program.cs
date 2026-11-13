@@ -12,13 +12,10 @@ var connectionString = builder.Configuration.GetConnectionString("Orders")
 var bootstrapServers = builder.Configuration["Kafka:BootstrapServers"] ?? "localhost:9092";
 // Application-owned data source outlives every hosted dispatcher and DbContext.
 await using var dataSource = NpgsqlDataSource.Create(connectionString);
-builder.Services.AddRelayerEntityFrameworkCoreOutbox();
-builder.Services.AddRelayerPostgreSqlDirectDispatch("orders", dataSource);
-builder.Services.AddRelayerPostgreSqlMaintenance("orders", dataSource);
-builder.Services.AddDbContext<OrdersDbContext>((provider, options) => options.UseNpgsql(dataSource)
-    .AddRelayerOutbox(provider, new EntityFrameworkCoreOutboxOptions { DispatchStoreName = "orders" }));
+builder.Services.AddDbContext<OrdersDbContext>(options => options.UseNpgsql(dataSource));
 builder.Services.AddRelayer(relayer =>
 {
+    relayer.UsePostgreSqlOutbox<OrdersDbContext>(dataSource);
     relayer.AddMessageTypesFromThisAssembly();
     relayer.Kafka("events", kafka =>
     {
@@ -28,7 +25,7 @@ builder.Services.AddRelayer(relayer =>
             options.BootstrapServers.Add(bootstrapServers);
             options.ConfigureConsumer = consumer => consumer.WithAutoOffsetReset(AutoOffsetReset.Earliest);
         });
-        // Unordered outbox dispatch: no OrderingKey, hence no ordered lane registration.
+        // The combined outbox registration also handles ordered and scheduled rows when needed.
         kafka.Send<OrderPlaced>("sample-orders");
         kafka.Consume("sample-orders", consumer =>
         {

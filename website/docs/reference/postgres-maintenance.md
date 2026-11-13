@@ -6,6 +6,9 @@ description: "Recover undispatched PostgreSQL outbox messages and apply leased, 
 Register maintenance alongside [direct dispatch](direct-dispatch.md) to recover unordered messages left
 by process death, queue overflow, failed sends, or a future delivery time. [Ordered lane dispatch](ordered-dispatch.md)
 already recovers its own lanes; the sweeper never sends ordered rows.
+The [combined EF Core outbox registration](ef-core-outbox.md#registration) includes maintenance by default.
+Individual direct-dispatch registrations require matching maintenance at host startup, using the same
+`NpgsqlDataSource` instance, schema and table prefix.
 Optional [PostgreSQL CDC dispatch](postgres-cdc.md) wakes unordered recovery from logical replication
 commits. Keep maintenance for failed sends, expired claims, future schedules and retention.
 

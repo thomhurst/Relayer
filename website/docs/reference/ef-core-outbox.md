@@ -8,10 +8,9 @@ It buffers serialized sends, copies borrowed memory before each send completes, 
 PostgreSQL `INSERT` immediately before commit. The insert uses the same connection and transaction as
 the business data. No `SaveChanges` override or outbox entity mapping is required.
 
-Enlistment alone persists rows. Enable [unordered direct dispatch](direct-dispatch.md) to send due messages
-in the background after commit, or register [ordered dispatch and lane leases](ordered-dispatch.md) separately.
-Register the [PostgreSQL durable store](postgres-store.md) separately for reads, claims and backlog health queries.
-[Leased recovery and cleanup](postgres-maintenance.md) are available separately.
+`UsePostgreSqlOutbox<TContext>` registers enlistment, [unordered direct dispatch](direct-dispatch.md),
+[ordered dispatch and lane leases](ordered-dispatch.md), and [leased recovery and cleanup](postgres-maintenance.md)
+together. It also registers the keyed [PostgreSQL durable store](postgres-store.md) for reads, claims and backlog health queries.
 [Outbox tracing and metrics](../guides/telemetry.md#outbox-tracing-and-metrics) cover enqueue and dispatch.
 The [EF Core consumer boundary](ef-core-inbox.md) supplies transactional inbox deduplication and
 enables it automatically for its selected outbox context.
@@ -26,13 +25,28 @@ the same scoped service provider used by `ISender`:
 using Microsoft.EntityFrameworkCore;
 using Relayer.Outbox.EntityFrameworkCore;
 
-services.AddRelayerEntityFrameworkCoreOutbox();
-services.AddDbContext<OrdersDbContext>((provider, options) =>
-    options.UseNpgsql(connectionString).AddRelayerOutbox(provider));
+// The application owns dataSource and keeps it alive until the host stops.
+services.AddDbContext<OrdersDbContext>(options => options.UseNpgsql(dataSource));
+services.AddRelayer(relayer =>
+{
+    relayer.UsePostgreSqlOutbox<OrdersDbContext>(dataSource);
+    // Register message types, transports, routes and consumers here.
+});
 ```
 
-Keep your normal `AddRelayer` message and route registrations. Register these interceptors on each
-participating DbContext. Context pooling, concurrent use of one service scope and ambient
+The combined registration adds scoped interceptors to the native `AddDbContext` configuration, in either
+registration order. It does not configure the EF provider or create tables. Configure `UseNpgsql` with
+the same data source. The default store name is `default`; use the optional `EntityFrameworkCoreOutboxOptions`
+argument to set `DispatchStoreName`, schema, table prefix, lanes, ordered lease duration and dispatch attempt limit.
+These store settings flow to the workers automatically. Direct dispatch, recovery and retention otherwise use
+their existing worker defaults. Stop the host before disposing the data source.
+
+For several participating contexts, give each composed registration a distinct `DispatchStoreName` and
+separate store tables. The first composed registration supplies default capability settings before a context
+is selected, unless the application already registered configuration-bound defaults. A selected context
+always uses its own settings.
+
+Context pooling, concurrent use of one service scope and ambient
 `TransactionScope` enlistment are not supported. Other EF database providers fail on first use;
 [SQL Server schema tooling and ADO.NET enlistment](sqlserver-store.md) and [MySQL schema tooling](mysql-store.md) are implemented separately. EF Core integration for those providers remains planned.
 
@@ -49,6 +63,23 @@ contexts. Npgsql connection pooling is independent and remains supported.
 Application-owned scoped factories can select native stores for manually initiated units and explicitly
 composed tenant endpoints. See [native tenant store selection](tenant-stores.md) for database/schema
 isolation, ownership and the current dynamic-consumer limitation.
+
+### Individual registrations
+
+For separate writer/worker deployments or worker-specific tuning, the individual registrations remain available.
+Enlistment alone persists rows without starting any dispatch workers:
+
+```csharp
+services.AddRelayerEntityFrameworkCoreOutbox();
+services.AddDbContext<OrdersDbContext>((provider, options) =>
+    options.UseNpgsql(dataSource).AddRelayerOutbox(provider));
+```
+
+Add direct dispatch with matching maintenance for commit-triggered sends and durable recovery; add ordered
+dispatch when needed. A host with direct dispatch and no matching maintenance fails startup before workers
+start. Maintenance must use the same `NpgsqlDataSource` instance, schema and table prefix; worker names can differ.
+For application-authorized tenant stores, keep the scoped factory registrations described in
+[native tenant store selection](tenant-stores.md).
 
 The defaults are schema `public`, table prefix `relayer_`, and 32 lanes. Set immutable options per context:
 
@@ -67,7 +98,7 @@ binds immutable defaults through the Options pattern. `IOptionsSnapshot<EntityFr
 keeps a scope's settings stable; configuration changes apply to newly created scopes. Invalid identifiers,
 nonpositive lane counts and malformed numeric values fail validation. A per-context options argument
 overrides those defaults. Always match the deployed schema and prefix. Drain the outbox before changing lanes.
-`LeaseDuration` and `MaxDispatchAttempts` do not affect enlistment. Configure ordered worker deadlines
+With individual registrations, `LeaseDuration` and `MaxDispatchAttempts` do not affect enlistment. Configure ordered worker deadlines
 through `PostgreSqlOrderedDispatchOptions`; direct dispatch uses `PostgreSqlDirectDispatchOptions.ClaimDuration`.
 The separately registered dispatchers implement [poison-row handling and key release](postgres-store.md#poison-rows-and-key-release);
 configure their attempt limits independently of enlistment.

@@ -11,7 +11,8 @@ Committing the transaction does not wait for the broker. A rollback never queues
 
 Create the [schema](postgres-schema.md) first. Use the same application-owned `NpgsqlDataSource`,
 database, schema and prefix for EF Core and dispatch. Keep your normal `AddRelayer` routes and named
-`ITransport` registrations. With a .NET host, register:
+`ITransport` registrations. For EF Core applications, prefer [the combined outbox registration](ef-core-outbox.md#registration),
+which includes direct dispatch and recovery. To configure workers individually:
 
 ```csharp
 using Microsoft.EntityFrameworkCore;
@@ -26,6 +27,8 @@ services.AddRelayerPostgreSqlDirectDispatch("orders", dataSource,
         BatchSize = 100,
         ClaimDuration = TimeSpan.FromSeconds(30)
     });
+services.AddRelayerPostgreSqlMaintenance("orders", dataSource,
+    new PostgreSqlMaintenanceOptions { Schema = "messaging", TablePrefix = "orders_" });
 services.AddRelayerEntityFrameworkCoreOutbox();
 services.AddDbContext<OrdersDbContext>((provider, options) =>
     options.UseNpgsql(dataSource).AddRelayerOutbox(provider,
@@ -40,6 +43,9 @@ services.AddDbContext<OrdersDbContext>((provider, options) =>
 Direct-dispatch registration also registers the named scoped `IOutboxStore`; do not register that store
 again. The host starts and stops the worker. Resolving services without starting their hosted services
 does not dispatch messages. Dispose the data source only after the host has stopped.
+Startup fails before workers start if direct dispatch has no maintenance worker using the same
+`NpgsqlDataSource` instance, schema and table prefix. A differently named maintenance worker can recover
+the same tables. Ordered dispatch alone does not recover unordered rows.
 If you use `NpgsqlSlimDataSourceBuilder`, call `EnableArrays()` before `Build()`; fenced batch claim and deletion
 operations use native UUID array parameters. The regular `NpgsqlDataSource` builder enables these mappings by default.
 

@@ -31,6 +31,7 @@ public static partial class PostgreSqlOutboxServiceCollectionExtensions
     /// <remarks>
     /// Select this name with EntityFrameworkCoreOutboxOptions.DispatchStoreName on participating contexts.
     /// The data source remains application-owned. This does not dispatch ordered or future-due rows or run recovery polling.
+    /// Startup requires matching AddRelayerPostgreSqlMaintenance registration for durable recovery.
     /// </remarks>
     public static IServiceCollection AddRelayerPostgreSqlDirectDispatch(this IServiceCollection services,
         string storeName, Npgsql.NpgsqlDataSource dataSource, PostgreSqlOutboxOptions? storeOptions = null,
@@ -48,6 +49,8 @@ public static partial class PostgreSqlOutboxServiceCollectionExtensions
         var snapshot = new PostgreSqlOutboxOptions { Schema = storeOptions.Schema, TablePrefix = storeOptions.TablePrefix, MaxDispatchAttempts = storeOptions.MaxDispatchAttempts, RetainSentMessages = storeOptions.RetainSentMessages };
         _ = PostgreSqlOutboxSchema.CreateScript(snapshot);
         services.AddRelayerPostgreSqlOutboxStore(storeName, dataSource, snapshot);
+        services.AddSingleton(new PostgreSqlDispatchRegistration(storeName, dataSource, snapshot));
+        services.TryAddEnumerable(ServiceDescriptor.Singleton<IHostedService, PostgreSqlRecoveryStartupValidator>());
         services.AddSingleton(new DispatchSettings(storeName, dispatchOptions));
         services.AddOptions<PostgreSqlDirectDispatchOptions>();
         services.TryAddSingleton<IOptionsFactory<PostgreSqlDirectDispatchOptions>, DispatchOptionsFactory>();
