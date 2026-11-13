@@ -26,6 +26,7 @@ public sealed class FailurePipeline
     private readonly bool _nativeDeadLetter;
     private readonly bool _nativeRedeliveryOnly;
     private readonly TransportCapabilities _capabilities;
+    private readonly long? _deadLetterMaxBytes;
 
     /// <summary>Validates native paths and available fallback executors for this consumer's complete policy.</summary>
     public FailurePipeline(IServiceProvider services, string transportName, string source, string consumer,
@@ -85,7 +86,7 @@ public sealed class FailurePipeline
         {
             if (string.IsNullOrWhiteSpace(_options.DeadLetterEndpoint) || copy is null)
                 throw Invalid("DeadLetter", "Enable native DeadLetter with error metadata, or configure DeadLetterEndpoint and a message copy executor.");
-            validator.GetCapabilities(_transport, _options.DeadLetterEndpoint);
+            _deadLetterMaxBytes = validator.GetCapabilities(_transport, _options.DeadLetterEndpoint)?.MaxMessageBytes;
         }
         _paths = new RedeliveryPath[_redeliveries.Length];
         for (var i = 0; i < _paths.Length; i++) _paths[i] = ResolveRedelivery(_redeliveries[i]);
@@ -123,7 +124,7 @@ public sealed class FailurePipeline
         {
             var path = ResolveRedelivery(request.Delay);
             // A manual retry is not an exception. Preserve prior error history without inventing a failure.
-            var headers = FailureMetadata.SettlementHeaders(context, checked(context.Redeliveries + 1));
+            var headers = FailureMetadata.SettlementHeaders(context, checked(context.Redeliveries + 1), maxBytes: path == RedeliveryPath.Native ? MetadataBudget(context) : null);
             if (path == RedeliveryPath.Native)
                 context.FailureDisposition = Disposition.Redeliver(request.Delay, headers);
             else
@@ -135,7 +136,7 @@ public sealed class FailurePipeline
         }
         else
         {
-            var headers = FailureMetadata.SettlementHeaders(context, context.Redeliveries, request.DeadLetter.Reason);
+            var headers = FailureMetadata.SettlementHeaders(context, context.Redeliveries, request.DeadLetter.Reason, _nativeDeadLetter ? MetadataBudget(context) : null);
             if (_nativeDeadLetter)
                 context.FailureDisposition = Disposition.DeadLettered(new(request.DeadLetter.Reason, headers: headers));
             else
@@ -170,7 +171,7 @@ public sealed class FailurePipeline
         var redelivery = context.Redeliveries;
         if (action == FailureAction.Retry && redelivery < _paths.Length)
         {
-            var headers = FailureMetadata.Headers(context, redelivery + 1);
+            var headers = FailureMetadata.Headers(context, redelivery + 1, _paths[redelivery] == RedeliveryPath.Native ? MetadataBudget(context) : null);
             var delay = Jitter(_redeliveries[redelivery]);
             if (_paths[redelivery] == RedeliveryPath.Native)
                 context.FailureDisposition = Disposition.Redeliver(delay, headers);
@@ -182,9 +183,10 @@ public sealed class FailurePipeline
             }
             return;
         }
-        var deadHeaders = FailureMetadata.Headers(context, redelivery);
+        var description = FailureMetadata.Description(error);
+        var deadHeaders = FailureMetadata.Headers(context, redelivery, _nativeDeadLetter ? MetadataBudget(context, System.Text.Encoding.UTF8.GetByteCount(description)) : null);
         if (_nativeDeadLetter)
-            context.FailureDisposition = Disposition.DeadLettered(new("Processing failed", error.Message, deadHeaders));
+            context.FailureDisposition = Disposition.DeadLettered(new("Processing failed", description, deadHeaders));
         else
         {
             await CopyAsync(context, _options.DeadLetterEndpoint!, null, deadHeaders, false).ConfigureAwait(false);
@@ -201,6 +203,8 @@ public sealed class FailurePipeline
         var headers = new List<KeyValuePair<string, WireString>>(original.Headers.Length + metadata.Length);
         foreach (var header in original.Headers.Span)
         {
+            // A deliberately omitted history must not resurrect an oversized incoming value.
+            if (header.Key == FailureHeaders.History) continue;
             var replaced = false;
             foreach (var replacement in metadata)
             {
@@ -211,6 +215,8 @@ public sealed class FailurePipeline
             if (!replaced) headers.Add(header);
         }
         headers.AddRange(metadata);
+        FailureMetadata.FitCopyHistory(headers, original,
+            destination == _source ? _capabilities.MaxMessageBytes : _deadLetterMaxBytes, context.FailureHistory);
         var copy = original.Forward(destination, headers.ToArray(), deliverAt);
         if (schedule) copy.ValidateForOutbox();
         // Fallback work is on the error path. Its timeout covers the whole durable operation.
@@ -222,6 +228,9 @@ public sealed class FailurePipeline
             await _transport.SendAsync(copy, timeout.Token).ConfigureAwait(false);
         timeout.Token.ThrowIfCancellationRequested();
     }
+
+    private long? MetadataBudget(DefaultMessageContext context, int descriptionBytes = 0) =>
+        _capabilities.MaxMessageBytes is { } maximum ? Math.Max(0, maximum - context.Body.Length - descriptionBytes) : null;
 
     private enum RedeliveryPath { Native, Copy, Outbox }
 }

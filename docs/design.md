@@ -427,8 +427,8 @@ Copies preserve the original identity and creation context. Native redelivery di
 `FailureHeaders` that the adapter **must persist before releasing the original**. Native dead-letter dispositions
 carry the same history in `DeadLetterInfo.Headers`. Their owned metadata survives pooled-context disposal.
 Adapters must not advertise native redelivery if they cannot preserve that metadata. History records the
-original ID (null for a missing ID), total failed attempts, first/last failure times, and each attempt's consumer,
-host, exception type, message and stack. Error metadata uses generated JSON, including under Native AOT.
+original ID (null for a missing ID), total failed attempts, first/last failure times, and retained attempts' consumer,
+host, exception type, message and stack. D75 bounds diagnostics while retaining total counts. Error metadata uses generated JSON, including under Native AOT.
 Malformed failure counters are permanent envelope errors; corrupt history is replaced so poison messages can
 still reach the dead-letter destination. History construction and exception type diagnostics run only on failure.
 
@@ -443,7 +443,7 @@ dead-letter requests. See [Failure handling](https://relayer.tomlonghurst.dev/do
 for the call site, precedence and buffered-send contract.
 
 
-- **Error metadata** goes on the dead-lettered message: the original message ID, exception type, message and stack trace for **every** attempt (Rebus #1154), attempt count, first and last failure time, consumer name, and host. SQS visibility retries preserve immutable native attributes: their final copy retains previously stored history and the current delivery’s in-process failures; earlier visibility-delivery exceptions are unavailable from SQS (D67).
+- **Error metadata** goes on the dead-lettered message: the original message ID, exception type, message and stack trace for retained attempts (D75) (Rebus #1154), attempt count, first and last failure time, consumer name, and host. SQS visibility retries preserve immutable native attributes: their final copy retains previously stored history and the current delivery’s in-process failures; earlier visibility-delivery exceptions are unavailable from SQS (D67).
 - **Redrive API:** `IDeadLetterManager` provides `List`, `Peek`, `Redrive(filter)`, and `Purge`, backed by native broker mechanisms. Queue redrive settles an original after an acknowledged send; Kafka redrive commits a dedicated group offset after that send and leaves the original subject to native retention. Kafka purge deletes scanned partition prefixes with native `DeleteRecords`, never arbitrary records. See the [site roadmap](../website/docs/roadmap.md) for implemented transports and optional endpoint/CLI status.
 - **Circuit breaker:** when the failure rate of a consumer crosses a threshold, Relayer **pauses the consumer natively** (Kafka `Pause`, ASB processor stop, RabbitMQ consumer cancel) instead of burning messages into the DLQ (SlimMessageBus #454). It then half-opens with a probe message.
 - **Retries never duplicate side effects.** Outbox rows written by a failed attempt are rolled back with the transaction. Without a transaction, sends made during a failed attempt are buffered and discarded (Rebus #1198, Rebus.PostgreSql #53).

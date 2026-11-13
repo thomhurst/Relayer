@@ -4,6 +4,7 @@ using System.Text;
 using System.Text.Json;
 using Microsoft.Extensions.DependencyInjection;
 using Relayer.Transports;
+using Relayer.InMemory;
 
 namespace Relayer.Tests;
 
@@ -966,6 +967,103 @@ public class FailurePipelineTests
         await Assert.That(history.RootElement.GetProperty("Attempts").GetArrayLength()).IsEqualTo(1);
     }
 
+    [Test]
+    public async Task History_bounds_keep_first_and_latest_attempts_across_redeliveries()
+    {
+        using var provider = Provider(new Transport { Capabilities = new() { DeadLetter = true, MaxRedeliveryDelay = TimeSpan.Zero } });
+        provider.GetRequiredService<Control>().Invoke = _ => throw new LongFailure();
+        var pipeline = Pipeline(provider, new() { RetryDelays = new TimeSpan[19], RedeliveryDelays = new[] { TimeSpan.Zero } });
+        var first = await pipeline.ProcessAsync(new());
+        var next = new Incoming();
+        foreach (var pair in first.Headers.Span) next.Headers[pair.Key] = pair.Value.ToString();
+        var final = await pipeline.ProcessAsync(next);
+        await Assert.That(final.DeadLetter.Description!.Length <= 1024).IsTrue();
+        var json = final.DeadLetter.Headers.ToArray().Single(p => p.Key == FailureHeaders.History).Value.ToString();
+        await Assert.That(Encoding.UTF8.GetByteCount(json) <= FailureMetadata.MaxHistoryBytes).IsTrue();
+        using var history = JsonDocument.Parse(json);
+        var root = history.RootElement;
+        var attempts = root.GetProperty("Attempts");
+        await Assert.That(root.GetProperty("Truncated").GetBoolean()).IsTrue();
+        await Assert.That(root.GetProperty("AttemptCount").GetInt32()).IsEqualTo(40);
+        await Assert.That(attempts.GetArrayLength() <= FailureMetadata.MaxAttempts).IsTrue();
+        await Assert.That(attempts[0].GetProperty("Attempt").GetInt32()).IsEqualTo(1);
+        await Assert.That(attempts[attempts.GetArrayLength() - 1].GetProperty("Attempt").GetInt32()).IsEqualTo(40);
+        foreach (var attempt in attempts.EnumerateArray())
+            await Assert.That(attempt.GetProperty("StackTrace").GetString()!.Length <= FailureMetadata.MaxStackTraceChars).IsTrue();
+    }
+
+    [Test]
+    [Arguments(2048)]
+    [Arguments(256)]
+    public async Task Poison_with_large_exceptions_reaches_size_limited_dead_letter_destination(int maximum)
+    {
+        await using var transport = new InMemoryTransport("test", new Dictionary<string, InMemoryEndpointOptions>
+        {
+            ["source"] = new() { Capabilities = new() },
+            ["destination"] = new(),
+            ["errors"] = new() { Capabilities = new() { MaxMessageBytes = maximum, OrderedByKey = true } },
+        });
+        using var provider = Provider(transport);
+        provider.GetRequiredService<Control>().Invoke = _ => throw new LongFailure();
+        var received = new TaskCompletionSource<Snapshot>(TaskCreationOptions.RunContinuationsAsynchronously);
+        transport.RegisterConsumer("errors", (delivery, _) =>
+        {
+            received.TrySetResult(Snapshot.From(new("errors", delivery.Message.Body, delivery.Message.Headers, delivery.Message.OrderingKey)));
+            return new(Disposition.Complete);
+        });
+        await transport.StartAsync(default);
+        try
+        {
+            var incoming = new Incoming();
+            // Old versions could have persisted an oversized history. It must not be resurrected
+            // when the replacement cannot fit in the small destination.
+            incoming.Headers[FailureHeaders.History] = new string('x', 20000);
+            var result = await Pipeline(provider, new() { DeadLetterEndpoint = "errors", RetryDelays = new TimeSpan[39] }, Copy).ProcessAsync(incoming);
+            await Assert.That(result.Kind).IsEqualTo(DispositionKind.Complete);
+            var copy = await received.Task.WaitAsync(TimeSpan.FromSeconds(10));
+            await Assert.That(copy.Body).IsEqualTo("{}");
+            await Assert.That(copy.Headers["custom"]).IsEqualTo("preserved");
+            await Assert.That(copy.Headers[FailureHeaders.Attempts]).IsEqualTo("40");
+            if (maximum == 2048)
+            {
+                using var history = JsonDocument.Parse(copy.Headers[FailureHeaders.History]);
+                await Assert.That(history.RootElement.GetProperty("Truncated").GetBoolean()).IsTrue();
+                await Assert.That(history.RootElement.GetProperty("Attempts")[0].GetProperty("Attempt").GetInt32()).IsEqualTo(1);
+            }
+            else await Assert.That(copy.Headers.ContainsKey(FailureHeaders.History)).IsFalse();
+        }
+        finally { await transport.StopAsync(default); }
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Manual_settlement_bounds_preexisting_history(bool oversized)
+    {
+        using var provider = Provider(new Transport());
+        provider.GetRequiredService<Control>().Invoke = context =>
+        {
+            context.Features.GetRequired<ISettlementFeature>().DeadLetter("poison");
+            return default;
+        };
+        var incoming = new Incoming();
+        var history = new FailureHistory { AttemptCount = 100 };
+        for (var i = 1; i <= (oversized ? 100 : 20); i++)
+            history.Attempts.Add(new() { Attempt = i, StackTrace = new string('x', oversized ? 5000 : 100) });
+        incoming.Headers[FailureHeaders.History] = JsonSerializer.Serialize(history, FailureJsonContext.Default.FailureHistory);
+        var result = await Pipeline(provider).ProcessAsync(incoming);
+        var json = result.DeadLetter.Headers.ToArray().Single(p => p.Key == FailureHeaders.History).Value.ToString();
+        await Assert.That(Encoding.UTF8.GetByteCount(json) <= FailureMetadata.MaxHistoryBytes).IsTrue();
+        using var parsed = JsonDocument.Parse(json);
+        await Assert.That(parsed.RootElement.GetProperty("Attempts").GetArrayLength() <= FailureMetadata.MaxAttempts).IsTrue();
+    }
+
+    private sealed class LongFailure : Exception
+    {
+        public override string Message => new('界', 20000);
+        public override string StackTrace => string.Concat(Enumerable.Repeat("\"\\界😀\n", 20000));
+    }
+
     private static void Request(ISettlementFeature settlement, DispositionKind kind)
     {
         switch (kind)
@@ -979,7 +1077,7 @@ public class FailurePipelineTests
 
     private static ValueTask Throw(MessageContext context) => throw new InvalidOperationException("failed attempt");
 
-    private static ServiceProvider Provider(Transport transport, Action<IServiceCollection>? configure = null)
+    private static ServiceProvider Provider(ITransport transport, Action<IServiceCollection>? configure = null)
     {
         var services = new ServiceCollection();
         services.AddSingleton<ITransport>(transport);

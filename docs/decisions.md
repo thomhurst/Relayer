@@ -85,6 +85,7 @@ To change a decision, add a new entry that supersedes it rather than editing his
 | [D72](#d72-handler-registration-belongs-to-the-consumer) | Handler registration belongs to the consumer | Accepted |
 | [D73](#d73-postgresql-retryable-outbox-sends-retain-durable-eligibility) | PostgreSQL retryable outbox sends retain durable eligibility | Accepted |
 | [D74](#d74-portable-consumer-failure-declarations) | Portable consumer failure declarations | Accepted |
+| [D75](#d75-failure-diagnostics-are-bounded) | Failure diagnostics are bounded | Accepted |
 
 ---
 
@@ -1763,3 +1764,15 @@ budget. Repair such configuration through the existing dead-letter redrive workf
 Delay options are bindable arrays. `FailureOptions` retains its convenience constructor and provides a real public parameterless constructor for `OptionsFactory<T>`. Its properties use public setters as a narrow exception to the init-only options convention: the .NET configuration binding source generator skips init-only properties when binding an existing instance through `AddOptions<FailureOptions>().Bind(section)`. This preserves standard Options-pattern binding and Native AOT support; policies are captured and composed at startup, and reload does not rebuild consumers. `CopyTimeout` uses null for its 30-second default so configuration binding preserves missing settings without accepting an explicit zero timeout. Null `RetryDelays` selects D69's default sequence at composition; empty disables it. This avoids the configuration binder appending configured entries to a pre-populated default array. In-memory native redelivery retains failure headers per queued message or per log-group receiver, preventing attempt/history resets without sharing mutable consumer state across groups.
 
 In-memory consumers use only native redelivery for retries, including manual settlement requests. Scheduled-copy and outbox redelivery fallbacks are rejected when the requested delay exceeds `MaxRedeliveryDelay`: sending another message to the source would fan out to unrelated log groups and could wait for admission credit still owned by the current delivery. Native redelivery retains both the group and that credit. Dead-letter copies to a separate configured endpoint remain supported.
+## D75. Failure diagnostics are bounded
+
+**Status:** Accepted; supersedes D10's every-attempt diagnostic retention guarantee.
+
+**Context.** Unbounded exception history can exceed native message/header limits and prevent durable poison settlement. The history is Relayer-owned metadata (D10); native clients cannot bound its application JSON for us. Existing native settlement, copy and Pub/Sub attribute splitting remain in use.
+
+**Decision.** Retain at most eight attempts, preserving first and latest, with 2,048-character stacks and 1,024-character diagnostic fields/native dead-letter error descriptions. Limit generated JSON to 16 KiB using its actual UTF-8 byte length including escaping. Remove intermediate attempts before shortening text. Mark incomplete history with `Truncated`; preserve total attempt counts and first/last timestamps. Incoming malformed or larger-than-16-KiB history is replaced with truncated history before deserialization.
+
+Copies budget against the destination's declared `MaxMessageBytes`, subtracting portable body, headers and ordering key. Native settlements budget body and failure headers against the source declaration, because the lazy header SPI cannot enumerate original properties. If even the first/latest summary cannot fit, omit only the history header and retain counters. Native overhead, hidden properties, native callbacks and attribute counts remain broker-enforced; application data is never removed to make room. Native send failure still prevents settlement.
+
+**Consequences.** Full exception diagnostics belong in application logs/traces. All new work runs on failure/manual settlement paths; the successful receive and send paths are unchanged. See the site's [failure handling contract](../website/docs/guides/failure-handling.md).
+
