@@ -124,6 +124,15 @@ retries run first; recovery, direct and ordered dispatch share the persisted dea
 ordered head holds its lane until due, preserving send order. Failed-send diagnostics saturate at
 30 attempts so an extended outage cannot overflow the counter.
 
+All native send exceptions use this retry path, including permanent broker rejections such as an
+oversized message, invalid credentials or a missing destination. There is no automatic attempt or
+age ceiling and no transport-exception classifier. Monitor pending rows and repair the payload,
+credentials or destination: an unrepaired ordered head blocks later rows with that key indefinitely.
+A native batch failure backs off all claimed rows in that batch, including valid rows when the client
+does not identify which row failed; Relayer does not split the batch to isolate a rejected message.
+Unclassified local-handler errors and local configuration failures caught during dispatch also require
+operator repair. Classify permanent local-handler failures with `IFailureClassifier` to dead-letter them.
+
 Explicit local `FailureAction.DeadLetter` decisions take the poison transition immediately.
 Ordered preparation errors (missing transport, key or ordering capability) and explicit low-level
 `RecordFailureAsync` calls retain the positive `MaxDispatchAttempts` budget (default **10**).

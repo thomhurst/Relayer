@@ -1720,8 +1720,15 @@ decisions retain immediate poison handling. Preparation failures and explicit lo
 RecordFailureAsync retain their existing attempt budget. Ordered heads retain their existing
 due-time lane barrier. No new schema or broker scheduling feature is introduced.
 
-**Consequences.** PostgreSQL outages recover automatically without manual redrive. Local handlers
-that need poison isolation must classify permanent failures explicitly. SQL Server and MySQL
+**Consequences.** PostgreSQL outages recover automatically without manual redrive. Native transport
+exceptions are not classified here: every native send failure retries indefinitely, including permanent
+rejections such as oversized messages, authorization errors and missing destinations. Operators must
+monitor pending rows and repair the payload, destination or credentials; `MaxDispatchAttempts` does
+not bound these retries. A rejected ordered head blocks later rows for its key until repaired. A failed
+native batch backs off every claimed row in that batch; no per-row isolation is inferred from a batch
+exception. Local handlers that need poison isolation must classify permanent failures explicitly.
+Unclassified local errors and local configuration failures caught during dispatch also retry indefinitely
+and require operator repair. SQL Server and MySQL
 follow-ups are tracked independently under #646. The low-level store mutation contract remains
 unchanged; callers using it directly still own their failure classification.
 

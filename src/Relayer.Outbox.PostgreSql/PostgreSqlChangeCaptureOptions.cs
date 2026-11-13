@@ -16,7 +16,7 @@ public sealed class PostgreSqlChangeCaptureOptions
     /// <summary>Retain sent IDs, destinations and completion times. Disabled by default; enable on every dispatcher and maintenance worker for this store.</summary>
     public bool RetainSentMessages { get; init; }
 
-    /// <summary>Failed sends before a row is dead-lettered. Must match other dispatchers for this store.</summary>
+    /// <summary>Failure budget for preparation errors and explicit store failure recording. Native send failures retry indefinitely with durable backoff. Must match other dispatchers for this store.</summary>
     public int MaxDispatchAttempts { get; init; } = 10;
     /// <summary>Maximum rows read per database transaction.</summary>
     public int BatchSize { get; init; } = 100;
