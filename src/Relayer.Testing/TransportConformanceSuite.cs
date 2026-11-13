@@ -343,6 +343,10 @@ public sealed class TransportConformanceSuite<TIncoming, TBinding>
                     catch (Exception error) when (!token.IsCancellationRequested && fixture.IsExpectedOutageFailure(error)) { }
                     progress.Phase = "broker reconnect";
                     await fixture.ReconnectAsync(token).ConfigureAwait(false);
+                    // An offline stop can exhaust its budget while native drain is still
+                    // running. Finish that shutdown with connectivity restored before
+                    // Start can treat the still-started transport as an idempotent no-op.
+                    await Stop().ConfigureAwait(false);
                     await Start().ConfigureAwait(false);
                     await Send(4).ConfigureAwait(false);
                     // A failed/cancelled native send or unsettled warm-up may still arrive. Duplicates are legal;

@@ -37,6 +37,12 @@ public sealed class OutageConformanceTests
     }
 
     [Test]
+    public async Task Outage_finishes_interrupted_shutdown_after_reconnect_before_restart()
+    {
+        await Assert.That((await Suite("interrupted-shutdown").RunAsync(TransportConformanceCase.SendDuringOutage)).Skipped).IsFalse();
+    }
+
+    [Test]
     public async Task Outage_rejects_unrecognized_shutdown_failure()
     {
         await Assert.That(async () => await Suite("unexpected-shutdown").RunAsync(TransportConformanceCase.SendDuringOutage))
@@ -63,6 +69,7 @@ public sealed class OutageConformanceTests
         private bool _offline;
         private bool _shutdownFailed;
         private bool _recovered;
+        private bool _shutdownIncomplete;
         private int _outageSends;
         private int _warmupSettlements;
         private readonly TaskCompletionSource _warmupRedelivered = new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -95,12 +102,20 @@ public sealed class OutageConformanceTests
         public ValueTask<ConformanceDeadLetter> ReadDeadLetterAsync(CancellationToken token) => _inner.ReadDeadLetterAsync(token);
         public Task StartAsync(CancellationToken token)
         {
+            if (_shutdownIncomplete) throw new InvalidOperationException("Interrupted shutdown must finish before restart.");
             if (_shutdownFailed && !_recovered) throw new InvalidOperationException("Faulted application was not recovered.");
             return _inner.Transport.StartAsync(token);
         }
         public async Task StopAsync(CancellationToken token)
         {
+            if (_offline && mode == "interrupted-shutdown")
+            {
+                _shutdownIncomplete = true;
+                // Model a disconnected native drain that outlives the caller's stop budget.
+                throw new IOException("Disconnected drain is still pending.");
+            }
             await _inner.Transport.StopAsync(token);
+            _shutdownIncomplete = false;
             if (_offline && mode == "unexpected-shutdown") throw new InvalidOperationException("Unexpected shutdown defect.");
             if (_offline && mode == "shutdown-failure")
             {
