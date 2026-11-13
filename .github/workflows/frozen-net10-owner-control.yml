@@ -1,0 +1,74 @@
+name: Frozen net10 exact owner controls
+
+# #537: keep regional owner controls on the retained image's runtime major.
+# These are separate instrumented executions, never a rerun of the Performance gate.
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/frozen-net10-owner-control.yml'
+  workflow_dispatch:
+    inputs:
+      performance_run:
+        description: Retained net10 Performance run for separate exact owner controls
+        type: string
+        default: "43124385683"
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  owners:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      PERFORMANCE_RUN: ${{ inputs.performance_run || '43124385683' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
+        with:
+          dotnet-version: |
+            10.0.403
+            11.0.100
+      - name: Record host and build net10 probes
+        run: |
+          mkdir -p results
+          dotnet --info > results/runtime.txt
+          uname -a > results/host.txt
+          python3 -m unittest discover -s .github/scripts -p test_frozen_concurrent_control.py > results/launcher-tests.log 2>&1
+          # The global property overrides these tools' net11 default without changing
+          # historical tools or rebuilding any retained workload assembly.
+          for probe in FrozenConcurrentProbe FrozenFixtureProbe FrozenDriverProbe; do
+            dotnet restore "tools/$probe" -p:TargetFramework=net10.0 > "results/$probe-restore.log" 2>&1
+            dotnet build "tools/$probe" -c Release -p:TargetFramework=net10.0 --no-restore > "results/$probe-build.log" 2>&1
+          done
+      - name: Download exact original inputs and run separate net10 owner ABBAs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          [[ "$PERFORMANCE_RUN" =~ ^[0-9]+$ ]] || { echo "Invalid run ID: $PERFORMANCE_RUN" >&2; exit 1; }
+          gh run download "$PERFORMANCE_RUN" --name "performance-$PERFORMANCE_RUN-1" --dir inputs
+          # Each region is its own ABBA. Never subtract different instrumented controls.
+          failed=0
+          python3 .github/scripts/frozen_concurrent_control.py inputs tools/FrozenConcurrentProbe/bin/Release/net10.0/FrozenConcurrentProbe.dll results/bdn-await --bdn-await || failed=1
+          python3 .github/scripts/frozen_concurrent_control.py inputs tools/FrozenFixtureProbe/bin/Release/net10.0/FrozenFixtureProbe.dll results/exact-sources --exact-sources || failed=1
+          python3 .github/scripts/frozen_concurrent_control.py inputs tools/FrozenDriverProbe/bin/Release/net10.0/FrozenDriverProbe.dll results/exact-worker --exact-worker || failed=1
+          python3 .github/scripts/frozen_concurrent_control.py inputs tools/FrozenDriverProbe/bin/Release/net10.0/FrozenDriverProbe.dll results/exact-driver --exact-driver || failed=1
+          python3 .github/scripts/summarize_frozen_driver.py results/exact-driver > results/exact-driver-summary.json || failed=1
+          exit "$failed"
+      - name: Retain all outcomes and executable inputs
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: frozen-net10-owner-control-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            results/
+            inputs/
+            tools/FrozenConcurrentProbe/
+            tools/FrozenFixtureProbe/
+            tools/FrozenDriverProbe/
+            tools/FrozenMeasurementEvents.cs
+            .github/scripts/frozen_concurrent_control.py
+            .github/scripts/summarize_frozen_driver.py
+            .github/workflows/frozen-net10-owner-control.yml
+          retention-days: 90
