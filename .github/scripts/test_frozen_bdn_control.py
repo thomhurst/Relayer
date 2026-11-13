@@ -306,6 +306,86 @@ class OriginalRunnerTests(unittest.TestCase):
                 self.assertIn("managed parent is unprofiled", protocol["limits"])
                 self.assertEqual([call[4] for call in protocol["commands"]], [call[4] for call in calls])
 
+    def test_jit_capture_is_child_only_and_keeps_every_outcome(self):
+        real_run = subprocess.run
+        for failure in (None, "missing", "empty", "invalid", "launch"):
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory(prefix="JIT 'child ") as directory:
+                root = Path(directory)
+                output = root / "results"
+                calls = []
+                method = "*DirectScopedDispatch* 'quoted' $(false)"
+                fake_dotnet = root / "dotnet"
+                fake_dotnet.write_text("#!/bin/sh\nprintf '%s\\n' \"$DOTNET_JitDisasm\" \"$DOTNET_JitDisasmDiffable\" \"$DOTNET_JitStdOutFile\" \"$@\"\n")
+                fake_dotnet.chmod(0o700)
+                config = {"runtimeOptions": {"framework": {"name": "Microsoft.NETCore.App", "version": "10.0.0"}}}
+                (root / "image.runtimeconfig.json").write_text(json.dumps(config))
+
+                def execute(command, **kwargs):
+                    calls.append(command.copy())
+                    for key in ("DOTNET_JitDisasm", "DOTNET_JitDisasmDiffable", "DOTNET_JitStdOutFile"):
+                        self.assertNotIn(key, kwargs["env"])
+                    child = real_run([command[4], "image with spaces.dll", "--anonymousPipes", "pipe handles"],
+                                     env=dict(kwargs["env"], PATH=str(root) + os.pathsep + os.environ["PATH"]),
+                                     capture_output=True, text=True, check=True).stdout.splitlines()
+                    side = ("baseline", "candidate", "candidate", "baseline")[len(calls) - 1]
+                    listing = output / f"{len(calls)}-{side}-jit.asm"
+                    self.assertEqual(child, [method, "1", str(listing.resolve()), "--fx-version", "10.0.15",
+                                             "--roll-forward", "Disable", "image with spaces.dll", "--anonymousPipes", "pipe handles"])
+                    if len(calls) == 2 and failure == "launch":
+                        listing.write_text("partial failed capture")
+                        raise subprocess.CalledProcessError(1, command)
+                    Path(command[6]).write_text(json.dumps({"FoundExecutable": True, "ExitCode": 0,
+                        "IsSuccess": True, "Errors": [], "selectedCase": "scoped-dispatch", "operationsPerInvoke": 1,
+                        "benchmarkArguments": "--benchmarkName Relayer.Benchmarks.ConsumePipelineBenchmarks.DirectScopedDispatch --job Default --benchmarkId 6"}))
+                    Path(command[5]).write_text("// Runtime=.NET 10.0.15 (test), X64\n" + COMPLETE)
+                    if len(calls) == 2 and failure == "missing":
+                        return
+                    listing.write_text(("" if failure == "empty" else "not a JIT listing")
+                                       if len(calls) == 2 and failure in ("empty", "invalid")
+                                       else "; Assembly listing for method test (Tier1)\nret\n")
+
+                with patch("sys.argv", ["control", str(root), str(output), "--case", "scoped-dispatch",
+                                        "--native-executor", str(root / "host.dll"), "--runtime-version", "10.0.15",
+                                        "--jit-method", method]), \
+                     patch("frozen_bdn_control.verify", return_value="frozen"), \
+                     patch("frozen_bdn_control.executable", return_value=(root / "image.dll", "6")), \
+                     patch("frozen_bdn_control.subprocess.run", side_effect=execute):
+                    if failure:
+                        with self.assertRaisesRegex(SystemExit, "launches failed"):
+                            main()
+                    else:
+                        main()
+                self.assertEqual(len(calls), 4)
+                outcomes = json.loads((output / "outcomes.json").read_text())
+                self.assertEqual(len(outcomes), 4)
+                self.assertEqual("jitError" in outcomes[1], failure is not None)
+                self.assertEqual("error" in outcomes[1], failure == "launch")
+                self.assertEqual(outcomes[3]["jitDisassembly"], "4-baseline-jit.asm")
+                for outcome in outcomes:
+                    self.assertIn("Excluded", outcome["timingUse"])
+                    self.assertNotIn("meanNs", outcome)
+                    self.assertNotIn("allocatedBytes", outcome)
+                self.assertEqual(outcomes[3]["diagnosticResults"]["operations"], 65536)
+                if failure == "launch":
+                    self.assertEqual((output / "2-candidate-jit.asm").read_text(), "partial failed capture")
+                protocol = json.loads((output / "protocol.json").read_text())
+                self.assertTrue(protocol["instrumented"])
+                self.assertEqual(protocol["jitMethod"], method)
+                self.assertIn("managed parent is not instrumented", protocol["limits"])
+                self.assertIn("precompiled or interleaved", protocol["limits"])
+                self.assertEqual([c[4] for c in protocol["commands"]], [c[4] for c in calls])
+
+    def test_jit_capture_rejects_invalid_filters_and_mixed_instrumentation(self):
+        for extra in (["--jit-method", ""], ["--jit-method", "  "], ["--jit-method", "a\0b"],
+                      ["--jit-method", "*", "--trace-tool", "trace"],
+                      ["--jit-method", "*", "--allocation-profiler", "profiler"]):
+            with self.subTest(extra=extra), patch("sys.argv", ["control", "inputs", "output", "--native-executor", "host", *extra]):
+                with self.assertRaises(SystemExit):
+                    main()
+        with patch("sys.argv", ["control", "inputs", "output", "--jit-method", "*"]):
+            with self.assertRaises(SystemExit):
+                main()
+
     def test_native_parent_rejects_unsupported_combinations(self):
         for extra in (["--case", "log-composed"], ["--case", "queue-composed"],
                       ["--case", "queue-native"], ["--trace-tool", "trace"],
