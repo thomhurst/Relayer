@@ -1,6 +1,8 @@
+using System.Collections.Concurrent;
 using System.Text.Json.Serialization;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 using NATS.Client.Core;
 using NATS.Client.JetStream;
 using NATS.Client.JetStream.Models;
@@ -273,12 +275,15 @@ public class NatsExecutionTests
         var broker = await NatsSessionBroker.Current.WaitAsync(token);
         var events = TestContext.Current!.Isolation.GetIsolatedName("ack_events");
         var subject = TestContext.Current!.Isolation.GetIsolatedName("ack_orders");
+        var capture = new AckFailureCapture();
+        using var logs = LoggerFactory.Create(logging => logging.SetMinimumLevel(LogLevel.Debug).AddProvider(capture));
         var services = new ServiceCollection();
+        services.AddSingleton<ILoggerFactory>(logs);
         services.AddRelayer(relayer => relayer.Nats("ack_failure", transport =>
         {
             transport.Options.Configure(options =>
             {
-                options.ConnectionOptions = broker.Options();
+                options.ConnectionOptions = broker.Options() with { LoggerFactory = logs };
                 options.Streams.Add(new(events) { Configuration = new(events, [subject]) });
                 options.Consumers.Add(new(events, "worker") { Configuration = new("worker") { AckWait = TimeSpan.FromMilliseconds(200) } });
             });
@@ -288,46 +293,97 @@ public class NatsExecutionTests
         var adapter = (NatsNativeTransport)provider.GetRequiredService<Relayer.Transports.ITransport>();
         await adapter.ApplyTopologyAsync(TopologyMode.Provision, token);
         var worker = adapter.AddConsumer(events, "worker", new() { MaxMsgs = 1, DrainOnCancel = true, Expires = TimeSpan.FromSeconds(1) }, 2);
-        var redelivered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var failedAckCompleted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var redeliveryReceived = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var initialAttemptFinished = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var redelivered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var callbackFailure = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var calls = 0;
+        ulong originalSequence = 0;
         worker.Receive = async (delivery, processing) =>
         {
-            Interlocked.Increment(ref calls);
-            if (delivery.Message.Metadata!.Value.NumDelivered == 1)
+            try
             {
-                // Force the second worker to observe native redelivery before this attempt
-                // finishes. Callback scheduling is not broker delivery order.
-                await redeliveryReceived.Task.WaitAsync(processing);
-                // A real native confirmed ACK request to an unsubscribed subject fails without
-                // acknowledging the original. No connection outage or timing race is required.
-                var failed = new NatsJSMsg<ReadOnlyMemory<byte>>(new NatsMsg<ReadOnlyMemory<byte>>(
-                    subject, subject + ".no_ack_receiver", 0, null, delivery.Message.Data, delivery.Message.Connection),
-                    new NatsJSContext(delivery.Message.Connection!));
-                try { await worker.SettleAsync(new(failed, delivery.Consumer), Disposition.Complete, processing); }
-                finally { initialAttemptFinished.TrySetResult(); }
+                var metadata = delivery.Message.Metadata!.Value;
+                Interlocked.Increment(ref calls);
+                if (metadata.NumDelivered == 1)
+                {
+                    originalSequence = metadata.Sequence.Stream;
+                    // Callback scheduling is not broker delivery order. Keep the original active
+                    // until the second worker receives native redelivery.
+                    await redeliveryReceived.Task.WaitAsync(processing);
+                    // A real native confirmed ACK request to an unsubscribed subject fails without
+                    // acknowledging the original. Observe the failure, rather than assuming it happened.
+                    var failed = new NatsJSMsg<ReadOnlyMemory<byte>>(new NatsMsg<ReadOnlyMemory<byte>>(
+                        subject, subject + ".no_ack_receiver", 0, null, delivery.Message.Data, delivery.Message.Connection),
+                        new NatsJSContext(delivery.Message.Connection!));
+                    await worker.SettleAsync(new(failed, delivery.Consumer), Disposition.Complete, processing);
+                    failedAckCompleted.TrySetResult();
+                }
+                else
+                {
+                    redeliveryReceived.TrySetResult();
+                    // AckWait can expire while the other callback is still in its failed request.
+                    // Fence the assertion behind that request, without delaying native redelivery.
+                    await failedAckCompleted.Task.WaitAsync(token);
+                    await Assert.That(metadata.Sequence.Stream).IsEqualTo(originalSequence);
+                    await Assert.That(metadata.NumDelivered).IsGreaterThan(1UL);
+                    await Assert.That(delivery.Message.Data.ToArray()).IsEquivalentTo(new byte[] { 42 });
+                    await worker.SettleAsync(delivery, Disposition.Complete, processing);
+                    redelivered.TrySetResult();
+                }
                 return Disposition.SettledByHandler;
             }
-            redeliveryReceived.TrySetResult();
-            await initialAttemptFinished.Task.WaitAsync(processing);
-            // Confirm settlement before signalling: stopping the pull loop must not race
-            // the assertion, and native at-least-once delivery may include queued duplicates.
-            await worker.SettleAsync(delivery, Disposition.Complete, processing);
-            if (delivery.Message.Metadata!.Value.NumDelivered > 1) redelivered.TrySetResult();
-            return Disposition.SettledByHandler;
+            catch (Exception error)
+            {
+                // The worker intentionally catches callback errors to keep consuming. Test assertions
+                // must also reach the test, instead of turning into an unexplained redelivery timeout.
+                callbackFailure.TrySetException(error);
+                failedAckCompleted.TrySetException(error);
+                throw;
+            }
         };
         await adapter.StartAsync(token);
         await using var native = new NatsConnection(broker.Options());
         var js = new NatsJSContext(native);
         (await js.PublishAsync(subject, new byte[] { 42 }, NatsRawSerializer<byte[]>.Default, cancellationToken: token)).EnsureSuccess();
-        await Task.WhenAny(redelivered.Task, worker.Completion).WaitAsync(token);
-        if (worker.Completion.IsCompleted) await worker.Completion;
-        await redelivered.Task.WaitAsync(token);
-        await adapter.StopAsync(token);
-        var consumer = await js.GetConsumerAsync(events, "worker", token);
-        await Assert.That(consumer.Info.NumAckPending).IsEqualTo(0L);
-        await Assert.That(calls).IsGreaterThanOrEqualTo(2);
+        try
+        {
+            await WaitForStageAsync(failedAckCompleted.Task, "failed ACK callback");
+            await Assert.That(capture.Failure.Task.IsCompletedSuccessfully).IsTrue();
+            await Assert.That(await capture.Failure.Task).IsTypeOf<NatsNoRespondersException>();
+            await WaitForStageAsync(redelivered.Task, "confirmed native redelivery");
+            await adapter.StopAsync(token);
+            if (callbackFailure.Task.IsCompleted) await callbackFailure.Task;
+            var consumer = await js.GetConsumerAsync(events, "worker", token);
+            await Assert.That(consumer.Info.NumAckPending).IsEqualTo(0L);
+            // At-least-once delivery permits more redeliveries when a runner is delayed past AckWait.
+            await Assert.That(calls).IsGreaterThanOrEqualTo(2);
+        }
+        catch (Exception error)
+        {
+            // The test deadline may already be canceled: use a separate bounded diagnostic request.
+            string consumerState;
+            using var diagnostics = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            try
+            {
+                var info = (await js.GetConsumerAsync(events, "worker", diagnostics.Token)).Info;
+                consumerState = $"ackPending={info.NumAckPending}, redelivered={info.NumRedelivered}, waiting={info.NumWaiting}, pending={info.NumPending}";
+            }
+            catch (Exception diagnosticError) { consumerState = diagnosticError.ToString(); }
+            throw new InvalidOperationException(
+                $"Failed ACK recovery: calls={Volatile.Read(ref calls)}, failedAck={failedAckCompleted.Task.Status}, " +
+                $"ackError={capture.Failure.Task.Status}, redelivery={redelivered.Task.Status}, " +
+                $"callback={callbackFailure.Task.Status}, worker={worker.Completion.Status}, " +
+                $"adminConnection={native.ConnectionState}; {consumerState}\n{capture}", error);
+        }
+
+        async Task WaitForStageAsync(Task stage, string name)
+        {
+            var completed = await Task.WhenAny(stage, callbackFailure.Task, worker.Completion).WaitAsync(token);
+            await completed;
+            if (completed == worker.Completion)
+                throw new InvalidOperationException($"Worker stopped before {name}.");
+        }
     }
 
     [Test]
@@ -398,6 +454,23 @@ public class NatsExecutionTests
         var consumer = await js.GetConsumerAsync(events, "worker", token);
         await Assert.That(consumer.Info.NumAckPending).IsEqualTo(0L);
         await Assert.That(calls).IsGreaterThanOrEqualTo(2);
+    }
+
+    private sealed class AckFailureCapture : ILoggerProvider, ILogger
+    {
+        private readonly ConcurrentQueue<string> _entries = new();
+        internal TaskCompletionSource<Exception> Failure { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public ILogger CreateLogger(string categoryName) => this;
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+        public bool IsEnabled(LogLevel logLevel) => true;
+        public void Dispose() { }
+        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception,
+            Func<TState, Exception?, string> formatter)
+        {
+            _entries.Enqueue($"{logLevel} {eventId.Name}: {formatter(state, exception)} {exception}");
+            if (eventId.Name == "AckFailed" && exception is not null) Failure.TrySetResult(exception);
+        }
+        public override string ToString() => string.Join(Environment.NewLine, _entries);
     }
 
 }
