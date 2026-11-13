@@ -5,6 +5,14 @@ namespace Relayer.Tests;
 public class ConcurrentReceiveAllocationTests
 {
     [Test]
+    public async Task Retained_image_probe_can_construct_fixture_without_arguments()
+    {
+        // FrozenReceiveProbe binds to the retained image through Activator.CreateInstance.
+        using var fixture = (ConcurrentReceiveFixture)Activator.CreateInstance(typeof(ConcurrentReceiveFixture))!;
+        await Assert.That(fixture.Run(ConcurrentReceiveFixture.Mode.Scoped)).IsGreaterThan(0);
+    }
+
+    [Test]
     public async Task Pending_cross_thread_receives_allocate_only_native_scopes_after_warmup()
     {
         // Opt-in diagnostic only: retain the real parallel TUnit process, rather than

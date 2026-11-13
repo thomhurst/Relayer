@@ -31,7 +31,10 @@ public sealed class ConcurrentReceiveFixture : IDisposable
     public long CallerBytes { get; private set; }
     public long WorkerBytes => _workerBytes;
 
-    public ConcurrentReceiveFixture(Action<int>? workerStarted = null)
+    // Retained-image probes construct this fixture through Activator.CreateInstance.
+    public ConcurrentReceiveFixture() : this(null) { }
+
+    public ConcurrentReceiveFixture(Action<int>? workerStarted)
     {
         var services = new ServiceCollection();
         services.AddSingleton(_handler);
