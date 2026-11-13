@@ -50,7 +50,7 @@ public class RabbitMqReceiveBenchmarks
         {
             builder.MessageTypes.Add<RabbitMqBenchmarkPayload>("benchmarks.rabbit-receive");
             builder.UseJsonSerializer(RabbitMqReceiveBenchmarkJson.Default);
-            builder.Handler<RabbitMqBenchmarkHandler>();
+
             if (!relayer) return;
             builder.RabbitMQ("benchmark", rabbit =>
             {

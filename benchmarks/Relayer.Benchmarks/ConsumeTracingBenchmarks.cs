@@ -38,7 +38,7 @@ public class ConsumeTracingBenchmarks
         services.AddRelayer(r =>
         {
             r.MessageTypes.Add<Payload>("benchmark.payload");
-            r.Handler<Handler>();
+            new ConsumerBuilder<object>(r.Services, r.Handlers, "manual").Handler<Handler>();
             r.AddTransport<BatchOptions, BatchOptions, BatchOptions>("benchmark", transport =>
                 transport.Consume("orders", consumer => consumer.Handler<BatchHandler>().Batch(10, TimeSpan.FromMilliseconds(100))));
         });

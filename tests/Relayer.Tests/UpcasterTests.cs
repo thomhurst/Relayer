@@ -164,7 +164,7 @@ public class UpcasterTests
         {
             r.AddMessageTypesFromThisAssembly();
             r.Upcasters.Add(new FirstUpgrade());
-            r.Handler<Handler>();
+            new ConsumerBuilder<object>(r.Services, r.Handlers, "manual").Handler<Handler>();
         });
         await using var provider = services.BuildServiceProvider();
         var failures = new List<FailureAction>();
@@ -189,7 +189,7 @@ public class UpcasterTests
             r.AddMessageTypesFromThisAssembly();
             // Register in reverse order to prove composition follows types, not insertion order.
             r.Upcasters.Add(new SecondUpgrade()).Add(first ?? new FirstUpgrade());
-            r.Handler<Handler>().Handler<OldHandler>();
+            new ConsumerBuilder<object>(r.Services, r.Handlers, "manual").Handler<Handler>().Handler<OldHandler>();
             r.AddTransport<Options, Options, Options>("test", t => t.Consume("versions", c => c.Handler<BatchHandler>().Batch(5, TimeSpan.FromSeconds(1))));
         });
         return services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });

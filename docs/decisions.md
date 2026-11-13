@@ -14,7 +14,7 @@ To change a decision, add a new entry that supersedes it rather than editing his
 | [D1](#d1-wrap-native-clients-do-not-abstract-brokers) | Wrap native clients; do not abstract brokers | Accepted |
 | [D2](#d2-target-net-10-and-later) | Target .NET 10 and later | Accepted |
 | [D3](#d3-mit-licence-permanently) | MIT licence, permanently | Accepted |
-| [D4](#d4-explicit-registration-source-generation-no-reflection) | Explicit registration, source generation, no reflection | Accepted |
+| [D4](#d4-explicit-registration-source-generation-no-reflection) | Explicit registration, source generation, no reflection | Accepted; assembly-wide handler registration superseded by [D72](#d72-handler-registration-belongs-to-the-consumer) |
 | [D5](#d5-handlers-implement-ihandlert) | Handlers implement `IHandler<T>` | Accepted |
 | [D6](#d6-native-access-through-a-feature-collection) | Native access through a feature collection | Accepted |
 | [D7](#d7-stable-message-names-and-cloudevents-on-the-wire) | Stable message names and CloudEvents on the wire | Accepted |
@@ -82,6 +82,7 @@ To change a decision, add a new entry that supersedes it rather than editing his
 | [D69](#d69-retryable-handler-failures-get-three-in-process-retries-by-default) | Retryable handler failures get three in-process retries by default | Accepted |
 | [D70](#d70-mysql-send-failures-retain-durable-retry-eligibility) | MySQL send failures retain durable retry eligibility | Accepted |
 | [D71](#d71-sql-server-outbox-send-failures-retain-durable-eligibility) | SQL Server outbox send failures retain durable eligibility | Accepted |
+| [D72](#d72-handler-registration-belongs-to-the-consumer) | Handler registration belongs to the consumer | Accepted |
 
 ---
 
@@ -1690,3 +1691,14 @@ clients retain their in-operation retries; no extra in-process send loop or brok
 worker replacement. Ordered heads retain their existing due-time lane barrier. The schema and low-level
 store contract remain unchanged; callers using `RecordFailureAsync` directly still own permanent-failure
 classification. See [SQL Server recovery](https://relayer.tomlonghurst.dev/docs/reference/sqlserver-store#recovery-poison-rows-and-retention).
+
+
+## D72. Handler registration belongs to the consumer
+
+**Status:** Accepted. Supersedes D4's optional assembly-wide handler registration.
+
+**Context.** Root builder registration added DI services and generated descriptors but did not select a consumer. Users could register a handler and still have no dispatch path. Consumer registration already performs both jobs through `IConsumerBuilder.AddHandler` and the shared registry.
+
+**Decision.** Generate `Handler<THandler>()` only for `IConsumerBuilder`. Remove the root builder overload and `AddHandlersFromThisAssembly()`. Applications explicitly select each handler inside its consumer callback. RLY003 points to that call. Source generation continues to discover contracts at compile time; it does not register discovered handlers automatically. Manual pipeline composers use descriptors registered by their consumer declaration.
+
+**Consequences.** One application call selects dispatch and registers DI, preserving explicit topology, typed native options, AOT safety and existing handler lifetimes. Existing applications move builder-level registrations into consumer callbacks. Dispatch and native broker behavior are unchanged, with no additional steady-state work or allocation.

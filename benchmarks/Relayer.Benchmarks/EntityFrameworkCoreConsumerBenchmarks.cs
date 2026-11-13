@@ -40,7 +40,7 @@ public class EntityFrameworkCoreConsumerBenchmarks
         services.AddRelayer(r =>
         {
             r.MessageTypes.Add<Probe>("benchmark.ef-consumer");
-            r.Handler<Handler>();
+            new ConsumerBuilder<object>(r.Services, r.Handlers, "manual").Handler<Handler>();
         });
         _provider = services.BuildServiceProvider();
         _pipeline = new ConsumePipelineBuilder(_provider.GetRequiredService<IServiceScopeFactory>(),

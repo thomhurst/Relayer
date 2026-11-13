@@ -5,34 +5,6 @@ namespace Relayer;
 
 internal static class RelayerGeneratedHandlers
 {
-    public static global::Relayer.IRelayerBuilder AddHandlersFromThisAssembly(this global::Relayer.IRelayerBuilder builder)
-    {
-        global::System.ArgumentNullException.ThrowIfNull(builder);
-        Handler<global::Example.Derived>(builder);
-        Handler<global::Example.Handler>(builder);
-        return builder;
-    }
-
-    public static global::Relayer.IRelayerBuilder Handler<THandler>(this global::Relayer.IRelayerBuilder builder)
-        where THandler : class, global::Relayer.IHandlerMarker
-    {
-        global::System.ArgumentNullException.ThrowIfNull(builder);
-        if (typeof(THandler) == typeof(global::Example.Derived))
-        {
-            builder.Handlers.Add(new Dispatcher0());
-            global::Microsoft.Extensions.DependencyInjection.Extensions.ServiceCollectionDescriptorExtensions.TryAddScoped<global::Example.Derived>(builder.Services);
-            return builder;
-        }
-        if (typeof(THandler) == typeof(global::Example.Handler))
-        {
-            builder.Handlers.Add(new Dispatcher1());
-            builder.Handlers.Add(new Dispatcher2());
-            global::Microsoft.Extensions.DependencyInjection.Extensions.ServiceCollectionDescriptorExtensions.TryAddScoped<global::Example.Handler>(builder.Services);
-            return builder;
-        }
-        throw new global::System.InvalidOperationException($"No generated descriptor for handler '{typeof(THandler)}'. Use a concrete, closed, assembly-accessible IHandler<T> or IBatchHandler<T> in Handler<THandler>().");
-    }
-
     public static global::Relayer.IConsumerBuilder Handler<THandler>(this global::Relayer.IConsumerBuilder builder)
         where THandler : class, global::Relayer.IHandlerMarker
     {

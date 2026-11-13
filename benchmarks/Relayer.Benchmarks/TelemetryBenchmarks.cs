@@ -35,7 +35,7 @@ public class TelemetryBenchmarks
         services.AddLogging(logging => logging
             .SetMinimumLevel(ErrorLoggingEnabled ? LogLevel.Error : LogLevel.None)
             .AddProvider(new ScopeProvider()));
-        services.AddRelayer(r => { r.MessageTypes.Add<Payload>("benchmark.payload"); r.Handler<Handler>(); });
+        services.AddRelayer(r => { r.MessageTypes.Add<Payload>("benchmark.payload"); new ConsumerBuilder<object>(r.Services, r.Handlers, "manual").Handler<Handler>(); });
         _provider = services.BuildServiceProvider();
         var instrumentation = _provider.GetRequiredService<RelayerInstrumentation>();
         _endpoint = instrumentation.CreateEndpoint(new()

@@ -22,7 +22,8 @@ public class StartupBenchmarks
         services.AddRelayer(builder =>
         {
             builder.AddMessageTypesFromThisAssembly();
-            StartupHandlers.Register(builder);
+            builder.AddTransport<object, object, object>("startup", transport =>
+                transport.Consume("source", consumer => StartupHandlers.Register(consumer)));
         });
         _provider = services.BuildServiceProvider();
         _scopes = _provider.GetRequiredService<IServiceScopeFactory>();

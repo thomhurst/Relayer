@@ -15,7 +15,7 @@ public sealed class ConfigurationAnalyzer : DiagnosticAnalyzer
     private static readonly DiagnosticDescriptor DuplicateMessage = Rule("RLY002", "Duplicate message identity",
         "Message type '{0}' duplicates message identity '{1}' version {2}. Choose a unique name and version.", DiagnosticSeverity.Error);
     private static readonly DiagnosticDescriptor UnregisteredHandler = Rule("RLY003", "Handler is never registered",
-        "Handler '{0}' is never registered in this compilation. Call Handler<{0}>() or AddHandlersFromThisAssembly().");
+        "Handler '{0}' is never registered in this compilation. Call consumer.Handler<{0}>() inside a consumer configuration callback.");
     private static readonly DiagnosticDescriptor EmptyConsumer = Rule("RLY004", "Consumer has no handler",
         "Consumer has no handler. Call consumer.Handler<THandler>() inside its configuration callback.");
 
@@ -48,7 +48,6 @@ public sealed class ConfigurationAnalyzer : DiagnosticAnalyzer
             var registered = new ConcurrentDictionary<ITypeSymbol, byte>(SymbolEqualityComparer.Default);
             var messages = new ConcurrentDictionary<INamedTypeSymbol, AttributeData>(SymbolEqualityComparer.Default);
             var missing = new ConcurrentDictionary<ITypeSymbol, ConcurrentDictionary<Location, byte>>(SymbolEqualityComparer.Default);
-            var discovery = 0;
 
             void CheckMessage(ITypeSymbol message, Location use)
             {
@@ -104,7 +103,6 @@ public sealed class ConfigurationAnalyzer : DiagnosticAnalyzer
                             || SymbolEqualityComparer.Default.Equals(contract.OriginalDefinition, batch))
                             CheckMessage(contract.TypeArguments[0], invocation.Syntax.GetLocation());
                 }
-                else if (method.Name == "AddHandlersFromThisAssembly") Interlocked.Exchange(ref discovery, 1);
             }, OperationKind.Invocation);
 
             start.RegisterCompilationEndAction(end =>
@@ -127,7 +125,6 @@ public sealed class ConfigurationAnalyzer : DiagnosticAnalyzer
                             pair.Key.ToDisplayString(), group.Key.Name, group.Key.Version));
                 }
 
-                if (discovery != 0) return;
                 foreach (var handler in handlers.Keys)
                     if (!registered.ContainsKey(handler))
                         end.ReportDiagnostic(Diagnostic.Create(UnregisteredHandler, handler.Locations[0], handler.ToDisplayString()));

@@ -52,7 +52,7 @@ public class GooglePubSubBrokerReceiveBenchmarks
         {
             relayer.MessageTypes.Add<PubSubBenchmarkOrder>("benchmarks.pubsub.order");
             relayer.UseJsonSerializer(PubSubBenchmarkJson.Default);
-            relayer.Handler<PubSubBrokerBenchmarkHandler>();
+            new ConsumerBuilder<object>(relayer.Services, relayer.Handlers, "manual").Handler<PubSubBrokerBenchmarkHandler>();
         });
         _provider = services.BuildServiceProvider();
         _scopes = _provider.GetRequiredService<IServiceScopeFactory>();

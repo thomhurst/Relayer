@@ -3,7 +3,7 @@ namespace Relayer.Benchmarks;
 
 internal static class StartupHandlers
 {
-    internal static void Register(IRelayerBuilder builder)
+    internal static void Register(IConsumerBuilder builder)
     {
         builder.Handler<StartupHandler00>();
         builder.Handler<StartupHandler01>();

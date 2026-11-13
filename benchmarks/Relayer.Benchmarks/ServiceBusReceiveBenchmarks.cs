@@ -51,7 +51,7 @@ public class ServiceBusReceiveBenchmarks
         {
             builder.MessageTypes.Add<ServiceBusBenchmarkPayload>("benchmarks.servicebus-receive");
             builder.UseJsonSerializer(ServiceBusReceiveBenchmarkJson.Default);
-            builder.Handler<ServiceBusBenchmarkHandler>();
+
             if (!relayer) return;
             builder.ServiceBus("benchmark", bus =>
             {

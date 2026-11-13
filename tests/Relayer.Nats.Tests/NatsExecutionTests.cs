@@ -124,7 +124,6 @@ public class NatsExecutionTests
         {
             relayer.AddMessageTypesFromThisAssembly();
             relayer.UseJsonSerializer(NatsExecutionJson.Default);
-            relayer.Handler<ExecutionHandler>();
             relayer.Nats("execution", transport =>
             {
                 transport.TopologyMode = TopologyMode.Provision;
@@ -209,7 +208,6 @@ public class NatsExecutionTests
         {
             relayer.AddMessageTypesFromThisAssembly();
             relayer.UseJsonSerializer(NatsExecutionJson.Default);
-            relayer.Handler<ExecutionHandler>();
             relayer.Nats("preconditions", transport =>
             {
                 transport.TopologyMode = TopologyMode.Provision;
@@ -290,7 +288,6 @@ public class NatsExecutionTests
         {
             relayer.AddMessageTypesFromThisAssembly();
             relayer.UseJsonSerializer(NatsExecutionJson.Default);
-            relayer.Handler<ExecutionHandler>();
             relayer.Nats("rollup", transport =>
             {
                 transport.TopologyMode = TopologyMode.Provision;

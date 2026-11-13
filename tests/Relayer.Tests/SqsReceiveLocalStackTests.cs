@@ -34,7 +34,6 @@ public sealed class SqsReceiveLocalStackTests
         builder.Services.AddRelayer(relayer =>
         {
             relayer.AddMessageTypesFromThisAssembly();
-            relayer.Handler<Handler>();
             relayer.AmazonSqs("ExactSqs", sqs =>
             {
                 sqs.TopologyMode = TopologyMode.Provision;

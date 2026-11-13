@@ -59,6 +59,31 @@ public class HandlerGeneratorTests
     }
 
     [Test]
+    public async Task Root_builder_registration_is_rejected_at_compile_time()
+    {
+        var compilation = CreateCompilation(Handlers + """
+
+            public static class RootRegistration
+            {
+                public static void Add(IRelayerBuilder builder)
+                {
+                    builder.Handler<Handler>();
+                    builder.AddHandlersFromThisAssembly();
+                }
+            }
+            """);
+        GeneratorDriver driver = CSharpGeneratorDriver.Create(new HandlerGenerator());
+        driver = driver.RunGeneratorsAndUpdateCompilation(compilation, out var output, out _);
+
+        await Assert.That(Generated(driver)).DoesNotContain("IRelayerBuilder");
+        await Assert.That(Generated(driver)).DoesNotContain("AddHandlersFromThisAssembly");
+        var errors = output.GetDiagnostics().Where(d => d.Severity == DiagnosticSeverity.Error).ToArray();
+        await Assert.That(errors.Length).IsEqualTo(2);
+        await Assert.That(errors.Any(d => d.Id == "CS1929")).IsTrue();
+        await Assert.That(errors.Any(d => d.Id == "CS1061")).IsTrue();
+    }
+
+    [Test]
     public async Task Unrelated_edit_caches_models_and_source_output()
     {
         var unrelated = CSharpSyntaxTree.ParseText("class Unrelated { int Value => 1; }");
@@ -120,7 +145,7 @@ public class HandlerGeneratorTests
             class Concrete : Generic<int> { }
             static class Registration
             {
-                public static void Add<T>(IRelayerBuilder builder)
+                public static void Add<T>(IConsumerBuilder builder)
                 {
                     builder.Handler<Generic<List<T>>>();
                     builder.Handler<Generic<T[]>>();
@@ -193,7 +218,7 @@ public class HandlerGeneratorTests
             }
             public static class Registration
             {
-                public static void Add(IRelayerBuilder builder) => builder.Handler<Handler<dynamic>>();
+                public static void Add(IConsumerBuilder builder) => builder.Handler<Handler<dynamic>>();
             }
             """), out _);
         await Assert.That(Generated(driver)).Contains("HandlerDescriptor<global::System.Object>");
@@ -202,7 +227,6 @@ public class HandlerGeneratorTests
     }
 
     [Test]
-    [Arguments("IRelayerBuilder")]
     [Arguments("IConsumerBuilder")]
     public async Task Referenced_handler_can_be_registered_explicitly_without_assembly_discovery(string builderType)
     {
@@ -214,14 +238,14 @@ public class HandlerGeneratorTests
             using Relayer;
             public static class Registration
             {
-                public static void Add(IRelayerBuilder builder) => builder.Handler<Example.Handler>();
+                public static void Add(IConsumerBuilder builder) => builder.Handler<Example.Handler>();
             }
-            """.Replace("IRelayerBuilder", builderType)).AddReferences(MetadataReference.CreateFromImage(stream.ToArray()));
+            """.Replace("IConsumerBuilder", builderType)).AddReferences(MetadataReference.CreateFromImage(stream.ToArray()));
         var driver = Run(compilation, out _);
         var generated = Generated(driver);
         await Assert.That(generated).Contains("TryAddScoped<global::Example.Handler>");
-        var discovery = generated[..generated.IndexOf("public static global::Relayer.IRelayerBuilder Handler<", StringComparison.Ordinal)];
-        await Assert.That(discovery).DoesNotContain("Handler<global::Example.Handler>(builder)");
+        await Assert.That(generated).DoesNotContain("AddHandlersFromThisAssembly");
+        await Assert.That(generated).DoesNotContain("IRelayerBuilder");
     }
 
     [Test]

@@ -33,7 +33,7 @@ public class ReceivePipelineBenchmarks
         if (Tenancy) services.AddRelayerTenancy();
         services.AddSingleton<Handler>();
         services.AddSingleton<TombstoneHandler>();
-        services.AddRelayer(r => { r.MessageTypes.Add<Payload>("benchmark.payload"); r.Handler<Handler>().Handler<TombstoneHandler>(); });
+        services.AddRelayer(r => { r.MessageTypes.Add<Payload>("benchmark.payload"); new ConsumerBuilder<object>(r.Services, r.Handlers, "manual").Handler<Handler>().Handler<TombstoneHandler>(); });
         _provider = services.BuildServiceProvider();
         _consumer = new ConsumePipelineBuilder(_provider.GetRequiredService<IServiceScopeFactory>(),
                 _provider.GetRequiredService<MessageTypeRegistry>(), _serializer,

@@ -86,8 +86,10 @@ public class SagaBenchmarks
             state.Property(s => s.Version).IsRowVersion();
         }
     }
+#pragma warning disable RLY003 // The benchmark constructs and invokes the saga directly.
     public sealed class Process(Context database, State state) : EntityFrameworkCoreSaga<Context, State, Probe>(database)
     {
+#pragma warning restore RLY003
         protected override ValueTask<State?> LoadAsync(Probe message, CancellationToken cancellationToken) => new(state);
         protected override ValueTask TransitionAsync(State current, Probe message, MessageContext context, CancellationToken cancellationToken)
         {
@@ -147,8 +149,10 @@ public class SagaRuntimeBenchmarks
     }
 
     public sealed class RuntimeState : SagaData { public int Count { get; set; } }
+#pragma warning disable RLY003 // This benchmark invokes the saga directly without a consumer declaration.
     public sealed class RuntimeProcess(Reader reader) : Saga<RuntimeState, SagaBenchmarks.Probe>
     {
+#pragma warning restore RLY003
         protected override void ValidateTransaction() { }
         protected override ValueTask<RuntimeState?> LoadAsync(SagaBenchmarks.Probe message, CancellationToken cancellationToken) => reader.Read();
         protected override ValueTask TransitionAsync(RuntimeState current, SagaBenchmarks.Probe message, MessageContext context, CancellationToken cancellationToken)

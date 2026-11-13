@@ -100,15 +100,11 @@ for transport-author integration and native count/wait limits.
 Relayer never scans assemblies at runtime. Register handlers inside `AddRelayer`:
 
 ```csharp
-services.AddRelayer(relayer => relayer.Handler<OrderPlacedHandler>());
-
-// Or register every concrete, assembly-accessible handler declared in this assembly:
-services.AddRelayer(relayer => relayer.AddHandlersFromThisAssembly());
+services.AddRelayer(relayer => relayer.Kafka("events", kafka =>
+    kafka.Consume("orders", consumer => consumer.Handler<OrderPlacedHandler>())));
 ```
 
-`AddHandlersFromThisAssembly()` is written by the source generator at compile time. It is a plain list of `Handler<T>()` calls you can open and read, and it works under Native AOT.
-
-Discovery includes inherited contracts, explicit interface implementations, and handlers with several message or batch contracts. Open generic, abstract, private nested and file-local classes are excluded. Explicit `Handler<ClosedHandler<OrderPlaced>>()` supports closed generic handlers and handlers in referenced assemblies. Repeated registration is idempotent, and handlers default to a scoped registration unless you registered them yourself.
+`consumer.Handler<THandler>()` both selects the handler for that consumer and registers its generated descriptors and scoped DI service. No separate builder registration or assembly-wide handler registration is needed. The generator supports inherited contracts, explicit interface implementations, and handlers with several message or batch contracts. Explicit `Handler<ClosedHandler<OrderPlaced>>()` supports closed generic handlers and handlers in referenced assemblies. Repeated registration is idempotent, and an existing DI lifetime is preserved.
 
 Message types must be accessible to the generated code; [RLYH001](../reference/diagnostics.md#suppression-and-generated-code) reports ones that are not. Analyzer [RLY003](../reference/diagnostics.md#rly003) warns about a handler that is never registered, and [RLY004](../reference/diagnostics.md#rly004) about a consumer with no handler.
 

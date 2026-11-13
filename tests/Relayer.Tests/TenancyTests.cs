@@ -221,7 +221,7 @@ public class TenancyTests
         services.AddRelayer(r =>
         {
             r.AddMessageTypesFromThisAssembly();
-            r.Handler<Handler>().Handler<BatchHandler>();
+            new ConsumerBuilder<object>(r.Services, r.Handlers, "manual").Handler<Handler>().Handler<BatchHandler>();
             r.AddTransport<object, object, object>("sink", t => t.Send<Payload>("messages"));
         });
         services.AddScoped(static p => new Handler(p.GetRequiredService<Control>(), p.GetService<TenantContext>()));

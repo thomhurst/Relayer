@@ -664,7 +664,7 @@ public class BatchPipelineTests
         services.AddRelayer(builder =>
         {
             builder.MessageTypes.Add<Payload>("batch.payload");
-            builder.Handler<AllocationHandler>();
+            new ConsumerBuilder<object>(builder.Services, builder.Handlers, "manual").Handler<AllocationHandler>();
             builder.AddTransport<Options, Options, Options>("test", transport =>
             {
                 transport.Send<Payload>("destination");

@@ -13,7 +13,7 @@ internal static class SagaDispatchSmoke
         services.AddRelayer(r =>
         {
             r.MessageTypes.Add<SmokeSagaMessage>("smoke.saga");
-            r.Handler<SmokeSaga>();
+            r.AddTransport<object, object, object>("manual-1", transport => transport.Consume("source", consumer => consumer.Handler<SmokeSaga>()));
         });
         await using var provider = services.BuildServiceProvider();
         await using var scope = provider.CreateAsyncScope();

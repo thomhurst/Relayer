@@ -39,15 +39,13 @@ Message names are case-sensitive. The default version is 1. Two different types 
 
 ## RLY003
 
-Register a concrete, assembly-accessible handler explicitly:
+Select a concrete, assembly-accessible handler inside its consumer configuration callback:
 
 ```csharp
-builder.Handler<OrderPlacedHandler>();
-// Or explicitly register all discoverable handlers in this assembly:
-builder.AddHandlersFromThisAssembly();
+kafka.Consume("orders", consumer => consumer.Handler<OrderPlacedHandler>());
 ```
 
-Registration inside `consumer.Handler<THandler>()` also counts. Both static and extension forms of generated registration calls are recognized throughout the compilation. Batch handlers, inherited contracts and explicit interface implementations are supported. Abstract, open generic, inaccessible and file-local handlers are not candidates for assembly registration. Closed generic and referenced handlers can be registered explicitly.
+This call registers the generated descriptors and DI service as well as binding the consumer. Builder-level `Handler<T>()` and `AddHandlersFromThisAssembly()` are no longer generated; move each registration into the consumer that handles its messages. Both static and extension forms of generated consumer registration calls are recognized throughout the compilation. Batch handlers, inherited contracts and explicit interface implementations are supported. Abstract, open generic, inaccessible and file-local handlers are excluded. Closed generic and referenced handlers can be registered explicitly.
 
 This is compilation-local analysis, not a proof of runtime reachability. A registration in a helper counts even if the helper is not called. If a library intentionally leaves registration to another assembly, suppress this warning in that library with `.editorconfig`:
 

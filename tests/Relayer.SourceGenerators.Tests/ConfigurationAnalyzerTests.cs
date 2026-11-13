@@ -30,8 +30,8 @@ public class ConfigurationAnalyzerTests
     public async Task Missing_identity_in_route_and_handler_reports_once_at_message_declaration()
     {
         var source = Imports + Handler.Replace("[Message(\"order\")] ", "") + """
-            static class Setup { public static void Add(Broker broker, IRelayerBuilder builder)
-                { broker.Send<Order>("orders"); builder.Handler<H>(); } }
+            static class Setup { public static void Add(Broker broker, IRelayerBuilder builder, IConsumerBuilder consumer)
+                { broker.Send<Order>("orders"); consumer.Handler<H>(); } }
             """;
         var diagnostics = await Analyze(source);
         await Assert.That(Ids(diagnostics)).IsEqualTo("RLY001");
@@ -47,7 +47,7 @@ public class ConfigurationAnalyzerTests
     {
         var source = Imports + Handler.Replace("IHandler<Order>", "IHandler<Tombstone<Order>>")
             .Replace("HandleAsync(Order message", "HandleAsync(Tombstone<Order> message") +
-            "static class Setup { public static void Add(IRelayerBuilder builder) => builder.Handler<H>(); }";
+            "static class Setup { public static void Add(IConsumerBuilder consumer) => consumer.Handler<H>(); }";
         if (!identity) source = source.Replace("[Message(\"order\")] ", "");
         await Verify(source, expected);
     }
@@ -75,10 +75,10 @@ public class ConfigurationAnalyzerTests
             .Replace("HandleAsync(Order message", $"HandleAsync({messageType} message") + $$"""
             static class Setup
             {
-                public static void Add(Broker broker, IRelayerBuilder builder)
+                public static void Add(Broker broker, IRelayerBuilder builder, IConsumerBuilder consumer)
                 {
                     broker.Send<{{messageType}}>("orders");
-                    builder.Handler<H>();
+                    consumer.Handler<H>();
                     builder.MessageTypes.Add<Order>("orders.placed");
                 }
             }
@@ -111,7 +111,7 @@ public class ConfigurationAnalyzerTests
             public record Order<T>;
             static class Setup
             {
-                public static void Add(Broker broker, IRelayerBuilder builder)
+                public static void Add(Broker broker, IRelayerBuilder builder, IConsumerBuilder consumer)
                 {
                     builder.MessageTypes.Add<Order<int>>("orders.integer");
                     broker.Send<{{registeredRoute}}>("integers");
@@ -130,7 +130,7 @@ public class ConfigurationAnalyzerTests
             public record Order;
             static class Setup
             {
-                public static void Add(Broker broker, IRelayerBuilder builder)
+                public static void Add(Broker broker, IRelayerBuilder builder, IConsumerBuilder consumer)
                 {
                     Register<Order>(builder);
                     broker.Send<Order>("orders");
@@ -155,7 +155,7 @@ public class ConfigurationAnalyzerTests
         var compilation = Compile(Imports + """
             static class Setup
             {
-                public static void Add(Broker broker, IRelayerBuilder builder)
+                public static void Add(Broker broker, IRelayerBuilder builder, IConsumerBuilder consumer)
                 {
                     Identities.Add(builder);
                     broker.Send<Order>("orders");
@@ -200,14 +200,12 @@ public class ConfigurationAnalyzerTests
 
     [Test]
     [Arguments("", "RLY003")]
-    [Arguments("builder.Handler<H>();", "")]
-    [Arguments("RelayerGeneratedHandlers.Handler<H>(builder);", "")]
-    [Arguments("builder.AddHandlersFromThisAssembly();", "")]
-    [Arguments("RelayerGeneratedHandlers.AddHandlersFromThisAssembly(builder);", "")]
+    [Arguments("consumer.Handler<H>();", "")]
+    [Arguments("RelayerGeneratedHandlers.Handler<H>(consumer);", "")]
     public async Task Registration_is_compilation_wide_and_supports_static_and_extension_calls(string registration, string expected)
     {
         await Verify(Imports + Handler + $$"""
-            static class Setup { public static void Add(IRelayerBuilder builder) { {{registration}} } }
+            static class Setup { public static void Add(IConsumerBuilder consumer) { {{registration}} } }
             """, expected);
     }
 
@@ -272,9 +270,9 @@ public class ConfigurationAnalyzerTests
         await Verify(Imports + Handler + $$"""
             static class Setup
             {
-                public static void Add(Broker broker, IRelayerBuilder builder)
+                public static void Add(Broker broker, IRelayerBuilder builder, IConsumerBuilder consumer)
                 {
-                    builder.Handler<H>();
+                    consumer.Handler<H>();
                     broker.Consume("orders", {{callback}});
                 }
                 static void Configure(ConsumerBuilder<object> c) => c.Handler<H>();
@@ -360,7 +358,7 @@ public class ConfigurationAnalyzerTests
         using var stream = new MemoryStream();
         await Assert.That(external.Emit(stream).Success).IsTrue();
         var compilation = Compile(Imports + """
-            static class Setup { public static void Add(IRelayerBuilder builder) => builder.Handler<H>(); }
+            static class Setup { public static void Add(IConsumerBuilder consumer) => consumer.Handler<H>(); }
             """).AddReferences(MetadataReference.CreateFromImage(stream.ToArray()));
         GeneratorDriver driver = CSharpGeneratorDriver.Create(new HandlerGenerator());
         driver.RunGeneratorsAndUpdateCompilation(compilation, out var output, out _);

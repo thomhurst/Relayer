@@ -52,7 +52,7 @@ public class KafkaReceiveBenchmarks
         {
             relayer.MessageTypes.Add<KafkaBenchmarkPayload>("benchmarks.kafka-receive");
             relayer.UseJsonSerializer(KafkaReceiveBenchmarkJson.Default);
-            relayer.Handler<KafkaBenchmarkHandler>();
+
             relayer.Kafka("benchmark", kafka =>
             {
                 kafka.Options.Configure(options => options.BootstrapServers.Add(bootstrap));
