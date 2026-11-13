@@ -26,6 +26,8 @@ services.AddRelayer(relayer => relayer.AddMessageTypesFromThisAssembly());
 
 ## Serialization
 
+Message contracts must be non-static classes, structs or records. A static `[Message]` class produces [RLYM004](../reference/diagnostics.md#rlym004) and is excluded from generated registration and JSON metadata. Ordinary message types may be nested inside an accessible static container.
+
 Message types and all their containing types must be accessible within the assembly and non-file-local, for example `internal` or `public`. Inaccessible `[Message]` declarations produce [RLYM002](../reference/diagnostics.md#rlym002) and are excluded from generated registration and JSON metadata.
 
 The default serializer is System.Text.Json with a source-generated `JsonSerializerContext`. The generator builds it from the declared message types, so serialization is Native AOT safe and never falls back to reflection.

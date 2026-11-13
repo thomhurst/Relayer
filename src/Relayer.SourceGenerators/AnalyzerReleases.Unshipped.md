@@ -11,3 +11,4 @@ RLY003 | Relayer | Warning | Handler must be registered
 RLY004 | Relayer | Warning | Consumer needs a handler
 RLYM001 | Relayer | Error | Message declaration must not have unbound type parameters
 RLYM002 | Relayer | Error | Message type must be accessible to generated registration and JSON metadata
+RLYM004 | Relayer | Error | Message type must not be static

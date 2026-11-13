@@ -27,6 +27,12 @@ public sealed class MessageTypeGenerator : IIncrementalGenerator
         "Relayer", DiagnosticSeverity.Error, isEnabledByDefault: true,
         helpLinkUri: "https://relayer.tomlonghurst.dev/docs/reference/diagnostics#rlym001");
 
+    private static readonly DiagnosticDescriptor StaticMessage = new(
+        "RLYM004", "Message type is static",
+        "Message type '{0}' is static and cannot be used by generated registration or JSON metadata. Declare a non-static message class, struct or record.",
+        "Relayer", DiagnosticSeverity.Error, isEnabledByDefault: true,
+        helpLinkUri: "https://relayer.tomlonghurst.dev/docs/reference/diagnostics#rlym004");
+
     public void Initialize(IncrementalGeneratorInitializationContext context)
     {
         var declarations = context.SyntaxProvider
@@ -42,7 +48,7 @@ public sealed class MessageTypeGenerator : IIncrementalGenerator
         {
             if (model.InaccessibleLocation is { } inaccessibleLocation)
             {
-                spc.ReportDiagnostic(Diagnostic.Create(InaccessibleMessage,
+                spc.ReportDiagnostic(Diagnostic.Create(model.IsStatic ? StaticMessage : InaccessibleMessage,
                     Location.Create(inaccessibleLocation.FilePath, inaccessibleLocation.Span, inaccessibleLocation.LineSpan), model.FullyQualifiedName));
             }
             if (model.OpenGenericLocation is { } location)
@@ -65,11 +71,11 @@ public sealed class MessageTypeGenerator : IIncrementalGenerator
             return null;
         }
 
-        if (!CanReference(type, context.SemanticModel.Compilation))
+        if (type.IsStatic || !CanReference(type, context.SemanticModel.Compilation))
         {
             var location = context.TargetNode.GetLocation();
             return new MessageModel(type.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat), "", 1,
-                InaccessibleLocation: new DiagnosticLocation(location.GetLineSpan().Path, location.SourceSpan, location.GetLineSpan().Span));
+                InaccessibleLocation: new DiagnosticLocation(location.GetLineSpan().Path, location.SourceSpan, location.GetLineSpan().Span), IsStatic: type.IsStatic);
         }
 
         var attribute = context.Attributes[0];
@@ -196,7 +202,7 @@ public sealed class MessageTypeGenerator : IIncrementalGenerator
         && compilation.IsSymbolAccessibleWithin(type, compilation.Assembly)
         && (type.ContainingType is null || CanReference(type.ContainingType, compilation));
 
-    private sealed record MessageModel(string FullyQualifiedName, string Name, int Version, DiagnosticLocation? OpenGenericLocation = null, DiagnosticLocation? InaccessibleLocation = null);
+    private sealed record MessageModel(string FullyQualifiedName, string Name, int Version, DiagnosticLocation? OpenGenericLocation = null, DiagnosticLocation? InaccessibleLocation = null, bool IsStatic = false);
 
     private sealed record DiagnosticLocation(string FilePath, TextSpan Span, LinePositionSpan LineSpan);
 }
