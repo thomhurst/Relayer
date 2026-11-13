@@ -88,6 +88,7 @@ To change a decision, add a new entry that supersedes it rather than editing his
 | [D75](#d75-failure-diagnostics-are-bounded) | Failure diagnostics are bounded | Accepted |
 | [D76](#d76-ef-transaction-coordination-is-independent-of-the-database-provider) | EF transaction coordination is independent of the database provider | Accepted |
 | [D77](#d77-batch-items-report-their-own-failures) | Batch items report their own failures | Accepted |
+| [D78](#d78-isolate-failed-outbox-batches-using-native-single-sends-and-confirmed-receipts) | Isolate failed outbox batches using native single sends and confirmed receipts | Accepted |
 
 ---
 
@@ -1867,11 +1868,11 @@ is the source of truth for available combinations.
 
 **Consequences.** Item copies preserve delivery association through filtering and reordering without allocating a handle per message. The dispatcher writes into the existing attempt error storage. Deserialization failures, manual settlement precedence, durable settlement and ambiguous buffered sends retain the existing execution and native settlement paths (D11, D28); no native capability is duplicated. Items and contexts remain borrowed for the handler invocation only.
 
-## D73. Isolate failed outbox batches using native single sends and confirmed receipts
+## D78. Isolate failed outbox batches using native single sends and confirmed receipts
 
-**Status:** Accepted. Qualifies D70, D71 and D72's batch-failure handling; durable retry and poison policies remain unchanged.
+**Status:** Accepted. Qualifies D70, D71 and D73's batch-failure handling; durable retry and poison policies remain unchanged.
 
-**Context.** #647 remains possible when a failed batch outcome is assigned to every row. Even D72's
+**Context.** #647 remains possible when a failed batch outcome is assigned to every row. Even D73's
 stop after the first single-send `Retry` can indefinitely hold healthy neighbours behind an unclassified
 permanent rejection. Native clients already provide all send mechanics: Service Bus 7.21.0
 [`SendMessagesAsync`](https://github.com/Azure/azure-sdk-for-net/blob/Azure.Messaging.ServiceBus_7.21.0/sdk/servicebus/Azure.Messaging.ServiceBus/src/Sender/ServiceBusSender.cs)
