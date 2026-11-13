@@ -29,7 +29,7 @@ public class BatchTracingTests
         services.AddRelayer(builder =>
         {
             builder.Infrastructure().MessageTypes.Add<Payload>("batch.tracing");
-            builder.AddTransport<Options, Options, Options>("test", transport =>
+            builder.AddTransport<Options, Options>("test", transport =>
                 transport.Consume("source", consumer => consumer.Handler<Handler>().Batch(size, TimeSpan.FromSeconds(1))));
         });
         await using var provider = services.BuildServiceProvider();

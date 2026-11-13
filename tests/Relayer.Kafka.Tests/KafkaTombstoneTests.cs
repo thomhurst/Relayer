@@ -23,7 +23,7 @@ public class KafkaTombstoneTests
         var services = new ServiceCollection();
         var control = new TombstoneControl();
         services.AddSingleton(control);
-        services.AddRelayer(r => r.AddMessageTypesFromThisAssembly().AddTransport<object, object, object>("manual", t => t.Consume("source", c => c.Handler<TombstoneHandler>())));
+        services.AddRelayer(r => r.AddMessageTypesFromThisAssembly().AddTransport<object, object>("manual", t => t.Consume("source", c => c.Handler<TombstoneHandler>())));
         await using var provider = services.BuildServiceProvider();
         var serializer = new CountingSerializer(provider.GetRequiredService<IMessageSerializer>());
         var builder = new ConsumePipelineBuilder(provider.GetRequiredService<IServiceScopeFactory>(),
@@ -48,7 +48,7 @@ public class KafkaTombstoneTests
     {
         var services = new ServiceCollection();
         services.AddSingleton(new TombstoneControl());
-        services.AddRelayer(r => r.AddMessageTypesFromThisAssembly().AddTransport<object, object, object>("manual", t => t.Consume("source", c => c.Handler<TombstoneValueHandler>())));
+        services.AddRelayer(r => r.AddMessageTypesFromThisAssembly().AddTransport<object, object>("manual", t => t.Consume("source", c => c.Handler<TombstoneValueHandler>())));
         await using var provider = services.BuildServiceProvider();
         var serializer = new CountingSerializer(provider.GetRequiredService<IMessageSerializer>());
         var pipeline = new ConsumePipelineBuilder(provider.GetRequiredService<IServiceScopeFactory>(),

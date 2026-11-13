@@ -28,7 +28,7 @@ public class SqsSendLocalStackTests
         var urls = new List<string>();
         try
         {
-            IRouteDefinition[] routes = [new RouteDefinition<SqsSendTests.Order, AmazonSqsRouteOptions>(fifo, new(), null, null, new() { HeaderNames = new("event_") })];
+            IRouteDefinition[] routes = [new RouteDefinition<SqsSendTests.Order>(fifo, null, null, new() { HeaderNames = new("event_") })];
             await using var transport = new SqsSendTransport("localstack", client, false, options, identityHeaders: SqsSendTransport.ResolveIdentityHeaders(routes));
             var missing = await transport.ApplyTopologyAsync(TopologyMode.Validate, token);
             await Assert.That(missing.Differences.Count).IsEqualTo(2);

@@ -14,12 +14,12 @@ public static class RabbitMqBuilderExtensions
 
     /// <summary>Registers a named RabbitMQ connection and explicitly declared consumers.</summary>
     public static IRelayerBuilder RabbitMQ(this IRelayerBuilder builder, string name,
-        Action<TransportBuilder<RabbitMqTransportOptions, RabbitMqRouteOptions, RabbitMqConsumerOptions>> configure)
+        Action<TransportBuilder<RabbitMqTransportOptions, RabbitMqConsumerOptions>> configure)
     {
         ArgumentNullException.ThrowIfNull(builder);
         ArgumentException.ThrowIfNullOrWhiteSpace(name);
         ArgumentNullException.ThrowIfNull(configure);
-        builder.AddTransport<RabbitMqTransportOptions, RabbitMqRouteOptions, RabbitMqConsumerOptions>(name, transport =>
+        builder.AddTransport<RabbitMqTransportOptions, RabbitMqConsumerOptions>(name, transport =>
         {
             transport.SendDefaults = new() { HeaderNames = new("cloudEvents:") };
             configure(transport);
@@ -38,9 +38,6 @@ public static class RabbitMqBuilderExtensions
         return builder;
     }
 }
-
-/// <summary>RabbitMQ route configuration. Destinations select the native exchange and routing key.</summary>
-public sealed class RabbitMqRouteOptions;
 
 /// <summary>Native consumer channel, QoS and failure configuration.</summary>
 public sealed class RabbitMqConsumerOptions

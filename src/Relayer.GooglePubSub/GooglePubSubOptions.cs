@@ -17,9 +17,6 @@ public sealed class GooglePubSubTransportOptions
     public IList<Subscription> Subscriptions { get; } = new List<Subscription>();
 }
 
-/// <summary>Pub/Sub route configuration. Use the common route ordering key and native send callbacks.</summary>
-public sealed class GooglePubSubRouteOptions;
-
 /// <summary>Native streaming pull settings and the common durable failure policy.</summary>
 public sealed class GooglePubSubConsumerOptions
 {

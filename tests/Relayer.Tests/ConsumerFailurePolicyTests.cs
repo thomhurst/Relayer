@@ -52,7 +52,7 @@ public class ConsumerFailurePolicyTests
         var services = new ServiceCollection();
         services.AddRelayer(relayer =>
         {
-            relayer.AddTransport<Options, Options, Options>("broker", transport =>
+            relayer.AddTransport<Options, Options>("broker", transport =>
                 transport.Consume("source", consumer => consumer.Failures(policy).Classify(classifier)));
             relayer.InMemory("test", transport =>
                 transport.Consume("source", consumer => ((IConsumerBuilder)consumer).Failures(policy).Classify(classifier)));
@@ -202,7 +202,7 @@ public class ConsumerFailurePolicyTests
     {
         ConsumerBuilder<Options>? captured = null;
         var services = new ServiceCollection();
-        services.AddRelayer(relayer => relayer.AddTransport<Options, Options, Options>("broker", transport =>
+        services.AddRelayer(relayer => relayer.AddTransport<Options, Options>("broker", transport =>
             transport.Consume("source", consumer => captured = consumer)));
         await Assert.That(() => captured!.Failures(FailureOptions.None)).Throws<InvalidOperationException>();
         await Assert.That(() => captured!.Classify(new DefaultFailureClassifier())).Throws<InvalidOperationException>();

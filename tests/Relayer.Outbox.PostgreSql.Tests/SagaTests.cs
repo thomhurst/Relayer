@@ -340,7 +340,7 @@ public class SagaTests
             {
                 r.Infrastructure().MessageTypes.Add<Probe>("saga.probe");
                 new ConsumerBuilder<object>(r.Services, r.Infrastructure().Handlers, "manual").Handler<Process>();
-                r.AddTransport<Empty, Empty, Empty>("events", t => t.Send<Probe>("destination"));
+                r.AddTransport<Empty, Empty>("events", t => t.Send<Probe>("destination"));
             });
             return services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
         }

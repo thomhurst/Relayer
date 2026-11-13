@@ -67,7 +67,7 @@ public class HealthCheckTests
         await using var provider = Create(configure: services =>
             services.AddKeyedSingleton<ITransportHealthProbe>("events",
                 new TransportProbe(_ => ValueTask.FromResult(HealthCheckResult.Degraded("warming up")))),
-            extra: builder => builder.AddTransport<EmptyOptions, EmptyOptions, EmptyOptions>("missing", _ => { }));
+            extra: builder => builder.AddTransport<EmptyOptions, EmptyOptions>("missing", _ => { }));
         var entry = (await Check(provider)).Entries["relayer.transport"];
         await Assert.That(entry.Status).IsEqualTo(HealthStatus.Unhealthy);
         await Assert.That(entry.Description!).Contains("warming up");
@@ -362,7 +362,7 @@ public class HealthCheckTests
         services.AddSingleton<TimeProvider>(new HealthClock());
         services.AddRelayer(builder =>
         {
-            builder.AddTransport<EmptyOptions, EmptyOptions, EmptyOptions>("events", transport =>
+            builder.AddTransport<EmptyOptions, EmptyOptions>("events", transport =>
             {
                 // Health reads declarations without starting the transport or invoking handlers.
                 transport.Consume("orders", consumer => consumer.Handler<HealthHandler>());

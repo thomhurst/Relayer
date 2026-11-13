@@ -236,7 +236,7 @@ public class KafkaSchemaRegistryTests
             .Build();
     }
 
-    private static void Configure(TransportBuilder<KafkaTransportOptions, KafkaRouteOptions, KafkaConsumerOptions> kafka, string bootstrap)
+    private static void Configure(TransportBuilder<KafkaTransportOptions, KafkaConsumerOptions> kafka, string bootstrap)
     {
         kafka.TopologyMode = TopologyMode.None;
         kafka.Options.Configure(options =>

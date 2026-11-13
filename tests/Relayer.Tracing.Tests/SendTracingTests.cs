@@ -380,7 +380,7 @@ public class SendTracingTests
             services.AddRelayer(builder =>
             {
                 builder.Infrastructure().MessageTypes.Add<Probe>("send.probe");
-                builder.AddTransport<EmptyOptions, EmptyOptions, EmptyOptions>("sink", transport =>
+                builder.AddTransport<EmptyOptions, EmptyOptions>("sink", transport =>
                     transport.Send<Probe>("orders", route => route.SendOptions = new() { EnvelopeMode = raw ? MessageEnvelopeMode.Raw : MessageEnvelopeMode.CloudEvents }));
             });
             _provider = services.BuildServiceProvider();

@@ -6,7 +6,7 @@
     <TargetFramework Condition="'$(RelayerBenchmarkTargetFramework)' != ''">$(RelayerBenchmarkTargetFramework)</TargetFramework>
     <!-- Prefer the local runtime-async opt-out attribute over copies visible through friend assemblies. -->
     <NoWarn>$(NoWarn);CS0436</NoWarn>
-    <DefineConstants>$(DefineConstants);RELAYER_FOCUSED_SPI</DefineConstants>
+    <DefineConstants>$(DefineConstants);RELAYER_FOCUSED_SPI;RELAYER_REDUCED_BUILDERS</DefineConstants>
     <!-- BenchmarkDotNet generates code that trips some analyzers. -->
     <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
   </PropertyGroup>

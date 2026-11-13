@@ -37,17 +37,16 @@ internal sealed class RelayerBuilder(IServiceCollection services) : IRelayerBuil
 
     internal List<TransportDefinition> Transports { get; } = [];
 
-    public IRelayerBuilder AddTransport<TTransportOptions, TRouteOptions, TConsumerOptions>(string name,
-        Action<TransportBuilder<TTransportOptions, TRouteOptions, TConsumerOptions>> configure)
+    public IRelayerBuilder AddTransport<TTransportOptions, TConsumerOptions>(string name,
+        Action<TransportBuilder<TTransportOptions, TConsumerOptions>> configure)
         where TTransportOptions : class, new()
-        where TRouteOptions : class, new()
         where TConsumerOptions : class, new()
     {
         ArgumentNullException.ThrowIfNull(name);
         ArgumentNullException.ThrowIfNull(configure);
         EnsureMutable();
 
-        var transport = new TransportBuilder<TTransportOptions, TRouteOptions, TConsumerOptions>(Services, Handlers, name);
+        var transport = new TransportBuilder<TTransportOptions, TConsumerOptions>(Services, Handlers, name);
         configure(transport);
         Transports.Add(transport.Build());
         return this;

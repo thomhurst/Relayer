@@ -156,7 +156,7 @@ public class OutboxRegistrationTests
         {
             relayer.UsePostgreSqlOutbox<OrdersContext>(source);
             relayer.Infrastructure().MessageTypes.Add<Probe>("registration.probe");
-            relayer.AddTransport<Empty, Empty, Empty>("events", events => events.Send<Probe>("orders"));
+            relayer.AddTransport<Empty, Empty>("events", events => events.Send<Probe>("orders"));
         });
         await using var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
         await ValidateRecovery(provider);

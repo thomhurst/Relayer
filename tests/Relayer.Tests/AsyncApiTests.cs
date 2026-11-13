@@ -138,7 +138,7 @@ public class AsyncApiTests
     public async Task Undeclared_message_identity_fails_before_writing()
     {
         using var provider = new ServiceCollection().AddRelayer(builder =>
-            builder.AddTransport<BuilderTests.BrokerOptions, BuilderTests.RouteOptions, BuilderTests.ConsumerOptions>("events",
+            builder.AddTransport<BuilderTests.BrokerOptions, BuilderTests.ConsumerOptions>("events",
                 transport => transport.Send<ExportOrder>("orders"))).BuildServiceProvider();
         using var output = new MemoryStream();
         var failure = await Assert.That(() => provider.GetRequiredService<ITopology>().ExportAsyncApi(output,
@@ -154,7 +154,7 @@ public class AsyncApiTests
         {
             builder.Infrastructure().MessageTypes.Add<ExportOrder>("order");
             builder.UseJsonSerializer(ExportJsonContext.Default);
-            builder.AddTransport<BuilderTests.BrokerOptions, BuilderTests.RouteOptions, BuilderTests.ConsumerOptions>("events",
+            builder.AddTransport<BuilderTests.BrokerOptions, BuilderTests.ConsumerOptions>("events",
                 transport => transport.Send<Tombstone<ExportOrder>>("orders"));
         }).BuildServiceProvider();
         using var document = JsonDocument.Parse(Export(provider));
@@ -177,13 +177,13 @@ public class AsyncApiTests
             builder.Infrastructure().MessageTypes.Add<ExportOrder>("orders/~é", 2).Add<ExportOldOrder>("orders/~é", 1).Add<ExportTree>("tree");
             builder.UseJsonSerializer(ExportDefaultContext.Default);
             builder.UseJsonSerializer(ExportJsonContext.Default);
-            builder.AddTransport<BuilderTests.BrokerOptions, BuilderTests.RouteOptions, BuilderTests.ConsumerOptions>("first/~", transport =>
+            builder.AddTransport<BuilderTests.BrokerOptions, BuilderTests.ConsumerOptions>("first/~", transport =>
             {
                 transport.Send<ExportOrder>("orders/~é");
                 transport.Consume("orders/~é", consumer => consumer.Handler<ExportHandler>().Handler<ExportOtherHandler>());
                 transport.Consume("inbound-only", consumer => consumer.Handler<ExportHandler>());
             });
-            builder.AddTransport<BuilderTests.BrokerOptions, BuilderTests.RouteOptions, BuilderTests.ConsumerOptions>("second",
+            builder.AddTransport<BuilderTests.BrokerOptions, BuilderTests.ConsumerOptions>("second",
                 transport => transport.Send<ExportOldOrder>("orders/~é"));
         }).BuildServiceProvider();
     }

@@ -32,9 +32,6 @@ public sealed class InMemoryTransportOptions
     public TimeProvider TimeProvider { get; init; } = TimeProvider.System;
 }
 
-/// <summary>In-memory routes have no additional native settings.</summary>
-public sealed class InMemoryRouteOptions;
-
 /// <summary>Native consumer settings. Portable handlers and concurrency use the common builder.</summary>
 public sealed class InMemoryConsumerOptions
 {

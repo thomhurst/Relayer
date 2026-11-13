@@ -13,7 +13,7 @@ public static class AmazonSqsBuilderExtensions
 {
     /// <summary>Declares native SQS sending, long-poll receivers and queue topology.</summary>
     public static IRelayerBuilder AmazonSqs(this IRelayerBuilder builder, string name,
-        Action<TransportBuilder<AmazonSqsTransportOptions, AmazonSqsRouteOptions, AmazonSqsConsumerOptions>> configure)
+        Action<TransportBuilder<AmazonSqsTransportOptions, AmazonSqsConsumerOptions>> configure)
     {
         ArgumentNullException.ThrowIfNull(builder);
         ArgumentNullException.ThrowIfNull(configure);
@@ -39,9 +39,6 @@ public static class AmazonSqsBuilderExtensions
     public static SendOptions AmazonSqs(this SendOptions options, Action<SendMessageRequest> configure) =>
         options.ConfigureNative(configure);
 }
-
-/// <summary>SQS route options. Native queue settings belong on the transport declaration.</summary>
-public sealed class AmazonSqsRouteOptions;
 
 /// <summary>Native long-poll request settings and durable failure handling.</summary>
 public sealed class AmazonSqsConsumerOptions

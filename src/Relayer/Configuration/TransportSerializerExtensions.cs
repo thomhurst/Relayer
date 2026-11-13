@@ -7,11 +7,10 @@ namespace Relayer;
 public static class TransportSerializerExtensions
 {
     /// <summary>Uses a DI-owned serializer for all sends and consumers on this transport.</summary>
-    public static TransportBuilder<TTransportOptions, TRouteOptions, TConsumerOptions> UseSerializer<TTransportOptions, TRouteOptions, TConsumerOptions>(
-        this TransportBuilder<TTransportOptions, TRouteOptions, TConsumerOptions> builder,
+    public static TransportBuilder<TTransportOptions, TConsumerOptions> UseSerializer<TTransportOptions, TConsumerOptions>(
+        this TransportBuilder<TTransportOptions, TConsumerOptions> builder,
         Func<IServiceProvider, IMessageSerializer> factory)
         where TTransportOptions : class, new()
-        where TRouteOptions : class, new()
         where TConsumerOptions : class, new()
     {
         ArgumentNullException.ThrowIfNull(builder);

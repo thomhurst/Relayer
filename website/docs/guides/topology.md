@@ -9,7 +9,7 @@ Declare routes and consumers normally. Relayer builds an inspectable topology fr
 services.AddRelayer(relayer =>
 {
     relayer.AddMessageTypesFromThisAssembly();
-    relayer.AddTransport<BrokerOptions, RouteOptions, ConsumerOptions>("events", transport =>
+    relayer.AddTransport<BrokerOptions, ConsumerOptions>("events", transport =>
     {
         transport.TopologyMode = TopologyMode.Provision; // Development only; default is Validate.
         transport.Send<OrderPlaced>("orders");

@@ -15,7 +15,7 @@ internal static class SagaDispatchSmoke
         services.AddRelayer(r =>
         {
             r.Infrastructure().MessageTypes.Add<SmokeSagaMessage>("smoke.saga");
-            r.AddTransport<object, object, object>("manual-1", transport => transport.Consume("source", consumer => consumer.Handler<SmokeSaga>()));
+            r.AddTransport<object, object>("manual-1", transport => transport.Consume("source", consumer => consumer.Handler<SmokeSaga>()));
         });
         await using var provider = services.BuildServiceProvider();
         await using var scope = provider.CreateAsyncScope();

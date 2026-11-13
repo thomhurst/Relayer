@@ -89,6 +89,7 @@ To change a decision, add a new entry that supersedes it rather than editing his
 | [D76](#d76-ef-transaction-coordination-is-independent-of-the-database-provider) | EF transaction coordination is independent of the database provider | Accepted |
 | [D77](#d77-batch-items-report-their-own-failures) | Batch items report their own failures | Accepted |
 | [D78](#d78-isolate-failed-outbox-batches-using-native-single-sends-and-confirmed-receipts) | Isolate failed outbox batches using native single sends and confirmed receipts | Accepted |
+| [D79](#d79-route-builders-carry-only-the-message-type) | Route builders carry only the message type | Accepted |
 
 ---
 
@@ -372,7 +373,7 @@ The core-first log scheduling rule below is superseded by [D40](#d40-log-transpo
 - **One send shape.** The core sends through `SendAsync(OutgoingMessage)` and `SendBatchAsync(ReadOnlyMemory<OutgoingMessage>)`. `OutgoingMessage` has the same fields as an outbox row, so direct sends, outbox dispatch, scheduled re-sends and dead-letter copies share one path.
 - **Headers are read in place.** `WireString` holds a header value as the native client stores it (UTF-16 or UTF-8) and converts it only when user code asks. The transport's `HeaderNames` encodes its CloudEvents protocol binding. This replaces materializing headers into a dictionary per message.
 - **Native access is generic too.** The pipeline exposes the native message as a pooled `NativeMessage<TIncoming>` feature, and each transport's `context.Kafka()`-style extension wraps it in a struct view. No per-transport feature class is allocated per message.
-- **Builders are generic.** The core implements `RouteBuilder<TMessage, TRouteOptions>` and `ConsumerBuilder<TConsumerOptions>` once (handlers, inbox, failure policy, ordering keys). Transports supply option types and add typed extension methods on their own instantiation, so transport-specific settings cannot be applied to the wrong transport.
+- **Builders are generic.** The core implements `RouteBuilder<TMessage>` and `ConsumerBuilder<TConsumerOptions>` once (handlers, inbox, failure policy, ordering keys). Transports supply native transport and consumer option types and add typed consumer extensions on their own instantiation. Routes carry portable send settings and typed ordering keys; see D79.
 - **Log-based consumption lives in the core.** `PartitionScheduler<TIncoming, TBinding, TPartition, TPosition>` implements key-ordered parallelism, contiguous-watermark commits, backpressure, drain on revoke and pause tracking. A log transport implements `IPartitionSource<TPartition, TPosition>` (`Commit`, `Pause`, `Resume`). D13 still holds; its mechanisms are now reusable.
 - The implemented scheduler is single-owner: the transport pumps completion observation and native calls, including while fetching is paused. `IPartitionMessageBinding<TIncoming>` compares native keys and releases delivery leases. Assignment tokens fence completion publication; native adapters still own fencing asynchronous commit queues. Bounded ownership drain never releases buffers beneath late handlers. See the [transport-author contract](../website/docs/transports/partition-scheduler.md).
 - The in-memory transport (phase 0) is the first SPI implementation, and the transport conformance suite is the SPI's executable contract.
@@ -477,7 +478,7 @@ Refines [D8](#d8-systemtextjson-source-generation-by-default).
 **Context.** Issue #6 originally depended on receive and send execution (#4 and #5). Both pipelines need declared routes and consumers to compose, while declaration and named Options validation need neither pipeline. The design also used both `Produce<T>` and `Send<T>` for a destination, despite the single routing API principle.
 
 **Decision.**
-- The core owns named, typed transport, route and consumer declarations, available before execution pipelines. Native transport packages wrap `AddTransport<TTransportOptions, TRouteOptions, TConsumerOptions>` in their own simple registration extensions.
+- The core owns named, typed transport, route and consumer declarations, available before execution pipelines. Native transport packages wrap `AddTransport<TTransportOptions, TConsumerOptions>` in their own simple registration extensions.
 - The single route declaration is `Send<T>` for any native destination. Sending versus publishing remains native routing, as in §3.4.
 - Each message type has one route across all transports. Cross-broker fan-out is outside the default routing contract.
 - Consumer `Handler<THandler>()` registration is source-generated, just like root handler registration. It adds every single-message and batch descriptor to the shared registry before freezing it, and records the handler on that consumer. The untyped `IConsumerBuilder` keeps generated registration independent of native option types; the callback's typed builder retains access to native `Options`.
@@ -1900,3 +1901,9 @@ outage, so one unclassified rejected row cannot repeatedly charge its neighbours
 acceptance can duplicate delivery under at-least-once semantics. Live token fencing protects each
 outcome; expired or replaced claims remain recoverable. Successful batches perform the same sends
 and completions and allocate no additional memory. Isolation changes only failure-path work.
+
+## D79. Route builders carry only the message type
+
+**Context.** All ten transport route option classes were empty. Their generic parameter added no native configuration or routing behavior, but propagated through every transport registration, route declaration and serializer extension.
+
+**Decision.** Use `TransportBuilder<TTransportOptions, TConsumerOptions>`, `RouteBuilder<TMessage>` and `RouteDefinition<TMessage>`. Remove route `Options` and the empty route option classes. Retain portable `SendRouteOptions`, native transport/consumer configuration and typed ordering selectors unchanged. Add transport-specific route extensions when a concrete native setting needs them rather than reserving an empty options type. This refines D23 and D27; it changes declaration signatures only, with no steady-state pipeline changes.

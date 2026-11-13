@@ -7,9 +7,8 @@ using Relayer.Serialization;
 namespace Relayer;
 
 /// <summary>The common declaration surface used by transport-specific extension methods.</summary>
-public sealed class TransportBuilder<TTransportOptions, TRouteOptions, TConsumerOptions>
+public sealed class TransportBuilder<TTransportOptions, TConsumerOptions>
     where TTransportOptions : class, new()
-    where TRouteOptions : class, new()
     where TConsumerOptions : class, new()
 {
     private readonly IServiceCollection _services;
@@ -50,12 +49,12 @@ public sealed class TransportBuilder<TTransportOptions, TRouteOptions, TConsumer
     }
 
     /// <summary>Declares a message destination. Whether this sends or publishes is a native routing concern.</summary>
-    public TransportBuilder<TTransportOptions, TRouteOptions, TConsumerOptions> Send<TMessage>(string destination,
-        Action<RouteBuilder<TMessage, TRouteOptions>>? configure = null)
+    public TransportBuilder<TTransportOptions, TConsumerOptions> Send<TMessage>(string destination,
+        Action<RouteBuilder<TMessage>>? configure = null)
     {
         EnsureMutable();
         ArgumentNullException.ThrowIfNull(destination);
-        var route = new RouteBuilder<TMessage, TRouteOptions>(destination);
+        var route = new RouteBuilder<TMessage>(destination);
         route.SendOptions = _sendDefaults;
         configure?.Invoke(route);
         _routes.Add(route.Build());
@@ -64,14 +63,14 @@ public sealed class TransportBuilder<TTransportOptions, TRouteOptions, TConsumer
 
     /// <summary>Declares a request send route and a dedicated, process-local reply consumer.</summary>
     /// <remarks>Give each requesting process its own reply endpoint. The responder declares an ordinary Send route to that endpoint.</remarks>
-    public TransportBuilder<TTransportOptions, TRouteOptions, TConsumerOptions> Request<TRequest, TResponse>(
+    public TransportBuilder<TTransportOptions, TConsumerOptions> Request<TRequest, TResponse>(
         string destination, string replyAddress,
-        Action<RequestBuilder<TRequest, TRouteOptions, TConsumerOptions>>? configure = null)
+        Action<RequestBuilder<TRequest, TConsumerOptions>>? configure = null)
     {
         EnsureMutable();
         ArgumentException.ThrowIfNullOrWhiteSpace(destination);
         ArgumentException.ThrowIfNullOrWhiteSpace(replyAddress);
-        var request = new RequestBuilder<TRequest, TRouteOptions, TConsumerOptions>();
+        var request = new RequestBuilder<TRequest, TConsumerOptions>();
         configure?.Invoke(request);
         var options = request.Options;
         options.Validate();
@@ -90,7 +89,7 @@ public sealed class TransportBuilder<TTransportOptions, TRouteOptions, TConsumer
     }
 
     /// <summary>Declares a consumer on a native source endpoint.</summary>
-    public TransportBuilder<TTransportOptions, TRouteOptions, TConsumerOptions> Consume(string source,
+    public TransportBuilder<TTransportOptions, TConsumerOptions> Consume(string source,
         Action<ConsumerBuilder<TConsumerOptions>> configure)
     {
         EnsureMutable();

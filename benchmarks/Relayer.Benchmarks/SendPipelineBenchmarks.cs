@@ -36,7 +36,7 @@ public class SendPipelineBenchmarks
         services.AddRelayer(builder =>
         {
             builder.AddMessageTypesFromThisAssembly();
-            builder.AddTransport<SendBenchmarkOptions, SendBenchmarkOptions, SendBenchmarkOptions>("sink",
+            builder.AddTransport<SendBenchmarkOptions, SendBenchmarkOptions>("sink",
                 transport => transport.Send<SendOrder>("orders", route => route.OrderingKey(static message => message.Id)));
             if (Middleware) builder.UseSendMiddleware<PassThroughMiddleware>();
         });

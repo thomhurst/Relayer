@@ -13,10 +13,9 @@ public interface IRelayerInfrastructure
     UpcasterRegistry Upcasters { get; }
 
     /// <summary>Declares a named transport. Transport packages wrap this method in typed extension methods.</summary>
-    IRelayerBuilder AddTransport<TTransportOptions, TRouteOptions, TConsumerOptions>(string name,
-        Action<TransportBuilder<TTransportOptions, TRouteOptions, TConsumerOptions>> configure)
+    IRelayerBuilder AddTransport<TTransportOptions, TConsumerOptions>(string name,
+        Action<TransportBuilder<TTransportOptions, TConsumerOptions>> configure)
         where TTransportOptions : class, new()
-        where TRouteOptions : class, new()
         where TConsumerOptions : class, new();
 }
 
@@ -32,10 +31,9 @@ public static class RelayerInfrastructureExtensions
     }
 
     /// <summary>Declares a named transport from a transport package's typed extension.</summary>
-    public static IRelayerBuilder AddTransport<TTransportOptions, TRouteOptions, TConsumerOptions>(this IRelayerBuilder builder,
-        string name, Action<TransportBuilder<TTransportOptions, TRouteOptions, TConsumerOptions>> configure)
+    public static IRelayerBuilder AddTransport<TTransportOptions, TConsumerOptions>(this IRelayerBuilder builder,
+        string name, Action<TransportBuilder<TTransportOptions, TConsumerOptions>> configure)
         where TTransportOptions : class, new()
-        where TRouteOptions : class, new()
         where TConsumerOptions : class, new()
         => builder.Infrastructure().AddTransport(name, configure);
 }

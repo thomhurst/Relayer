@@ -26,7 +26,7 @@ public class RequestResponseBenchmarks
         services.AddRelayer(builder =>
         {
             builder.AddMessageTypesFromThisAssembly();
-            builder.AddTransport<SendBenchmarkOptions, SendBenchmarkOptions, SendBenchmarkOptions>("rpc", transport =>
+            builder.AddTransport<SendBenchmarkOptions, SendBenchmarkOptions>("rpc", transport =>
                 transport.Request<BenchmarkRequest, BenchmarkResponse>("requests", "replies"));
         });
         _provider = services.BuildServiceProvider();

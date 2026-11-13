@@ -1,12 +1,11 @@
 namespace Relayer;
 
 /// <summary>Configures bounded request state and the ordinary send route and reply consumer.</summary>
-public sealed class RequestBuilder<TRequest, TRouteOptions, TConsumerOptions>
-    where TRouteOptions : class, new()
+public sealed class RequestBuilder<TRequest, TConsumerOptions>
     where TConsumerOptions : class, new()
 {
     private RequestOptions _options = new();
-    internal Action<RouteBuilder<TRequest, TRouteOptions>>? ConfigureSend { get; private set; }
+    internal Action<RouteBuilder<TRequest>>? ConfigureSend { get; private set; }
     internal Action<ConsumerBuilder<TConsumerOptions>>? ConfigureReplies { get; private set; }
 
     internal RequestBuilder() { }
@@ -18,8 +17,8 @@ public sealed class RequestBuilder<TRequest, TRouteOptions, TConsumerOptions>
         set { ArgumentNullException.ThrowIfNull(value); _options = value; }
     }
 
-    /// <summary>Configures the ordinary request send route, preserving native route options.</summary>
-    public RequestBuilder<TRequest, TRouteOptions, TConsumerOptions> Send(Action<RouteBuilder<TRequest, TRouteOptions>> configure)
+    /// <summary>Configures the ordinary request send route and its portable send settings.</summary>
+    public RequestBuilder<TRequest, TConsumerOptions> Send(Action<RouteBuilder<TRequest>> configure)
     {
         ArgumentNullException.ThrowIfNull(configure);
         ConfigureSend += configure;
@@ -27,7 +26,7 @@ public sealed class RequestBuilder<TRequest, TRouteOptions, TConsumerOptions>
     }
 
     /// <summary>Configures the dedicated reply consumer, preserving native consumer options.</summary>
-    public RequestBuilder<TRequest, TRouteOptions, TConsumerOptions> Replies(Action<ConsumerBuilder<TConsumerOptions>> configure)
+    public RequestBuilder<TRequest, TConsumerOptions> Replies(Action<ConsumerBuilder<TConsumerOptions>> configure)
     {
         ArgumentNullException.ThrowIfNull(configure);
         ConfigureReplies += configure;

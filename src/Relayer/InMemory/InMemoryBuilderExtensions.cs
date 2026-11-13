@@ -12,7 +12,7 @@ public static class InMemoryBuilderExtensions
 {
     /// <summary>Declares a named process-local transport. Each declared source or destination creates one explicit endpoint.</summary>
     public static IRelayerBuilder InMemory(this IRelayerBuilder builder, string name,
-        Action<TransportBuilder<InMemoryTransportOptions, InMemoryRouteOptions, InMemoryConsumerOptions>> configure)
+        Action<TransportBuilder<InMemoryTransportOptions, InMemoryConsumerOptions>> configure)
     {
         ArgumentNullException.ThrowIfNull(builder);
         builder.AddTransport(name, configure);

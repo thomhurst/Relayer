@@ -40,7 +40,7 @@ public class SendTracingBenchmarks
         services.AddRelayer(builder =>
         {
             builder.AddMessageTypesFromThisAssembly();
-            builder.AddTransport<SendBenchmarkOptions, SendBenchmarkOptions, SendBenchmarkOptions>("sink",
+            builder.AddTransport<SendBenchmarkOptions, SendBenchmarkOptions>("sink",
                 transport => transport.Send<SendOrder>("orders"));
         });
         _provider = services.BuildServiceProvider();

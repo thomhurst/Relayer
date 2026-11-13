@@ -223,7 +223,7 @@ public class TenancyTests
         {
             r.AddMessageTypesFromThisAssembly();
             new ConsumerBuilder<object>(r.Services, r.Infrastructure().Handlers, "manual").Handler<Handler>().Handler<BatchHandler>();
-            r.AddTransport<object, object, object>("sink", t => t.Send<Payload>("messages"));
+            r.AddTransport<object, object>("sink", t => t.Send<Payload>("messages"));
         });
         services.AddScoped(static p => new Handler(p.GetRequiredService<Control>(), p.GetService<TenantContext>()));
         return services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });

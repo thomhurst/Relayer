@@ -321,7 +321,7 @@ public class SagaTimeoutTests
                 r.Infrastructure().MessageTypes.Add<Complete>("timeout.complete");
                 r.UseJsonSerializer(RelayerGeneratedJsonContext.Default);
                 new ConsumerBuilder<object>(r.Services, r.Infrastructure().Handlers, "manual").Handler<BeginProcess>(); new ConsumerBuilder<object>(r.Services, r.Infrastructure().Handlers, "manual").Handler<TimeoutProcess>(); new ConsumerBuilder<object>(r.Services, r.Infrastructure().Handlers, "manual").Handler<CompleteProcess>();
-                r.AddTransport<Empty, Empty, Empty>("events", t => t.Send<WaitExpired>("timeouts", route =>
+                r.AddTransport<Empty, Empty>("events", t => t.Send<WaitExpired>("timeouts", route =>
                     route.SendOptions = new() { RequiredDeliveryDelay = TimeSpan.FromDays(1), TransactionRequirement = SendTransactionRequirement.Outbox }));
             });
             return services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });

@@ -8,8 +8,6 @@ namespace Relayer.Outbox.PostgreSql;
 
 /// <summary>Options for an outbox-backed local endpoint.</summary>
 public sealed class PostgreSqlLocalOptions;
-/// <summary>Local routes use the shared PostgreSQL outbox's ordering and scheduling options.</summary>
-public sealed class PostgreSqlLocalRouteOptions;
 /// <summary>Local consumers use the shared outbox retry, recovery and dead-letter policy.</summary>
 public sealed class PostgreSqlLocalConsumerOptions;
 
@@ -19,7 +17,7 @@ public static class PostgreSqlLocalBuilderExtensions
     /// <summary>Registers local routes and consumers. Register shared direct, maintenance and ordered dispatch separately.</summary>
     /// <remarks>Every dispatching instance must declare the same local consumers. Use an active outbox to enlist sends with business writes.</remarks>
     public static IRelayerBuilder PostgreSqlLocal(this IRelayerBuilder builder, string name, NpgsqlDataSource dataSource,
-        Action<TransportBuilder<PostgreSqlLocalOptions, PostgreSqlLocalRouteOptions, PostgreSqlLocalConsumerOptions>> configure,
+        Action<TransportBuilder<PostgreSqlLocalOptions, PostgreSqlLocalConsumerOptions>> configure,
         PostgreSqlOutboxOptions? options = null, string? dispatchStoreName = null)
     {
         ArgumentNullException.ThrowIfNull(builder);

@@ -186,7 +186,7 @@ public class AmazonTerraformTests
         }));
         await Assert.That(() => Export(unsupported)).Throws<InvalidOperationException>().WithMessageContaining("RedriveAllowPolicy");
         var services = new ServiceCollection();
-        services.AddRelayer(builder => builder.AddTransport<OtherOptions, OtherOptions, OtherOptions>("other", _ => { }));
+        services.AddRelayer(builder => builder.AddTransport<OtherOptions, OtherOptions>("other", _ => { }));
         using var provider = services.BuildServiceProvider();
         using var output = new MemoryStream();
         await Assert.That(() => provider.GetRequiredService<ITopology>().ExportAmazonTerraform(provider, output, Options()))

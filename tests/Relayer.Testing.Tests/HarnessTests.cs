@@ -390,7 +390,7 @@ public class HarnessTests
         services.AddRelayer(builder =>
         {
             builder.AddMessageTypesFromThisAssembly();
-            builder.AddTransport<InMemoryTransportOptions, InMemoryRouteOptions, InMemoryConsumerOptions>("batch", transport =>
+            builder.AddTransport<InMemoryTransportOptions, InMemoryConsumerOptions>("batch", transport =>
                 transport.Consume("probes", consumer => consumer.Handler<BatchProbeHandler>().Batch(2, TimeSpan.FromSeconds(1))));
         });
         services.AddRelayerHarness();

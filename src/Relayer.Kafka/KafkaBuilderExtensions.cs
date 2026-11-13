@@ -18,7 +18,7 @@ public static class KafkaBuilderExtensions
 
     /// <summary>Declares Kafka send routes and serial consumers with durable dead-letter copies.</summary>
     public static IRelayerBuilder Kafka(this IRelayerBuilder builder, string name,
-        Action<TransportBuilder<KafkaTransportOptions, KafkaRouteOptions, KafkaConsumerOptions>> configure)
+        Action<TransportBuilder<KafkaTransportOptions, KafkaConsumerOptions>> configure)
     {
         ArgumentNullException.ThrowIfNull(builder);
         builder.AddTransport(name, configure);
@@ -61,9 +61,6 @@ public static class KafkaBuilderExtensions
         return builder;
     }
 }
-
-/// <summary>Kafka route configuration. Ordering keys use the common route builder.</summary>
-public sealed class KafkaRouteOptions;
 
 /// <summary>Kafka group identity and the common durable failure policy.</summary>
 public sealed class KafkaConsumerOptions

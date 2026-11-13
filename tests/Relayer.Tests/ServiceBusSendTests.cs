@@ -39,7 +39,7 @@ public class ServiceBusSendTests
             await Assert.That(options.Get("second").Client).IsSameReferenceAs(second);
             var transports = provider.GetServices<ITransport>().ToArray();
             var routes = provider.GetRequiredService<RelayerConfiguration>().Transports;
-            var route = (RouteDefinition<First, ServiceBusRouteOptions>)routes[0].Routes.Single();
+            var route = (RouteDefinition<First>)routes[0].Routes.Single();
             await Assert.That(route.SendOptions.HeaderNames.Id).IsEqualTo("cloudEvents:id");
             await transports[0].SendAsync(new("orders", new byte[] { 1 }), default);
             await transports[0].SendAsync(new("orders", new byte[] { 2 }), default);

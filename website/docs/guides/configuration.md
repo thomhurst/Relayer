@@ -11,7 +11,7 @@ var services = new ServiceCollection();
 services.AddRelayer(relayer =>
 {
     relayer.AddMessageTypesFromThisAssembly();
-    relayer.AddTransport<BrokerOptions, RouteOptions, ConsumerOptions>("events", broker =>
+    relayer.AddTransport<BrokerOptions, ConsumerOptions>("events", broker =>
     {
         broker.Options.Bind(configuration.GetSection("Events"))
             .Validate(o => !string.IsNullOrWhiteSpace(o.Server), "Server is required.");
