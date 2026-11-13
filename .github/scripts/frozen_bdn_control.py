@@ -2,12 +2,14 @@
 """Replay a retained BenchmarkDotNet engine, without rebuilding or changing its job."""
 import argparse
 import json
+import os
 from pathlib import Path
 import re
 import subprocess
 
 from frozen_concurrent_control import verify
 from frozen_scope_control import result as timing_result
+from read_native_tail_allocations import read as read_tail
 
 
 BENCHMARK = "Relayer.Benchmarks.EndToEndBenchmarks.ConcurrentRoundTrip"
@@ -91,9 +93,13 @@ def main():
                         help="Bind the original executable to an installed exact patch without editing retained inputs.")
     parser.add_argument("--same-image", choices=("baseline", "candidate"),
                         help="Negative control: launch the selected original image four times, without an image comparison.")
+    parser.add_argument("--allocation-profiler", type=Path,
+                        help="Separate exact CLR callback counts in the native final-stop tail envelope.")
     args = parser.parse_args()
     owner, method, parameter, operations = CASES[args.case]
     benchmark = f"Relayer.Benchmarks.{owner}.{method}"
+    if args.trace_tool and args.allocation_profiler:
+        parser.error("Choose sampled traces or synchronous CLR allocation callbacks, not both")
     builds = args.artifact.resolve() / "performance-builds"
     # Verify all three original inventories before starting any process. A2 deliberately
     # repeats the first baseline executable, as in the external-probe ABBA.
@@ -105,7 +111,7 @@ def main():
                 "case": args.case, "parameter": parameter,
                 "engine": "Original retained BenchmarkDotNet generated executable and Default job",
                 "host": "Native NoAcknowledgementConsoleHost; original anonymous-pipe parent absent",
-                "operationsPerInvoke": operations, "instrumented": args.trace_tool is not None,
+                "operationsPerInvoke": operations, "instrumented": args.trace_tool is not None or args.allocation_profiler is not None,
                 "limits": "New original-engine executions, not historical reconstruction, allocation-type attribution, throughput equivalence or native-client budget evidence. No external fixed-count driver, sampled profile, job override or threshold change.",
                 "requestedRuntime": args.runtime_version, "commands": []}
     for side in launches:
@@ -127,6 +133,15 @@ def main():
              "--output", str((args.output / f"{index}-{side}.nettrace").resolve()),
              "--show-child-io", "--", *command]
             for index, (side, command) in enumerate(zip(launches, protocol["commands"]), 1)]
+    if args.allocation_profiler:
+        protocol["allocationProfiler"] = str(args.allocation_profiler.resolve())
+        protocol["limits"] = (
+            "Separate instrumented native-engine ABBA; exact CLR ObjectAllocated notifications and GetObjectSize2 sizes, not all allocation-context overhead. "
+            "Synchronous native EventPipe callbacks reset counts at each WorkloadActualStop, retaining only the final stop to BenchmarkStop envelope. "
+            "Includes final timed cleanup/GC/logging and extra-stat setup/work/cleanup, not exact MeasureWithGc. "
+            "Callbacks, metadata resolution and locking change allocation paths and scheduling. No stacks or exact call-site attribution. "
+            "New executions do not establish historical ownership, production regression, throughput equivalence or a performance trade-off. "
+            "No independent-total subtraction or threshold relaxation.")
     if args.same_image:
         protocol["limits"] += " Same-image negative control: no candidate-versus-baseline comparison; process order, adaptive operation counts and host drift remain uncontrolled."
     (args.output / "protocol.json").write_text(json.dumps(protocol, indent=2) + "\n")
@@ -137,8 +152,15 @@ def main():
         outcome = {"launch": index, "side": side}
         with log_path.open("w") as log:
             try:
+                environment = None
+                if args.allocation_profiler:
+                    environment = dict(os.environ, CORECLR_ENABLE_PROFILING="1",
+                                       CORECLR_PROFILER="{32B7EF07-25E8-4AC7-B011-9A4321D702C8}",
+                                       CORECLR_PROFILER_PATH=str(args.allocation_profiler.resolve()),
+                                       RELAYER_ALLOCATION_BDN_TAIL="1",
+                                       RELAYER_ALLOCATION_OUTPUT=str((args.output / f"{index}-{side}-objects.jsonl").resolve()))
                 subprocess.run(command, cwd=runners[side][0].parent, stdout=log,
-                               stderr=subprocess.STDOUT, check=True, timeout=900)
+                               stderr=subprocess.STDOUT, check=True, timeout=900, env=environment)
             except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as error:
                 log.write(f"\nLaunch failed: {error}\n")
                 outcome["error"] = str(error)
@@ -158,6 +180,18 @@ def main():
                     outcome.update(result(text))
             except ValueError as error:
                 outcome["error"] = str(error)
+                failed = True
+        if args.allocation_profiler:
+            report = args.output / f"{index}-{side}-objects.jsonl"
+            try:
+                if "operations" not in outcome:
+                    raise ValueError("No native GC-stat denominator for callback report")
+                validated = read_tail(report, outcome["operations"])
+                outcome["allocationReport"] = report.name
+                outcome["callbackObjects"] = validated["coverage"]["objects"]
+                outcome["callbackBytes"] = validated["coverage"]["bytes"]
+            except (ValueError, OSError, KeyError, TypeError) as error:
+                outcome["allocationError"] = str(error)
                 failed = True
         if args.trace_tool:
             trace = args.output / f"{index}-{side}.nettrace"

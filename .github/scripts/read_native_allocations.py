@@ -3,8 +3,7 @@ import json
 from pathlib import Path
 
 
-def read(path):
-    rows = [json.loads(line) for line in Path(path).read_text().splitlines()]
+def read_rows(rows):
     coverage = [row for row in rows if row.get("kind") == "coverage"]
     types = [row for row in rows if row.get("kind") == "type"]
     if len(coverage) != 1 or not types or len(rows) != len(types) + 1 or rows[-1] != coverage[0]:
@@ -22,6 +21,10 @@ def read(path):
         if sum(row[key] for row in types) != coverage[0][key]:
             raise ValueError("Coverage total does not match type counts")
     return {"coverage": coverage[0], "types": types}
+
+
+def read(path):
+    return read_rows([json.loads(line) for line in Path(path).read_text().splitlines()])
 
 
 if __name__ == "__main__":

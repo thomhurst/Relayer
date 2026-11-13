@@ -1,0 +1,112 @@
+name: Frozen adaptive native-tail exact allocation callbacks
+
+# #537: separate instrumented execution; never a Performance-gate rerun.
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/frozen-exact-tail-control.yml'
+  workflow_dispatch:
+    inputs:
+      performance_run:
+        description: Retained Performance inputs
+        type: string
+        default: '43124385683'
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  allocations:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      PERFORMANCE_RUN: ${{ inputs.performance_run || '43124385683' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: dotnet/samples
+          ref: 3810558800760fc39282cc939bac645735514209
+          path: profiler-sdk
+          sparse-checkout: core/profiling
+          persist-credentials: false
+      - uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
+        with:
+          dotnet-version: |
+            10.0.403
+            10.0.404
+            11.0.100
+      - name: Build existing native profiler and known-count fixture
+        run: |
+          mkdir -p results
+          dotnet --info > results/runtime.txt
+          uname -a > results/host.txt
+          git -C profiler-sdk rev-parse HEAD > results/profiler-sdk-commit.txt
+          CXX=clang++ cmake -S tools/FrozenAllocationProfiler -B .artifacts/exact-profiler -DPROFILER_SAMPLES="$PWD/profiler-sdk" -DCMAKE_BUILD_TYPE=Release > results/native-configure.log 2>&1
+          cmake --build .artifacts/exact-profiler > results/native-build.log 2>&1
+          dotnet build tools/FrozenAllocationProfiler/Fixture -c Release > results/fixture-build.log 2>&1
+      - name: Retain installed net10 runtime inventory without changing retained images
+        run: |
+          python3 - <<'PYTHON'
+          import hashlib, json, os
+          from pathlib import Path
+          runtime = Path(os.environ['DOTNET_ROOT']) / 'shared/Microsoft.NETCore.App/10.0.15'
+          if not runtime.is_dir():
+              raise ValueError('Expected .NET 10.0.15 from pinned SDK installation')
+          inventory = [{'path': str(path.relative_to(runtime)), 'length': path.stat().st_size,
+                        'sha256': hashlib.sha256(path.read_bytes()).hexdigest()}
+                       for path in sorted(runtime.rglob('*')) if path.is_file()]
+          Path('results/runtime-inventory.json').write_text(json.dumps(
+              {'version': '10.0.15', 'files': inventory,
+               'limits': 'Installed runtime inventory; native logs name loaded runtime. Not proof of historical execution equality.'}, indent=2) + '\n')
+          PYTHON
+      - name: Validate exact known-type counts before interpreting frozen workloads
+        env:
+          TEST_NATIVE_PROFILER: .artifacts/exact-profiler/libFrozenAllocationProfiler.so
+          TEST_NATIVE_FIXTURE: tools/FrozenAllocationProfiler/Fixture/bin/Release/net10.0/Fixture.dll
+          TEST_NATIVE_OUTPUT: results/fixture
+        run: |
+          python3 -m unittest discover -s .github/scripts -p test_native_allocations.py > results/native-tests.log 2>&1
+          python3 -m unittest discover -s .github/scripts -p test_native_tail_allocations.py > results/native-tail-tests.log 2>&1
+          python3 -m unittest discover -s .github/scripts -p test_frozen_bdn_control.py > results/launcher-tests.log 2>&1
+      - name: Count exact CLR notifications in original adaptive ABBA tails
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          [[ "$PERFORMANCE_RUN" =~ ^[0-9]+$ ]] || { echo "Invalid run ID: $PERFORMANCE_RUN" >&2; exit 1; }
+          gh run download "$PERFORMANCE_RUN" --name "performance-$PERFORMANCE_RUN-1" --dir inputs
+          python3 .github/scripts/frozen_bdn_control.py inputs results/exact-tails --allocation-profiler .artifacts/exact-profiler/libFrozenAllocationProfiler.so
+          python3 - <<'PYTHON'
+          import re
+          from pathlib import Path
+          logs = sorted(Path('results/exact-tails').glob('*.log'))
+          if len(logs) != 4:
+              raise ValueError('Expected all four native launch logs')
+          for path in logs:
+              if len(re.findall(r'^// Runtime=\.NET 10\.0\.15 \(', path.read_text(), re.M)) != 1:
+                  raise ValueError('Unexpected or missing loaded runtime: ' + str(path))
+          PYTHON
+      - name: Preserve every outcome and executable input, including failures
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: frozen-exact-tail-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            results/
+            inputs/
+            profiler-sdk/core/profiling/
+            profiler-sdk/LICENSE
+            .artifacts/exact-profiler/
+            tools/FrozenAllocationProfiler/
+            tools/FrozenConcurrentProbe/NativeAllocationRegion.cs
+            .github/scripts/frozen_concurrent_control.py
+            .github/scripts/frozen_bdn_control.py
+            .github/scripts/test_frozen_bdn_control.py
+            .github/scripts/read_native_tail_allocations.py
+            .github/scripts/test_native_tail_allocations.py
+            .github/scripts/read_native_allocations.py
+            .github/scripts/test_native_allocations.py
+            .github/workflows/frozen-exact-tail-control.yml
+          include-hidden-files: true
+          retention-days: 90

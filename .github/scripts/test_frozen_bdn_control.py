@@ -292,6 +292,54 @@ class OriginalRunnerTests(unittest.TestCase):
                 self.assertEqual([o["side"] for o in outcomes], ["candidate"] * 4)
                 self.assertEqual(json.loads((output / "protocol.json").read_text())["requestedRuntime"], "10.0.14")
 
+    def test_exact_callbacks_attempt_every_launch_and_fail_closed_on_denominator_mismatch(self):
+        from test_native_tail_allocations import report
+        for invalid in (None, "coverage", "denominator", "missing"):
+            with self.subTest(invalid=invalid), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                for side in ("baseline", "candidate"):
+                    self.fixture(root / "performance-builds" / side)
+                output = root / "results"
+                calls = []
+
+                def execute(command, **kwargs):
+                    calls.append(command)
+                    environment = kwargs["env"]
+                    self.assertEqual(environment["RELAYER_ALLOCATION_BDN_TAIL"], "1")
+                    self.assertEqual(environment["CORECLR_ENABLE_PROFILING"], "1")
+                    self.assertIn("--job", command)
+                    self.assertNotIn("collect", command)
+                    kwargs["stdout"].write(COMPLETE)
+                    rows = report()
+                    # Keep every native iteration payload and final scope consistent.
+                    for row in rows:
+                        if row["kind"] == "engine-event" and row["id"] in (15, 16):
+                            row["operations"] = 65536
+                        if row["kind"] == "native-engine-tail":
+                            row["nativeOperations"] = 65536
+                    if len(calls) == 2:
+                        if invalid == "coverage":
+                            rows[-1]["failures"] = 1
+                        elif invalid == "denominator":
+                            rows[-3]["nativeOperations"] = 8
+                        elif invalid == "missing":
+                            return
+                    Path(environment["RELAYER_ALLOCATION_OUTPUT"]).write_text("\n".join(map(json.dumps, rows)))
+
+                with patch("sys.argv", ["control", str(root), str(output), "--allocation-profiler", str(root / "profiler.so")]), \
+                     patch("frozen_bdn_control.verify", return_value="frozen"), \
+                     patch("frozen_bdn_control.subprocess.run", side_effect=execute):
+                    if invalid:
+                        with self.assertRaisesRegex(SystemExit, "launches failed"):
+                            main()
+                    else:
+                        main()
+                self.assertEqual(len(calls), 4)
+                outcomes = json.loads((output / "outcomes.json").read_text())
+                self.assertEqual("allocationError" in outcomes[1], invalid is not None)
+                self.assertEqual(outcomes[3]["callbackBytes"], 72)
+                self.assertTrue((output / "4-baseline-objects.jsonl").exists())
+
     def test_invalid_input_prevents_every_process_launch(self):
         with tempfile.TemporaryDirectory() as directory, \
              patch("sys.argv", ["control", directory, str(Path(directory) / "results")]), \
