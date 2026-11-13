@@ -3,6 +3,8 @@ using System.Globalization;
 using System.Runtime.CompilerServices;
 using Dekaf;
 using Dekaf.Consumer;
+using Dekaf.Errors;
+using Dekaf.Protocol;
 
 namespace Relayer.Kafka;
 
@@ -162,7 +164,15 @@ internal sealed class KafkaConsumer : IAsyncDisposable
         }
         if (!batch.TryGetNextOffset(out var checkpoint)) return 0;
         _offset[0] = checkpoint;
-        await CommitAsync(_offset, count, cancellationToken).ConfigureAwait(false);
+        try { await CommitAsync(_offset, count, cancellationToken).ConfigureAwait(false); }
+        catch (GroupException error) when (error.ErrorCode is ErrorCode.FencedMemberEpoch
+            or ErrorCode.UnknownMemberId or ErrorCode.StaleMemberEpoch)
+        {
+            // Dekaf owns rejoining the group. Replay only if this partition is still local;
+            // otherwise its next owner resumes from the broker's committed checkpoint.
+            if (_native.Assignment.Contains(partition)) _native.Seek(rewind);
+            return 0;
+        }
         return count;
     }
 

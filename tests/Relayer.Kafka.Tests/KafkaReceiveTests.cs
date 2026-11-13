@@ -138,6 +138,48 @@ public class KafkaReceiveTests
     }
 
     [Test]
+    [Arguments(Dekaf.Protocol.ErrorCode.FencedMemberEpoch, true)]
+    [Arguments(Dekaf.Protocol.ErrorCode.UnknownMemberId, true)]
+    [Arguments(Dekaf.Protocol.ErrorCode.StaleMemberEpoch, true)]
+    [Arguments(Dekaf.Protocol.ErrorCode.GroupAuthorizationFailed, false)]
+    public async Task Rejected_commit_replays_only_membership_failures(Dekaf.Protocol.ErrorCode code, bool recover)
+    {
+        using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(2));
+        var token = timeout.Token;
+        using var tracing = new MessageTracing(Options.Create(new TracingOptions()), []);
+        await using var fixture = (KafkaFixture)await KafkaFixture.CreateAsync(tracing, token);
+        await fixture.Transport.StartAsync(token);
+        await fixture.Transport.SendAsync(Message(fixture.Destination, 0), token);
+        var partition = new TopicPartition(fixture.Destination, 0);
+        var native = new ConsumerBuilder<byte[], byte[]>().WithBootstrapServers(fixture.Bootstrap)
+            .WithGroupId(fixture.Destination).WithAutoOffsetReset(AutoOffsetReset.Earliest)
+            .WithOffsetCommitMode(OffsetCommitMode.Manual).WithAutoOffsetStore(false).Build();
+        native.Assign(partition);
+        var failure = new Dekaf.Errors.GroupException(code, "injected commit rejection");
+        var probe = new NativeLifecycleProbe { CommitFailure = failure };
+        var handled = 0;
+        await using var adapter = new KafkaConsumer(NativeLifecycleProxy.Wrap(native, probe),
+            (_, _) => { handled++; return ValueTask.FromResult(Disposition.Complete); }, tracing,
+            new() { System = "kafka", Destination = fixture.Destination, ConsumerGroup = fixture.Destination }, new());
+        await native.InitializeAsync(token);
+        await using var batches = native.ConsumeBatchAsync(token).GetAsyncEnumerator(token);
+        await Assert.That(await batches.MoveNextAsync()).IsTrue();
+        if (!recover)
+        {
+            var error = await Assert.ThrowsAsync<Dekaf.Errors.GroupException>(async () =>
+                await adapter.ProcessBatchAsync(batches.Current, token));
+            await Assert.That(ReferenceEquals(error, failure)).IsTrue();
+            return;
+        }
+        await Assert.That(await adapter.ProcessBatchAsync(batches.Current, token)).IsEqualTo(0);
+        await Assert.That(native.GetPosition(partition)).IsEqualTo(0L);
+        await Assert.That(await batches.MoveNextAsync()).IsTrue();
+        await Assert.That(await adapter.ProcessBatchAsync(batches.Current, token)).IsEqualTo(1);
+        await Assert.That(handled).IsEqualTo(2);
+        await Assert.That(await native.GetCommittedOffsetAsync(partition, token)).IsEqualTo(1L);
+    }
+
+    [Test]
     [Arguments(1, false)]
     [Arguments(3, false)]
     [Arguments(1, true)]

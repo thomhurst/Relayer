@@ -11,6 +11,7 @@ internal sealed class NativeLifecycleProbe
     private readonly ConcurrentQueue<string> _violations = new();
     internal int Closed;
     internal int Commits;
+    internal Exception? CommitFailure;
 
     internal void Before(string operation)
     {
@@ -48,6 +49,8 @@ internal class NativeLifecycleProxy : DispatchProxy
         var method = targetMethod!;
         _probe.Before(method.Name);
         if (method.Name == nameof(IAsyncDisposable.DisposeAsync)) Interlocked.Exchange(ref _probe.Closed, 1);
+        if (method.Name == "CommitAsync" && Interlocked.Exchange(ref _probe.CommitFailure, null) is { } failure)
+            return ValueTask.FromException(failure);
         object? result;
         try { result = method.Invoke(_native, args); }
         catch (TargetInvocationException error) when (error.InnerException is not null)
