@@ -1,6 +1,6 @@
 ---
 title: Diagnostics
-description: "Compile-time analyzers RLY001 to RLY004 and generator errors RLYH001, RLYM001, RLYM002 and RLYM004: what each reports and how to fix it."
+description: "Compile-time analyzers RLY001 to RLY004 and generator errors RLYH001 and RLYM001 to RLYM004: what each reports and how to fix it."
 ---
 
 Relayer ships compile-time analyzers and an IDE code fix in its NuGet package. They inspect symbols, not naming conventions, and add no runtime work. Startup validation still checks the complete configuration, including declarations assembled through helpers or other assemblies.
@@ -14,6 +14,7 @@ Relayer ships compile-time analyzers and an IDE code fix in its NuGet package. T
 | [RLYH001](#rlyh001) | Error | A handler message type is inaccessible to generated dispatch. |
 | [RLYM001](#rlym001) | Error | A message declaration has type parameters on itself or a containing type. |
 | [RLYM002](#rlym002) | Error | A declared message type is inaccessible to generated registration and JSON metadata. |
+| [RLYM003](#rlym003) | Error | A `[Message]` type is ref-like. |
 | [RLYM004](#rlym004) | Error | A declared message type is static. |
 
 ## RLY001
@@ -71,6 +72,10 @@ Generated dispatch must be able to access each handler's message type. Make the 
 ## RLYM002
 
 A `[Message]` declaration must be accessible from the generated assembly-wide registration and JSON context. Make the message and all containing types `internal` or `public` (or otherwise accessible within the assembly), and remove any `file` modifier. Unsupported declarations are excluded from both generated outputs; other accessible messages still generate normally. See [message registration](../guides/messages.md).
+
+## RLYM003
+
+A wire message cannot be a `ref struct` or `readonly ref struct`: stack-only types cannot be used by registration and serializer generic APIs. Replace the declaration with an ordinary struct, class or record. The generator reports the message declaration and excludes it from generated registration and JSON metadata; valid messages in the same compilation still generate.
 
 ## RLYM004
 
