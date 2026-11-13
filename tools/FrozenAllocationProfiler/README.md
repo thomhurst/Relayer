@@ -126,11 +126,35 @@ and exact native-scope equality. All three outcomes are attempted and retained e
 when a comparison fails. The profiler's existing known-count checks run first.
 
 The exact region surrounds all measured triples, including the external loop and
-all process threads; it reports aggregate object types, not individual window
-owners or allocation stacks. The external delegate driver excludes TUnit and its
+all process threads; it reports aggregate object types and partitions them into the
+external checkpoint windows described below. It does not collect allocation stacks. The external delegate driver excludes TUnit and its
 parallel test activity. It is a separate execution: callback scheduling and fastpath
 changes can hide or expose the failure. A passing run cannot explain the historical
 12,360-byte window, and callback object sizes cannot be subtracted from thread byte
 counters or independent runs. Preserve every unfavorable outcome and correlate any
 new excess with its own exact report before proposing a production fix. Original
 unit-test assertions, warmup and normal test parallelism remain unchanged.
+
+
+## Concurrent receive window correlation (#687)
+
+The external `FrozenReceiveProbe` checkpoints native callback totals after each
+Scoped, Consumer and Receive invocation. The retained fixture remains unchanged:
+1000 warmup triples, 1000 measured triples and exact thread-byte equality. Each
+`window` row carries its sequential index, mode (0/1/2) and the fixture's returned
+thread-byte counter. Preceding `window-type` rows partition the aggregate callback
+counts. The reader rejects missing/reordered boundaries, incorrect totals or types,
+and the receive reader checks all 3000 counters against the same process's full log.
+Known-count checks exercise worker allocations, caller allocations and an empty
+window. Other profiler clients keep their existing aggregate-only report.
+
+These boundaries are **external process envelopes**, wider than the fixture's own
+counter intervals. They include marker transitions, caller bookkeeping and concurrent
+background allocations. Native callback lock order assigns racing allocations to a
+window. The final checkpoint stops capture under that same lock, before report-writing
+transitions. Counter bytes and CLR object sizes remain distinct: do not subtract them or
+claim they must sum. Callbacks and checkpoints change scheduling; no stacks are
+collected and a passing run does not explain a historical failure. Preserve all
+windows and types, including baseline excesses, failed equality and failed coverage.
+Use an unfavorable same-execution window to narrow candidate objects before choosing
+further stack diagnostics or a demonstrated fix.

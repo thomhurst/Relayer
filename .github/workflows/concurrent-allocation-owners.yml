@@ -8,6 +8,11 @@ on:
       - '.github/scripts/verify_retained_ci.py'
       - '.github/scripts/test_verify_retained_ci.py'
       - 'tools/FrozenReceiveProbe/**'
+      - 'tools/FrozenAllocationProfiler/**'
+      - 'tools/FrozenConcurrentProbe/NativeAllocationRegion.cs'
+      - '.github/scripts/read_native_allocations.py'
+      - '.github/scripts/read_receive_allocations.py'
+      - '.github/scripts/test_native_allocations.py'
   workflow_dispatch:
     inputs:
       ci_run_id:
@@ -136,7 +141,7 @@ jobs:
           export RELAYER_ALLOCATION_PROFILER="$CORECLR_PROFILER_PATH"
           export RELAYER_ALLOCATION_OUTPUT="$PWD/results/objects.jsonl"
           dotnet --fx-version "$CAPTURE_RUNTIME" tools/FrozenReceiveProbe/bin/Release/${{ matrix.framework }}/FrozenReceiveProbe.dll "$TEST_IMAGE" > results/exact.log 2>&1 || failed=1
-          python3 .github/scripts/read_native_allocations.py results/objects.jsonl > results/validated-types.json || failed=1
+          python3 .github/scripts/read_receive_allocations.py results/objects.jsonl results/exact.log > results/validated-types.json || failed=1
           sha256sum --check results/test-inputs-before.sha256 > results/test-inputs-after.log 2>&1 || failed=1
           exit "$failed"
       - name: Retain all outcomes and executable inputs
@@ -162,6 +167,7 @@ jobs:
             .artifacts/exact-profiler/
             profiler-sdk/core/profiling/
             .github/scripts/read_native_allocations.py
+            .github/scripts/read_receive_allocations.py
             .github/scripts/test_native_allocations.py
             .github/scripts/verify_retained_ci.py
             .github/scripts/test_verify_retained_ci.py
