@@ -107,7 +107,15 @@ and inspect every type family and failed outcome before choosing an intervention
 
 ## Concurrent receive test fixture (#687)
 
-`concurrent-allocation-owners.yml` builds and retains the test image, then executes
+`concurrent-allocation-owners.yml` covers net10/net11 independently. By default it
+builds and retains the test image. Manual dispatch can instead set `ci_run_id` and
+`ci_run_attempt` to download that failed CI run's original core-test artifact. The
+workflow verifies its binary manifest and commit against the selected CI run,
+selects the matching recorded runtime (failing if unavailable), and executes those
+binaries without rebuilding or modifying them. It retains the downloaded inputs,
+source-run metadata and before/after hashes along with every new outcome. These
+are new diagnostic executions, never recovery of historical allocation ownership
+or replacement of failed CI. The workflow then executes
 its unchanged TUnit allocation test, a plain external fixture control and an exact
 callback control. `FrozenReceiveProbe` binds once to that image's original
 `ConcurrentReceiveFixture.Run`; it does not compile a substitute fixture. It keeps
