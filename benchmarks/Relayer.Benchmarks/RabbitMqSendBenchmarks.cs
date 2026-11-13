@@ -22,6 +22,9 @@ public class RabbitMqSendBenchmarks
     private ITransport _transport = null!;
     private BasicProperties _properties = null!;
     private OutgoingMessage _message;
+    private OutgoingMessage[] _batch = null!;
+    private readonly ValueTask[] _batchSends = new ValueTask[100];
+    private BasicProperties[] _batchProperties = null!;
     private string _queue = null!;
     private RelayerInstrumentation _instrumentation = null!;
     private DirectJsonSend _json = null!;
@@ -59,6 +62,13 @@ public class RabbitMqSendBenchmarks
         _properties = new() { Persistent = true, ContentType = "application/json", Headers = new Dictionary<string, object?>() };
         foreach (var header in headers)
             if (header.Key != "content-type") _properties.Headers[header.Key] = header.Value.Text ?? (object)header.Value.Utf8.ToArray();
+        _batch = new OutgoingMessage[100];
+        _batchProperties = new BasicProperties[100];
+        for (var i = 0; i < _batch.Length; i++)
+        {
+            _batch[i] = _message;
+            _batchProperties[i] = new(_properties) { Headers = new Dictionary<string, object?>(_properties.Headers!) };
+        }
         _instrumentation = new();
         _json = new(_instrumentation, builder => builder.RabbitMQ("benchmark-json", rabbit =>
         {
@@ -90,6 +100,32 @@ public class RabbitMqSendBenchmarks
 
     [Benchmark, BenchmarkCategory("DefaultJson")]
     public ValueTask RelayerJsonSingle() => _json.Sender.SendAsync(_json.Order);
+
+    [Benchmark(Baseline = true, OperationsPerInvoke = 100), BenchmarkCategory("Batch")]
+    public async Task RawBatch()
+    {
+        Exception? error = null;
+        var admitted = 0;
+        try
+        {
+            for (var i = 0; i < _batch.Length; i++)
+            {
+                _batchSends[admitted] = _channel.BasicPublishAsync("", _queue, true, _batchProperties[i], _batch[i].Body);
+                admitted++;
+            }
+        }
+        catch (Exception exception) { error = exception; }
+        for (var i = 0; i < admitted; i++)
+        {
+            try { await _batchSends[i]; }
+            catch (Exception exception) { error ??= exception; }
+            _batchSends[i] = default;
+        }
+        if (error is not null) System.Runtime.ExceptionServices.ExceptionDispatchInfo.Throw(error);
+    }
+
+    [Benchmark(OperationsPerInvoke = 100), BenchmarkCategory("Batch")]
+    public async Task RelayerBatch() => await _transport.SendBatchAsync(_batch, default);
 
     private sealed class NativeHeaders : IMessageHeaderWriter<BasicProperties>
     {

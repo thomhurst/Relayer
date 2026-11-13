@@ -10,6 +10,7 @@ internal sealed class RabbitMqSendEndpoint
     internal readonly string RoutingKey;
     internal readonly SendTracing? Tracing;
     private readonly MessageTracing? _tracing;
+    private readonly MessagingEndpoint _tracingEndpoint;
     internal bool TraceEnabled => _tracing?.Source.HasListeners() == true;
     internal readonly EndpointTelemetry? Telemetry;
     internal string? DelayedExchange;
@@ -29,14 +30,17 @@ internal sealed class RabbitMqSendEndpoint
             System = "rabbitmq", Destination = name, OperationName = "send", ServerAddress = factory.HostName,
             ServerPort = factory.Port == -1 ? (factory.Ssl.Enabled ? 5671 : 5672) : factory.Port,
         });
-        if (tracing is null) return;
-        Tracing = new(tracing, new()
+        _tracingEndpoint = new()
         {
             System = "rabbitmq", Destination = name, ServerAddress = factory.HostName,
             ServerPort = factory.Port == -1 ? (factory.Ssl.Enabled ? 5671 : 5672) : factory.Port,
             Attributes = RoutingKey.Length == 0 ? default : new KeyValuePair<string, object?>[] { new("messaging.rabbitmq.destination.routing_key", RoutingKey) },
-        }, send, batch, headerNames: new("cloudEvents:"));
+        };
+        if (tracing is not null) Tracing = new(tracing, _tracingEndpoint, send, batch, headerNames: new("cloudEvents:"));
     }
+
+    internal SendTracing CreateTracing(Func<OutgoingMessage, CancellationToken, ValueTask> send) =>
+        new(_tracing!, _tracingEndpoint, send, static (_, _) => throw new NotSupportedException(), headerNames: new("cloudEvents:"));
 
     internal async ValueTask InitializeAsync(IConnection connection, RabbitMqTransportOptions options,
         TopologyMode mode, CancellationToken token)

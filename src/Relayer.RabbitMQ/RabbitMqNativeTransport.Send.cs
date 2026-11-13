@@ -97,14 +97,33 @@ internal sealed partial class RabbitMqNativeTransport : ITransportSendTracing, I
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         cancellationToken.ThrowIfCancellationRequested();
-        // There is no native batch publish: each confirmed native call gets its own span and duration.
-        return messages.IsEmpty ? ValueTask.CompletedTask : _operations.Rent().StartBatch(this, messages, cancellationToken, traceMessages: true);
+        // Native confirmation tracking admits multiple publishes on one exclusively leased channel.
+        return messages.IsEmpty ? ValueTask.CompletedTask : StartBatch(messages, cancellationToken, traceMessages: true);
     }
+
+    private ValueTask StartBatch(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken token, bool traceMessages)
+    {
+        var publishers = Volatile.Read(ref _publishers) ?? throw new InvalidOperationException("Start the RabbitMQ transport before sending.");
+        var connection = _connection ?? throw new InvalidOperationException("Start the RabbitMQ transport before sending.");
+        return _operations.Rent().StartBatch(this, messages, connection, publishers, token, traceMessages);
+    }
+
+    internal ValueTask SendBatchItemAsync(OutgoingMessage message, RabbitMqBatchSlot slot, CancellationToken token, bool trace)
+    {
+        var endpoint = Endpoint(message.Destination);
+        if (message.IsTombstone) throw new NotSupportedException("RabbitMQ does not support native tombstones.");
+        if (message.OrderingKey is not null) throw new NotSupportedException("RabbitMQ publishing does not provide ordering by key.");
+        return slot.Send(this, endpoint, message, token, trace);
+    }
+
+    internal ValueTask SendBorrowedAsync(RabbitMqSendEndpoint endpoint, RabbitMqPublisher publisher,
+        OutgoingMessage message, CancellationToken token) =>
+        _operations.Rent().StartBorrowed(this, endpoint, publisher, message, token);
 
     private ValueTask SendBatchCoreAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         cancellationToken.ThrowIfCancellationRequested();
-        return messages.IsEmpty ? ValueTask.CompletedTask : _operations.Rent().StartBatch(this, messages, cancellationToken, traceMessages: false);
+        return messages.IsEmpty ? ValueTask.CompletedTask : StartBatch(messages, cancellationToken, traceMessages: false);
     }
 }

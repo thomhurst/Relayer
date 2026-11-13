@@ -9,6 +9,23 @@ internal sealed class RabbitMqPublisher(IChannel channel)
 {
     internal IChannel Channel { get; set; } = channel;
     internal readonly BasicProperties Properties = new();
+    private readonly List<RabbitMqBatchSlot> _batchSlots = [];
+    private ConfiguredValueTaskAwaitable.ConfiguredValueTaskAwaiter[] _batchSends = [];
+
+    internal ConfiguredValueTaskAwaitable.ConfiguredValueTaskAwaiter[] BatchSends(int count)
+    {
+        if (_batchSends.Length < count) Array.Resize(ref _batchSends, count);
+        return _batchSends;
+    }
+
+    internal RabbitMqBatchSlot BatchSlot(int index)
+    {
+        if (index == _batchSlots.Count) _batchSlots.Add(new(Channel));
+        var slot = _batchSlots[index];
+        slot.Publisher.Channel = Channel;
+        return slot;
+    }
+
     private readonly RabbitMqHeaders _headers = new();
     internal const int CacheCapacity = 256;
     private readonly Dictionary<(int Index, int Length), byte[]> _buffers = new(CacheCapacity);
@@ -112,4 +129,30 @@ internal sealed class RabbitMqHeaders : Dictionary<string, object?>, IDictionary
             this[key] = value;
         }
     }
+}
+
+// Retained at the leased channel's batch high-water mark, separate from its single-send properties.
+internal sealed class RabbitMqBatchSlot(IChannel channel)
+{
+    internal readonly RabbitMqPublisher Publisher = new(channel);
+    private readonly Dictionary<RabbitMqSendEndpoint, SendTracing> _tracing = [];
+    private RabbitMqNativeTransport _transport = null!;
+    private RabbitMqSendEndpoint _endpoint = null!;
+
+    internal ValueTask Send(RabbitMqNativeTransport transport, RabbitMqSendEndpoint endpoint,
+        OutgoingMessage message, CancellationToken token, bool trace)
+    {
+        _transport = transport;
+        _endpoint = endpoint;
+        if (!trace || !endpoint.TraceEnabled) return Publish(message, token);
+        if (!_tracing.TryGetValue(endpoint, out var tracing))
+        {
+            tracing = endpoint.CreateTracing(Publish);
+            _tracing.Add(endpoint, tracing);
+        }
+        return tracing.SendAsync(message, token);
+    }
+
+    private ValueTask Publish(OutgoingMessage message, CancellationToken token) =>
+        _transport.SendBorrowedAsync(_endpoint, Publisher, message, token);
 }

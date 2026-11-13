@@ -57,14 +57,17 @@ internal sealed class RabbitMqSendOperation : IValueTaskSource
     private OutgoingMessage _message;
     private ReadOnlyMemory<OutgoingMessage> _batch;
     private int _batchIndex;
-    private bool _batchPending;
+    private Exception? _batchError;
+    private ConfiguredValueTaskAwaitable.ConfiguredValueTaskAwaiter[] _batchSends = [];
+    private int _batchCount;
+    private bool _borrowed;
     private bool _traceBatchMessages;
     private CancellationToken _token;
     private long _delay;
     private long _started;
     private Stage _stage;
     private int _consumed;
-    private enum Stage { Lease, Recover, Publish, Batch }
+    private enum Stage { Lease, Recover, Publish, BatchLease, BatchRecover, BatchDrain }
 
     internal RabbitMqSendOperation(RabbitMqSendPool pool)
     {
@@ -77,6 +80,7 @@ internal sealed class RabbitMqSendOperation : IValueTaskSource
         long delay, IConnection connection, Channel<RabbitMqPublisher> publishers, CancellationToken token)
     {
         _consumed = 0;
+        _borrowed = false;
         _context = ExecutionContext.Capture();
         _transport = transport;
         _endpoint = endpoint;
@@ -96,19 +100,47 @@ internal sealed class RabbitMqSendOperation : IValueTaskSource
         return new(this, _completion.Version);
     }
 
-    internal ValueTask StartBatch(RabbitMqNativeTransport transport, ReadOnlyMemory<OutgoingMessage> messages,
-        CancellationToken token, bool traceMessages)
+    internal ValueTask StartBorrowed(RabbitMqNativeTransport transport, RabbitMqSendEndpoint endpoint,
+        RabbitMqPublisher publisher, OutgoingMessage message, CancellationToken token)
     {
         _consumed = 0;
+        _borrowed = true;
         _context = ExecutionContext.Capture();
         _transport = transport;
+        _endpoint = endpoint;
+        _publisher = publisher;
+        _message = message;
+        _token = token;
+        _started = Stopwatch.GetTimestamp();
+        _stage = Stage.Recover;
+        _pending = ValueTask.CompletedTask.ConfigureAwait(false).GetAwaiter();
+        Advance();
+        return new(this, _completion.Version);
+    }
+
+    internal ValueTask StartBatch(RabbitMqNativeTransport transport, ReadOnlyMemory<OutgoingMessage> messages,
+        IConnection connection, Channel<RabbitMqPublisher> publishers, CancellationToken token, bool traceMessages)
+    {
+        _consumed = 0;
+        _borrowed = false;
+        _context = ExecutionContext.Capture();
+        _transport = transport;
+        _connection = connection;
+        _publishers = publishers;
         _batch = messages;
         _batchIndex = 0;
-        _batchPending = false;
+        _batchCount = 0;
+        _batchError = null;
         _traceBatchMessages = traceMessages;
         _token = token;
-        _stage = Stage.Batch;
-        Advance();
+        _stage = Stage.BatchLease;
+        try
+        {
+            _lease = publishers.Reader.ReadAsync(token).ConfigureAwait(false).GetAwaiter();
+            if (_lease.IsCompleted) Advance();
+            else _lease.UnsafeOnCompleted(_continuation);
+        }
+        catch (Exception error) { Finish(error); }
         return new(this, _completion.Version);
     }
 
@@ -126,20 +158,46 @@ internal sealed class RabbitMqSendOperation : IValueTaskSource
             {
                 switch (_stage)
                 {
-                    case Stage.Batch:
-                        if (_batchPending)
-                        {
-                            _pending.GetResult();
-                            _pending = default;
-                            _batchPending = false;
-                        }
-                        if (_batchIndex == _batch.Length) { Finish(null); return; }
-                        var message = _batch.Span[_batchIndex++];
-                        _pending = (_traceBatchMessages ? _transport.SendAsync(message, _token) : _transport.SendCoreAsync(message, _token))
-                            .ConfigureAwait(false).GetAwaiter();
-                        _batchPending = true;
+                    case Stage.BatchLease:
+                        _publisher = _lease.GetResult();
+                        _lease = default;
+                        _stage = Stage.BatchRecover;
+                        _pending = (_publisher.Channel.IsOpen ? ValueTask.CompletedTask :
+                            _transport.ReplacePublisherChannelAsync(_publisher, _connection, _token)).ConfigureAwait(false).GetAwaiter();
                         if (!_pending.IsCompleted) { _pending.UnsafeOnCompleted(_continuation); return; }
                         break;
+                    case Stage.BatchRecover:
+                        _pending.GetResult();
+                        _pending = default;
+                        _batchSends = _publisher!.BatchSends(_batch.Length);
+                        // RabbitMQ.Client 7.2.2 releases its publish semaphore before awaiting native confirms.
+                        // Each slot owns its mutable properties until its native call completes. Native flow control
+                        // can suspend before serialization, so reusing the leased publisher's properties is unsafe.
+                        try
+                        {
+                            for (var i = 0; i < _batch.Length; i++)
+                            {
+                                _token.ThrowIfCancellationRequested();
+                                var send = _transport.SendBatchItemAsync(_batch.Span[i], _publisher!.BatchSlot(i),
+                                    _token, _traceBatchMessages).ConfigureAwait(false).GetAwaiter();
+                                _batchSends[_batchCount++] = send;
+                            }
+                        }
+                        catch (Exception error) { _batchError = error; }
+                        _stage = Stage.BatchDrain;
+                        break;
+                    case Stage.BatchDrain:
+                        while (_batchIndex < _batchCount)
+                        {
+                            ref var send = ref _batchSends[_batchIndex];
+                            if (!send.IsCompleted) { send.UnsafeOnCompleted(_continuation); return; }
+                            try { send.GetResult(); }
+                            catch (Exception error) { _batchError ??= error; }
+                            send = default;
+                            _batchIndex++;
+                        }
+                        Finish(_batchError);
+                        return;
                     case Stage.Lease:
                         _publisher = _lease.GetResult();
                         _lease = default;
@@ -175,17 +233,19 @@ internal sealed class RabbitMqSendOperation : IValueTaskSource
     {
         if (_publisher is { } publisher)
         {
-            try { _endpoint.Telemetry?.RecordDuration(Stopwatch.GetElapsedTime(_started), error is not null); }
+            try { _endpoint?.Telemetry?.RecordDuration(Stopwatch.GetElapsedTime(_started), error is not null); }
             catch (Exception telemetryError) { error ??= telemetryError; }
             finally
             {
                 publisher.Clear();
                 _publisher = null;
-                _publishers.Writer.TryWrite(publisher);
+                if (!_borrowed) _publishers.Writer.TryWrite(publisher);
             }
         }
         _message = default;
         _batch = default;
+        _batchError = null;
+        _batchSends = [];
         _pending = default;
         _lease = default;
         if (error is null) _completion.SetResult(true);
