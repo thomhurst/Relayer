@@ -56,6 +56,41 @@ class OriginalRunnerTests(unittest.TestCase):
             {"path": path.relative_to(root).as_posix()} for path in (source, image)]}))
         return source, image
 
+    def test_scoped_scope_runner_selection_and_native_parent(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for side in ("baseline", "candidate"):
+                source, image = self.fixture(root / "performance-builds" / side)
+                source.write_text(source.read_text().replace("EndToEndBenchmarks", "ConsumePipelineBenchmarks")
+                                  .replace("ConcurrentRoundTrip()", "ScopeOnly()")
+                                  .replace("OperationsPerInvoke = 8", "OperationsPerInvoke = 1")
+                                  .replace("workloadDelegate =", "instance.ScopedHandler = true; workloadDelegate ="))
+                self.assertEqual(executable(root / "performance-builds" / side, "scope-only"), (image.resolve(), "10"))
+            output = root / "results"
+            calls = []
+
+            def execute(command, **kwargs):
+                calls.append(command)
+                self.assertEqual(command[-1], "scope-only")
+                Path(command[-2]).write_text(json.dumps({"FoundExecutable": True, "ExitCode": 0,
+                    "IsSuccess": True, "Errors": [],
+                    "benchmarkArguments": '--benchmarkName "Relayer.Benchmarks.ConsumePipelineBenchmarks.ScopeOnly(ScopedHandler: True)" --job Default --benchmarkId 10',
+                    "selectedCase": "scope-only", "operationsPerInvoke": 1}))
+                Path(command[-3]).write_text(COMPLETE.replace("65536", "9"))
+
+            with patch("sys.argv", ["control", str(root), str(output), "--case", "scope-only",
+                                    "--native-executor", str(root / "host.dll")]), \
+                 patch("frozen_bdn_control.verify", return_value="frozen"), \
+                 patch("frozen_bdn_control.subprocess.run", side_effect=execute):
+                main()
+            self.assertEqual(len(calls), 4)
+            outcomes = json.loads((output / "outcomes.json").read_text())
+            self.assertTrue(all(row["operations"] == 9 for row in outcomes))
+            self.assertTrue(all("bytesPerMessage" not in row for row in outcomes))
+            protocol = json.loads((output / "protocol.json").read_text())
+            self.assertEqual(protocol["operationsPerInvoke"], 1)
+            self.assertEqual(protocol["parameter"], "instance.ScopedHandler = true;")
+
     def test_discovers_runner_from_inventoried_generated_source(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -120,7 +155,9 @@ class OriginalRunnerTests(unittest.TestCase):
                     receipt = {"FoundExecutable": True, "ExitCode": 0, "IsSuccess": True, "Errors": [],
                                "Results": ["WorkloadResult   1: 65536 op, 1 ns, 1 ns/op"],
                                "PrefixedLines": ["// GC:  0 0 0 45823680 65536", "// AfterAll"],
-                               "StandardOutput": ["// Runtime=.NET 10.0.15 (test), ARM64"]}
+                               "StandardOutput": ["// Runtime=.NET 10.0.15 (test), ARM64"],
+                               "benchmarkArguments": "--benchmarkName Relayer.Benchmarks.EndToEndBenchmarks.ConcurrentRoundTrip --job Default --benchmarkId 10",
+                               "selectedCase": "concurrent", "operationsPerInvoke": 8}
                     if len(calls) == 2:
                         if invalid == "exit": receipt["ExitCode"] = 1
                         if invalid == "errors": receipt["Errors"] = ["native error"]
@@ -151,46 +188,53 @@ class OriginalRunnerTests(unittest.TestCase):
                 self.assertIn("anonymous pipes/Broker", protocol["host"])
                 self.assertIn("bundled protocol intervention", protocol["limits"])
 
-    def test_scoped_native_parent_checks_identity_and_retains_all_outcomes(self):
-        for invalid in (None, "identity", "case", "operations"):
-            with self.subTest(invalid=invalid), tempfile.TemporaryDirectory() as directory:
-                root = Path(directory)
-                output = root / "results"
-                calls = []
+    def test_native_parent_checks_every_case_identity_and_retains_all_outcomes(self):
+        for case, benchmark, operations in (
+                ("concurrent", "Relayer.Benchmarks.EndToEndBenchmarks.ConcurrentRoundTrip", 8),
+                ("scoped-dispatch", "Relayer.Benchmarks.ConsumePipelineBenchmarks.DirectScopedDispatch", 1),
+                ("scope-only", '"Relayer.Benchmarks.ConsumePipelineBenchmarks.ScopeOnly(ScopedHandler: True)"', 1)):
+            for invalid in (None, "identity", "case", "operations"):
+                with self.subTest(case=case, invalid=invalid), tempfile.TemporaryDirectory() as directory:
+                    root = Path(directory)
+                    output = root / "results"
+                    calls = []
 
-                def execute(command, **kwargs):
-                    calls.append(command)
-                    self.assertEqual(command[-1], "scoped-dispatch")
-                    self.assertEqual(command[3], "42")
-                    receipt = {"FoundExecutable": True, "ExitCode": 0, "IsSuccess": True, "Errors": [],
-                               "benchmarkArguments": "--benchmarkName Relayer.Benchmarks.ConsumePipelineBenchmarks.DirectScopedDispatch --job Default --benchmarkId 42",
-                               "selectedCase": "scoped-dispatch", "operationsPerInvoke": 1}
-                    if len(calls) == 2:
-                        if invalid == "identity": receipt["benchmarkArguments"] = "wrong runner"
-                        if invalid == "case": receipt["selectedCase"] = "concurrent"
-                        if invalid == "operations": receipt["operationsPerInvoke"] = 8
-                    Path(command[-2]).write_text(json.dumps(receipt))
-                    # A one-operation benchmark need not be divisible by eight.
-                    Path(command[-3]).write_text(COMPLETE.replace("65536", "9"))
+                    def execute(command, **kwargs):
+                        calls.append(command)
+                        if case != "concurrent":
+                            self.assertEqual(command[-1], case)
+                        self.assertEqual(command[3], "42")
+                        receipt = {"FoundExecutable": True, "ExitCode": 0, "IsSuccess": True, "Errors": [],
+                                   "benchmarkArguments": f"--benchmarkName {benchmark} --job Default --benchmarkId 42",
+                                   "selectedCase": case, "operationsPerInvoke": operations}
+                        if len(calls) == 2:
+                            if invalid == "identity": receipt["benchmarkArguments"] = "wrong runner"
+                            if invalid == "case": receipt["selectedCase"] = "wrong case"
+                            if invalid == "operations": receipt["operationsPerInvoke"] = 99
+                        Path(command[6]).write_text(json.dumps(receipt))
+                        # A one-operation benchmark need not be divisible by eight.
+                        Path(command[5]).write_text(COMPLETE if case == "concurrent" else COMPLETE.replace("65536", "9"))
 
-                with patch("sys.argv", ["control", str(root), str(output), "--case", "scoped-dispatch",
-                                        "--native-executor", str(root / "host.dll")]), \
-                     patch("frozen_bdn_control.verify", return_value="frozen"), \
-                     patch("frozen_bdn_control.executable", return_value=(root / "image.dll", "42")), \
-                     patch("frozen_bdn_control.subprocess.run", side_effect=execute):
-                    if invalid:
-                        with self.assertRaisesRegex(SystemExit, "launches failed"):
+                    with patch("sys.argv", ["control", str(root), str(output), "--case", case,
+                                            "--native-executor", str(root / "host.dll")]), \
+                         patch("frozen_bdn_control.verify", return_value="frozen"), \
+                         patch("frozen_bdn_control.executable", return_value=(root / "image.dll", "42")), \
+                         patch("frozen_bdn_control.subprocess.run", side_effect=execute):
+                        if invalid:
+                            with self.assertRaisesRegex(SystemExit, "launches failed"):
+                                main()
+                        else:
                             main()
-                    else:
-                        main()
-                self.assertEqual(len(calls), 4)
-                outcomes = json.loads((output / "outcomes.json").read_text())
-                self.assertEqual([item["side"] for item in outcomes], ["baseline", "candidate", "candidate", "baseline"])
-                self.assertEqual("error" in outcomes[1], invalid is not None)
-                self.assertEqual(outcomes[3]["operations"], 9)
-                protocol = json.loads((output / "protocol.json").read_text())
-                self.assertFalse(protocol["instrumented"])
-                self.assertEqual(protocol["parameter"], "instance.ScopedHandler = true;")
+                    self.assertEqual(len(calls), 4)
+                    outcomes = json.loads((output / "outcomes.json").read_text())
+                    self.assertEqual([item["side"] for item in outcomes], ["baseline", "candidate", "candidate", "baseline"])
+                    self.assertEqual("error" in outcomes[1], invalid is not None)
+                    if invalid:
+                        self.assertIn("benchmark identity differs", outcomes[1]["error"])
+                    self.assertEqual(outcomes[3]["operations"], 65536 if case == "concurrent" else 9)
+                    protocol = json.loads((output / "protocol.json").read_text())
+                    self.assertFalse(protocol["instrumented"])
+                    self.assertEqual(protocol["parameter"], None if case == "concurrent" else "instance.ScopedHandler = true;")
 
     def test_native_parent_profiles_child_only_and_retains_invalid_report(self):
         real_run = subprocess.run
@@ -218,7 +262,9 @@ class OriginalRunnerTests(unittest.TestCase):
                     self.assertEqual(child, ["1", str((root / "profiler 'quoted.so").resolve()), str(report.resolve()), "MeasureWithGc",
                                              "--fx-version", "10.0.15", "--roll-forward", "Disable",
                                              "image with spaces.dll", "--anonymousPipes", "pipe handles"])
-                    Path(command[-1]).write_text(json.dumps({"FoundExecutable": True, "ExitCode": 0, "IsSuccess": True, "Errors": []}))
+                    Path(command[-1]).write_text(json.dumps({"FoundExecutable": True, "ExitCode": 0, "IsSuccess": True, "Errors": [],
+                        "benchmarkArguments": "--benchmarkName Relayer.Benchmarks.EndToEndBenchmarks.ConcurrentRoundTrip --job Default --benchmarkId 10",
+                        "selectedCase": "concurrent", "operationsPerInvoke": 8}))
                     Path(command[-2]).write_text("// Runtime=.NET 10.0.15 (test), X64\n" + COMPLETE)
                     if missing and len(calls) == 2:
                         return

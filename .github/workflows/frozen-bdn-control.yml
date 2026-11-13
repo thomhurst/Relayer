@@ -24,6 +24,7 @@ on:
         type: choice
         options:
           - concurrent
+          - scope-only
           - scoped-dispatch
           - log-composed
           - queue-composed
