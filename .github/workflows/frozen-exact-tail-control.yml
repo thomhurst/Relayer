@@ -51,6 +51,8 @@ jobs:
           python3 - <<'PYTHON'
           import hashlib, json, os
           from pathlib import Path
+          if not os.environ.get('DOTNET_ROOT'):
+              raise ValueError('DOTNET_ROOT must identify the pinned SDK installation')
           runtime = Path(os.environ['DOTNET_ROOT']) / 'shared/Microsoft.NETCore.App/10.0.15'
           if not runtime.is_dir():
               raise ValueError('Expected .NET 10.0.15 from pinned SDK installation')

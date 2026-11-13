@@ -47,3 +47,11 @@ Compare complete ABBA outcomes only within their own bracket; never subtract nat
 GC totals from callback totals or independent controls. Retain every type, event,
 coverage record, original image and failed outcome. A successful new run still does
 not identify the historical signal or justify a production change.
+
+The exact-tail workflow defaults to retained Performance run `43124385683` and
+requires its unexpired `performance-43124385683-1` artifact. Hosted artifacts expire
+after their configured retention period (these control outputs use 90 days). A
+missing input fails the download rather than validating the profiler. Preserve
+inputs independently before expiry; for a later experiment, dispatch with an
+explicit retained Performance run instead of treating a download failure as a
+workload result.

@@ -1,4 +1,6 @@
 import json
+import shutil
+import sys
 from pathlib import Path
 import subprocess
 import tempfile
@@ -12,6 +14,17 @@ COMPLETE = "WorkloadResult   1: 65536 op, 1 ns, 1 ns/op\n// GC:  0 0 0 45823680 
 
 
 class NativeResultTests(unittest.TestCase):
+    def test_retained_uninstrumented_launcher_needs_no_allocation_readers(self):
+        # Existing control artifacts retain these two scripts without allocation readers.
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for name in ("frozen_bdn_control.py", "frozen_concurrent_control.py"):
+                shutil.copyfile(Path(__file__).with_name(name), root / name)
+            completed = subprocess.run([sys.executable, str(root / "frozen_bdn_control.py"), "--help"],
+                                       cwd=root, capture_output=True, text=True)
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            self.assertIn("--allocation-profiler", completed.stdout)
+
     def test_uses_native_operations_without_dividing_by_eight_again(self):
         actual = result(COMPLETE)
         self.assertEqual(actual["operations"], 65536)

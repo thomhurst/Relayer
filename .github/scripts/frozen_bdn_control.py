@@ -9,7 +9,6 @@ import subprocess
 
 from frozen_concurrent_control import verify
 from frozen_scope_control import result as timing_result
-from read_native_tail_allocations import read as read_tail
 
 
 BENCHMARK = "Relayer.Benchmarks.EndToEndBenchmarks.ConcurrentRoundTrip"
@@ -134,6 +133,8 @@ def main():
              "--show-child-io", "--", *command]
             for index, (side, command) in enumerate(zip(launches, protocol["commands"]), 1)]
     if args.allocation_profiler:
+        from read_native_tail_allocations import read as read_tail
+
         protocol["allocationProfiler"] = str(args.allocation_profiler.resolve())
         protocol["limits"] = (
             "Separate instrumented native-engine ABBA; exact CLR ObjectAllocated notifications and GetObjectSize2 sizes, not all allocation-context overhead. "
