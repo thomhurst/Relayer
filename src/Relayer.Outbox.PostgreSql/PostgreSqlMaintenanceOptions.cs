@@ -10,7 +10,7 @@ public sealed class PostgreSqlMaintenanceOptions
     /// <summary>Retain sent IDs, destinations and completion times. Disabled by default; enable on every dispatcher and maintenance worker for this store.</summary>
     public bool RetainSentMessages { get; init; }
 
-    /// <summary>Failure budget for preparation errors and explicit store failure recording. Native send failures retry indefinitely with durable backoff. Must match other dispatchers for this store.</summary>
+    /// <summary>Failure budget for preparation errors and explicit store failure recording. Classified retryable send failures retry indefinitely with durable backoff. Must match other dispatchers for this store.</summary>
     public int MaxDispatchAttempts { get; init; } = 10;
     /// <summary>Maximum rows scanned or deleted per pass.</summary>
     public int BatchSize { get; init; } = 100;

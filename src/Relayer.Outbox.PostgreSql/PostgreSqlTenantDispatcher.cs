@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Npgsql;
@@ -11,6 +12,7 @@ namespace Relayer.Outbox.PostgreSql;
 internal sealed partial class PostgreSqlTenantDispatcher : BackgroundService
 {
     private readonly ITenantSource _catalog;
+    private readonly IServiceScopeFactory? _scopes;
     private readonly PostgreSqlTenantDispatchOptions _options;
     private readonly ITransport[] _transports;
     private readonly ILoggerFactory _logs;
@@ -23,8 +25,9 @@ internal sealed partial class PostgreSqlTenantDispatcher : BackgroundService
     private bool _stopped;
 
     public PostgreSqlTenantDispatcher(ITenantSource catalog, PostgreSqlTenantDispatchOptions options,
-        IEnumerable<ITransport> transports, ILoggerFactory logs, RelayerInstrumentation? instrumentation = null, TimeProvider? orderedTimeProvider = null, TimeProvider? recoveryTimeProvider = null)
+        IEnumerable<ITransport> transports, ILoggerFactory logs, RelayerInstrumentation? instrumentation = null, TimeProvider? orderedTimeProvider = null, TimeProvider? recoveryTimeProvider = null, IServiceScopeFactory? scopes = null)
     {
+        _scopes = scopes;
         _catalog = catalog;
         _options = options;
         options.Validate();
@@ -237,10 +240,10 @@ internal sealed partial class PostgreSqlTenantDispatcher : BackgroundService
         ValidateEntry(entry);
         return new(entry,
         new(entry.DataSource, entry.Options, new() { QueueCapacity = _options.QueueCapacity, BatchSize = _options.BatchSize,
-            ClaimDuration = entry.Options.LeaseDuration }, _transports, _logs.CreateLogger<PostgreSqlDirectDispatcher>(), instrumentation: _instrumentation),
+            ClaimDuration = entry.Options.LeaseDuration }, _transports, _logs.CreateLogger<PostgreSqlDirectDispatcher>(), instrumentation: _instrumentation, scopes: _scopes),
         new(entry.DataSource, _options.Maintenance(entry.Options), _transports, _logs.CreateLogger<PostgreSqlMaintenanceWorker>(),
-            _logs.CreateLogger<PostgreSqlDirectDispatcher>(), _instrumentation, _recoveryTimeProvider),
-        new(entry.DataSource, OrderedOptions(entry.Options), _transports, _logs.CreateLogger<PostgreSqlOrderedDispatcher>(), _orderedTimeProvider, _instrumentation));
+            _logs.CreateLogger<PostgreSqlDirectDispatcher>(), _instrumentation, _recoveryTimeProvider, _scopes),
+        new(entry.DataSource, OrderedOptions(entry.Options), _transports, _logs.CreateLogger<PostgreSqlOrderedDispatcher>(), _orderedTimeProvider, _instrumentation, _scopes));
     }
 
     private PostgreSqlOrderedDispatchOptions OrderedOptions(PostgreSqlOutboxOptions store) => new()

@@ -35,7 +35,7 @@ public static partial class PostgreSqlOutboxServiceCollectionExtensions
         services.AddKeyedSingleton<PostgreSqlMaintenanceWorker>(name, (provider, _) => new(dataSource,
             provider.GetRequiredService<IOptionsMonitor<PostgreSqlMaintenanceOptions>>().Get(name), provider.GetServices<ITransport>(),
             provider.GetRequiredService<ILogger<PostgreSqlMaintenanceWorker>>(), provider.GetRequiredService<ILogger<PostgreSqlDirectDispatcher>>(),
-            provider.GetService<RelayerInstrumentation>()));
+            provider.GetService<RelayerInstrumentation>(), scopes: provider.GetRequiredService<IServiceScopeFactory>()));
         services.AddSingleton<IHostedService>(provider => provider.GetRequiredKeyedService<PostgreSqlMaintenanceWorker>(name));
         services.AddSingleton<PostgreSqlSchedulingRegistration>(provider =>
         {

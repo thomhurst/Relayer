@@ -42,7 +42,7 @@ public static partial class PostgreSqlOutboxServiceCollectionExtensions
             provider.GetRequiredService<IOptionsMonitor<PostgreSqlChangeCaptureOptions>>().Get(name),
             provider.GetServices<ITransport>(), provider.GetRequiredService<ILogger<PostgreSqlChangeCaptureWorker>>(),
             provider.GetRequiredService<ILogger<PostgreSqlMaintenanceWorker>>(), provider.GetRequiredService<ILogger<PostgreSqlDirectDispatcher>>(),
-            provider.GetService<RelayerInstrumentation>()));
+            provider.GetService<RelayerInstrumentation>(), scopes: provider.GetRequiredService<IServiceScopeFactory>()));
         services.AddSingleton<IHostedService>(provider => provider.GetRequiredKeyedService<PostgreSqlChangeCaptureWorker>(name));
         return services;
     }

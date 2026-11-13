@@ -124,19 +124,39 @@ retries run first; recovery, direct and ordered dispatch share the persisted dea
 ordered head holds its lane until due, preserving send order. Failed-send diagnostics saturate at
 30 attempts so an extended outage cannot overflow the counter.
 
-All native send exceptions use this retry path, including permanent broker rejections such as an
-oversized message, invalid credentials or a missing destination. There is no automatic attempt or
-age ceiling and no transport-exception classifier. Monitor pending rows and repair the payload,
-credentials or destination: an unrepaired ordered head blocks later rows with that key indefinitely.
-A native batch failure backs off all claimed rows in that batch, including valid rows when the client
-does not identify which row failed; Relayer does not split the batch to isolate a rejected message.
-Unclassified local-handler errors and local configuration failures caught during dispatch also require
-operator repair. Classify permanent local-handler failures with `IFailureClassifier` to dead-letter them.
+Native send failures use the registered `IFailureClassifier`, resolved in a fresh DI scope after
+native client retries finish. `Retry` persists backoff, `DeadLetter` immediately takes the fenced
+poison transition, and `Discard` completes the fenced row without a dead copy. The classifier receives
+the original ID, stable message type, headers, attempt and scoped services; native receive/settlement
+features are unavailable because this is an outgoing send. Tenant rows restore their tenant context
+in that scope. Local-handler failures retain the consume pipeline's classification.
 
-Explicit local `FailureAction.DeadLetter` decisions take the poison transition immediately.
+Register typed native exception rules to distinguish permanent broker rejections from outages.
+For example, with Azure Service Bus:
+
+```csharp
+services.AddSingleton<IFailureClassifier>(new FailureClassifierBuilder()
+    .On<Azure.Messaging.ServiceBus.ServiceBusException>(FailureAction.DeadLetter,
+        static (error, _) => !error.IsTransient)
+    .Build());
+```
+
+This reuses the native client's transient signal; PostgreSQL does not depend on broker client packages.
+Unmatched exceptions fall back to `DefaultFailureClassifier`: contract failures dead-letter and other
+errors retry. Unclassified permanent rejections therefore still require operator repair; there is no
+automatic attempt or age ceiling for `Retry`. Configure permanent rules for your native clients and
+monitor pending rows. A retrying ordered head blocks later rows with its key until it succeeds or is
+classified permanent.
+
+After a native batch fails, dispatch tries each row once through native `SendAsync` while its claim
+remains live, then completes or classifies that row independently. This prevents one rejected row
+from repeatedly backing off healthy neighbours. A partially successful batch can produce duplicate
+sends during isolation, consistent with at-least-once delivery. Cancellation stops isolation; expired
+claims remain for recovery. Successful batches retain the existing batch send and completion path.
+
 Ordered preparation errors (missing transport, key or ordering capability) and explicit low-level
 `RecordFailureAsync` calls retain the positive `MaxDispatchAttempts` budget (default **10**).
-Configure that limit consistently on store and worker options; native send failures never exhaust it.
+Configure that limit consistently on store and worker options; classified retryable sends never exhaust it.
 Broker success followed by database completion failure does not consume an attempt.
 
 One fenced statement persists the final error and attempt count and copies the original identity,

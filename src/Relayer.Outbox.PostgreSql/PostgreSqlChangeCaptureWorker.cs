@@ -1,3 +1,4 @@
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Npgsql;
@@ -20,7 +21,7 @@ internal sealed partial class PostgreSqlChangeCaptureWorker : BackgroundService
     internal PostgreSqlChangeCaptureWorker(NpgsqlDataSource source, Func<LogicalReplicationConnection> connectionFactory,
         PostgreSqlChangeCaptureOptions options, IEnumerable<ITransport> transports,
         ILogger<PostgreSqlChangeCaptureWorker> logger, ILogger<PostgreSqlMaintenanceWorker> recoveryLogger,
-        ILogger<PostgreSqlDirectDispatcher> dispatchLogger, RelayerInstrumentation? instrumentation = null)
+        ILogger<PostgreSqlDirectDispatcher> dispatchLogger, RelayerInstrumentation? instrumentation = null, IServiceScopeFactory? scopes = null)
     {
         _source = source;
         _connectionFactory = connectionFactory;
@@ -28,7 +29,7 @@ internal sealed partial class PostgreSqlChangeCaptureWorker : BackgroundService
         _logger = logger;
         _schema = options.Schema ?? "public";
         _table = options.TablePrefix + "outbox";
-        _recovery = new(source, options.Validate(), transports, recoveryLogger, dispatchLogger, instrumentation);
+        _recovery = new(source, options.Validate(), transports, recoveryLogger, dispatchLogger, instrumentation, scopes: scopes);
     }
 
     public override async Task StartAsync(CancellationToken cancellationToken)

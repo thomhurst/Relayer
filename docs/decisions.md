@@ -83,6 +83,7 @@ To change a decision, add a new entry that supersedes it rather than editing his
 | [D70](#d70-mysql-send-failures-retain-durable-retry-eligibility) | MySQL send failures retain durable retry eligibility | Accepted |
 | [D71](#d71-sql-server-outbox-send-failures-retain-durable-eligibility) | SQL Server outbox send failures retain durable eligibility | Accepted |
 | [D72](#d72-handler-registration-belongs-to-the-consumer) | Handler registration belongs to the consumer | Accepted |
+| [D71](#d71-postgresql-retryable-outbox-sends-retain-durable-eligibility) | PostgreSQL retryable outbox sends retain durable eligibility | Accepted |
 
 ---
 
@@ -1702,7 +1703,7 @@ classification. See [SQL Server recovery](https://relayer.tomlonghurst.dev/docs/
 **Decision.** Generate `Handler<THandler>()` only for `IConsumerBuilder`. Remove the root builder overload and `AddHandlersFromThisAssembly()`. Applications explicitly select each handler inside its consumer callback. RLY003 points to that call. Source generation continues to discover contracts at compile time; it does not register discovered handlers automatically. Manual pipeline composers use descriptors registered by their consumer declaration.
 
 **Consequences.** One application call selects dispatch and registers DI, preserving explicit topology, typed native options, AOT safety and existing handler lifetimes. Existing applications move builder-level registrations into consumer callbacks. Dispatch and native broker behavior are unchanged, with no additional steady-state work or allocation.
-## D70. PostgreSQL retryable outbox sends retain durable eligibility
+## D71. PostgreSQL retryable outbox sends retain durable eligibility
 
 **Context.** Native sends already retry within their operation: Azure.Messaging.ServiceBus 7.21.0
 [`ServiceBusRetryPolicy.RunOperation`](https://github.com/Azure/azure-sdk-for-net/blob/Azure.Messaging.ServiceBus_7.21.0/sdk/servicebus/Azure.Messaging.ServiceBus/src/Primitives/ServiceBusRetryPolicy.cs)
@@ -1715,22 +1716,35 @@ PostgreSQL rows across worker replacement. Existing dispatch used its poison bud
 **Decision.** After a native send fails, reuse the fenced PostgreSQL mutation and `deliver_at`
 column to persist exponential delays from one second to five minutes. Do not add native send
 retry loops or replace broker retry policies. Retryable sends never enter the poison-budget
-transition; their diagnostic attempt counter saturates at 30. Explicit local dead-letter
-decisions retain immediate poison handling. Preparation failures and explicit low-level
+transition; their diagnostic attempt counter saturates at 30. Explicit permanent classifications
+retain immediate poison handling, and discard completes the fenced row without a dead copy. Preparation failures and explicit low-level
 RecordFailureAsync retain their existing attempt budget. Ordered heads retain their existing
 due-time lane barrier. No new schema or broker scheduling feature is introduced.
 
-**Consequences.** PostgreSQL outages recover automatically without manual redrive. Native transport
-exceptions are not classified here: every native send failure retries indefinitely, including permanent
-rejections such as oversized messages, authorization errors and missing destinations. Operators must
-monitor pending rows and repair the payload, destination or credentials; `MaxDispatchAttempts` does
-not bound these retries. A rejected ordered head blocks later rows for its key until repaired. A failed
-native batch backs off every claimed row in that batch; no per-row isolation is inferred from a batch
-exception. Local handlers that need poison isolation must classify permanent failures explicitly.
-Unclassified local errors and local configuration failures caught during dispatch also retry indefinitely
-and require operator repair. SQL Server and MySQL
-follow-ups are tracked independently under #646. The low-level store mutation contract remains
-unchanged; callers using it directly still own their failure classification.
+**Consequences.** PostgreSQL outages recover automatically without manual redrive. Native send
+failures reuse the registered `IFailureClassifier` in a fresh DI scope, with the original row identity,
+wire type, headers, attempt and tenant context. Local consume failures retain their existing classified
+action. The PostgreSQL package does not reference native broker packages: applications can use native
+signals such as Azure.Messaging.ServiceBus 7.21.0's
+[`ServiceBusException.IsTransient`](https://github.com/Azure/azure-sdk-for-net/blob/4e4c19469fe598b9f28a73d065514106985e7560/sdk/servicebus/Azure.Messaging.ServiceBus/src/Primitives/ServiceBusException.cs),
+verified from the pinned package's checksum-matched source. Unclassified native failures still use the
+existing default classifier, so non-contract errors retry indefinitely until repaired or covered by a
+permanent rule. `MaxDispatchAttempts` does not bound `Retry`; applications must configure native
+permanent-error rules and monitor pending rows. A retrying ordered head blocks its key until recovery.
+
+Existing native batch behavior was checked in ServiceBusSendTransport, KafkaProducerTransport,
+SqsSendTransport and RabbitMqNativeTransport.Send. SQS exposes partial failures in its native response;
+other native batches can reject before sending or partially send. `ITransport.SendBatchAsync` exposes
+one exception rather than a portable per-row receipt. After failure, use each existing native `SendAsync`
+once under its original live claim to isolate rows, and apply the same classifier per failed row. This
+is a bounded isolation pass, not a retry scheduler or replacement for native client retries. It may
+duplicate a row that the batch already sent, as allowed by at-least-once delivery. Successful batches
+are unchanged, and cancellation or known claim expiry stops isolation. No broker outcome is inferred
+from an aggregate exception and no native client API is reimplemented.
+
+Classifier contexts, scopes and the isolation pass exist only on failure; successful dispatch adds no
+work or allocation. SQL Server and MySQL follow-ups are tracked independently under #646. The low-level
+store mutation contract remains unchanged; callers using it directly own their failure classification.
 
 Preparation failures retain the existing diagnostic attempt count, including previous retryable sends.
 If routing becomes invalid after an extended outage, its first preparation failure can exhaust that
