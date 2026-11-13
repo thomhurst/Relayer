@@ -3,6 +3,7 @@ using Dekaf.Admin;
 using Dekaf.Consumer;
 using Dekaf.Protocol.Messages;
 using Microsoft.Extensions.Options;
+using Relayer.Transports;
 
 namespace Relayer.Kafka.Tests;
 
