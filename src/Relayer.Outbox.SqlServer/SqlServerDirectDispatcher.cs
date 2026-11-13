@@ -202,7 +202,7 @@ internal sealed class SqlServerDirectDispatcher : BackgroundService
                 catch (Exception error)
                 {
                     DirectDispatchLog.Failed(_logger, error);
-                    var retryable = _retrySendFailure?.Invoke(error) == true;
+                    var retryable = SqlServerSendFailure.IsRetryable(_retrySendFailure, error, _logger);
                     for (var i = 0; i < live; i++)
                     {
                         try

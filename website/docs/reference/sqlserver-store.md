@@ -267,6 +267,9 @@ RetrySendFailure = static error =>
     error is Azure.Messaging.ServiceBus.ServiceBusException { IsTransient: true }
 ```
 
+If the predicate throws, Relayer logs the classification error and records the original send failure
+against the poison budget.
+
 Only true opts into indefinite durable retries, with one-second exponential delays capped at five
 minutes. Classified sends remain eligible beyond `MaxDispatchAttempts`, including after worker
 replacement. Null (the default) or false preserves bounded poison handling for permanently rejected

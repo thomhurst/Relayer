@@ -154,7 +154,7 @@ internal sealed partial class SqlServerOrderedDispatcher : BackgroundService
                 }
                 catch (Exception error) when (!cancellationToken.IsCancellationRequested)
                 {
-                    var retryable = preparedForSend && _options.RetrySendFailure?.Invoke(error) == true;
+                    var retryable = preparedForSend && SqlServerSendFailure.IsRetryable(_options.RetrySendFailure, error, _logger);
                     var recorded = retryable
                         ? await _lane.RetryAsync(connection, transaction, claim, error.Message, cancellationToken).ConfigureAwait(false)
                         : await _lane.FailAsync(connection, transaction, claim, error.Message, cancellationToken).ConfigureAwait(false);

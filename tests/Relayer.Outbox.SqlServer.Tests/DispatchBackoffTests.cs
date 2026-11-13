@@ -64,21 +64,26 @@ public sealed class DispatchBackoffTests(SqlServerFixture database)
     }
 
     [Test]
-    [Arguments("direct")]
-    [Arguments("maintenance")]
-    [Arguments("ordered")]
-    public async Task Unclassified_native_rejection_exhausts_poison_budget(string mode)
+    [Arguments("direct", false)]
+    [Arguments("maintenance", false)]
+    [Arguments("ordered", false)]
+    [Arguments("direct", true)]
+    [Arguments("maintenance", true)]
+    [Arguments("ordered", true)]
+    public async Task Unclassified_native_rejection_exhausts_poison_budget(string mode, bool throwingClassifier)
     {
         var data = new StoreData(database, new()
         {
             TablePrefix = TestContext.Current!.Isolation.GetIsolatedName("rejected") + "_",
-            Lanes = 1, MaxDispatchAttempts = 2
+            Lanes = 1, MaxDispatchAttempts = 2,
+            RetrySendFailure = throwingClassifier ? static _ => throw new InvalidOperationException("classifier failed") : null
         });
         await data.Create();
         await data.Insert(Guid.CreateVersion7(), DateTimeOffset.UtcNow.AddDays(-1), mode == "ordered" ? 0 : null, orderedHeaders: true);
         var transport = new Transport();
         using var ordered = Ordered(data, transport);
         await Dispatch(mode, data, transport, ordered);
+        await Assert.That((await Read(data)).Error).IsEqualTo("broker offline");
         await Dispatch(mode, data, transport, ordered);
         if (mode == "ordered")
             await Assert.That((await Read(data)).Status).IsEqualTo("parked");
