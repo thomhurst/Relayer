@@ -28,6 +28,32 @@ public class RequestResponseTests
     private static readonly TimeSpan Limit = TimeSpan.FromSeconds(10);
 
     [Test]
+    public async Task Request_configuration_preserves_native_builders_and_composes_callbacks()
+    {
+        var services = new ServiceCollection();
+        services.AddRelayer(builder => builder.AddTransport<Options, Options, Options>("sink", transport =>
+            transport.Request<RpcRequest, RpcResponse>("requests", "replies", request =>
+            {
+                request.Send(route => route.Options.NativeSetting = "request-route")
+                    .Send(route => route.OrderingKey(message => message.Value));
+                request.Replies(consumer => consumer.Options.NativeSetting = "reply-group")
+                    .Replies(consumer => consumer.Concurrency(4));
+            })));
+        await using var provider = services.BuildServiceProvider();
+        var transport = provider.GetRequiredService<RelayerConfiguration>().Transports[0];
+        await Assert.That(transport.Routes.Count).IsEqualTo(1);
+        await Assert.That(transport.Consumers.Count).IsEqualTo(1);
+        var route = (RouteDefinition<RpcRequest, Options>)transport.Routes[0];
+        var replies = (ConsumerDefinition<Options>)transport.Consumers[0];
+        await Assert.That(route.Destination).IsEqualTo("requests");
+        await Assert.That(route.Options.NativeSetting).IsEqualTo("request-route");
+        await Assert.That(route.GetOrderingKeySelector<int>()!(new RpcRequest(7))).IsEqualTo(7);
+        await Assert.That(replies.Source).IsEqualTo("replies");
+        await Assert.That(replies.Options.NativeSetting).IsEqualTo("reply-group");
+        await Assert.That(replies.Concurrency).IsEqualTo(4);
+    }
+
+    [Test]
     public async Task Hosted_native_in_memory_pipelines_deliver_concurrent_correlated_replies()
     {
         using var host = new HostBuilder().ConfigureServices(services => services.AddRelayer(builder =>
@@ -35,7 +61,12 @@ public class RequestResponseTests
             builder.AddMessageTypesFromThisAssembly();
             builder.InMemory("local", transport =>
             {
-                transport.Request<RpcRequest, RpcResponse>("requests", "replies", configureReplies: c => c.Concurrency(4));
+                transport.Request<RpcRequest, RpcResponse>("requests", "replies", request =>
+                {
+                    request.Options = new() { MaxPendingRequests = 128 };
+                    request.Send(route => route.SendOptions = new() { Source = "/configured-request" });
+                    request.Replies(c => c.Concurrency(4));
+                });
                 transport.Send<RpcResponse>("replies");
                 transport.Consume("requests", c => c.Handler<RequestEchoHandler>().Concurrency(4));
             });
@@ -203,7 +234,7 @@ public class RequestResponseTests
     {
         await Assert.That(() => new ServiceCollection().AddRelayer(builder =>
             builder.InMemory("local", transport => transport.Request<RpcRequest, RpcResponse>("requests", "replies",
-                new() { MaxPendingRequests = capacity })))).Throws<ArgumentOutOfRangeException>();
+                request => request.Options = new() { MaxPendingRequests = capacity })))).Throws<ArgumentOutOfRangeException>();
     }
 
     [Test]
@@ -217,7 +248,7 @@ public class RequestResponseTests
             builder.InMemory("local", transport =>
             {
                 transport.Request<RpcRequest, RpcResponse>("requests", "replies",
-                    configureReplies: consumer => { if (!shared) consumer.Batch(2, TimeSpan.FromSeconds(1)); });
+                    request => request.Replies(consumer => { if (!shared) consumer.Batch(2, TimeSpan.FromSeconds(1)); }));
                 if (shared) transport.Consume("replies", consumer => consumer.Handler<RequestEchoHandler>());
             });
         })).Build();
@@ -234,15 +265,50 @@ public class RequestResponseTests
             builder.AddMessageTypesFromThisAssembly();
             builder.InMemory("local", transport =>
             {
-                transport.SendDefaults = new()
+                transport.Request<RpcRequest, RpcResponse>("requests", "replies", request => request.Send(route => route.SendOptions = new()
                 {
                     EnvelopeMode = outbox ? MessageEnvelopeMode.CloudEvents : MessageEnvelopeMode.Raw,
                     TransactionRequirement = outbox ? SendTransactionRequirement.Outbox : SendTransactionRequirement.None,
-                };
-                transport.Request<RpcRequest, RpcResponse>("requests", "replies");
+                }));
             });
         })).Build();
         await Assert.That(async () => await host.StartAsync()).Throws<Microsoft.Extensions.Options.OptionsValidationException>();
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Reply_omission_uses_context_token_but_explicit_None_is_uncancelable(bool explicitNone)
+    {
+        await using var fixture = new Fixture();
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+        using var context = fixture.ReplyContext(cancellation.Token);
+        if (explicitNone)
+        {
+            await context.ReplyAsync(new RpcResponse(7), CancellationToken.None);
+            await fixture.Next();
+        }
+        else
+        {
+            var error = await Assert.That(async () => await context.ReplyAsync(new RpcResponse(7)))
+                .Throws<OperationCanceledException>();
+            await Assert.That(error!.CancellationToken).IsEqualTo(cancellation.Token);
+            await Assert.That(fixture.Transport.Sent.Reader.TryRead(out _)).IsFalse();
+        }
+    }
+
+    [Test]
+    public async Task Reply_preserves_an_explicit_cancellation_token()
+    {
+        await using var fixture = new Fixture();
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+        using var context = fixture.ReplyContext(CancellationToken.None);
+        var error = await Assert.That(async () => await context.ReplyAsync(new RpcResponse(7), cancellation.Token))
+            .Throws<OperationCanceledException>();
+        await Assert.That(error!.CancellationToken).IsEqualTo(cancellation.Token);
+        await Assert.That(fixture.Transport.Sent.Reader.TryRead(out _)).IsFalse();
     }
 
     [Test]
@@ -313,7 +379,7 @@ public class RequestResponseTests
                 builder.AddTransport<Options, Options, Options>("sink", transport =>
                 {
                     transport.SendDefaults = new() { HeaderNames = Names };
-                    transport.Request<RpcRequest, RpcResponse>("requests", "replies", new() { MaxPendingRequests = 1, TimeProvider = clock ?? TimeProvider.System });
+                    transport.Request<RpcRequest, RpcResponse>("requests", "replies", request => request.Options = new() { MaxPendingRequests = 1, TimeProvider = clock ?? TimeProvider.System });
                     transport.Send<RpcResponse>("replies");
                 });
             });
@@ -322,6 +388,18 @@ public class RequestResponseTests
             Client = _scope.ServiceProvider.GetRequiredService<IRequestClient<RpcRequest, RpcResponse>>();
             _replies = new(Pipeline(new ReplyDescriptor<RpcRequest, RpcResponse>()), Names);
         }
+        internal DefaultMessageContext ReplyContext(CancellationToken cancellationToken)
+        {
+            var headers = new Dictionary<string, WireString>
+            {
+                [Names.ReplyTo] = new("replies"), [Names.CorrelationId] = new("test-correlation"),
+            };
+            var context = Pipeline(new EchoDescriptor(headers, false)).RentContext(
+                Message(new RpcRequest(7), headers, "tests.rpc.request"), cancellationToken);
+            context.SetServices(_scope.ServiceProvider);
+            return context;
+        }
+
         internal ConsumePipeline Pipeline(HandlerDescriptor descriptor, bool durable = false)
         {
             var scopes = _provider.GetRequiredService<IServiceScopeFactory>();
@@ -358,7 +436,7 @@ public class RequestResponseTests
     {
         public override bool TryGetValue(string name, out WireString value) => values.TryGetValue(name, out value);
     }
-    private sealed class Options;
+    private sealed class Options { public string? NativeSetting { get; set; } }
     private sealed class Receiver : ServiceBusReceiver;
     private sealed record Incoming(ReadOnlySequence<byte> Body, Dictionary<string, WireString> Headers);
     private readonly struct Binding : IMessageBinding<Incoming>

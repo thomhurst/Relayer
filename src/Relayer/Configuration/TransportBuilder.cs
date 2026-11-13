@@ -65,24 +65,25 @@ public sealed class TransportBuilder<TTransportOptions, TRouteOptions, TConsumer
     /// <summary>Declares a request send route and a dedicated, process-local reply consumer.</summary>
     /// <remarks>Give each requesting process its own reply endpoint. The responder declares an ordinary Send route to that endpoint.</remarks>
     public TransportBuilder<TTransportOptions, TRouteOptions, TConsumerOptions> Request<TRequest, TResponse>(
-        string destination, string replyAddress, RequestOptions? options = null,
-        Action<ConsumerBuilder<TConsumerOptions>>? configureReplies = null,
-        Action<RouteBuilder<TRequest, TRouteOptions>>? configureRequest = null)
+        string destination, string replyAddress,
+        Action<RequestBuilder<TRequest, TRouteOptions, TConsumerOptions>>? configure = null)
     {
         EnsureMutable();
         ArgumentException.ThrowIfNullOrWhiteSpace(destination);
         ArgumentException.ThrowIfNullOrWhiteSpace(replyAddress);
-        options ??= new();
+        var request = new RequestBuilder<TRequest, TRouteOptions, TConsumerOptions>();
+        configure?.Invoke(request);
+        var options = request.Options;
         options.Validate();
         if (_services.Any(service => service.ServiceType == typeof(IRequestClient<TRequest, TResponse>)))
             throw new InvalidOperationException("This request/response pair already has a registration. Declare it once.");
         _services.AddSingleton(new RequestReplies<TRequest, TResponse>(Name, replyAddress, options));
         _services.AddScoped<IRequestClient<TRequest, TResponse>, RequestClient<TRequest, TResponse>>();
         _services.AddSingleton<IRequestRegistration, RequestRegistration<TRequest, TResponse>>();
-        Send(destination, configureRequest);
+        Send(destination, request.ConfigureSend);
         Consume(replyAddress, consumer =>
         {
-            configureReplies?.Invoke(consumer);
+            request.ConfigureReplies?.Invoke(consumer);
             ((IConsumerBuilder)consumer).AddHandler(new ReplyDescriptor<TRequest, TResponse>());
         });
         return this;
