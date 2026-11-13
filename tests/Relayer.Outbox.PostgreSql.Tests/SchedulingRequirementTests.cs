@@ -128,8 +128,7 @@ public class SchedulingRequirementTests
         var services = new ServiceCollection().AddLogging();
         if (ef) services.AddRelayerEntityFrameworkCoreOutbox();
         else services.AddRelayerPostgreSqlOutbox();
-        // Commit-only dispatch is insufficient: it intentionally skips future rows.
-        services.AddRelayerPostgreSqlDirectDispatch("direct", source);
+        // Enlistment requires due-row recovery even when no direct dispatcher is installed.
         if (worker) services.AddRelayerPostgreSqlMaintenance("due", source,
             new PostgreSqlMaintenanceOptions { TablePrefix = mismatch ? "other_" : "relayer_" });
         services.AddSingleton<ITransport>(new Transport());
