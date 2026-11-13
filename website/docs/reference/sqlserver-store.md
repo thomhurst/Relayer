@@ -194,7 +194,7 @@ No activity or scoped service travels with the queued buffers. Native endpoint c
 `SqlBatch` groups fenced claim and completion statements through the native client. Claims use fresh
 tokens, and completion deletes only rows still owned by that live token. An expired claim leaves the
 row available for later recovery, even if the broker accepted the message; delivery remains at least once.
-Native send failures record the error, increment a diagnostic attempt count (saturating at 30), and
+Explicitly retryable native send failures record the error, increment a diagnostic attempt count (saturating at 30), and
 release live claims with a durable `deliver_at` deadline. Retry delays start at one second, double after
 each failed send and stop growing at five minutes. Native clients still own retries within each send;
 the dispatcher adds no in-process send retry loop. A completion failure after a successful send retains
@@ -255,13 +255,24 @@ latency. These workers poll; they do not enable Service Broker, query notificati
 
 Malformed encoded headers are transferred immediately to `outbox_dead`, with the raw payload and an
 actionable `last_error`. Recovery records missing transports and invalid endpoint capabilities as failed
-attempts without stalling unrelated groups. These preparation failures use `MaxDispatchAttempts`
-(default 10). Native send exceptions are treated as retryable: direct and recovered sends persist the
-same bounded exponential deadline and remain eligible for automatic recovery even after more than
-`MaxDispatchAttempts` failures. Broker outages therefore never move healthy rows to dead storage.
-Unordered rows that exhaust the preparation budget leave the outbox. Explicit low-level
-`RecordFailureAsync` calls retain the poison transition; callers of that API own permanent-failure
-classification. No broker exception types are guessed to be permanent. Completion errors after broker
+attempts without stalling unrelated groups. Preparation and unclassified native send failures use
+`MaxDispatchAttempts` (default 10). Unordered rows that exhaust this budget leave the outbox.
+
+Set `RetrySendFailure` on `SqlServerOutboxOptions`, `SqlServerMaintenanceOptions` and
+`SqlServerOrderedDispatchOptions` to the same predicate to identify known retryable native failures.
+For example, with Azure Service Bus use:
+
+```csharp
+RetrySendFailure = static error =>
+    error is Azure.Messaging.ServiceBus.ServiceBusException { IsTransient: true }
+```
+
+Only true opts into indefinite durable retries, with one-second exponential delays capped at five
+minutes. Classified sends remain eligible beyond `MaxDispatchAttempts`, including after worker
+replacement. Null (the default) or false preserves bounded poison handling for permanently rejected
+or unclassified sends. Use native exception information; do not classify permanent rejections as retryable.
+A failed native batch applies the same classification to all its claims because delivery may be partial.
+Explicit low-level `RecordFailureAsync` calls retain the poison transition. Completion errors after broker
 success do not consume send attempts.
 
 Each cleanup pass deletes at most `BatchSize` expired dead rows and `BatchSize` expired inbox keys,
@@ -326,9 +337,10 @@ otherwise they expire. A disconnected or cancellation-insensitive native send ma
 remains at least once. Up to `BatchSize` accepted sends can replay after a rollback.
 
 Lanes read by database `seq`, including scheduled and claimed heads. Future or live-claimed heads block
-the lane; the worker never skips them. Native send failures persist the same one-second-to-five-minute
+the lane; the worker never skips them. Explicitly retryable native send failures persist the same one-second-to-five-minute
 backoff as unordered dispatch. The head holds the lane until its deadline, then retries automatically;
-broker outages never park its key. Exhausting `MaxDispatchAttempts` on preparation failures parks the
+classified broker outages never park its key. Exhausting `MaxDispatchAttempts` on preparation or
+unclassified send failures parks the
 original row, preserving its sequence and error. Later rows with exactly the same key remain behind that barrier, while other keys
 in the lane can proceed. SQL Server dead-letter inspection/redrive/purge APIs remain planned; operate on
 parked rows only with application-owned tooling that preserves the row and sequence. The worker records

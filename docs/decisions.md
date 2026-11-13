@@ -1676,13 +1676,17 @@ Server rows across worker replacement. Counting those send failures toward poiso
 broker outage require manual recovery of otherwise healthy messages.
 
 **Decision.** Reuse the existing fenced mutation and `deliver_at` column for one-second exponential
-backoff capped at five minutes after a native send fails. Retryable sends never enter the poison-budget
+backoff capped at five minutes after an explicitly retryable native send fails. Retryable sends never enter the poison-budget
 transition; their diagnostic attempt count saturates at 30. Preparation failures and explicit low-level
-`RecordFailureAsync` calls retain poison handling. No broker exception type is inferred to be permanent:
-the consume-only classifier requires a consume context and is not reused for outbox sends. Native
+`RecordFailureAsync` calls retain poison handling. Each dispatcher exposes an optional `RetrySendFailure`
+predicate over the native exception. Null (the default) or false keeps bounded `MaxDispatchAttempts`
+poison handling; only true opts into indefinite durable recovery. Applications reuse native exception
+classification (for example Service Bus `ServiceBusException.IsTransient`) and configure the same policy
+across direct, maintenance and ordered workers. No broker exception types are guessed. The consume-only
+classifier requires a consume context and is not reused for outbox sends. Native
 clients retain their in-operation retries; no extra in-process send loop or broker scheduler is added.
 
-**Consequences.** SQL Server outages recover automatically after the durable deadline, including after
+**Consequences.** Explicitly classified retryable sends recover automatically after the durable deadline, including after
 worker replacement. Ordered heads retain their existing due-time lane barrier. The schema and low-level
 store contract remain unchanged; callers using `RecordFailureAsync` directly still own permanent-failure
 classification. See [SQL Server recovery](https://relayer.tomlonghurst.dev/docs/reference/sqlserver-store#recovery-poison-rows-and-retention).

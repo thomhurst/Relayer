@@ -1,5 +1,6 @@
 using Microsoft.Data.SqlClient;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.DependencyInjection;
 using Relayer.Transports;
 
 namespace Relayer.Outbox.SqlServer.Tests;
@@ -15,7 +16,7 @@ public sealed class DispatchBackoffTests(SqlServerFixture database)
     {
         var data = new StoreData(database, new()
         {
-            TablePrefix = TestContext.Current!.Isolation.GetIsolatedName("backoff") + "_", Lanes = 1, MaxDispatchAttempts = 2
+            TablePrefix = TestContext.Current!.Isolation.GetIsolatedName("backoff") + "_", Lanes = 1, MaxDispatchAttempts = 2, RetrySendFailure = static error => error is IOException
         });
         await data.Create();
         var id = Guid.CreateVersion7();
@@ -60,6 +61,32 @@ public sealed class DispatchBackoffTests(SqlServerFixture database)
         await Assert.That(transport.Sent).IsEqualTo(1);
         await Assert.That(transport.LastDeliverAt).IsNull();
         await Assert.That(transport.LastBody).IsEquivalentTo(new byte[] { 0, 255, 1 });
+    }
+
+    [Test]
+    [Arguments("direct")]
+    [Arguments("maintenance")]
+    [Arguments("ordered")]
+    public async Task Unclassified_native_rejection_exhausts_poison_budget(string mode)
+    {
+        var data = new StoreData(database, new()
+        {
+            TablePrefix = TestContext.Current!.Isolation.GetIsolatedName("rejected") + "_",
+            Lanes = 1, MaxDispatchAttempts = 2
+        });
+        await data.Create();
+        await data.Insert(Guid.CreateVersion7(), DateTimeOffset.UtcNow.AddDays(-1), mode == "ordered" ? 0 : null, orderedHeaders: true);
+        var transport = new Transport();
+        using var ordered = Ordered(data, transport);
+        await Dispatch(mode, data, transport, ordered);
+        await Dispatch(mode, data, transport, ordered);
+        if (mode == "ordered")
+            await Assert.That((await Read(data)).Status).IsEqualTo("parked");
+        else
+        {
+            await Assert.That(await Count(data.Table)).IsEqualTo(0L);
+            await Assert.That(await Count(SqlServerOutboxSchema.DeadTable(data.Options))).IsEqualTo(1L);
+        }
     }
 
     [Test]
@@ -136,7 +163,7 @@ public sealed class DispatchBackoffTests(SqlServerFixture database)
     private string ConnectionString => new SqlConnectionStringBuilder(database.ConnectionString) { InitialCatalog = "master" }.ConnectionString;
 
     private SqlServerOrderedDispatcher Ordered(StoreData data, Transport transport) => new(ConnectionString,
-        new() { TablePrefix = data.Options.TablePrefix, Lanes = 1, MaxDispatchAttempts = 2 },
+        new() { TablePrefix = data.Options.TablePrefix, Lanes = 1, MaxDispatchAttempts = 2, RetrySendFailure = data.Options.RetrySendFailure },
         [transport], NullLogger<SqlServerOrderedDispatcher>.Instance);
 
     private async Task Dispatch(string mode, StoreData data, Transport transport, SqlServerOrderedDispatcher ordered)
@@ -145,15 +172,16 @@ public sealed class DispatchBackoffTests(SqlServerFixture database)
         if (mode == "maintenance")
         {
             using var worker = new SqlServerMaintenanceWorker(ConnectionString,
-                new() { TablePrefix = data.Options.TablePrefix, RecoveryDelay = TimeSpan.Zero, MaxDispatchAttempts = 2 },
+                new() { TablePrefix = data.Options.TablePrefix, RecoveryDelay = TimeSpan.Zero, MaxDispatchAttempts = 2, RetrySendFailure = data.Options.RetrySendFailure },
                 [transport], NullLogger<SqlServerMaintenanceWorker>.Instance);
             try { await worker.SweepAsync(); }
             finally { await worker.ReleaseAsync(); }
             return;
         }
         // Use the actual commit-notification queue and drain it before inspecting durable state.
-        using var direct = new SqlServerDirectDispatcher(ConnectionString, data.Options, new(), [transport],
-            NullLogger<SqlServerDirectDispatcher>.Instance);
+        await using var services = new ServiceCollection().AddLogging().AddSingleton<ITransport>(transport)
+            .AddRelayerSqlServerDirectDispatch("retry", ConnectionString, data.Options).BuildServiceProvider();
+        var direct = services.GetRequiredKeyedService<SqlServerDirectDispatcher>("retry");
         var records = new OutboxRecord[1];
         if (await data.Store().ReadPendingAsync(new(null, DateTimeOffset.MaxValue), records, default) == 1)
         {

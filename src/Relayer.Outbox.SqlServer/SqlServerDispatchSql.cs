@@ -4,6 +4,7 @@ internal static class SqlServerDispatchSql
 {
     // Native clients own retries within a send. Persist the next eligible time after they fail,
     // using the existing claim fence and due-time barrier rather than an in-process retry loop.
+    // Guard POWER itself: SQL may evaluate it before selecting the outer CASE branch.
     internal static string Retry(string table, string fenced, string now) => $"""
         UPDATE {table} SET attempts = CASE WHEN attempts < 30 THEN attempts + 1 ELSE 30 END,
             last_error = @error,

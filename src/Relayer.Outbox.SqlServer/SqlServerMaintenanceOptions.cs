@@ -7,8 +7,14 @@ public sealed class SqlServerMaintenanceOptions
     public string? Schema { get; init; }
     /// <summary>Table prefix, identical to every writer and dispatcher.</summary>
     public string TablePrefix { get; init; } = "relayer_";
-    /// <summary>Permanent preparation failures before a row is dead-lettered. Native sends retry durably. Must match other dispatchers for this store.</summary>
+    /// <summary>Unclassified send or preparation failures before a row is dead-lettered. Explicitly retryable sends retry durably. Must match other dispatchers for this store.</summary>
     public int MaxDispatchAttempts { get; init; } = 10;
+
+    /// <summary>Returns true for send failures that should retry indefinitely with durable backoff.
+    /// Null preserves bounded poison handling for all send failures. Use native exception classification
+    /// and configure the same policy on every dispatcher for this store.</summary>
+    public Func<Exception, bool>? RetrySendFailure { get; init; }
+
     /// <summary>Maximum rows scanned or deleted per pass.</summary>
     public int BatchSize { get; init; } = 100;
     /// <summary>Minimum row age before recovery can dispatch it.</summary>
@@ -39,7 +45,7 @@ public sealed class SqlServerMaintenanceOptions
         if (InboxRetention is { } inbox) ValidateDuration(inbox, nameof(InboxRetention));
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(MaxDispatchAttempts);
         ArgumentNullException.ThrowIfNull(TablePrefix);
-        var store = new SqlServerOutboxOptions { Schema = Schema, TablePrefix = TablePrefix, MaxDispatchAttempts = MaxDispatchAttempts };
+        var store = new SqlServerOutboxOptions { Schema = Schema, TablePrefix = TablePrefix, MaxDispatchAttempts = MaxDispatchAttempts, RetrySendFailure = RetrySendFailure };
         _ = SqlServerOutboxSchema.CreateScript(store);
         return store;
     }

@@ -154,12 +154,13 @@ internal sealed partial class SqlServerOrderedDispatcher : BackgroundService
                 }
                 catch (Exception error) when (!cancellationToken.IsCancellationRequested)
                 {
-                    var recorded = preparedForSend
+                    var retryable = preparedForSend && _options.RetrySendFailure?.Invoke(error) == true;
+                    var recorded = retryable
                         ? await _lane.RetryAsync(connection, transaction, claim, error.Message, cancellationToken).ConfigureAwait(false)
                         : await _lane.FailAsync(connection, transaction, claim, error.Message, cancellationToken).ConfigureAwait(false);
                     if (!recorded)
                         throw new InvalidOperationException("Ordered outbox claim expired while recording a dispatch failure.", error);
-                    poisoned = !preparedForSend && row.Attempts + 1 >= _options.MaxDispatchAttempts;
+                    poisoned = !retryable && row.Attempts + 1 >= _options.MaxDispatchAttempts;
                     DispatchFailed(_logger, error);
                     break;
                 }
