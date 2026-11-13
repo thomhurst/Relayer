@@ -42,6 +42,44 @@ public class HarnessTests
     }
 
     [Test]
+    public async Task Typed_logical_reads_distinguish_payloads_and_tombstones_with_the_same_identity()
+    {
+        var services = new ServiceCollection();
+        services.AddRelayer(builder =>
+        {
+            builder.AddMessageTypesFromThisAssembly();
+            builder.UseSendMiddleware<LogicalSendOnly>();
+            builder.InMemory("logical", transport =>
+            {
+                transport.Send<Probe>("probes");
+                transport.Options.Configure(options => options.Endpoints["probes"] = new()
+                {
+                    Capabilities = new() { Tombstones = true },
+                });
+            });
+        });
+        services.AddRelayerHarness();
+        await using var provider = services.BuildServiceProvider();
+        using var scope = provider.CreateScope();
+        var sender = scope.ServiceProvider.GetRequiredService<ISender>();
+        var payload = new Probe(42);
+        var deletion = Tombstone.For<Probe>("key");
+        await sender.SendAsync(payload);
+        await sender.SendAsync(deletion);
+        var harness = provider.GetRequiredService<RelayerHarness>();
+        await Assert.That(harness.GetSent<Probe>().Single()).IsSameReferenceAs(payload);
+        await Assert.That(harness.GetSent<Tombstone<Probe>>().Single()).IsEqualTo(deletion);
+        await Assert.That(harness.Read<Tombstone<Probe>>(harness.Sent[1])).IsEqualTo(deletion);
+        await Assert.That(() => harness.Read<Probe>(harness.Sent[1])).Throws<InvalidOperationException>();
+        await Assert.That(() => harness.Read<Tombstone<Probe>>(harness.Sent[0])).Throws<InvalidOperationException>();
+    }
+
+    public sealed class LogicalSendOnly : ISendMiddleware
+    {
+        public ValueTask InvokeAsync(SendContext context, SendDelegate next) => default;
+    }
+
+    [Test]
     public async Task Typed_queries_skip_raw_and_other_version_bodies_before_deserialization()
     {
         await using var fixture = await Fixture.Create();

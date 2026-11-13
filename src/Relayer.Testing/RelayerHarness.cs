@@ -78,7 +78,8 @@ public sealed class RelayerHarness : ISendMiddleware, IRelayerObserver
         var identity = GetIdentity<TMessage>();
         var messages = new List<TMessage>();
         foreach (var observation in observations)
-            if (string.Equals(observation.WireType, identity, StringComparison.Ordinal))
+            if (string.Equals(observation.WireType, identity, StringComparison.Ordinal)
+                && (observation.Message is null || observation.Message is TMessage))
                 messages.Add(ReadCore<TMessage>(observation));
         return messages.ToArray();
     }
@@ -86,6 +87,8 @@ public sealed class RelayerHarness : ISendMiddleware, IRelayerObserver
     private TMessage ReadCore<TMessage>(HarnessMessage observation)
     {
         if (observation.Message is TMessage message) return message;
+        if (observation.Message is not null)
+            throw new InvalidOperationException($"The logical observation contains '{observation.Message.GetType()}', not '{typeof(TMessage)}'.");
         var serializer = observation.TransportName is { } name
             ? _services!.GetMessageSerializer(name)
             : _services!.GetRequiredService<IMessageSerializer>();
