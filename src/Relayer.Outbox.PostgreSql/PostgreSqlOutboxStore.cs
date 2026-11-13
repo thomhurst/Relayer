@@ -19,6 +19,11 @@ public sealed class PostgreSqlOutboxStore : IOutboxStore
     private readonly string _read;
     private readonly string _claim;
     private readonly string _claimBatch;
+    private readonly string _claimDirectBatch;
+    private readonly string _completeDirectBatch;
+    private readonly string _failDirect;
+    private readonly string _retryDirect;
+    private readonly string _failDirectImmediately;
     private readonly string _renew;
     private readonly string _complete;
     private readonly string _completeInTransaction;
@@ -47,26 +52,39 @@ public sealed class PostgreSqlOutboxStore : IOutboxStore
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(options.MaxDispatchAttempts);
         var dead = PostgreSqlOutboxSchema.QuoteIdentifier(options.Schema ?? "public") + "." +
             PostgreSqlOutboxSchema.QuoteIdentifier(options.TablePrefix + "outbox_dead");
-        var eligible = "status = 'pending' AND (deliver_at IS NULL OR deliver_at <= @now) AND (claim_expires_at IS NULL OR claim_expires_at <= @now)";
-        var fenced = "id = @id AND claim_token = @token AND claim_expires_at > @now";
+        static string Eligible(string now) => $"status = 'pending' AND (deliver_at IS NULL OR deliver_at <= {now}) AND (claim_expires_at IS NULL OR claim_expires_at <= {now})";
+        static string Fenced(string now) => $"id = @id AND claim_token = @token AND claim_expires_at > {now}";
+        var eligible = Eligible("@now");
+        var fenced = Fenced("@now");
         _read = $"SELECT id, transport, message_type, destination, body, headers, ordering_key, deliver_at, created_at, lane, attempts, last_error, tenant_id, seq FROM {table} WHERE {eligible} AND lane IS NOT DISTINCT FROM @lane AND (@after IS NULL OR id > @after) ORDER BY id LIMIT @limit";
         _claim = $"UPDATE {table} SET claim_token = @token, claim_expires_at = @expires WHERE id = @id AND {eligible} RETURNING true";
-        _claimBatch = $"UPDATE {table} AS row SET claim_token = claims.token, claim_expires_at = @expires FROM unnest(@ids, @tokens) WITH ORDINALITY AS claims(id, token, ordinal) WHERE row.id = claims.id AND {eligible} AND lane IS NULL RETURNING claims.ordinal";
+        string ClaimBatch(string now, string expires) => $"UPDATE {table} AS row SET claim_token = claims.token, claim_expires_at = {expires} FROM unnest(@ids, @tokens) WITH ORDINALITY AS claims(id, token, ordinal) WHERE row.id = claims.id AND {Eligible(now)} AND lane IS NULL RETURNING claims.ordinal";
+        _claimBatch = ClaimBatch("@now", "@expires");
+        _claimDirectBatch = ClaimBatch("clock_timestamp()", "clock_timestamp() + @duration");
         _renew = $"UPDATE {table} SET claim_expires_at = GREATEST(claim_expires_at, @expires) WHERE {fenced} RETURNING true";
         _complete = $"DELETE FROM {table} WHERE {fenced} RETURNING true";
         _completeInTransaction = $"DELETE FROM {table} WHERE id = @id AND claim_token = @token AND claim_expires_at > clock_timestamp() RETURNING true";
-        _completeBatch = $"WITH deleted AS (DELETE FROM {table} AS row USING unnest(@ids, @tokens) AS claims(id, token) WHERE row.id = claims.id AND row.claim_token = claims.token AND row.claim_expires_at > @now RETURNING row.id) SELECT count(*) FROM deleted";
+        string CompleteBatchDelete(string now) => $"DELETE FROM {table} AS row USING unnest(@ids, @tokens) AS claims(id, token) WHERE row.id = claims.id AND row.claim_token = claims.token AND row.claim_expires_at > {now}";
+        _completeBatch = $"WITH deleted AS ({CompleteBatchDelete("@now")} RETURNING row.id) SELECT count(*) FROM deleted";
+        _completeDirectBatch = $"WITH deleted AS ({CompleteBatchDelete("clock_timestamp()")} RETURNING row.id) SELECT count(*) FROM deleted";
         if (options.RetainSentMessages)
         {
             var sent = PostgreSqlOutboxSchema.QuoteIdentifier(options.Schema ?? "public") + "." +
                 PostgreSqlOutboxSchema.QuoteIdentifier(options.TablePrefix + "outbox_sent");
             _completeInTransaction = PostgreSqlSentSql.Complete($"DELETE FROM {table} AS row WHERE id = @id AND claim_token = @token AND claim_expires_at > clock_timestamp()", sent, "clock_timestamp()", false);
             _complete = PostgreSqlSentSql.Complete($"DELETE FROM {table} AS row WHERE {fenced}", sent, "@now", false);
-            _completeBatch = PostgreSqlSentSql.Complete($"DELETE FROM {table} AS row USING unnest(@ids, @tokens) AS claims(id, token) WHERE row.id = claims.id AND row.claim_token = claims.token AND row.claim_expires_at > @now", sent, "@now", true);
+            _completeBatch = PostgreSqlSentSql.Complete(CompleteBatchDelete("@now"), sent, "@now", true);
+            _completeDirectBatch = PostgreSqlSentSql.Complete(CompleteBatchDelete("clock_timestamp()"), sent, "clock_timestamp()", true);
         }
         _retry = PostgreSqlPoisonSql.Retry(table, fenced, "@now");
         _fail = PostgreSqlPoisonSql.Failure(table, dead, fenced, options.MaxDispatchAttempts);
         _failImmediately = PostgreSqlPoisonSql.Failure(table, dead, fenced, 1);
+        // Internal dispatch follows the same database clock as maintenance and ordered lanes.
+        // Public explicit-time operations retain their caller-controlled clock contract.
+        var directFence = Fenced("clock_timestamp()");
+        _failDirect = PostgreSqlPoisonSql.Failure(table, dead, directFence, options.MaxDispatchAttempts);
+        _retryDirect = PostgreSqlPoisonSql.Retry(table, directFence, "clock_timestamp()");
+        _failDirectImmediately = PostgreSqlPoisonSql.Failure(table, dead, directFence, 1);
         _count = $"SELECT count(*) FROM {table} WHERE {eligible}";
     }
 
@@ -120,20 +138,34 @@ public sealed class PostgreSqlOutboxStore : IOutboxStore
         return _mutation.Start(command, cancellationToken);
     }
 
-    // Direct dispatch claims one native group in one statement. Returned flags refer to input positions,
-    // regardless of PostgreSQL's result order; live competing claims and ineligible rows stay untouched.
+    // Returned flags refer to input positions, regardless of PostgreSQL's result order.
+    internal ValueTask ClaimBatchAsync(ReadOnlyMemory<OutboxClaim> claims, Memory<bool> claimed,
+        DateTimeOffset now, DateTimeOffset expiresAt, CancellationToken cancellationToken)
+    {
+        foreach (var claim in claims.Span) Validate(claim, now, expiresAt);
+        return ClaimBatchCoreAsync(claims, claimed, now, expiresAt, null, cancellationToken);
+    }
+
+    internal ValueTask ClaimDirectBatchAsync(ReadOnlyMemory<OutboxClaim> claims, Memory<bool> claimed,
+        TimeSpan duration, CancellationToken cancellationToken)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(duration, TimeSpan.Zero);
+        foreach (var claim in claims.Span) Validate(claim);
+        return ClaimBatchCoreAsync(claims, claimed, null, default, duration, cancellationToken);
+    }
+
     [RuntimeAsyncMethodGeneration(false)]
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
-    internal async ValueTask ClaimBatchAsync(ReadOnlyMemory<OutboxClaim> claims, Memory<bool> claimed,
-        DateTimeOffset now, DateTimeOffset expiresAt, CancellationToken cancellationToken)
+    private async ValueTask ClaimBatchCoreAsync(ReadOnlyMemory<OutboxClaim> claims, Memory<bool> claimed,
+        DateTimeOffset? now, DateTimeOffset expiresAt, TimeSpan? duration, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
         if (claimed.Length != claims.Length) throw new ArgumentException("One result slot is required per claim.", nameof(claimed));
-        foreach (var claim in claims.Span) Validate(claim, now, expiresAt);
         claimed.Span.Clear();
         if (claims.IsEmpty) return;
-        using var command = CreateBatchMutation(_claimBatch, claims, now);
-        Add(command, "expires", NpgsqlDbType.TimestampTz, expiresAt.ToUniversalTime());
+        using var command = CreateBatchMutation(duration.HasValue ? _claimDirectBatch : _claimBatch, claims, now);
+        if (duration is { } claimDuration) Add(command, "duration", NpgsqlDbType.Interval, claimDuration);
+        else Add(command, "expires", NpgsqlDbType.TimestampTz, expiresAt.ToUniversalTime());
         await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
             claimed.Span[(int)reader.GetInt64(0) - 1] = true;
@@ -189,7 +221,15 @@ public sealed class PostgreSqlOutboxStore : IOutboxStore
         return _completedCount.Start(CreateBatchMutation(_completeBatch, claims, now), cancellationToken);
     }
 
-    private NpgsqlCommand CreateBatchMutation(string sql, ReadOnlyMemory<OutboxClaim> claims, DateTimeOffset now)
+    internal ValueTask<long> CompleteDirectBatchAsync(ReadOnlyMemory<OutboxClaim> claims, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        if (claims.IsEmpty) return new(0L);
+        foreach (var claim in claims.Span) Validate(claim);
+        return _completedCount.Start(CreateBatchMutation(_completeDirectBatch, claims, null), cancellationToken);
+    }
+
+    private NpgsqlCommand CreateBatchMutation(string sql, ReadOnlyMemory<OutboxClaim> claims, DateTimeOffset? now)
     {
         _batchIds.Clear();
         _batchTokens.Clear();
@@ -201,7 +241,7 @@ public sealed class PostgreSqlOutboxStore : IOutboxStore
         var command = CreateCommand(sql);
         Add(command, "ids", NpgsqlDbType.Array | NpgsqlDbType.Uuid, _batchIds);
         Add(command, "tokens", NpgsqlDbType.Array | NpgsqlDbType.Uuid, _batchTokens);
-        Add(command, "now", NpgsqlDbType.TimestampTz, now.ToUniversalTime());
+        if (now is { } timestamp) Add(command, "now", NpgsqlDbType.TimestampTz, timestamp.ToUniversalTime());
         return command;
     }
 
@@ -212,12 +252,15 @@ public sealed class PostgreSqlOutboxStore : IOutboxStore
         CancellationToken cancellationToken)
         => await RecordDispatchFailureAsync(claim, error, now, cancellationToken).ConfigureAwait(false) != 0;
 
-    internal ValueTask<int> RecordDispatchFailureAsync(OutboxClaim claim, string error, DateTimeOffset now,
+    internal ValueTask<int> RecordDispatchFailureAsync(OutboxClaim claim, string error, DateTimeOffset? now,
         CancellationToken cancellationToken, bool permanent = false, bool retryable = false)
     {
         Validate(claim);
         ArgumentNullException.ThrowIfNull(error);
-        var command = CreateMutation(permanent ? _failImmediately : retryable ? _retry : _fail, claim, now);
+        var sql = now.HasValue
+            ? permanent ? _failImmediately : retryable ? _retry : _fail
+            : permanent ? _failDirectImmediately : retryable ? _retryDirect : _failDirect;
+        var command = CreateMutation(sql, claim, now);
         Add(command, "error", NpgsqlDbType.Text, error);
         return _failure.Start(command, cancellationToken);
     }
@@ -241,12 +284,12 @@ public sealed class PostgreSqlOutboxStore : IOutboxStore
         ? new NpgsqlCommand(sql, connection, _dispatchTransaction)
         : _dataSource.CreateCommand(sql);
 
-    private NpgsqlCommand CreateMutation(string sql, OutboxClaim claim, DateTimeOffset now)
+    private NpgsqlCommand CreateMutation(string sql, OutboxClaim claim, DateTimeOffset? now)
     {
         var command = CreateCommand(sql);
         Add(command, "id", NpgsqlDbType.Uuid, claim.MessageId);
         Add(command, "token", NpgsqlDbType.Uuid, claim.Token);
-        Add(command, "now", NpgsqlDbType.TimestampTz, now.ToUniversalTime());
+        if (now is { } timestamp) Add(command, "now", NpgsqlDbType.TimestampTz, timestamp.ToUniversalTime());
         return command;
     }
 
