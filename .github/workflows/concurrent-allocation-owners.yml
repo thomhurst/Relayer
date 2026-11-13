@@ -43,14 +43,23 @@ jobs:
           cmake --build .artifacts/exact-profiler > results/native-build.log 2>&1
           python3 - <<'PYTHON'
           import json
+          import re
+          import shutil
+          import subprocess
           from pathlib import Path
           path = Path('tools/FrozenAllocationProfiler/Fixture/bin/Release/net10.0/Fixture.runtimeconfig.json')
           config = json.loads(path.read_text())
-          config['runtimeOptions']['framework']['version'] = '11.0.0'
+          runtimes = subprocess.check_output(['dotnet', '--list-runtimes'], text=True)
+          matches = re.findall(r'^Microsoft.NETCore.App (11\.\S+) \[(.+)\]$', runtimes, re.MULTILINE)
+          if not matches:
+              raise RuntimeError('No installed .NET 11 runtime; see results/runtime.txt')
+          version, root = matches[-1]
+          Path('results/selected-runtime.txt').write_text(version + '\n')
+          config['runtimeOptions']['framework']['version'] = version
           config['runtimeOptions']['rollForward'] = 'Disable'
           path.write_text(json.dumps(config, indent=2) + '\n')
+          shutil.copytree(Path(root) / version, 'results/runtime-binaries')
           PYTHON
-          cp -a "$DOTNET_ROOT/shared/Microsoft.NETCore.App/11.0.0" results/runtime-binaries
           find tests/Relayer.Tests/bin/Release -type f -exec sha256sum {} + > results/test-inputs-before.sha256
       - name: Validate known-type callback counts
         env:
