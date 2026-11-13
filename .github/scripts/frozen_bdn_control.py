@@ -238,12 +238,15 @@ def main():
                     # The native logger includes Broker signal lines (AfterAll),
                     # which ExecuteResult intentionally omits from PrefixedLines.
                     text = (args.output / f"{index}-{side}-native.log").read_text()
-                    if args.case == "scoped-dispatch":
-                        expected = f"--benchmarkName {benchmark} --job Default --benchmarkId {runners[side][1]}"
-                        if (receipt.get("benchmarkArguments") != expected
-                                or receipt.get("selectedCase") != args.case
-                                or receipt.get("operationsPerInvoke") != operations):
-                            raise ValueError("Native executor benchmark identity differs from selected original runner")
+                    # Independently bind the parent's receipt to the selected original
+                    # runner, including the parameterized ScopeOnly benchmark name.
+                    name_argument = (f'"{benchmark}(ScopedHandler: True)"'
+                                     if args.case == "scope-only" else benchmark)
+                    expected = f"--benchmarkName {name_argument} --job Default --benchmarkId {runners[side][1]}"
+                    if (receipt.get("benchmarkArguments") != expected
+                            or receipt.get("selectedCase") != args.case
+                            or receipt.get("operationsPerInvoke") != operations):
+                        raise ValueError("Native executor benchmark identity differs from selected original runner")
                     outcome["nativeReceipt"] = f"{index}-{side}-native.json"
                 if args.runtime_version:
                     versions = re.findall(r"^// Runtime=\.NET ([0-9.]+) ", text, re.M)
