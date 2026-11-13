@@ -3,6 +3,7 @@
 import argparse
 import hashlib
 import json
+import os
 from pathlib import Path
 import subprocess
 
@@ -26,6 +27,8 @@ def main():
     parser.add_argument("output", type=Path)
     parser.add_argument("--trace-tool", type=Path)
     parser.add_argument("--profile-reader", type=Path)
+    parser.add_argument("--allocation-profiler", type=Path,
+                        help="Separate exact CLR heap-allocation callback control; changes fast paths and scheduling.")
     parser.add_argument("--keep-traces", action="store_true",
                         help="Retain raw EventPipe captures after extraction so owner analysis can be repeated.")
     parser.add_argument("--exact-invocations", action="store_true",
@@ -41,6 +44,8 @@ def main():
     parser.add_argument("--exact-sources", action="store_true", help="Separate handler source identity and synchronous byte control.")
     parser.add_argument("--exact-worker", action="store_true", help="Separate original-waiter native worker read and resumed callback counters.")
     args = parser.parse_args()
+    if args.allocation_profiler and (not args.bdn_await or args.trace_tool):
+        parser.error("Native allocation callbacks require the original waiter, without sampled profiling")
     if args.bdn_await and (args.exact_invocations or args.exact_releases or args.exact_roundtrips or args.exact_driver or args.exact_sources or args.exact_worker):
         parser.error("BDN full-delivery waiter and exact counters are distinct controls")
     if sum((args.exact_invocations, args.exact_releases, args.exact_roundtrips, args.exact_driver, args.exact_sources, args.exact_worker)) > 1:
@@ -60,6 +65,9 @@ def main():
                 "limits": "Inclusive fixed-count control; not original BDN replay, allocation-owner attribution, throughput equivalence or native-client budget evidence."}
     protocol["completion_boundary"] = "original-BenchmarkDotNet-AwaitHelper.GetResult" if args.bdn_await or args.exact_driver or args.exact_worker else "asynchronous-await"
     protocol["instrumented"] = args.trace_tool is not None or args.exact_invocations or args.exact_releases or args.exact_roundtrips or args.exact_driver or args.exact_sources or args.exact_worker
+    if args.allocation_profiler:
+        protocol["instrumented"] = True
+        protocol["allocation_callback_limits"] = "Exact CLR heap callbacks in a new instrumented execution, without stacks. Changes allocation fast paths and scheduling; not historical replay, throughput evidence or cross-control subtraction."
     protocol["exact_invocations"] = args.exact_invocations
     protocol["exact_releases"] = args.exact_releases
     protocol["exact_roundtrips"] = args.exact_roundtrips
@@ -111,8 +119,18 @@ def main():
                        "--show-child-io", "--", *command]
         with (args.output / f"{index + 1}-{side}.log").open("w") as log:
             try:
-                subprocess.run(command, stdout=log, stderr=subprocess.STDOUT, check=True, timeout=600)
-            except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as error:
+                environment = None
+                if args.allocation_profiler:
+                    profiler = str(args.allocation_profiler.resolve())
+                    environment = dict(os.environ, CORECLR_ENABLE_PROFILING="1",
+                                       CORECLR_PROFILER="{32B7EF07-25E8-4AC7-B011-9A4321D702C8}",
+                                       CORECLR_PROFILER_PATH=profiler, RELAYER_ALLOCATION_PROFILER=profiler,
+                                       RELAYER_ALLOCATION_OUTPUT=str((args.output / f"{index + 1}-{side}-objects.jsonl").resolve()))
+                subprocess.run(command, stdout=log, stderr=subprocess.STDOUT, check=True, timeout=600, env=environment)
+                if environment is not None:
+                    from read_native_allocations import read as read_native_allocations
+                    read_native_allocations(environment["RELAYER_ALLOCATION_OUTPUT"])
+            except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError, ValueError) as error:
                 log.write(f"\nLaunch failed: {error}\n")
                 failed = True
         if args.profile_reader and not trace.exists():
