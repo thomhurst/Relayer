@@ -131,6 +131,8 @@ jobs:
         run: dotnet build --no-restore -c Release
 
       - name: Test
+        id: tests
+        shell: bash
         if: steps.solution.outputs.present == 'true'
         # Keep image acquisition outside Kafka's lifecycle deadline and
         # PostgreSQL/MySQL bounded docker run commands.
@@ -141,7 +143,35 @@ jobs:
           docker pull mysql:8.4
           docker pull gcr.io/google.com/cloudsdktool/google-cloud-cli@sha256:112c21f8f6e04b03b393b3c34fb943a1f443e839f18c6492c364ac2e6c3ff935
           docker pull ghcr.io/shopify/toxiproxy@sha256:5d3dae09bc185dcc5ff6cf43abf6062a4a720aff0c4306a471e773acdcd107aa
-          dotnet test --no-build -c Release -f ${{ matrix.framework }}
+          mkdir -p .artifacts/ci-test-failure
+          # Bash pipefail preserves the test exit code; tee retains the original parallel run.
+          dotnet test --no-build -c Release -f ${{ matrix.framework }} 2>&1 | tee .artifacts/ci-test-failure/tests.log
+
+      - name: Collect failing test inputs
+        if: failure() && steps.tests.outcome == 'failure'
+        run: |
+          mkdir -p .artifacts/ci-test-failure
+          dotnet --info > .artifacts/ci-test-failure/runtime.txt
+          uname -a > .artifacts/ci-test-failure/host.txt
+          git rev-parse HEAD > .artifacts/ci-test-failure/commit.txt
+          git archive --format=zip HEAD -o .artifacts/ci-test-failure/source.zip
+          # No rebuild: retain the core-test executable/dependencies used by this matrix leg.
+          # Allowlisted paths exclude environment variables, credentials and broker container data.
+          find "tests/Relayer.Tests/bin/Release/${{ matrix.framework }}" -type f -print0 \
+            | sort -z | xargs -0 sha256sum > .artifacts/ci-test-failure/binaries.sha256
+
+      - name: Retain failing test inputs
+        if: failure() && steps.tests.outcome == 'failure'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ci-test-failure-${{ matrix.framework }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            .artifacts/ci-test-failure/
+            tests/Relayer.Tests/bin/Release/${{ matrix.framework }}/
+          include-hidden-files: true
+          if-no-files-found: error
+          # Diagnostic inputs are downloadable by reviewers; retain for 14 days, not indefinitely.
+          retention-days: 14
 
       - name: Pack and verify NuGet artifacts
         if: matrix.framework == 'net11.0'
