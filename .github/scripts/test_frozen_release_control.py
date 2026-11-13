@@ -35,6 +35,26 @@ class ReleaseInterventionTests(unittest.TestCase):
                 main()
             self.assertEqual(json.loads(output.with_name("capture-intervention.json").read_text())["arm"], "sync")
 
+    def test_exact_arms_reuse_callback_launcher_without_sampled_options(self):
+        for arm in ("async", "sync"):
+            with self.subTest(arm=arm), tempfile.TemporaryDirectory() as directory:
+                output = Path(directory) / "capture"
+                args = ["control", arm, "inputs", "probe.dll", str(output), "--allocation-profiler", "profiler.so"]
+                with patch("sys.argv", args), patch("frozen_release_control.subprocess.run") as run:
+                    main()
+                command = run.call_args.args[0]
+                self.assertEqual(command[-2:], ["--allocation-profiler", "profiler.so"])
+                self.assertNotIn("--trace-tool", command)
+                self.assertEqual(run.call_args.kwargs["env"]["RELAYER_FROZEN_RELEASE_CHANNEL"], arm)
+                metadata = json.loads(output.with_name("capture-intervention.json").read_text())
+                self.assertEqual(metadata["allocationObservation"], "exact CLR callbacks")
+
+    def test_incomplete_or_mixed_instrumentation_rejected_before_launch(self):
+        for options in ([], ["--trace-tool", "trace"], ["--allocation-profiler", "profiler.so", "--keep-traces"]):
+            with self.subTest(options=options), patch("sys.argv", ["control", "async", "inputs", "probe", "output", *options]), patch("frozen_release_control.subprocess.run") as run, self.assertRaises(SystemExit):
+                main()
+            run.assert_not_called()
+
     def test_rejects_unknown_arm_before_launch(self):
         with patch("sys.argv", ["control", "unknown"]), patch("frozen_release_control.subprocess.run") as run, self.assertRaises(SystemExit):
             main()
