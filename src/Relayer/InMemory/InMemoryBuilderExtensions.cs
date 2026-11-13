@@ -55,6 +55,9 @@ internal sealed class InMemoryHostedService(IServiceProvider provider, string na
             var consumer = (ConsumerDefinition<InMemoryConsumerOptions>)declaration;
             if (consumer.BatchSize != 1)
                 throw new NotSupportedException($"In-memory consumer '{consumer.Source}': batch-handler composition is not implemented. Use single-message handlers.");
+            if (!_transport.GetCapabilities(consumer.Source).DeadLetter &&
+                string.Equals(consumer.Failure.DeadLetterEndpoint, consumer.Source, StringComparison.Ordinal))
+                throw new InvalidOperationException($"In-memory consumer '{consumer.Source}': DeadLetterEndpoint must differ from the source so a dead-letter copy does not wait on its own admission credit. Enable native dead-lettering or select a separate endpoint.");
             var failure = new FailurePipeline(provider, name, consumer.Source, consumer.Options.Group ?? consumer.Source,
                 true, consumer.Failure, Copy, provider.GetService<IFailureScheduler>(),
                 provider.GetRequiredService<IOptionsMonitor<InMemoryTransportOptions>>().Get(name).TimeProvider);

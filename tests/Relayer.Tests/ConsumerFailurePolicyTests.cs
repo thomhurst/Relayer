@@ -131,6 +131,33 @@ public class ConsumerFailurePolicyTests
     }
 
     [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task In_memory_rejects_dead_letter_copy_to_its_source(bool log)
+    {
+        var services = new ServiceCollection();
+        services.AddRelayer(relayer =>
+        {
+            relayer.AddMessageTypesFromThisAssembly();
+            relayer.InMemory("local", transport =>
+            {
+                transport.Options.Configure(options => options.Endpoints.Add("source", new()
+                {
+                    Capacity = 1,
+                    Capabilities = new() { ConsumptionModel = log ? ConsumptionModel.Log : ConsumptionModel.Queue },
+                }));
+                transport.Consume("source", consumer => consumer
+                    .Failures(new() { RetryDelays = [], DeadLetterEndpoint = "source" })
+                    .Handler<PolicyHandler>());
+            });
+        });
+        await using var provider = services.BuildServiceProvider();
+        var service = provider.GetServices<IHostedService>().OfType<InMemoryHostedService>().Single();
+        await Assert.That(() => service.StartAsync(default)).Throws<InvalidOperationException>()
+            .WithMessageContaining("DeadLetterEndpoint must differ from the source");
+    }
+
+    [Test]
     [Arguments(false, 1)]
     [Arguments(false, 4)]
     [Arguments(true, 1)]
