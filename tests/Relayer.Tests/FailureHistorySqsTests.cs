@@ -40,7 +40,7 @@ public sealed class FailureHistorySqsTests
                 {
                     consumer.Handler<Handler>();
                     consumer.Options.ConfigureReceive = request => request.WaitTimeSeconds = 1;
-                    consumer.Options.Failure = new() { DeadLetterEndpoint = dead, RetryDelays = new TimeSpan[31], Jitter = 0 };
+                    consumer.Failures(new() { DeadLetterEndpoint = dead, RetryDelays = new TimeSpan[31], Jitter = 0 });
                 });
             });
         });
