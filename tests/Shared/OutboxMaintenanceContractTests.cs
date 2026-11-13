@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using Microsoft.Extensions.Logging;
 using Relayer.Transports;
 
 namespace Relayer.TestFixtures;
@@ -12,12 +13,13 @@ public abstract class OutboxMaintenanceContractTests
     protected abstract class MaintenanceFixture : IAsyncDisposable
     {
         public abstract MaintenanceWorker Worker(RecordingTransport transport, int batchSize = 1,
-            bool deadRetention = true, bool inboxRetention = true);
+            bool deadRetention = true, bool inboxRetention = true, int cleanupBatchLimit = 10, Action? failure = null);
         public abstract Task Insert(Guid id, DateTimeOffset createdAt, int? lane = null,
             DateTimeOffset? deliverAt = null, string status = "pending", DateTimeOffset? claimExpiresAt = null);
         public abstract Task InsertDead(Guid id, DateTimeOffset failedAt);
         public abstract Task InsertInbox(string consumer, Guid id, DateTimeOffset processedAt);
         public abstract Task MakeDueAndExpireClaims();
+        public abstract Task DropInboxTable();
         public abstract Task<int> Attempts(Guid id);
         public abstract Task<long> Count(Table table);
         public abstract ValueTask DisposeAsync();
@@ -26,8 +28,11 @@ public abstract class OutboxMaintenanceContractTests
     protected abstract class MaintenanceWorker : IDisposable
     {
         public abstract ValueTask<int> SweepAsync(CancellationToken cancellationToken = default);
+        public abstract bool CleanupPending { get; }
         public abstract ValueTask<int> CleanupAsync(CancellationToken cancellationToken = default);
         public abstract ValueTask ReleaseAsync(CancellationToken cancellationToken = default);
+        public abstract Task StartAsync(CancellationToken cancellationToken);
+        public abstract Task StopAsync(CancellationToken cancellationToken);
         public abstract void Dispose();
     }
 
@@ -103,8 +108,8 @@ public abstract class OutboxMaintenanceContractTests
         await fixture.InsertInbox("a", Id(1), now.AddDays(-10));
         await fixture.InsertInbox("b", Id(1), now.AddDays(-10));
         await fixture.InsertInbox("new", Id(1), now);
-        using var first = fixture.Worker(new());
-        using var rival = fixture.Worker(new());
+        using var first = fixture.Worker(new(), cleanupBatchLimit: 1);
+        using var rival = fixture.Worker(new(), cleanupBatchLimit: 1);
         await Assert.That(await first.CleanupAsync()).IsEqualTo(2);
         await Assert.That(await rival.CleanupAsync()).IsEqualTo(0);
         await Assert.That(await fixture.Count(Table.Dead)).IsEqualTo(2L);
@@ -116,6 +121,103 @@ public abstract class OutboxMaintenanceContractTests
         await Assert.That(await fixture.Count(Table.Inbox)).IsEqualTo(1L);
         await Assert.That(await fixture.Count(Table.Outbox)).IsEqualTo(2L);
         await Assert.That(await rival.CleanupAsync()).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task Cleanup_drains_multiple_batches_preserves_parked_payload_and_yields_at_budget()
+    {
+        await using var fixture = await CreateFixtureAsync();
+        var old = DateTimeOffset.UtcNow.AddDays(-60);
+        await fixture.Insert(Id(90), old, status: "parked");
+        await fixture.InsertDead(Id(90), old);
+        for (var i = 1; i <= 7; i++)
+        {
+            await fixture.InsertDead(Id(i), old);
+            await fixture.InsertInbox("consumer", Id(i), old);
+        }
+        var transport = new RecordingTransport();
+        using var worker = fixture.Worker(transport, batchSize: 2, cleanupBatchLimit: 2);
+        await Assert.That(await worker.CleanupAsync()).IsEqualTo(8);
+        await Assert.That(worker.CleanupPending).IsTrue();
+        await Assert.That(await fixture.Count(Table.Dead)).IsEqualTo(4L);
+        await Assert.That(await fixture.Count(Table.Inbox)).IsEqualTo(3L);
+        // A sustained backlog must yield the connection and admission before recovery.
+        await fixture.Insert(Id(100), old);
+        await Assert.That(await worker.SweepAsync()).IsEqualTo(1);
+        await Assert.That(transport.Ids.Contains(Id(100))).IsTrue();
+        await Assert.That(await worker.CleanupAsync()).IsEqualTo(6);
+        await Assert.That(worker.CleanupPending).IsFalse();
+        await Assert.That(await fixture.Count(Table.Dead)).IsEqualTo(1L);
+        await Assert.That(await fixture.Count(Table.Inbox)).IsEqualTo(0L);
+        await Assert.That(await fixture.Count(Table.Outbox)).IsEqualTo(1L);
+    }
+
+    [Test]
+    public async Task Failed_cleanup_waits_for_interval_while_recovery_continues()
+    {
+        await using var fixture = await CreateFixtureAsync();
+        await fixture.DropInboxTable();
+        var failed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var recovered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var failures = 0;
+        var sends = 0;
+        var transport = new RecordingTransport((_, _) =>
+        {
+            if (Interlocked.Increment(ref sends) == 2) recovered.TrySetResult();
+            return ValueTask.CompletedTask;
+        });
+        using var worker = fixture.Worker(transport, deadRetention: false, failure: () =>
+        {
+            Interlocked.Increment(ref failures);
+            failed.TrySetResult();
+        });
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        await worker.StartAsync(timeout.Token);
+        try
+        {
+            await failed.Task.WaitAsync(timeout.Token);
+            await fixture.Insert(Id(1), DateTimeOffset.UtcNow.AddDays(-1));
+            await fixture.Insert(Id(2), DateTimeOffset.UtcNow.AddDays(-1));
+            // BatchSize=1 makes the second send prove another sweep finished after the error.
+            await recovered.Task.WaitAsync(timeout.Token);
+            await Assert.That(Volatile.Read(ref failures)).IsEqualTo(1);
+        }
+        finally { await worker.StopAsync(timeout.Token); }
+    }
+
+    [Test]
+    public async Task Failed_cleanup_clears_pending_continuation_from_previous_full_turn()
+    {
+        await using var fixture = await CreateFixtureAsync();
+        var old = DateTimeOffset.UtcNow.AddDays(-60);
+        await fixture.InsertInbox("consumer", Id(1), old);
+        using var worker = fixture.Worker(new(), deadRetention: false, cleanupBatchLimit: 1);
+        await Assert.That(await worker.CleanupAsync()).IsEqualTo(1);
+        await Assert.That(worker.CleanupPending).IsTrue();
+        await fixture.DropInboxTable();
+        await Assert.ThrowsAsync<System.Data.Common.DbException>(async () => await worker.CleanupAsync());
+        // ExecuteAsync uses this to select CleanupInterval rather than an immediate continuation.
+        await Assert.That(worker.CleanupPending).IsFalse();
+    }
+
+    [Test]
+    public async Task Cancelled_cleanup_leaves_rows_and_admission_available_for_retry()
+    {
+        await using var fixture = await CreateFixtureAsync();
+        var old = DateTimeOffset.UtcNow.AddDays(-60);
+        for (var i = 1; i <= 3; i++)
+        {
+            await fixture.InsertDead(Id(i), old);
+            await fixture.InsertInbox("consumer", Id(i), old);
+        }
+        using var worker = fixture.Worker(new());
+        using var cancelled = new CancellationTokenSource();
+        await cancelled.CancelAsync();
+        await Assert.ThrowsAsync<OperationCanceledException>(async () => await worker.CleanupAsync(cancelled.Token));
+        await Assert.That(await fixture.Count(Table.Dead)).IsEqualTo(3L);
+        await Assert.That(await fixture.Count(Table.Inbox)).IsEqualTo(3L);
+        await Assert.That(await worker.CleanupAsync()).IsEqualTo(6);
+        await Assert.That(worker.CleanupPending).IsFalse();
     }
 
     [Test]
@@ -136,6 +238,17 @@ public abstract class OutboxMaintenanceContractTests
 
     private static Guid Id(int i) => Guid.Parse($"01900000-0000-7000-8000-{i:D12}");
     private static Guid HeaderId(OutgoingMessage message) => Guid.Parse(message.Headers.Span[0].Value.ToString());
+
+    protected sealed class FailureLogger<T>(Action? failure) : ILogger<T>
+    {
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+        public bool IsEnabled(LogLevel logLevel) => true;
+        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception,
+            Func<TState, Exception?, string> formatter)
+        {
+            if (exception is not null) failure?.Invoke();
+        }
+    }
 
     protected sealed class RecordingTransport(Func<OutgoingMessage, CancellationToken, ValueTask>? send = null) : ITransport
     {

@@ -1,5 +1,4 @@
 using System.Buffers;
-using Microsoft.Extensions.Logging.Abstractions;
 using Npgsql;
 using NpgsqlTypes;
 using Relayer.TestFixtures;
@@ -29,13 +28,14 @@ public sealed class SharedMaintenanceContractTests : OutboxMaintenanceContractTe
         }
 
         public override MaintenanceWorker Worker(RecordingTransport transport, int batchSize = 1,
-            bool deadRetention = true, bool inboxRetention = true) => new WorkerAdapter(new(_source!, new()
+            bool deadRetention = true, bool inboxRetention = true, int cleanupBatchLimit = 10, Action? failure = null) => new WorkerAdapter(new(_source!, new()
             {
-                BatchSize = batchSize,
+                BatchSize = batchSize, CleanupBatchLimit = cleanupBatchLimit,
+                SweepInterval = TimeSpan.FromMilliseconds(1), CleanupInterval = TimeSpan.FromHours(1),
                 RecoveryDelay = TimeSpan.FromHours(1),
                 DeadRetention = deadRetention ? TimeSpan.FromDays(30) : null,
                 InboxRetention = inboxRetention ? TimeSpan.FromDays(7) : null
-            }, [transport], NullLogger<PostgreSqlMaintenanceWorker>.Instance));
+            }, [transport], new FailureLogger<PostgreSqlMaintenanceWorker>(failure)));
 
         public override async Task Insert(Guid id, DateTimeOffset createdAt, int? lane = null,
             DateTimeOffset? deliverAt = null, string status = "pending", DateTimeOffset? claimExpiresAt = null)
@@ -82,6 +82,12 @@ public sealed class SharedMaintenanceContractTests : OutboxMaintenanceContractTe
             await command.ExecuteNonQueryAsync();
         }
 
+        public override async Task DropInboxTable()
+        {
+            await using var command = _source!.CreateCommand("DROP TABLE relayer_inbox");
+            await command.ExecuteNonQueryAsync();
+        }
+
         public override async Task MakeDueAndExpireClaims()
         {
             await using var command = _source!.CreateCommand("""
@@ -121,8 +127,11 @@ public sealed class SharedMaintenanceContractTests : OutboxMaintenanceContractTe
     private sealed class WorkerAdapter(PostgreSqlMaintenanceWorker worker) : MaintenanceWorker
     {
         public override ValueTask<int> SweepAsync(CancellationToken cancellationToken = default) => worker.SweepAsync(cancellationToken);
+        public override bool CleanupPending => worker.CleanupPending;
         public override ValueTask<int> CleanupAsync(CancellationToken cancellationToken = default) => worker.CleanupAsync(cancellationToken);
         public override ValueTask ReleaseAsync(CancellationToken cancellationToken = default) => worker.ReleaseAsync(cancellationToken);
+        public override Task StartAsync(CancellationToken cancellationToken) => worker.StartAsync(cancellationToken);
+        public override Task StopAsync(CancellationToken cancellationToken) => worker.StopAsync(cancellationToken);
         public override void Dispose() => worker.Dispose();
     }
 }

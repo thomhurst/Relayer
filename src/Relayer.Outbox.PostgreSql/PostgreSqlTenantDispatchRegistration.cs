@@ -36,6 +36,7 @@ public static partial class PostgreSqlOutboxServiceCollectionExtensions
             PollInterval = Read(nameof(defaults.PollInterval), defaults.PollInterval),
             TurnTimeout = Read(nameof(defaults.TurnTimeout), defaults.TurnTimeout),
             BatchSize = Read(nameof(defaults.BatchSize), defaults.BatchSize),
+            CleanupBatchLimit = Read(nameof(defaults.CleanupBatchLimit), defaults.CleanupBatchLimit),
             QueueCapacity = Read(nameof(defaults.QueueCapacity), defaults.QueueCapacity),
             RecoveryDelay = Read(nameof(defaults.RecoveryDelay), defaults.RecoveryDelay),
             CleanupInterval = Read(nameof(defaults.CleanupInterval), defaults.CleanupInterval),
