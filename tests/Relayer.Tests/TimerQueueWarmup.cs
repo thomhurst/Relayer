@@ -7,7 +7,7 @@ internal static class TimerQueueWarmup
 {
     // CancelAfter reuses its timer after warmup, but .NET's shared TimerQueue Lock
     // allocates a 24 B AutoResetEvent and 32 B SafeWaitHandle on first contention.
-    // Exercise that native lazy initialization before measuring the batch pipeline.
+    // Exercise that native lazy initialization before measuring send or batch pipelines.
     // This is setup only: do not replace native timers or exclude bytes from a window.
     internal static void WarmContention()
     {
