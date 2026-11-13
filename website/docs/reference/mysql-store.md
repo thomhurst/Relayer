@@ -346,8 +346,10 @@ releases its session lock; rivals recover after leadership and row claims expire
 shutdown releases this worker's leases. Use one writable MySQL primary: named locks are local
 to that server and are unsuitable for independent multi-primary writers.
 
-Workers wait `SweepInterval` after each recovery pass, including a full batch. With the defaults,
-a pass reads at most 100 rows before the five-second wait; transport and database time add to that interval.
+Nonempty recovery passes continue immediately, releasing named-lock admission between bounded batches
+(default `BatchSize`: 100). `SweepInterval` (five seconds by default) is the idle delay after exhausting
+the fixed scan, losing admission, or a pass error. Failed rows are attempted at most once per scan;
+locked, scheduled and otherwise ineligible rows do not cause a retry loop. Cleanup is checked between batches.
 
 Each bounded recovery pass selects due, old-enough **unordered** pending rows without live claims.
 A fixed upper UUID boundary ensures failed, scheduled and previously claimed rows are revisited

@@ -10,6 +10,7 @@ namespace Relayer.Outbox.SqlServer;
 
 internal sealed partial class SqlServerMaintenanceWorker : BackgroundService
 {
+    private readonly TimeProvider _idleTimeProvider;
     private readonly string _connectionString;
     private readonly SqlServerMaintenanceOptions _options;
     private readonly SqlServerOutboxStore _store;
@@ -32,9 +33,10 @@ internal sealed partial class SqlServerMaintenanceWorker : BackgroundService
     [RequiresDynamicCode("SqlClient runtime Native AOT is unsupported.")]
     internal SqlServerMaintenanceWorker(string connectionString, SqlServerMaintenanceOptions options,
         IEnumerable<ITransport> transports, ILogger<SqlServerMaintenanceWorker> logger,
-        ILogger<SqlServerDirectDispatcher>? dispatchLogger = null, RelayerInstrumentation? instrumentation = null)
+        ILogger<SqlServerDirectDispatcher>? dispatchLogger = null, RelayerInstrumentation? instrumentation = null, TimeProvider? idleTimeProvider = null)
     {
         _connectionString = connectionString;
+        _idleTimeProvider = idleTimeProvider ?? TimeProvider.System;
         _options = options;
         var settings = options.Validate();
         _store = new(connectionString, settings);
@@ -86,9 +88,10 @@ internal sealed partial class SqlServerMaintenanceWorker : BackgroundService
         {
             while (!stoppingToken.IsCancellationRequested)
             {
+                var scanned = 0;
                 try
                 {
-                    await SweepAsync(stoppingToken).ConfigureAwait(false);
+                    scanned = await SweepAsync(stoppingToken).ConfigureAwait(false);
                 }
                 catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { break; }
                 catch (Exception error) { Failed(_logger, error); }
@@ -103,7 +106,10 @@ internal sealed partial class SqlServerMaintenanceWorker : BackgroundService
                     catch (Exception error) { Failed(_logger, error); }
                     nextCleanup = DateTimeOffset.UtcNow + (CleanupPending ? TimeSpan.Zero : _options.CleanupInterval);
                 }
-                await Task.Delay(_options.SweepInterval, stoppingToken).ConfigureAwait(false);
+                // Each turn releases database admission. Continue only within the fixed scan boundary;
+                // its empty terminal pass provides the idle/retry delay even when every send failed.
+                if (scanned == 0)
+                    await Task.Delay(_options.SweepInterval, _idleTimeProvider, stoppingToken).ConfigureAwait(false);
             }
         }
         catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { }

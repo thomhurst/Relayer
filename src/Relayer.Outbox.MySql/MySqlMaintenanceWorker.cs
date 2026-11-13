@@ -8,6 +8,7 @@ namespace Relayer.Outbox.MySql;
 
 internal sealed partial class MySqlMaintenanceWorker : BackgroundService
 {
+    private readonly TimeProvider _idleTimeProvider;
     private readonly MySqlDataSource _dataSource;
     private readonly MySqlMaintenanceOptions _options;
     private readonly MySqlOutboxStore _store;
@@ -29,10 +30,11 @@ internal sealed partial class MySqlMaintenanceWorker : BackgroundService
 
     internal MySqlMaintenanceWorker(MySqlDataSource dataSource, MySqlMaintenanceOptions options,
         IEnumerable<ITransport> transports, ILogger<MySqlMaintenanceWorker> logger,
-        ILogger<MySqlDirectDispatcher>? dispatchLogger = null, RelayerInstrumentation? instrumentation = null)
+        ILogger<MySqlDirectDispatcher>? dispatchLogger = null, RelayerInstrumentation? instrumentation = null, TimeProvider? idleTimeProvider = null)
     {
         _dataSource = dataSource;
         ValidateDataSource(dataSource);
+        _idleTimeProvider = idleTimeProvider ?? TimeProvider.System;
         _options = options;
         var settings = options.Validate();
         _store = new(dataSource, settings);
@@ -84,9 +86,10 @@ internal sealed partial class MySqlMaintenanceWorker : BackgroundService
         {
             while (!stoppingToken.IsCancellationRequested)
             {
+                var scanned = 0;
                 try
                 {
-                    await SweepAsync(stoppingToken).ConfigureAwait(false);
+                    scanned = await SweepAsync(stoppingToken).ConfigureAwait(false);
                 }
                 catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { break; }
                 catch (Exception error) { Failed(_logger, error); }
@@ -101,7 +104,10 @@ internal sealed partial class MySqlMaintenanceWorker : BackgroundService
                     catch (Exception error) { Failed(_logger, error); }
                     nextCleanup = DateTimeOffset.UtcNow + (CleanupPending ? TimeSpan.Zero : _options.CleanupInterval);
                 }
-                await Task.Delay(_options.SweepInterval, stoppingToken).ConfigureAwait(false);
+                // Each turn releases database admission. Continue only within the fixed scan boundary;
+                // its empty terminal pass provides the idle/retry delay even when every send failed.
+                if (scanned == 0)
+                    await Task.Delay(_options.SweepInterval, _idleTimeProvider, stoppingToken).ConfigureAwait(false);
             }
         }
         catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { }

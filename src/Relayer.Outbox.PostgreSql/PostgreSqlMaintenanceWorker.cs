@@ -12,6 +12,7 @@ namespace Relayer.Outbox.PostgreSql;
 
 internal sealed partial class PostgreSqlMaintenanceWorker : BackgroundService
 {
+    private readonly TimeProvider _idleTimeProvider;
     private readonly NpgsqlDataSource _source;
     private readonly TimeProvider? _admissionTimeProvider;
     private readonly PostgreSqlMaintenanceOptions _options;
@@ -38,10 +39,11 @@ internal sealed partial class PostgreSqlMaintenanceWorker : BackgroundService
 
     internal PostgreSqlMaintenanceWorker(NpgsqlDataSource source, PostgreSqlMaintenanceOptions options,
         IEnumerable<ITransport> transports, ILogger<PostgreSqlMaintenanceWorker> logger,
-        ILogger<PostgreSqlDirectDispatcher>? dispatchLogger = null, RelayerInstrumentation? instrumentation = null, TimeProvider? admissionTimeProvider = null, IServiceScopeFactory? scopes = null)
+        ILogger<PostgreSqlDirectDispatcher>? dispatchLogger = null, RelayerInstrumentation? instrumentation = null, TimeProvider? admissionTimeProvider = null, IServiceScopeFactory? scopes = null, TimeProvider? idleTimeProvider = null)
     {
         _source = source;
         _admissionTimeProvider = admissionTimeProvider;
+        _idleTimeProvider = idleTimeProvider ?? TimeProvider.System;
         _options = options;
         var store = options.Validate();
         _store = new(source, store);
@@ -78,7 +80,8 @@ internal sealed partial class PostgreSqlMaintenanceWorker : BackgroundService
         {
             while (!stoppingToken.IsCancellationRequested && Volatile.Read(ref _localStop) == 0)
             {
-                try { await SweepAsync(stoppingToken).ConfigureAwait(false); }
+                var scanned = 0;
+                try { scanned = await SweepAsync(stoppingToken).ConfigureAwait(false); }
                 catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { break; }
                 catch (Exception error) { Failed(_logger, "sweeper", error); }
                 if (Volatile.Read(ref _localStop) != 0) break;
@@ -89,7 +92,10 @@ internal sealed partial class PostgreSqlMaintenanceWorker : BackgroundService
                     catch (Exception error) { Failed(_logger, "cleanup", error); }
                     nextCleanup = DateTimeOffset.UtcNow + (CleanupPending ? TimeSpan.Zero : _options.CleanupInterval);
                 }
-                await Task.Delay(_options.SweepInterval, idleStop.Token).ConfigureAwait(false);
+                // Each turn releases database admission. Continue only within the fixed scan boundary;
+                // its empty terminal pass provides the idle/retry delay even when every send failed.
+                if (scanned == 0)
+                    await Task.Delay(_options.SweepInterval, _idleTimeProvider, idleStop.Token).ConfigureAwait(false);
             }
         }
         catch (OperationCanceledException) when (idleStop.IsCancellationRequested) { }
