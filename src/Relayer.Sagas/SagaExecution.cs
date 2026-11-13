@@ -7,7 +7,7 @@ namespace Relayer.Sagas;
 /// <remarks>Applications normally use Saga rather than calling this infrastructure directly.</remarks>
 public sealed class SagaExecution<TState, TMessage> where TState : SagaData
 {
-    // Same peak-retaining, cross-thread pool as SendRoute; no worker-local async state-machine cache.
+    // Provider-owned, peak-retaining cross-thread pool; SendRoute instead bounds idle retention (D52).
     private readonly Segment _operations = new();
 
     internal ValueTask Start(Saga<TState, TMessage> handler, TMessage message, MessageContext context, CancellationToken cancellation)

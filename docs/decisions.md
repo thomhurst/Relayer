@@ -935,11 +935,56 @@ Extends D20's post-v1 scope; it does not change the v1 boundary.
 
 **Decision.** Keep typed execution in `Relayer.Sagas` and persistence in optional `Relayer.Sagas.EntityFrameworkCore`. State queries and native EF model configuration remain application code. Startup validates an explicit non-generated correlation key, native xmin row version and the selected outbox context. Save state, inbox identity and outgoing messages in the existing consumer transaction, and leave settlement and complete-attempt retries to the existing pipelines. A send-only transition still issues a native version-checked update. Keep completed rows as tombstones so later starting messages cannot recreate a completed process. Deleting retained state deliberately ends that protection. Diagram metadata remains independent of execution. Durable process timeouts (#249) use ordinary typed messages with application-owned process and wait identities, sent through ISender with SendOptions.DeliverAt inside this same boundary. Existing PostgreSQL due-row dispatch owns delivery; the consumer inbox owns duplicate message IDs. Replacing or clearing the wait identity logically invalidates old timeouts; completed tombstones skip transitions, and missing state keeps the existing explicit failure. No new scheduler, cancellation store, timeout registration API or retry loop is introduced. See the [timeout guide](../website/docs/guides/saga-timeouts.md).
 
-**Execution state.** Reuse the continuation and ExecutionContext restoration pattern from `ConsumePipeline.CoreOperation` and the provider-owned, peak-retaining cross-thread pool pattern from `SendRoute`. A plain async ValueTask requires a state-machine object on suspension; the runtime's pooled async builders use [thread-local and per-core caches](https://github.com/dotnet/runtime/blob/v10.0.14/src/libraries/System.Private.CoreLib/src/System/Runtime/CompilerServices/PoolingAsyncValueTaskMethodBuilderT.cs#L256-L283) and do not guarantee reuse after worker changes. The saga executor therefore retains its typed load/transition/save operation until the caller consumes GetResult, then clears completion references and returns it to its owning pool. Generated handler registration adds the typed singleton explicitly. There are no process-wide mutable pools, background threads, timers, per-message callback allocations or additional retry loops. The EF save hook returns the native task directly.
+**Execution state.** Reuse the continuation and ExecutionContext restoration pattern from `ConsumePipeline.CoreOperation` and a provider-owned, peak-retaining cross-thread pool (`SendRoute` uses a bounded idle pool under D52). A plain async ValueTask requires a state-machine object on suspension; the runtime's pooled async builders use [thread-local and per-core caches](https://github.com/dotnet/runtime/blob/v10.0.14/src/libraries/System.Private.CoreLib/src/System/Runtime/CompilerServices/PoolingAsyncValueTaskMethodBuilderT.cs#L256-L283) and do not guarantee reuse after worker changes. The saga executor therefore retains its typed load/transition/save operation until the caller consumes GetResult, then clears completion references and returns it to its owning pool. Generated handler registration adds the typed singleton explicitly. There are no process-wide mutable pools, background threads, timers, per-message callback allocations or additional retry loops. The EF save hook returns the native task directly.
 
 Calling CoreOperation recursively would create another consumer scope and repeat the consume/settlement lifecycle. SendRoute owns send buffers and transport dispatch rather than typed state loading. Neither can execute a saga transition directly. The small saga operation uses their established patterns within the existing consumer boundary; it does not replace a native locking, scheduling, settlement or transaction feature. Benchmarks compare native EF updates with saga updates, and use a reusable synchronous/cross-thread read fixture to attribute execution allocations independently of native EF allocations. Lifecycle tests cover every suspension stage, exceptions, cancellation, execution-context isolation and reservation until GetResult. Local benchmark timings remain diagnostic under D18.
 
 **Consequences.** The provider-independent runtime and generated dispatch are Native AOT tested. EF persistence inherits the provider's trimming, compiled-model and query restrictions; this decision does not claim to make EF Core AOT compatible. Ordinary non-saga send/receive paths retain their existing contracts. The additional execution complexity serves the zero-allocation requirement without introducing a separate saga transaction, inbox, outbox, retry or lock provider. See the [state-transition guide](../website/docs/guides/sagas.md) for supported registration and calls.
+
+### Completion storage assessment (#726)
+
+Retain the hand-written operations in `ConsumePipeline.CoreOperation`, `ReceivePipeline.State`,
+`SendRoute.Operation`, `SendTracing.State` and `SagaExecution`. The runtime pooled builders are
+useful on paths where cache misses are acceptable, but do not satisfy D18's zero steady-state
+allocation requirement for these overlapping operations. This is an allocation decision, not
+permission to exchange CPU, throughput or latency for allocations.
+
+The installed .NET 10.0.14 and .NET 11.0.0 implementations were inspected through their
+checksum-verified SourceLink sources ([10.0.14](https://github.com/dotnet/dotnet/blob/0427b9abbead3fa64c6655eb4290c537397131fa/src/runtime/src/libraries/System.Private.CoreLib/src/System/Runtime/CompilerServices/PoolingAsyncValueTaskMethodBuilderT.cs),
+[11.0.0](https://github.com/dotnet/dotnet/blob/297acf930fb0f5c07fd4e51d78e521b4ad2e5d1f/src/runtime/src/libraries/System.Private.CoreLib/src/System/Runtime/CompilerServices/PoolingAsyncValueTaskMethodBuilderT.cs)).
+For each state-machine type, they retain one box per thread and one per processor. `GetResult`
+returns a box to the consuming thread's cache; completion by itself does not return it. Worker
+changes alone need not allocate, and serial warmed runs can be allocation-free. However,
+concurrent operations can exhaust those caches repeatedly, even with a fixed caller and
+alternating completion workers. Runtime async on net11.0 also ignores custom builders unless
+`RuntimeAsyncMethodGeneration(false)` keeps the compiler-generated state machine.
+
+`PooledBuilderCompletionBenchmarks` compares native completion, context-owned hand-written
+completion and minimal void/result pooled-builder wrappers over the same reusable native
+sources. It covers synchronous and asynchronous completion, one and 64 overlapping operations,
+ambient execution context and alternating dedicated completion workers on both target frameworks.
+The shared fixture counts caller and worker bytes separately; MemoryDiagnoser alone does not
+attribute allocations on the dedicated workers. The minimal wrappers already incur repeated
+allocation in the overlapping asynchronous case, while owned completion retains its storage.
+That necessary-condition failure rules out replacing any of the five operations now. The
+experiment does not copy the full pipeline algorithms or establish full-pipeline throughput:
+passing it in a future runtime would require equivalent production prototypes, native baselines
+and D18 throughput measurements before any replacement.
+
+| Operation | Ownership and behavior a future replacement must preserve |
+| --- | --- |
+| `ConsumePipeline.CoreOperation` | Continuation storage belongs to the rented context; handler, durable failure work, async scope disposal, buffered sends and settlement retain their ordering and execution context. |
+| `ReceivePipeline.State` | Native message/header state and the context survive processing; cleanup precedes completion, and continuation storage stays reserved until `GetResult`. Both disposition and settled-result entry points remain supported. |
+| `SendRoute.Operation` | The route owns serialization/header buffers and deadline resources; reset precedes publishing completion, and asynchronous operations return to the bounded idle pool only after consumption. |
+| `SendTracing.State` | Tracing scratch buffers and activity cleanup stay owned through completion, and the state clears caller continuation references before returning to its provider-owned pool. |
+| `SagaExecution` | Typed load/transition/save state restores application execution context at every suspension and returns to its owner only after consumption. Its peak-retaining pool differs from D52's bounded send pool. |
+
+`PooledBuilderCompletionTests` checks overlapping completion, ambient context restoration,
+immediate reuse, fault identity and cancellation tokens. Production contracts remain covered by
+`ConsumePipelineTests`, `ReceivePipelineTests`, `ReceiveContinuationTests`, `SenderTests`,
+`SendTracingContinuationTests`, `SendTracingPoolTests` and `SagaExecutionTests`; in particular,
+these cover completed-but-unconsumed operations, inline continuation reuse and application
+execution-context changes. No production algorithm or public behavior changes in this assessment.
 
 ## D44. MessagePack uses native generated formatters directly
 

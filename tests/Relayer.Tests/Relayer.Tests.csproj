@@ -2,6 +2,8 @@
 
   <PropertyGroup>
     <OutputType>Exe</OutputType>
+    <!-- Prefer the local runtime-async opt-out attribute over copies visible through friend assemblies. -->
+    <NoWarn>$(NoWarn);CS0436</NoWarn>
     <EnableConfigurationBindingGenerator>true</EnableConfigurationBindingGenerator>
   </PropertyGroup>
 
@@ -39,6 +41,8 @@
   </ItemGroup>
 
   <ItemGroup>
+    <Compile Include="../../src/Shared/RuntimeAsyncMethodGenerationAttribute.cs" Link="Fixtures/RuntimeAsyncMethodGenerationAttribute.cs" />
+    <Compile Include="../../tests/Shared/PooledBuilderCompletionFixture.cs" Link="Fixtures/PooledBuilderCompletionFixture.cs" />
     <Compile Include="..\..\tests\Shared\ConcurrentReceiveFixture.cs" Link="Fixtures\ConcurrentReceiveFixture.cs" />
     <Compile Include="../../benchmarks/Relayer.Benchmarks/RegressionGate/PendingReadBarrier.cs" Link="Fixtures/PendingReadBarrier.cs" />
   </ItemGroup>

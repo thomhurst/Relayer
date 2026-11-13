@@ -781,6 +781,7 @@ Techniques:
 
 - The middleware pipeline is compiled into a delegate chain once per consumer at startup. Nothing is resolved per message except the DI scope, which singleton-only consumers open on demand (D53).
 - `ValueTask` everywhere. Context objects are pooled. Headers are read lazily from the native message and only materialized when accessed.
+- Completion storage for consume, receive, send, send tracing and saga execution remains provider/context-owned. The [D43 builder assessment](decisions.md#completion-storage-assessment-726) records why runtime pooled builders cannot replace it under concurrent suspension; a serial cache-hit benchmark is insufficient.
 - Single-message dispatch with an explicit failure delegate keeps continuation storage with the rented context and native receive state. Cross-worker completion does not depend on runtime async state-machine cache hits. Fresh scopes, async disposal and settlement ordering remain unchanged; batch and executable-retry paths retain their existing implementations.
 - `IBufferWriter<byte>` / `ReadOnlySequence<byte>` serialization with pooled buffers.
 - Source-generated dispatch per message type: no `Type` lookups, no `MethodInfo.Invoke`, no `dynamic`.
