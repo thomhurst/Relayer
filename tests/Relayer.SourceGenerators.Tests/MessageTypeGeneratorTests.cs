@@ -9,6 +9,48 @@ namespace Relayer.SourceGenerators.Tests;
 public class MessageTypeGeneratorTests
 {
     [Test]
+    [Arguments("null", false)]
+    [Arguments("null!", false)]
+    [Arguments("null", true)]
+    [Arguments("null!", true)]
+    public async Task Null_message_names_report_diagnostic_and_preserve_valid_output(string name, bool includeValid)
+    {
+        var references = ((string)AppContext.GetData("TRUSTED_PLATFORM_ASSEMBLIES")!)
+            .Split(Path.PathSeparator).Select(static p => MetadataReference.CreateFromFile(p)).ToList();
+        references.Add(MetadataReference.CreateFromFile(typeof(MessageAttribute).Assembly.Location));
+        var source = $"#nullable enable\n[Relayer.Message({name})] public sealed record InvalidOrder(int Id);"
+            + (includeValid ? "\n[Relayer.Message(\"orders.valid\")] public sealed record ValidOrder(int Id);" : "");
+        var tree = CSharpSyntaxTree.ParseText(source, path: "Messages.cs");
+        var compilation = CSharpCompilation.Create("NullMessageConsumer", [tree], references,
+            new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
+        GeneratorDriver driver = CSharpGeneratorDriver.Create(new MessageTypeGenerator());
+        driver = driver.RunGeneratorsAndUpdateCompilation(compilation, out var output, out var diagnostics);
+
+        await Assert.That(diagnostics.Length).IsEqualTo(1);
+        var diagnostic = diagnostics[0];
+        await Assert.That(diagnostic.Id).IsEqualTo("RLYM005");
+        await Assert.That(diagnostic.Severity).IsEqualTo(DiagnosticSeverity.Error);
+        await Assert.That(diagnostic.GetMessage()).Contains("cannot be null");
+        await Assert.That(diagnostic.Location.GetLineSpan().Path).IsEqualTo("Messages.cs");
+        await Assert.That(tree.GetText().ToString(diagnostic.Location.SourceSpan)).IsEqualTo($"Relayer.Message({name})");
+        await Assert.That(diagnostic.Descriptor.HelpLinkUri)
+            .IsEqualTo("https://relayer.tomlonghurst.dev/docs/reference/diagnostics#rlym005");
+        await Assert.That(string.Join("\n", output.GetDiagnostics().Where(d => d.Severity == DiagnosticSeverity.Error)))
+            .IsEqualTo("");
+        var generated = string.Join("\n", driver.GetRunResult().GeneratedTrees.Select(t => t.ToString()));
+        await Assert.That(generated).DoesNotContain("InvalidOrder");
+        if (includeValid)
+        {
+            await Assert.That(generated).Contains("Add<global::ValidOrder>(\"orders.valid\", 1)");
+            await Assert.That(generated).Contains("typeof(global::ValidOrder)");
+        }
+        else
+        {
+            await Assert.That(generated).IsEqualTo("");
+        }
+    }
+
+    [Test]
     public async Task Inaccessible_messages_are_diagnosed_without_generated_source_errors()
     {
         var references = ((string)AppContext.GetData("TRUSTED_PLATFORM_ASSEMBLIES")!)
