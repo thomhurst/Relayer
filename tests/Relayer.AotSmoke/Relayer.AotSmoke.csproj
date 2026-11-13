@@ -6,6 +6,9 @@
     <JsonSerializerIsReflectionEnabledByDefault>false</JsonSerializerIsReflectionEnabledByDefault>
     <IlcTreatWarningsAsErrors>true</IlcTreatWarningsAsErrors>
     <TrimmerSingleWarn>false</TrimmerSingleWarn>
+    <!-- Background GC can charge retired allocation-context space to current-thread counters
+         (dotnet/runtime#134724), including under Native AOT. Preserve exact smoke assertions. -->
+    <ConcurrentGarbageCollection>false</ConcurrentGarbageCollection>
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="../Relayer.TestContracts.Orders/Relayer.TestContracts.Orders.csproj" />
