@@ -1,6 +1,7 @@
 using Relayer.Transports;
 using Relayer.Pipeline;
 using System.Buffers;
+using System.Collections.Frozen;
 using BenchmarkDotNet.Attributes;
 using Microsoft.Extensions.DependencyInjection;
 using Relayer.Serialization;
@@ -22,6 +23,9 @@ public class ReceivePipelineBenchmarks
     private Incoming _tombstone = null!;
     private readonly Disposition[] _dispositions = new Disposition[10];
 
+    [Params(1, 100)]
+    public int HandledIdentityCount { get; set; }
+
     [Params(false, true)]
     public bool Utf8Headers { get; set; }
 
@@ -42,6 +46,21 @@ public class ReceivePipelineBenchmarks
                 static (_, error, _) => ValueTask.FromException(error))
             .Handler(_provider.GetRequiredService<HandlerRegistry>().GetHandler<Payload, Handler>())
             .Handler(_provider.GetRequiredService<HandlerRegistry>().GetHandler<Tombstone<Payload>, TombstoneHandler>()).Build(1);
+        // Alias identities reuse the same dispatch work to isolate wire matching at scale.
+        using (var context = _consumer.RentContext(new ConsumeMessage
+        {
+            MessageId = "setup", MessageType = new("benchmark.payload", 1), Body = ReadOnlySequence<byte>.Empty
+        }))
+        {
+            var dispatch = _consumer.ResolveDispatch(context);
+            var identities = new Dictionary<MessageType, ConsumeDelegate>();
+            identities.Add(new("benchmark.payload", 1), dispatch);
+            for (var i = 1; i < HandledIdentityCount; i++)
+                identities.Add(new($"benchmark.padding-{i}", 1), dispatch);
+            _consumer = new ConsumePipeline(_provider.GetRequiredService<IServiceScopeFactory>(),
+                identities.ToFrozenDictionary(), [], static (_, error, _) => ValueTask.FromException(error),
+                new DefaultFailureClassifier(), 1, null, null, null, null);
+        }
         _receive = new(_consumer, new HeaderNames(), 1);
         _incoming = new Incoming(Utf8Headers ? new WireString("benchmark.payload;v=1"u8.ToArray()) : new("benchmark.payload;v=1"));
         _tombstone = new Incoming(_incoming.Type, tombstone: true);

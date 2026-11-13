@@ -25,6 +25,28 @@ internal partial class CustomJsonContext : JsonSerializerContext;
 public class JsonSerializerTests
 {
     [Test]
+    public async Task Composed_reader_preserves_options_segmented_input_and_invalid_body_checks()
+    {
+        using var provider = CreateProvider(new JsonSerializerOptions
+        {
+            PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+            AllowTrailingCommas = true,
+            ReadCommentHandling = JsonCommentHandling.Skip
+        });
+        var serializer = (JsonMessageSerializer)provider.GetRequiredService<IMessageSerializer>();
+        var read = serializer.CreateDeserializer<JsonValue>();
+        var first = new Segment("{ /* comment */ \"co"u8.ToArray());
+        var last = first.Append("unt\":42,}"u8.ToArray());
+        var source = new ReadOnlySequence<byte>(first, 0, last, last.Memory.Length);
+        await Assert.That(read(source)).IsEqualTo(new JsonValue(42));
+        foreach (var invalid in new[] { "null", "{} {}", "{", "" })
+        {
+            await Assert.That(() => read(new ReadOnlySequence<byte>(Encoding.UTF8.GetBytes(invalid))))
+                .Throws<JsonException>();
+        }
+    }
+
+    [Test]
     public async Task Exported_contexts_compose_and_allow_custom_context_override()
     {
         var services = new ServiceCollection().AddRelayer(builder =>

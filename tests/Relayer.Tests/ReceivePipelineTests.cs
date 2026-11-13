@@ -1,6 +1,7 @@
 using Relayer.Transports;
 using Relayer.Pipeline;
 using System.Buffers;
+using System.Collections.Frozen;
 using Microsoft.Extensions.DependencyInjection;
 using Relayer.Serialization;
 
@@ -8,6 +9,60 @@ namespace Relayer.Tests;
 
 public class ReceivePipelineTests
 {
+    [Test]
+    public async Task Wire_match_preserves_native_tombstone_and_value_routing()
+    {
+        var services = new ServiceCollection();
+        services.AddSingleton<Control>();
+        services.AddRelayer(r =>
+        {
+            r.Infrastructure().MessageTypes.Add<Payload>("payload");
+            new ConsumerBuilder<object>(r.Services, r.Infrastructure().Handlers, "manual")
+                .Handler<Handler>().Handler<DeletedHandler>();
+        });
+        await using var provider = services.BuildServiceProvider();
+        var control = provider.GetRequiredService<Control>();
+        var handlers = provider.GetRequiredService<HandlerRegistry>();
+        var consumer = new ConsumePipelineBuilder(provider.GetRequiredService<IServiceScopeFactory>(),
+            provider.GetRequiredService<MessageTypeRegistry>(), new Serializer(control),
+            static (_, error, _) => ValueTask.FromException(error))
+            .Handler(handlers.GetHandler<Payload, Handler>())
+            .Handler(handlers.GetHandler<Tombstone<Payload>, DeletedHandler>()).Build(1);
+        var receive = new ReceivePipeline<Incoming, Binding>(consumer, new(), 1);
+        await receive.ProcessAsync(new Incoming());
+        await receive.ProcessAsync(new Incoming { Tombstone = true, Body = ReadOnlySequence<byte>.Empty });
+        await receive.ProcessAsync(new Incoming { Type = new("payload;v=1") });
+        await Assert.That(control.Calls).IsEqualTo(2);
+        await Assert.That(control.Deleted).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task Wire_match_retains_the_correct_delegate_across_pooled_deliveries()
+    {
+        await using var provider = Provider();
+        var calls = new List<int>();
+        var errors = new List<Exception>();
+        var dispatch = new Dictionary<MessageType, ConsumeDelegate>
+        {
+            [new("payload", 1)] = _ => { calls.Add(1); return default; },
+            [new("payload", 2)] = _ => { calls.Add(2); return default; },
+            [new("other", 1)] = _ => { calls.Add(3); return default; }
+        };
+        var consumer = new ConsumePipeline(provider.GetRequiredService<IServiceScopeFactory>(),
+            dispatch.ToFrozenDictionary(), [], (_, error, _) => { errors.Add(error); return default; },
+            new DefaultFailureClassifier(), 1, null, null, null, null);
+        var receive = new ReceivePipeline<Incoming, Binding>(consumer, new HeaderNames(), 1);
+        foreach (var type in new[] { "payload;v=2", "other;v=1", "unknown;v=1", "payload;v=1", "malformed", "payload;v=2" })
+        {
+            await receive.ProcessAsync(new Incoming { Type = new(type) });
+            await receive.ProcessAsync(new Incoming { Type = new(System.Text.Encoding.UTF8.GetBytes(type)) });
+        }
+        await Assert.That(calls).IsEquivalentTo(new[] { 2, 2, 3, 3, 1, 1, 2, 2 });
+        await Assert.That(errors.Count).IsEqualTo(4);
+        await Assert.That(errors[0]).IsTypeOf<UnknownMessageTypeException>();
+        await Assert.That(errors[2]).IsTypeOf<MessageEnvelopeException>();
+    }
+
     [Test]
     public async Task Default_disposition_is_unset_and_completion_is_explicit()
     {
@@ -410,6 +465,7 @@ public class ReceivePipelineTests
     {
         public Func<MessageContext, ValueTask>? Invoke { get; set; }
         public int Calls { get; set; }
+        public int Deleted { get; set; }
         public ReadOnlySequence<byte> Body { get; set; }
         public TaskCompletionSource? DisposalStarted { get; set; }
         public Task? Disposal { get; set; }
@@ -430,6 +486,14 @@ public class ReceivePipelineTests
             return control.Invoke?.Invoke(context) ?? default;
         }
     }
+    public sealed class DeletedHandler(Control control) : IHandler<Tombstone<Payload>>
+    {
+        public ValueTask HandleAsync(Tombstone<Payload> message, MessageContext context, CancellationToken cancellationToken)
+        {
+            control.Deleted++;
+            return default;
+        }
+    }
     private sealed class Serializer(Control control) : IMessageSerializer
     {
         private readonly Payload _payload = new();
@@ -443,6 +507,7 @@ public class ReceivePipelineTests
     }
     private sealed class Incoming
     {
+        public bool Tombstone { get; init; }
         public ReadOnlySequence<byte> Body { get; init; } = new(new byte[] { 1 });
         public WireString Type { get; init; } = new("payload;v=1"u8.ToArray());
         public WireString Id { get; init; } = new("id"u8.ToArray());
@@ -454,6 +519,8 @@ public class ReceivePipelineTests
     }
     private readonly struct Binding : IMessageBinding<Incoming>
     {
+        public static bool IsTombstone(Incoming message) => message.Tombstone;
+        public static WireString? GetTombstoneKey(Incoming message) => new WireString("key");
         public static ReadOnlySequence<byte> GetBody(Incoming message) => message.Body;
         public static int? GetDeliveryCount(Incoming message) => message.Count;
         public static bool TryGetHeader(Incoming message, string name, out WireString value)

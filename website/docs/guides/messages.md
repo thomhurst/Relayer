@@ -89,6 +89,8 @@ services.AddRelayer(relayer =>
 
 When contexts overlap, the last registered context supplies the metadata for a type. A custom context can also cover explicitly registered message types from a contracts assembly. Missing metadata fails when the serializer is first resolved, which includes host startup through Relayer's hosted validator.
 
+Single-message consumers cache their typed JSON reader when the pipeline is composed, using the selected source-generated metadata and reader options. Custom serializers continue to receive calls through `IMessageSerializer`.
+
 Serialization writes to pooled `IBufferWriter<byte>` storage and deserialization reads the `ReadOnlySequence<byte>` directly. Null bodies and trailing JSON values are rejected.
 
 ## Custom serializers

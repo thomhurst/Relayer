@@ -50,7 +50,19 @@ internal sealed class JsonMessageSerializer : IMessageSerializer
     {
         var entry = GetEntry<TMessage>();
         var typeInfo = (JsonTypeInfo<TMessage>)entry.TypeInfo;
-        var reader = new Utf8JsonReader(source, entry.ReaderOptions);
+        return Deserialize<TMessage>(source, typeInfo, entry.ReaderOptions);
+    }
+
+    internal Func<ReadOnlySequence<byte>, TMessage> CreateDeserializer<TMessage>()
+    {
+        var entry = GetEntry<TMessage>();
+        var typeInfo = (JsonTypeInfo<TMessage>)entry.TypeInfo;
+        return source => Deserialize(source, typeInfo, entry.ReaderOptions);
+    }
+
+    private static TMessage Deserialize<TMessage>(ReadOnlySequence<byte> source, JsonTypeInfo<TMessage> typeInfo, JsonReaderOptions options)
+    {
+        var reader = new Utf8JsonReader(source, options);
         var message = JsonSerializer.Deserialize(ref reader, typeInfo);
         if (reader.Read())
         {

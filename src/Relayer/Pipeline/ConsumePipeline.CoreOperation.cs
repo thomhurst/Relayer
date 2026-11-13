@@ -128,9 +128,7 @@ public sealed partial class ConsumePipeline
                             _context.SetServices(_scope.ServiceProvider);
                             if (_owner.BufferAttemptSends) _context.AttachSender(_scope.ServiceProvider);
                             _stage = Stage.Handler;
-                            if (!_owner._dispatch.TryGetValue(_context.MessageType, out var dispatch))
-                                throw new UnknownMessageTypeException(_context.MessageType);
-                            _context.Dispatch = dispatch;
+                            _context.Dispatch = _owner.ResolveDispatch(_context);
                             _pending = _owner._pipeline(_context).ConfigureAwait(false).GetAwaiter();
                             goto case Stage.Handler;
                         case Stage.PolicyAttempt:
@@ -149,9 +147,7 @@ public sealed partial class ConsumePipeline
                                 _context.InitializeAttempts();
                             }
                             if (!_owner._scopesOnDemand) _context.AttachSender();
-                            if (!_owner._dispatch.TryGetValue(_context.MessageType, out var policyDispatch))
-                                throw new UnknownMessageTypeException(_context.MessageType);
-                            _context.Dispatch = policyDispatch;
+                            _context.Dispatch = _owner.ResolveDispatch(_context);
                             _pending = _owner._pipeline(_context).ConfigureAwait(false).GetAwaiter();
                             goto case Stage.PolicyHandler;
                         case Stage.PolicyHandler:
