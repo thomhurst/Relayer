@@ -58,6 +58,7 @@ public class PublicApiSurfaceTests
             "RelayerServiceCollectionExtensions",
             "RelayerTelemetry",
             "ReplyExtensions",
+            "RequestBuilder",
             "RequestOptions",
             "RouteBuilder",
             "SendBuilderExtensions",
