@@ -36,6 +36,54 @@ public class OutboxStoreHealthTests
     }
 
     [Test]
+    [Arguments(9L, HealthStatus.Healthy, false)]
+    [Arguments(10L, HealthStatus.Degraded, false)]
+    [Arguments(19L, HealthStatus.Degraded, false)]
+    [Arguments(20L, HealthStatus.Unhealthy, false)]
+    [Arguments(21L, HealthStatus.Unhealthy, true)]
+    [Arguments(100L, HealthStatus.Unhealthy, true)]
+    public async Task Health_probe_forwards_bound_and_reports_saturation(long count, HealthStatus expected, bool lowerBound)
+    {
+        var store = new BoundedStore { Count = count };
+        var services = CreateServices("orders", "billing");
+        services.AddKeyedScoped<IOutboxStore>("orders", (_, _) => store);
+        services.AddKeyedScoped<IOutboxStore>("billing", (_, _) => new TestStore());
+        services.AddRelayerOutboxHealthProvider("orders");
+        services.AddRelayerOutboxHealthProvider("billing");
+        await using var provider = services.BuildServiceProvider();
+        var entry = (await Check(provider)).Entries["relayer.outbox"];
+        var detail = (HealthCheckResult)entry.Data["orders"];
+        await Assert.That(detail.Status).IsEqualTo(expected);
+        await Assert.That((long)detail.Data["pending_count"]).IsEqualTo(Math.Min(count, 21));
+        await Assert.That((bool)detail.Data["pending_count_is_lower_bound"]).IsEqualTo(lowerBound);
+        await Assert.That(detail.Description!).IsEqualTo($"{(lowerBound ? "At least " : "")}{Math.Min(count, 21)} pending rows eligible for dispatch.");
+        await Assert.That(store.Limit).IsEqualTo(21L);
+        await Assert.That(store.ObservedNow).IsEqualTo(Now);
+        await Assert.That(((HealthCheckResult)entry.Data["billing"]).Status).IsEqualTo(HealthStatus.Healthy);
+    }
+
+    [Test]
+    public async Task Maximum_threshold_does_not_overflow()
+    {
+        var store = new BoundedStore { Count = long.MaxValue };
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddRelayer(_ => { });
+        services.AddRelayerHealthChecks(new RelayerHealthCheckOptions
+        {
+            OutboxNames = ["orders"], OutboxDegradedThreshold = long.MaxValue - 1,
+            OutboxUnhealthyThreshold = long.MaxValue
+        });
+        services.AddKeyedScoped<IOutboxStore>("orders", (_, _) => store);
+        services.AddRelayerOutboxHealthProvider("orders");
+        await using var provider = services.BuildServiceProvider();
+        var detail = (HealthCheckResult)(await Check(provider)).Entries["relayer.outbox"].Data["orders"];
+        await Assert.That(detail.Status).IsEqualTo(HealthStatus.Unhealthy);
+        await Assert.That(store.Limit).IsEqualTo(long.MaxValue);
+        await Assert.That((bool)detail.Data["pending_count_is_lower_bound"]).IsTrue();
+    }
+
+    [Test]
     public async Task Adapter_reads_current_time_and_forwards_the_callers_token()
     {
         var store = new TestStore();
@@ -132,8 +180,8 @@ public class OutboxStoreHealthTests
     {
         var error = new IOException("database unavailable");
         var services = CreateServices("unavailable", "failed");
-        services.AddKeyedScoped<IOutboxStore>("unavailable", (_, _) => new TestStore { Count = null });
-        services.AddKeyedScoped<IOutboxStore>("failed", (_, _) => new TestStore { Error = error });
+        services.AddKeyedScoped<IOutboxStore>("unavailable", (_, _) => new BoundedStore { Count = null });
+        services.AddKeyedScoped<IOutboxStore>("failed", (_, _) => new BoundedStore { Error = error });
         services.AddRelayerOutboxHealthProvider("unavailable");
         services.AddRelayerOutboxHealthProvider("failed");
         await using var provider = services.BuildServiceProvider();
@@ -147,10 +195,12 @@ public class OutboxStoreHealthTests
     }
 
     [Test]
-    public async Task Cancellation_reaches_an_inflight_store_query()
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Cancellation_reaches_an_inflight_store_query(bool bounded)
     {
         var entered = new TaskCompletionSource<CancellationToken>(TaskCreationOptions.RunContinuationsAsynchronously);
-        var store = new TestStore { Query = WaitForCancellation };
+        var store = new BoundedStore { Query = WaitForCancellation };
         var services = new ServiceCollection();
         services.AddKeyedScoped<IOutboxStore>("orders", (_, _) => store);
         services.AddRelayerOutboxHealthProvider("orders");
@@ -159,7 +209,8 @@ public class OutboxStoreHealthTests
         var adapter = scope.ServiceProvider.GetRequiredKeyedService<IOutboxHealthProvider>("orders");
         using var cancellation = new CancellationTokenSource();
 
-        var query = adapter.GetPendingCountAsync(cancellation.Token).AsTask();
+        var query = (bounded ? adapter.GetPendingCountAsync(21, cancellation.Token)
+            : adapter.GetPendingCountAsync(cancellation.Token)).AsTask();
         var observed = await entered.Task.WaitAsync(TimeSpan.FromSeconds(10));
         cancellation.Cancel();
 
@@ -247,7 +298,18 @@ public class OutboxStoreHealthTests
         public ValueTask<long?> GetPendingCountAsync(CancellationToken cancellationToken) => ValueTask.FromResult<long?>(7);
     }
 
-    private sealed class TestStore : IOutboxStore, IDisposable
+    private sealed class BoundedStore : TestStore, IOutboxStore
+    {
+        public long Limit { get; private set; }
+        public async ValueTask<long?> GetPendingCountAsync(DateTimeOffset now, long countLimit, CancellationToken cancellationToken)
+        {
+            Limit = countLimit;
+            var count = await GetPendingCountAsync(now, cancellationToken);
+            return count is null ? null : Math.Min(count.Value, countLimit);
+        }
+    }
+
+    private class TestStore : IOutboxStore, IDisposable
     {
         public long? Count { get; init; } = 0;
         public Exception? Error { get; init; }

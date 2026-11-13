@@ -56,6 +56,18 @@ public interface IOutboxStore
     /// lanes. A zero count means a successful query with no eligible rows; never translate an error into zero.
     /// </remarks>
     ValueTask<long?> GetPendingCountAsync(DateTimeOffset now, CancellationToken cancellationToken);
+
+    /// <summary>Counts at most countLimit eligible rows across all lanes for a health probe.</summary>
+    /// <remarks>
+    /// countLimit must be positive. A result at or above the limit is a lower bound, not an exact count.
+    /// Uses the same eligibility and error semantics as the exact-count overload. Providers should bound
+    /// the query in native SQL; the default preserves compatibility by falling back to the exact query.
+    /// </remarks>
+    ValueTask<long?> GetPendingCountAsync(DateTimeOffset now, long countLimit, CancellationToken cancellationToken)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(countLimit);
+        return GetPendingCountAsync(now, cancellationToken);
+    }
 }
 
 /// <summary>A bounded scan of one lane at a fixed instant. A null lane selects unordered rows.</summary>

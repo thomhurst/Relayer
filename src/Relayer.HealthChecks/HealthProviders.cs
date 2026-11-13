@@ -31,4 +31,12 @@ public interface IOutboxHealthProvider
 {
     /// <summary>Returns pending rows eligible for dispatch, excluding future scheduled rows; null means unavailable.</summary>
     ValueTask<long?> GetPendingCountAsync(CancellationToken cancellationToken);
+
+    /// <summary>Probes up to countLimit eligible rows; a result at or above the limit is a lower bound.</summary>
+    /// <remarks>countLimit must be positive. The default calls the exact-count overload for existing providers.</remarks>
+    ValueTask<long?> GetPendingCountAsync(long countLimit, CancellationToken cancellationToken)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(countLimit);
+        return GetPendingCountAsync(cancellationToken);
+    }
 }

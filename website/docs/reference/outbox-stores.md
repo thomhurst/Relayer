@@ -109,6 +109,11 @@ filter. Count rows, not keys or lanes. Include schedules exactly at `now` and ex
 schedules, live claims and parked/dead rows. Return zero only after a successful query finds no eligible rows.
 Return null for an unavailable count and propagate query errors rather than returning zero.
 
+The `GetPendingCountAsync(now, countLimit, cancellationToken)` overload is intended for health probes.
+It uses the same eligibility rules and counts at most the positive `countLimit` in PostgreSQL, SQL Server
+and MySQL native SQL. A result at or above the limit is a lower bound. Custom implementations retain a
+default exact-count fallback; override it to bound database work. The overload without a limit remains exact.
+
 The [health adapter](../guides/health-checks.md) forwards the query time and cancellation token without changing
 the result. Provider implementations must verify these predicates and threshold inputs against real database
 fixtures; the core adapter's unit tests do not establish database correctness.

@@ -80,6 +80,30 @@ public abstract class OutboxStoreContractTests
     }
 
     [Test]
+    public async Task Health_counts_are_bounded_without_changing_exact_counts_or_eligibility()
+    {
+        await using var fixture = await CreateFixtureAsync();
+        var store = fixture.Store();
+        var now = new DateTimeOffset(2030, 1, 1, 0, 0, 0, TimeSpan.Zero);
+        await fixture.Insert(Guid.CreateVersion7(), now, deliverAt: now.AddSeconds(1));
+        await fixture.Insert(Guid.CreateVersion7(), now, expires: now.AddSeconds(1));
+        await fixture.Insert(Guid.CreateVersion7(), now, status: "parked");
+        for (var count = 0; count <= 5; count++)
+        {
+            await Assert.That(await store.GetPendingCountAsync(now, 3, default)).IsEqualTo(Math.Min(count, 3));
+            await Assert.That(await store.GetPendingCountAsync(now, default)).IsEqualTo((long)count);
+            if (count < 5)
+                await fixture.Insert(Guid.CreateVersion7(), now, lane: count % 2 == 0 ? null : 1,
+                    deliverAt: now, expires: now);
+        }
+        await Assert.That(await store.GetPendingCountAsync(now, long.MaxValue, default)).IsEqualTo(5L);
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(async () => await store.GetPendingCountAsync(now, 0, default));
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(async () => await store.GetPendingCountAsync(now, -1, default));
+        await Assert.ThrowsAsync<OperationCanceledException>(async () =>
+            await store.GetPendingCountAsync(now, 3, new CancellationToken(true)));
+    }
+
+    [Test]
     public async Task Concurrent_claims_fence_stale_owners_and_recover_at_exact_expiry()
     {
         await using var fixture = await CreateFixtureAsync();

@@ -97,7 +97,11 @@ inside the health service's scope; adapters may be scoped if their native depend
 
 `AddRelayerOutboxHealthProvider(name)` registers a scoped keyed `IOutboxHealthProvider` that resolves the
 keyed `IOutboxStore` with exactly the same case-sensitive name. The adapter queries
-`GetPendingCountAsync(now, cancellationToken)` with the DI `TimeProvider`'s current UTC instant on every poll.
+`GetPendingCountAsync(now, countLimit, cancellationToken)` with the DI `TimeProvider`'s current UTC instant
+on every poll. PostgreSQL, SQL Server and MySQL bound the native SQL count to the unhealthy threshold plus
+one, so a large eligible backlog does not require counting every row. The limit saturates at `long.MaxValue`.
+The original store overload without `countLimit` still returns an exact count. Custom stores and health
+providers can implement the bounded overload; its default falls back to their existing exact-count method.
 It preserves null counts, errors and cancellation. EF Core integrations can use scoped store dependencies;
 the health scope disposes them after the poll. Repeated registration preserves an existing provider for that name.
 Applications may still register `IOutboxHealthProvider` directly for other storage integrations.
@@ -113,7 +117,10 @@ consumer's future progress timestamp also fail health. No configured resources i
 with an explicit description. All resources in a category are checked; the worst status wins. The description
 names every resource. Each result's `Data` retains the individual `HealthCheckResult`, including native data and
 exceptions. Consumer data keys include transport, declaration index and source. Backlog result data includes
-`pending_count`. The aggregate exception is the first reported exception; other exceptions remain in the data.
+`pending_count` and `pending_count_is_lower_bound`. When the probe reaches its limit, the description says
+“At least N pending rows eligible for dispatch” and `pending_count_is_lower_bound` is `true`; do not treat
+that value as an exact backlog size. Counts below the limit are exact. Health thresholds remain inclusive.
+The aggregate exception is the first reported exception; other exceptions remain in the data.
 
 Idle consumers are healthy regardless of elapsed time. Active consumers become unhealthy at or beyond
 `ConsumerStallTimeout`. Backlogs become degraded at or beyond `OutboxDegradedThreshold` and unhealthy at or

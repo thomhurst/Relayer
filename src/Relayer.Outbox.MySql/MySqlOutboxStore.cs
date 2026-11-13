@@ -23,6 +23,7 @@ public sealed class MySqlOutboxStore : IOutboxStore, IDisposable
     private readonly MySqlStoreParameters _fail;
     private readonly MySqlStoreParameters _retry;
     private readonly MySqlStoreParameters _count;
+    private readonly MySqlStoreParameters _boundedCount;
     private readonly MySqlDispatchMutations _claimBatch;
     private readonly MySqlDispatchMutations _completeBatch;
     private readonly List<HeaderSlot> _headers = [];
@@ -58,6 +59,8 @@ public sealed class MySqlOutboxStore : IOutboxStore, IDisposable
         _claimBatch = new($"UPDATE {table} SET claim_token = @token, claim_expires_at = @expires WHERE id = @id AND lane IS NULL AND {eligible}");
         _completeBatch = new($"DELETE FROM {table} WHERE {fenced}");
         _count = new($"SELECT COUNT(*) FROM {table} WHERE {eligible}");
+        _boundedCount = new($"SELECT COUNT(*) FROM (SELECT 1 FROM {table} WHERE {eligible} LIMIT @countLimit) AS pending");
+        _boundedCount.Command.Parameters.Add("countLimit", MySqlDbType.Int64);
     }
 
     internal static void ValidateDataSource(MySqlDataSource dataSource)
@@ -270,6 +273,20 @@ public sealed class MySqlOutboxStore : IOutboxStore, IDisposable
         finally { command.Connection = null; }
     }
 
+    /// <inheritdoc />
+    public async ValueTask<long?> GetPendingCountAsync(DateTimeOffset now, long countLimit, CancellationToken cancellationToken)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(countLimit);
+        EnsureAvailable(cancellationToken);
+        _boundedCount.Now(now);
+        var command = _boundedCount.Command;
+        command.Parameters["countLimit"].Value = countLimit;
+        await using var connection = await _dataSource.OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+        command.Connection = connection;
+        try { return (long)(await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false))!; }
+        finally { command.Connection = null; }
+    }
+
     [RuntimeAsyncMethodGeneration(false)]
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
     internal async ValueTask ClaimBatchAsync(ReadOnlyMemory<OutboxClaim> claims, Memory<bool> claimed,
@@ -332,6 +349,7 @@ public sealed class MySqlOutboxStore : IOutboxStore, IDisposable
         _fail.Command.Dispose();
         _retry.Command.Dispose();
         _count.Command.Dispose();
+        _boundedCount.Command.Dispose();
         _claimBatch.Dispose();
         _completeBatch.Dispose();
         _headers.Clear();

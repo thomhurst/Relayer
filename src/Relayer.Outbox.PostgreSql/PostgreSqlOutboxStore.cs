@@ -32,6 +32,7 @@ public sealed class PostgreSqlOutboxStore : IOutboxStore
     private readonly string _retry;
     private readonly string _failImmediately;
     private readonly string _count;
+    private readonly string _boundedCount;
     private readonly ScalarOperation<int> _failure = new(static value => (int)value!);
     private readonly ScalarOperation<bool> _mutation = new(static value => value is true);
     private readonly ScalarOperation<long?> _pendingCount = new(static value => (long?)value);
@@ -86,6 +87,7 @@ public sealed class PostgreSqlOutboxStore : IOutboxStore
         _retryDirect = PostgreSqlPoisonSql.Retry(table, directFence, "clock_timestamp()");
         _failDirectImmediately = PostgreSqlPoisonSql.Failure(table, dead, directFence, 1);
         _count = $"SELECT count(*) FROM {table} WHERE {eligible}";
+        _boundedCount = $"SELECT count(*) FROM (SELECT 1 FROM {table} WHERE {eligible} LIMIT @countLimit) AS pending";
     }
 
     /// <inheritdoc />
@@ -270,6 +272,17 @@ public sealed class PostgreSqlOutboxStore : IOutboxStore
     {
         var command = CreateCommand(_count);
         Add(command, "now", NpgsqlDbType.TimestampTz, now.ToUniversalTime());
+        return _pendingCount.Start(command, cancellationToken);
+    }
+
+    /// <inheritdoc />
+    public ValueTask<long?> GetPendingCountAsync(DateTimeOffset now, long countLimit, CancellationToken cancellationToken)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(countLimit);
+        cancellationToken.ThrowIfCancellationRequested();
+        var command = CreateCommand(_boundedCount);
+        Add(command, "now", NpgsqlDbType.TimestampTz, now.ToUniversalTime());
+        Add(command, "countLimit", NpgsqlDbType.Bigint, countLimit);
         return _pendingCount.Start(command, cancellationToken);
     }
 
