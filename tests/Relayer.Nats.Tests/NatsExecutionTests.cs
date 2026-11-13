@@ -289,21 +289,33 @@ public class NatsExecutionTests
         await adapter.ApplyTopologyAsync(TopologyMode.Provision, token);
         var worker = adapter.AddConsumer(events, "worker", new() { MaxMsgs = 1, DrainOnCancel = true, Expires = TimeSpan.FromSeconds(1) }, 2);
         var redelivered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var redeliveryReceived = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var initialAttemptFinished = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var calls = 0;
         worker.Receive = async (delivery, processing) =>
         {
-            if (Interlocked.Increment(ref calls) == 1)
+            Interlocked.Increment(ref calls);
+            if (delivery.Message.Metadata!.Value.NumDelivered == 1)
             {
+                // Force the second worker to observe native redelivery before this attempt
+                // finishes. Callback scheduling is not broker delivery order.
+                await redeliveryReceived.Task.WaitAsync(processing);
                 // A real native confirmed ACK request to an unsubscribed subject fails without
                 // acknowledging the original. No connection outage or timing race is required.
                 var failed = new NatsJSMsg<ReadOnlyMemory<byte>>(new NatsMsg<ReadOnlyMemory<byte>>(
                     subject, subject + ".no_ack_receiver", 0, null, delivery.Message.Data, delivery.Message.Connection),
                     new NatsJSContext(delivery.Message.Connection!));
-                await worker.SettleAsync(new(failed, delivery.Consumer), Disposition.Complete, processing);
+                try { await worker.SettleAsync(new(failed, delivery.Consumer), Disposition.Complete, processing); }
+                finally { initialAttemptFinished.TrySetResult(); }
                 return Disposition.SettledByHandler;
             }
+            redeliveryReceived.TrySetResult();
+            await initialAttemptFinished.Task.WaitAsync(processing);
+            // Confirm settlement before signalling: stopping the pull loop must not race
+            // the assertion, and native at-least-once delivery may include queued duplicates.
+            await worker.SettleAsync(delivery, Disposition.Complete, processing);
             if (delivery.Message.Metadata!.Value.NumDelivered > 1) redelivered.TrySetResult();
-            return Disposition.Complete;
+            return Disposition.SettledByHandler;
         };
         await adapter.StartAsync(token);
         await using var native = new NatsConnection(broker.Options());
@@ -315,7 +327,7 @@ public class NatsExecutionTests
         await adapter.StopAsync(token);
         var consumer = await js.GetConsumerAsync(events, "worker", token);
         await Assert.That(consumer.Info.NumAckPending).IsEqualTo(0L);
-        await Assert.That(calls).IsEqualTo(2);
+        await Assert.That(calls).IsGreaterThanOrEqualTo(2);
     }
 
     [Test]
@@ -347,20 +359,35 @@ public class NatsExecutionTests
         var js = new NatsJSContext(native);
         var worker = adapter.AddConsumer(events, "worker", new() { MaxMsgs = 1, DrainOnCancel = true, Expires = TimeSpan.FromSeconds(1) }, 2);
         var redelivered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var redeliveryReceived = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var initialAttemptFinished = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var calls = 0;
         worker.Receive = async (delivery, processing) =>
         {
-            if (Interlocked.Increment(ref calls) == 1)
+            Interlocked.Increment(ref calls);
+            if (delivery.Message.Metadata!.Value.NumDelivered == 1)
             {
-                if (unsupportedSettlement) return Disposition.Redeliver(TimeSpan.Zero);
-                // A real failure-copy publication to a subject outside every stream fails.
-                // Leave the original unacknowledged so native AckWait can redeliver it.
-                (await js.PublishAsync(missing, delivery.Message.Data,
-                    NatsRawSerializer<ReadOnlyMemory<byte>>.Default, cancellationToken: processing)).EnsureSuccess();
-                throw new InvalidOperationException("Expected native publication to fail.");
+                // Force the second worker to observe native redelivery before this attempt
+                // finishes. Callback scheduling is not broker delivery order.
+                await redeliveryReceived.Task.WaitAsync(processing);
+                try
+                {
+                    if (unsupportedSettlement) return Disposition.Redeliver(TimeSpan.Zero);
+                    // A real failure-copy publication to a subject outside every stream fails.
+                    // Leave the original unacknowledged so native AckWait can redeliver it.
+                    (await js.PublishAsync(missing, delivery.Message.Data,
+                        NatsRawSerializer<ReadOnlyMemory<byte>>.Default, cancellationToken: processing)).EnsureSuccess();
+                    throw new InvalidOperationException("Expected native publication to fail.");
+                }
+                finally { initialAttemptFinished.TrySetResult(); }
             }
+            redeliveryReceived.TrySetResult();
+            await initialAttemptFinished.Task.WaitAsync(processing);
+            // Confirm settlement before signalling: stopping the pull loop must not race
+            // the assertion, and native at-least-once delivery may include queued duplicates.
+            await worker.SettleAsync(delivery, Disposition.Complete, processing);
             if (delivery.Message.Metadata!.Value.NumDelivered > 1) redelivered.TrySetResult();
-            return Disposition.Complete;
+            return Disposition.SettledByHandler;
         };
         await adapter.StartAsync(token);
         (await js.PublishAsync(subject, new byte[] { 42 }, NatsRawSerializer<byte[]>.Default, cancellationToken: token)).EnsureSuccess();
@@ -370,7 +397,7 @@ public class NatsExecutionTests
         await adapter.StopAsync(token);
         var consumer = await js.GetConsumerAsync(events, "worker", token);
         await Assert.That(consumer.Info.NumAckPending).IsEqualTo(0L);
-        await Assert.That(calls).IsEqualTo(2);
+        await Assert.That(calls).IsGreaterThanOrEqualTo(2);
     }
 
 }
