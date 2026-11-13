@@ -7,7 +7,7 @@ using Relayer.Transports;
 
 namespace Relayer.Outbox.PostgreSql;
 
-internal sealed partial class PostgreSqlOrderedDispatcher : BackgroundService
+internal sealed partial class PostgreSqlOrderedDispatcher : BackgroundService, IOrderedLaneWorker
 {
     private readonly NpgsqlDataSource _source;
     private readonly PostgreSqlDispatchFailures _failures;
@@ -57,67 +57,21 @@ internal sealed partial class PostgreSqlOrderedDispatcher : BackgroundService
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        // Reuse the deadline source across successful batches. Cancellation is an exceptional path.
-        var deadline = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
         using var idleStop = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken, _idleStop.Token);
-        long? lastRebalance = null;
-        try
-        {
-            while (!stoppingToken.IsCancellationRequested && Volatile.Read(ref _localStop) == 0)
-            {
-                var madeProgress = false;
-                try
-                {
-                    await RebalanceIfDueAsync().ConfigureAwait(false);
-                    await _lane.FindReadyAsync(_coordinator.Assigned, _ready, stoppingToken).ConfigureAwait(false);
-                    for (var lane = 0; lane < _options.Lanes; lane++)
-                    {
-                        if (Volatile.Read(ref _localStop) != 0) break;
-                        if (!_ready[lane] || !_coordinator.Assigned[lane]) continue;
-                        // A preceding slow batch can consume the heartbeat interval. Refresh before renewing another lane.
-                        await RebalanceIfDueAsync().ConfigureAwait(false);
-                        if (!_coordinator.Assigned[lane]) continue;
-                        deadline.CancelAfter(_options.LeaseDuration / 2);
-                        try
-                        {
-                            madeProgress |= await DispatchLaneAsync(lane, deadline.Token).ConfigureAwait(false) > 0;
-                        }
-                        catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { throw; }
-                        catch (Exception error) { DispatchFailed(_logger, error); }
-                        finally
-                        {
-                            deadline.CancelAfter(Timeout.InfiniteTimeSpan);
-                            if (!deadline.TryReset())
-                            {
-                                deadline.Dispose();
-                                deadline = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
-                            }
-                        }
-                    }
-                }
-                catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { break; }
-                catch (Exception error) { DispatchFailed(_logger, error); }
-                if (!madeProgress)
-                    await Task.Delay(_options.PollInterval, _timeProvider, idleStop.Token).ConfigureAwait(false);
-            }
-        }
-        catch (OperationCanceledException) when (idleStop.IsCancellationRequested) { }
-        finally
-        {
-            deadline.Dispose();
-            using var cleanup = new CancellationTokenSource(_options.LeaseDuration / 2);
-            try { await _coordinator.ReleaseAsync(cleanup.Token).ConfigureAwait(false); }
-            catch (Exception error) { ReleaseFailed(_logger, error); }
-        }
-
-        async ValueTask RebalanceIfDueAsync()
-        {
-            if (lastRebalance is { } last && _timeProvider.GetElapsedTime(last) < _options.LeaseDuration / 3) return;
-            var started = _timeProvider.GetTimestamp();
-            await _coordinator.RebalanceAsync(stoppingToken).ConfigureAwait(false);
-            lastRebalance = started;
-        }
+        await OrderedLaneWorker.RunAsync(this, _options.LeaseDuration, _options.PollInterval,
+            _timeProvider, stoppingToken, idleStop.Token).ConfigureAwait(false);
     }
+
+    int IOrderedLaneWorker.Lanes => _options.Lanes;
+    bool IOrderedLaneWorker.StopRequested => Volatile.Read(ref _localStop) != 0;
+    bool IOrderedLaneWorker.IsReady(int lane) => _ready[lane];
+    bool IOrderedLaneWorker.IsAssigned(int lane) => _coordinator.Assigned[lane];
+    ValueTask IOrderedLaneWorker.FindReadyAsync(CancellationToken token) => _lane.FindReadyAsync(_coordinator.Assigned, _ready, token);
+    ValueTask IOrderedLaneWorker.RebalanceAsync(CancellationToken token) => _coordinator.RebalanceAsync(token);
+    ValueTask<int> IOrderedLaneWorker.DispatchLaneAsync(int lane, CancellationToken token) => DispatchLaneAsync(lane, token);
+    ValueTask IOrderedLaneWorker.ReleaseAsync(CancellationToken token) => _coordinator.ReleaseAsync(token);
+    void IOrderedLaneWorker.DispatchFailed(Exception error) => DispatchFailed(_logger, error);
+    void IOrderedLaneWorker.ReleaseFailed(Exception error) => ReleaseFailed(_logger, error);
 
     // Reuse native membership, readiness probes and fenced lane transactions in one catalog turn.
     [RuntimeAsyncMethodGeneration(false)]
