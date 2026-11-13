@@ -115,8 +115,16 @@ internal sealed class SnsSendTransport : ITransport, ITransportSendTracing
             while (end < messages.Length && messages.Span[end].Destination == destination) end++;
             var group = messages.Slice(start, end - start);
             var tracing = GetEndpoint(destination).Tracing;
-            if (tracing is null) await SendBatchCoreAsync(group, cancellationToken).ConfigureAwait(false);
-            else await tracing.SendBatchAsync(group, cancellationToken).ConfigureAwait(false);
+            try
+            {
+                if (tracing is null) await SendBatchCoreAsync(group, cancellationToken).ConfigureAwait(false);
+                else await tracing.SendBatchAsync(group, cancellationToken).ConfigureAwait(false);
+            }
+            catch (AmazonSnsBatchException error)
+            {
+                error.GroupOffset = start;
+                throw;
+            }
             start = end;
         }
     }

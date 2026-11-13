@@ -150,11 +150,12 @@ automatic attempt or age ceiling for `Retry`. Configure permanent rules for your
 monitor pending rows. A retrying ordered head blocks later rows with its key until it succeeds or is
 classified permanent.
 
-After a native batch fails, dispatch tries each row once through native `SendAsync` while its claim
+Confirmed native batch successes (including SQS/SNS response entries) complete without another send.
+After a native batch fails, dispatch tries each unconfirmed row once through native `SendAsync` while its claim
 remains live, then completes or classifies that row independently. This prevents one rejected row
 from repeatedly backing off healthy neighbours. A partially successful batch can produce duplicate
 sends during isolation, consistent with at-least-once delivery. Cancellation stops isolation; expired
-claims remain for recovery. Successful batches retain the existing batch send and completion path. The first single-send `Retry` stops isolation and applies fenced durable backoff to the remaining claims with the same error. An outage therefore costs at most one failed batch send and one failed single send per pass; `DeadLetter` and `Discard` allow isolation to continue. Expired or replaced claims cannot be updated and remain eligible for recovery under the existing fencing rules.
+claims remain for recovery. Successful batches retain the existing batch send and completion path. Each unconfirmed row receives at most one single send per failed batch, bounded by `BatchSize`; only that row’s single-send failure is classified. A `Retry` no longer assigns its outcome to remaining rows. Expired or replaced claims cannot be updated and remain eligible for recovery under the existing fencing rules.
 
 Local-handler failures classified as `Retry`, ordered preparation errors (missing transport, key or ordering capability) and explicit low-level
 `RecordFailureAsync` calls retain the positive `MaxDispatchAttempts` budget (default **10**).

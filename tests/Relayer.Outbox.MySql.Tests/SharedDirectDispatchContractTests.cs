@@ -235,6 +235,20 @@ public sealed class SharedDirectDispatchContractTests : OutboxDirectDispatchCont
             return new(bytes, bigEndian: true);
         }
 
+        public override async ValueTask RecoverAsync(OutboxRecord[] records, CancellationToken cancellationToken = default)
+        {
+            var rows = new List<BufferedOutboxMessage>();
+            foreach (var record in records)
+            {
+                var row = new BufferedOutboxMessage();
+                row.Copy(record, 1);
+                rows.Add(row);
+            }
+            var batch = new OutboxDispatchBatch();
+            batch.Take(rows, rows.Count, DateTimeOffset.UtcNow);
+            await _worker!.DispatchRecoveredAsync(batch, cancellationToken);
+        }
+
         public override async Task StopAsync()
         {
             if (_worker is null) return;

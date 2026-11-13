@@ -14,6 +14,25 @@ namespace Relayer.Tests;
 public class SqsSendTests
 {
     [Test]
+    public async Task Native_receipts_index_completed_groups_and_chunks_in_the_original_batch()
+    {
+        using var client = new SqsTestClient { FailBatch = true, FailBatchOnCall = 3 };
+        await using var transport = Transport(client);
+        await transport.StartAsync(default);
+        OutgoingMessage[] messages = [new("ordered.fifo", "{}"u8.ToArray(), orderingKey: new WireString("key")),
+            .. Enumerable.Repeat(new OutgoingMessage("orders", "{}"u8.ToArray()), 12)];
+        AmazonSqsBatchException? failure = null;
+        try { await transport.SendBatchAsync(messages, default); }
+        catch (AmazonSqsBatchException error) { failure = error; }
+        await Assert.That(failure).IsNotNull();
+        await Assert.That(failure!.BatchOffset).IsEqualTo(10);
+        for (var index = 0; index < 12; index++)
+            await Assert.That(((IBatchSendFailure)failure).IsConfirmed(index)).IsTrue();
+        await Assert.That(((IBatchSendFailure)failure).IsConfirmed(12)).IsFalse();
+        await Assert.That(((IBatchSendFailure)failure).IsConfirmed(13)).IsFalse();
+    }
+
+    [Test]
     public async Task Hosted_sender_serializes_the_real_generated_envelope()
     {
         using var client = new SqsTestClient();
@@ -247,6 +266,10 @@ public class SqsSendTests
         await Assert.That(failure!.Response.Failed.Single().Id).IsEqualTo("1");
         await Assert.That(failure.Response.Successful.Single().Id).IsEqualTo("0");
         await Assert.That(failure.BatchOffset).IsEqualTo(0);
+        await Assert.That(((IBatchSendFailure)failure).IsConfirmed(0)).IsTrue();
+        await Assert.That(((IBatchSendFailure)failure).IsConfirmed(1)).IsFalse();
+        await Assert.That(((IBatchSendFailure)failure).IsConfirmed(-1)).IsFalse();
+        await Assert.That(((IBatchSendFailure)failure).IsConfirmed(100)).IsFalse();
         await Assert.That(client.Batches.Count).IsEqualTo(1);
         await transport.SendAsync(new("orders", "{}"u8.ToArray()), default);
         await Assert.That(client.Sent.Single().Attributes.Count).IsEqualTo(0);
@@ -493,6 +516,7 @@ internal sealed class SqsTestClient() : AmazonSQSClient(new AnonymousAWSCredenti
     internal readonly List<CreateQueueRequest> Creates = [];
     internal readonly Dictionary<string, string> NativeAttributes = new() { ["MaximumMessageSize"] = "1048576", ["FifoQueue"] = "true", ["ContentBasedDeduplication"] = "true" };
     internal bool FailBatch;
+    internal int FailBatchOnCall;
     internal bool Missing;
     internal int Lookups;
     internal int Disposals;
@@ -517,7 +541,7 @@ internal sealed class SqsTestClient() : AmazonSQSClient(new AnonymousAWSCredenti
         return new SendMessageBatchResponse
         {
             Successful = [new() { Id = "0" }],
-            Failed = FailBatch ? [new() { Id = "1", Code = "InvalidMessageContents", SenderFault = true }] : [],
+            Failed = FailBatch && (FailBatchOnCall == 0 || Batches.Count == FailBatchOnCall) ? [new() { Id = "1", Code = "InvalidMessageContents", SenderFault = true }] : [],
             ResponseMetadata = new() { RequestId = "batch-request" },
         };
     }

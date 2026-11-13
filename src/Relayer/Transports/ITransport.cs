@@ -31,6 +31,7 @@ public interface ITransport : IAsyncDisposable
     /// Observe cancellation. Apply each message's native callbacks before sending. The batch memory and each message's
     /// borrowed storage remain valid until completion and must not be retained afterward. Completion does not imply
     /// atomicity: a native batch failure or cancellation can leave some messages delivered.
+    /// Exceptions can implement <see cref="IBatchSendFailure"/> to expose confirmed native successes.
     /// </remarks>
     ValueTask SendBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken);
 

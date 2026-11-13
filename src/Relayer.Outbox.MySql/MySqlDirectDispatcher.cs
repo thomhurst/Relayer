@@ -196,7 +196,29 @@ internal sealed class MySqlDirectDispatcher : BackgroundService
                     {
                         try
                         {
-                            await _store.RecordRetryAsync(_claims[i], error.Message, DateTimeOffset.UtcNow, cancellationToken).ConfigureAwait(false);
+                            var sendError = error;
+                            if (live > 1)
+                            {
+                                var confirmed = error is IBatchSendFailure result && result.IsConfirmed(i);
+                                if (!confirmed)
+                                {
+                                    // Never admit another native send after cancellation or known claim expiry.
+                                    cancellationToken.ThrowIfCancellationRequested();
+                                    if (expires <= DateTimeOffset.UtcNow) continue;
+                                    sendError = null;
+                                    try { await transport.SendAsync(_messages[i], cancellationToken).ConfigureAwait(false); }
+                                    catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
+                                    catch (Exception failure) { sendError = failure; }
+                                }
+                                if (confirmed || sendError is null)
+                                {
+                                    // Completion failures must not be recorded as send failures.
+                                    var completed = await _store.CompleteBatchAsync(_claims.AsMemory(i, 1), DateTimeOffset.UtcNow, cancellationToken).ConfigureAwait(false);
+                                    _instrumentation?.AddOutboxPending(-completed);
+                                    continue;
+                                }
+                            }
+                            await _store.RecordRetryAsync(_claims[i], sendError.Message, DateTimeOffset.UtcNow, cancellationToken).ConfigureAwait(false);
                         }
                         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
                         catch (Exception failure) { DirectDispatchLog.Failed(_logger, failure); }

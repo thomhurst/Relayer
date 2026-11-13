@@ -13,6 +13,25 @@ namespace Relayer.Tests;
 public class SnsSendTests
 {
     [Test]
+    public async Task Native_receipts_index_completed_groups_and_chunks_in_the_original_batch()
+    {
+        using var client = new SnsTestClient { FailBatch = true, FailBatchOnCall = 3 };
+        await using var transport = new SnsSendTransport("sns", client, false, Options(client));
+        await transport.StartAsync(default);
+        OutgoingMessage[] messages = [new("ordered.fifo", "{}"u8.ToArray(), orderingKey: new WireString("key")),
+            .. Enumerable.Repeat(new OutgoingMessage("orders", "{}"u8.ToArray()), 12)];
+        AmazonSnsBatchException? failure = null;
+        try { await transport.SendBatchAsync(messages, default); }
+        catch (AmazonSnsBatchException error) { failure = error; }
+        await Assert.That(failure).IsNotNull();
+        await Assert.That(failure!.BatchOffset).IsEqualTo(10);
+        for (var index = 0; index < 12; index++)
+            await Assert.That(((IBatchSendFailure)failure).IsConfirmed(index)).IsTrue();
+        await Assert.That(((IBatchSendFailure)failure).IsConfirmed(12)).IsFalse();
+        await Assert.That(((IBatchSendFailure)failure).IsConfirmed(13)).IsFalse();
+    }
+
+    [Test]
     public async Task Hosted_sender_uses_native_topics_and_generated_envelope_without_owning_client()
     {
         using var client = new SnsTestClient();
@@ -123,6 +142,10 @@ public class SnsSendTests
         await Assert.That(failure!.Response.Successful.Single().Id).IsEqualTo("0");
         await Assert.That(failure.Response.Failed.Single().Id).IsEqualTo("1");
         await Assert.That(failure.BatchOffset).IsEqualTo(0);
+        await Assert.That(((IBatchSendFailure)failure).IsConfirmed(0)).IsTrue();
+        await Assert.That(((IBatchSendFailure)failure).IsConfirmed(1)).IsFalse();
+        await Assert.That(((IBatchSendFailure)failure).IsConfirmed(-1)).IsFalse();
+        await Assert.That(((IBatchSendFailure)failure).IsConfirmed(100)).IsFalse();
         await Assert.That(client.Batches.Count).IsEqualTo(5);
         await transport.SendAsync(new("orders", "{}"u8.ToArray()), default);
         await Assert.That(client.Sent.Single().Attributes.Count).IsEqualTo(0);
@@ -361,6 +384,7 @@ internal sealed class SnsTestClient() : AmazonSimpleNotificationServiceClient(ne
     internal readonly List<SubscribeRequest> Subscribes = [];
     internal readonly Dictionary<string, string> SubscriptionAttributes = new() { ["RawMessageDelivery"] = "true" };
     internal bool FailBatch;
+    internal int FailBatchOnCall;
     internal bool Missing;
     internal bool Paginate;
     internal int Lookups;
@@ -383,7 +407,7 @@ internal sealed class SnsTestClient() : AmazonSimpleNotificationServiceClient(ne
             MessageDeduplicationId = entry.MessageDeduplicationId, Subject = entry.Subject, MessageAttributes = entry.MessageAttributes,
         }))).ToArray());
         if (Gate is not null) await Gate.Task.WaitAsync(cancellationToken);
-        return new() { Successful = [new() { Id = "0" }], Failed = FailBatch ? [new() { Id = "1", Code = "InvalidParameter", SenderFault = true }] : [], ResponseMetadata = new() { RequestId = "batch-request" } };
+        return new() { Successful = [new() { Id = "0" }], Failed = FailBatch && (FailBatchOnCall == 0 || Batches.Count == FailBatchOnCall) ? [new() { Id = "1", Code = "InvalidParameter", SenderFault = true }] : [], ResponseMetadata = new() { RequestId = "batch-request" } };
     }
     public override Task<ListTopicsResponse> ListTopicsAsync(ListTopicsRequest request, CancellationToken cancellationToken = default)
     {

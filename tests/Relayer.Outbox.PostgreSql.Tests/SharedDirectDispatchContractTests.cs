@@ -10,8 +10,6 @@ namespace Relayer.Outbox.PostgreSql.Tests;
 [InheritsTests]
 public sealed class SharedDirectDispatchContractTests : OutboxDirectDispatchContractTests
 {
-    protected override bool IsolatesFailedNativeBatches => true;
-
     protected override async Task<DispatchFixture> CreateFixtureAsync(RecordingTransport transport, int batchSize = 100,
         int queueCapacity = 256)
     {
@@ -52,6 +50,8 @@ public sealed class SharedDirectDispatchContractTests : OutboxDirectDispatchCont
                     !reader.IsDBNull(3), !reader.IsDBNull(4)));
             return rows.ToArray();
         }
+
+        public override ValueTask RecoverAsync(OutboxRecord[] records, CancellationToken cancellationToken = default) => _worker!.DispatchRecoveredAsync(records, cancellationToken);
 
         public override async Task StopAsync()
         {

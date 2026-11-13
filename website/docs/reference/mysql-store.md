@@ -374,8 +374,12 @@ This includes invalid transport destinations and malformed-row quarantine. Retri
 rolled-back transitions do not change these counters.
 
 All native send exceptions are retried indefinitely, including a permanent broker rejection, because
-native batch errors do not supply a portable per-row permanent classification. A failed native batch
-applies backoff to every claimed row in that batch; partial acceptance can duplicate delivery on retry.
+the store has no portable per-row permanent classification. After a batch fails, direct and recovery
+dispatch try each unconfirmed row once with native `SendAsync` while its original claim remains live.
+Confirmed native successes (including SQS/SNS response entries) complete without being resent. Only
+failed single sends receive durable backoff; healthy neighbours complete independently. There are at
+most `BatchSize` single sends per failed batch. Cancellation stops isolation and no new send starts
+after known claim expiry. Uncertain acceptance can duplicate delivery, consistent with at-least-once semantics.
 Inspect persistent errors and repair routing, payloads or broker configuration through application-owned
 SQL. `MaxDispatchAttempts` governs explicit `RecordFailureAsync` calls and preparation failures,
 including prior diagnostic send attempts: a preparation error after a long outage may exhaust that

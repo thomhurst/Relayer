@@ -88,6 +88,7 @@ To change a decision, add a new entry that supersedes it rather than editing his
 | [D75](#d75-failure-diagnostics-are-bounded) | Failure diagnostics are bounded | Accepted |
 | [D76](#d76-ef-transaction-coordination-is-independent-of-the-database-provider) | EF transaction coordination is independent of the database provider | Accepted |
 | [D77](#d77-batch-items-report-their-own-failures) | Batch items report their own failures | Accepted |
+| [D78](#d78-isolate-failed-outbox-batches-using-native-single-sends-and-confirmed-receipts) | Isolate failed outbox batches using native single sends and confirmed receipts | Accepted |
 
 ---
 
@@ -1866,3 +1867,36 @@ is the source of truth for available combinations.
 **Decision.** Delivered `BatchItem<TMessage>` values report failures with `Fail(exception)`. `BatchResult.Success` succeeds unmarked items and `BatchResult.Failure(exception)` fails every delivered item. Opaque item handles contain the original delivery index and a generation of the pooled dispatcher state. Default, manually constructed and expired handles reject failure marking, including while that state serves another invocation. Repeated marking replaces the item's exception; null exceptions are rejected. The index-keyed partial-failure API is removed.
 
 **Consequences.** Item copies preserve delivery association through filtering and reordering without allocating a handle per message. The dispatcher writes into the existing attempt error storage. Deserialization failures, manual settlement precedence, durable settlement and ambiguous buffered sends retain the existing execution and native settlement paths (D11, D28); no native capability is duplicated. Items and contexts remain borrowed for the handler invocation only.
+
+## D78. Isolate failed outbox batches using native single sends and confirmed receipts
+
+**Status:** Accepted. Qualifies D70, D71 and D73's batch-failure handling; durable retry and poison policies remain unchanged.
+
+**Context.** #647 remains possible when a failed batch outcome is assigned to every row. Even D73's
+stop after the first single-send `Retry` can indefinitely hold healthy neighbours behind an unclassified
+permanent rejection. Native clients already provide all send mechanics: Service Bus 7.21.0
+[`SendMessagesAsync`](https://github.com/Azure/azure-sdk-for-net/blob/Azure.Messaging.ServiceBus_7.21.0/sdk/servicebus/Azure.Messaging.ServiceBus/src/Sender/ServiceBusSender.cs)
+is atomic per native batch; the adapter can split a supplied group. Dekaf 1.27.0
+[`ProduceAllAsync`](https://github.com/thomhurst/Dekaf/blob/v1.27.0/src/Dekaf/Producer/KafkaProducer.cs)
+returns metadata on success and throws on aggregate failure. RabbitMQ.Client 7.2.2
+[`BasicPublishAsync`](https://github.com/rabbitmq/rabbitmq-dotnet-client/blob/v7.2.2/projects/RabbitMQ.Client/Impl/Channel.cs)
+publishes individual messages; Relayer's batch drains those native calls. AWS SQS/SNS 4.1.0 provide
+native `Successful` and `Failed` entry lists, already retained by Relayer's batch exceptions
+([SQS source](https://github.com/aws/aws-sdk-net/blob/4.1.0.0/sdk/src/Services/SQS/Generated/Model/SendMessageBatchResponse.g.cs),
+[SNS source](https://github.com/aws/aws-sdk-net/blob/4.1.0.0/sdk/src/Services/SimpleNotificationService/Generated/Model/PublishBatchResponse.g.cs)).
+
+**Decision.** On failed unordered batches, PostgreSQL, SQL Server and MySQL direct/recovery dispatch
+invoke existing native `SendAsync` at most once per unconfirmed row under its original live claim.
+Continue after any individual failure; apply each provider's existing classification/backoff policy only
+to that row. Cancellation or known claim expiry stops new native sends. Complete successes with the
+existing fenced store mutation, never treating a completion error as a send failure. An error-only
+`IBatchSendFailure` transport contract exposes confirmed successes without database providers taking
+native broker dependencies; SQS/SNS implement it using native response IDs and already completed
+chunks/groups. Confirmed successes are completed without another send. This is failure isolation,
+not another native retry scheduler or an implementation of broker batching.
+
+**Consequences.** A failed batch costs at most one batch plus `BatchSize` single calls, including an
+outage, so one unclassified rejected row cannot repeatedly charge its neighbours. Unknown batch
+acceptance can duplicate delivery under at-least-once semantics. Live token fencing protects each
+outcome; expired or replaced claims remain recoverable. Successful batches perform the same sends
+and completions and allocate no additional memory. Isolation changes only failure-path work.

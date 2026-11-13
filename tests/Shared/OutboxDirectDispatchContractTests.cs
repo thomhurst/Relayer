@@ -5,7 +5,7 @@ namespace Relayer.TestFixtures;
 
 public abstract class OutboxDirectDispatchContractTests
 {
-    protected virtual bool IsolatesFailedNativeBatches => false;
+
 
     protected abstract Task<DispatchFixture> CreateFixtureAsync(RecordingTransport transport, int batchSize = 100,
         int queueCapacity = 256);
@@ -16,6 +16,7 @@ public abstract class OutboxDirectDispatchContractTests
         public abstract Task<Row[]> ReadRowsAsync();
         // Drain committed work before returning. Tests release blocked native sends first.
         public abstract Task StopAsync();
+        public abstract ValueTask RecoverAsync(OutboxRecord[] records, CancellationToken cancellationToken = default);
         public abstract ValueTask DisposeAsync();
 
         public async Task CommitAsync(params OutboxRecord[] records)
@@ -162,23 +163,54 @@ public abstract class OutboxDirectDispatchContractTests
         await transport.Entered.Task.WaitAsync(TimeSpan.FromSeconds(30));
         await fixture.CommitAsync(Record(3));
         await fixture.StopAsync();
-        if (IsolatesFailedNativeBatches)
-        {
-            // The failed batch accepted one row before throwing. Single-send isolation
-            // completes both rows, duplicating the accepted row under at-least-once delivery.
-            await Assert.That(transport.Calls.Select(call => call.Count)).IsEquivalentTo(new[] { 2, 1, 1, 1 });
-            await Assert.That(transport.Received.Select(sent => sent.Body[0])).IsEquivalentTo(new byte[] { 1, 1, 2, 3 });
-            await Assert.That((await fixture.ReadRowsAsync()).Length).IsEqualTo(0);
-            return;
-        }
+        // Unknown acceptance is retried individually; duplicate delivery is allowed.
+        await Assert.That(transport.Calls.Select(call => call.Count)).IsEquivalentTo(new[] { 2, 1, 1, 1 });
+        await Assert.That(transport.Received.Select(sent => sent.Body[0])).IsEquivalentTo(new byte[] { 1, 1, 2, 3 });
+        await Assert.That((await fixture.ReadRowsAsync()).Length).IsEqualTo(0);
+    }
+
+    [Test]
+    [Arguments(false, false, false)]
+    [Arguments(false, true, false)]
+    [Arguments(true, false, false)]
+    [Arguments(true, true, false)]
+    [Arguments(false, false, true)]
+    [Arguments(true, false, true)]
+    public async Task Rejected_row_does_not_charge_healthy_neighbours(bool recovery, bool confirmed, bool rejectedFirst)
+    {
+        var transport = new RecordingTransport { RejectValue = rejectedFirst ? (byte)1 : (byte)2, ConfirmPartial = confirmed };
+        await using var fixture = await CreateFixtureAsync(transport);
+        // Recovery exercises the same store dispatcher after losing the commit notification.
+        if (recovery) await fixture.StopAsync();
+        var first = Record(1);
+        var second = Record(2);
+        var rejected = rejectedFirst ? first : second;
+        await fixture.CommitAsync(first, second);
+        if (recovery) await fixture.RecoverAsync([first, second]);
+        else await fixture.StopAsync();
+        await Assert.That(transport.Received.Select(sent => sent.Body[0])).IsEquivalentTo(new byte[] { rejectedFirst ? (byte)2 : (byte)1 });
+        await Assert.That(transport.Calls.Select(call => call.Count)).IsEquivalentTo(confirmed ? new[] { 2, 1 } : new[] { 2, 1, 1 });
+        await Assert.That(await fixture.ReadRowsAsync()).IsEquivalentTo(new[]
+            { new Row(rejected.Id, 1, "native send rejected", false, false) });
+    }
+
+    [Test]
+    public async Task Cancellation_during_single_send_stops_isolation_without_charging_other_rows()
+    {
+        using var cancellation = new CancellationTokenSource();
+        var transport = new RecordingTransport { PartialFirst = 1, CancelAfterSingle = cancellation };
+        await using var fixture = await CreateFixtureAsync(transport);
+        await fixture.StopAsync();
+        var first = Record(1);
+        var second = Record(2);
+        await fixture.CommitAsync(first, second);
+        await Assert.That(async () => await fixture.RecoverAsync([first, second], cancellation.Token))
+            .Throws<OperationCanceledException>();
         await Assert.That(transport.Calls.Select(call => call.Count)).IsEquivalentTo(new[] { 2, 1 });
-        await Assert.That(transport.Received.Count).IsEqualTo(2);
-        await Assert.That(transport.Received.Count(sent => sent.Body[0] == 3)).IsEqualTo(1);
-        await Assert.That(transport.Received.Count(sent => sent.Body[0] is 1 or 2)).IsEqualTo(1);
         await Assert.That(await fixture.ReadRowsAsync()).IsEquivalentTo(new[]
         {
-            new Row(first.Id, 1, "native send failed", false, false),
-            new Row(second.Id, 1, "native send failed", false, false)
+            new Row(first.Id, 0, null, true, true),
+            new Row(second.Id, 0, null, true, true)
         });
     }
 
@@ -218,7 +250,10 @@ public abstract class OutboxDirectDispatchContractTests
     public sealed class RecordingTransport : ITransport
     {
         public bool Block { get; init; }
+        public CancellationTokenSource? CancelAfterSingle { get; init; }
         public string? CapabilityFailure { get; init; }
+        public byte? RejectValue { get; init; }
+        public bool ConfirmPartial { get; init; }
         public int FailFirst;
         public int PartialFirst;
         public TaskCompletionSource Entered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -244,7 +279,9 @@ public abstract class OutboxDirectDispatchContractTests
             Entered.TrySetResult();
             if (Block) await Release.Task.WaitAsync(cancellationToken);
             if (Interlocked.Exchange(ref FailFirst, 0) != 0) throw new InvalidOperationException("native send failed");
+            if (message.Body.Span[0] == RejectValue) throw new InvalidOperationException("native send rejected");
             Record(message);
+            CancelAfterSingle?.Cancel();
         }
 
         public async ValueTask SendBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken)
@@ -252,6 +289,11 @@ public abstract class OutboxDirectDispatchContractTests
             Calls.Enqueue(new(messages.Span[0].Destination, messages.Length));
             Entered.TrySetResult();
             if (Block) await Release.Task.WaitAsync(cancellationToken);
+            if (RejectValue.HasValue)
+            {
+                if (ConfirmPartial) Record(messages.Span[0]);
+                throw ConfirmPartial ? new PartialFailure() : new InvalidOperationException("native batch rejected");
+            }
             if (Interlocked.Exchange(ref PartialFirst, 0) != 0)
             {
                 Record(messages.Span[0]);
@@ -259,6 +301,11 @@ public abstract class OutboxDirectDispatchContractTests
             }
             if (Interlocked.Exchange(ref FailFirst, 0) != 0) throw new InvalidOperationException("native send failed");
             for (var i = 0; i < messages.Length; i++) Record(messages.Span[i]);
+        }
+
+        private sealed class PartialFailure : Exception, IBatchSendFailure
+        {
+            public bool IsConfirmed(int messageIndex) => messageIndex == 0;
         }
 
         private void Record(OutgoingMessage message)

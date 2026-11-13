@@ -264,6 +264,20 @@ public sealed class SharedDirectDispatchContractTests(SqlServerFixture database)
             return rows.ToArray();
         }
 
+        public override async ValueTask RecoverAsync(OutboxRecord[] records, CancellationToken cancellationToken = default)
+        {
+            var rows = new List<SqlServerBufferedMessage>();
+            foreach (var record in records)
+            {
+                var row = new SqlServerBufferedMessage();
+                row.Copy(record, 1, unordered: true);
+                rows.Add(row);
+            }
+            var batch = new OutboxDispatchBatch();
+            batch.Take(rows, rows.Count, DateTimeOffset.UtcNow);
+            await _worker!.DispatchRecoveredAsync(batch, cancellationToken);
+        }
+
         public override async Task StopAsync()
         {
             if (_worker is null) return;

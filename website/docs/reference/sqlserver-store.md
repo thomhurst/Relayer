@@ -199,7 +199,7 @@ row available for later recovery, even if the broker accepted the message; deliv
 Explicitly retryable native send failures record the error, increment a diagnostic attempt count (saturating at 30), and
 release live claims with a durable `deliver_at` deadline. Retry delays start at one second, double after
 each failed send and stop growing at five minutes. Native clients still own retries within each send;
-the dispatcher adds no in-process send retry loop. A completion failure after a successful send retains
+native batch failure isolation is described below. A completion failure after a successful send retains
 the claim without incrementing send attempts.
 
 **This worker does not poll or recover rows.** Ordered rows, future schedules, overflow and commits
@@ -280,7 +280,12 @@ Only true opts into indefinite durable retries, with one-second exponential dela
 minutes. Classified sends remain eligible beyond `MaxDispatchAttempts`, including after worker
 replacement. Null (the default) or false preserves bounded poison handling for permanently rejected
 or unclassified sends. Use native exception information; do not classify permanent rejections as retryable.
-A failed native batch applies the same classification to all its claims because delivery may be partial.
+After a batch fails, direct and recovery dispatch try each unconfirmed row once with native
+`SendAsync` under its original live claim. Confirmed native successes (including SQS/SNS response
+entries) complete without another send. Only a failed single send is classified against that row;
+healthy neighbours complete independently. At most `BatchSize` single sends follow a failed batch.
+Cancellation stops isolation, and no new send starts after known claim expiry. Native acceptance can
+be uncertain, so isolation can duplicate delivery under at-least-once semantics.
 Explicit low-level `RecordFailureAsync` calls retain the poison transition. Completion errors after broker
 success do not consume send attempts.
 
