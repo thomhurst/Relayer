@@ -33,6 +33,9 @@ public class SnsSendBenchmarks
     private PublishRequest _rawSingle = null!;
     private PublishBatchRequest _rawBatch = null!;
 
+    private DirectJsonSend _json = null!;
+    private PublishRequest _jsonRequest = null!;
+
     [GlobalSetup]
     public async Task Setup()
     {
@@ -66,6 +69,18 @@ public class SnsSendBenchmarks
         _rawSingle = new() { TopicArn = _arn, MessageAttributes = Attributes() };
         _rawBatch = new() { TopicArn = _arn, PublishBatchRequestEntries = new(10) };
         for (var i = 0; i < 10; i++) _rawBatch.PublishBatchRequestEntries.Add(new() { Id = i.ToString(), MessageAttributes = Attributes() });
+        _json = new(_instrumentation, builder => builder.AmazonSns("benchmark-json", transport =>
+        {
+            transport.TopologyMode = TopologyMode.None;
+            transport.Options.Configure(options => { options.SnsClient = _client; options.Topics.Add(new(_topic)); });
+            transport.Send<DirectJsonOrder>(_topic);
+        }));
+        await _json.StartAsync();
+        _jsonRequest = new() { TopicArn = _arn, MessageAttributes = new() };
+        foreach (var key in new[] { "ce_id", "ce_type", "ce_source", "ce_time", "ce_specversion", "traceparent", "tracestate", "content-type" })
+            _jsonRequest.MessageAttributes[key] = new() { DataType = "String" };
+        await RawJsonSingle();
+        await RelayerJsonSingle();
         await RawSingle();
         await RelayerSingle();
         await RawBatch();
@@ -109,9 +124,32 @@ public class SnsSendBenchmarks
     [Benchmark(OperationsPerInvoke = 10), BenchmarkCategory("Batch")]
     public ValueTask RelayerBatch() => _transport.SendBatchAsync(_batch, default);
 
+    [Benchmark(Baseline = true), BenchmarkCategory("DefaultJson")]
+    public Task<PublishResponse> RawJsonSingle()
+    {
+        _jsonRequest.Message = Encoding.UTF8.GetString(_json.Serialize().Span);
+        _json.WriteEnvelope<Dictionary<string, MessageAttributeValue>, NativeHeaders>(_jsonRequest.MessageAttributes);
+        _jsonRequest.MessageAttributes["content-type"].StringValue = _json.ContentType;
+        return _client.PublishAsync(_jsonRequest);
+    }
+
+    [Benchmark, BenchmarkCategory("DefaultJson")]
+    public ValueTask RelayerJsonSingle() => _json.Sender.SendAsync(_json.Order);
+
+    private sealed class NativeHeaders : IMessageHeaderWriter<Dictionary<string, MessageAttributeValue>>
+    {
+        public static void SetHeader(Dictionary<string, MessageAttributeValue> headers, string name, ReadOnlySpan<char> value)
+        {
+            if (!headers.TryGetValue(name, out var attribute)) headers[name] = attribute = new() { DataType = "String" };
+            attribute.StringValue = value.ToString();
+        }
+        public static void RemoveHeader(Dictionary<string, MessageAttributeValue> headers, string name) => headers.Remove(name);
+    }
+
     [GlobalCleanup]
     public async Task Cleanup()
     {
+        if (_json is not null) await _json.DisposeAsync();
         if (_transport is not null) await _transport.DisposeAsync();
         try { if (_client is not null && _arn is not null) await _client.DeleteTopicAsync(_arn); }
         finally { _client?.Dispose(); _tracing?.Dispose(); _listener?.Dispose(); _instrumentation?.Dispose(); }
