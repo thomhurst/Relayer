@@ -4,6 +4,7 @@ namespace Relayer;
 public sealed class SendOptions
 {
     private List<Delegate>? _nativeConfigurators;
+    internal bool HasNativeTransforms { get; private set; }
 
     /// <summary>Additional headers to write to the native message.</summary>
     public Dictionary<string, string> Headers { get; } = [];
@@ -22,6 +23,7 @@ public sealed class SendOptions
         if (_nativeConfigurators is not { Count: > 0 }) return;
         target._nativeConfigurators ??= [];
         target._nativeConfigurators.AddRange(_nativeConfigurators);
+        target.HasNativeTransforms |= HasNativeTransforms;
     }
 
     internal bool CanRetain => Headers.EnsureCapacity(0) <= 128 &&
@@ -33,6 +35,7 @@ public sealed class SendOptions
         DeliverAt = null;
         OrderingKey = null;
         _nativeConfigurators?.Clear();
+        HasNativeTransforms = false;
     }
 
     /// <summary>
@@ -45,6 +48,29 @@ public sealed class SendOptions
         ArgumentNullException.ThrowIfNull(configure);
         (_nativeConfigurators ??= []).Add(configure);
         return this;
+    }
+
+    /// <summary>Transforms an immutable native outgoing record before sending. Native callbacks cannot be persisted in an outbox.</summary>
+    public SendOptions TransformNative<TNative>(Func<TNative, TNative> configure) where TNative : class
+    {
+        ArgumentNullException.ThrowIfNull(configure);
+        (_nativeConfigurators ??= []).Add(configure);
+        HasNativeTransforms = true;
+        return this;
+    }
+
+    internal TRecord ApplyNativeCore<TNative, TRecord>(TNative nativeMessage, TRecord record)
+        where TNative : class where TRecord : class
+    {
+        if (_nativeConfigurators is null) return record;
+        foreach (var callback in _nativeConfigurators)
+        {
+            if (callback is Action<TNative> configure) configure(nativeMessage);
+            else if (callback is Func<TRecord, TRecord> transform)
+                record = transform(record) ?? throw new InvalidOperationException("A native record transform returned null.");
+            else throw new InvalidOperationException("Native configuration does not match the route's native outgoing type.");
+        }
+        return record;
     }
 
     /// <summary>Applies native callbacks in registration order. Called by transports with their native outgoing type.</summary>

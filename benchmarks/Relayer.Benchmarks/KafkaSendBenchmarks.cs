@@ -35,6 +35,9 @@ public class KafkaSendBenchmarks
     [Params(false, true)]
     public bool Tombstone { get; set; }
 
+    [Params(false, true)]
+    public bool NativeRecord { get; set; }
+
     private RelayerInstrumentation _instrumentation = null!;
     private MessageTracing _tracing = null!;
     private MeterListener? _metrics;
@@ -79,7 +82,10 @@ public class KafkaSendBenchmarks
             new("ce_id", new("019a3c1b-97c0-7000-8000-000000000001")), new("content-type", new("application/json"))];
         var nativeHeaders = new Headers(headers.Select(header => new Header(header.Key, Encoding.UTF8.GetBytes(header.Value.Text!))));
         _native = new() { Topic = _topic, Key = key, Value = Tombstone ? null! : body, Headers = nativeHeaders };
-        _message = new(_topic, Tombstone ? default : body, headers, new WireString("customer-1"), isTombstone: Tombstone);
+        var options = NativeRecord ? new SendOptions().KafkaRecord(static record => record with { Partition = 1,
+            Timestamp = DateTimeOffset.FromUnixTimeMilliseconds(1700000000000) }) : null;
+        if (NativeRecord) _native = _native with { Partition = 1, Timestamp = DateTimeOffset.FromUnixTimeMilliseconds(1700000000000) };
+        _message = new(_topic, Tombstone ? default : body, headers, new WireString("customer-1"), options: options, isTombstone: Tombstone);
         _nativeBatch = Enumerable.Repeat(_native, 32).ToList();
         _batch = Enumerable.Repeat(_message, 32).ToArray();
         _json = new(_instrumentation, builder => builder.Kafka("benchmark-json", kafka =>

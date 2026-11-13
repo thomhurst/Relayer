@@ -2,6 +2,7 @@ using Relayer.Transports;
 using System.Buffers;
 using System.Text;
 using Dekaf.Serialization;
+using Dekaf.Producer;
 
 namespace Relayer.Kafka;
 
@@ -36,6 +37,8 @@ internal sealed class KafkaSendState
     internal ValueTask<Dekaf.Producer.RecordMetadata> TrackSend(ValueTask<Dekaf.Producer.RecordMetadata> pending, SendTracing.NativeSendOperation duration) =>
         (_completion ??= new()).Track(pending, duration);
 
+    internal ProducerMessage<WireString?, (ReadOnlyMemory<byte> Body, Headers Headers)?>? Record { get; private set; }
+
     internal WireString? Key { get; private set; }
     internal bool Tombstone { get; set; }
     internal Headers Headers => _headers;
@@ -51,7 +54,17 @@ internal sealed class KafkaSendState
         Key = outgoing.OrderingKey;
         foreach (var header in outgoing.Headers.Span)
             _headers.Add(new Header(header.Key, Encode(header.Value, ref position)));
-        outgoing.ApplyNative(_headers);
+        if (outgoing.HasNativeTransforms)
+        {
+            Record = outgoing.ApplyNative(_headers, new ProducerMessage<WireString?, (ReadOnlyMemory<byte> Body, Headers Headers)?>
+            {
+                Topic = outgoing.Destination, Key = Key,
+                Value = outgoing.IsTombstone ? null : (outgoing.Body, _headers), Headers = _headers,
+            });
+            if (Record.Topic != outgoing.Destination)
+                throw new InvalidOperationException("KafkaRecord cannot change the declared destination topic. Configure a send route instead.");
+        }
+        else outgoing.ApplyNative(_headers);
         // Legacy private markers are never trusted, including ones supplied by native callbacks.
         _headers.Remove(TombstoneHeader);
         Tombstone = outgoing.IsTombstone;
@@ -70,6 +83,7 @@ internal sealed class KafkaSendState
     {
         _headers.Clear();
         Key = null;
+        Record = null;
         Tombstone = false;
     }
 }

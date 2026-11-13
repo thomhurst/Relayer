@@ -90,7 +90,9 @@ internal sealed class KafkaProducerTransport : ITransport, ITransportSendTracing
             var failed = true;
             try
             {
-                if (state.Tombstone)
+                if (state.Record is { } record)
+                    await _producer.ProduceAsync(record, cancellationToken).ConfigureAwait(false);
+                else if (state.Tombstone)
                     await _topics[message.Destination].ProduceAsync(state.Key, null, state.Headers, cancellationToken).ConfigureAwait(false);
                 else
                     await _producer.ProduceAsync(message.Destination, state.Key, (message.Body, state.Headers), cancellationToken).ConfigureAwait(false);
@@ -121,18 +123,18 @@ internal sealed class KafkaProducerTransport : ITransport, ITransportSendTracing
         var operation = _operations.Rent(messages.Length);
         try
         {
-            var hasTombstone = false;
+            var needsIndividualSends = false;
             for (var i = 0; i < messages.Length; i++)
             {
                 operation.States[i].Prepare(messages.Span[i]);
-                hasTombstone |= operation.States[i].Tombstone;
+                needsIndividualSends |= operation.States[i].Tombstone || operation.States[i].Record is not null;
                 operation.Messages.Add((operation.States[i].Key, (messages.Span[i].Body, operation.States[i].Headers)));
             }
-            // The tuple batch overload cannot carry headers alongside a null value. Admit
-            // null-containing batches through native sends and drain every admitted operation
+            // The tuple batch overload cannot carry null-value headers or record overrides.
+            // Admit these batches through native sends and drain every admitted operation
             // before returning borrowed storage, including after cancellation or failure.
-            if (hasTombstone)
-                await SendNullBatchAsync(messages, operation, cancellationToken).ConfigureAwait(false);
+            if (needsIndividualSends)
+                await SendIndividualBatchAsync(messages, operation, cancellationToken).ConfigureAwait(false);
             else
             {
                 var tracing = Endpoint(messages.Span[0].Destination);
@@ -152,7 +154,7 @@ internal sealed class KafkaProducerTransport : ITransport, ITransportSendTracing
 
     [RuntimeAsyncMethodGeneration(false)]
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
-    private async ValueTask SendNullBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, KafkaSendOperation operation, CancellationToken token)
+    private async ValueTask SendIndividualBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, KafkaSendOperation operation, CancellationToken token)
     {
         operation.EnsurePending(messages.Length);
         var tracing = Endpoint(messages.Span[0].Destination);
@@ -183,7 +185,9 @@ internal sealed class KafkaProducerTransport : ITransport, ITransportSendTracing
         try
         {
             // Preserve synchronous admission failures: stop admitting and drain earlier calls.
-            var pending = state.Tombstone
+            var pending = state.Record is { } record
+                ? _producer.ProduceAsync(record, token)
+                : state.Tombstone
                 ? _topics[message.Destination].ProduceAsync(state.Key, null, state.Headers, token)
                 : _producer.ProduceAsync(message.Destination, state.Key, (message.Body, state.Headers), token);
             return duration.IsEnabled ? state.TrackSend(pending, duration) : pending;

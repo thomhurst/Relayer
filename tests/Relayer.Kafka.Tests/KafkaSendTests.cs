@@ -8,6 +8,39 @@ namespace Relayer.Kafka.Tests;
 public class KafkaSendTests
 {
     [Test]
+    public async Task Record_transforms_compose_with_headers_reject_outbox_and_clear_pooled_state()
+    {
+        var timestamp = DateTimeOffset.FromUnixTimeMilliseconds(123456789);
+        var options = new SendOptions().Kafka(static h => h.Add("before", "yes"))
+            .KafkaRecord(record => record with { Partition = 2, Timestamp = timestamp })
+            .Kafka(static h => h.Add("after", "yes"));
+        var outgoing = new OutgoingMessage("orders", new byte[] { 42 }, orderingKey: new("key"), options: options);
+        var state = new KafkaSendState();
+        state.Prepare(outgoing);
+        await Assert.That(state.Record!.Partition).IsEqualTo(2);
+        await Assert.That(state.Record.Timestamp).IsEqualTo(timestamp);
+        await Assert.That(state.Record.Headers!.GetFirstAsString("before")).IsEqualTo("yes");
+        await Assert.That(state.Record.Headers.GetFirstAsString("after")).IsEqualTo("yes");
+        await Assert.That(() => outgoing.ValidateForOutbox()).Throws<InvalidOperationException>().WithMessageContaining("Native configurators");
+        var buffered = new SendOptions();
+        outgoing.CopyNativeOptionsTo(buffered);
+        state.Prepare(new("orders", default, options: buffered));
+        await Assert.That(state.Record!.Partition).IsEqualTo(2);
+        buffered.Reset();
+        state.Prepare(new("orders", default, options: buffered));
+        await Assert.That(state.Record).IsNull();
+        state.Prepare(new("orders", default));
+        await Assert.That(state.Record).IsNull();
+        await Assert.That(state.Headers.Count).IsEqualTo(0);
+        var invalid = new SendOptions().KafkaRecord(static record => record with { Topic = "other" });
+        await Assert.That(() => state.Prepare(new("orders", default, options: invalid)))
+            .Throws<InvalidOperationException>().WithMessageContaining("destination topic");
+        var nullRecord = new SendOptions().KafkaRecord(static _ => null!);
+        await Assert.That(() => state.Prepare(new("orders", default, options: nullRecord)))
+            .Throws<InvalidOperationException>().WithMessageContaining("returned null");
+    }
+
+    [Test]
     public async Task Warm_operation_pool_retains_more_than_64_concurrent_sends_without_allocating()
     {
         var pool = new KafkaSendPool();
