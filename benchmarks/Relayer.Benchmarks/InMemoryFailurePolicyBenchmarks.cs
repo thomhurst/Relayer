@@ -31,8 +31,7 @@ public class InMemoryFailurePolicyBenchmarks
         services.AddRelayer(builder =>
         {
             builder.AddMessageTypesFromThisAssembly();
-            builder.Handler<InMemoryBenchmarkHandler>();
-            builder.AddTransport<Options, Options, Options>("benchmark", transport => transport.Consume("orders", _ => { }));
+            builder.AddTransport<Options, Options, Options>("benchmark", transport => transport.Consume("orders", consumer => consumer.Handler<InMemoryBenchmarkHandler>()));
         });
         _transport = new("benchmark", new Dictionary<string, InMemoryEndpointOptions> { ["orders"] = new() });
         services.AddSingleton<ITransport>(_transport);
