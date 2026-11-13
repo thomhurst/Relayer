@@ -11,6 +11,7 @@ Relayer ships compile-time analyzers and an IDE code fix in its NuGet package. T
 | [RLY002](#rly002) | Error | Two types declare the same message name and version. |
 | [RLY003](#rly003) | Warning | A concrete handler is never registered in this compilation. |
 | [RLY004](#rly004) | Warning | An inline consumer configuration has no handler. |
+| [RLYH001](#rlyh001) | Error | A handler message type is inaccessible to generated dispatch. |
 
 ## RLY001
 
@@ -56,8 +57,10 @@ broker.Consume("orders", consumer => consumer.Handler<OrderPlacedHandler>());
 
 The analyzer checks inline lambdas and anonymous delegates. It does not follow method-group callbacks, arbitrary helper calls, aliases or captures that can register handlers. These cases remain subject to startup validation. A handler on another consumer or the global builder does not satisfy an empty callback.
 
+## RLYH001
+
+Generated dispatch must be able to access each handler's message type. Make the message type and any containing types assembly-accessible (for example, `internal` or `public`) and non-file-local. A private nested message type or a file-local type cannot be referenced by generated dispatch; see [handler discovery](../guides/handlers.md#registration-without-scanning).
+
 ## Suppression and generated code
 
 Use `dotnet_diagnostic.<ID>.severity` in `.editorconfig`, or a targeted `#pragma warning disable <ID>` for intentionally invalid test fixtures. Generated code is excluded. Diagnostics run concurrently, with all mutable state scoped to one compilation.
-
-`RLYH001` is the existing generator error for handler message types that generated dispatch cannot access. Make those message types assembly-accessible and non-file-local; see [handler discovery](../guides/handlers.md#registration-without-scanning).

@@ -13,7 +13,8 @@ public sealed class HandlerGenerator : IIncrementalGenerator
     private static readonly DiagnosticDescriptor InaccessibleMessage = new(
         "RLYH001", "Handler message type is inaccessible",
         "Handler '{0}' uses message type '{1}', which generated dispatch cannot access. Make the message type assembly-accessible and non-file-local.",
-        "Relayer", DiagnosticSeverity.Error, isEnabledByDefault: true);
+        "Relayer", DiagnosticSeverity.Error, isEnabledByDefault: true,
+        helpLinkUri: "https://relayer.tomlonghurst.dev/docs/reference/diagnostics#rlyh001");
 
     public void Initialize(IncrementalGeneratorInitializationContext context)
     {
