@@ -9,6 +9,7 @@ public sealed class ConsumerBuilder<TConsumerOptions> : IConsumerBuilder where T
     private readonly HandlerRegistry _registry;
     private readonly string _source;
     private readonly List<Type> _handlers = [];
+    private readonly List<Action<ConsumePipelineBuilder>> _pipelineConfiguration = [];
     private int _concurrency = 1;
     private int _batchSize = 1;
     private TimeSpan _batchWait = TimeSpan.FromMilliseconds(100);
@@ -54,6 +55,17 @@ public sealed class ConsumerBuilder<TConsumerOptions> : IConsumerBuilder where T
         return this;
     }
 
+    /// <summary>Configures the existing consume pipeline once at startup, before global middleware.</summary>
+    public ConsumerBuilder<TConsumerOptions> ConfigurePipeline(Action<ConsumePipelineBuilder> configure)
+    {
+        EnsureMutable();
+        ArgumentNullException.ThrowIfNull(configure);
+        _pipelineConfiguration.Add(configure);
+        return this;
+    }
+
+    IConsumerBuilder IConsumerBuilder.ConfigurePipeline(Action<ConsumePipelineBuilder> configure) => ConfigurePipeline(configure);
+
     private void EnsureMutable()
     {
         if (_built) throw new InvalidOperationException("The consumer declaration is frozen.");
@@ -62,6 +74,6 @@ public sealed class ConsumerBuilder<TConsumerOptions> : IConsumerBuilder where T
     internal IConsumerDefinition Build()
     {
         _built = true;
-        return new ConsumerDefinition<TConsumerOptions>(_source, Options, _handlers.ToArray(), _concurrency, _batchSize, _batchWait);
+        return new ConsumerDefinition<TConsumerOptions>(_source, Options, _handlers.ToArray(), _concurrency, _batchSize, _batchWait, _pipelineConfiguration.ToArray());
     }
 }

@@ -28,6 +28,16 @@ public static class EntityFrameworkCoreConsumerExtensions
         return builder.Use(services => Create<TContext>(services, consumer, inbox, options, isolationLevel: isolationLevel));
     }
 
+    /// <summary>Attaches the existing transaction and optional inbox boundary to a fluent consumer declaration. Register first.</summary>
+    public static IConsumerBuilder EntityFrameworkCore<TContext>(this IConsumerBuilder builder,
+        string consumer, bool inbox = false, EntityFrameworkCoreOutboxOptions? options = null,
+        IsolationLevel? isolationLevel = null) where TContext : DbContext
+    {
+        ArgumentNullException.ThrowIfNull(builder);
+        ArgumentException.ThrowIfNullOrWhiteSpace(consumer);
+        return builder.ConfigurePipeline(pipeline => pipeline.EntityFrameworkCore<TContext>(consumer, inbox, options, isolationLevel));
+    }
+
     internal static IConsumeMiddleware Create<TContext>(IServiceProvider services, string consumer,
         bool inbox = false, EntityFrameworkCoreOutboxOptions? options = null, bool requireOutbox = false,
         IsolationLevel? isolationLevel = null) where TContext : DbContext

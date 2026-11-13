@@ -11,6 +11,9 @@ public interface IConsumerBuilder
     /// <summary>Adds a generated descriptor to this consumer and the shared handler registry.</summary>
     void AddHandler(HandlerDescriptor descriptor);
 
+    /// <summary>Configures the existing consume pipeline once at startup, before global middleware.</summary>
+    IConsumerBuilder ConfigurePipeline(Action<ConsumePipelineBuilder> configure);
+
     /// <summary>Sets the maximum number of concurrent handler invocations.</summary>
     IConsumerBuilder Concurrency(int maximum);
 

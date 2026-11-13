@@ -75,6 +75,7 @@ internal sealed class InMemoryHostedService(IServiceProvider provider, string na
             {
                 System = InMemoryTransport.MessagingSystem, Destination = consumer.Source, ConsumerGroup = consumer.Options.Group,
             }).Settle(SettleAsync);
+            pipeline.ConfigureConsumer(provider, consumer);
             foreach (var handler in handlers.Descriptors)
                 if (consumer.Handlers.Contains(handler.HandlerType)) pipeline.Handler(handler);
             var receive = new ReceivePipeline<InMemoryDelivery, InMemoryMessageBinding>(pipeline.Build(consumer.Concurrency), new HeaderNames(), consumer.Concurrency);

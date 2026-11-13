@@ -38,4 +38,18 @@ public static class SagaConsumerExtensions
             return middleware;
         });
     }
+
+    /// <summary>Attaches the existing saga transaction boundary to a fluent consumer declaration. Register first.</summary>
+    public static IConsumerBuilder Saga<TContext,
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors | DynamicallyAccessedMemberTypes.NonPublicConstructors
+            | DynamicallyAccessedMemberTypes.PublicFields | DynamicallyAccessedMemberTypes.NonPublicFields
+            | DynamicallyAccessedMemberTypes.PublicProperties | DynamicallyAccessedMemberTypes.NonPublicProperties
+            | DynamicallyAccessedMemberTypes.Interfaces)] TState>(this IConsumerBuilder builder, string consumer)
+        where TContext : DbContext
+        where TState : EntityFrameworkCoreSagaData
+    {
+        ArgumentNullException.ThrowIfNull(builder);
+        ArgumentException.ThrowIfNullOrWhiteSpace(consumer);
+        return builder.ConfigurePipeline(pipeline => pipeline.Saga<TContext, TState>(consumer));
+    }
 }

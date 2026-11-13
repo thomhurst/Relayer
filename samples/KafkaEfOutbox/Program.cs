@@ -33,6 +33,7 @@ builder.Services.AddRelayer(relayer =>
         kafka.Consume("sample-orders", consumer =>
         {
             consumer.Options.Group = "sample-billing";
+            consumer.EntityFrameworkCore<OrdersDbContext>("sample-billing");
             consumer.Handler<OrderPlacedHandler>();
         });
     });

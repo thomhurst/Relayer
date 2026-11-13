@@ -16,6 +16,33 @@ namespace Relayer.Tests;
 public sealed class ServiceBusReceiveTests
 {
     [Test]
+    public async Task Declared_transaction_can_compose_and_middleware_has_native_settlement_features()
+    {
+        var client = new NativeClient();
+        await using var provider = Provider(client, consumer => consumer.ConfigurePipeline(pipeline =>
+            pipeline.Use(new DeclaredBoundary()).Use(new NativeSettlementProbe())));
+        await Start(provider);
+        var receiver = new NativeReceiver();
+        await client.Processors.Single().Emit(Args(receiver));
+        await Assert.That(receiver.Operations.ToArray()).IsEquivalentTo(new[] { "complete" });
+        await Stop(provider);
+    }
+
+    private sealed class DeclaredBoundary : IConsumeTransactionMiddleware
+    {
+        public ValueTask InvokeAsync(MessageContext context, ConsumeDelegate next) => next(context);
+    }
+
+    private sealed class NativeSettlementProbe : IConsumeMiddleware
+    {
+        public async ValueTask InvokeAsync(MessageContext context, ConsumeDelegate next)
+        {
+            await context.ServiceBus().CompleteAsync();
+            await next(context);
+        }
+    }
+
+    [Test]
     public async Task Queue_and_subscription_processors_keep_native_options_and_complete_after_handler_work()
     {
         var client = new NativeClient();

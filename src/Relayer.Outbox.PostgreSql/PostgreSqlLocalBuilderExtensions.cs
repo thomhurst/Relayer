@@ -61,6 +61,7 @@ public static class PostgreSqlLocalBuilderExtensions
                 var telemetry = provider.GetRequiredService<RelayerInstrumentation>().CreateEndpoint(new()
                 { System = "postgresql", Destination = consumer.Source });
                 pipeline.Tracing(tracing, endpoint).Telemetry(telemetry).Settle(PostgreSqlLocalTransport.SettleAsync);
+                pipeline.ConfigureConsumer(provider, consumer);
                 foreach (var handler in handlers.Descriptors)
                     if (consumer.Handlers.Contains(handler.HandlerType)) pipeline.Handler(handler);
                 var composed = pipeline.Build(consumer.Concurrency);

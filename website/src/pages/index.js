@@ -280,6 +280,7 @@ const status = [
   ['Native AOT handler round trips and trace propagation in CI', 'Implemented', true],
   ['Batch dispatch and receive executor composition', 'Implemented core seam', true],
   ['Send pipeline and middleware', 'Implemented', true],
+  ['Fluent consume middleware, inbox and saga registration', 'Implemented', true],
   ['Consume pipeline and receive SPI', 'Implemented', true],
   ['Message upcaster chains for single and batch handlers', 'Implemented', true],
   ['Failure classification, retries and dead-letter copies', 'Implemented', true],

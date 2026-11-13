@@ -524,8 +524,10 @@ public class InboxTests : InboxContractTests
         var builder = failures is null
             ? new ConsumePipelineBuilder(scopes, messages, new Serializer(), static (_, error, _) => ValueTask.FromException(error))
             : new ConsumePipelineBuilder(scopes, messages, new Serializer(), failures);
+        var declaration = new ConsumerBuilder<Empty>(new ServiceCollection(), new HandlerRegistry(), "source");
+        declaration.EntityFrameworkCore<OrdersContext>(consumer, inbox, inbox ? Database.Options : null, isolationLevel: isolationLevel);
         return builder.Handler(provider.GetRequiredService<HandlerRegistry>().GetHandler<Probe, Handler>())
-            .EntityFrameworkCore<OrdersContext>(consumer, inbox, inbox ? Database.Options : null, isolationLevel: isolationLevel);
+            .ConfigureConsumer(provider, declaration.Build());
     }
 
     private static ConsumeMessage Message() => new()

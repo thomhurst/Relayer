@@ -200,8 +200,11 @@ public class SagaTests
                 new FailurePipeline(provider, "events", "source", "process", new() { RetryDelays = new[] { TimeSpan.Zero }, Jitter = 0 }),
                 new Classifier(control))
             : new ConsumePipelineBuilder(scopes, messages, new Serializer(), static (_, error, _) => ValueTask.FromException(error));
+        var declaration = new ConsumerBuilder<object>(new ServiceCollection(), new HandlerRegistry(), "source");
+        declaration.Saga<Context, State>("process");
+        declaration.ConfigurePipeline(pipeline => pipeline.Use(new AfterSave(control)));
         return builder.Handler(provider.GetRequiredService<HandlerRegistry>().GetHandler<Probe, Process>())
-            .Saga<Context, State>("process").Use(new AfterSave(control));
+            .ConfigureConsumer(provider, declaration.Build());
     }
 
     private static ConsumeMessage Message() => new()

@@ -1,6 +1,6 @@
 # Kafka with an EF Core outbox
 
-This web API writes an order and its serialized outgoing event in one PostgreSQL transaction. Committing wakes the unordered direct dispatcher; a maintenance worker recovers rows left by failed sends or process death. A serial Kafka consumer logs the committed event. The consumer does not write a database or use an inbox, so duplicate log lines remain possible.
+This web API writes an order and its serialized outgoing event in one PostgreSQL transaction. Committing wakes the unordered direct dispatcher; a maintenance worker recovers rows left by failed sends or process death. A serial Kafka consumer logs the committed event. The consumer attaches the EF Core transaction boundary through its fluent declaration; the selected outbox context enables inbox deduplication for the stable `sample-billing` consumer identity. Logging itself is not transactional, so a crash after logging but before the inbox commit can still repeat a log line.
 
 ## Start dependencies
 

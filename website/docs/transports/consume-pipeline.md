@@ -22,6 +22,7 @@ Transport authors can compose and invoke the execution layer as follows:
 var pipeline = new ConsumePipelineBuilder(scopeFactory, messageTypes,
         serializer, failures.HandleAsync)
     .Handler(handlers.GetHandler<OrderPlaced, OrderPlacedHandler>())
+    .ConfigureConsumer(serviceProvider, consumerDefinition)
     .Tracing(tracing, endpoint)
     .Settle(SettleNativeMessageAsync)
     .Build(contextPoolCapacity: maxConcurrentDeliveries);
@@ -39,6 +40,11 @@ context.Features.Set(nativeFeature);
 await pipeline.ProcessAsync(context).ConfigureAwait(false);
 // The configured callback has completed native settlement inside the process span.
 ```
+
+Call `ConfigureConsumer(serviceProvider, consumerDefinition)` once before building a pipeline for a
+fluent declaration. It applies that consumer's startup callbacks and then global consume middleware;
+the hosted transport integrations already do this. See [consume middleware](../guides/handlers.md#consume-middleware).
+Manual composers without a declaration can continue to register middleware directly with `Use`.
 
 Each `Handler(descriptor)` consumes an already registered generated descriptor;
 it does not register services. Transport configuration can pass non-generic
