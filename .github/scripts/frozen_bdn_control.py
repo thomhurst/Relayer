@@ -7,14 +7,23 @@ import re
 import subprocess
 
 from frozen_concurrent_control import verify
+from frozen_scope_control import result as timing_result
 
 
 BENCHMARK = "Relayer.Benchmarks.EndToEndBenchmarks.ConcurrentRoundTrip"
 LAUNCHES = ("baseline", "candidate", "candidate", "baseline")
+# Explicit original generated runner selectors; ConsumptionModel.Queue=0, Log=1.
+CASES = {
+    "concurrent": ("EndToEndBenchmarks", "ConcurrentRoundTrip", None, 8),
+    "scoped-dispatch": ("ConsumePipelineBenchmarks", "DirectScopedDispatch", "instance.ScopedHandler = true;", 1),
+    "log-composed": ("InMemoryTransportBenchmarks", "ComposedRoundTrip", "instance.Mode = (Relayer.Transports.ConsumptionModel)(1);", 1),
+    "queue-native": ("InMemoryTransportBenchmarks", "NativeRoundTrip", "instance.Mode = (Relayer.Transports.ConsumptionModel)(0);", 1),
+}
 
 
-def executable(root):
-    """Require the original generated runner and its eight-operation GC-stat job."""
+def executable(root, case="concurrent"):
+    """Require the selected original generated runner, parameter and GC-stat job."""
+    owner, method, parameter, operations = CASES[case]
     root = Path(root).resolve()
     files = {entry["path"] for entry in json.loads((root / "inventory-sha256.json").read_text())["files"]}
     sources = list(root.glob("builds/*/Relayer.Benchmarks-DefaultJob-*/*.notcs"))
@@ -22,14 +31,15 @@ def executable(root):
         raise ValueError("Expected one retained generated BenchmarkDotNet source")
     source = sources[0]
     text = source.read_text()
-    runners = re.findall(r"public unsafe class Runnable_(\d+) : global::Relayer\.Benchmarks\.EndToEndBenchmarks\s*\{(.*?)(?=public unsafe class Runnable_|\Z)", text, re.S)
+    runners = re.findall(rf"public unsafe class Runnable_(\d+) : global::Relayer\.Benchmarks\.{owner}\s*\{{(.*?)(?=public unsafe class Runnable_|\Z)", text, re.S)
     matches = [(identity, body) for identity, body in runners
-               if "AwaitHelper.GetResult(ConcurrentRoundTrip())" in body]
+               if f"AwaitHelper.GetResult({method}())" in body
+               and (parameter is None or parameter in body)]
     if len(matches) != 1:
-        raise ValueError("Expected one original ConcurrentRoundTrip runner")
+        raise ValueError(f"Expected one original {case} runner for selected parameter")
     identity, body = matches[0]
-    if "OperationsPerInvoke = 8," not in body or "MeasureExtraStats = true," not in body:
-        raise ValueError("Original runner must measure eight operations and GC statistics")
+    if f"OperationsPerInvoke = {operations}," not in body or "MeasureExtraStats = true," not in body:
+        raise ValueError(f"Original runner must measure {operations} operations and GC statistics")
     images = list(source.parent.glob("bin/Release/net10.0/Relayer.Benchmarks-DefaultJob-*.dll"))
     if len(images) != 1:
         raise ValueError("Expected one retained generated BenchmarkDotNet executable")
@@ -73,6 +83,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("artifact", type=Path)
     parser.add_argument("output", type=Path)
+    parser.add_argument("--case", choices=tuple(CASES), default="concurrent",
+                        help="Select an original generated runner and parameter, preserving its native job.")
     parser.add_argument("--trace-tool", type=Path,
                         help="Separate instrumented replay; retain whole-process raw allocation profiles.")
     parser.add_argument("--runtime-version", choices=("10.0.14", "10.0.15"),
@@ -80,22 +92,25 @@ def main():
     parser.add_argument("--same-image", choices=("baseline", "candidate"),
                         help="Negative control: launch the selected original image four times, without an image comparison.")
     args = parser.parse_args()
+    owner, method, parameter, operations = CASES[args.case]
+    benchmark = f"Relayer.Benchmarks.{owner}.{method}"
     builds = args.artifact.resolve() / "performance-builds"
     # Verify all three original inventories before starting any process. A2 deliberately
     # repeats the first baseline executable, as in the external-probe ABBA.
     commits = {side: verify(builds / side) for side in (*dict.fromkeys(LAUNCHES), "baseline-after")}
-    runners = {side: executable(builds / side) for side in dict.fromkeys(LAUNCHES)}
+    runners = {side: executable(builds / side, args.case) for side in dict.fromkeys(LAUNCHES)}
     launches = (args.same_image,) * 4 if args.same_image else LAUNCHES
     args.output.mkdir(parents=True, exist_ok=False)
-    protocol = {"commits": commits, "launches": launches, "sameImage": args.same_image, "benchmark": BENCHMARK,
+    protocol = {"commits": commits, "launches": launches, "sameImage": args.same_image, "benchmark": benchmark,
+                "case": args.case, "parameter": parameter,
                 "engine": "Original retained BenchmarkDotNet generated executable and Default job",
                 "host": "Native NoAcknowledgementConsoleHost; original anonymous-pipe parent absent",
-                "operationsPerInvoke": 8, "instrumented": args.trace_tool is not None,
+                "operationsPerInvoke": operations, "instrumented": args.trace_tool is not None,
                 "limits": "New original-engine executions, not historical reconstruction, allocation-type attribution, throughput equivalence or native-client budget evidence. No external fixed-count driver, sampled profile, job override or threshold change.",
                 "requestedRuntime": args.runtime_version, "commands": []}
     for side in launches:
         image, identity = runners[side]
-        protocol["commands"].append([*runtime_command(image, args.runtime_version), "--benchmarkName", BENCHMARK,
+        protocol["commands"].append([*runtime_command(image, args.runtime_version), "--benchmarkName", benchmark,
                                      "--job", "Default", "--benchmarkId", identity])
     if args.trace_tool:
         protocol["profile_limits"] = (
@@ -136,7 +151,11 @@ def main():
                     if versions != [args.runtime_version]:
                         raise ValueError(f"Unexpected loaded runtime: {versions}")
                     outcome["runtime"] = versions[0]
-                outcome.update(result(text))
+                # Reuse the existing native WorkloadResult parser; these are new
+                # process samples, never a gate verdict or historical reconstruction.
+                outcome.update(timing_result(text))
+                if args.case == "concurrent":
+                    outcome.update(result(text))
             except ValueError as error:
                 outcome["error"] = str(error)
                 failed = True

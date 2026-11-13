@@ -75,6 +75,7 @@ jobs:
             tools/FrozenFixtureProbe/InvocationAllocations.cs
             tools/FrozenMeasurementEvents.cs
             .github/scripts/frozen_bdn_control.py
+            .github/scripts/frozen_scope_control.py
             .github/scripts/test_frozen_bdn_control.py
             .github/scripts/frozen_concurrent_control.py
             .github/scripts/test_frozen_concurrent_control.py
