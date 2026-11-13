@@ -663,14 +663,36 @@ public class FailurePipelineTests
             ProcessSynchronously(pipeline, incoming);
             _ = serializer.Deserialize<Payload>(new(incoming.Body));
         }
+        // Retain every window without logging inside either measurement. A completed ValueTask
+        // keeps thread-local counters on this thread; suspension invalidates this comparison.
+        var jsonWindows = new long[1000];
+        var pipelineWindows = new long[1000];
+        var collectionsBefore = (GC.CollectionCount(0), GC.CollectionCount(1), GC.CollectionCount(2));
         var start = GC.GetAllocatedBytesForCurrentThread();
-        for (var i = 0; i < 1000; i++) _ = serializer.Deserialize<Payload>(new(incoming.Body));
+        for (var i = 0; i < 1000; i++)
+        {
+            var before = GC.GetAllocatedBytesForCurrentThread();
+            _ = serializer.Deserialize<Payload>(new(incoming.Body));
+            jsonWindows[i] = GC.GetAllocatedBytesForCurrentThread() - before;
+        }
         var jsonBytes = GC.GetAllocatedBytesForCurrentThread() - start;
         start = GC.GetAllocatedBytesForCurrentThread();
         // Measure the synchronous pipeline, excluding the test caller's runtime-async await machinery.
         // Requiring completion also keeps both per-thread counters on the same thread.
-        for (var i = 0; i < 1000; i++) ProcessSynchronously(pipeline, incoming);
+        for (var i = 0; i < 1000; i++)
+        {
+            var before = GC.GetAllocatedBytesForCurrentThread();
+            ProcessSynchronously(pipeline, incoming);
+            pipelineWindows[i] = GC.GetAllocatedBytesForCurrentThread() - before;
+        }
         var pipelineBytes = GC.GetAllocatedBytesForCurrentThread() - start;
+        var collectionsAfter = (GC.CollectionCount(0), GC.CollectionCount(1), GC.CollectionCount(2));
+        if (pipelineBytes != jsonBytes)
+        {
+            Console.WriteLine($"Singleton allocation comparison: JSON={jsonBytes}; pipeline={pipelineBytes}; collections before={collectionsBefore}; after={collectionsAfter}; runtime={System.Runtime.InteropServices.RuntimeInformation.FrameworkDescription}");
+            for (var i = 0; i < jsonWindows.Length; i++)
+                Console.WriteLine($"window={i}; JSON={jsonWindows[i]}; pipeline={pipelineWindows[i]}");
+        }
         await Assert.That(pipelineBytes).IsEqualTo(jsonBytes);
     }
 

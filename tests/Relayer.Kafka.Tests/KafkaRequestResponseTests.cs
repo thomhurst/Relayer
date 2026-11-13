@@ -40,7 +40,7 @@ public class KafkaRequestResponseTests
                     options.ConfigureConsumer = native => native.WithAutoOffsetReset(AutoOffsetReset.Earliest);
                 });
                 transport.Request<KafkaRequest, KafkaResponse>(requests, replies,
-                    configureReplies: consumer => consumer.Options.Group = replies);
+                    request => request.Replies(consumer => consumer.Options.Group = replies));
                 transport.Send<KafkaResponse>(replies);
                 transport.Consume(requests, consumer =>
                 {

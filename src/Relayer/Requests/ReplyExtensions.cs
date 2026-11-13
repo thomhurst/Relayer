@@ -8,7 +8,15 @@ public static class ReplyExtensions
 {
     /// <summary>Sends a correlated reply to the request's explicitly declared reply address.</summary>
     /// <remarks>Uses the active outbox or handler send buffer. The response's Send route must match the reply address.</remarks>
-    public static ValueTask ReplyAsync<TResponse>(this MessageContext context, TResponse response, CancellationToken cancellationToken = default)
+    public static ValueTask ReplyAsync<TResponse>(this MessageContext context, TResponse response)
+    {
+        ArgumentNullException.ThrowIfNull(context);
+        return context.ReplyAsync(response, context.CancellationToken);
+    }
+
+    /// <summary>Sends a correlated reply using the supplied cancellation token, including CancellationToken.None.</summary>
+    /// <remarks>The response's Send route must match the reply address.</remarks>
+    public static ValueTask ReplyAsync<TResponse>(this MessageContext context, TResponse response, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(context);
         ArgumentNullException.ThrowIfNull(response);
@@ -25,7 +33,6 @@ public static class ReplyExtensions
         if (context.Services.GetRequiredService<ISender>() is not Sender sender)
             throw new InvalidOperationException("ReplyAsync requires Relayer's scoped ISender. Remove the replacement ISender registration.");
         // Send buffers and outbox stores already copy borrowed header storage before returning.
-        return sender.ReplyAsync(response, correlation,
-            cancellationToken == default ? context.CancellationToken : cancellationToken);
+        return sender.ReplyAsync(response, correlation, cancellationToken);
     }
 }
