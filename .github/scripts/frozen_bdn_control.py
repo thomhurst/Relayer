@@ -55,12 +55,28 @@ def result(text):
             "bdnRoundedBytesPerMessage": round(allocated / operations)}
 
 
+def runtime_command(image, version):
+    if version is None:
+        return ["dotnet", str(image)]
+    if not re.fullmatch(r"10\.0\.[0-9]+", version):
+        raise ValueError("Expected an exact net10 runtime patch")
+    options = json.loads(image.with_suffix(".runtimeconfig.json").read_text())["runtimeOptions"]
+    framework = options.get("framework", {})
+    if (options.get("frameworks") or framework.get("name") != "Microsoft.NETCore.App"
+            or not framework.get("version", "").startswith("10.0.")):
+        raise ValueError("Exact patch selection requires one Microsoft.NETCore.App net10 framework")
+    # Native host options preserve every retained byte; Disable prevents patch roll-forward.
+    return ["dotnet", "--fx-version", version, "--roll-forward", "Disable", str(image)]
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("artifact", type=Path)
     parser.add_argument("output", type=Path)
     parser.add_argument("--trace-tool", type=Path,
                         help="Separate instrumented replay; retain whole-process raw allocation profiles.")
+    parser.add_argument("--runtime-version", choices=("10.0.14", "10.0.15"),
+                        help="Bind the original executable to an installed exact patch without editing retained inputs.")
     args = parser.parse_args()
     builds = args.artifact.resolve() / "performance-builds"
     # Verify all three original inventories before starting any process. A2 deliberately
@@ -73,10 +89,10 @@ def main():
                 "host": "Native NoAcknowledgementConsoleHost; original anonymous-pipe parent absent",
                 "operationsPerInvoke": 8, "instrumented": args.trace_tool is not None,
                 "limits": "New original-engine executions, not historical reconstruction, allocation-type attribution, throughput equivalence or native-client budget evidence. No external fixed-count driver, sampled profile, job override or threshold change.",
-                "commands": []}
+                "requestedRuntime": args.runtime_version, "commands": []}
     for side in LAUNCHES:
         image, identity = runners[side]
-        protocol["commands"].append(["dotnet", str(image), "--benchmarkName", BENCHMARK,
+        protocol["commands"].append([*runtime_command(image, args.runtime_version), "--benchmarkName", BENCHMARK,
                                      "--job", "Default", "--benchmarkId", identity])
     if args.trace_tool:
         protocol["profile_limits"] = (
@@ -109,7 +125,13 @@ def main():
                 failed = True
         if "error" not in outcome:
             try:
-                outcome.update(result(log_path.read_text()))
+                text = log_path.read_text()
+                if args.runtime_version:
+                    versions = re.findall(r"^// Runtime=\.NET ([0-9.]+) ", text, re.M)
+                    if versions != [args.runtime_version]:
+                        raise ValueError(f"Unexpected loaded runtime: {versions}")
+                    outcome["runtime"] = versions[0]
+                outcome.update(result(text))
             except ValueError as error:
                 outcome["error"] = str(error)
                 failed = True

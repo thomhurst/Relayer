@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from frozen_bdn_control import executable, main, result
+from frozen_bdn_control import executable, main, result, runtime_command
 
 
 COMPLETE = "WorkloadResult   1: 65536 op, 1 ns, 1 ns/op\n// GC:  0 0 0 45823680 65536\n// AfterAll\n"
@@ -133,6 +133,62 @@ class OriginalRunnerTests(unittest.TestCase):
                 self.assertTrue(protocol["instrumented"])
                 self.assertIn("Whole-process", protocol["profile_limits"])
                 self.assertIn("no Relayer measurement markers", protocol["profile_limits"])
+
+    def test_exact_patch_selection_preserves_image_and_rejects_other_frameworks(self):
+        with tempfile.TemporaryDirectory() as directory:
+            image = Path(directory) / "runner.dll"
+            config = image.with_suffix(".runtimeconfig.json")
+            original = json.dumps({"runtimeOptions": {"framework": {
+                "name": "Microsoft.NETCore.App", "version": "10.0.0"}}})
+            config.write_text(original)
+            self.assertEqual(runtime_command(image, "10.0.14"),
+                             ["dotnet", "--fx-version", "10.0.14", "--roll-forward", "Disable", str(image)])
+            self.assertEqual(config.read_text(), original)
+            self.assertEqual(runtime_command(image, None), ["dotnet", str(image)])
+            for invalid in ("11.0.0", "10.0.x", "10.0.14 --help"):
+                with self.assertRaises(ValueError):
+                    runtime_command(image, invalid)
+            config.write_text(original.replace("Microsoft.NETCore.App", "Microsoft.AspNetCore.App"))
+            with self.assertRaises(ValueError):
+                runtime_command(image, "10.0.14")
+            config.write_text(json.dumps({"runtimeOptions": {"frameworks": [
+                {"name": "Microsoft.NETCore.App", "version": "10.0.0"}]}}))
+            with self.assertRaises(ValueError):
+                runtime_command(image, "10.0.14")
+
+    def test_loaded_runtime_mismatch_fails_closed_and_attempts_every_profile(self):
+        for mismatch in (False, True):
+            with self.subTest(mismatch=mismatch), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                for side in ("baseline", "candidate"):
+                    _, image = self.fixture(root / "performance-builds" / side)
+                    image.with_suffix(".runtimeconfig.json").write_text(json.dumps({"runtimeOptions": {
+                        "framework": {"name": "Microsoft.NETCore.App", "version": "10.0.0"}}}))
+                output = root / "results"
+                calls = []
+
+                def execute(command, **kwargs):
+                    calls.append(command)
+                    original = command[command.index("--") + 1:]
+                    self.assertEqual(original[:5], ["dotnet", "--fx-version", "10.0.14", "--roll-forward", "Disable"])
+                    version = "10.0.15" if mismatch and len(calls) == 2 else "10.0.14"
+                    kwargs["stdout"].write("// Runtime=.NET " + version + " (test), X64\n" + COMPLETE)
+                    Path(command[command.index("--output") + 1]).write_bytes(b"trace")
+
+                with patch("sys.argv", ["control", str(root), str(output), "--runtime-version", "10.0.14",
+                                        "--trace-tool", str(root / "dotnet-trace")]), \
+                     patch("frozen_bdn_control.verify", return_value="frozen"), \
+                     patch("frozen_bdn_control.subprocess.run", side_effect=execute):
+                    if mismatch:
+                        with self.assertRaisesRegex(SystemExit, "launches failed"):
+                            main()
+                    else:
+                        main()
+                self.assertEqual(len(calls), 4)
+                outcomes = json.loads((output / "outcomes.json").read_text())
+                self.assertEqual("error" in outcomes[1], mismatch)
+                self.assertEqual(outcomes[3]["runtime"], "10.0.14")
+                self.assertEqual(json.loads((output / "protocol.json").read_text())["requestedRuntime"], "10.0.14")
 
     def test_invalid_input_prevents_every_process_launch(self):
         with tempfile.TemporaryDirectory() as directory, \
