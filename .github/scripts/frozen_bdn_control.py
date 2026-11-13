@@ -16,6 +16,7 @@ LAUNCHES = ("baseline", "candidate", "candidate", "baseline")
 # Explicit original generated runner selectors; ConsumptionModel.Queue=0, Log=1.
 CASES = {
     "concurrent": ("EndToEndBenchmarks", "ConcurrentRoundTrip", None, 8),
+    "scope-only-unscoped": ("ConsumePipelineBenchmarks", "ScopeOnly", "instance.ScopedHandler = false;", 1),
     "scope-only": ("ConsumePipelineBenchmarks", "ScopeOnly", "instance.ScopedHandler = true;", 1),
     "scoped-dispatch": ("ConsumePipelineBenchmarks", "DirectScopedDispatch", "instance.ScopedHandler = true;", 1),
     "log-composed": ("InMemoryTransportBenchmarks", "ComposedRoundTrip", "instance.Mode = (Relayer.Transports.ConsumptionModel)(1);", 1),
@@ -102,8 +103,8 @@ def main():
                         help="Separate exact CLR callback counts in the selected native boundary.")
     args = parser.parse_args()
     from frozen_scope_control import result as timing_result
-    if args.native_executor and (args.case not in ("concurrent", "scoped-dispatch", "scope-only") or args.trace_tool):
-        parser.error("Native parent supports concurrent, scoped-dispatch or scoped ScopeOnly replay without an external trace launcher")
+    if args.native_executor and (args.case not in ("concurrent", "scoped-dispatch", "scope-only", "scope-only-unscoped") or args.trace_tool):
+        parser.error("Native parent supports concurrent, scoped-dispatch or either ScopeOnly parameter replay without an external trace launcher")
     if args.allocation_profiler and args.case != "concurrent":
         parser.error("Exact allocation callbacks support only the concurrent benchmark")
     owner, method, parameter, operations = CASES[args.case]
@@ -240,8 +241,9 @@ def main():
                     text = (args.output / f"{index}-{side}-native.log").read_text()
                     # Independently bind the parent's receipt to the selected original
                     # runner, including the parameterized ScopeOnly benchmark name.
-                    name_argument = (f'"{benchmark}(ScopedHandler: True)"'
-                                     if args.case == "scope-only" else benchmark)
+                    scope_parameter = "False" if args.case == "scope-only-unscoped" else "True"
+                    name_argument = (f'"{benchmark}(ScopedHandler: {scope_parameter})"'
+                                     if args.case in ("scope-only", "scope-only-unscoped") else benchmark)
                     expected = f"--benchmarkName {name_argument} --job Default --benchmarkId {runners[side][1]}"
                     if (receipt.get("benchmarkArguments") != expected
                             or receipt.get("selectedCase") != args.case

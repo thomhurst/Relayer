@@ -25,6 +25,7 @@ on:
         options:
           - concurrent
           - scope-only
+          - scope-only-unscoped
           - scoped-dispatch
           - log-composed
           - queue-composed
