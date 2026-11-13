@@ -40,6 +40,12 @@ public sealed class MessageTypeGenerator : IIncrementalGenerator
         "Relayer", DiagnosticSeverity.Error, isEnabledByDefault: true,
         helpLinkUri: "https://relayer.tomlonghurst.dev/docs/reference/diagnostics#rlym004");
 
+    private static readonly DiagnosticDescriptor NullMessageName = new(
+        "RLYM005", "Message name cannot be null",
+        "Message '{0}' has a null name. A stable message name cannot be null; specify a permanent wire name in [Message(\"name\")].",
+        "Relayer", DiagnosticSeverity.Error, isEnabledByDefault: true,
+        helpLinkUri: "https://relayer.tomlonghurst.dev/docs/reference/diagnostics#rlym005");
+
     public void Initialize(IncrementalGeneratorInitializationContext context)
     {
         var refLikeMessages = context.SyntaxProvider.ForAttributeWithMetadataName(
@@ -66,6 +72,11 @@ public sealed class MessageTypeGenerator : IIncrementalGenerator
 
         context.RegisterSourceOutput(declarations, static (spc, model) =>
         {
+            if (model.NullNameLocation is { } nullNameLocation)
+            {
+                spc.ReportDiagnostic(Diagnostic.Create(NullMessageName,
+                    Location.Create(nullNameLocation.FilePath, nullNameLocation.Span, nullNameLocation.LineSpan), model.FullyQualifiedName));
+            }
             if (model.InaccessibleLocation is { } inaccessibleLocation)
             {
                 spc.ReportDiagnostic(Diagnostic.Create(model.IsStatic ? StaticMessage : InaccessibleMessage,
@@ -77,7 +88,7 @@ public sealed class MessageTypeGenerator : IIncrementalGenerator
                     Location.Create(location.FilePath, location.Span, location.LineSpan), model.FullyQualifiedName));
             }
         });
-        var messages = declarations.Where(static m => m.OpenGenericLocation is null && m.InaccessibleLocation is null).Collect();
+        var messages = declarations.Where(static m => m.OpenGenericLocation is null && m.InaccessibleLocation is null && m.NullNameLocation is null).Collect();
 
         context.RegisterSourceOutput(messages, static (spc, models) => Emit(spc, models));
         context.RegisterSourceOutput(messages.Combine(context.CompilationProvider),
@@ -99,6 +110,12 @@ public sealed class MessageTypeGenerator : IIncrementalGenerator
         }
 
         var attribute = context.Attributes[0];
+        if (attribute.ConstructorArguments.Length == 1 && attribute.ConstructorArguments[0].IsNull)
+        {
+            var location = attribute.ApplicationSyntaxReference?.GetSyntax().GetLocation() ?? context.TargetNode.GetLocation();
+            return new MessageModel(type.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat), "", 1,
+                NullNameLocation: new DiagnosticLocation(location.GetLineSpan().Path, location.SourceSpan, location.GetLineSpan().Span));
+        }
         if (attribute.ConstructorArguments.Length != 1 || attribute.ConstructorArguments[0].Value is not string name)
         {
             return null;
@@ -222,7 +239,7 @@ public sealed class MessageTypeGenerator : IIncrementalGenerator
         && compilation.IsSymbolAccessibleWithin(type, compilation.Assembly)
         && (type.ContainingType is null || CanReference(type.ContainingType, compilation));
 
-    private sealed record MessageModel(string FullyQualifiedName, string Name, int Version, DiagnosticLocation? OpenGenericLocation = null, DiagnosticLocation? InaccessibleLocation = null, bool IsStatic = false);
+    private sealed record MessageModel(string FullyQualifiedName, string Name, int Version, DiagnosticLocation? OpenGenericLocation = null, DiagnosticLocation? InaccessibleLocation = null, bool IsStatic = false, DiagnosticLocation? NullNameLocation = null);
 
     private sealed record DiagnosticLocation(string FilePath, TextSpan Span, LinePositionSpan LineSpan);
 
