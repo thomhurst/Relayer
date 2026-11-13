@@ -6,7 +6,6 @@ using Dekaf.Admin;
 using Dekaf.Consumer;
 using Dekaf.Serialization;
 using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Options;
 using Relayer.Kafka;
 using Relayer.Serialization;
 
@@ -25,7 +24,7 @@ public class KafkaReceiveBenchmarks
     private KafkaWorkerHealth? _health;
     private ServiceProvider _provider = null!;
     private readonly TopicPartitionOffset[] _offset = new TopicPartitionOffset[1];
-    private readonly MessageTracing _tracing = new(Options.Create(new TracingOptions()), []);
+    private MessageTracing _tracing = null!;
     private string _topic = null!;
 
     [Params(false, true)]
@@ -48,21 +47,39 @@ public class KafkaReceiveBenchmarks
         _raw = await BuildConsumer(bootstrap, "raw");
         _native = await BuildConsumer(bootstrap, "relayer");
         var services = new ServiceCollection();
-        services.AddSingleton<KafkaBenchmarkHandler>();
+        services.AddScoped<KafkaBenchmarkHandler>();
         services.AddRelayer(relayer =>
         {
             relayer.MessageTypes.Add<KafkaBenchmarkPayload>("benchmarks.kafka-receive");
             relayer.UseJsonSerializer(KafkaReceiveBenchmarkJson.Default);
             relayer.Handler<KafkaBenchmarkHandler>();
+            relayer.Kafka("benchmark", kafka =>
+            {
+                kafka.Options.Configure(options => options.BootstrapServers.Add(bootstrap));
+                kafka.Consume(_topic, consumer =>
+                {
+                    consumer.Options.Group = _topic + "relayer";
+                    consumer.Handler<KafkaBenchmarkHandler>();
+                });
+            });
         });
-        _provider = services.BuildServiceProvider();
+        _provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
+        _tracing = _provider.GetRequiredService<MessageTracing>();
+        var endpoint = new MessagingEndpoint { System = "kafka", Destination = _topic, ConsumerGroup = _topic + "relayer" };
+        var telemetry = _provider.GetRequiredService<RelayerInstrumentation>().CreateEndpoint(new()
+        {
+            System = endpoint.System, Destination = endpoint.Destination, ConsumerGroup = endpoint.ConsumerGroup,
+        });
+        var failures = new FailurePipeline(_provider, "benchmark", _topic, endpoint.ConsumerGroup,
+            new() { DeadLetterEndpoint = _topic + ".dead-letter" }, KafkaHostedService.Copy);
         var pipeline = new ConsumePipelineBuilder(_provider.GetRequiredService<IServiceScopeFactory>(),
             _provider.GetRequiredService<MessageTypeRegistry>(), _provider.GetRequiredService<IMessageSerializer>(),
-            static (_, error, _) => ValueTask.FromException(error))
+            failures, _provider.GetService<IFailureClassifier>())
+            .Tracing(_tracing, endpoint).Telemetry(telemetry)
             .Handler(_provider.GetRequiredService<HandlerRegistry>().GetHandler<KafkaBenchmarkPayload, KafkaBenchmarkHandler>()).Build(1);
         var receive = new ReceivePipeline<KafkaDelivery, KafkaMessageBinding>(pipeline, new(), 1);
         _health = HealthEnabled ? new KafkaWorkerHealth(TimeProvider.System) : null;
-        _adapter = new(_native, receive.ProcessAsync, _tracing, new() { System = "kafka", Destination = _topic }, new(), _health);
+        _adapter = new(_native, receive.ProcessAsync, _tracing, endpoint, new(), _health);
     }
 
     private async Task<IKafkaConsumer<byte[], byte[]>> BuildConsumer(string bootstrap, string suffix)
@@ -90,8 +107,9 @@ public class KafkaReceiveBenchmarks
         {
             foreach (var record in batch)
             {
+                await using var scope = _provider.CreateAsyncScope();
                 var payload = JsonSerializer.Deserialize(record.Value, KafkaReceiveBenchmarkJson.Default.KafkaBenchmarkPayload);
-                if (payload.Value != 42) throw new InvalidOperationException("Unexpected benchmark payload.");
+                await scope.ServiceProvider.GetRequiredService<KafkaBenchmarkHandler>().HandleAsync(payload, null!, timeout.Token);
                 count++;
             }
             if (batch.TryGetNextOffset(out var checkpoint))
@@ -125,7 +143,6 @@ public class KafkaReceiveBenchmarks
         if (_adapter is not null) await _adapter.DisposeAsync();
         if (_raw is not null) await _raw.DisposeAsync();
         if (_provider is not null) await _provider.DisposeAsync();
-        _tracing.Dispose();
         if (_admin is not null)
         {
             try { if (_topic is not null) await _admin.DeleteTopicsAsync([_topic]); }
