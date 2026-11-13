@@ -1105,6 +1105,148 @@ public class FailurePipelineTests
         }
     }
 
+    [Test]
+    [Arguments(false, false, false)]
+    [Arguments(true, false, false)]
+    [Arguments(false, true, false)]
+    [Arguments(false, false, true)]
+    [Arguments(true, false, true)]
+    [Arguments(false, true, true)]
+    public async Task Pending_native_settlement_preserves_execution_context_and_failed_probe_cleanup(bool failSettlement, bool cancelSettlement, bool suspendDurable)
+    {
+        using var provider = Provider(new Transport());
+        var control = provider.GetRequiredService<Control>();
+        var ambient = new AsyncLocal<string>();
+        var scopeDisposed = false;
+        var handlerGate = new TaskCompletionSource();
+        var disposalGate = new TaskCompletionSource();
+        var disposalEntered = new TaskCompletionSource();
+        control.Invoke = _ => { ambient.Value = "handler"; return suspendDurable ? new(handlerGate.Task) : default; };
+        control.Dispose = () =>
+        {
+            ambient.Value = "disposed";
+            scopeDisposed = true;
+            disposalEntered.SetResult();
+            return suspendDurable ? new(disposalGate.Task) : default;
+        };
+        var gate = new TaskCompletionSource();
+        var entered = new TaskCompletionSource();
+        var failures = new FailurePipeline(provider, "test", "source", "consumer");
+        var pipeline = new ConsumePipelineBuilder(provider.GetRequiredService<IServiceScopeFactory>(),
+            provider.GetRequiredService<MessageTypeRegistry>(), provider.GetRequiredService<Relayer.Serialization.IMessageSerializer>(), failures)
+            .Handler(provider.GetRequiredService<HandlerRegistry>().GetHandler<Payload, Handler>())
+            .Settle(context =>
+            {
+                if (!scopeDisposed || ambient.Value != "disposed") throw new InvalidOperationException("Settlement lost durable-work context.");
+                entered.SetResult();
+                return new(gate.Task);
+            }).Build(1);
+        var clock = new ConsumerCircuitTests.Clock();
+        using var circuit = new ConsumerCircuit(1, 1, TimeSpan.FromMinutes(1), TimeSpan.FromMinutes(1), clock);
+        circuit.TryEnter(out var initialProbe);
+        circuit.Complete(initialProbe, true);
+        clock.Recovery.Fire();
+        pipeline.Circuit = circuit;
+        var receive = new ReceivePipeline<Incoming, Binding>(pipeline, new(), 1);
+        ambient.Value = "caller";
+        using var cancellation = new CancellationTokenSource();
+        var processing = receive.ProcessAsync(new(), cancellation.Token);
+        if (suspendDurable)
+        {
+            await Assert.That(ambient.Value).IsEqualTo("caller");
+            handlerGate.SetResult();
+            await disposalEntered.Task;
+            await Assert.That(entered.Task.IsCompleted).IsFalse();
+            disposalGate.SetResult();
+        }
+        await entered.Task;
+        await Assert.That(processing.IsCompleted).IsFalse();
+        await Assert.That(circuit.State).IsEqualTo(2);
+        await Assert.That(ambient.Value).IsEqualTo("caller");
+        await Task.Run(() =>
+        {
+            ambient.Value = "completing-worker";
+            if (cancelSettlement) { cancellation.Cancel(); gate.SetCanceled(cancellation.Token); }
+            else if (failSettlement) gate.SetException(new ApplicationException("settlement failed"));
+            else gate.SetResult();
+            if (ambient.Value != "completing-worker") throw new InvalidOperationException("Completion leaked execution context.");
+        });
+        if (cancelSettlement) await Assert.That(async () => await processing).Throws<OperationCanceledException>();
+        else if (failSettlement) await Assert.That(async () => await processing).Throws<ApplicationException>();
+        else await processing;
+        await Assert.That(circuit.State).IsEqualTo(failSettlement || cancelSettlement ? 1 : 0);
+        await Assert.That(ambient.Value).IsEqualTo("caller");
+    }
+
+    [Test]
+    public async Task Ten_pending_settlements_add_no_continuation_allocations_and_reuse_their_storage()
+    {
+        using var provider = Provider(new Transport(), static services =>
+        {
+            services.AddScoped(static scope => new Lifetime(scope.GetRequiredService<Control>()));
+            services.AddScoped(static scope => new Handler(scope.GetRequiredService<Control>(), scope.GetRequiredService<Lifetime>()));
+        });
+        var gates = new SettlementGate[10];
+        var processing = new ValueTask<Disposition>[10];
+        for (var i = 0; i < gates.Length; i++) gates[i] = new();
+        var next = 0;
+        var failures = new FailurePipeline(provider, "test", "source", "consumer");
+        var pipeline = new ConsumePipelineBuilder(provider.GetRequiredService<IServiceScopeFactory>(),
+            provider.GetRequiredService<MessageTypeRegistry>(), provider.GetRequiredService<Relayer.Serialization.IMessageSerializer>(), failures)
+            .Handler(provider.GetRequiredService<HandlerRegistry>().GetHandler<Payload, Handler>())
+            .Settle(_ => gates[next++].Wait()).Build(10);
+        var receive = new ReceivePipeline<Incoming, Binding>(pipeline, new(), 10);
+        var incoming = new Incoming();
+        var serializer = provider.GetRequiredService<Relayer.Serialization.IMessageSerializer>();
+        var scopes = provider.GetRequiredService<IServiceScopeFactory>();
+        void PipelineWindow()
+        {
+            next = 0;
+            for (var i = 0; i < gates.Length; i++)
+            {
+                gates[i].Reset();
+                processing[i] = receive.ProcessAsync(incoming);
+                if (processing[i].IsCompleted) throw new InvalidOperationException("Settlement did not suspend.");
+            }
+            for (var i = 0; i < gates.Length; i++) gates[i].Complete();
+            for (var i = 0; i < gates.Length; i++)
+            {
+                // Every gate completes inline above; this consumes a completed ValueTask, never blocks.
+                if (!processing[i].IsCompletedSuccessfully) throw new InvalidOperationException("Settlement failed.");
+                _ = processing[i].GetAwaiter().GetResult();
+            }
+        }
+        void NativeWindow()
+        {
+            for (var i = 0; i < gates.Length; i++)
+            {
+                var scope = new AsyncServiceScope(scopes.CreateScope());
+                _ = scope.ServiceProvider.GetRequiredService<Handler>();
+                _ = serializer.Deserialize<Payload>(new(incoming.Body));
+                scope.DisposeAsync().GetAwaiter().GetResult(); // Lifetime completes synchronously in this test.
+            }
+        }
+        for (var i = 0; i < 1000; i++) { NativeWindow(); PipelineWindow(); }
+        var start = GC.GetAllocatedBytesForCurrentThread();
+        for (var i = 0; i < 1000; i++) NativeWindow();
+        var nativeBytes = GC.GetAllocatedBytesForCurrentThread() - start;
+        start = GC.GetAllocatedBytesForCurrentThread();
+        for (var i = 0; i < 1000; i++) PipelineWindow();
+        var pipelineBytes = GC.GetAllocatedBytesForCurrentThread() - start;
+        await Assert.That(pipelineBytes).IsEqualTo(nativeBytes);
+    }
+
+    private sealed class SettlementGate : System.Threading.Tasks.Sources.IValueTaskSource
+    {
+        private System.Threading.Tasks.Sources.ManualResetValueTaskSourceCore<bool> _completion;
+        internal void Reset() => _completion.Reset();
+        internal ValueTask Wait() => new(this, _completion.Version);
+        internal void Complete() => _completion.SetResult(true);
+        public void GetResult(short token) => _completion.GetResult(token);
+        public System.Threading.Tasks.Sources.ValueTaskSourceStatus GetStatus(short token) => _completion.GetStatus(token);
+        public void OnCompleted(Action<object?> continuation, object? state, short token, System.Threading.Tasks.Sources.ValueTaskSourceOnCompletedFlags flags) => _completion.OnCompleted(continuation, state, token, flags);
+    }
+
     private static ValueTask Throw(MessageContext context) => throw new InvalidOperationException("failed attempt");
 
     private static ServiceProvider Provider(ITransport transport, Action<IServiceCollection>? configure = null)
