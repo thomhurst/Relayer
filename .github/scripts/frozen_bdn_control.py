@@ -17,6 +17,7 @@ CASES = {
     "concurrent": ("EndToEndBenchmarks", "ConcurrentRoundTrip", None, 8),
     "scoped-dispatch": ("ConsumePipelineBenchmarks", "DirectScopedDispatch", "instance.ScopedHandler = true;", 1),
     "log-composed": ("InMemoryTransportBenchmarks", "ComposedRoundTrip", "instance.Mode = (Relayer.Transports.ConsumptionModel)(1);", 1),
+    "queue-composed": ("InMemoryTransportBenchmarks", "ComposedRoundTrip", "instance.Mode = (Relayer.Transports.ConsumptionModel)(0);", 1),
     "queue-native": ("InMemoryTransportBenchmarks", "NativeRoundTrip", "instance.Mode = (Relayer.Transports.ConsumptionModel)(0);", 1),
 }
 

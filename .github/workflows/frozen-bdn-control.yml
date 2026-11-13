@@ -25,6 +25,7 @@ on:
           - concurrent
           - scoped-dispatch
           - log-composed
+          - queue-composed
           - queue-native
 
       same_image:
