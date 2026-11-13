@@ -19,10 +19,15 @@ public sealed partial class ConsumePipeline
         private ConfiguredValueTaskAwaitable.ConfiguredValueTaskAwaiter _pending;
         private ExecutionContext? _executionContext;
         private AsyncServiceScope _scope;
-        private Activity? _activity;
-        private Exception? _failure;
+        internal Activity? TraceActivity;
+        internal Exception? Failure;
         private Exception? _error;
-        private long _start;
+        internal long StartedAt;
+        internal bool Admitted;
+        internal bool Probe;
+        internal bool OutcomeRecorded;
+        internal bool SkipSettlement;
+        internal ExecutionContext? DurableContext;
         private Stage _stage;
         private bool _suspended;
 
@@ -89,8 +94,15 @@ public sealed partial class ConsumePipeline
                     switch (_stage)
                     {
                         case Stage.Start:
-                            _start = _owner._telemetry is { DurationEnabled: true } ? Stopwatch.GetTimestamp() : 0;
-                            _activity = _owner._tracing?.Start(_context);
+                            if (_owner._failures is not null)
+                            {
+                                Admitted = Probe = OutcomeRecorded = SkipSettlement = false;
+                                _stage = Stage.Policy;
+                                _pending = _owner.ProcessDurableWithFailuresAsync(_context, this).ConfigureAwait(false).GetAwaiter();
+                                goto case Stage.Policy;
+                            }
+                            StartedAt = _owner._telemetry is { DurationEnabled: true } ? Stopwatch.GetTimestamp() : 0;
+                            TraceActivity = _owner._tracing?.Start(_context);
                             _owner._telemetry?.RecordConsumed();
                             _context.CancellationToken.ThrowIfCancellationRequested();
                             _scope = new AsyncServiceScope(_owner._scopes.CreateScope());
@@ -103,6 +115,10 @@ public sealed partial class ConsumePipeline
                             _context.Dispatch = dispatch;
                             _pending = _owner._pipeline(_context).ConfigureAwait(false).GetAwaiter();
                             goto case Stage.Handler;
+                        case Stage.Policy:
+                            if (!AwaitPending()) return;
+                            CompletePolicy(null);
+                            return;
                         case Stage.Handler:
                         case Stage.Failure:
                             if (!AwaitPending()) return;
@@ -117,7 +133,7 @@ public sealed partial class ConsumePipeline
                             if (_owner.BufferAttemptSends) _context.EndAttemptSender();
                             if (_error is { } error) ExceptionDispatchInfo.Throw(error);
                             _context.CancellationToken.ThrowIfCancellationRequested();
-                            if (_failure is null && _context.Settlement.Request is { } request)
+                            if (Failure is null && _context.Settlement.Request is { } request)
                             {
                                 _context.FailureDisposition = request;
                                 _context.ApplyFailureDisposition();
@@ -126,8 +142,8 @@ public sealed partial class ConsumePipeline
                             if (!_owner.BufferAttemptSends) goto case Stage.PrepareSettlement;
                             _stage = Stage.Flush;
                             // Scope disposal is part of the attempt. Failure or a non-complete
-                            // settlement must discard its sends, just like ProcessWithFailuresAsync.
-                            if (_failure is null &&
+                            // settlement must discard its sends, just like ProcessDurableWithFailuresAsync.
+                            if (Failure is null &&
                                 (_context.Settlement.Request is not { } settlement || settlement.Kind == DispositionKind.Complete))
                                 _pending = _context.SendBuffer.FlushAsync(_context.CancellationToken).ConfigureAwait(false).GetAwaiter();
                             else
@@ -145,12 +161,23 @@ public sealed partial class ConsumePipeline
                             goto case Stage.Settlement;
                         case Stage.Settlement:
                             if (!AwaitPending()) return;
+                            if (_owner._failures is not null && _owner.Circuit is { } circuit && !OutcomeRecorded)
+                            {
+                                OutcomeRecorded = true;
+                                var opened = circuit.Complete(Probe, false);
+                                if (opened || Probe) _owner.CircuitChanged?.Invoke(opened);
+                            }
                             Finish(null);
                             return;
                     }
                 }
                 catch (Exception error)
                 {
+                    if (_stage == Stage.Policy)
+                    {
+                        CompletePolicy(error);
+                        return;
+                    }
                     if (_stage == Stage.Handler)
                     {
                         _stage = Stage.Failure;
@@ -162,7 +189,7 @@ public sealed partial class ConsumePipeline
                                 ReferenceEquals(_context.ScopeCleanupError, error))
                                 ExceptionDispatchInfo.Throw(error);
                             _context.Settlement.Clear();
-                            _failure = error;
+                            Failure = error;
                             _owner.LogFailure(_context, error);
                             _pending = _owner._failure(_context, error, _owner._classifier.Classify(error, _context))
                                 .ConfigureAwait(false).GetAwaiter();
@@ -185,11 +212,38 @@ public sealed partial class ConsumePipeline
             }
         }
 
+        private void CompletePolicy(Exception? error)
+        {
+            // The async durable-work method restores its caller's ExecutionContext when it returns.
+            // Carry its final context (including Activity/AsyncLocal changes) into settlement/cleanup.
+            _error = error;
+            var executionContext = DurableContext;
+            DurableContext = null;
+            if (executionContext is not null)
+                ExecutionContext.Run(executionContext, static state => ((CoreOperation)state!).AfterPolicy(), this);
+            else AfterPolicy();
+        }
+
+        private void AfterPolicy()
+        {
+            var error = _error;
+            _error = null;
+            if (error is not null || SkipSettlement) { Finish(error); return; }
+            _stage = Stage.PrepareSettlement;
+            MoveNext();
+        }
+
         private void Finish(Exception? error)
         {
             try
             {
-                if (_owner.BufferAttemptSends)
+                if (_owner._failures is not null)
+                {
+                    if (Admitted && _owner.Circuit is { } circuit && !OutcomeRecorded)
+                        if (circuit.Complete(Probe, true)) _owner.CircuitChanged?.Invoke(true);
+                    _context.SendBuffer.Clear();
+                }
+                else if (_owner.BufferAttemptSends)
                 {
                     _context.EndAttemptSender();
                     _context.SendBuffer.Clear();
@@ -198,23 +252,23 @@ public sealed partial class ConsumePipeline
                 {
                     if (error is not null && !(error is OperationCanceledException && _context.CancellationToken.IsCancellationRequested))
                     {
-                        if (!ReferenceEquals(_failure, error)) _owner.LogFailure(_context, error);
-                        _failure = error;
+                        if (!ReferenceEquals(Failure, error)) _owner.LogFailure(_context, error);
+                        Failure = error;
                     }
                 }
                 finally
                 {
                     try
                     {
-                        if (_start != 0) _owner._telemetry!.RecordDuration(Stopwatch.GetElapsedTime(_start), _failure is not null);
+                        if (StartedAt != 0) _owner._telemetry!.RecordDuration(Stopwatch.GetElapsedTime(StartedAt), Failure is not null);
                         _owner._telemetry?.RecordCriticalTime(_context);
                     }
                     finally
                     {
                         try
                         {
-                            if (_failure is not null) MessageOperationTracing.Fail(_activity, "_OTHER");
-                            _activity?.Dispose();
+                            if (Failure is not null) MessageOperationTracing.Fail(TraceActivity, "_OTHER");
+                            TraceActivity?.Dispose();
                         }
                         finally { _context.EndProcessing(); }
                     }
@@ -222,8 +276,8 @@ public sealed partial class ConsumePipeline
             }
             catch (Exception finalError) { error = finalError; }
             _scope = default;
-            _activity = null;
-            _failure = null;
+            TraceActivity = null;
+            Failure = null;
             _pending = default;
             _executionContext = null;
             _error = null;
@@ -244,7 +298,7 @@ public sealed partial class ConsumePipeline
         public void OnCompleted(Action<object?> continuation, object? state, short token, ValueTaskSourceOnCompletedFlags flags)
             => _completion.OnCompleted(continuation, state, token, flags);
 
-        private enum Stage { Start, Scope, Handler, Failure, Dispose, AfterDispose, Flush, PrepareSettlement, Settlement }
+        private enum Stage { Start, Policy, Scope, Handler, Failure, Dispose, AfterDispose, Flush, PrepareSettlement, Settlement }
         private struct Runner(CoreOperation operation) : IAsyncStateMachine
         {
             public void MoveNext() => operation.MoveNext();

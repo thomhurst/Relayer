@@ -77,8 +77,7 @@ public sealed partial class ConsumePipeline
         _classifier = classifier;
         _telemetry = telemetry;
         _settlement = settlement is not null && Observer is { } observer ? observer.WrapSettlement(settlement) : settlement;
-        _process = failures is null ? context => ProcessCoreAsync((DefaultMessageContext)context)
-            : context => ProcessWithFailuresAsync((DefaultMessageContext)context);
+        _process = static context => ProcessCoreAsync((DefaultMessageContext)context);
         _tracing = tracing;
         _logger = telemetry?.Logger ?? tracing?.Logger;
         _contexts = new DefaultMessageContext[capacity];
@@ -180,39 +179,35 @@ public sealed partial class ConsumePipeline
         ArgumentNullException.ThrowIfNull(context);
         context.BeginProcessing(this);
         if (Observer is { } observer) return observer.ProcessAsync(context, _process);
-        return _failures is null ? ProcessCoreAsync(context) : ProcessWithFailuresAsync(context);
+        return ProcessCoreAsync(context);
     }
 
     private static ValueTask ProcessCoreAsync(DefaultMessageContext context) => context.CoreProcessing.Start();
 
     [RuntimeAsyncMethodGeneration(false)]
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
-    private async ValueTask ProcessWithFailuresAsync(DefaultMessageContext context)
+    private async ValueTask ProcessDurableWithFailuresAsync(DefaultMessageContext context, CoreOperation operation)
     {
         var onDemand = _scopesOnDemand;
         var telemetry = _telemetry;
-        var start = telemetry is { DurationEnabled: true } ? Stopwatch.GetTimestamp() : 0;
-        Exception? failure = null;
-        Activity? activity = null;
+        operation.StartedAt = telemetry is { DurationEnabled: true } ? Stopwatch.GetTimestamp() : 0;
         var circuit = Circuit;
-        var admitted = false;
-        var probe = false;
-        var outcomeRecorded = false;
         try
         {
             if (circuit is not null)
             {
-                admitted = circuit.TryEnter(out probe);
-                if (!admitted)
+                operation.Admitted = circuit.TryEnter(out operation.Probe);
+                if (!operation.Admitted)
                 {
                     context.FailureDisposition = Disposition.Redeliver(TimeSpan.Zero);
                     context.ApplyFailureDisposition();
                     // Service Bus leaves rejected callbacks unsettled: native lock expiry returns them
                     // without repeatedly abandoning the same delivery while a probe is running.
+                    operation.SkipSettlement = true;
                     return;
                 }
             }
-            activity = _tracing?.Start(context);
+            operation.TraceActivity = _tracing?.Start(context);
             telemetry?.RecordConsumed();
             var retry = 0;
             var initialize = true;
@@ -246,7 +241,7 @@ public sealed partial class ConsumePipeline
                         if (context.ObservedDisposition.Kind == DispositionKind.SettledByHandler ||
                             ReferenceEquals(context.ScopeCleanupError, error)) throw;
                         context.Settlement.Clear();
-                        failure = attemptFailure = error;
+                        operation.Failure = attemptFailure = error;
                         LogFailure(context, error);
                         action = _classifier.Classify(error, context);
                         _failures!.Record(context, error);
@@ -279,7 +274,7 @@ public sealed partial class ConsumePipeline
                             context.FailureDisposition = complete;
                             context.ApplyFailureDisposition();
                         }
-                        failure = null;
+                        operation.Failure = null;
                     }
                     _failures!.Circuit?.Complete(false);
                     break;
@@ -302,8 +297,8 @@ public sealed partial class ConsumePipeline
                 }
                 if (circuit is not null)
                 {
-                    outcomeRecorded = true;
-                    if (circuit.Complete(probe, true)) CircuitChanged?.Invoke(true);
+                    operation.OutcomeRecorded = true;
+                    if (circuit.Complete(operation.Probe, true)) CircuitChanged?.Invoke(true);
                     // Include outcomes already in flight when another callback opened the circuit.
                     if (circuit.State != 0)
                     {
@@ -317,44 +312,15 @@ public sealed partial class ConsumePipeline
                 break;
             }
             context.ClearServices();
-            if (_settlement is { } settle) await settle(context).ConfigureAwait(false);
-            if (circuit is not null && !outcomeRecorded)
-            {
-                outcomeRecorded = true;
-                var opened = circuit.Complete(probe, false);
-                if (opened || probe) CircuitChanged?.Invoke(opened);
-            }
         }
         catch (OperationCanceledException) when (context.CancellationToken.IsCancellationRequested) { throw; }
         catch (Exception error)
         {
-            if (!ReferenceEquals(failure, error)) LogFailure(context, error);
-            failure = error;
+            if (!ReferenceEquals(operation.Failure, error)) LogFailure(context, error);
+            operation.Failure = error;
             throw;
         }
-        finally
-        {
-            // Scope, flush, settlement and cancellation failures must release a half-open probe too.
-            if (admitted && circuit is not null && !outcomeRecorded)
-            {
-                if (circuit.Complete(probe, true)) CircuitChanged?.Invoke(true);
-            }
-            context.SendBuffer.Clear();
-            try
-            {
-                if (start != 0) telemetry!.RecordDuration(Stopwatch.GetElapsedTime(start), failure is not null);
-                telemetry?.RecordCriticalTime(context);
-            }
-            finally
-            {
-                try
-                {
-                    if (failure is not null) MessageOperationTracing.Fail(activity, "_OTHER");
-                    activity?.Dispose();
-                }
-                finally { context.EndProcessing(); }
-            }
-        }
+        finally { operation.DurableContext = ExecutionContext.Capture(); }
     }
 
     internal void ValidateSettlement(Disposition disposition) => _failures?.ValidateSettlement(disposition);
