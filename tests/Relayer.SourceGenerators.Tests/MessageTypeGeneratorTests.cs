@@ -132,7 +132,7 @@ public class MessageTypeGeneratorTests
         var diagnostic = diagnostics[0];
         await Assert.That(diagnostic.Id).IsEqualTo("RLYM001");
         await Assert.That(diagnostic.Severity).IsEqualTo(DiagnosticSeverity.Error);
-        await Assert.That(diagnostic.Location.SourceTree).IsEqualTo(tree);
+        await Assert.That(diagnostic.Location.GetLineSpan()).IsEqualTo(tree.GetLineSpan(diagnostic.Location.SourceSpan));
         await Assert.That(tree.GetText().ToString(diagnostic.Location.SourceSpan)).Contains("record Order");
         await Assert.That(diagnostic.GetMessage()).Contains(typeName);
         await Assert.That(diagnostic.Descriptor.HelpLinkUri)
@@ -145,6 +145,29 @@ public class MessageTypeGeneratorTests
         await Assert.That(generated).Contains("typeof(global::Concrete)");
         using var image = new MemoryStream();
         await Assert.That(output.Emit(image).Success).IsTrue();
+    }
+
+    [Test]
+    public async Task Unchanged_open_generic_declarations_reuse_incremental_models_after_tree_replacement()
+    {
+        const string source = "[Relayer.Message(\"invalid\")] public sealed record Order<T>(T Value);";
+        var references = ((string)AppContext.GetData("TRUSTED_PLATFORM_ASSEMBLIES")!)
+            .Split(Path.PathSeparator).Select(static p => MetadataReference.CreateFromFile(p)).ToList();
+        references.Add(MetadataReference.CreateFromFile(typeof(MessageAttribute).Assembly.Location));
+        var tree = CSharpSyntaxTree.ParseText(source, path: "Message.cs");
+        var compilation = CSharpCompilation.Create("IncrementalMessageConsumer", [tree], references,
+            new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
+        GeneratorDriver driver = CSharpGeneratorDriver.Create(
+            [new MessageTypeGenerator().AsSourceGenerator()],
+            driverOptions: new GeneratorDriverOptions(IncrementalGeneratorOutputKind.None, trackIncrementalGeneratorSteps: true));
+        driver = driver.RunGenerators(compilation);
+        compilation = compilation.ReplaceSyntaxTree(tree, CSharpSyntaxTree.ParseText(source, path: "Message.cs"));
+        driver = driver.RunGenerators(compilation);
+
+        var result = driver.GetRunResult().Results.Single();
+        var output = result.TrackedSteps["MessageDeclarations"].Single().Outputs.Single();
+        await Assert.That(output.Reason).IsEqualTo(IncrementalStepRunReason.Cached);
+        await Assert.That(result.Diagnostics.Single().Location.GetLineSpan().Path).IsEqualTo("Message.cs");
     }
 
     private sealed class CompetingGeneratorLoadContext(byte[] competingImage) : AssemblyLoadContext

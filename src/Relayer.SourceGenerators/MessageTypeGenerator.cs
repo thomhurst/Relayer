@@ -35,18 +35,20 @@ public sealed class MessageTypeGenerator : IIncrementalGenerator
                 predicate: static (_, _) => true,
                 transform: static (ctx, _) => ToModel(ctx))
             .Where(static m => m is not null)
-            .Select(static (m, _) => m!);
+            .Select(static (m, _) => m!)
+            .WithTrackingName("MessageDeclarations");
 
         context.RegisterSourceOutput(declarations, static (spc, model) =>
         {
-            if (model.InaccessibleLocation is { } location)
+            if (model.InaccessibleLocation is { } inaccessibleLocation)
             {
                 spc.ReportDiagnostic(Diagnostic.Create(InaccessibleMessage,
-                    Location.Create(location.FilePath, location.Span, location.LineSpan), model.FullyQualifiedName));
+                    Location.Create(inaccessibleLocation.FilePath, inaccessibleLocation.Span, inaccessibleLocation.LineSpan), model.FullyQualifiedName));
             }
             if (model.OpenGenericLocation is { } location)
             {
-                spc.ReportDiagnostic(Diagnostic.Create(OpenGenericMessage, location, model.FullyQualifiedName));
+                spc.ReportDiagnostic(Diagnostic.Create(OpenGenericMessage,
+                    Location.Create(location.FilePath, location.Span, location.LineSpan), model.FullyQualifiedName));
             }
         });
         var messages = declarations.Where(static m => m.OpenGenericLocation is null && m.InaccessibleLocation is null).Collect();
@@ -86,12 +88,14 @@ public sealed class MessageTypeGenerator : IIncrementalGenerator
         }
 
         var fullyQualifiedName = type.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
-        Location? openGenericLocation = null;
+        DiagnosticLocation? openGenericLocation = null;
         for (var current = type; current is not null; current = current.ContainingType)
         {
             if (current.Arity != 0)
             {
-                openGenericLocation = context.TargetNode.GetLocation();
+                var location = context.TargetNode.GetLocation();
+                openGenericLocation = new DiagnosticLocation(location.GetLineSpan().Path,
+                    location.SourceSpan, location.GetLineSpan().Span);
                 break;
             }
         }
@@ -194,7 +198,7 @@ public sealed class MessageTypeGenerator : IIncrementalGenerator
 
     private static string Escape(string value) => value.Replace("\\", "\\\\").Replace("\"", "\\\"");
 
-    private sealed record MessageModel(string FullyQualifiedName, string Name, int Version, Location? OpenGenericLocation = null, DiagnosticLocation? InaccessibleLocation = null);
+    private sealed record MessageModel(string FullyQualifiedName, string Name, int Version, DiagnosticLocation? OpenGenericLocation = null, DiagnosticLocation? InaccessibleLocation = null);
 
     private sealed record DiagnosticLocation(string FilePath, TextSpan Span, LinePositionSpan LineSpan);
 }
