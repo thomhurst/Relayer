@@ -222,7 +222,7 @@ public sealed class MessageTypeGenerator : IIncrementalGenerator
 
         foreach (var model in models.OrderBy(m => m.Name, StringComparer.Ordinal).ThenBy(m => m.Version))
         {
-            builder.Append("            builder.MessageTypes.Add<")
+            builder.Append("            global::Relayer.Transports.RelayerInfrastructureExtensions.Infrastructure(builder).MessageTypes.Add<")
                 .Append(model.FullyQualifiedName)
                 .Append(">(")
                 .Append(SymbolDisplay.FormatLiteral(model.Name, quote: true))

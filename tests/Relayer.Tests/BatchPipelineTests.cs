@@ -1,3 +1,4 @@
+using Relayer.Pipeline;
 using System.Buffers;
 using System.Diagnostics;
 using Microsoft.Extensions.DependencyInjection;
@@ -663,8 +664,8 @@ public class BatchPipelineTests
         services.AddSingleton<AllocationHandler>();
         services.AddRelayer(builder =>
         {
-            builder.MessageTypes.Add<Payload>("batch.payload");
-            new ConsumerBuilder<object>(builder.Services, builder.Handlers, "manual").Handler<AllocationHandler>();
+            builder.Infrastructure().MessageTypes.Add<Payload>("batch.payload");
+            new ConsumerBuilder<object>(builder.Services, builder.Infrastructure().Handlers, "manual").Handler<AllocationHandler>();
             builder.AddTransport<Options, Options, Options>("test", transport =>
             {
                 transport.Send<Payload>("destination");

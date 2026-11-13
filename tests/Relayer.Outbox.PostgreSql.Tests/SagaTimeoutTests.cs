@@ -1,3 +1,4 @@
+using Relayer.Pipeline;
 using System.Buffers;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
@@ -315,11 +316,11 @@ public class SagaTimeoutTests
             services.AddDbContext<Context>((sp, o) => o.UseNpgsql(_fixture.ConnectionString).AddRelayerOutbox(sp));
             services.AddRelayer(r =>
             {
-                r.MessageTypes.Add<BeginWait>("timeout.begin");
-                r.MessageTypes.Add<WaitExpired>("timeout.expired");
-                r.MessageTypes.Add<Complete>("timeout.complete");
+                r.Infrastructure().MessageTypes.Add<BeginWait>("timeout.begin");
+                r.Infrastructure().MessageTypes.Add<WaitExpired>("timeout.expired");
+                r.Infrastructure().MessageTypes.Add<Complete>("timeout.complete");
                 r.UseJsonSerializer(RelayerGeneratedJsonContext.Default);
-                new ConsumerBuilder<object>(r.Services, r.Handlers, "manual").Handler<BeginProcess>(); new ConsumerBuilder<object>(r.Services, r.Handlers, "manual").Handler<TimeoutProcess>(); new ConsumerBuilder<object>(r.Services, r.Handlers, "manual").Handler<CompleteProcess>();
+                new ConsumerBuilder<object>(r.Services, r.Infrastructure().Handlers, "manual").Handler<BeginProcess>(); new ConsumerBuilder<object>(r.Services, r.Infrastructure().Handlers, "manual").Handler<TimeoutProcess>(); new ConsumerBuilder<object>(r.Services, r.Infrastructure().Handlers, "manual").Handler<CompleteProcess>();
                 r.AddTransport<Empty, Empty, Empty>("events", t => t.Send<WaitExpired>("timeouts", route =>
                     route.SendOptions = new() { RequiredDeliveryDelay = TimeSpan.FromDays(1), TransactionRequirement = SendTransactionRequirement.Outbox }));
             });

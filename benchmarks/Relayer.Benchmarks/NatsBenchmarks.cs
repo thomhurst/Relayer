@@ -1,3 +1,4 @@
+using Relayer.Pipeline;
 using System.Buffers;
 using System.Runtime.CompilerServices;
 using System.Text.Json.Serialization;
@@ -209,7 +210,7 @@ public class NatsReceiveBenchmarks
         {
             relayer.AddMessageTypesFromThisAssembly();
             relayer.UseJsonSerializer(NatsBenchmarkJson.Default);
-            new ConsumerBuilder<object>(relayer.Services, relayer.Handlers, "manual").Handler<NatsBenchmarkHandler>();
+            new ConsumerBuilder<object>(relayer.Services, relayer.Infrastructure().Handlers, "manual").Handler<NatsBenchmarkHandler>();
         });
         _provider = services.BuildServiceProvider();
         _serializer = _provider.GetRequiredService<IMessageSerializer>();
@@ -290,7 +291,7 @@ public class NatsWireReceiveBenchmarks
         {
             relayer.AddMessageTypesFromThisAssembly();
             relayer.UseJsonSerializer(NatsBenchmarkJson.Default);
-            new ConsumerBuilder<object>(relayer.Services, relayer.Handlers, "manual").Handler<NatsBenchmarkHandler>();
+            new ConsumerBuilder<object>(relayer.Services, relayer.Infrastructure().Handlers, "manual").Handler<NatsBenchmarkHandler>();
         });
         _provider = services.BuildServiceProvider();
         _serializer = _provider.GetRequiredService<IMessageSerializer>();

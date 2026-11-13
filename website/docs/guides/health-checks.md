@@ -61,6 +61,7 @@ Without adapters, configured transports, consumers and stores report unhealthy.
 Applications can also supply their own providers, including an outbox store:
 
 ```csharp
+using Relayer.Transports;
 // Adapter types implement the contracts below and use the application's existing clients/state.
 builder.Services.AddKeyedSingleton<ITransportHealthProbe, OrdersConnectivity>("orders-broker");
 builder.Services.AddKeyedSingleton<IConsumerHealthProvider, OrdersConsumers>("orders-broker");

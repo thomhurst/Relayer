@@ -1,3 +1,4 @@
+using Relayer.Pipeline;
 using System.Buffers;
 using Microsoft.Extensions.DependencyInjection;
 using Relayer.InMemory;
@@ -83,14 +84,14 @@ public class UpcasterTests
     [Test]
     public async Task Startup_rejects_missing_contracts_name_changes_and_non_increasing_versions()
     {
-        await Assert.That(() => new ServiceCollection().AddRelayer(r => r.Upcasters.Add(new FirstUpgrade())))
+        await Assert.That(() => new ServiceCollection().AddRelayer(r => r.Infrastructure().Upcasters.Add(new FirstUpgrade())))
             .Throws<InvalidOperationException>();
         foreach (var identity in new[] { new MessageType("other", 2), new MessageType("upgrade", 1), new MessageType("upgrade", 2) })
         {
             await Assert.That(() => new ServiceCollection().AddRelayer(r =>
             {
-                r.MessageTypes.Add<V1>("upgrade", 2).Add<V2>(identity.Name, identity.Version);
-                r.Upcasters.Add(new FirstUpgrade());
+                r.Infrastructure().MessageTypes.Add<V1>("upgrade", 2).Add<V2>(identity.Name, identity.Version);
+                r.Infrastructure().Upcasters.Add(new FirstUpgrade());
             })).Throws<InvalidOperationException>();
         }
     }
@@ -163,8 +164,8 @@ public class UpcasterTests
         services.AddRelayer(r =>
         {
             r.AddMessageTypesFromThisAssembly();
-            r.Upcasters.Add(new FirstUpgrade());
-            new ConsumerBuilder<object>(r.Services, r.Handlers, "manual").Handler<Handler>();
+            r.Infrastructure().Upcasters.Add(new FirstUpgrade());
+            new ConsumerBuilder<object>(r.Services, r.Infrastructure().Handlers, "manual").Handler<Handler>();
         });
         await using var provider = services.BuildServiceProvider();
         var failures = new List<FailureAction>();
@@ -188,8 +189,8 @@ public class UpcasterTests
         {
             r.AddMessageTypesFromThisAssembly();
             // Register in reverse order to prove composition follows types, not insertion order.
-            r.Upcasters.Add(new SecondUpgrade()).Add(first ?? new FirstUpgrade());
-            new ConsumerBuilder<object>(r.Services, r.Handlers, "manual").Handler<Handler>().Handler<OldHandler>();
+            r.Infrastructure().Upcasters.Add(new SecondUpgrade()).Add(first ?? new FirstUpgrade());
+            new ConsumerBuilder<object>(r.Services, r.Infrastructure().Handlers, "manual").Handler<Handler>().Handler<OldHandler>();
             r.AddTransport<Options, Options, Options>("test", t => t.Consume("versions", c => c.Handler<BatchHandler>().Batch(5, TimeSpan.FromSeconds(1))));
         });
         return services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });

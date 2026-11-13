@@ -1,7 +1,8 @@
+using Relayer.Pipeline;
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
 
-namespace Relayer;
+namespace Relayer.Transports;
 
 /// <summary>A precomputed native endpoint operation. Construct once at startup; Start supports concurrent calls.</summary>
 public sealed class MessageOperationTracing

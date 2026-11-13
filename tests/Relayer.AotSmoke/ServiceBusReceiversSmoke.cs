@@ -1,3 +1,4 @@
+using Relayer.Transports;
 using System.Text.Json.Serialization;
 using Azure.Messaging.ServiceBus;
 using Microsoft.Extensions.DependencyInjection;
@@ -16,7 +17,7 @@ internal static class ServiceBusReceiversSmoke
         services.AddRelayerServiceBusHealthProviders("aot-servicebus");
         services.AddRelayer(builder =>
         {
-            builder.MessageTypes.Add<Payload>("aot.servicebus.receive");
+            builder.Infrastructure().MessageTypes.Add<Payload>("aot.servicebus.receive");
             builder.UseJsonSerializer(ServiceBusReceiversJson.Default);
             builder.ServiceBus("aot-servicebus", bus =>
             {

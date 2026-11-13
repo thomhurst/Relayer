@@ -48,7 +48,7 @@ public class RabbitMqReceiveBenchmarks
         services.AddSingleton<RabbitMqBenchmarkHandler>();
         services.AddRelayer(builder =>
         {
-            builder.MessageTypes.Add<RabbitMqBenchmarkPayload>("benchmarks.rabbit-receive");
+            builder.Infrastructure().MessageTypes.Add<RabbitMqBenchmarkPayload>("benchmarks.rabbit-receive");
             builder.UseJsonSerializer(RabbitMqReceiveBenchmarkJson.Default);
 
             if (!relayer) return;

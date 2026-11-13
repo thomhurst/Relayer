@@ -1,3 +1,4 @@
+using Relayer.Transports;
 using System.Buffers;
 using System.Runtime.CompilerServices;
 using System.Text;
@@ -178,7 +179,7 @@ public class JsonSerializerTests
             services.AddSingleton<IMessageSerializer>(serializer);
         services.AddRelayer(builder =>
         {
-            builder.MessageTypes.Add<JsonValue>("manual");
+            builder.Infrastructure().MessageTypes.Add<JsonValue>("manual");
             if (registrationOrder == 1)
                 builder.Services.AddSingleton<IMessageSerializer>(serializer);
         });
@@ -214,7 +215,7 @@ public class JsonSerializerTests
     public async Task Missing_metadata_fails_at_host_startup()
     {
         using var provider = new ServiceCollection()
-            .AddRelayer(builder => builder.MessageTypes.Add<JsonValue>("manual"))
+            .AddRelayer(builder => builder.Infrastructure().MessageTypes.Add<JsonValue>("manual"))
             .BuildServiceProvider();
         await Assert.That(async () =>
             {
@@ -242,7 +243,7 @@ public class JsonSerializerTests
     {
         using var provider = new ServiceCollection().AddRelayer(builder =>
         {
-            builder.MessageTypes.Add<JsonOrder>("manual");
+            builder.Infrastructure().MessageTypes.Add<JsonOrder>("manual");
             builder.UseJsonSerializer(CustomJsonContext.Default);
         }).BuildServiceProvider();
         var buffer = new ArrayBufferWriter<byte>();
@@ -339,7 +340,7 @@ public class JsonSerializerTests
     {
         using var provider = new ServiceCollection().AddRelayer(builder =>
         {
-            builder.MessageTypes.Add<JsonValue>("manual");
+            builder.Infrastructure().MessageTypes.Add<JsonValue>("manual");
             builder.UseJsonSerializer(new RelayerGeneratedJsonContext());
         }).BuildServiceProvider();
         var serializer = provider.GetRequiredService<IMessageSerializer>();

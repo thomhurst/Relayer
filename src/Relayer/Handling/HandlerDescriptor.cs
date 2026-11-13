@@ -1,6 +1,6 @@
 using Relayer.Serialization;
 
-namespace Relayer;
+namespace Relayer.Pipeline;
 
 /// <summary>Generated handler metadata, selected once when composing a consumer.</summary>
 /// <param name="handlerType">The concrete handler type. Used only during configuration.</param>

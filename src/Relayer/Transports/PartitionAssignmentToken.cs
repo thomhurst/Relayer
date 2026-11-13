@@ -1,4 +1,4 @@
-namespace Relayer;
+namespace Relayer.Transports;
 
 /// <summary>Identifies one assignment, including its ownership epoch. Default and foreign tokens are invalid.</summary>
 public readonly struct PartitionAssignmentToken

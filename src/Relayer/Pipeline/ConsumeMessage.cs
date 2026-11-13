@@ -1,6 +1,7 @@
+using Relayer.Transports;
 using System.Buffers;
 
-namespace Relayer;
+namespace Relayer.Pipeline;
 
 /// <summary>Decoded envelope metadata and native body storage supplied by a transport.</summary>
 /// <remarks>The body and headers must remain valid until processing and context disposal finish.</remarks>

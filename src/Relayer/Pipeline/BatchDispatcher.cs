@@ -3,7 +3,7 @@ using System.Collections.Frozen;
 using System.Runtime.CompilerServices;
 using Relayer.Serialization;
 
-namespace Relayer;
+namespace Relayer.Pipeline;
 
 internal abstract class BatchDispatcher
 {

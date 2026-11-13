@@ -1,6 +1,6 @@
 using System.Diagnostics;
 
-namespace Relayer;
+namespace Relayer.Transports;
 
 /// <summary>Stable envelope metadata. Preserve this value across retries and outbox dispatches.</summary>
 public readonly record struct MessageEnvelopeMetadata(Guid MessageId, DateTimeOffset Time, ActivityContext CreationContext)

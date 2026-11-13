@@ -60,8 +60,8 @@ public class KafkaBrokerTests
         var configured = false;
         hostBuilder.Services.AddRelayer(builder =>
         {
-            builder.MessageTypes.Add<Order>("tests.kafka.order");
-            builder.MessageTypes.Add<OtherOrder>("tests.kafka.other");
+            builder.Infrastructure().MessageTypes.Add<Order>("tests.kafka.order");
+            builder.Infrastructure().MessageTypes.Add<OtherOrder>("tests.kafka.other");
             builder.UseJsonSerializer(KafkaJson.Default);
             builder.Kafka("events", kafka =>
             {

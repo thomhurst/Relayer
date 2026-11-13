@@ -1,3 +1,5 @@
+using Relayer.Transports;
+using Relayer.Pipeline;
 namespace Relayer;
 
 /// <summary>Opt-in failure-rate protection for a consumer. Outcomes are counted after in-process retries.</summary>

@@ -1,3 +1,4 @@
+using Relayer.Transports;
 namespace Relayer.TestFixtures;
 
 // Shared durable-store behaviours. Providers own setup and seeding; tests use only the portable contract.

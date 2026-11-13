@@ -1,3 +1,4 @@
+using Relayer.Transports;
 using System.Reflection;
 using System.Runtime.Loader;
 using Microsoft.CodeAnalysis;
@@ -358,6 +359,7 @@ public class MessageTypeGeneratorTests
         references.Add(MetadataReference.CreateFromFile(typeof(MessageAttribute).Assembly.Location));
         var source = $$"""
             using Relayer;
+            using Relayer.Transports;
             using Microsoft.Extensions.DependencyInjection;
             [Message({{SymbolDisplay.FormatLiteral(name, quote: true)}}, Version = 2)]
             public sealed record Order(int Id);
@@ -369,7 +371,7 @@ public class MessageTypeGeneratorTests
                     new ServiceCollection().AddRelayer(builder =>
                     {
                         builder.AddMessageTypesFromThisAssembly();
-                        if (!builder.MessageTypes.TryGetMessageType(typeof(Order), out identity))
+                        if (!builder.Infrastructure().MessageTypes.TryGetMessageType(typeof(Order), out identity))
                             throw new System.InvalidOperationException("Message was not registered");
                     });
                     return identity;
@@ -461,6 +463,7 @@ public class MessageTypeGeneratorTests
             using System.Text.Json;
             using Microsoft.Extensions.DependencyInjection;
             using Relayer;
+            using Relayer.Pipeline;
             using Relayer.Serialization;
             [Message("host.local")] public sealed record Local(int LocalId);
             public static class Probe

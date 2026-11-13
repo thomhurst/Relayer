@@ -1,3 +1,5 @@
+using Relayer.Transports;
+using Relayer.Pipeline;
 using System.Buffers;
 using BenchmarkDotNet.Attributes;
 using Google.Cloud.PubSub.V1;
@@ -50,9 +52,9 @@ public class GooglePubSubBrokerReceiveBenchmarks
         services.AddSingleton<PubSubBrokerBenchmarkHandler>();
         services.AddRelayer(relayer =>
         {
-            relayer.MessageTypes.Add<PubSubBenchmarkOrder>("benchmarks.pubsub.order");
+            relayer.Infrastructure().MessageTypes.Add<PubSubBenchmarkOrder>("benchmarks.pubsub.order");
             relayer.UseJsonSerializer(PubSubBenchmarkJson.Default);
-            new ConsumerBuilder<object>(relayer.Services, relayer.Handlers, "manual").Handler<PubSubBrokerBenchmarkHandler>();
+            new ConsumerBuilder<object>(relayer.Services, relayer.Infrastructure().Handlers, "manual").Handler<PubSubBrokerBenchmarkHandler>();
         });
         _provider = services.BuildServiceProvider();
         _scopes = _provider.GetRequiredService<IServiceScopeFactory>();

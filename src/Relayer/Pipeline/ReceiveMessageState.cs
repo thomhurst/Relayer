@@ -1,6 +1,7 @@
+using Relayer.Transports;
 using System.Buffers;
 
-namespace Relayer;
+namespace Relayer.Pipeline;
 
 internal abstract class ReceiveMessageState : MessageHeaders
 {

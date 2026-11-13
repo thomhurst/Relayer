@@ -2,7 +2,7 @@ using System.Runtime.CompilerServices;
 using Microsoft.Extensions.DependencyInjection;
 using Relayer.Transports;
 
-namespace Relayer;
+namespace Relayer.Pipeline;
 
 /// <summary>Receives native deliveries into borrowed caller storage, respecting native count and byte limits.</summary>
 /// <returns>The number written, from zero through destination.Length.</returns>

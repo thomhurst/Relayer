@@ -1,3 +1,4 @@
+using Relayer.Transports;
 using Npgsql;
 using Relayer.TestFixtures;
 

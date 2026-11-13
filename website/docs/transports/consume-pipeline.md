@@ -18,6 +18,7 @@ middleware. Composition rejects another transaction boundary or a boundary place
 Transport authors can compose and invoke the execution layer as follows:
 
 ```csharp
+using Relayer.Pipeline;
 // Once, after AddRelayer registration has completed:
 var pipeline = new ConsumePipelineBuilder(scopeFactory, messageTypes,
         serializer, failures.HandleAsync)
@@ -138,6 +139,7 @@ The transport composes one homogeneous batch handler at startup. Select its gene
 Pass the existing `IConsumerDefinition` to `BuildBatch` and `BatchReceiveExecutor<TIncoming>`:
 
 ```csharp
+using Relayer.Pipeline;
 var execution = new ConsumePipelineBuilder(scopeFactory, messageTypes, serializer, failurePipeline)
     .Tracing(tracing, endpoint)
     .Settle(SettleNativeMessageAsync)

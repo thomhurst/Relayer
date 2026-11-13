@@ -80,6 +80,7 @@ Use the EF Core outbox and context registration from the [saga guide](sagas.md#e
 Register a matching due-row worker against the same database, schema and table prefix:
 
 ```csharp
+using Relayer.Transports;
 using Relayer.Outbox.PostgreSql;
 using Relayer.Kafka;
 
@@ -89,8 +90,8 @@ services.AddSingleton<TimeProvider>(TimeProvider.System);
 services.AddRelayerPostgreSqlMaintenance("process-timeouts", dataSource);
 services.AddRelayer(relayer =>
 {
-    relayer.MessageTypes.Add<BeginWait>("orders.begin-wait");
-    relayer.MessageTypes.Add<WaitExpired>("orders.wait-expired");
+    relayer.Infrastructure().MessageTypes.Add<BeginWait>("orders.begin-wait");
+    relayer.Infrastructure().MessageTypes.Add<WaitExpired>("orders.wait-expired");
     relayer.UseJsonSerializer(OrderJsonContext.Default); // Source-generated metadata for both contracts.
     relayer.Kafka("events", kafka =>
     {

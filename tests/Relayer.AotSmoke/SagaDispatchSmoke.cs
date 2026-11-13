@@ -1,3 +1,5 @@
+using Relayer.Transports;
+using Relayer.Pipeline;
 using Microsoft.Extensions.DependencyInjection;
 using Relayer;
 using Relayer.Sagas;
@@ -12,7 +14,7 @@ internal static class SagaDispatchSmoke
         services.AddSingleton<SmokeSagaStore>();
         services.AddRelayer(r =>
         {
-            r.MessageTypes.Add<SmokeSagaMessage>("smoke.saga");
+            r.Infrastructure().MessageTypes.Add<SmokeSagaMessage>("smoke.saga");
             r.AddTransport<object, object, object>("manual-1", transport => transport.Consume("source", consumer => consumer.Handler<SmokeSaga>()));
         });
         await using var provider = services.BuildServiceProvider();

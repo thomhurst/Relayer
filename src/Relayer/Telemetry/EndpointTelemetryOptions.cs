@@ -1,4 +1,4 @@
-namespace Relayer;
+namespace Relayer.Transports;
 
 /// <summary>Declared, low-cardinality metric dimensions. Create one recorder per endpoint and operation at startup.</summary>
 public sealed class EndpointTelemetryOptions

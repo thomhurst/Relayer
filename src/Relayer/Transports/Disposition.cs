@@ -1,4 +1,4 @@
-namespace Relayer;
+namespace Relayer.Transports;
 
 /// <summary>The native settlement to perform after core processing completes successfully.</summary>
 public enum DispositionKind

@@ -1,3 +1,5 @@
+using Relayer.Transports;
+using Relayer.Pipeline;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace Relayer;
@@ -8,27 +10,11 @@ public interface IRelayerBuilder
     /// <summary>The application's service collection.</summary>
     IServiceCollection Services { get; }
 
-    /// <summary>The message type registry.</summary>
-    MessageTypeRegistry MessageTypes { get; }
-
-    /// <summary>The explicitly registered, source-generated handler descriptors.</summary>
-    HandlerRegistry Handlers { get; }
-
-    /// <summary>Explicit upgrades between registered versions of a message.</summary>
-    UpcasterRegistry Upcasters { get; }
-
     /// <summary>How broker entities are treated at startup. Defaults to <see cref="TopologyMode.Validate"/>.</summary>
     TopologyMode TopologyMode { get; set; }
-
-    /// <summary>Declares a named transport. Transport packages wrap this method in typed extension methods.</summary>
-    IRelayerBuilder AddTransport<TTransportOptions, TRouteOptions, TConsumerOptions>(string name,
-        Action<TransportBuilder<TTransportOptions, TRouteOptions, TConsumerOptions>> configure)
-        where TTransportOptions : class, new()
-        where TRouteOptions : class, new()
-        where TConsumerOptions : class, new();
 }
 
-internal sealed class RelayerBuilder(IServiceCollection services) : IRelayerBuilder
+internal sealed class RelayerBuilder(IServiceCollection services) : IRelayerBuilder, IRelayerInfrastructure
 {
     private TopologyMode _topologyMode = TopologyMode.Validate;
     public IServiceCollection Services { get; } = services;

@@ -1,3 +1,4 @@
+using Relayer.Transports;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
 
 namespace Relayer.HealthChecks;

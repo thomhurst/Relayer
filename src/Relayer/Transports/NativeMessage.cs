@@ -1,4 +1,4 @@
-namespace Relayer;
+namespace Relayer.Transports;
 
 /// <summary>A native delivery feature reused with the receive context.</summary>
 /// <remarks>Do not retain this feature or its message beyond processing. Native access does not copy or box the message.</remarks>

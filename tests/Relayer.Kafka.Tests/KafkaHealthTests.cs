@@ -1,3 +1,4 @@
+using Relayer.Transports;
 using Dekaf;
 using Dekaf.Admin;
 using Dekaf.Consumer;

@@ -1,9 +1,11 @@
+using Relayer.Transports;
+using Relayer.Pipeline;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace Relayer;
 
 /// <summary>Configures a consumer without replacing its native transport options.</summary>
-public sealed class ConsumerBuilder<TConsumerOptions> : IConsumerBuilder where TConsumerOptions : class, new()
+public sealed class ConsumerBuilder<TConsumerOptions> : IConsumerBuilder, IConsumerInfrastructure where TConsumerOptions : class, new()
 {
     private readonly IServiceCollection _services;
     private readonly HandlerRegistry _registry;
@@ -29,7 +31,7 @@ public sealed class ConsumerBuilder<TConsumerOptions> : IConsumerBuilder where T
 
     IServiceCollection IConsumerBuilder.Services => _services;
 
-    void IConsumerBuilder.AddHandler(HandlerDescriptor descriptor)
+    void IConsumerInfrastructure.AddHandler(HandlerDescriptor descriptor)
     {
         EnsureMutable();
         _registry.Add(descriptor);

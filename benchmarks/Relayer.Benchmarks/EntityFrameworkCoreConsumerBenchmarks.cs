@@ -1,3 +1,5 @@
+using Relayer.Transports;
+using Relayer.Pipeline;
 #pragma warning disable RLY001 // The benchmark explicitly registers its cached serializer and wire identity.
 using System.Buffers;
 using BenchmarkDotNet.Attributes;
@@ -39,8 +41,8 @@ public class EntityFrameworkCoreConsumerBenchmarks
         }));
         services.AddRelayer(r =>
         {
-            r.MessageTypes.Add<Probe>("benchmark.ef-consumer");
-            new ConsumerBuilder<object>(r.Services, r.Handlers, "manual").Handler<Handler>();
+            r.Infrastructure().MessageTypes.Add<Probe>("benchmark.ef-consumer");
+            new ConsumerBuilder<object>(r.Services, r.Infrastructure().Handlers, "manual").Handler<Handler>();
         });
         _provider = services.BuildServiceProvider();
         _pipeline = new ConsumePipelineBuilder(_provider.GetRequiredService<IServiceScopeFactory>(),

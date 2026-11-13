@@ -1,4 +1,4 @@
-namespace Relayer;
+namespace Relayer.Transports;
 
 /// <summary>Implemented by an outbox integration and registered as a scoped service.</summary>
 public interface IOutboxEnlistment

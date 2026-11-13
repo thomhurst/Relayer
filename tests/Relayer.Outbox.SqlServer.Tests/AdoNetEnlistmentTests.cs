@@ -522,7 +522,7 @@ public class AdoNetEnlistmentTests(SqlServerFixture fixture)
             services.AddSingleton<IMessageSerializer, Serializer>();
             services.AddRelayer(builder =>
             {
-                builder.MessageTypes.Add<Probe>("ado.probe");
+                builder.Infrastructure().MessageTypes.Add<Probe>("ado.probe");
                 builder.AddTransport<Empty, Empty, Empty>("events", transport => transport.Send<Probe>("destination"));
             });
             return services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });

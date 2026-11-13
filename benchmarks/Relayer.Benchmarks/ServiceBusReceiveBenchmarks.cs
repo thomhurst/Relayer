@@ -1,3 +1,4 @@
+using Relayer.Transports;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Azure.Messaging.ServiceBus;
@@ -49,7 +50,7 @@ public class ServiceBusReceiveBenchmarks
         services.AddSingleton<ServiceBusBenchmarkHandler>();
         services.AddRelayer(builder =>
         {
-            builder.MessageTypes.Add<ServiceBusBenchmarkPayload>("benchmarks.servicebus-receive");
+            builder.Infrastructure().MessageTypes.Add<ServiceBusBenchmarkPayload>("benchmarks.servicebus-receive");
             builder.UseJsonSerializer(ServiceBusReceiveBenchmarkJson.Default);
 
             if (!relayer) return;

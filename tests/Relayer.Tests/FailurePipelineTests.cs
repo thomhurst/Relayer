@@ -1,3 +1,4 @@
+using Relayer.Pipeline;
 using System.Collections.Concurrent;
 using System.Buffers;
 using System.Text;
@@ -1116,8 +1117,8 @@ public class FailurePipelineTests
         services.AddRelayer(r =>
         {
             r.AddMessageTypesFromThisAssembly();
-            new ConsumerBuilder<object>(r.Services, r.Handlers, "manual").Handler<Handler>();
-            new ConsumerBuilder<object>(r.Services, r.Handlers, "manual").Handler<SingletonHandler>();
+            new ConsumerBuilder<object>(r.Services, r.Infrastructure().Handlers, "manual").Handler<Handler>();
+            new ConsumerBuilder<object>(r.Services, r.Infrastructure().Handlers, "manual").Handler<SingletonHandler>();
             r.DeclareRoute<Payload>("test", "destination");
         });
         configure?.Invoke(services);

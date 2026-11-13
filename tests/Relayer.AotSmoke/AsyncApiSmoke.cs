@@ -1,3 +1,4 @@
+using Relayer.Transports;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Microsoft.Extensions.DependencyInjection;
@@ -9,7 +10,7 @@ internal static class AsyncApiSmoke
     {
         using var provider = new ServiceCollection().AddRelayer(builder =>
         {
-            builder.MessageTypes.Add<AsyncApiTree>("smoke.tree", 2);
+            builder.Infrastructure().MessageTypes.Add<AsyncApiTree>("smoke.tree", 2);
             builder.UseJsonSerializer(AsyncApiSmokeContext.Default);
         }).BuildServiceProvider();
         using var output = new MemoryStream();

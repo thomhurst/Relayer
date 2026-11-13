@@ -1,3 +1,4 @@
+using Relayer.Pipeline;
 using System.Buffers;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
@@ -337,8 +338,8 @@ public class SagaTests
             });
             services.AddRelayer(r =>
             {
-                r.MessageTypes.Add<Probe>("saga.probe");
-                new ConsumerBuilder<object>(r.Services, r.Handlers, "manual").Handler<Process>();
+                r.Infrastructure().MessageTypes.Add<Probe>("saga.probe");
+                new ConsumerBuilder<object>(r.Services, r.Infrastructure().Handlers, "manual").Handler<Process>();
                 r.AddTransport<Empty, Empty, Empty>("events", t => t.Send<Probe>("destination"));
             });
             return services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });

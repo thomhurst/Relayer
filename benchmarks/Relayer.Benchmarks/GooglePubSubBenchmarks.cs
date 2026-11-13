@@ -1,3 +1,5 @@
+using Relayer.Transports;
+using Relayer.Pipeline;
 using System.Buffers;
 using System.Text.Json.Serialization;
 using BenchmarkDotNet.Attributes;
@@ -117,7 +119,7 @@ public class GooglePubSubReceiveBenchmarks
         {
             relayer.AddMessageTypesFromThisAssembly();
             relayer.UseJsonSerializer(PubSubBenchmarkJson.Default);
-            new ConsumerBuilder<object>(relayer.Services, relayer.Handlers, "manual").Handler<PubSubBenchmarkHandler>();
+            new ConsumerBuilder<object>(relayer.Services, relayer.Infrastructure().Handlers, "manual").Handler<PubSubBenchmarkHandler>();
         });
         _provider = services.BuildServiceProvider();
         _serializer = _provider.GetRequiredService<IMessageSerializer>();

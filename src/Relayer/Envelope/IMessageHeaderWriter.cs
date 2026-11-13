@@ -1,4 +1,4 @@
-namespace Relayer;
+namespace Relayer.Transports;
 
 /// <summary>Writes headers using a transport's native binary-mode binding.</summary>
 public interface IMessageHeaderWriter<TOutgoing>

@@ -1,4 +1,5 @@
-namespace Relayer;
+using Relayer.Transports;
+namespace Relayer.Pipeline;
 
 // Transport-independent policy only. Native admission, settlement and lifecycle remain the adapter's job.
 // Count completed logical deliveries, after retries; do not count individual retry attempts.

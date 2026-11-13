@@ -1,10 +1,11 @@
+using Relayer.Pipeline;
 using System.Diagnostics;
 using System.Diagnostics.Metrics;
 using System.Globalization;
 using System.Text;
 using Microsoft.Extensions.Logging;
 
-namespace Relayer;
+namespace Relayer.Transports;
 
 /// <summary>An endpoint operation's allocation-free metric recorder. All dimensions are computed at startup.</summary>
 /// <remarks>

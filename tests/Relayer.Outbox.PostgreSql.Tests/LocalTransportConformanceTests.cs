@@ -1,3 +1,4 @@
+using Relayer.Pipeline;
 using Microsoft.Extensions.Logging;
 using Npgsql;
 using Relayer.Testing;

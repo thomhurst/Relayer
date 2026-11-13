@@ -18,6 +18,7 @@ The fallback SPI and its tests remain available while the next log transport is 
 Supply the native source, the composed `ReceivePipeline.ProcessAsync` delegate, and a struct binding implementing `IPartitionMessageBinding<TIncoming>`. The native types below stand for your adapter's record, binding, partition and checkpoint types:
 
 ```csharp
+using Relayer.Transports;
 var scheduler = new PartitionScheduler<NativeRecord, NativeBinding, NativePartition, NativeCheckpoint>(
     source, pipeline.ProcessAsync, new PartitionSchedulerOptions
     {

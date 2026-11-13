@@ -194,7 +194,7 @@ public class SchedulingRequirementTests
 
     private static void Configure(IServiceCollection services) => services.AddRelayer(builder =>
     {
-        builder.MessageTypes.Add<Probe>("schedule.probe");
+        builder.Infrastructure().MessageTypes.Add<Probe>("schedule.probe");
         builder.AddTransport<Empty, Empty, Empty>("events", transport => transport.Send<Probe>("orders", route =>
             route.SendOptions = new() { RequiredDeliveryDelay = TimeSpan.FromDays(1),
                 TransactionRequirement = SendTransactionRequirement.Outbox }));

@@ -1,3 +1,4 @@
+using Relayer.Transports;
 using System.Buffers;
 using System.Text.Json;
 using System.Text.Json.Serialization.Metadata;
@@ -37,7 +38,7 @@ public class JsonSerializerBenchmarks
             }
             else
             {
-                builder.MessageTypes.Add<JsonOrder>("bench.json-order");
+                builder.Infrastructure().MessageTypes.Add<JsonOrder>("bench.json-order");
             }
             builder.UseJsonSerializer(context);
         }).BuildServiceProvider();

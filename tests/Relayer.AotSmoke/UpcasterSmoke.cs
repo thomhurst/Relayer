@@ -1,3 +1,5 @@
+using Relayer.Transports;
+using Relayer.Pipeline;
 using System.Buffers;
 using Microsoft.Extensions.DependencyInjection;
 using Relayer;
@@ -13,7 +15,7 @@ internal static class UpcasterSmoke
         services.AddRelayer(r =>
         {
             r.AddMessageTypesFromThisAssembly();
-            r.Upcasters.Add(new UpgradeFirst()).Add(new UpgradeSecond());
+            r.Infrastructure().Upcasters.Add(new UpgradeFirst()).Add(new UpgradeSecond());
             r.AddTransport<object, object, object>("manual-1", transport => transport.Consume("source", consumer => consumer.Handler<UpgradeHandler>()));
             r.AddTransport<UpgradeOptions, UpgradeOptions, UpgradeOptions>("upgrades", t =>
                 t.Consume("versions", c => c.Handler<UpgradeBatchHandler>().Batch(2, TimeSpan.FromSeconds(1))));

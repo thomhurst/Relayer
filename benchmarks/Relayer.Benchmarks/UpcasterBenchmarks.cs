@@ -1,3 +1,5 @@
+using Relayer.Transports;
+using Relayer.Pipeline;
 using System.Buffers;
 using BenchmarkDotNet.Attributes;
 using Microsoft.Extensions.DependencyInjection;
@@ -27,8 +29,8 @@ public class UpcasterBenchmarks
         services.AddRelayer(r =>
         {
             r.AddMessageTypesFromThisAssembly();
-            r.Upcasters.Add(new FirstUpgrade()).Add(new SecondUpgrade());
-            new ConsumerBuilder<object>(r.Services, r.Handlers, "manual").Handler<Handler>();
+            r.Infrastructure().Upcasters.Add(new FirstUpgrade()).Add(new SecondUpgrade());
+            new ConsumerBuilder<object>(r.Services, r.Infrastructure().Handlers, "manual").Handler<Handler>();
             r.AddTransport<Options, Options, Options>("benchmark", t =>
                 t.Consume("versions", c => c.Handler<BatchHandler>().Batch(10, TimeSpan.FromSeconds(1))));
         });

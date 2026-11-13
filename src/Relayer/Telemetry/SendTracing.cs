@@ -4,7 +4,7 @@ using System.Threading.Tasks.Sources;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
-namespace Relayer;
+namespace Relayer.Transports;
 
 /// <summary>Exposes an adapter's precomputed send tracing to the serialization pipeline.</summary>
 public interface ITransportSendTracing

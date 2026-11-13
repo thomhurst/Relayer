@@ -1,3 +1,4 @@
+using Relayer.Pipeline;
 using System.Buffers;
 using BenchmarkDotNet.Attributes;
 using Microsoft.Extensions.DependencyInjection;
@@ -35,7 +36,7 @@ public class BatchBufferedSendBenchmarks
         services.AddSingleton<Handler>();
         services.AddRelayer(builder =>
         {
-            builder.MessageTypes.Add<Payload>("benchmark.buffered-batch");
+            builder.Infrastructure().MessageTypes.Add<Payload>("benchmark.buffered-batch");
             builder.AddTransport<Options, Options, Options>("benchmark", transport =>
             {
                 transport.Send<Payload>("destination");

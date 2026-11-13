@@ -14,6 +14,7 @@ Create one window per assigned partition. A single coordinator must serialize **
 Track every delivery before dispatching it. Only report completion after its handler and any durable failure handling succeed. Leave failed, cancelled or unfinished deliveries incomplete.
 
 ```csharp
+using Relayer.Transports;
 var window = new PartitionCompletionWindow<long>(capacity: 64);
 
 // These are native next-offset checkpoints; gaps do not need synthetic entries.

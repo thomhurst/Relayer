@@ -11,21 +11,21 @@ internal static class RelayerGeneratedHandlers
         global::System.ArgumentNullException.ThrowIfNull(builder);
         if (typeof(THandler) == typeof(global::Example.Derived))
         {
-            builder.AddHandler(new Dispatcher0());
+            global::Relayer.Pipeline.ConsumerInfrastructureExtensions.AddHandler(builder, new Dispatcher0());
             global::Microsoft.Extensions.DependencyInjection.Extensions.ServiceCollectionDescriptorExtensions.TryAddScoped<global::Example.Derived>(builder.Services);
             return builder;
         }
         if (typeof(THandler) == typeof(global::Example.Handler))
         {
-            builder.AddHandler(new Dispatcher1());
-            builder.AddHandler(new Dispatcher2());
+            global::Relayer.Pipeline.ConsumerInfrastructureExtensions.AddHandler(builder, new Dispatcher1());
+            global::Relayer.Pipeline.ConsumerInfrastructureExtensions.AddHandler(builder, new Dispatcher2());
             global::Microsoft.Extensions.DependencyInjection.Extensions.ServiceCollectionDescriptorExtensions.TryAddScoped<global::Example.Handler>(builder.Services);
             return builder;
         }
         throw new global::System.InvalidOperationException($"No generated descriptor for handler '{typeof(THandler)}'. Use a concrete, closed, assembly-accessible IHandler<T> or IBatchHandler<T> in Handler<THandler>().");
     }
 
-    private sealed class Dispatcher0 : global::Relayer.HandlerDescriptor<int>
+    private sealed class Dispatcher0 : global::Relayer.Pipeline.HandlerDescriptor<int>
     {
         public Dispatcher0() : base(typeof(global::Example.Derived)) { }
         public override global::Relayer.IHandlerMarker Resolve(global::System.IServiceProvider services)
@@ -34,7 +34,7 @@ internal static class RelayerGeneratedHandlers
             => ((global::Relayer.IHandler<int>)(global::Example.Derived)handler).HandleAsync(message, context, cancellationToken);
     }
 
-    private sealed class Dispatcher1 : global::Relayer.HandlerDescriptor<int>
+    private sealed class Dispatcher1 : global::Relayer.Pipeline.HandlerDescriptor<int>
     {
         public Dispatcher1() : base(typeof(global::Example.Handler)) { }
         public override global::Relayer.IHandlerMarker Resolve(global::System.IServiceProvider services)
@@ -43,7 +43,7 @@ internal static class RelayerGeneratedHandlers
             => ((global::Relayer.IHandler<int>)(global::Example.Handler)handler).HandleAsync(message, context, cancellationToken);
     }
 
-    private sealed class Dispatcher2 : global::Relayer.BatchHandlerDescriptor<string>
+    private sealed class Dispatcher2 : global::Relayer.Pipeline.BatchHandlerDescriptor<string>
     {
         public Dispatcher2() : base(typeof(global::Example.Handler)) { }
         public override global::Relayer.IHandlerMarker Resolve(global::System.IServiceProvider services)

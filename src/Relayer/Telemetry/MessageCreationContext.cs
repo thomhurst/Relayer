@@ -1,7 +1,7 @@
 using System.Buffers;
 using System.Diagnostics;
 
-namespace Relayer;
+namespace Relayer.Transports;
 
 /// <summary>Reads and preserves the immutable W3C creation context in a native message.</summary>
 public static class MessageCreationContext

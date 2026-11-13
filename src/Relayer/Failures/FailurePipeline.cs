@@ -2,7 +2,7 @@ using System.Runtime.CompilerServices;
 using Microsoft.Extensions.DependencyInjection;
 using Relayer.Transports;
 
-namespace Relayer;
+namespace Relayer.Pipeline;
 
 /// <summary>Composes executable failure handling and validates D24 capabilities before a consumer starts.</summary>
 /// <remarks>

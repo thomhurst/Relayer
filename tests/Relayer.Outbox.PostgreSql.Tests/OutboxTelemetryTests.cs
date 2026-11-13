@@ -1,3 +1,4 @@
+using Relayer.Pipeline;
 using System.Buffers;
 using System.Collections.Concurrent;
 using System.Diagnostics;
@@ -38,8 +39,8 @@ public class OutboxTelemetryTests
             }));
         services.AddRelayer(builder =>
         {
-            builder.MessageTypes.Add<Probe>("outbox.trace");
-            new ConsumerBuilder<object>(builder.Services, builder.Handlers, "manual").Handler<Handler>();
+            builder.Infrastructure().MessageTypes.Add<Probe>("outbox.trace");
+            new ConsumerBuilder<object>(builder.Services, builder.Infrastructure().Handlers, "manual").Handler<Handler>();
             builder.InMemory("local", transport =>
             {
                 transport.Send<Probe>("orders");

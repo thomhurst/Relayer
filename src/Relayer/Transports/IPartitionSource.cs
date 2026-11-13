@@ -1,4 +1,4 @@
-namespace Relayer;
+namespace Relayer.Transports;
 
 /// <summary>Native operations used by the single-owner partition scheduler.</summary>
 /// <remarks>

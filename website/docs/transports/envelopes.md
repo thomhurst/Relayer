@@ -8,6 +8,7 @@ The core owns the CloudEvents envelope. A transport maps individual header reads
 Configure the envelope once per route. Capture metadata once per logical message, then preserve it across retries, outbox dispatches, scheduled copies and dead-letter copies:
 
 ```csharp
+using Relayer.Transports;
 var names = new HeaderNames(); // ce_ binding, for example Kafka
 var envelope = new MessageEnvelope(
     new MessageType("billing.charge-card", 2), "/billing", names);
@@ -24,6 +25,7 @@ Use `new HeaderNames("cloudEvents:")` for the AMQP attribute prefix and `new Hea
 A transport's reader is a struct implementing `IMessageHeaderReader<TIncoming>` with a static `TryGetHeader` method. Return `new WireString(nativeString)` or `new WireString(nativeUtf8Memory)` without decoding. Its writer implements `IMessageHeaderWriter<TOutgoing>` with static `SetHeader` and `RemoveHeader` methods. Set replaces an existing header; it must consume or copy the supplied character span before returning. UTF-8 transports encode directly into native storage. String-based clients create their required native strings at this boundary. Core formatting uses stack storage and creates no intermediate strings.
 
 ```csharp
+using Relayer.Transports;
 var headers = new MessageHeaders<NativeIncoming, NativeHeaderReader>(incoming, names);
 var wireType = headers.GetMessageType();
 if (headers.TryGetValue("tenant", out var tenant))

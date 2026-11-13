@@ -505,7 +505,7 @@ public class DirectDispatchTests
                 }));
             services.AddRelayer(builder =>
             {
-                builder.MessageTypes.Add<Probe>("dispatch.probe");
+                builder.Infrastructure().MessageTypes.Add<Probe>("dispatch.probe");
                 builder.AddTransport<Empty, Empty, Empty>("events", routes => routes.Send<Probe>("destination"));
             });
             return services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });

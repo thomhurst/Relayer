@@ -299,7 +299,7 @@ public sealed class ServiceBusReceiveTests
         if (health) services.AddRelayerServiceBusHealthProviders("bus");
         services.AddRelayer(builder =>
         {
-            builder.MessageTypes.Add<Payload>("servicebus.receive-test");
+            builder.Infrastructure().MessageTypes.Add<Payload>("servicebus.receive-test");
             builder.UseJsonSerializer(ServiceBusReceiveTestJson.Default);
             builder.ServiceBus("bus", bus =>
             {
@@ -403,7 +403,7 @@ public sealed class ServiceBusReceiveTests
         services.AddSingleton<Control>();
         services.AddRelayer(builder =>
         {
-            builder.MessageTypes.Add<Payload>("servicebus.receive-test");
+            builder.Infrastructure().MessageTypes.Add<Payload>("servicebus.receive-test");
             builder.UseJsonSerializer(ServiceBusReceiveTestJson.Default);
             builder.ServiceBus("bus", bus =>
             {
@@ -435,7 +435,7 @@ public sealed class ServiceBusReceiveTests
         services.AddSingleton<Control>();
         services.AddRelayer(builder =>
         {
-            builder.MessageTypes.Add<Payload>("servicebus.receive-test");
+            builder.Infrastructure().MessageTypes.Add<Payload>("servicebus.receive-test");
             builder.ServiceBus("bus", bus =>
             {
                 bus.TopologyMode = TopologyMode.None;

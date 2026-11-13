@@ -1,3 +1,4 @@
+using Relayer.Transports;
 using System.Buffers;
 using MessagePack;
 using MessagePack.Formatters;
@@ -122,7 +123,7 @@ public class MessagePackSerializerTests
     {
         var builder = Host.CreateApplicationBuilder();
         builder.Services.AddSingleton<IMessageSerializer>(new MessagePackMessageSerializer(Options));
-        builder.Services.AddRelayer(relayer => relayer.MessageTypes.Add<TestMessage>("tests.messagepack"));
+        builder.Services.AddRelayer(relayer => relayer.Infrastructure().MessageTypes.Add<TestMessage>("tests.messagepack"));
         using var host = builder.Build();
         await host.StartAsync();
         var serializer = host.Services.GetRequiredService<IMessageSerializer>();

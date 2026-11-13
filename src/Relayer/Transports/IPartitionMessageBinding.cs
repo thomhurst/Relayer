@@ -1,4 +1,4 @@
-namespace Relayer;
+namespace Relayer.Transports;
 
 /// <summary>Compares native keys without decoding or allocating, and releases accepted native deliveries.</summary>
 public interface IPartitionMessageBinding<TIncoming> : IMessageBinding<TIncoming>

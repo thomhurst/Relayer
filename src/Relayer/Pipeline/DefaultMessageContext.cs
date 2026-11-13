@@ -1,6 +1,7 @@
+using Relayer.Transports;
 using Microsoft.Extensions.DependencyInjection;
 
-namespace Relayer;
+namespace Relayer.Pipeline;
 
 /// <summary>A context rented from a consumer's pool. Dispose it after awaiting processing.</summary>
 /// <remarks>Do not retain a context or use it after disposal. Native features can be populated before processing.</remarks>

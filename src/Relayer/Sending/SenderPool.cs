@@ -1,3 +1,4 @@
+using Relayer.Transports;
 namespace Relayer;
 
 // Failure-enabled consumers attach one scoped sender to each attempt and return it through EndAttempt.

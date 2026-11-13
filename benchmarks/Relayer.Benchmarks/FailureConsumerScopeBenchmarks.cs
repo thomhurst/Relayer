@@ -1,3 +1,5 @@
+using Relayer.Transports;
+using Relayer.Pipeline;
 #pragma warning disable RLY001 // This pipeline-only benchmark registers its serializer and message identity explicitly.
 using System.Buffers;
 using BenchmarkDotNet.Attributes;
@@ -27,7 +29,7 @@ public class FailureConsumerScopeBenchmarks
         else services.AddSingleton<Handler>();
         services.AddRelayer(relayer =>
         {
-            relayer.MessageTypes.Add<Payload>("benchmark.failure-scope");
+            relayer.Infrastructure().MessageTypes.Add<Payload>("benchmark.failure-scope");
 
             relayer.InMemory("benchmark", memory => memory.Consume("source", consumer => consumer.Handler<Handler>()));
         });

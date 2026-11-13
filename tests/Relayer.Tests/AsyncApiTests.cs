@@ -1,3 +1,5 @@
+using Relayer.Transports;
+using Relayer.Pipeline;
 #pragma warning disable RLY001 // Export fixtures use explicit MessageTypeRegistry registrations.
 using System.Buffers;
 using System.Globalization;
@@ -113,7 +115,7 @@ public class AsyncApiTests
     [Test]
     public async Task Missing_metadata_fails_with_registration_guidance_before_writing()
     {
-        using var provider = new ServiceCollection().AddRelayer(builder => builder.MessageTypes.Add<ExportOrder>("order")).BuildServiceProvider();
+        using var provider = new ServiceCollection().AddRelayer(builder => builder.Infrastructure().MessageTypes.Add<ExportOrder>("order")).BuildServiceProvider();
         using var output = new MemoryStream();
         var failure = await Assert.That(() => provider.GetRequiredService<ITopology>().ExportAsyncApi(output,
             new() { Title = "Orders", Version = "1" })).Throws<InvalidOperationException>();
@@ -150,7 +152,7 @@ public class AsyncApiTests
     {
         using var provider = new ServiceCollection().AddRelayer(builder =>
         {
-            builder.MessageTypes.Add<ExportOrder>("order");
+            builder.Infrastructure().MessageTypes.Add<ExportOrder>("order");
             builder.UseJsonSerializer(ExportJsonContext.Default);
             builder.AddTransport<BuilderTests.BrokerOptions, BuilderTests.RouteOptions, BuilderTests.ConsumerOptions>("events",
                 transport => transport.Send<Tombstone<ExportOrder>>("orders"));
@@ -172,7 +174,7 @@ public class AsyncApiTests
     {
         return new ServiceCollection().AddRelayer(builder =>
         {
-            builder.MessageTypes.Add<ExportOrder>("orders/~é", 2).Add<ExportOldOrder>("orders/~é", 1).Add<ExportTree>("tree");
+            builder.Infrastructure().MessageTypes.Add<ExportOrder>("orders/~é", 2).Add<ExportOldOrder>("orders/~é", 1).Add<ExportTree>("tree");
             builder.UseJsonSerializer(ExportDefaultContext.Default);
             builder.UseJsonSerializer(ExportJsonContext.Default);
             builder.AddTransport<BuilderTests.BrokerOptions, BuilderTests.RouteOptions, BuilderTests.ConsumerOptions>("first/~", transport =>

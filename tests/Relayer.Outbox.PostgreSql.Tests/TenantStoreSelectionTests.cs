@@ -1,3 +1,4 @@
+using Relayer.Pipeline;
 using System.Buffers;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Storage;
@@ -341,8 +342,8 @@ public class TenantStoreSelectionTests
         });
         services.AddRelayer(relayer =>
         {
-            relayer.MessageTypes.Add<Probe>("tenant.store.probe");
-            new ConsumerBuilder<object>(relayer.Services, relayer.Handlers, "manual").Handler<Handler>();
+            relayer.Infrastructure().MessageTypes.Add<Probe>("tenant.store.probe");
+            new ConsumerBuilder<object>(relayer.Services, relayer.Infrastructure().Handlers, "manual").Handler<Handler>();
             relayer.AddTransport<Empty, Empty, Empty>("events", transport => transport.Send<Probe>("orders"));
         });
         return services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });

@@ -239,7 +239,7 @@ public class SendTracingTests
         services.AddSingleton<IMessageSerializer>(serializer);
         services.AddRelayer(builder =>
         {
-            builder.MessageTypes.Add<Probe>("send.probe");
+            builder.Infrastructure().MessageTypes.Add<Probe>("send.probe");
             builder.InMemory("local", local => local.Send<Probe>("orders"));
         });
         await using var provider = services.BuildServiceProvider();
@@ -379,7 +379,7 @@ public class SendTracingTests
             if (middleware is not null) services.AddSingleton<ISendMiddleware>(new ConfigureMiddleware(middleware));
             services.AddRelayer(builder =>
             {
-                builder.MessageTypes.Add<Probe>("send.probe");
+                builder.Infrastructure().MessageTypes.Add<Probe>("send.probe");
                 builder.AddTransport<EmptyOptions, EmptyOptions, EmptyOptions>("sink", transport =>
                     transport.Send<Probe>("orders", route => route.SendOptions = new() { EnvelopeMode = raw ? MessageEnvelopeMode.Raw : MessageEnvelopeMode.CloudEvents }));
             });

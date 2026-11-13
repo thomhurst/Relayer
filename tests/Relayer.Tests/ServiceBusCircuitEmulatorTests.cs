@@ -1,3 +1,4 @@
+using Relayer.Transports;
 using System.Diagnostics.Metrics;
 using System.Text.Json.Serialization;
 using System.Threading.Channels;
@@ -26,7 +27,7 @@ public sealed class ServiceBusCircuitEmulatorTests
             services.AddSingleton(control);
             services.AddRelayer(builder =>
             {
-                builder.MessageTypes.Add<Payload>("servicebus.circuit-emulator");
+                builder.Infrastructure().MessageTypes.Add<Payload>("servicebus.circuit-emulator");
                 builder.UseJsonSerializer(ServiceBusCircuitEmulatorJson.Default);
                 builder.ServiceBus("circuit", bus =>
                 {

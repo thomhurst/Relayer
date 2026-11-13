@@ -7,9 +7,33 @@ A transport package wraps one native client. It owns the client, the receive loo
 
 A transport author writes five small pieces: a [message binding and receive loop](receive.md), the native send methods described below, [capabilities](../concepts/capabilities.md), [topology](../guides/topology.md#transport-adapters), and typed builder extensions.
 
+## Application API and authoring namespaces
+
+Application code normally imports `Relayer` and its chosen transport package. Pipeline composition and transport implementation require explicit additional imports:
+
+```csharp
+using Relayer;
+using Relayer.Pipeline;
+using Relayer.Transports;
+```
+
+The core's public surface is classified explicitly below (generic arities are omitted). Implementations remain in the same core package; there are no forwarding aliases in the root namespace.
+
+| Namespace | Audience and public types |
+| --- | --- |
+| `Relayer` | Application contracts, fluent configuration, middleware, failure policy, requests, tenancy and telemetry configuration: `AsyncApiOptions`, `Batch`, `BatchItem`, `BatchResult`, `ConsumeBuilderExtensions`, `ConsumeDelegate`, `ConsumerBuilder`, `ConsumerCircuitOptions`, `DeadLetterMessage`, `DeadLetterPage`, `DeadLetterSource`, `FailureAction`, `FailureClassifierBuilder`, `FailureHeaders`, `FailureOptions`, `GenerateMessageTypesAttribute`, `IActivityEnricher`, `IBatchHandler`, `IConsumeMiddleware`, `IConsumeTransactionMiddleware`, `IConsumerBuilder`, `IDeadLetterManager`, `IFailureClassifier`, `IHandler`, `IHandlerMarker`, `IRelayerBuilder`, `IRequestClient`, `ISendMiddleware`, `ISender`, `ISettlementFeature`, `ITopology`, `IUpcaster`, `JsonSerializerBuilderExtensions`, `MessageAttribute`, `MessageContext`, `MessageDeserializationException`, `MessageEnvelopeException`, `MessageEnvelopeMode`, `MessageFeatures`, `MessageHeaders`, `MessageType`, `OutboxTenantBinding`, `RelayerServiceCollectionExtensions`, `RelayerTelemetry`, `ReplyExtensions`, `RequestOptions`, `RouteBuilder`, `SendBuilderExtensions`, `SendContext`, `SendDelegate`, `SendOptions`, `SendRouteOptions`, `SendTransactionRequirement`, `TenantContext`, `TenantServiceCollectionExtensions`, `Tombstone`, `TopologyMode`, `TopologyReport`, `TracingBuilderExtensions`, `TracingOptions`, `TransportBuilder`, `TransportSerializerExtensions`, `UnknownMessageTypeException`, `WireString`. |
+| `Relayer.Pipeline` | Generated registration and receive/failure composition: `BatchHandlerDescriptor`, `BatchReceiveDelegate`, `BatchReceiveExecutor`, `ConsumeFailureDelegate`, `ConsumeMessage`, `ConsumePipeline`, `ConsumePipelineBuilder`, `ConsumerInfrastructureExtensions`, `ConsumerPipelineExtensions`, `DefaultFailureClassifier`, `DefaultMessageContext`, `FailurePipeline`, `HandlerDescriptor`, `HandlerRegistry`, `IConsumerInfrastructure`, `MessageTypeRegistry`, `ReceivePipeline`, `TombstoneHandlerDescriptor`, `UpcasterRegistry`. |
+| `Relayer.Transports` | Native bindings, envelope I/O, scheduling, adapter telemetry, configuration definitions and persistence integration: `ConsumerDefinition`, `ConsumptionModel`, `DeadLetterInfo`, `Disposition`, `DispositionKind`, `EndpointTelemetry`, `EndpointTelemetryOptions`, `FailureMessageCopyDelegate`, `HeaderNames`, `IConsumerDefinition`, `IFailureScheduler`, `IMessageBinding`, `IMessageHeaderReader`, `IMessageHeaderWriter`, `IOutboxEnlistment`, `IOutboxStore`, `IPartitionMessageBinding`, `IPartitionSource`, `IRelayerInfrastructure`, `IRouteDefinition`, `ITransport`, `ITransportCapabilityInitializer`, `ITransportSendTracing`, `MessageCreationContext`, `MessageEnvelope`, `MessageEnvelopeMetadata`, `MessageHeaders`, `MessageOperationTracing`, `MessageTraceData`, `MessageTracing`, `MessagingEndpoint`, `MessagingOperation`, `NativeMessage`, `NativeSendOptionsExtensions`, `OutboxClaim`, `OutboxHeaders`, `OutboxReadRequest`, `OutboxRecord`, `OutgoingMessage`, `PartitionAssignmentToken`, `PartitionCompletionToken`, `PartitionCompletionWindow`, `PartitionScheduler`, `PartitionSchedulerOptions`, `RelayerConfiguration`, `RelayerInfrastructureExtensions`, `RelayerInstrumentation`, `RouteDefinition`, `SendTracing`, `TransportCapabilities`, `TransportDefinition`, `TransportServiceProviderExtensions`. |
+
+Serialization SPI remains in `Relayer.Serialization`, and in-memory transport types remain in `Relayer.InMemory`. Other packages keep their existing focused namespaces.
+
+Generated code accesses message/handler/upcaster registries through `builder.Infrastructure()` from `Relayer.Transports` and registers handler descriptors through `ConsumerInfrastructureExtensions.AddHandler` from `Relayer.Pipeline`. Custom builders implement `IRelayerInfrastructure` or `IConsumerInfrastructure` alongside their application-facing interface to support these extensions. The adapter-only `AddTransport` extension delegates to `IRelayerInfrastructure.AddTransport`; applications normally call their transport package's typed extension. Registries freeze at the end of `AddRelayer`, as before. Applications normally use the generated `AddMessageTypesFromThisAssembly()` and `Handler<THandler>()` methods.
+
+`SendOptions.ConfigureNative<TNative>` remains application-facing. Adapters import `Relayer.Transports` to call `options.ApplyNative(native)` and persistence integrations call `options.HasNativeConfigurators()`; neither is an application-facing instance member. Prefer `OutgoingMessage.ApplyNative` and `ValidateForOutbox` when working with an outgoing message. Consumer pipeline composition and serializer resolution use `Relayer.Pipeline.ConsumerPipelineExtensions.ConfigureConsumer` and `Relayer.Transports.TransportServiceProviderExtensions.GetMessageSerializer`.
+
 ## Registration
 
-`IRelayerBuilder.AddTransport<TTransportOptions, TRouteOptions, TConsumerOptions>` is the core seam for a transport package's typed registration extension. It declares routes and consumers; it does not substitute for a native client or start a broker receive loop. The application-side call site is in [Configuration](../guides/configuration.md), with executable coverage in `BuilderTests`.
+`RelayerInfrastructureExtensions.AddTransport<TTransportOptions, TRouteOptions, TConsumerOptions>` is the core seam for a transport package's typed registration extension. It declares routes and consumers; it does not substitute for a native client or start a broker receive loop. The application-side call site is in [Configuration](../guides/configuration.md), with executable coverage in `BuilderTests`.
 
 For example, the declaration seam and runtime adapter registration can be composed as follows:
 
@@ -46,6 +70,7 @@ Native adapters must honor the concurrency and batching declarations using nativ
 `OutgoingMessage.Headers` is borrowed memory containing named `WireString` values. Each name is already mapped to the selected transport's binary-mode binding. An adapter maps those values to its native header/property representation without rebuilding the envelope or changing the original creation context.
 
 ```csharp
+using Relayer.Transports;
 // Body and headers are already serialized/resolved by the core.
 var outgoing = new OutgoingMessage(
     destination: "orders.placed",
@@ -70,6 +95,7 @@ Before persisting or enlisting a message, outbox integrations call `outgoing.Val
 Implement `ITransportSendTracing` alongside `ITransport`. Construct one `SendTracing` per declared endpoint at startup, using the provider's `MessageTracing`, the adapter's `MessagingEndpoint`, and cached delegates to its native single and batch implementations:
 
 ```csharp
+using Relayer.Transports;
 var sendTracing = new SendTracing(
     tracing,
     new MessagingEndpoint

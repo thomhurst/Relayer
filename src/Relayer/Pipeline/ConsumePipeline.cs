@@ -1,3 +1,4 @@
+using Relayer.Transports;
 using System.Collections.Frozen;
 using System.Diagnostics;
 using System.Globalization;
@@ -6,7 +7,7 @@ using System.Text;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 
-namespace Relayer;
+namespace Relayer.Pipeline;
 
 /// <summary>Durably handles a failed delivery. A successful return permits the receive layer to continue settlement.</summary>
 public delegate ValueTask ConsumeFailureDelegate(MessageContext context, Exception error, FailureAction action);

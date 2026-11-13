@@ -1,3 +1,4 @@
+using Relayer.Pipeline;
 using BenchmarkDotNet.Attributes;
 
 namespace Relayer.Benchmarks;

@@ -1,3 +1,4 @@
+using Relayer.Transports;
 namespace Relayer.Kafka;
 
 // Optional receiver-owned state. The health integration is the only production registrant.

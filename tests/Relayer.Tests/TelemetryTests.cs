@@ -1,3 +1,4 @@
+using Relayer.Pipeline;
 #pragma warning disable RLY001 // Pipeline fixtures explicitly register their primitive wire identity and cached serializer.
 using System.Buffers;
 using System.Collections.Concurrent;
@@ -646,7 +647,7 @@ public class TelemetryTests
         var services = new ServiceCollection();
         services.AddSingleton<Control>();
         services.AddSingleton<Handler>();
-        services.AddRelayer(r => { r.MessageTypes.Add<int>("number"); new ConsumerBuilder<object>(r.Services, r.Handlers, "manual").Handler<Handler>(); });
+        services.AddRelayer(r => { r.Infrastructure().MessageTypes.Add<int>("number"); new ConsumerBuilder<object>(r.Services, r.Infrastructure().Handlers, "manual").Handler<Handler>(); });
         configure?.Invoke(services);
         return services.BuildServiceProvider();
     }

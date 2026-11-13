@@ -1,3 +1,5 @@
+using Relayer.Transports;
+using Relayer.Pipeline;
 using System.Buffers;
 using Microsoft.Extensions.DependencyInjection;
 using Relayer.Serialization;
@@ -15,7 +17,7 @@ public class ReceiveContinuationTests
     {
         var control = new Control();
         var services = new ServiceCollection().AddSingleton(control).AddScoped<Lifetime>();
-        services.AddRelayer(r => { r.MessageTypes.Add<Payload>("continuation"); new ConsumerBuilder<object>(r.Services, r.Handlers, "manual").Handler<Handler>(); });
+        services.AddRelayer(r => { r.Infrastructure().MessageTypes.Add<Payload>("continuation"); new ConsumerBuilder<object>(r.Services, r.Infrastructure().Handlers, "manual").Handler<Handler>(); });
         await using var provider = services.BuildServiceProvider();
         var pipeline = new ConsumePipelineBuilder(provider.GetRequiredService<IServiceScopeFactory>(),
             provider.GetRequiredService<MessageTypeRegistry>(), new Serializer(), (context, _, _) =>
@@ -81,7 +83,7 @@ public class ReceiveContinuationTests
     {
         var control = new Control();
         var services = new ServiceCollection().AddSingleton(control).AddScoped<Lifetime>();
-        services.AddRelayer(r => { r.MessageTypes.Add<Payload>("continuation"); new ConsumerBuilder<object>(r.Services, r.Handlers, "manual").Handler<Handler>(); });
+        services.AddRelayer(r => { r.Infrastructure().MessageTypes.Add<Payload>("continuation"); new ConsumerBuilder<object>(r.Services, r.Infrastructure().Handlers, "manual").Handler<Handler>(); });
         await using var provider = services.BuildServiceProvider();
         control.Disposal.SetResult();
         var consumer = new ConsumePipelineBuilder(provider.GetRequiredService<IServiceScopeFactory>(),

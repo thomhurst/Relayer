@@ -1,3 +1,4 @@
+using Relayer.Transports;
 namespace Relayer.Tests;
 
 public class FailureClassifierTests

@@ -1,3 +1,4 @@
+using Relayer.Transports;
 using System.Buffers;
 using Google.Protobuf;
 using Google.Protobuf.WellKnownTypes;
@@ -12,7 +13,7 @@ internal static class ProtobufSmoke
     {
         var services = new ServiceCollection();
         services.AddSingleton<IMessageSerializer>(new ProtobufMessageSerializer(types => types.Add(StringValue.Parser)));
-        services.AddRelayer(relayer => relayer.MessageTypes.Add<StringValue>("aot.protobuf"));
+        services.AddRelayer(relayer => relayer.Infrastructure().MessageTypes.Add<StringValue>("aot.protobuf"));
         using var provider = services.BuildServiceProvider();
         var serializer = provider.GetRequiredService<IMessageSerializer>();
         var message = new StringValue { Value = "Protobuf under Native AOT: Zoë" };

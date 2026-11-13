@@ -1,3 +1,4 @@
+using Relayer.Transports;
 using System.Buffers;
 using System.Net;
 using System.Text;
@@ -14,7 +15,7 @@ internal static class KafkaSchemaSmoke
         using var client = new SchemaRegistryClient(new() { Url = "http://registry" }, new RegistryResponses());
         var services = new ServiceCollection().AddRelayer(relayer =>
         {
-            relayer.MessageTypes.Add<SchemaSmokeOrder>("smoke.schema");
+            relayer.Infrastructure().MessageTypes.Add<SchemaSmokeOrder>("smoke.schema");
             relayer.Kafka("registry", kafka => kafka.UseSerializer(_ => new KafkaJsonSchemaSerializer(client)
                 .Add("orders", "{\"type\":\"object\"}", SchemaSmokeJson.Default.SchemaSmokeOrder)));
         });

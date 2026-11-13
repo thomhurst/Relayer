@@ -752,7 +752,7 @@ public class EnlistmentTests
             services.AddDbContext<AuditContext>((sp, o) => o.UseNpgsql(ConnectionString).AddRelayerOutbox(sp, Options));
             services.AddRelayer(builder =>
             {
-                builder.MessageTypes.Add<Probe>("outbox.probe");
+                builder.Infrastructure().MessageTypes.Add<Probe>("outbox.probe");
                 builder.AddTransport<Empty, Empty, Empty>("events", transport => transport.Send<Probe>("destination"));
             });
             return services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });

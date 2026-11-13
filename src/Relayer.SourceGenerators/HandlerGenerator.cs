@@ -112,7 +112,7 @@ public sealed class HandlerGenerator : IIncrementalGenerator
         {
             var model = contracts[i];
             builder.AppendLine();
-            builder.Append("    private sealed class Dispatcher").Append(i).Append(" : global::Relayer.")
+            builder.Append("    private sealed class Dispatcher").Append(i).Append(" : global::Relayer.Pipeline.")
                 .Append(model.IsBatch ? "BatchHandlerDescriptor<" : model.TombstoneMessage is not null ? "TombstoneHandlerDescriptor<" : "HandlerDescriptor<")
                 .Append(model.TombstoneMessage ?? model.Message).AppendLine(">");
             builder.AppendLine("    {");
@@ -158,7 +158,7 @@ public sealed class HandlerGenerator : IIncrementalGenerator
             {
                 if (contracts[i].Handler == handler)
                 {
-                    builder.Append("            builder.AddHandler(new Dispatcher")
+                    builder.Append("            global::Relayer.Pipeline.ConsumerInfrastructureExtensions.AddHandler(builder, new Dispatcher")
                         .Append(i).AppendLine("());");
                     if (contracts[i].SagaState is { } state)
                         builder.Append("            global::Microsoft.Extensions.DependencyInjection.Extensions.ServiceCollectionDescriptorExtensions.TryAddSingleton<global::Relayer.Sagas.SagaExecution<")

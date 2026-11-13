@@ -1,3 +1,4 @@
+using Relayer.Pipeline;
 namespace Relayer.Tests;
 
 public class ConsumerCircuitTests

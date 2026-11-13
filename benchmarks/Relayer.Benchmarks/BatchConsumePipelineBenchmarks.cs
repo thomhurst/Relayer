@@ -1,3 +1,5 @@
+using Relayer.Transports;
+using Relayer.Pipeline;
 using System.Buffers;
 using System.Diagnostics;
 using System.Text;
@@ -43,7 +45,7 @@ public class BatchConsumePipelineBenchmarks
         services.AddSingleton<Handler>();
         services.AddRelayer(builder =>
         {
-            builder.MessageTypes.Add<Payload>("benchmark.batch");
+            builder.Infrastructure().MessageTypes.Add<Payload>("benchmark.batch");
             builder.AddTransport<Options, Options, Options>("benchmark", transport =>
                 transport.Consume("source", consumer => consumer.Handler<Handler>().Batch(BatchSize, TimeSpan.FromMilliseconds(100))));
         });
