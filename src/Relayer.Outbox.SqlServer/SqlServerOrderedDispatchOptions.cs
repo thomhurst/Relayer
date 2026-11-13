@@ -13,8 +13,14 @@ public sealed class SqlServerOrderedDispatchOptions
     public TimeSpan LeaseDuration { get; init; } = TimeSpan.FromSeconds(30);
     /// <summary>Delay between scans, less than one third of the lease duration.</summary>
     public TimeSpan PollInterval { get; init; } = TimeSpan.FromSeconds(1);
-    /// <summary>Failed sends before the original row is parked with its error. Must match other dispatchers for this store.</summary>
+    /// <summary>Unclassified send or preparation failures before the original row is parked. Explicitly retryable sends retry durably. Must match other dispatchers for this store.</summary>
     public int MaxDispatchAttempts { get; init; } = 10;
+
+    /// <summary>Returns true for send failures that should retry indefinitely with durable backoff.
+    /// Null preserves bounded poison handling for all send failures. Use native exception classification
+    /// and configure the same policy on every dispatcher for this store.</summary>
+    public Func<Exception, bool>? RetrySendFailure { get; init; }
+
     /// <summary>Maximum sequential sends in one bounded lane transaction.</summary>
     public int BatchSize { get; init; } = 100;
 

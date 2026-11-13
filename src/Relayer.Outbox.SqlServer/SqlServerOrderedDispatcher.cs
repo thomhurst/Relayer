@@ -144,17 +144,23 @@ internal sealed partial class SqlServerOrderedDispatcher : BackgroundService
                 var row = _rows[index];
                 var claim = new OutboxClaim(row.Id, Guid.NewGuid());
                 if (!await _lane.ClaimAsync(connection, transaction, claim, cancellationToken).ConfigureAwait(false)) break;
+                var preparedForSend = false;
                 try
                 {
                     var prepared = Prepare(row, _transports, _capabilities);
+                    preparedForSend = true;
                     _instrumentation?.RecordOutboxDispatchLag(_timeProvider.GetUtcNow() - row.CreatedAt);
                     await prepared.Transport.SendAsync(prepared.Message, cancellationToken).ConfigureAwait(false);
                 }
                 catch (Exception error) when (!cancellationToken.IsCancellationRequested)
                 {
-                    if (!await _lane.FailAsync(connection, transaction, claim, error.Message, cancellationToken).ConfigureAwait(false))
+                    var retryable = preparedForSend && SqlServerSendFailure.IsRetryable(_options.RetrySendFailure, error, _logger);
+                    var recorded = retryable
+                        ? await _lane.RetryAsync(connection, transaction, claim, error.Message, cancellationToken).ConfigureAwait(false)
+                        : await _lane.FailAsync(connection, transaction, claim, error.Message, cancellationToken).ConfigureAwait(false);
+                    if (!recorded)
                         throw new InvalidOperationException("Ordered outbox claim expired while recording a dispatch failure.", error);
-                    poisoned = row.Attempts + 1 >= _options.MaxDispatchAttempts;
+                    poisoned = !retryable && row.Attempts + 1 >= _options.MaxDispatchAttempts;
                     DispatchFailed(_logger, error);
                     break;
                 }
@@ -188,7 +194,7 @@ internal sealed partial class SqlServerOrderedDispatcher : BackgroundService
         return (transport, new OutgoingMessage(message.Destination, message.Body, message.Headers, message.OrderingKey).ForOutboxDispatch());
     }
 
-    [LoggerMessage(Level = LogLevel.Error, Message = "Ordered outbox dispatch failed; durable rows remain available for retry or, after attempt exhaustion, application-owned parked-row management.")]
+    [LoggerMessage(Level = LogLevel.Error, Message = "Ordered outbox dispatch failed; native send failures retain durable backoff; exhausted preparation failures require application-owned parked-row management.")]
     private static partial void DispatchFailed(ILogger logger, Exception error);
     [LoggerMessage(Level = LogLevel.Warning, Message = "Could not release ordered outbox leases; they expire automatically.")]
     private static partial void ReleaseFailed(ILogger logger, Exception error);

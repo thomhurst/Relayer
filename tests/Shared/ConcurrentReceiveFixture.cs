@@ -26,6 +26,8 @@ public sealed class ConcurrentReceiveFixture : IDisposable
     private bool _stopping;
     private int _nextWorker;
     private long _workerBytes;
+    public long CallerBytes { get; private set; }
+    public long WorkerBytes => _workerBytes;
 
     public ConcurrentReceiveFixture()
     {
@@ -102,7 +104,8 @@ public sealed class ConcurrentReceiveFixture : IDisposable
                 }
             }
         }
-        return GC.GetAllocatedBytesForCurrentThread() - start + _workerBytes;
+        CallerBytes = GC.GetAllocatedBytesForCurrentThread() - start;
+        return CallerBytes + _workerBytes;
     }
 
     private void Work(int index)

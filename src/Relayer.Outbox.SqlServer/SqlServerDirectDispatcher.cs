@@ -12,6 +12,7 @@ namespace Relayer.Outbox.SqlServer;
 internal sealed class SqlServerDirectDispatcher : BackgroundService
 {
     private readonly SqlServerOutboxStore _store;
+    private readonly Func<Exception, bool>? _retrySendFailure;
     private readonly SqlServerDirectDispatchOptions _options;
     private readonly ILogger<SqlServerDirectDispatcher> _logger;
     private readonly Channel<OutboxDispatchBatch> _queue;
@@ -36,6 +37,7 @@ internal sealed class SqlServerDirectDispatcher : BackgroundService
         SqlServerOutboxStore? store = null, RelayerInstrumentation? instrumentation = null)
     {
         _store = store ?? new(connectionString, storeOptions);
+        _retrySendFailure = storeOptions.RetrySendFailure;
         var target = ValidateConnectionString(connectionString);
         _dataSource = target.DataSource;
         _database = target.InitialCatalog;
@@ -200,11 +202,15 @@ internal sealed class SqlServerDirectDispatcher : BackgroundService
                 catch (Exception error)
                 {
                     DirectDispatchLog.Failed(_logger, error);
+                    var retryable = SqlServerSendFailure.IsRetryable(_retrySendFailure, error, _logger);
                     for (var i = 0; i < live; i++)
                     {
                         try
                         {
-                            await _store.RecordFailureAsync(_claims[i], error.Message, DateTimeOffset.UtcNow, cancellationToken).ConfigureAwait(false);
+                            if (retryable)
+                                await _store.RecordRetryAsync(_claims[i], error.Message, DateTimeOffset.UtcNow, cancellationToken).ConfigureAwait(false);
+                            else
+                                await _store.RecordFailureAsync(_claims[i], error.Message, DateTimeOffset.UtcNow, cancellationToken).ConfigureAwait(false);
                         }
                         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
                         catch (Exception failure) { DirectDispatchLog.Failed(_logger, failure); }

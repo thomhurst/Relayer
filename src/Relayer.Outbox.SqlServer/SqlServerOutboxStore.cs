@@ -27,6 +27,7 @@ public sealed class SqlServerOutboxStore : IOutboxStore
     private readonly string _renew;
     private readonly string _complete;
     private readonly string _fail;
+    private readonly string _retry;
     private readonly string _count;
     private readonly string _batchClaim;
     private readonly string _batchComplete;
@@ -86,6 +87,7 @@ public sealed class SqlServerOutboxStore : IOutboxStore
             IF @own = 1 COMMIT;
             SELECT CAST(@changed AS bit);
             """;
+        _retry = SqlServerDispatchSql.Retry(table, fenced, "@now");
         _count = $"SELECT COUNT_BIG(*) FROM {table} WHERE {eligible}";
         _batchClaim = _claim.Replace(" OUTPUT CAST(1 AS bit)", "", StringComparison.Ordinal) + "; SELECT CAST(@@ROWCOUNT AS bit)";
         _batchComplete = _complete.Replace(" OUTPUT CAST(1 AS bit)", "", StringComparison.Ordinal) + "; SELECT CAST(@@ROWCOUNT AS bigint)";
@@ -216,6 +218,13 @@ public sealed class SqlServerOutboxStore : IOutboxStore
         Validate(claim);
         ArgumentNullException.ThrowIfNull(error);
         return MutateAsync(_fail, claim, now, null, error, cancellationToken);
+    }
+
+    internal ValueTask<bool> RecordRetryAsync(OutboxClaim claim, string error, DateTimeOffset now, CancellationToken cancellationToken)
+    {
+        Validate(claim);
+        ArgumentNullException.ThrowIfNull(error);
+        return MutateAsync(_retry, claim, now, null, error, cancellationToken);
     }
 
     [RuntimeAsyncMethodGeneration(false)]

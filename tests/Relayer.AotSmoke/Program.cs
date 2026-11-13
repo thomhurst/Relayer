@@ -27,16 +27,25 @@ foreach (var listener in new[] { false, true })
 {
     using var send = new Relayer.TestFixtures.SendTracingCompletionFixture(batch, listener);
     for (var i = 0; i < 16; i++) send.Run(traced: true);
-    if (send.Run(traced: true) != 0) throw new InvalidOperationException("Send tracing allocates under Native AOT.");
+    AssertSendAllocation(send, batch, listener, traced: true, asynchronousCaller: false);
     // Native AOT runtime-async dispatch lazily allocates thread-static storage (dotnet/runtime#137474).
     // Warm and check the native caller separately, then warm the wrapped continuation path as well.
     send.Run(traced: false, asynchronousCaller: true);
-    if (send.Run(traced: false, asynchronousCaller: true) != 0)
-        throw new InvalidOperationException("Native awaited send caller allocates under Native AOT.");
+    AssertSendAllocation(send, batch, listener, traced: false, asynchronousCaller: true);
     send.Run(traced: true, asynchronousCaller: true);
-    if (send.Run(traced: true, asynchronousCaller: true) != 0)
-        throw new InvalidOperationException("Awaited send tracing allocates under Native AOT.");
+    AssertSendAllocation(send, batch, listener, traced: true, asynchronousCaller: true);
 }
+
+static void AssertSendAllocation(Relayer.TestFixtures.SendTracingCompletionFixture send,
+    bool batch, bool listener, bool traced, bool asynchronousCaller)
+{
+    var allocated = send.Run(traced, asynchronousCaller);
+    if (allocated != 0)
+        throw new InvalidOperationException($"Send allocates {allocated} B under Native AOT " +
+            $"(caller={send.CallerBytes} B, worker={send.WorkerBytes} B, batch={batch}, " +
+            $"listener={listener}, traced={traced}, asynchronousCaller={asynchronousCaller}).");
+}
+
 Console.WriteLine("Cross-thread single and batch send tracing passed under Native AOT.");
 PartitionCompletionSmoke.Run();
 PartitionSchedulerSmoke.Run();

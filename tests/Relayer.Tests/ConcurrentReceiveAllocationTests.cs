@@ -47,9 +47,9 @@ public class ConcurrentReceiveAllocationTests
         var gen1 = GC.CollectionCount(1);
         var gen2 = GC.CollectionCount(2);
         var bytes = fixture.Run(mode);
-        return new Window(bytes, GC.CollectionCount(0) - gen0,
+        return new Window(bytes, fixture.CallerBytes, fixture.WorkerBytes, GC.CollectionCount(0) - gen0,
             GC.CollectionCount(1) - gen1, GC.CollectionCount(2) - gen2);
     }
 
-    private readonly record struct Window(long Bytes, int Gen0, int Gen1, int Gen2);
+    private readonly record struct Window(long Bytes, long CallerBytes, long WorkerBytes, int Gen0, int Gen1, int Gen2);
 }

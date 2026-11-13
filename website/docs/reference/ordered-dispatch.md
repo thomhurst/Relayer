@@ -169,3 +169,10 @@ idempotent processing or the [EF Core consumer inbox](ef-core-inbox.md). A trans
 shutdown. A stalled connected transaction deliberately delays takeover until it ends.
 
 SQL Server treats malformed stored headers as a dispatch failure for that row. The fenced failure path records attempts and parks the row at `MaxDispatchAttempts`; its original key stays blocked while other keys in the lane can continue. Valid preceding rows can commit even when a later row has malformed headers.
+
+SQL Server native send failures classified by `RetrySendFailure` persist a retry deadline in `deliver_at`, with exponential delays
+from one second to five minutes. A waiting head retains the lane's due-time barrier. Retryable sends never
+park a key or exhaust the poison budget, so a classified broker outage recovers automatically when the broker returns.
+By default the predicate is null: unclassified sends retain bounded `MaxDispatchAttempts` poison handling
+and park the key after exhaustion. Configure the same native exception policy on all workers.
+The diagnostic attempt counter saturates at 30. See [SQL Server recovery](sqlserver-store.md#recovery-poison-rows-and-retention).

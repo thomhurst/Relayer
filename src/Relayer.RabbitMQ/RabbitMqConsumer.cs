@@ -199,7 +199,9 @@ internal sealed partial class RabbitMqConsumer
             {
                 await delivery.Endpoint.Settlement.SettleAsync(delivery, disposition, _abort.Token).ConfigureAwait(false);
             }
-            if (previousFailure is not null && Volatile.Read(ref _recovering) == 0)
+            // Recovery callbacks can still be finishing their nack when a redelivery succeeds.
+            // _recovering independently keeps health unhealthy until every backoff ends.
+            if (previousFailure is not null)
                 Interlocked.CompareExchange(ref _processingFailure, null, previousFailure);
         }
         finally

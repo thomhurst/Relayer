@@ -106,14 +106,15 @@ public sealed class OrderedDispatchTests(SqlServerFixture database)
             routing.Parameters.Add("@other", SqlDbType.NVarChar, -1).Value = otherKey;
             await routing.ExecuteNonQueryAsync();
         }
-        var transport = new RecordingTransport((_, _) => ValueTask.FromException(new InvalidOperationException("poison")));
+        // A malformed persisted row is a permanent preparation failure, not a broker outage.
+        await data.Execute($"UPDATE {data.Table} SET headers = 0x00 WHERE seq = 1");
+        var transport = new RecordingTransport();
         using var worker = Worker(data, transport, maxAttempts: 1);
         await Assert.That(await worker.DispatchLaneAsync(0, default)).IsEqualTo(0);
         using var lane = new SqlServerOrderedLane(database.ConnectionString, data.Options, TimeSpan.FromSeconds(30), 1);
         var ready = new bool[1];
         await lane.FindReadyAsync([true], ready, default);
         await Assert.That(ready[0]).IsTrue();
-        transport.Send = null;
         await Assert.That(await worker.DispatchLaneAsync(0, default)).IsEqualTo(1);
         await Assert.That(transport.Ids.SequenceEqual([Id(1)])).IsTrue();
         await lane.FindReadyAsync([true], ready, default);
@@ -124,7 +125,7 @@ public sealed class OrderedDispatchTests(SqlServerFixture database)
         await using var reader = await query.ExecuteReaderAsync();
         await Assert.That(await reader.ReadAsync()).IsTrue();
         await Assert.That(reader.GetInt32(0)).IsEqualTo(1);
-        await Assert.That(reader.GetString(1)).IsEqualTo("poison");
+        await Assert.That(reader.GetString(1).StartsWith("Malformed outbox row:", StringComparison.Ordinal)).IsTrue();
         await Assert.That(reader.GetString(2)).IsEqualTo("parked");
     }
 

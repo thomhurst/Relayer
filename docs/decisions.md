@@ -81,6 +81,7 @@ To change a decision, add a new entry that supersedes it rather than editing his
 | [D68](#d68-offline-cli-export-loads-an-explicit-application-declaration-factory) | Offline CLI export loads an explicit application declaration factory | Accepted |
 | [D69](#d69-retryable-handler-failures-get-three-in-process-retries-by-default) | Retryable handler failures get three in-process retries by default | Accepted |
 | [D70](#d70-mysql-send-failures-retain-durable-retry-eligibility) | MySQL send failures retain durable retry eligibility | Accepted |
+| [D71](#d71-sql-server-outbox-send-failures-retain-durable-eligibility) | SQL Server outbox send failures retain durable eligibility | Accepted |
 
 ---
 
@@ -1662,3 +1663,30 @@ native rejections and repair their cause. A failed batch backs off every claimed
 semantics after partial acceptance. Preparation failures still count previous diagnostic attempts toward
 the poison budget; repair can require resetting attempts. Success does no additional database work or
 allocation. See the [MySQL reference](../website/docs/reference/mysql-store.md#recovery-poison-rows-and-retention).
+## D71. SQL Server outbox send failures retain durable eligibility
+
+**Status:** Accepted. Qualifies the failure policy in D62 and D64.
+
+**Context.** Native clients own in-operation retries: for example
+[ServiceBusRetryPolicy.RunOperation in 7.21.0](https://github.com/Azure/azure-sdk-for-net/blob/Azure.Messaging.ServiceBus_7.21.0/sdk/servicebus/Azure.Messaging.ServiceBus/src/Primitives/ServiceBusRetryPolicy.cs)
+waits and retries before throwing after exhaustion. Dekaf 1.27.0's separate Kafka-specific
+[OutboxRelayService](https://github.com/thomhurst/Dekaf/blob/v1.27.0/src/Dekaf.Outbox/OutboxRelayService.cs)
+backs off failed bucket heads in memory. Neither persists eligibility for Relayer's multi-transport SQL
+Server rows across worker replacement. Counting those send failures toward poison handling makes a
+broker outage require manual recovery of otherwise healthy messages.
+
+**Decision.** Reuse the existing fenced mutation and `deliver_at` column for one-second exponential
+backoff capped at five minutes after an explicitly retryable native send fails. Retryable sends never enter the poison-budget
+transition; their diagnostic attempt count saturates at 30. Preparation failures and explicit low-level
+`RecordFailureAsync` calls retain poison handling. Each dispatcher exposes an optional `RetrySendFailure`
+predicate over the native exception. Null (the default) or false keeps bounded `MaxDispatchAttempts`
+poison handling; only true opts into indefinite durable recovery. Applications reuse native exception
+classification (for example Service Bus `ServiceBusException.IsTransient`) and configure the same policy
+across direct, maintenance and ordered workers. No broker exception types are guessed. The consume-only
+classifier requires a consume context and is not reused for outbox sends. Native
+clients retain their in-operation retries; no extra in-process send loop or broker scheduler is added.
+
+**Consequences.** Explicitly classified retryable sends recover automatically after the durable deadline, including after
+worker replacement. Ordered heads retain their existing due-time lane barrier. The schema and low-level
+store contract remain unchanged; callers using `RecordFailureAsync` directly still own permanent-failure
+classification. See [SQL Server recovery](https://relayer.tomlonghurst.dev/docs/reference/sqlserver-store#recovery-poison-rows-and-retention).
