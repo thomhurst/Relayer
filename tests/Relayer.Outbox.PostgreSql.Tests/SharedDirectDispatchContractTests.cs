@@ -9,6 +9,8 @@ namespace Relayer.Outbox.PostgreSql.Tests;
 [InheritsTests]
 public sealed class SharedDirectDispatchContractTests : OutboxDirectDispatchContractTests
 {
+    protected override bool IsolatesFailedNativeBatches => true;
+
     protected override async Task<DispatchFixture> CreateFixtureAsync(RecordingTransport transport, int batchSize = 100,
         int queueCapacity = 256)
     {

@@ -297,10 +297,11 @@ public class OutboxTelemetryTests
             await Assert.That(activity.Status).IsEqualTo(ActivityStatusCode.Error);
             await Assert.That(activity.GetTagItem("error.type")).IsEqualTo("_OTHER");
         }
-        // Explicitly expire claims to simulate later recovery, without waiting for wall-clock time.
+        // Explicitly advance claim expiry and durable retry eligibility to simulate later recovery.
         await using (var command = source.CreateCommand("""
             DROP TRIGGER IF EXISTS fail_delete ON relayer_outbox;
             UPDATE relayer_outbox SET claim_expires_at = clock_timestamp() - interval '1 second' WHERE claim_token IS NOT NULL;
+            UPDATE relayer_outbox SET deliver_at = clock_timestamp() - interval '1 second' WHERE deliver_at IS NOT NULL;
             """)) await command.ExecuteNonQueryAsync();
         transport.Fail = false;
         await worker.DispatchRecoveredAsync(rows, default);
