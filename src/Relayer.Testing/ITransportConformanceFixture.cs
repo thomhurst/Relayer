@@ -5,7 +5,7 @@ namespace Relayer.Testing;
 /// <summary>Bridges conformance scenarios to real native transport operations on an isolated endpoint.</summary>
 /// <remarks>
 /// Create a fresh fixture per scenario, with the supplied MessageTracing owner and native instrumentation enabled.
-/// Provision an empty endpoint with capacity for at least 32 small messages. Dispose must stop receivers and remove owned resources.
+/// Provision an empty endpoint; native admission may apply backpressure between sends. Dispose must stop receivers and remove owned resources.
 /// Do not implement delivery, ordering, settlement, reconnect or tracing in the bridge: call the adapter and broker.
 /// </remarks>
 public interface ITransportConformanceFixture<TIncoming> : IAsyncDisposable
