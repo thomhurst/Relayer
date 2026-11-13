@@ -138,6 +138,7 @@ internal sealed class HarnessTransport : ITransport, ITransportSendTracing, ITra
             }
             if (candidateId is not null && candidateType is not null) break;
         }
-        return _harness.Correlate(id, type, message.Body.ToArray(), transportName: Name, destination: message.Destination);
+        return _harness.Correlate(id, type, message.Body.ToArray(), transportName: Name, destination: message.Destination,
+            isTombstone: message.IsTombstone, tombstoneKey: message.IsTombstone ? message.OrderingKey : null);
     }
 }

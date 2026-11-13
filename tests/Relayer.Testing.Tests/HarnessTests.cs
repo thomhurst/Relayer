@@ -74,6 +74,56 @@ public class HarnessTests
         await Assert.That(() => harness.Read<Tombstone<Probe>>(harness.Sent[0])).Throws<InvalidOperationException>();
     }
 
+    [Test]
+    public async Task Typed_serialized_reads_preserve_tombstones_and_owned_binary_keys()
+    {
+        await using var fixture = await Fixture.Create(tombstones: true);
+        var transport = fixture.Provider.GetServices<ITransport>().Single(item => item.Name == "first");
+        var key = new byte[] { 0xff, 0x00, 0x80 };
+        var headers = new KeyValuePair<string, WireString>[] { new("ce_type", new("harness.probe;v=1")), new("ce_id", new("deletion")) };
+        await fixture.Send(new Probe(42));
+        await transport.SendAsync(new("probes", default, headers, orderingKey: new WireString(key), isTombstone: true), default);
+        var provider = fixture.Provider;
+        var pipeline = new ConsumePipelineBuilder(provider.GetRequiredService<IServiceScopeFactory>(),
+            provider.GetRequiredService<MessageTypeRegistry>(), fixture.Serializer, static (_, _, _) => default)
+            .Handler(provider.GetRequiredService<HandlerRegistry>().Descriptors.Single(item => item.HandlerType == typeof(ProbeHandler)))
+            .Build(1);
+        var receive = new ReceivePipeline<OutgoingMessage, TombstoneBinding>(pipeline, new(), 1);
+        var body = new ArrayBufferWriter<byte>();
+        fixture.Serializer.Serialize(new Probe(7), body);
+        await receive.ProcessAsync(new("probes", body.WrittenMemory, headers));
+        await receive.ProcessAsync(new("probes", default, headers, orderingKey: new WireString(key), isTombstone: true));
+        var dispatched = fixture.Harness.Dispatched.Single(item => item.IsTombstone);
+        var consumed = fixture.Harness.Consumed.Single(item => item.IsTombstone);
+        Array.Clear(key);
+        await Assert.That(fixture.Harness.GetDispatched<Probe>().Single().Value).IsEqualTo(42);
+        await Assert.That(fixture.Harness.GetConsumed<Probe>().Single().Value).IsEqualTo(7);
+        await Assert.That(fixture.Harness.GetDispatched<Tombstone<Probe>>().Single().Key.Utf8.ToArray()).IsEquivalentTo(new byte[] { 0xff, 0x00, 0x80 });
+        await Assert.That(fixture.Harness.GetConsumed<Tombstone<Probe>>().Single().Key.Utf8.ToArray()).IsEquivalentTo(new byte[] { 0xff, 0x00, 0x80 });
+        await Assert.That(() => fixture.Harness.Read<Probe>(consumed)).Throws<InvalidOperationException>();
+        await Assert.That(() => fixture.Harness.Read<Tombstone<Probe>>(fixture.Harness.Consumed[0])).Throws<InvalidOperationException>();
+        await fixture.StartServices();
+        await fixture.Idle();
+        fixture.Harness.Reset();
+        await Assert.That(fixture.Harness.Read<Tombstone<Probe>>(consumed).Key.Utf8.ToArray()).IsEquivalentTo(new byte[] { 0xff, 0x00, 0x80 });
+        await Assert.That(dispatched.Read<Tombstone<Probe>>(fixture.Serializer).Key.Utf8.ToArray()).IsEquivalentTo(new byte[] { 0xff, 0x00, 0x80 });
+    }
+
+    private readonly struct TombstoneBinding : IMessageBinding<OutgoingMessage>
+    {
+        public static ReadOnlySequence<byte> GetBody(OutgoingMessage message) => new(message.Body);
+        public static int? GetDeliveryCount(OutgoingMessage message) => 1;
+        public static bool IsTombstone(OutgoingMessage message) => message.IsTombstone;
+        public static WireString? GetTombstoneKey(OutgoingMessage message) => message.OrderingKey;
+        public static bool TryGetHeader(OutgoingMessage message, string name, out WireString value)
+        {
+            foreach (var header in message.Headers.Span)
+                if (header.Key == name) { value = header.Value; return true; }
+            value = default;
+            return false;
+        }
+    }
+
     public sealed class LogicalSendOnly : ISendMiddleware
     {
         public ValueTask InvokeAsync(SendContext context, SendDelegate next) => default;
@@ -555,7 +605,7 @@ public class HarnessTests
         private bool _started;
 
         internal static Task<Fixture> Create(ProbeControl? control = null, bool log = false,
-            TestOutbox? outbox = null, TimeProvider? clock = null, ILoggerFactory? logging = null, TimeSpan? maxRedeliveryDelay = null, FailureOptions? failures = null, byte? serializerMarker = null)
+            TestOutbox? outbox = null, TimeProvider? clock = null, ILoggerFactory? logging = null, TimeSpan? maxRedeliveryDelay = null, FailureOptions? failures = null, byte? serializerMarker = null, bool tombstones = false)
         {
             var services = new ServiceCollection();
             services.AddSingleton(control ?? new ProbeControl());
@@ -575,7 +625,7 @@ public class HarnessTests
                         {
                             ConsumptionModel = log ? ConsumptionModel.Log : ConsumptionModel.Queue,
                             DeadLetter = true, MaxDeliveryDelay = TimeSpan.MaxValue, MaxRedeliveryDelay = maxRedeliveryDelay ?? TimeSpan.MaxValue,
-                            MaxBatchSize = 100,
+                            MaxBatchSize = 100, OrderedByKey = tombstones, Tombstones = tombstones,
                         } };
                     });
                     transport.Consume("probes", consumer => { consumer.Handler<ProbeHandler>(); if (failures is not null) consumer.Failures(failures); consumer.Options.Group = log ? "one" : null; });

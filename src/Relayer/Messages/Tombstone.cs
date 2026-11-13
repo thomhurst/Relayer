@@ -14,7 +14,17 @@ public static class Tombstone
 }
 
 /// <summary>A native null-value record for <typeparamref name="T"/>. The key is borrowed during receive processing.</summary>
-public readonly record struct Tombstone<T>(WireString Key);
+public readonly record struct Tombstone<T>(WireString Key) : ITombstone
+{
+    object ITombstone.Create(WireString key) => Tombstone.For<T>(key);
+}
+
+// Lets test observations reconstruct a registered typed deletion without reflection or JSON metadata.
+internal interface ITombstone
+{
+    WireString Key { get; }
+    object Create(WireString key);
+}
 
 internal sealed class TombstoneKeySelector<T> : IOrderingKeySelector<Tombstone<T>>
 {

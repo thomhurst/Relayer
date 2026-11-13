@@ -79,7 +79,7 @@ public sealed class RelayerHarness : ISendMiddleware, IRelayerObserver
         var messages = new List<TMessage>();
         foreach (var observation in observations)
             if (string.Equals(observation.WireType, identity, StringComparison.Ordinal)
-                && (observation.Message is null || observation.Message is TMessage))
+                && observation.Matches<TMessage>())
                 messages.Add(ReadCore<TMessage>(observation));
         return messages.ToArray();
     }
@@ -131,7 +131,8 @@ public sealed class RelayerHarness : ISendMiddleware, IRelayerObserver
         {
             var operation = (ISendOperation)context;
             var message = new HarnessMessage(context.MessageId, context.MessageType.ToString(), default,
-                operation.TransportName, operation.Destination, message: context.Message, usesOutbox: operation.UsesOutbox);
+                operation.TransportName, operation.Destination, message: context.Message, usesOutbox: operation.UsesOutbox,
+                isTombstone: context.Message is ITombstone, tombstoneKey: (context.Message as ITombstone)?.Key);
             lock (_gate) _identities[context.MessageId] = message;
             try
             {
@@ -193,16 +194,17 @@ public sealed class RelayerHarness : ISendMiddleware, IRelayerObserver
     }
 
     private HarnessMessage Snapshot(DefaultMessageContext context) => Correlate(context.GetLogMessageId(),
-        context.GetLogMessageType(), context.Body.ToArray(), context.Attempt);
+        context.GetLogMessageType(), context.Body.ToArray(), context.Attempt,
+        isTombstone: context.IsTombstone, tombstoneKey: context.TombstoneKey);
 
     internal HarnessMessage Correlate(string? id, string? wireType, ReadOnlyMemory<byte> body, int attempt = 1,
-        string? transportName = null, string? destination = null)
+        string? transportName = null, string? destination = null, bool isTombstone = false, WireString? tombstoneKey = null)
     {
         lock (_gate)
         {
             var original = id is not null && _identities.TryGetValue(id, out var known) ? known : null;
             return new(id, wireType, body, transportName ?? original?.TransportName,
-                destination ?? original?.Destination, attempt);
+                destination ?? original?.Destination, attempt, isTombstone: isTombstone, tombstoneKey: tombstoneKey);
         }
     }
 
