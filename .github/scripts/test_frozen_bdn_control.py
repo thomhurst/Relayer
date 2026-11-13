@@ -91,6 +91,18 @@ class OriginalRunnerTests(unittest.TestCase):
             self.assertEqual(protocol["operationsPerInvoke"], 1)
             self.assertEqual(protocol["parameter"], "instance.ScopedHandler = true;")
 
+    def test_unscoped_scope_selector_rejects_true_parameter(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source, image = self.fixture(root)
+            text = source.read_text().replace("EndToEndBenchmarks", "ConsumePipelineBenchmarks").replace("ConcurrentRoundTrip()", "ScopeOnly()").replace("OperationsPerInvoke = 8", "OperationsPerInvoke = 1").replace("workloadDelegate =", "instance.ScopedHandler = false; workloadDelegate =")
+            source.write_text(text + text.replace("Runnable_10", "Runnable_11").replace("ScopedHandler = false", "ScopedHandler = true"))
+            self.assertEqual(executable(root, "scope-only-unscoped"), (image.resolve(), "10"))
+            self.assertEqual(executable(root, "scope-only"), (image.resolve(), "11"))
+            source.write_text(text.replace("ScopedHandler = false", "ScopedHandler = true"))
+            with self.assertRaisesRegex(ValueError, "selected parameter"):
+                executable(root, "scope-only-unscoped")
+
     def test_discovers_runner_from_inventoried_generated_source(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -192,7 +204,8 @@ class OriginalRunnerTests(unittest.TestCase):
         for case, benchmark, operations in (
                 ("concurrent", "Relayer.Benchmarks.EndToEndBenchmarks.ConcurrentRoundTrip", 8),
                 ("scoped-dispatch", "Relayer.Benchmarks.ConsumePipelineBenchmarks.DirectScopedDispatch", 1),
-                ("scope-only", '"Relayer.Benchmarks.ConsumePipelineBenchmarks.ScopeOnly(ScopedHandler: True)"', 1)):
+                ("scope-only", '"Relayer.Benchmarks.ConsumePipelineBenchmarks.ScopeOnly(ScopedHandler: True)"', 1),
+                ("scope-only-unscoped", '"Relayer.Benchmarks.ConsumePipelineBenchmarks.ScopeOnly(ScopedHandler: False)"', 1)):
             for invalid in (None, "identity", "case", "operations"):
                 with self.subTest(case=case, invalid=invalid), tempfile.TemporaryDirectory() as directory:
                     root = Path(directory)
@@ -234,7 +247,7 @@ class OriginalRunnerTests(unittest.TestCase):
                     self.assertEqual(outcomes[3]["operations"], 65536 if case == "concurrent" else 9)
                     protocol = json.loads((output / "protocol.json").read_text())
                     self.assertFalse(protocol["instrumented"])
-                    self.assertEqual(protocol["parameter"], None if case == "concurrent" else "instance.ScopedHandler = true;")
+                    self.assertEqual(protocol["parameter"], None if case == "concurrent" else ("instance.ScopedHandler = false;" if case == "scope-only-unscoped" else "instance.ScopedHandler = true;"))
 
     def test_native_parent_profiles_child_only_and_retains_invalid_report(self):
         real_run = subprocess.run

@@ -13,7 +13,7 @@ using BenchmarkDotNet.Toolchains.Results;
 
 if (args.Length is not (5 or 6))
 {
-    Console.Error.WriteLine("Usage: FrozenNativeHost <original-image> <benchmark-id> <dotnet-wrapper> <native-log> <receipt> [concurrent|scoped-dispatch|scope-only]");
+    Console.Error.WriteLine("Usage: FrozenNativeHost <original-image> <benchmark-id> <dotnet-wrapper> <native-log> <receipt> [concurrent|scoped-dispatch|scope-only|scope-only-unscoped]");
     return 2;
 }
 
@@ -28,7 +28,7 @@ var selectedCase = args.Length == 6 ? args[5] : "concurrent";
 var (owner, methodName, operations) = selectedCase switch
 {
     "concurrent" => ("EndToEndBenchmarks", "ConcurrentRoundTrip", 8),
-    "scope-only" => ("ConsumePipelineBenchmarks", "ScopeOnly", 1),
+    "scope-only" or "scope-only-unscoped" => ("ConsumePipelineBenchmarks", "ScopeOnly", 1),
     "scoped-dispatch" => ("ConsumePipelineBenchmarks", "DirectScopedDispatch", 1),
     _ => throw new ArgumentException("Unsupported original benchmark case.")
 };
@@ -37,14 +37,16 @@ var method = type.GetMethod(methodName) ?? throw new MissingMethodException(type
 // The inventoried generated runner ID selects the parameter and original job.
 // The descriptor supplies only the method name required by the native executor.
 var descriptor = new Descriptor(type, method, operationsPerInvoke: operations);
-ParameterInstance[] parameters = selectedCase == "scope-only"
-    ? [new(new ParameterDefinition("ScopedHandler", false, [true], false, typeof(bool), 0), true, BenchmarkDotNet.Reports.SummaryStyle.Default)]
+var scopeOnly = selectedCase is "scope-only" or "scope-only-unscoped";
+var scopedHandler = selectedCase != "scope-only-unscoped";
+ParameterInstance[] parameters = scopeOnly
+    ? [new(new ParameterDefinition("ScopedHandler", false, [scopedHandler], false, typeof(bool), 0), scopedHandler, BenchmarkDotNet.Reports.SummaryStyle.Default)]
     : [];
 using var benchmarkCase = BenchmarkCase.Create(descriptor, Job.Default.WithId("Default"),
     new ParameterInstances(parameters), ManualConfig.CreateEmpty().CreateImmutableConfig());
 var benchmarkId = new BenchmarkId(identity, benchmarkCase);
-var nameArgument = selectedCase == "scope-only"
-    ? "\"Relayer.Benchmarks.ConsumePipelineBenchmarks.ScopeOnly(ScopedHandler: True)\""
+var nameArgument = scopeOnly
+    ? $"\"Relayer.Benchmarks.ConsumePipelineBenchmarks.ScopeOnly(ScopedHandler: {scopedHandler})\""
     : $"Relayer.Benchmarks.{owner}.{methodName}";
 var expected = $"--benchmarkName {nameArgument} --job Default --benchmarkId {identity}";
 if (benchmarkId.ToArguments() != expected)
