@@ -90,3 +90,17 @@ report and preserve every unfavorable outcome. Do not subtract independent contr
 claim historical delta ownership, use timings as throughput evidence, or infer a
 production fix. The known-count multithread fixture validates exact object counts,
 warmup exclusion and failure handling before hosted frozen-image execution.
+
+## Native-parent method control (#537)
+
+The exact-adaptive workflow accepts `parent=native` to reuse the reviewed
+`FrozenNativeHost` / BenchmarkDotNet 0.15.8 DotNetCliExecutor route. Each launch
+gets its own retained CLI wrapper with profiler variables set only for the child;
+the managed parent is unprofiled and cannot truncate or contaminate the child's
+report. The launcher keeps native receipts/logs, validates callback boundaries,
+and attempts every launch after a failure. Console replay remains the default.
+This combination measures owner types in a new instrumented native-parent
+execution, not the historical allocation stream. All existing ELT/JIT, callback,
+locking, adaptive-count and host-drift limits apply. It does not isolate pipe
+effects or permit subtraction of independent runs. Use explicit original inputs
+and inspect every type family and failed outcome before choosing an intervention.
