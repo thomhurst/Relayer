@@ -93,6 +93,8 @@ def main():
                         help="Separate Linux code-placement capture; diagnostic timings are excluded")
     parser.add_argument("--eventpipe-sampling", action="store_true",
                         help="Native startup sample/CLR/BDN trace; diagnostic timings are excluded")
+    parser.add_argument("--eventpipe-contention", action="store_true",
+                        help="Native contention/CLR/BDN trace without sampling or perf maps; timings are excluded")
     parser.add_argument("--tiered-compilation", choices=("default", "off"), default="default",
                         help="Diagnostic runtime control; off uses native DOTNET_TieredCompilation=0")
     parser.add_argument("--method", choices=("ScopeOnly", "ScopeAndHandlerResolution"),
@@ -111,9 +113,14 @@ def main():
     plans.add_argument("--counterbalanced", action="store_true",
                         help="Scoped-only fixed ABBA/BAAB/BAAB/ABBA blocks (16 processes)")
     args = parser.parse_args()
-    if args.eventpipe_sampling and (args.jit_disassembly or args.aslr_control or args.affinity_control or
+    if args.eventpipe_sampling and args.eventpipe_contention:
+        parser.error("Choose sampling or contention-only capture")
+    if args.eventpipe_contention and args.perf_map:
+        parser.error("Contention-only capture cannot be mixed with perf maps")
+    eventpipe = args.eventpipe_sampling or args.eventpipe_contention
+    if eventpipe and (args.jit_disassembly or args.aslr_control or args.affinity_control or
                                    args.tiered_compilation != "default" or args.ready_to_run != "default"):
-        parser.error("--eventpipe-sampling requires default runtime policies without JIT disassembly, ASLR or affinity controls")
+        parser.error("EventPipe capture requires default runtime policies without JIT disassembly, ASLR or affinity controls")
     if args.jit_method != "*" and not args.jit_disassembly:
         parser.error("--jit-method requires --jit-disassembly")
     if not args.jit_method.strip():
@@ -152,11 +159,12 @@ def main():
                          if args.affinity_control else "Scoped default ABBA / no-ASLR BAAB / no-ASLR ABBA / default BAAB; no adaptive stopping"
                          if args.aslr_control else "Scoped-only ABBA/BAAB/BAAB/ABBA; 4 fixed blocks, no adaptive stopping"
                          if args.counterbalanced else "Scoped ABBA, then unscoped ABBA; A2 reuses first baseline image"),
-                "analysisPlan": ("Test whether sampled instruction addresses during native WorkloadActual intervals occupy different recorded code tiers by image. Join sample addresses to same-process CLR method events and perf maps, retaining unresolved addresses, all phases, all launches and unfavorable results. Sampling/instrumentation cannot reconstruct historical execution or prove equivalence; no instrumented timing comparison." if args.eventpipe_sampling else "Code-placement capture only: compare every raw map within and across blocks by actual image; timings and allocations excluded. See perfMapAnalysis for interpretation." if args.perf_map else "Compare process means within each block by actual image; retain every block difference and process. Counterbalancing addresses fixed launch-position effects, not arbitrary host drift or historical causality. No gate decision or equivalence claim."),
+                "analysisPlan": ("Test whether original scope processes emit native monitor contention Start/Stop events during complete WorkloadActual intervals without the sampling profiler. Retain all events, lock/object/owner identities, durations, phases, launches and unmatched pairs. Absence does not establish no contention or historical cause; instrumented timings/allocations are excluded." if args.eventpipe_contention else "Test whether sampled instruction addresses during native WorkloadActual intervals occupy different recorded code tiers by image. Join sample addresses to same-process CLR method events and perf maps, retaining unresolved addresses, all phases, all launches and unfavorable results. Sampling/instrumentation cannot reconstruct historical execution or prove equivalence; no instrumented timing comparison." if args.eventpipe_sampling else "Code-placement capture only: compare every raw map within and across blocks by actual image; timings and allocations excluded. See perfMapAnalysis for interpretation." if args.perf_map else "Compare process means within each block by actual image; retain every block difference and process. Counterbalancing addresses fixed launch-position effects, not arbitrary host drift or historical causality. No gate decision or equivalence claim."),
                 "engine": "Original Default job, native NoAcknowledgementConsoleHost without anonymous-pipe parent",
                 "limits": "New host/process executions, not historical reconstruction. Image-associated differences do not identify a production defect; absent differences do not prove equivalence. No threshold changes or gate pass claim.",
                 "perfMap": args.perf_map,
                 "eventPipeSampling": args.eventpipe_sampling,
+                "eventPipeContention": args.eventpipe_contention,
                 "samplingLimits": "Native thread-time samples are statistical observations, not CPU-cycle counts or exhaustive execution. BDN markers delimit timed iterations, not the extra GC-stat workload. Rundown and method events can describe code never sampled. Retain missing stacks, unnamed frames, repeated compilations and non-workload samples; no tier identity is inferred by this launcher. TraceEvent must parse every raw trace and check loss/coverage before interpretation.",
                 "perfMapAnalysis": "Compare absolute addresses, page/cache-line offsets, code sizes, optimization tiers, repeated compilations and relative placement of workload/scope methods within and across each planned condition. Retain absent methods and differing layouts; never infer identical execution from matching symbols/sizes. Perf maps omit precompiled code and contain no samples or proof which version executed during measurement. Join separate samples only to their own process's map. Instrumented timings/allocations are excluded; layout differences cannot attribute historical timing or establish causality.",
                 "aslrControl": args.aslr_control,
@@ -173,7 +181,7 @@ def main():
                 "slotMeaning": "side is the planned A/B slot label; imageSide identifies the executed original image; all A slots reuse the first baseline image",
                 "readyToRun": args.ready_to_run,
                 "runtimeControlLimits": "Changing tiering or ReadyToRun changes execution, not production configuration. Cross-condition timing is diagnostic only; host/process order remains a confound.",
-                "timingUse": "Excluded: code diagnostics perturb execution" if args.jit_disassembly or args.perf_map or args.eventpipe_sampling else "New fixed-plan experiment only",
+                "timingUse": "Excluded: code diagnostics perturb execution" if args.jit_disassembly or args.perf_map or eventpipe else "New fixed-plan experiment only",
                 "launches": []}
     # ABBA is a palindrome: swap A/B, rather than reversing it, for BAAB.
     if args.counterbalanced or args.affinity_control or args.aslr_control:
@@ -230,11 +238,12 @@ def main():
             outcome["diagnosticEnvironment"] = {key: environment[key] for key in
                 ("DOTNET_PerfMapEnabled", "DOTNET_PerfMapJitDumpPath", "DOTNET_PerfMapShowOptimizationTiers")}
         trace = (args.output / f"{index}-samples.nettrace").resolve()
-        if args.eventpipe_sampling:
+        if eventpipe:
             # Native startup tracing avoids attaching late. Each process owns one
             # trace; the runtime performs rundown when the process exits.
             sampling = {"DOTNET_EnableEventPipe": "1", "DOTNET_EventPipeOutputPath": str(trace),
-                        "DOTNET_EventPipeConfig": "Microsoft-Windows-DotNETRuntime:0x20038:5,Microsoft-DotNETCore-SampleProfiler:0:5,BenchmarkDotNet.EngineEventSource:0xffffffffffffffff:4",
+                        "DOTNET_EventPipeConfig": ("Microsoft-Windows-DotNETRuntime:0x24038:5,BenchmarkDotNet.EngineEventSource:0xffffffffffffffff:4" if args.eventpipe_contention else
+                            "Microsoft-Windows-DotNETRuntime:0x20038:5,Microsoft-DotNETCore-SampleProfiler:0:5,BenchmarkDotNet.EngineEventSource:0xffffffffffffffff:4"),
                         "DOTNET_EventPipeCircularMB": "128", "DOTNET_EventPipeOutputStreaming": "1"}
             environment.update(sampling)
             outcome.setdefault("diagnosticEnvironment", {}).update(sampling)
@@ -249,7 +258,7 @@ def main():
         if "error" not in outcome:
             try:
                 native = result(log_path.read_text())
-                if args.eventpipe_sampling:
+                if eventpipe:
                     if not trace.is_file() or trace.stat().st_size == 0:
                         raise ValueError("Missing native EventPipe trace")
                     outcome["eventPipeTrace"] = trace.name
@@ -267,7 +276,7 @@ def main():
                         raise ValueError("Missing native JIT disassembly")
                     outcome["disassembly"] = disassembly.name
                     outcome["timingUse"] = "Excluded: JIT diagnostics perturb execution"
-                elif not args.eventpipe_sampling:
+                elif not eventpipe:
                     outcome.update(native)
             except ValueError as error:
                 outcome["error"] = str(error)

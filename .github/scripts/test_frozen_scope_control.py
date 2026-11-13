@@ -625,6 +625,51 @@ class ScopeControlTests(unittest.TestCase):
                              ['candidate', 'baseline', 'baseline', 'candidate'] * 2 +
                              ['baseline', 'candidate', 'candidate', 'baseline'])
 
+    def test_contention_only_capture_retains_failures_and_excludes_timings(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            environments = []
+
+            def execute(command, **kwargs):
+                environment = kwargs['env']
+                environments.append(environment)
+                kwargs['stdout'].write(COMPLETE)
+                Path(environment['DOTNET_EventPipeOutputPath']).write_bytes(b'contention-trace')
+                if len(environments) == 2:
+                    raise subprocess.CalledProcessError(1, command)
+                if len(environments) == 3:
+                    Path(environment['DOTNET_EventPipeOutputPath']).unlink()
+
+            with patch('sys.argv', ['control', directory, str(root / 'output'),
+                                    '--counterbalanced', '--eventpipe-contention']), \
+                 patch('frozen_scope_control.verify', return_value='commit'), \
+                 patch('frozen_scope_control.executable', return_value=(root / 'runner.dll', '4')), \
+                 patch('frozen_scope_control.subprocess.run', side_effect=execute):
+                with self.assertRaises(SystemExit):
+                    main()
+            self.assertEqual(len(environments), 16)
+            for env in environments:
+                self.assertEqual(env['DOTNET_EventPipeConfig'],
+                                 'Microsoft-Windows-DotNETRuntime:0x24038:5,BenchmarkDotNet.EngineEventSource:0xffffffffffffffff:4')
+            outcomes = json.loads((root / 'output/outcomes.json').read_text())
+            self.assertIn('error', outcomes[1])
+            self.assertIn('Missing native EventPipe trace', outcomes[2]['error'])
+            self.assertIn('eventPipeTrace', outcomes[-1])
+            self.assertTrue(all('meanNs' not in o and 'bytesPerOperation' not in o for o in outcomes))
+            protocol = json.loads((root / 'output/protocol.json').read_text())
+            self.assertTrue(protocol['eventPipeContention'])
+            self.assertFalse(protocol['eventPipeSampling'])
+            self.assertIn('without the sampling profiler', protocol['analysisPlan'])
+
+    def test_contention_rejects_sampling_and_runtime_policy_changes(self):
+        for option in ('--eventpipe-sampling', '--jit-disassembly', '--aslr-control', '--perf-map'):
+            with self.subTest(option=option), \
+                 patch('sys.argv', ['control', 'inputs', 'output', '--eventpipe-contention', option]), \
+                 patch('frozen_scope_control.verify') as verify:
+                with self.assertRaises(SystemExit):
+                    main()
+                verify.assert_not_called()
+
     def test_sampling_without_maps_still_excludes_timings(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
