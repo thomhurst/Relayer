@@ -23,7 +23,7 @@ public class ServiceBusSendEmulatorTests
             RetryOptions = new ServiceBusRetryOptions { MaxRetries = 0 }
         });
         var admin = new ServiceBusAdministrationClient(stack.Emulator.GetHttpConnectionString());
-        var queue = "batch-isolation-" + Guid.NewGuid().ToString("N");
+        var queue = TestContext.Current!.Isolation.GetIsolatedName("batch-isolation");
         var options = new AzureServiceBusTransportOptions { Client = client, AdministrationClient = admin };
         options.Queues.Add(new(queue) { DefaultMessageTimeToLive = TimeSpan.FromHours(1), MaxSizeInMegabytes = 100,
             DuplicateDetectionHistoryTimeWindow = TimeSpan.FromMinutes(10) });

@@ -94,6 +94,7 @@ native client's polling or callback lifecycle, not an application contract. Like
 dead-letter management and circuit pause/resume are advertised only by adapters that
 implement them with native facilities. Do not synthesize missing broker features to
 make a capability table look uniform.
+
 A batch exception can implement `IBatchSendFailure` when the native client reports individual
 successes. `IsConfirmed(index)` uses zero-based indexes into the original `SendBatchAsync` input,
 including earlier completed destination groups and native chunks. Return true only for native
