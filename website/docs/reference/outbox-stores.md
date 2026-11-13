@@ -234,3 +234,7 @@ its worker task completes. PostgreSQL also verifies that its worker connections 
 its independent observer connection remains available for durable-state checks. Keep logging capture active
 through host disposal. These cases cover cooperative graceful shutdown; they do not replace process-crash
 recovery tests or establish behavior after a shutdown deadline expires.
+
+### Custom dispatcher operations
+
+`ReadPendingAsync` and `RenewClaimAsync` remain supported extension points for custom dispatchers and store implementations. The shared store conformance tests exercise both through `IOutboxStore`. Bundled database dispatchers instead use provider-specific atomic claim operations; their implementation does not make the portable read/claim contract obsolete. A custom dispatcher must preserve the claim fencing and ordered lane lease rules above.

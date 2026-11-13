@@ -14,7 +14,7 @@ internal sealed class RabbitMqSendEndpoint
     internal bool TraceEnabled => _tracing?.Source.HasListeners() == true;
     internal readonly EndpointTelemetry? Telemetry;
     internal string? DelayedExchange;
-    internal TransportCapabilities Capabilities = RabbitMqTransport.GetCapabilities("endpoint");
+    internal TransportCapabilities Capabilities = RabbitMqCapabilities.GetCapabilities("endpoint");
 
     internal RabbitMqSendEndpoint(string destination, ConnectionFactory factory, MessageTracing? tracing, RelayerInstrumentation? instrumentation,
         Func<OutgoingMessage, CancellationToken, ValueTask> send,

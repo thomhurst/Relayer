@@ -20,7 +20,7 @@ internal sealed partial class RabbitMqNativeTransport : ITransport
 
     public TransportCapabilities GetCapabilities(string endpoint)
     {
-        if (_endpoints.Count == 0) return RabbitMqTransport.GetCapabilities(endpoint);
+        if (_endpoints.Count == 0) return RabbitMqCapabilities.GetCapabilities(endpoint);
         var destination = Endpoint(endpoint);
         if (!_initialized && _options.DelayedExchanges.ContainsKey(destination.Exchange))
             throw new InvalidOperationException("RabbitMQ delayed exchange capabilities are not initialized. Start the application host before resolving send routes.");
