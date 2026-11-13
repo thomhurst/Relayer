@@ -217,18 +217,14 @@ transport regression measurement.
 
 ## Failure policy composition
 
-Applications configure the native consumer's `Options.Failure` as shown in
-[failure handling](../guides/failure-handling.md). The transport composes the executable
-pipeline once using those options, its endpoint capabilities and native copy/scheduling executors:
+Applications configure `consumer.Failures(...)` on the shared consumer declaration as shown in
+[failure handling](../guides/failure-handling.md). Adapters read the resulting
+`ConsumerDefinition.Failure` policy, rather than native consumer options, and compose the executable
+pipeline once using that policy, their endpoint capabilities and native copy/scheduling executors:
 
 ```csharp
 var failures = new FailurePipeline(services, "broker", "orders", "billing",
-    new FailureOptions
-    {
-        RetryDelays = new[] { TimeSpan.FromMilliseconds(100), TimeSpan.FromMilliseconds(500) },
-        RedeliveryDelays = new[] { TimeSpan.FromSeconds(30), TimeSpan.FromMinutes(5) },
-        DeadLetterEndpoint = "orders.errors"
-    }, copy: CopyOriginalDelivery, scheduler: durableScheduler);
+    consumer.Failure, copy: CopyOriginalDelivery, scheduler: durableScheduler);
 ```
 
 `CopyOriginalDelivery` and `durableScheduler` represent adapter/integration-provided executors,
