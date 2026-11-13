@@ -9,6 +9,52 @@ namespace Relayer.SourceGenerators.Tests;
 public class MessageTypeGeneratorTests
 {
     [Test]
+    public async Task Inaccessible_messages_are_diagnosed_without_generated_source_errors()
+    {
+        var references = ((string)AppContext.GetData("TRUSTED_PLATFORM_ASSEMBLIES")!)
+            .Split(Path.PathSeparator).Select(static p => MetadataReference.CreateFromFile(p)).ToList();
+        references.Add(MetadataReference.CreateFromFile(typeof(MessageAttribute).Assembly.Location));
+        var tree = CSharpSyntaxTree.ParseText("""
+            public class Container
+            {
+                [Relayer.Message("private")] private sealed record Hidden(int Value);
+                [Relayer.Message("protected")] protected sealed record Protected(int Value);
+                private class HiddenContainer
+                {
+                    [Relayer.Message("container")] public sealed record Nested(int Value);
+                }
+                [Relayer.Message("internal")] internal sealed record ValidNested(int Value);
+            }
+            [Relayer.Message("local")] file sealed record Local(int Value);
+            file class LocalContainer
+            {
+                [Relayer.Message("local-container")] public sealed record Nested(int Value);
+            }
+            [Relayer.Message("public")] public sealed record ValidPublic(int Value);
+            [Relayer.Message("internal-root")] internal sealed record ValidInternal(int Value);
+            """);
+        var compilation = CSharpCompilation.Create("AccessibleMessages", [tree], references,
+            new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
+        GeneratorDriver driver = CSharpGeneratorDriver.Create(new MessageTypeGenerator());
+        driver = driver.RunGeneratorsAndUpdateCompilation(compilation, out var output, out var diagnostics);
+        await Assert.That(diagnostics.Length).IsEqualTo(5);
+        foreach (var diagnostic in diagnostics)
+        {
+            await Assert.That(diagnostic.Id).IsEqualTo("RLYM002");
+            await Assert.That(diagnostic.Location.SourceSpan.Length > 0).IsTrue();
+            await Assert.That(diagnostic.Severity).IsEqualTo(DiagnosticSeverity.Error);
+            await Assert.That(diagnostic.Descriptor.HelpLinkUri)
+                .IsEqualTo("https://relayer.tomlonghurst.dev/docs/reference/diagnostics#rlym002");
+        }
+        await Assert.That(string.Join("\n", output.GetDiagnostics()
+            .Where(d => d.Severity == DiagnosticSeverity.Error))).IsEqualTo("");
+        var sources = string.Join("\n", driver.GetRunResult().GeneratedTrees.Select(t => t.ToString()));
+        await Assert.That(sources).Contains("Add<global::Container.ValidNested>");
+        await Assert.That(sources).Contains("Add<global::ValidPublic>");
+        await Assert.That(sources).Contains("Add<global::ValidInternal>");
+    }
+
+    [Test]
     public async Task Pinned_json_generator_is_embedded_and_generates_compilable_metadata_after_reload()
     {
         // The pinned implementation must travel with each generator binary, rather
