@@ -258,12 +258,17 @@ public sealed class OrderPlacedHandler(AppDbContext db, ISender sender) : IHandl
 There are also batch handlers. Each message in a batch can succeed or fail independently, and the transport settles each message natively.
 
 ```csharp
-public sealed class AuditHandler : IBatchHandler<AuditEvent>
+public sealed class AuditHandler(AuditStore store) : IBatchHandler<AuditEvent>
 {
     public async ValueTask<BatchResult> HandleAsync(Batch<AuditEvent> batch, CancellationToken ct)
     {
-        var failures = await _store.WriteAsync(batch.Items, ct);
-        return BatchResult.PartialFailure(failures);   // only the failed messages are retried
+        foreach (var item in batch.Items)
+        {
+            try { await store.WriteAsync(item.Message, ct); }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+            catch (Exception error) { item.Fail(error); }
+        }
+        return BatchResult.Success; // only the failed items are retried
     }
 }
 ```

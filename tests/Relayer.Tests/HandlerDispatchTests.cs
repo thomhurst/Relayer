@@ -137,7 +137,7 @@ public class HandlerDispatchTests
         await Assert.That(handler.Batch).IsSameReferenceAs(messages);
         await Assert.That(handler.Cancellation).IsEqualTo(cancellation.Token);
         await Assert.That(result).IsSameReferenceAs(handler.Result);
-        await Assert.That(result.Failures[1]).IsSameReferenceAs(handler.Error);
+        await Assert.That(result.Error).IsSameReferenceAs(handler.Error);
         await Assert.That(async () => await registry.GetHandler<int, MultipleHandler>()
             .DispatchAsync(handler, 1, context, default)).Throws<InvalidOperationException>().WithMessage("handler failed");
     }
@@ -202,7 +202,7 @@ public class HandlerDispatchTests
         public Exception Error { get; } = new InvalidOperationException("handler failed");
         public BatchResult Result { get; }
 
-        public MultipleHandler() => Result = BatchResult.PartialFailure(new Dictionary<int, Exception> { [1] = Error });
+        public MultipleHandler() => Result = BatchResult.Failure(Error);
 
         ValueTask IHandler<int>.HandleAsync(int message, MessageContext context, CancellationToken cancellationToken)
             => ValueTask.FromException(Error);

@@ -37,6 +37,7 @@ internal sealed class BatchDispatcher<TMessage> : BatchDispatcher
         Memory<Exception?> errors, CancellationToken cancellationToken)
     {
         var state = Rent();
+        state.Begin(errors);
         try
         {
             for (var i = 0; i < contexts.Length; i++)
@@ -46,7 +47,7 @@ internal sealed class BatchDispatcher<TMessage> : BatchDispatcher
                 {
                     var message = _upcastReaders is { } readers && readers.TryGetValue(context.MessageType, out var reader)
                         ? reader.Read(context) : _reader.Read(context);
-                    state.Items[state.Count] = new(message, context);
+                    state.Items[state.Count] = new(message, context, state, state.Generation, i);
                     state.Indexes[state.Count++] = i;
                 }
                 catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
@@ -59,10 +60,6 @@ internal sealed class BatchDispatcher<TMessage> : BatchDispatcher
                 var handler = _descriptor.Resolve(contexts.Span[0].Services);
                 result = await _descriptor.DispatchAsync(handler, state.Batch, cancellationToken).ConfigureAwait(false);
                 ArgumentNullException.ThrowIfNull(result);
-                if (result.Failures.Count == 0) return;
-                foreach (var failure in result.Failures)
-                    if ((uint)failure.Key >= (uint)state.Count || failure.Value is null)
-                        throw new InvalidOperationException("BatchResult failures must contain valid batch indexes and non-null exceptions.");
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
             catch (Exception error)
@@ -70,10 +67,12 @@ internal sealed class BatchDispatcher<TMessage> : BatchDispatcher
                 for (var i = 0; i < state.Count; i++) errors.Span[state.Indexes[i]] = error;
                 return;
             }
-            foreach (var failure in result.Failures) errors.Span[state.Indexes[failure.Key]] = failure.Value;
+            if (result.Error is { } failure)
+                for (var i = 0; i < state.Count; i++) errors.Span[state.Indexes[i]] = failure;
         }
         finally
         {
+            state.End();
             Array.Clear(state.Items, 0, state.Count);
             state.Count = 0;
             for (var i = 0; i < _states.Length; i++)
@@ -88,8 +87,22 @@ internal sealed class BatchDispatcher<TMessage> : BatchDispatcher
         return new State(_size);
     }
 
-    private sealed class State : IReadOnlyList<BatchItem<TMessage>>
+    private sealed class State : IReadOnlyList<BatchItem<TMessage>>, IBatchItemFailureTarget
     {
+        private Memory<Exception?> _errors;
+        internal long Generation { get; private set; }
+        internal void Begin(Memory<Exception?> errors)
+        {
+            Generation = checked(Generation + 1);
+            _errors = errors;
+        }
+        internal void End() => _errors = default;
+        public void Fail(long generation, int index, Exception exception)
+        {
+            if (generation != Generation || _errors.IsEmpty)
+                throw new InvalidOperationException("A batch item can only be marked as failed during the handler invocation that supplied it.");
+            _errors.Span[index] = exception;
+        }
         internal readonly BatchItem<TMessage>[] Items;
         internal readonly int[] Indexes;
         internal readonly Batch<TMessage> Batch;

@@ -9,6 +9,103 @@ namespace Relayer.Tests;
 
 public class BatchPipelineTests
 {
+    private static BatchResult Fail(BatchItem<Payload> item, Exception error)
+    {
+        item.Fail(error);
+        return BatchResult.Success;
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Returned_whole_batch_failure_overrides_item_failure_and_preserves_deserialization_error(bool nullResult)
+    {
+        await using var provider = Provider();
+        var wholeError = new ApplicationException("whole batch");
+        provider.GetRequiredService<Control>().Invoke = (batch, _) =>
+        {
+            batch.Items[0].Fail(new Exception("item"));
+            return new(nullResult ? null! : BatchResult.Failure(wholeError));
+        };
+        var errors = new List<(string Id, Exception Error)>();
+        var input = Input(3);
+        input[1] = input[1] with { Type = "unknown;v=1" };
+        await Pipeline(provider, (context, error, _) => { errors.Add((context.MessageId, error)); return default; })
+            .ProcessBatchAsync(input, new Disposition[3]);
+        await Assert.That(errors.Count).IsEqualTo(3);
+        await Assert.That(errors.Single(item => item.Id == "1").Error).IsTypeOf<UnknownMessageTypeException>();
+        foreach (var item in errors.Where(item => item.Id != "1"))
+        {
+            if (nullResult) await Assert.That(item.Error).IsTypeOf<ArgumentNullException>();
+            else await Assert.That(item.Error).IsSameReferenceAs(wholeError);
+        }
+        await Assert.That(() => BatchResult.Failure(null!)).Throws<ArgumentNullException>();
+    }
+
+    [Test]
+    public async Task Repeated_item_failure_uses_last_exception()
+    {
+        await using var provider = Provider();
+        var lastError = new ApplicationException("last");
+        provider.GetRequiredService<Control>().Invoke = (batch, _) =>
+        {
+            batch.Items[0].Fail(new Exception("first"));
+            batch.Items[0].Fail(lastError);
+            return new(BatchResult.Success);
+        };
+        Exception? observed = null;
+        await Pipeline(provider, (_, error, _) => { observed = error; return default; })
+            .ProcessBatchAsync(Input(2), new Disposition[2]);
+        await Assert.That(observed).IsSameReferenceAs(lastError);
+    }
+
+    [Test]
+    public async Task Reordered_items_fail_their_original_delivery_and_reuse_clears_failures()
+    {
+        await using var provider = Provider();
+        var control = provider.GetRequiredService<Control>();
+        control.Invoke = (batch, _) =>
+        {
+            var reordered = batch.Items.Reverse().ToArray();
+            reordered[0].Fail(new ApplicationException("last"));
+            return new(BatchResult.Success);
+        };
+        var failedIds = new List<string>();
+        var pipeline = Pipeline(provider, (context, _, _) => { failedIds.Add(context.MessageId); return default; });
+        await pipeline.ProcessBatchAsync(Input(3), new Disposition[3]);
+        await Assert.That(string.Join(",", failedIds)).IsEqualTo("2");
+        control.Invoke = null;
+        failedIds.Clear();
+        var output = new Disposition[3];
+        await pipeline.ProcessBatchAsync(Input(3), output);
+        await Assert.That(failedIds.Count).IsEqualTo(0);
+        await Assert.That(output.All(item => item.Kind == DispositionKind.Complete)).IsTrue();
+    }
+
+    [Test]
+    public async Task Retained_items_reject_failure_after_return_and_during_pooled_reuse()
+    {
+        await using var provider = Provider();
+        var control = provider.GetRequiredService<Control>();
+        BatchItem<Payload> retained = default;
+        control.Invoke = (batch, _) => { retained = batch.Items[0]; return new(BatchResult.Success); };
+        var pipeline = Pipeline(provider);
+        await pipeline.ProcessBatchAsync(Input(2), new Disposition[2]);
+        await Assert.That(() => retained.Fail(new Exception())).Throws<InvalidOperationException>();
+        control.Invoke = async (batch, _) =>
+        {
+            await Assert.That(() => retained.Fail(new Exception())).Throws<InvalidOperationException>();
+            await Assert.That(() => default(BatchItem<Payload>).Fail(new Exception())).Throws<InvalidOperationException>();
+            await Assert.That(() => new BatchItem<Payload>(batch.Items[0].Message, batch.Items[0].Context).Fail(new Exception()))
+                .Throws<InvalidOperationException>();
+            await Assert.That(() => batch.Items[0].Fail(null!)).Throws<ArgumentNullException>();
+            return BatchResult.Success;
+        };
+        var output = new Disposition[2];
+        await pipeline.ProcessBatchAsync(Input(2), output);
+        await Assert.That(output.All(item => item.Kind == DispositionKind.Complete)).IsTrue();
+    }
+
     [Test]
     public async Task Batch_composition_rejects_declared_single_message_middleware()
     {
@@ -56,7 +153,12 @@ public class BatchPipelineTests
         var disposalDone = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         control.Disposal = disposalDone.Task;
         control.DisposalStarted = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        control.Invoke = (_, _) => new(handlerDone.Task);
+        control.Invoke = async (batch, _) =>
+        {
+            var result = await handlerDone.Task;
+            if (failureMode == 1) batch.Items[1].Fail(new InvalidOperationException("partial"));
+            return result;
+        };
         var failedIds = new List<string>();
         var failureDone = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var failureStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -71,7 +173,7 @@ public class BatchPipelineTests
         var pending = pipeline.ProcessBatchAsync(Input(3), output);
         await Assert.That(pending.IsCompleted).IsFalse();
         if (failureMode == 2) handlerDone.SetException(new InvalidOperationException("total failure"));
-        else handlerDone.SetResult(failureMode == 0 ? BatchResult.Success : BatchResult.PartialFailure(new Dictionary<int, Exception> { [1] = new InvalidOperationException("partial") }));
+        else handlerDone.SetResult(BatchResult.Success);
         await control.DisposalStarted.Task;
         await Assert.That(output.All(d => d.Kind == DispositionKind.SettledByHandler)).IsTrue();
         await Assert.That(failedIds.Count).IsEqualTo(0);
@@ -100,7 +202,7 @@ public class BatchPipelineTests
         control.Invoke = (batch, _) =>
         {
             batches.Add(string.Join(",", batch.Items.Select(item => item.Context.MessageId + ":" + item.Context.Attempt)));
-            return new(BatchResult.PartialFailure(new Dictionary<int, Exception> { [batch.Count - 1] = new InvalidOperationException("failed") }));
+            return new(Fail(batch.Items[batch.Count - 1], new InvalidOperationException("failed")));
         };
         var failures = new FailurePipeline(provider, "test", "source", "batch", new() { RetryDelays = new[] { TimeSpan.Zero }, Jitter = 0 });
         var pipeline = Pipeline(provider, failures: failures);
@@ -117,14 +219,14 @@ public class BatchPipelineTests
     }
 
     [Test]
-    public async Task Poison_items_are_excluded_and_partial_indexes_map_to_original_deliveries()
+    public async Task Poison_items_are_excluded_and_failed_items_map_to_original_deliveries()
     {
         await using var provider = Provider();
         var control = provider.GetRequiredService<Control>();
         control.Invoke = (batch, _) =>
         {
             if (string.Join(",", batch.Items.Select(item => item.Context.MessageId)) != "0,3") throw new Exception("Wrong batch");
-            return new(BatchResult.PartialFailure(new Dictionary<int, Exception> { [1] = new ApplicationException("handler") }));
+            return new(Fail(batch.Items[1], new ApplicationException("handler")));
         };
         var errors = new List<(string Id, Exception Error, FailureAction Action)>();
         var input = Input(4);
@@ -141,10 +243,10 @@ public class BatchPipelineTests
     }
 
     [Test]
-    public async Task Invalid_results_fail_every_item_without_dropping_invalid_indexes()
+    public async Task Invalid_items_fail_every_item_without_dropping_failures()
     {
         await using var provider = Provider();
-        provider.GetRequiredService<Control>().Invoke = (_, _) => new(BatchResult.PartialFailure(new Dictionary<int, Exception> { [3] = new Exception() }));
+        provider.GetRequiredService<Control>().Invoke = (batch, _) => new(Fail(default, new Exception()));
         var failures = 0;
         await Pipeline(provider, (_, _, _) => { failures++; return default; }).ProcessBatchAsync(Input(3), new Disposition[3]);
         await Assert.That(failures).IsEqualTo(3);
@@ -295,7 +397,7 @@ public class BatchPipelineTests
         await using var provider = Provider();
         using var cancellation = new CancellationTokenSource();
         var control = provider.GetRequiredService<Control>();
-        control.Invoke = (_, _) => new(BatchResult.PartialFailure(new Dictionary<int, Exception> { [1] = new Exception("retry") }));
+        control.Invoke = (batch, _) => new(Fail(batch.Items[1], new Exception("retry")));
         var failures = new FailurePipeline(provider, "test", "source", "batch", new() { RetryDelays = new[] { TimeSpan.Zero }, Jitter = 0 });
         var pipeline = new ConsumePipelineBuilder(provider.GetRequiredService<IServiceScopeFactory>(),
             provider.GetRequiredService<MessageTypeRegistry>(), provider.GetRequiredService<IMessageSerializer>(),
@@ -428,7 +530,7 @@ public class BatchPipelineTests
             for (var i = 0; i < batch.Count; i++)
                 await batch.Items[i].Context.Services.GetRequiredService<ISender>().SendNowAsync(new Payload());
             return poison || calls == 1
-                ? BatchResult.PartialFailure(new Dictionary<int, Exception> { [1] = new Exception("partial") })
+                ? Fail(batch.Items[1], new Exception("partial"))
                 : BatchResult.Success;
         };
         var failures = new FailurePipeline(provider, "test", "source", "batch", new() { RetryDelays = new[] { TimeSpan.Zero }, Jitter = 0 });
@@ -449,7 +551,7 @@ public class BatchPipelineTests
         var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var durable = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         transport.Send = (_, _) => { started.SetResult(); return new(durable.Task); };
-        provider.GetRequiredService<Control>().Invoke = (_, _) => new(BatchResult.PartialFailure(new Dictionary<int, Exception> { [1] = new Exception("failed") }));
+        provider.GetRequiredService<Control>().Invoke = (batch, _) => new(Fail(batch.Items[1], new Exception("failed")));
         var failures = new FailurePipeline(provider, "test", "source", "batch", new() { DeadLetterEndpoint = "dead" },
             context => new("source", new byte[] { 1 }, new[] { new KeyValuePair<string, WireString>("ce_id", new(context.MessageId)) }));
         var output = Sentinels(3);
@@ -481,7 +583,7 @@ public class BatchPipelineTests
             batch.Items[1].Context.Features.GetRequired<ISettlementFeature>().Retry(TimeSpan.FromSeconds(5));
             batch.Items[2].Context.Features.GetRequired<ISettlementFeature>().DeadLetter("manual");
             if (failureMode == 2) throw new InvalidOperationException("whole batch failed");
-            return new(failureMode == 1 ? BatchResult.PartialFailure(new Dictionary<int, Exception> { [0] = new InvalidOperationException("first failed") }) : BatchResult.Success);
+            return new(failureMode == 1 ? Fail(batch.Items[0], new InvalidOperationException("first failed")) : BatchResult.Success);
         };
         var failures = executable ? new FailurePipeline(provider, "test", "source", "consumer") : null;
         var pipeline = Pipeline(provider, static (context, _, _) =>
@@ -509,7 +611,7 @@ public class BatchPipelineTests
             var context = batch.Items[0].Context;
             context.Features.GetRequired<ISettlementFeature>().Complete();
             if (context.Attempt > 1) return new(BatchResult.Success);
-            return new(BatchResult.PartialFailure(new Dictionary<int, Exception> { [0] = new InvalidOperationException("retry") }));
+            return new(Fail(batch.Items[0], new InvalidOperationException("retry")));
         };
         var failures = new FailurePipeline(provider, "test", "source", "consumer", new() { RetryDelays = new[] { TimeSpan.Zero } });
         var output = new Disposition[1];

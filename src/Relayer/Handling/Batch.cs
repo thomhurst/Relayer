@@ -14,24 +14,47 @@ public sealed record Batch<TMessage>(IReadOnlyList<BatchItem<TMessage>> Items)
 /// <typeparam name="TMessage">The message type.</typeparam>
 /// <param name="Message">The deserialized message.</param>
 /// <param name="Context">The message context.</param>
-public readonly record struct BatchItem<TMessage>(TMessage Message, MessageContext Context);
+public readonly record struct BatchItem<TMessage>(TMessage Message, MessageContext Context)
+{
+    private readonly IBatchItemFailureTarget? _failures;
+    private readonly long _generation;
+    private readonly int _index;
+
+    internal BatchItem(TMessage message, MessageContext context, IBatchItemFailureTarget failures, long generation, int index)
+        : this(message, context) => (_failures, _generation, _index) = (failures, generation, index);
+
+    /// <summary>Marks this delivery as failed. Other items can still succeed.</summary>
+    /// <remarks>Valid only during the handler invocation that supplied this item. Do not retain items or use them after returning.</remarks>
+    /// <exception cref="InvalidOperationException">The item was not supplied by an active handler invocation.</exception>
+    public void Fail(Exception exception)
+    {
+        ArgumentNullException.ThrowIfNull(exception);
+        if (_failures is null)
+            throw new InvalidOperationException("Only items supplied to an active batch handler can be marked as failed.");
+        _failures.Fail(_generation, _index, exception);
+    }
+}
+
+internal interface IBatchItemFailureTarget
+{
+    void Fail(long generation, int index, Exception exception);
+}
 
 /// <summary>The outcome of handling a batch.</summary>
 public sealed class BatchResult
 {
-    private BatchResult(IReadOnlyDictionary<int, Exception> failures) => Failures = failures;
+    private BatchResult(Exception? error) => Error = error;
 
-    /// <summary>Every message succeeded.</summary>
-    public static BatchResult Success { get; } = new(new Dictionary<int, Exception>());
+    /// <summary>All items not explicitly marked with <c>item.Fail(exception)</c> succeeded.</summary>
+    public static BatchResult Success { get; } = new(null);
 
-    /// <summary>Failures keyed by index within the batch. These messages enter the failure pipeline.</summary>
-    /// <remarks>A partial failure with buffered direct sends fails the whole attempt because sends cannot be attributed to individual items.</remarks>
-    public IReadOnlyDictionary<int, Exception> Failures { get; }
+    /// <summary>The exception that fails every item, or null when only explicitly marked items failed.</summary>
+    public Exception? Error { get; }
 
-    /// <summary>Reports that the messages at the given indexes failed.</summary>
-    public static BatchResult PartialFailure(IReadOnlyDictionary<int, Exception> failures)
+    /// <summary>Reports that every item in the invocation failed.</summary>
+    public static BatchResult Failure(Exception exception)
     {
-        ArgumentNullException.ThrowIfNull(failures);
-        return failures.Count == 0 ? Success : new BatchResult(failures);
+        ArgumentNullException.ThrowIfNull(exception);
+        return new BatchResult(exception);
     }
 }

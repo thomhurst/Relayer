@@ -86,6 +86,7 @@ To change a decision, add a new entry that supersedes it rather than editing his
 | [D73](#d73-postgresql-retryable-outbox-sends-retain-durable-eligibility) | PostgreSQL retryable outbox sends retain durable eligibility | Accepted |
 | [D74](#d74-portable-consumer-failure-declarations) | Portable consumer failure declarations | Accepted |
 | [D75](#d75-failure-diagnostics-are-bounded) | Failure diagnostics are bounded | Accepted |
+| [D76](#d76-batch-items-report-their-own-failures) | Batch items report their own failures | Accepted |
 
 ---
 
@@ -1809,3 +1810,13 @@ with `Relayer.Outbox.PostgreSql.EntityFrameworkCore` and rebuild because registr
 assemblies. Existing namespaces, option types and method call sites remain. SQL Server and MySQL EF
 support is still planned; the site's [support matrix](../website/docs/reference/outbox-stores.md#database-integration-support)
 is the source of truth for available combinations.
+
+## D77. Batch items report their own failures
+
+**Status:** Accepted; supersedes D5's `BatchResult` representation of per-message failures.
+
+**Context.** Index-keyed failure dictionaries can attribute an in-range index from a reordered or filtered collection to the wrong delivery. This is application handler association, not a native broker capability.
+
+**Decision.** Delivered `BatchItem<TMessage>` values report failures with `Fail(exception)`. `BatchResult.Success` succeeds unmarked items and `BatchResult.Failure(exception)` fails every delivered item. Opaque item handles contain the original delivery index and a generation of the pooled dispatcher state. Default, manually constructed and expired handles reject failure marking, including while that state serves another invocation. Repeated marking replaces the item's exception; null exceptions are rejected. The index-keyed partial-failure API is removed.
+
+**Consequences.** Item copies preserve delivery association through filtering and reordering without allocating a handle per message. The dispatcher writes into the existing attempt error storage. Deserialization failures, manual settlement precedence, durable settlement and ambiguous buffered sends retain the existing execution and native settlement paths (D11, D28); no native capability is duplicated. Items and contexts remain borrowed for the handler invocation only.

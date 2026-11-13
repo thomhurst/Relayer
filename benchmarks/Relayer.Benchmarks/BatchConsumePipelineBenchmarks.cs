@@ -69,7 +69,7 @@ public class BatchConsumePipelineBenchmarks
             new("messaging.destination.name", "source"), new("messaging.batch.message_count", BatchSize)
         ];
         _pipeline = new ConsumePipelineBuilder(_scopes, _provider.GetRequiredService<MessageTypeRegistry>(), _serializer,
-            static (_, error, _) => ValueTask.FromException(error)).BuildBatch(_descriptor, definition, _source);
+            static (_, _, _) => default).BuildBatch(_descriptor, definition, _source);
         _message = new() { MessageId = "benchmark", MessageType = new("benchmark.batch", 1), Body = ReadOnlySequence<byte>.Empty,
             Headers = Tracing != TracingMode.None ? new TraceHeaders(Tracing == TracingMode.Utf8) : null };
         _contexts = new DefaultMessageContext[BatchSize];
@@ -81,6 +81,7 @@ public class BatchConsumePipelineBenchmarks
     [Benchmark(Baseline = true)]
     public async ValueTask DirectScopedBatch()
     {
+        _handler.FailLastItem = false;
         using var activity = StartDirectActivity();
         var scope = new AsyncServiceScope(_scopes.CreateScope());
         try
@@ -105,11 +106,13 @@ public class BatchConsumePipelineBenchmarks
     }
 
     [Benchmark]
-    [Arguments(false)]
-    [Arguments(true)]
-    public async ValueTask ComposedBatch(bool manualCompletion)
+    [Arguments(false, false)]
+    [Arguments(true, false)]
+    [Arguments(false, true)]
+    public async ValueTask ComposedBatch(bool manualCompletion, bool failLastItem)
     {
         _handler.ManualCompletion = manualCompletion;
+        _handler.FailLastItem = failLastItem;
         for (var i = 0; i < BatchSize; i++) _contexts[i] = _pipeline.RentContext(_message);
         try { await _pipeline.ProcessBatchAsync(_contexts).ConfigureAwait(false); }
         finally
@@ -133,6 +136,8 @@ public class BatchConsumePipelineBenchmarks
     {
         public int Total { get; private set; }
         public bool ManualCompletion { get; set; }
+        public bool FailLastItem { get; set; }
+        private readonly Exception _error = new InvalidOperationException("benchmark failure");
         public ValueTask<BatchResult> HandleAsync(Batch<Payload> batch, CancellationToken cancellationToken)
         {
             var total = 0;
@@ -141,6 +146,7 @@ public class BatchConsumePipelineBenchmarks
                 total += batch.Items[i].Message.Value;
                 if (ManualCompletion) batch.Items[i].Context.Features.GetRequired<ISettlementFeature>().Complete();
             }
+            if (FailLastItem) batch.Items[batch.Count - 1].Fail(_error);
             Total = total;
             return new(BatchResult.Success);
         }
