@@ -57,3 +57,36 @@ missing input fails the download rather than validating the profiler. Preserve
 inputs independently before expiry; for a later experiment, dispatch with an
 explicit retained Performance run instead of treating a download failure as a
 workload result.
+
+## Original adaptive-engine method control (#488)
+
+`frozen-exact-adaptive-control.yml` reuses this profiler with the original retained
+BDN executable and Default job. The launcher selects `--allocation-boundary method`;
+the default `tail` boundary preserves the separate #537 control. Opt-in `RELAYER_ALLOCATION_TYPE` and
+`RELAYER_ALLOCATION_METHOD` select a non-inlined metadata method; the launcher selects
+`BenchmarkDotNet.Engines.Engine.MeasureWithGc`. Native CLR
+`SetFunctionIDMapper2` and `SetEnterLeaveFunctionHooks3WithInfo` filter hooks to that
+method. Slowpath frame-info stubs preserve the managed calling convention, following
+[the runtime's official slowpath ELT fixture](https://github.com/dotnet/runtime/blob/v10.0.14/src/tests/profiler/native/eltprofiler/slowpatheltprofiler.cpp).
+The existing ObjectAllocated callback collects process-wide type counts between
+entry and normal leave. Reports are written at normal profiler shutdown. Exactly
+one entry/leave is required; missing, repeated, exception-unwound or tailcalled
+boundaries fail closed. Manual Begin/End exports reject method mode.
+
+BDN 0.15.8's
+[MeasureWithGc](https://github.com/dotnet/BenchmarkDotNet/blob/v0.15.8/src/BenchmarkDotNet/Engines/Engine.cs#L268)
+is non-inlined and invokes ReadInitial, the original WorkloadAction, and ReadFinal.
+This excludes surrounding iteration cleanup/logging and GetExtraStats setup/cleanup
+from the earlier sampled tail. It still includes the two counter reads and concurrent
+background activity. Allocation callbacks are serialized against method-boundary
+callbacks; objects racing a boundary are assigned by callback lock order. Runtime
+object sizes need not sum to the inclusive GC counter, which also accounts for
+allocation-context/alignment overhead.
+
+This is a new instrumented execution, not the historical allocation stream. ELT
+changes JIT code, allocation callbacks change fastpaths, and native locking and
+metadata resolution change scheduling. Keep each native GC denominator alongside its
+report and preserve every unfavorable outcome. Do not subtract independent controls,
+claim historical delta ownership, use timings as throughput evidence, or infer a
+production fix. The known-count multithread fixture validates exact object counts,
+warmup exclusion and failure handling before hosted frozen-image execution.

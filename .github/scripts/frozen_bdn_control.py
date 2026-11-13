@@ -91,8 +91,10 @@ def main():
                         help="Bind the original executable to an installed exact patch without editing retained inputs.")
     parser.add_argument("--same-image", choices=("baseline", "candidate"),
                         help="Negative control: launch the selected original image four times, without an image comparison.")
+    parser.add_argument("--allocation-boundary", choices=("tail", "method"), default="tail",
+                        help="Choose native final-stop tail or exact MeasureWithGc entry/leave.")
     parser.add_argument("--allocation-profiler", type=Path,
-                        help="Separate exact CLR callback counts in the native final-stop tail envelope.")
+                        help="Separate exact CLR callback counts in the selected native boundary.")
     args = parser.parse_args()
     from frozen_scope_control import result as timing_result
     if args.allocation_profiler and args.case != "concurrent":
@@ -136,6 +138,7 @@ def main():
             for index, (side, command) in enumerate(zip(launches, protocol["commands"]), 1)]
     if args.allocation_profiler:
         from read_native_tail_allocations import read as read_tail
+        from read_native_allocations import read as read_allocations
 
         protocol["allocationProfiler"] = str(args.allocation_profiler.resolve())
         protocol["limits"] = (
@@ -145,6 +148,16 @@ def main():
             "Callbacks, metadata resolution and locking change allocation paths and scheduling. No stacks or exact call-site attribution. "
             "New executions do not establish historical ownership, production regression, throughput equivalence or a performance trade-off. "
             "No independent-total subtraction or threshold relaxation.")
+    if args.allocation_profiler and args.allocation_boundary == "method":
+        protocol["allocationMethod"] = "BenchmarkDotNet.Engines.Engine.MeasureWithGc"
+        protocol["allocationProfiler"] = str(args.allocation_profiler.resolve())
+        protocol["limits"] = (
+            "Exact CLR ObjectAllocated callbacks between entry/leave of original non-inlined "
+            "Engine.MeasureWithGc, including its ReadInitial/ReadFinal work and concurrent background allocations. "
+            "This is a separate instrumented adaptive-engine execution: callbacks change allocation fastpaths, "
+            "ELT changes JIT code and native locking/metadata change scheduling. Object sizes exclude some "
+            "allocation-context/alignment overhead; they need not sum to the native GC counter. "
+            "No stacks, historical reconstruction, cross-control subtraction, gate rerun or throughput claim.")
     if args.same_image:
         protocol["limits"] += " Same-image negative control: no candidate-versus-baseline comparison; process order, adaptive operation counts and host drift remain uncontrolled."
     (args.output / "protocol.json").write_text(json.dumps(protocol, indent=2) + "\n")
@@ -162,6 +175,10 @@ def main():
                                        CORECLR_PROFILER_PATH=str(args.allocation_profiler.resolve()),
                                        RELAYER_ALLOCATION_BDN_TAIL="1",
                                        RELAYER_ALLOCATION_OUTPUT=str((args.output / f"{index}-{side}-objects.jsonl").resolve()))
+                if args.allocation_profiler and args.allocation_boundary == "method":
+                    environment.pop("RELAYER_ALLOCATION_BDN_TAIL", None)
+                    environment.update(RELAYER_ALLOCATION_TYPE="BenchmarkDotNet.Engines.Engine",
+                                       RELAYER_ALLOCATION_METHOD="MeasureWithGc")
                 subprocess.run(command, cwd=runners[side][0].parent, stdout=log,
                                stderr=subprocess.STDOUT, check=True, timeout=900, env=environment)
             except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as error:
@@ -189,7 +206,14 @@ def main():
             try:
                 if "operations" not in outcome:
                     raise ValueError("No native GC-stat denominator for callback report")
-                validated = read_tail(report, outcome["operations"])
+                if args.allocation_boundary == "method":
+                    validated = read_allocations(report)
+                    if validated["coverage"].get("boundary") != "method-enter-leave":
+                        raise ValueError("Missing exact native-engine method boundary")
+                    outcome["objectReport"] = report.name
+                    outcome["callbackCoverage"] = validated["coverage"]
+                else:
+                    validated = read_tail(report, outcome["operations"])
                 outcome["allocationReport"] = report.name
                 outcome["callbackObjects"] = validated["coverage"]["objects"]
                 outcome["callbackBytes"] = validated["coverage"]["bytes"]
