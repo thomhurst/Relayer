@@ -399,7 +399,7 @@ public class RabbitMqSendTests
         {
             await using var transport = new RabbitMqNativeTransport("rabbit", new() { ConnectionFactory = factory }, ["orders"]);
             var publishers = Channel.CreateBounded<RabbitMqPublisher>(1);
-            foreach (var outcome in new[] { "success", "preparation", "cancellation" })
+            foreach (var outcome in new[] { "success", "preparation", "cancellation", "success" })
             {
                 using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(token);
                 var prepared = 0;

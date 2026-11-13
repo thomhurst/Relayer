@@ -116,10 +116,6 @@ internal sealed partial class RabbitMqNativeTransport : ITransportSendTracing, I
         return slot.Send(this, endpoint, message, token, trace);
     }
 
-    internal ValueTask SendBorrowedAsync(RabbitMqSendEndpoint endpoint, RabbitMqPublisher publisher,
-        OutgoingMessage message, CancellationToken token) =>
-        _operations.Rent().StartBorrowed(this, endpoint, publisher, message, token);
-
     private ValueTask SendBatchCoreAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);

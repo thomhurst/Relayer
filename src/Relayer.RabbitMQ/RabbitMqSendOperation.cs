@@ -43,7 +43,7 @@ internal sealed class RabbitMqSendPool
 
 internal sealed class RabbitMqSendOperation : IValueTaskSource
 {
-    private readonly RabbitMqSendPool _pool;
+    private readonly RabbitMqSendPool? _pool;
     private readonly Action _continuation;
     private ManualResetValueTaskSourceCore<bool> _completion;
     private ConfiguredValueTaskAwaitable<RabbitMqPublisher>.ConfiguredValueTaskAwaiter _lease;
@@ -69,7 +69,7 @@ internal sealed class RabbitMqSendOperation : IValueTaskSource
     private int _consumed;
     private enum Stage { Lease, Recover, Publish, BatchLease, BatchRecover, BatchDrain }
 
-    internal RabbitMqSendOperation(RabbitMqSendPool pool)
+    internal RabbitMqSendOperation(RabbitMqSendPool? pool = null)
     {
         _pool = pool;
         _continuation = Resume;
@@ -269,7 +269,7 @@ internal sealed class RabbitMqSendOperation : IValueTaskSource
             _token = default;
             // Detach the caller's continuation and any exception before retaining this operation.
             _completion.Reset();
-            _pool.Return(this);
+            _pool?.Return(this);
         }
     }
     public ValueTaskSourceStatus GetStatus(short token) => _completion.GetStatus(token);

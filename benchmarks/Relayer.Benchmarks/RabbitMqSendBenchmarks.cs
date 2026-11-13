@@ -23,7 +23,10 @@ public class RabbitMqSendBenchmarks
     private BasicProperties _properties = null!;
     private OutgoingMessage _message;
     private OutgoingMessage[] _batch = null!;
-    private readonly ValueTask[] _batchSends = new ValueTask[100];
+    private ValueTask[] _batchSends = null!;
+
+    [Params(100, 10_000)]
+    public int BatchSize { get; set; }
     private BasicProperties[] _batchProperties = null!;
     private string _queue = null!;
     private RelayerInstrumentation _instrumentation = null!;
@@ -62,8 +65,9 @@ public class RabbitMqSendBenchmarks
         _properties = new() { Persistent = true, ContentType = "application/json", Headers = new Dictionary<string, object?>() };
         foreach (var header in headers)
             if (header.Key != "content-type") _properties.Headers[header.Key] = header.Value.Text ?? (object)header.Value.Utf8.ToArray();
-        _batch = new OutgoingMessage[100];
-        _batchProperties = new BasicProperties[100];
+        _batch = new OutgoingMessage[BatchSize];
+        _batchSends = new ValueTask[BatchSize];
+        _batchProperties = new BasicProperties[BatchSize];
         for (var i = 0; i < _batch.Length; i++)
         {
             _batch[i] = _message;
@@ -101,7 +105,7 @@ public class RabbitMqSendBenchmarks
     [Benchmark, BenchmarkCategory("DefaultJson")]
     public ValueTask RelayerJsonSingle() => _json.Sender.SendAsync(_json.Order);
 
-    [Benchmark(Baseline = true, OperationsPerInvoke = 100), BenchmarkCategory("Batch")]
+    [Benchmark(Baseline = true), BenchmarkCategory("Batch")]
     public async Task RawBatch()
     {
         Exception? error = null;
@@ -124,7 +128,7 @@ public class RabbitMqSendBenchmarks
         if (error is not null) System.Runtime.ExceptionServices.ExceptionDispatchInfo.Throw(error);
     }
 
-    [Benchmark(OperationsPerInvoke = 100), BenchmarkCategory("Batch")]
+    [Benchmark, BenchmarkCategory("Batch")]
     public async Task RelayerBatch() => await _transport.SendBatchAsync(_batch, default);
 
     private sealed class NativeHeaders : IMessageHeaderWriter<BasicProperties>

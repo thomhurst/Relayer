@@ -135,6 +135,8 @@ internal sealed class RabbitMqHeaders : Dictionary<string, object?>, IDictionary
 internal sealed class RabbitMqBatchSlot(IChannel channel)
 {
     internal readonly RabbitMqPublisher Publisher = new(channel);
+    // The batch drains this operation before the exclusively leased slot is reused.
+    private readonly RabbitMqSendOperation _operation = new();
     private readonly Dictionary<RabbitMqSendEndpoint, SendTracing> _tracing = [];
     private RabbitMqNativeTransport _transport = null!;
     private RabbitMqSendEndpoint _endpoint = null!;
@@ -154,5 +156,5 @@ internal sealed class RabbitMqBatchSlot(IChannel channel)
     }
 
     private ValueTask Publish(OutgoingMessage message, CancellationToken token) =>
-        _transport.SendBorrowedAsync(_endpoint, Publisher, message, token);
+        _operation.StartBorrowed(_transport, _endpoint, Publisher, message, token);
 }
