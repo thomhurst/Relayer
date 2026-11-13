@@ -99,6 +99,10 @@ public sealed class RouteDefinition<TMessage, TRouteOptions> : IRouteDefinition,
 /// <summary>A consumer's portable configuration. Native consumer options remain typed on the concrete declaration.</summary>
 public interface IConsumerDefinition
 {
+    /// <summary>The portable retry, redelivery and dead-letter policy.</summary>
+    FailureOptions Failure => new();
+    /// <summary>A consumer-specific classifier, or null to use the global registration or default.</summary>
+    IFailureClassifier? FailureClassifier => null;
     /// <summary>The native source endpoint.</summary>
     public string Source { get; }
     /// <summary>Explicit handler types for generated dispatch, in registration order.</summary>
@@ -117,8 +121,12 @@ public interface IConsumerDefinition
 public sealed class ConsumerDefinition<TConsumerOptions> : IConsumerDefinition where TConsumerOptions : class
 {
     internal ConsumerDefinition(string source, TConsumerOptions options, Type[] handlers,
-        int concurrency, int batchSize, TimeSpan batchWait, Action<ConsumePipelineBuilder>[]? pipelineConfiguration = null)
+        int concurrency, int batchSize, TimeSpan batchWait, Action<ConsumePipelineBuilder>[]? pipelineConfiguration = null,
+        FailureOptions? failure = null, IFailureClassifier? failureClassifier = null)
     {
+        HasFailurePolicy = failure is not null;
+        Failure = failure ?? new();
+        FailureClassifier = failureClassifier;
         Source = source;
         PipelineConfiguration = Array.AsReadOnly(pipelineConfiguration ?? []);
         Options = options;
@@ -141,6 +149,12 @@ public sealed class ConsumerDefinition<TConsumerOptions> : IConsumerDefinition w
 
     /// <inheritdoc />
     public IReadOnlyList<Action<ConsumePipelineBuilder>> PipelineConfiguration { get; }
+
+    /// <inheritdoc />
+    public FailureOptions Failure { get; }
+    internal bool HasFailurePolicy { get; }
+    /// <inheritdoc />
+    public IFailureClassifier? FailureClassifier { get; }
 
     /// <summary>The transport-specific consumer options, unchanged.</summary>
     public TConsumerOptions Options { get; }

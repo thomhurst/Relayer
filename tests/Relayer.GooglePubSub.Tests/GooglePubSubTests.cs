@@ -185,7 +185,7 @@ public class GooglePubSubTests
                 transport.Send<PubSubOrder>(topic);
                 transport.Consume(subscription, consumer =>
                 {
-                    consumer.Options.Failure = new() { DeadLetterEndpoint = deadLetter, RetryDelays = new[] { TimeSpan.Zero }, Jitter = 0 };
+                    consumer.Failures(new() { DeadLetterEndpoint = deadLetter, RetryDelays = new[] { TimeSpan.Zero }, Jitter = 0 });
                     consumer.Handler<PubSubHandler>();
                 });
             });

@@ -77,8 +77,8 @@ public class GooglePubSubSendTests
         await using var provider = Provider(native, transport => transport.Consume("projects/test/subscriptions/orders", consumer =>
         {
             if (invalid == "concurrency") consumer.Concurrency(2);
-            if (invalid == "retry") consumer.Options.Failure = new() { DeadLetterEndpoint = Topic, RedeliveryDelays = new[] { TimeSpan.Zero } };
-            else if (invalid != "dead-letter") consumer.Options.Failure = new() { DeadLetterEndpoint = Topic };
+            if (invalid == "retry") consumer.Failures(new() { DeadLetterEndpoint = Topic, RedeliveryDelays = new[] { TimeSpan.Zero } });
+            else if (invalid != "dead-letter") consumer.Failures(new() { DeadLetterEndpoint = Topic });
             if (invalid == "batch") consumer.Batch(2, TimeSpan.FromSeconds(1));
         }));
         if (invalid is "retry" or "batch")
@@ -99,7 +99,7 @@ public class GooglePubSubSendTests
             transport.Options.Configure(options => options.PublisherSettings.EnableMessageOrdering = enabled);
             transport.Consume("projects/test/subscriptions/orders", consumer =>
             {
-                consumer.Options.Failure = new() { DeadLetterEndpoint = Topic };
+                consumer.Failures(new() { DeadLetterEndpoint = Topic });
                 consumer.Handler<PubSubHandler>();
             });
         });

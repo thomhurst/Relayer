@@ -42,8 +42,6 @@ public sealed class NatsConsumerOptions
     public string Stream { get; set; } = "";
     /// <summary>Unchanged native pull buffering and drain settings. DrainOnCancel must be true.</summary>
     public NatsJSConsumeOpts Settings { get; set; } = new() { MaxMsgs = 1, DrainOnCancel = true };
-    /// <summary>In-process retry and confirmed dead-letter copies. An explicit DeadLetterEndpoint subject is required.</summary>
-    public FailureOptions Failure { get; set; } = new();
 }
 
 internal sealed class NatsHostedService(IServiceProvider provider, string name) : BackgroundService
@@ -57,11 +55,11 @@ internal sealed class NatsHostedService(IServiceProvider provider, string name) 
         foreach (var declaration in definition.Consumers)
         {
             var consumer = (ConsumerDefinition<NatsConsumerOptions>)declaration;
-            var failures = new FailurePipeline(provider, name, consumer.Source, consumer.Source, consumer.Options.Failure, Copy);
+            var failures = new FailurePipeline(provider, name, consumer.Source, consumer.Source, consumer.Failure, Copy);
             var endpoint = new MessagingEndpoint { System = "nats", Destination = consumer.Options.Stream, Subscription = consumer.Source };
             var pipeline = new ConsumePipelineBuilder(provider.GetRequiredService<IServiceScopeFactory>(),
                 provider.GetRequiredService<MessageTypeRegistry>(), provider.GetMessageSerializer(name), failures,
-                provider.GetService<IFailureClassifier>())
+                consumer.FailureClassifier ?? provider.GetService<IFailureClassifier>())
                 .Tracing(provider.GetRequiredService<MessageTracing>(), endpoint)
                 .Telemetry(provider.GetRequiredService<RelayerInstrumentation>().CreateEndpoint(new()
                 { System = "nats", Destination = consumer.Options.Stream, Subscription = consumer.Source }));

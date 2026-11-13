@@ -28,6 +28,4 @@ public sealed class GooglePubSubConsumerOptions
     {
         FlowControlSettings = new(1, null),
     };
-    /// <summary>Core retries and dead-letter copies. Configure an explicit dead-letter topic for each consumer.</summary>
-    public FailureOptions Failure { get; set; } = new();
 }

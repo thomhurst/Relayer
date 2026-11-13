@@ -77,7 +77,7 @@ For a topic subscription, consume the topic name and set `consumer.Options.Subsc
 
 The SDK cancels its callback token as soon as processor shutdown starts. The composed pipeline uses `context.CancellationToken` for durable work and settlement; Relayer cancels it only when the host's drain deadline expires or the adapter is disposed. The original callback and its native token remain unchanged. Use the context token when draining application work.
 
-Configure the common `FailureOptions` through `consumer.Options.Failure`. In-process retry delays and immediate durable redelivery use the core policy and native abandon. Service Bus has no delayed abandon operation: positive `RedeliveryDelays` fail at startup rather than broadcasting a retry copy to every topic subscription. Delayed redelivery requires a separately designed durable executor; it is not implemented by this adapter.
+Configure the common `FailureOptions` with `consumer.Failures(policy)`. In-process retry delays and immediate durable redelivery use the core policy and native abandon. Service Bus has no delayed abandon operation: positive `RedeliveryDelays` fail at startup rather than broadcasting a retry copy to every topic subscription. Delayed redelivery requires a separately designed durable executor; it is not implemented by this adapter.
 
 Inside a handler, `context.ServiceBus()` exposes the unchanged received message and native callback. `CompleteAsync`, `AbandonAsync`, `DeferAsync` and `DeadLetterAsync` call the SDK, use the context cancellation token and suppress automatic settlement only after success. Native defer retains the message for later retrieval by sequence number. Persist that sequence number before deferring. See [manual native settlement](service-bus-receive.md).
 

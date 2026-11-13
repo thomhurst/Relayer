@@ -61,7 +61,7 @@ internal sealed partial class ServiceBusConsumer : IAsyncDisposable
     {
         var options = consumer.Options;
         ArgumentNullException.ThrowIfNull(options.ProcessorOptions);
-        ArgumentNullException.ThrowIfNull(options.Failure);
+        ArgumentNullException.ThrowIfNull(consumer.Failure);
         if (options.CircuitBreaker is { } circuit)
         {
             // Reuse the policy's exact validation before native clients/processors are constructed.

@@ -18,7 +18,7 @@ public sealed class ServiceBusCircuitTests
         var provider = ServiceBusReceiveTests.Provider(client,
             consumer =>
             {
-                consumer.Options.Failure = FailureOptions.None;
+                consumer.Failures(FailureOptions.None);
                 consumer.Options.CircuitBreaker = new() { MinimumThroughput = 1 };
             }, health: true, time: clock);
         try
@@ -57,7 +57,7 @@ public sealed class ServiceBusCircuitTests
         var client = new ServiceBusReceiveTests.NativeClient();
         await using var provider = ServiceBusReceiveTests.Provider(client, consumer =>
         {
-            consumer.Options.Failure = FailureOptions.None;
+            consumer.Failures(FailureOptions.None);
             consumer.Concurrency(2);
             consumer.Options.CircuitBreaker = new() { MinimumThroughput = 1, FailureRatio = 1 };
             if (sessions) consumer.Options.SessionProcessorOptions = new()
@@ -148,7 +148,7 @@ public sealed class ServiceBusCircuitTests
         await using var provider = ServiceBusReceiveTests.Provider(client,
             consumer =>
             {
-                consumer.Options.Failure = FailureOptions.None;
+                consumer.Failures(FailureOptions.None);
                 consumer.Options.CircuitBreaker = new() { MinimumThroughput = 1 };
             }, time: clock);
         var control = provider.GetRequiredService<ServiceBusReceiveTests.Control>();
@@ -187,7 +187,7 @@ public sealed class ServiceBusCircuitTests
         await using var provider = ServiceBusReceiveTests.Provider(client, consumer =>
         {
             consumer.Options.CircuitBreaker = new() { MinimumThroughput = 3, FailureRatio = .5 };
-            consumer.Options.Failure = new() { RetryDelays = new[] { TimeSpan.Zero } };
+            consumer.Failures(new() { RetryDelays = new[] { TimeSpan.Zero } });
         });
         await ServiceBusReceiveTests.Start(provider, token);
         var processor = client.Processors.Single();
@@ -225,7 +225,7 @@ public sealed class ServiceBusCircuitTests
         await using var provider = ServiceBusReceiveTests.Provider(client,
             consumer =>
             {
-                consumer.Options.Failure = FailureOptions.None;
+                consumer.Failures(FailureOptions.None);
                 consumer.Options.CircuitBreaker = new() { MinimumThroughput = 1 };
             }, time: clock);
         provider.GetRequiredService<ServiceBusReceiveTests.Control>().Handle = (_, _, _) =>

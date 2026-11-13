@@ -56,11 +56,11 @@ Add a consumer to the same `Kafka` declaration:
 kafka.Consume("orders", consumer =>
 {
     consumer.Options.Group = "billing";
-    consumer.Options.Failure = new FailureOptions
+    consumer.Failures(new FailureOptions
     {
         RetryDelays = new[] { TimeSpan.FromMilliseconds(100), TimeSpan.FromSeconds(1) },
         DeadLetterEndpoint = "orders.dead-letter",
-    };
+    });
     consumer.Handler<OrderPlacedHandler>();
 });
 ```

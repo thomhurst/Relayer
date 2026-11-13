@@ -36,18 +36,18 @@ internal sealed partial class SqsConsumer : IAsyncDisposable
 
     internal static void ValidateDeclaration(string name, AmazonSqsTransportOptions transport, ConsumerDefinition<AmazonSqsConsumerOptions> consumer)
     {
-        ArgumentNullException.ThrowIfNull(consumer.Options.Failure);
+        ArgumentNullException.ThrowIfNull(consumer.Failure);
         ArgumentNullException.ThrowIfNull(consumer.Options.HeaderNames);
         if (!transport.Queues.Any(queue => queue.QueueName == consumer.Source))
             throw new InvalidOperationException($"SQS consumer '{consumer.Source}' on '{name}' needs a native CreateQueueRequest declaration.");
         if (consumer.BatchSize != 1) throw new NotSupportedException("SQS consumers currently require single-message handlers (BatchSize=1).");
-        if (string.IsNullOrWhiteSpace(consumer.Options.Failure.DeadLetterEndpoint))
+        if (string.IsNullOrWhiteSpace(consumer.Failure.DeadLetterEndpoint))
             throw new InvalidOperationException($"SQS consumer '{consumer.Source}': configure Failure.DeadLetterEndpoint; SQS redrive cannot attach processing failure metadata.");
-        if (consumer.Options.Failure.DeadLetterEndpoint == consumer.Source)
+        if (consumer.Failure.DeadLetterEndpoint == consumer.Source)
             throw new InvalidOperationException("SQS dead-letter destination must differ from its source.");
-        if (!transport.Queues.Any(queue => queue.QueueName == consumer.Options.Failure.DeadLetterEndpoint))
+        if (!transport.Queues.Any(queue => queue.QueueName == consumer.Failure.DeadLetterEndpoint))
             throw new InvalidOperationException("Declare the SQS dead-letter queue in transport Options.Queues.");
-        if (consumer.Source.EndsWith(".fifo", StringComparison.Ordinal) != consumer.Options.Failure.DeadLetterEndpoint.EndsWith(".fifo", StringComparison.Ordinal))
+        if (consumer.Source.EndsWith(".fifo", StringComparison.Ordinal) != consumer.Failure.DeadLetterEndpoint.EndsWith(".fifo", StringComparison.Ordinal))
             throw new InvalidOperationException("SQS source and dead-letter queue must both be standard or both FIFO.");
     }
 

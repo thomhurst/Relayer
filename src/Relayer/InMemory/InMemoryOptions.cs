@@ -39,6 +39,4 @@ public sealed class InMemoryConsumerOptions
 {
     /// <summary>Required for logs. Each registration has a unique group; different groups receive independent copies.</summary>
     public string? Group { get; set; }
-    /// <summary>An explicit core failure executor. By default failures are dead-lettered natively.</summary>
-    public ConsumeFailureDelegate? Failure { get; set; }
 }

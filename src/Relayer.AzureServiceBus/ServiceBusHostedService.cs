@@ -32,10 +32,10 @@ internal sealed class ServiceBusHostedService(IServiceProvider provider, string 
                 var settlement = new ServiceBusSettlement(tracing, endpoint);
                 var failures = new FailurePipeline(provider, name, consumer.Source,
                     consumer.Options.Subscription is { } subscription ? consumer.Source + "/Subscriptions/" + subscription : consumer.Source,
-                    consumer.Options.Failure);
+                    consumer.Failure);
                 var pipeline = new ConsumePipelineBuilder(provider.GetRequiredService<IServiceScopeFactory>(),
                     provider.GetRequiredService<MessageTypeRegistry>(), provider.GetMessageSerializer(name), failures,
-                    provider.GetService<IFailureClassifier>());
+                    consumer.FailureClassifier ?? provider.GetService<IFailureClassifier>());
                 var telemetry = provider.GetRequiredService<RelayerInstrumentation>().CreateEndpoint(new()
                 {
                     System = "servicebus", Destination = consumer.Source, Subscription = consumer.Options.Subscription,

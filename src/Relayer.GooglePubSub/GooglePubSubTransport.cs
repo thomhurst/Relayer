@@ -46,17 +46,17 @@ internal sealed class GooglePubSubTransport : ITransport, ITransportSendTracing,
         {
             var consumer = (ConsumerDefinition<GooglePubSubConsumerOptions>)declaration;
             ArgumentNullException.ThrowIfNull(consumer.Options.Settings);
-            ArgumentNullException.ThrowIfNull(consumer.Options.Failure);
+            ArgumentNullException.ThrowIfNull(consumer.Failure);
             TopicFor(consumer.Source);
             if (consumer.BatchSize != 1)
                 throw new NotSupportedException($"Pub/Sub consumer '{consumer.Source}': native streaming callbacks deliver individual messages. Use single-message handlers.");
             if (consumer.Concurrency < 1 || consumer.Options.Settings.FlowControlSettings?.MaxOutstandingElementCount != consumer.Concurrency)
                 throw new InvalidOperationException($"Pub/Sub consumer '{consumer.Source}': set native Settings.FlowControlSettings.MaxOutstandingElementCount equal to Concurrency({consumer.Concurrency}). Native flow control owns the concurrency bound.");
-            if (!consumer.Options.Failure.RedeliveryDelays.IsEmpty)
+            if (consumer.Failure.RedeliveryDelays.Length != 0)
                 throw new NotSupportedException($"Pub/Sub consumer '{consumer.Source}': Nack cannot persist updated failure attributes. Use in-process RetryDelays and a DeadLetterEndpoint topic; durable redelivery is not supported.");
-            if (string.IsNullOrWhiteSpace(consumer.Options.Failure.DeadLetterEndpoint))
+            if (string.IsNullOrWhiteSpace(consumer.Failure.DeadLetterEndpoint))
                 throw new InvalidOperationException($"Pub/Sub consumer '{consumer.Source}': set Failure.DeadLetterEndpoint to a declared topic. Native DeadLetterPolicy cannot dead-letter on demand with error metadata.");
-            GetEndpoint(consumer.Options.Failure.DeadLetterEndpoint);
+            GetEndpoint(consumer.Failure.DeadLetterEndpoint);
             // Incoming keys can originate outside Relayer, even on unordered subscriptions.
             // Failure copies preserve them, and the native publisher rejects keys unless enabled.
             if (_options.PublisherSettings.EnableMessageOrdering != true)

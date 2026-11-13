@@ -82,7 +82,7 @@ internal static class NatsTopologySmoke
                 {
                     consumer.Options.Stream = subject;
                     consumer.Options.Settings = new() { MaxMsgs = 1, DrainOnCancel = true, Expires = TimeSpan.FromSeconds(1) };
-                    consumer.Options.Failure = new() { DeadLetterEndpoint = subject + ".dead" };
+                    consumer.Failures(new() { DeadLetterEndpoint = subject + ".dead" });
                     consumer.Handler<NatsAotHandler>();
                 });
             });

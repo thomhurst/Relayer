@@ -182,7 +182,7 @@ after success to prevent a second settlement. Prefer the common settlement API w
 
 Relayer acknowledges after handling, scoped disposal and durable failure handling finish. Default poison
 handling sends to `source + ".dead-letter"`, waits for its publisher confirm, then acknowledges the original.
-Set `consumer.Options.Failure.DeadLetterEndpoint` to use another declared destination. Copies retain CloudEvents,
+Set `DeadLetterEndpoint` in `consumer.Failures(new FailureOptions { DeadLetterEndpoint = "orders.errors" })` to use another declared destination. Copies retain CloudEvents,
 creation context, native headers and native correlation/reply destinations, and add common error metadata. A failed or unroutable copy is logged and leaves the
 source unacknowledged for a one-second backoff, then uses native `basic.nack` with `requeue: true`. The host
 continues running. A delivery already settled successfully by native handler code is never settled again if later processing throws. Optional consumer health remains unhealthy while any delivery is in failure backoff, and reports the last failure until subsequent processing succeeds. Successful processing clears the prior failure even when the requeue callback is still finishing; health remains unhealthy until all failure backoffs have ended. Provision

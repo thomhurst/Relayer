@@ -84,6 +84,7 @@ To change a decision, add a new entry that supersedes it rather than editing his
 | [D71](#d71-sql-server-outbox-send-failures-retain-durable-eligibility) | SQL Server outbox send failures retain durable eligibility | Accepted |
 | [D72](#d72-handler-registration-belongs-to-the-consumer) | Handler registration belongs to the consumer | Accepted |
 | [D73](#d73-postgresql-retryable-outbox-sends-retain-durable-eligibility) | PostgreSQL retryable outbox sends retain durable eligibility | Accepted |
+| [D74](#d74-portable-consumer-failure-declarations) | Portable consumer failure declarations | Accepted |
 
 ---
 
@@ -1754,3 +1755,11 @@ store mutation contract remains unchanged; callers using it directly own their f
 Preparation failures retain the existing diagnostic attempt count, including previous retryable sends.
 If routing becomes invalid after an extended outage, its first preparation failure can exhaust that
 budget. Repair such configuration through the existing dead-letter redrive workflow.
+
+## D74. Portable consumer failure declarations
+
+**Decision.** `ConsumerBuilder.Failures(FailureOptions)` captures retry, redelivery and dead-letter settings in the core consumer definition. `Classify(IFailureClassifier)` overrides the optional global classifier for that consumer. Broker adapters and in-memory hosted consumers compose the existing `FailurePipeline`, retaining native settlement and capability validation. Native circuit options remain on adapters that implement pause/resume; no circuit executor is emulated. PostgreSQL local consumers retain their existing fenced outbox recovery policy and reject separate failure policies rather than ignoring them.
+
+Delay options are bindable arrays. `FailureOptions` retains its convenience constructor and provides a real public parameterless constructor for `OptionsFactory<T>`. Its properties use public setters as a narrow exception to the init-only options convention: the .NET configuration binding source generator skips init-only properties when binding an existing instance through `AddOptions<FailureOptions>().Bind(section)`. This preserves standard Options-pattern binding and Native AOT support; policies are captured and composed at startup, and reload does not rebuild consumers. `CopyTimeout` uses null for its 30-second default so configuration binding preserves missing settings without accepting an explicit zero timeout. Null `RetryDelays` selects D69's default sequence at composition; empty disables it. This avoids the configuration binder appending configured entries to a pre-populated default array. In-memory native redelivery retains failure headers per queued message or per log-group receiver, preventing attempt/history resets without sharing mutable consumer state across groups.
+
+In-memory consumers use only native redelivery for retries, including manual settlement requests. Scheduled-copy and outbox redelivery fallbacks are rejected when the requested delay exceeds `MaxRedeliveryDelay`: sending another message to the source would fan out to unrelated log groups and could wait for admission credit still owned by the current delivery. Native redelivery retains both the group and that credit. Dead-letter copies to a separate configured endpoint remain supported.

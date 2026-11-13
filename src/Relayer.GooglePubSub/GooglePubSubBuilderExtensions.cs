@@ -45,11 +45,11 @@ internal sealed class GooglePubSubHostedService(IServiceProvider provider, strin
         foreach (var declaration in definition.Consumers)
         {
             var consumer = (ConsumerDefinition<GooglePubSubConsumerOptions>)declaration;
-            var failures = new FailurePipeline(provider, name, consumer.Source, consumer.Source, consumer.Options.Failure, Copy);
+            var failures = new FailurePipeline(provider, name, consumer.Source, consumer.Source, consumer.Failure, Copy);
             var endpoint = new MessagingEndpoint { System = "gcp_pubsub", Destination = _transport.TopicFor(consumer.Source), Subscription = consumer.Source };
             var pipeline = new ConsumePipelineBuilder(provider.GetRequiredService<IServiceScopeFactory>(),
                 provider.GetRequiredService<MessageTypeRegistry>(), provider.GetMessageSerializer(name), failures,
-                provider.GetService<IFailureClassifier>())
+                consumer.FailureClassifier ?? provider.GetService<IFailureClassifier>())
                 .Tracing(tracing, endpoint)
                 .Telemetry(provider.GetRequiredService<RelayerInstrumentation>().CreateEndpoint(new()
                 { System = "gcp_pubsub", Destination = endpoint.Destination, Subscription = endpoint.Subscription }));

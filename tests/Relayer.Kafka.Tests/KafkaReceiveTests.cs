@@ -571,13 +571,13 @@ public class KafkaReceiveTests
                 {
                     consumer.Options.Group = fixture.Destination;
                     if (circuitClock is not null) consumer.Options.CircuitBreaker = new() { MinimumThroughput = 1 };
-                    consumer.Options.Failure = new()
+                    consumer.Failures(new()
                     {
                         RetryDelays = circuitClock is null || circuitRetry ? new[] { TimeSpan.Zero } : [], Jitter = 0,
                         DeadLetterEndpoint = missingDeadLetter ? fixture.Destination + ".missing" : null,
                         // Only missing-topic scenarios need a short failure-injection deadline.
                         CopyTimeout = missingDeadLetter ? TimeSpan.FromSeconds(1) : new FailureOptions().CopyTimeout,
-                    };
+                    });
                     consumer.Handler<KafkaReceiveHandler>();
                 });
                 if (healthySibling)

@@ -29,11 +29,11 @@ internal sealed class SqsHostedService(IServiceProvider provider, string name) :
                 var endpoint = new MessagingEndpoint { System = "aws_sqs", Destination = consumer.Source };
                 var settlement = new SqsSettlement(tracing, endpoint);
                 var failures = new FailurePipeline(provider, name, consumer.Source, consumer.Source,
-                    consumer.Options.Failure, context => Copy(context, consumer.Options.HeaderNames.Id,
-                        _transport.GetIdentityHeader(consumer.Options.Failure.DeadLetterEndpoint!)), provider.GetService<IFailureScheduler>());
+                    consumer.Failure, context => Copy(context, consumer.Options.HeaderNames.Id,
+                        _transport.GetIdentityHeader(consumer.Failure.DeadLetterEndpoint!)), provider.GetService<IFailureScheduler>());
                 var pipeline = new ConsumePipelineBuilder(provider.GetRequiredService<IServiceScopeFactory>(),
                     provider.GetRequiredService<MessageTypeRegistry>(), provider.GetMessageSerializer(name), failures,
-                    provider.GetService<IFailureClassifier>());
+                    consumer.FailureClassifier ?? provider.GetService<IFailureClassifier>());
                 var telemetry = provider.GetRequiredService<RelayerInstrumentation>().CreateEndpoint(new() { System = "aws_sqs", Destination = consumer.Source });
                 pipeline.Tracing(tracing, endpoint).Telemetry(telemetry).Settle(settlement.SettleAsync);
                 pipeline.ConfigureConsumer(provider, consumer);

@@ -330,7 +330,7 @@ public class LocalTransportTests(PostgreSqlLocalSessionFixture server)
     public async Task Unsupported_envelopes_batch_handlers_and_missing_consumers_fail_at_startup()
     {
         await using var source = NpgsqlDataSource.Create("Host=unused");
-        foreach (var kind in new[] { "raw", "batch", "missing" })
+        foreach (var kind in new[] { "raw", "batch", "missing", "failure" })
         {
             var services = new ServiceCollection().AddLogging();
             services.AddRelayer(builder =>
@@ -339,11 +339,11 @@ public class LocalTransportTests(PostgreSqlLocalSessionFixture server)
                 builder.PostgreSqlLocal("local", source, transport =>
                 {
                     transport.Send<LocalWork>("work", route => { if (kind == "raw") route.SendOptions = new() { EnvelopeMode = MessageEnvelopeMode.Raw }; });
-                    if (kind != "missing") transport.Consume("work", consumer => { consumer.Handler<LocalHandler>(); if (kind == "batch") consumer.Batch(2, TimeSpan.FromSeconds(1)); });
+                    if (kind != "missing") transport.Consume("work", consumer => { consumer.Handler<LocalHandler>(); if (kind == "batch") consumer.Batch(2, TimeSpan.FromSeconds(1)); if (kind == "failure") consumer.Failures(FailureOptions.None); });
                 });
             });
             services.AddSingleton(source);
-        services.AddScoped<FailingCleanup>();
+            services.AddScoped<FailingCleanup>();
             services.AddRelayerPostgreSqlDirectDispatch("local", source);
             await using var provider = services.BuildServiceProvider();
             await Assert.ThrowsAsync<Exception>(async () =>

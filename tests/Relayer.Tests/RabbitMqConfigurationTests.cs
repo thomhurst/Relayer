@@ -129,7 +129,7 @@ public class RabbitMqConfigurationTests
                 consumer.Handler<SampleHandler>();
                 if (scenario == 0) consumer.Concurrency(2);
                 if (scenario == 1) consumer.Batch(2, TimeSpan.FromSeconds(1));
-                if (scenario == 2) consumer.Options.Failure = new() { RedeliveryDelays = new[] { TimeSpan.Zero } };
+                if (scenario == 2) consumer.Failures(new() { RedeliveryDelays = new[] { TimeSpan.Zero } });
             });
         }));
         await using var provider = services.BuildServiceProvider();

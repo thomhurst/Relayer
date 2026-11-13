@@ -32,7 +32,7 @@ public static class RabbitMqBuilderExtensions
             return new RabbitMqNativeTransport(name,
                 provider.GetRequiredService<IOptionsMonitor<RabbitMqTransportOptions>>().Get(name),
                 definition.Routes.Select(route => route.Destination).Concat(definition.Consumers.SelectMany(declaration =>
-                    new[] { declaration.Source, ((ConsumerDefinition<RabbitMqConsumerOptions>)declaration).Options.Failure.DeadLetterEndpoint ?? ":" + declaration.Source + ".dead-letter" })), provider.GetRequiredService<MessageTracing>(), provider.GetRequiredService<RelayerInstrumentation>());
+                    new[] { declaration.Source, declaration.Failure.DeadLetterEndpoint ?? ":" + declaration.Source + ".dead-letter" })), provider.GetRequiredService<MessageTracing>(), provider.GetRequiredService<RelayerInstrumentation>());
         });
         builder.Services.AddSingleton<IHostedService>(provider => new RabbitMqHostedService(provider, name));
         return builder;
@@ -53,6 +53,4 @@ public sealed class RabbitMqConsumerOptions
     public bool Exclusive { get; set; }
     /// <summary>Native consume arguments passed unchanged.</summary>
     public IDictionary<string, object?>? Arguments { get; set; }
-    /// <summary>Retries and durable poison-message copies. Default destination is source + ".dead-letter".</summary>
-    public FailureOptions Failure { get; set; } = new();
 }

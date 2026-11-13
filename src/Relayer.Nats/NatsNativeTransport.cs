@@ -49,12 +49,12 @@ internal sealed class NatsNativeTransport : ITransport, ITransportSendTracing
             ArgumentNullException.ThrowIfNull(consumer.Options.Settings);
             if (!consumer.Options.Settings.DrainOnCancel || consumer.BatchSize != 1)
                 throw new NotSupportedException($"NATS consumer '{consumer.Source}': use single-message handlers and native Settings.DrainOnCancel = true.");
-            ArgumentNullException.ThrowIfNull(consumer.Options.Failure);
-            if (!consumer.Options.Failure.RedeliveryDelays.IsEmpty)
+            ArgumentNullException.ThrowIfNull(consumer.Failure);
+            if (consumer.Failure.RedeliveryDelays.Length != 0)
                 throw new NotSupportedException($"NATS consumer '{consumer.Source}': NAK cannot persist failure headers. Use RetryDelays and a DeadLetterEndpoint subject.");
-            if (string.IsNullOrWhiteSpace(consumer.Options.Failure.DeadLetterEndpoint))
+            if (string.IsNullOrWhiteSpace(consumer.Failure.DeadLetterEndpoint))
                 throw new InvalidOperationException($"NATS consumer '{consumer.Source}': configure Failure.DeadLetterEndpoint to a subject captured by a JetStream stream. The copy is confirmed before ACK.");
-            destinations.Add(consumer.Options.Failure.DeadLetterEndpoint);
+            destinations.Add(consumer.Failure.DeadLetterEndpoint);
         }
         _endpoints = destinations.ToFrozenDictionary(destination => destination,
             destination => new Endpoint(new(tracing, new() { System = "nats", Destination = destination }, SendCoreAsync, SendBatchCoreAsync, headerNames: new("ce-")), _options.CaseSensitiveHeaders), StringComparer.Ordinal);

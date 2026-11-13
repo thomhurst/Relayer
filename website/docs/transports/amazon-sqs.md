@@ -63,11 +63,11 @@ relayer.AmazonSqs("orders", sqs =>
             request.WaitTimeSeconds = 20;
             request.VisibilityTimeout = 120;
         };
-        consumer.Options.Failure = new FailureOptions
+        consumer.Failures(new FailureOptions
         {
             RedeliveryDelays = new[] { TimeSpan.FromSeconds(5) },
             DeadLetterEndpoint = "orders-errors",
-        };
+        });
     });
 });
 ```

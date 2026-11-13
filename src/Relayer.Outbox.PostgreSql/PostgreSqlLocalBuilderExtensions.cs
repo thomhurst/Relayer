@@ -51,11 +51,13 @@ public static class PostgreSqlLocalBuilderExtensions
                     throw new NotSupportedException("PostgreSQL local routes require CloudEvents headers. Raw envelopes and custom CloudEvents header bindings are unsupported.");
             foreach (var consumer in declaration.Consumers)
             {
+                if (((ConsumerDefinition<PostgreSqlLocalConsumerOptions>)consumer).HasFailurePolicy)
+                    throw new NotSupportedException($"PostgreSQL local consumer '{consumer.Source}': configure retry and dead-letter behavior through PostgreSqlOutboxOptions. A separate consumer failure policy cannot participate in fenced row recovery.");
                 if (consumer.BatchSize != 1)
                     throw new NotSupportedException($"PostgreSQL local consumer '{consumer.Source}': batch handlers are unsupported. Use single-message handlers.");
                 var pipeline = new ConsumePipelineBuilder(provider.GetRequiredService<IServiceScopeFactory>(),
                     provider.GetRequiredService<MessageTypeRegistry>(), provider.GetMessageSerializer(name),
-                    PostgreSqlLocalTransport.HandleFailureAsync, provider.GetService<IFailureClassifier>());
+                    PostgreSqlLocalTransport.HandleFailureAsync, consumer.FailureClassifier ?? provider.GetService<IFailureClassifier>());
                 var tracing = provider.GetRequiredService<MessageTracing>();
                 var endpoint = new MessagingEndpoint { System = "postgresql", Destination = consumer.Source };
                 var telemetry = provider.GetRequiredService<RelayerInstrumentation>().CreateEndpoint(new()

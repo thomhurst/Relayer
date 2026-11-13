@@ -371,7 +371,7 @@ exception
 
 - **Classification** is a predicate per exception type or a custom `IFailureClassifier`. Deserialization and contract failures are permanent by default, so they never block a partition or crash a consumer (Silverback #249, SlimMessageBus #438).
 
-Compose exception rules once and pass the classifier to `ConsumePipelineBuilder`:
+Compose exception rules once and apply them with `consumer.Classify(classifier)`; the low-level composer also accepts the classifier directly:
 
 ```csharp
 var classifier = new FailureClassifierBuilder()
@@ -383,7 +383,9 @@ var classifier = new FailureClassifierBuilder()
 
 Rules match the declared exception type and its derived types, in registration order. The first matching rule with a true predicate wins. Unmatched failures use `DefaultFailureClassifier`, or the custom `IFailureClassifier` passed to `Build`. Explicit rules can override permanent defaults. Builders freeze after `Build`; the resulting classifiers can be shared across consumers. Predicates and custom fallbacks must support concurrent calls. Predicate failures propagate without producing a settlement decision. Classification does not retry, send, or settle a delivery; the consumer's failure handler owns durable failure handling.
 
-Compose executable failure handling before starting native receive services:
+Declare portable policy with `consumer.Failures(policy)` on the core builder for broker and in-memory consumers. The declaration stores `FailureOptions` and an optional per-consumer classifier, which overrides a global registration. Bindable delay arrays use null `RetryDelays` for the default sequence so configuration binding replaces rather than appends defaults. Adapter-owned native options contain no retry/redelivery/dead-letter policy. PostgreSQL local consumers retain their fenced outbox row recovery policy and reject a separate consumer policy.
+
+Transport authors compose executable failure handling before starting native receive services:
 
 ```csharp
 var failures = new FailurePipeline(services, "broker", "orders", "billing",

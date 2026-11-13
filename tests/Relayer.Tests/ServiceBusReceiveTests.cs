@@ -193,7 +193,7 @@ public sealed class ServiceBusReceiveTests
     public async Task Successful_native_settlement_then_handler_error_does_not_retry_or_settle_again()
     {
         var client = new NativeClient();
-        await using var provider = Provider(client, consumer => consumer.Options.Failure = new() { RetryDelays = new[] { TimeSpan.Zero } });
+        await using var provider = Provider(client, consumer => consumer.Failures(new() { RetryDelays = new[] { TimeSpan.Zero } }));
         var calls = 0;
         provider.GetRequiredService<Control>().Handle = async (_, context, _) =>
         {

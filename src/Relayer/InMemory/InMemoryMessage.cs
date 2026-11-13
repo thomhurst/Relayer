@@ -11,6 +11,7 @@ public sealed class InMemoryMessage
     private KeyValuePair<string, WireString>[] _headers = [];
     private int _bodyLength;
     private int _headerCount;
+    internal ReadOnlyMemory<KeyValuePair<string, WireString>> RedeliveryHeaders;
     internal long Size;
     internal int References;
     internal int QueueAttempt;
@@ -28,6 +29,7 @@ public sealed class InMemoryMessage
 
     internal void Copy(in OutgoingMessage outgoing)
     {
+        RedeliveryHeaders = default;
         QueueAttempt = 1;
         var length = outgoing.Body.Length;
         Size = outgoing.Body.Length;
@@ -67,6 +69,7 @@ public sealed class InMemoryMessage
     internal void Clear()
     {
         Array.Clear(_headers, 0, _headerCount);
+        RedeliveryHeaders = default;
         _headerCount = 0;
         _bodyLength = 0;
         OrderingKey = null;
@@ -94,6 +97,8 @@ public readonly struct InMemoryDelivery
     public long Position => Message.Position;
     /// <summary>Delivery count, starting at one.</summary>
     public int Attempt { get; }
+    internal void Settle(Disposition disposition) => _receiver.Settle(disposition);
+    internal ReadOnlyMemory<KeyValuePair<string, WireString>> RedeliveryHeaders => _receiver.RedeliveryHeaders;
     /// <summary>Manually completes this delivery. Return SettledByHandler to prevent another settlement.</summary>
     public void Complete() => _receiver.Settle(Disposition.Complete);
     /// <summary>Manually requests native redelivery.</summary>
@@ -116,6 +121,10 @@ public readonly struct InMemoryMessageBinding : IMessageBinding<InMemoryDelivery
     /// <inheritdoc />
     public static bool TryGetHeader(InMemoryDelivery message, string name, out WireString value)
     {
+        foreach (var header in message.RedeliveryHeaders.Span)
+        {
+            if (header.Key == name) { value = header.Value; return true; }
+        }
         foreach (var header in message.Message.Headers.Span)
         {
             if (header.Key == name) { value = header.Value; return true; }
