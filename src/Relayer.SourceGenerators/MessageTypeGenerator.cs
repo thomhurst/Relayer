@@ -27,6 +27,7 @@ public sealed class MessageTypeGenerator : IIncrementalGenerator
         "Message '{0}' has type parameters on itself or a containing type. Declare a concrete, non-generic message outside generic containing types.",
         "Relayer", DiagnosticSeverity.Error, isEnabledByDefault: true,
         helpLinkUri: "https://relayer.tomlonghurst.dev/docs/reference/diagnostics#rlym001");
+
     private static readonly DiagnosticDescriptor RefLikeMessage = new(
         "RLYM003", "Message type is ref-like",
         "Message type '{0}' is ref-like and cannot be registered or serialized. Use an ordinary struct, class or record for the wire message.",
@@ -226,5 +227,4 @@ public sealed class MessageTypeGenerator : IIncrementalGenerator
     private sealed record DiagnosticLocation(string FilePath, TextSpan Span, LinePositionSpan LineSpan);
 
     private sealed record RefLikeMessageModel(string Name, string Path, TextSpan Span, LinePositionSpan LineSpan);
-
 }
