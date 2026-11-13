@@ -11,9 +11,9 @@ using BenchmarkDotNet.Toolchains.DotNetCli;
 using BenchmarkDotNet.Toolchains.Parameters;
 using BenchmarkDotNet.Toolchains.Results;
 
-if (args.Length != 5)
+if (args.Length is not (5 or 6))
 {
-    Console.Error.WriteLine("Usage: FrozenNativeHost <original-image> <benchmark-id> <dotnet-wrapper> <native-log> <receipt>");
+    Console.Error.WriteLine("Usage: FrozenNativeHost <original-image> <benchmark-id> <dotnet-wrapper> <native-log> <receipt> [concurrent|scoped-dispatch]");
     return 2;
 }
 
@@ -24,13 +24,22 @@ var identity = int.Parse(args[1], System.Globalization.CultureInfo.InvariantCult
 // setup, attributes, BenchmarkRunner or a builder. The child owns the native job.
 var metadata = new FrozenMetadataContext(directory);
 var assembly = metadata.LoadFromAssemblyPath(Path.Combine(directory, "Relayer.Benchmarks.dll"));
-var type = assembly.GetType("Relayer.Benchmarks.EndToEndBenchmarks", throwOnError: true)!;
-var method = type.GetMethod("ConcurrentRoundTrip") ?? throw new MissingMethodException(type.FullName, "ConcurrentRoundTrip");
-var descriptor = new Descriptor(type, method, operationsPerInvoke: 8);
+var selectedCase = args.Length == 6 ? args[5] : "concurrent";
+var (owner, methodName, operations) = selectedCase switch
+{
+    "concurrent" => ("EndToEndBenchmarks", "ConcurrentRoundTrip", 8),
+    "scoped-dispatch" => ("ConsumePipelineBenchmarks", "DirectScopedDispatch", 1),
+    _ => throw new ArgumentException("Unsupported original benchmark case.")
+};
+var type = assembly.GetType("Relayer.Benchmarks." + owner, throwOnError: true)!;
+var method = type.GetMethod(methodName) ?? throw new MissingMethodException(type.FullName, methodName);
+// The inventoried generated runner ID selects the parameter and original job.
+// The descriptor supplies only the method name required by the native executor.
+var descriptor = new Descriptor(type, method, operationsPerInvoke: operations);
 using var benchmarkCase = BenchmarkCase.Create(descriptor, Job.Default.WithId("Default"),
     new ParameterInstances([]), ManualConfig.CreateEmpty().CreateImmutableConfig());
 var benchmarkId = new BenchmarkId(identity, benchmarkCase);
-var expected = $"--benchmarkName Relayer.Benchmarks.EndToEndBenchmarks.ConcurrentRoundTrip --job Default --benchmarkId {identity}";
+var expected = $"--benchmarkName Relayer.Benchmarks.{owner}.{methodName} --job Default --benchmarkId {identity}";
 if (benchmarkId.ToArguments() != expected)
     throw new InvalidOperationException("Native parent identity differs from the verified original runner.");
 var paths = new ArtifactsPaths(directory, directory, directory, "", "", "", "", "", "", image, "", "");
@@ -48,7 +57,8 @@ File.WriteAllText(args[4], JsonSerializer.Serialize(new
     result.Results, result.PrefixedLines, result.StandardOutput,
     parent = "BenchmarkDotNet DotNetCliExecutor (native anonymous pipes/Broker/priority)",
     parentAssembly = typeof(DotNetCliExecutor).Assembly.FullName,
-    benchmarkArguments = benchmarkId.ToArguments()
+    benchmarkArguments = benchmarkId.ToArguments(),
+    selectedCase, operationsPerInvoke = operations
 }, new JsonSerializerOptions { WriteIndented = true }));
 return result.ExitCode == 0 && result.IsSuccess && result.Errors.Count == 0 ? 0 : 1;
 

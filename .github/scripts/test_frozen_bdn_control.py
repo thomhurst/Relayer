@@ -151,6 +151,47 @@ class OriginalRunnerTests(unittest.TestCase):
                 self.assertIn("anonymous pipes/Broker", protocol["host"])
                 self.assertIn("bundled protocol intervention", protocol["limits"])
 
+    def test_scoped_native_parent_checks_identity_and_retains_all_outcomes(self):
+        for invalid in (None, "identity", "case", "operations"):
+            with self.subTest(invalid=invalid), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                output = root / "results"
+                calls = []
+
+                def execute(command, **kwargs):
+                    calls.append(command)
+                    self.assertEqual(command[-1], "scoped-dispatch")
+                    self.assertEqual(command[3], "42")
+                    receipt = {"FoundExecutable": True, "ExitCode": 0, "IsSuccess": True, "Errors": [],
+                               "benchmarkArguments": "--benchmarkName Relayer.Benchmarks.ConsumePipelineBenchmarks.DirectScopedDispatch --job Default --benchmarkId 42",
+                               "selectedCase": "scoped-dispatch", "operationsPerInvoke": 1}
+                    if len(calls) == 2:
+                        if invalid == "identity": receipt["benchmarkArguments"] = "wrong runner"
+                        if invalid == "case": receipt["selectedCase"] = "concurrent"
+                        if invalid == "operations": receipt["operationsPerInvoke"] = 8
+                    Path(command[-2]).write_text(json.dumps(receipt))
+                    # A one-operation benchmark need not be divisible by eight.
+                    Path(command[-3]).write_text(COMPLETE.replace("65536", "9"))
+
+                with patch("sys.argv", ["control", str(root), str(output), "--case", "scoped-dispatch",
+                                        "--native-executor", str(root / "host.dll")]), \
+                     patch("frozen_bdn_control.verify", return_value="frozen"), \
+                     patch("frozen_bdn_control.executable", return_value=(root / "image.dll", "42")), \
+                     patch("frozen_bdn_control.subprocess.run", side_effect=execute):
+                    if invalid:
+                        with self.assertRaisesRegex(SystemExit, "launches failed"):
+                            main()
+                    else:
+                        main()
+                self.assertEqual(len(calls), 4)
+                outcomes = json.loads((output / "outcomes.json").read_text())
+                self.assertEqual([item["side"] for item in outcomes], ["baseline", "candidate", "candidate", "baseline"])
+                self.assertEqual("error" in outcomes[1], invalid is not None)
+                self.assertEqual(outcomes[3]["operations"], 9)
+                protocol = json.loads((output / "protocol.json").read_text())
+                self.assertFalse(protocol["instrumented"])
+                self.assertEqual(protocol["parameter"], "instance.ScopedHandler = true;")
+
     def test_native_parent_profiles_child_only_and_retains_invalid_report(self):
         real_run = subprocess.run
         for missing in (False, True):
@@ -207,7 +248,9 @@ class OriginalRunnerTests(unittest.TestCase):
                 self.assertEqual([call[4] for call in protocol["commands"]], [call[4] for call in calls])
 
     def test_native_parent_rejects_unsupported_combinations(self):
-        for extra in (["--case", "scoped-dispatch"], ["--trace-tool", "trace"]):
+        for extra in (["--case", "log-composed"], ["--case", "queue-composed"],
+                      ["--case", "queue-native"], ["--trace-tool", "trace"],
+                      ["--case", "scoped-dispatch", "--trace-tool", "trace"]):
             with self.subTest(extra=extra), patch("sys.argv", ["control", "inputs", "output", "--native-executor", "host", *extra]):
                 with self.assertRaises(SystemExit):
                     main()
