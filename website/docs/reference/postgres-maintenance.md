@@ -62,8 +62,11 @@ due delivery time. `RecoveryDelay` measures age from stored `created_at`, not fr
 commit timestamp. Recent rows remain available for immediate commit-triggered dispatch. Each keyset traversal
 captures the highest pending unordered ID and scans only through that fixed boundary. It wraps after an empty
 pass within that boundary, so continuous newer traffic cannot prevent retries of failed sends, newly due schedules
-or expired claims behind the cursor. A failed destination cannot permanently hide later rows. Each pass waits
-`SweepInterval` before the next; this also bounds retry frequency. Large backlogs require multiple passes.
+or expired claims behind the cursor. A failed destination cannot permanently hide later rows. Nonempty passes
+continue immediately, releasing database admission and committing each bounded batch before the next.
+`SweepInterval` (five seconds by default) is the idle delay after the fixed scan is exhausted, leadership
+is unavailable, or a pass fails. Failed rows are therefore attempted at most once per scan; locked, scheduled
+and otherwise ineligible rows do not cause a retry loop. Cleanup is checked between batches.
 
 Recovery reuses direct dispatch's conditional claims, transport/destination grouping, native batch limits,
 and fenced batch deletion. Recovery's claim/completion mutations share the leadership transaction and commit

@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Threading.Channels;
 using Microsoft.Extensions.Logging;
 using Relayer.Transports;
 
@@ -13,7 +14,7 @@ public abstract class OutboxMaintenanceContractTests
     protected abstract class MaintenanceFixture : IAsyncDisposable
     {
         public abstract MaintenanceWorker Worker(RecordingTransport transport, int batchSize = 1,
-            bool deadRetention = true, bool inboxRetention = true, int cleanupBatchLimit = 10, Action? failure = null);
+            bool deadRetention = true, bool inboxRetention = true, int cleanupBatchLimit = 10, Action? failure = null, TimeProvider? idleTimeProvider = null);
         public abstract Task Insert(Guid id, DateTimeOffset createdAt, int? lane = null,
             DateTimeOffset? deliverAt = null, string status = "pending", DateTimeOffset? claimExpiresAt = null);
         public abstract Task InsertDead(Guid id, DateTimeOffset failedAt);
@@ -31,9 +32,76 @@ public abstract class OutboxMaintenanceContractTests
         public abstract bool CleanupPending { get; }
         public abstract ValueTask<int> CleanupAsync(CancellationToken cancellationToken = default);
         public abstract ValueTask ReleaseAsync(CancellationToken cancellationToken = default);
-        public abstract Task StartAsync(CancellationToken cancellationToken);
-        public abstract Task StopAsync(CancellationToken cancellationToken);
+        public abstract Task StartAsync(CancellationToken cancellationToken = default);
+        public abstract Task StopAsync(CancellationToken cancellationToken = default);
         public abstract void Dispose();
+    }
+
+    [Test]
+    [Arguments(1)]
+    [Arguments(2)]
+    public async Task Hosted_recovery_drains_a_fixed_scan_before_idling_and_retries_only_after_idle(int batchSize)
+    {
+        await using var fixture = await CreateFixtureAsync();
+        var old = DateTimeOffset.UtcNow.AddDays(-1);
+        await fixture.Insert(Id(1), old);
+        await fixture.Insert(Id(2), old, claimExpiresAt: DateTimeOffset.UtcNow.AddDays(1));
+        await fixture.Insert(Id(3), old, deliverAt: DateTimeOffset.UtcNow.AddDays(1));
+        for (var i = 4; i <= 8; i++) await fixture.Insert(Id(i), old);
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var resume = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var transport = new RecordingTransport(async (message, cancellationToken) =>
+        {
+            if (HeaderId(message) == Id(1))
+            {
+                entered.TrySetResult();
+                await resume.Task.WaitAsync(cancellationToken);
+                throw new InvalidOperationException("offline");
+            }
+        });
+        var clock = new IdleClock();
+        using var worker = fixture.Worker(transport, batchSize, idleTimeProvider: clock);
+        await worker.StartAsync();
+        try
+        {
+            await entered.Task.WaitAsync(TimeSpan.FromSeconds(30));
+            // This concurrent insert is beyond the captured boundary, so it cannot extend this scan.
+            await fixture.Insert(Id(9), old);
+            resume.TrySetResult();
+            var idle = await clock.NextIdle();
+            await Assert.That(transport.Ids.SequenceEqual(Enumerable.Range(4, 5).Select(Id))).IsTrue();
+            await Assert.That(await fixture.Attempts(Id(1))).IsEqualTo(1);
+            await Assert.That(await fixture.Count(Table.Outbox)).IsEqualTo(4L);
+            // Idle has begun with failed, claimed, scheduled and newly inserted durable work left.
+            // Advancing only this timer starts the next scan and revisits newly eligible rows.
+            await fixture.MakeDueAndExpireClaims();
+            idle.Fire();
+            await clock.NextIdle();
+            await Assert.That(await fixture.Attempts(Id(1))).IsEqualTo(2);
+            foreach (var i in new[] { 2, 3, 9 }) await Assert.That(transport.Ids.Contains(Id(i))).IsTrue();
+            await Assert.That(await fixture.Count(Table.Outbox)).IsEqualTo(1L);
+        }
+        finally { resume.TrySetResult(); await worker.StopAsync(); }
+    }
+
+    private sealed class IdleClock : TimeProvider
+    {
+        private readonly Channel<IdleTimer> _timers = Channel.CreateUnbounded<IdleTimer>();
+        public async Task<IdleTimer> NextIdle() => await _timers.Reader.ReadAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(30));
+        public override ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period)
+        {
+            var timer = new IdleTimer(callback, state);
+            _timers.Writer.TryWrite(timer);
+            return timer;
+        }
+    }
+
+    private sealed class IdleTimer(TimerCallback callback, object? state) : ITimer
+    {
+        public void Fire() => callback(state);
+        public bool Change(TimeSpan dueTime, TimeSpan period) => true;
+        public void Dispose() { }
+        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }
 
     [Test]
@@ -269,8 +337,8 @@ public abstract class OutboxMaintenanceContractTests
             for (var i = 0; i < messages.Length; i++) await SendAsync(messages.Span[i], cancellationToken);
         }
         public ValueTask<TopologyReport> ApplyTopologyAsync(TopologyMode mode, CancellationToken cancellationToken) => new(new TopologyReport([]));
-        public Task StartAsync(CancellationToken cancellationToken) => Task.CompletedTask;
-        public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+        public Task StartAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;
+        public Task StopAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }
 }

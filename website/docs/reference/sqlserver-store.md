@@ -241,8 +241,11 @@ that message to run again.
 
 Each recovery pass reads at most `BatchSize` due, unordered pending rows older than `RecoveryDelay`,
 using a fixed UUID high-water mark before wrapping. Failed, previously claimed and newly due older rows
-are revisited even while newer rows arrive. `SweepInterval` delays every bounded pass, including full
-batches; tune it together with `BatchSize` for the desired recovery rate and database load.
+are revisited even while newer rows arrive. Nonempty passes continue immediately, committing and releasing
+transaction admission between bounded batches. `SweepInterval` (five seconds by default) is the idle delay
+after exhausting the fixed scan, losing admission, or a pass error. Failed rows are attempted at most once
+per scan; locked, scheduled and otherwise ineligible rows do not cause a retry loop. Cleanup is checked
+between batches.
 Ordered lanes and parked rows remain untouched.
 Stored schedules are respected; this registration does not yet enable future scheduled `ISender` calls.
 Recovery reuses direct dispatch's endpoint grouping, capability cache and fenced claims in one database
