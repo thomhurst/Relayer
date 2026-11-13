@@ -9,7 +9,6 @@ namespace Relayer.Outbox.SqlServer;
 
 internal sealed partial class SqlServerMaintenanceWorker : OutboxMaintenanceWorker
 {
-    private readonly TimeProvider _idleTimeProvider;
     private readonly string _connectionString;
     private readonly SqlServerMaintenanceOptions _options;
     private readonly SqlServerOutboxStore _store;
@@ -31,10 +30,10 @@ internal sealed partial class SqlServerMaintenanceWorker : OutboxMaintenanceWork
         IEnumerable<ITransport> transports, ILogger<SqlServerMaintenanceWorker> logger,
         ILogger<SqlServerDirectDispatcher>? dispatchLogger = null, RelayerInstrumentation? instrumentation = null, TimeProvider? idleTimeProvider = null)
         : base(2, options.BatchSize, options.CleanupBatchLimit,
-            (options.DeadRetention is not null ? 1 : 0) | (options.InboxRetention is not null ? 2 : 0))
+            (options.DeadRetention is not null ? 1 : 0) | (options.InboxRetention is not null ? 2 : 0),
+            options.SweepInterval, options.CleanupInterval, options.LeaseDuration, idleTimeProvider)
     {
         _connectionString = connectionString;
-        _idleTimeProvider = idleTimeProvider ?? TimeProvider.System;
         _options = options;
         var settings = options.Validate();
         _store = new(connectionString, settings);
@@ -79,45 +78,9 @@ internal sealed partial class SqlServerMaintenanceWorker : OutboxMaintenanceWork
 
     }
 
-    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
-    {
-        var nextCleanup = DateTimeOffset.MinValue;
-        try
-        {
-            while (!stoppingToken.IsCancellationRequested)
-            {
-                var scanned = 0;
-                try
-                {
-                    scanned = await SweepAsync(stoppingToken).ConfigureAwait(false);
-                }
-                catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { break; }
-                catch (Exception error) { Failed(_logger, error); }
-                // A failed recovery pass must not suppress the independently leased retention pass.
-                if (DateTimeOffset.UtcNow >= nextCleanup)
-                {
-                    try
-                    {
-                        await CleanupAsync(stoppingToken).ConfigureAwait(false);
-                    }
-                    catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { break; }
-                    catch (Exception error) { Failed(_logger, error); }
-                    nextCleanup = DateTimeOffset.UtcNow + (CleanupPending ? TimeSpan.Zero : _options.CleanupInterval);
-                }
-                // Each turn releases database admission. Continue only within the fixed scan boundary;
-                // its empty terminal pass provides the idle/retry delay even when every send failed.
-                if (scanned == 0)
-                    await Task.Delay(_options.SweepInterval, _idleTimeProvider, stoppingToken).ConfigureAwait(false);
-            }
-        }
-        catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { }
-        finally
-        {
-            using var timeout = new CancellationTokenSource(_options.LeaseDuration);
-            try { await ReleaseAsync(timeout.Token).ConfigureAwait(false); }
-            catch (Exception error) { Failed(_logger, error); }
-        }
-    }
+    protected override ValueTask<int> RecoverAsync(CancellationToken cancellationToken) => SweepAsync(cancellationToken);
+    protected override ValueTask ReleaseMaintenanceAsync(CancellationToken cancellationToken) => ReleaseAsync(cancellationToken);
+    protected override void ReportFailure(string job, Exception error) => Failed(_logger, error);
 
     internal ValueTask<int> SweepAsync(CancellationToken cancellationToken = default) => RunAsync(false, cancellationToken);
     protected override ValueTask<int> DeleteRetentionBatchAsync(int table, CancellationToken cancellationToken) =>

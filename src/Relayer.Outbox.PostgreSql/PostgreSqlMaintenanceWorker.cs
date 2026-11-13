@@ -11,7 +11,6 @@ namespace Relayer.Outbox.PostgreSql;
 
 internal sealed partial class PostgreSqlMaintenanceWorker : OutboxMaintenanceWorker
 {
-    private readonly TimeProvider _idleTimeProvider;
     private readonly NpgsqlDataSource _source;
     private readonly TimeProvider? _admissionTimeProvider;
     private readonly PostgreSqlMaintenanceOptions _options;
@@ -37,11 +36,11 @@ internal sealed partial class PostgreSqlMaintenanceWorker : OutboxMaintenanceWor
         IEnumerable<ITransport> transports, ILogger<PostgreSqlMaintenanceWorker> logger,
         ILogger<PostgreSqlDirectDispatcher>? dispatchLogger = null, RelayerInstrumentation? instrumentation = null, TimeProvider? admissionTimeProvider = null, IServiceScopeFactory? scopes = null, TimeProvider? idleTimeProvider = null)
         : base(3, options.BatchSize, options.CleanupBatchLimit,
-            (options.RetainSentMessages ? 1 : 0) | (options.DeadRetention is not null ? 2 : 0) | (options.InboxRetention is not null ? 4 : 0))
+            (options.RetainSentMessages ? 1 : 0) | (options.DeadRetention is not null ? 2 : 0) | (options.InboxRetention is not null ? 4 : 0),
+            options.SweepInterval, options.CleanupInterval, options.LeaseDuration, idleTimeProvider)
     {
         _source = source;
         _admissionTimeProvider = admissionTimeProvider;
-        _idleTimeProvider = idleTimeProvider ?? TimeProvider.System;
         _options = options;
         var store = options.Validate();
         _store = new(source, store);
@@ -70,40 +69,17 @@ internal sealed partial class PostgreSqlMaintenanceWorker : OutboxMaintenanceWor
         await base.StartAsync(cancellationToken).ConfigureAwait(false);
     }
 
+    protected override bool MaintenanceStopping => Volatile.Read(ref _localStop) != 0;
+
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         using var idleStop = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken, _idleStop.Token);
-        var nextCleanup = DateTimeOffset.MinValue;
-        try
-        {
-            while (!stoppingToken.IsCancellationRequested && Volatile.Read(ref _localStop) == 0)
-            {
-                var scanned = 0;
-                try { scanned = await SweepAsync(stoppingToken).ConfigureAwait(false); }
-                catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { break; }
-                catch (Exception error) { Failed(_logger, "sweeper", error); }
-                if (Volatile.Read(ref _localStop) != 0) break;
-                if (DateTimeOffset.UtcNow >= nextCleanup)
-                {
-                    try { await CleanupAsync(stoppingToken).ConfigureAwait(false); }
-                    catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { break; }
-                    catch (Exception error) { Failed(_logger, "cleanup", error); }
-                    nextCleanup = DateTimeOffset.UtcNow + (CleanupPending ? TimeSpan.Zero : _options.CleanupInterval);
-                }
-                // Each turn releases database admission. Continue only within the fixed scan boundary;
-                // its empty terminal pass provides the idle/retry delay even when every send failed.
-                if (scanned == 0)
-                    await Task.Delay(_options.SweepInterval, _idleTimeProvider, idleStop.Token).ConfigureAwait(false);
-            }
-        }
-        catch (OperationCanceledException) when (idleStop.IsCancellationRequested) { }
-        finally
-        {
-            using var timeout = new CancellationTokenSource(_options.LeaseDuration);
-            try { await ReleaseAsync(timeout.Token).ConfigureAwait(false); }
-            catch (Exception error) { Failed(_logger, "lease release", error); }
-        }
+        await RunMaintenanceAsync(stoppingToken, idleStop.Token).ConfigureAwait(false);
     }
+
+    protected override ValueTask<int> RecoverAsync(CancellationToken cancellationToken) => SweepAsync(cancellationToken);
+    protected override ValueTask ReleaseMaintenanceAsync(CancellationToken cancellationToken) => ReleaseAsync(cancellationToken);
+    protected override void ReportFailure(string job, Exception error) => Failed(_logger, job, error);
 
     public override async Task StopAsync(CancellationToken cancellationToken)
     {

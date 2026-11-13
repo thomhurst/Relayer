@@ -7,7 +7,6 @@ namespace Relayer.Outbox.MySql;
 
 internal sealed partial class MySqlMaintenanceWorker : OutboxMaintenanceWorker
 {
-    private readonly TimeProvider _idleTimeProvider;
     private readonly MySqlDataSource _dataSource;
     private readonly MySqlMaintenanceOptions _options;
     private readonly MySqlOutboxStore _store;
@@ -28,11 +27,11 @@ internal sealed partial class MySqlMaintenanceWorker : OutboxMaintenanceWorker
         IEnumerable<ITransport> transports, ILogger<MySqlMaintenanceWorker> logger,
         ILogger<MySqlDirectDispatcher>? dispatchLogger = null, RelayerInstrumentation? instrumentation = null, TimeProvider? idleTimeProvider = null)
         : base(2, options.BatchSize, options.CleanupBatchLimit,
-            (options.DeadRetention is not null ? 1 : 0) | (options.InboxRetention is not null ? 2 : 0))
+            (options.DeadRetention is not null ? 1 : 0) | (options.InboxRetention is not null ? 2 : 0),
+            options.SweepInterval, options.CleanupInterval, options.LeaseDuration, idleTimeProvider)
     {
         _dataSource = dataSource;
         ValidateDataSource(dataSource);
-        _idleTimeProvider = idleTimeProvider ?? TimeProvider.System;
         _options = options;
         var settings = options.Validate();
         _store = new(dataSource, settings);
@@ -77,45 +76,9 @@ internal sealed partial class MySqlMaintenanceWorker : OutboxMaintenanceWorker
             throw new ArgumentException("MySQL maintenance requires MaximumPoolSize >= 2: one connection holds admission while another dispatches rows.", nameof(dataSource));
     }
 
-    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
-    {
-        var nextCleanup = DateTimeOffset.MinValue;
-        try
-        {
-            while (!stoppingToken.IsCancellationRequested)
-            {
-                var scanned = 0;
-                try
-                {
-                    scanned = await SweepAsync(stoppingToken).ConfigureAwait(false);
-                }
-                catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { break; }
-                catch (Exception error) { Failed(_logger, error); }
-                // A failed recovery pass must not suppress the independently leased retention pass.
-                if (DateTimeOffset.UtcNow >= nextCleanup)
-                {
-                    try
-                    {
-                        await CleanupAsync(stoppingToken).ConfigureAwait(false);
-                    }
-                    catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { break; }
-                    catch (Exception error) { Failed(_logger, error); }
-                    nextCleanup = DateTimeOffset.UtcNow + (CleanupPending ? TimeSpan.Zero : _options.CleanupInterval);
-                }
-                // Each turn releases database admission. Continue only within the fixed scan boundary;
-                // its empty terminal pass provides the idle/retry delay even when every send failed.
-                if (scanned == 0)
-                    await Task.Delay(_options.SweepInterval, _idleTimeProvider, stoppingToken).ConfigureAwait(false);
-            }
-        }
-        catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { }
-        finally
-        {
-            using var timeout = new CancellationTokenSource(_options.LeaseDuration);
-            try { await ReleaseAsync(timeout.Token).ConfigureAwait(false); }
-            catch (Exception error) { Failed(_logger, error); }
-        }
-    }
+    protected override ValueTask<int> RecoverAsync(CancellationToken cancellationToken) => SweepAsync(cancellationToken);
+    protected override ValueTask ReleaseMaintenanceAsync(CancellationToken cancellationToken) => ReleaseAsync(cancellationToken);
+    protected override void ReportFailure(string job, Exception error) => Failed(_logger, error);
 
     internal ValueTask<int> SweepAsync(CancellationToken cancellationToken = default) => RunAsync(false, cancellationToken);
     protected override ValueTask<int> DeleteRetentionBatchAsync(int table, CancellationToken cancellationToken) =>
