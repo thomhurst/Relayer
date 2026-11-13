@@ -11,7 +11,7 @@ from frozen_scope_control import result
 
 
 def audit(root):
-    root = Path(root)
+    root = Path(root).resolve()
     output = root / 'results/native-scope'
     protocol = json.loads((output / 'protocol.json').read_text())
     if (protocol['case'] != 'scope-only' or protocol['launches'] != list(LAUNCHES)

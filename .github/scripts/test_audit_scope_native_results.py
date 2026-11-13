@@ -1,4 +1,5 @@
 import json
+import os
 from pathlib import Path
 import tempfile
 import unittest
@@ -40,7 +41,7 @@ class ScopeNativeAuditTests(unittest.TestCase):
         self.write('outcomes.json', outcomes)
         self.addCleanup(patch.stopall)
         patch('audit_scope_native_results.verify', return_value='commit').start()
-        patch('audit_scope_native_results.executable', side_effect=lambda root, case: (root / 'image.dll', '4')).start()
+        patch('audit_scope_native_results.executable', side_effect=lambda root, case: (root.resolve() / 'image.dll', '4')).start()
 
     def write(self, name, value):
         (self.output / name).write_text(json.dumps(value))
@@ -49,6 +50,11 @@ class ScopeNativeAuditTests(unittest.TestCase):
         actual = audit(self.root)
         self.assertEqual([x['meanNs'] for x in actual['launches']], [1, 2, 3, 4])
         self.assertEqual(actual['candidateTimeIncreasePercent'], [-19.999999999999996, 19.999999999999996])
+
+    def test_relative_artifact_path_matches_absolute_path(self):
+        relative = Path(os.path.relpath(self.root))
+        self.assertFalse(relative.is_absolute())
+        self.assertEqual(audit(relative), audit(self.root))
 
     def test_instrumented_or_wrong_parameter_protocol_rejected(self):
         for key, value in [('instrumented', True), ('parameter', 'instance.ScopedHandler = false;'), ('commands', [])]:
