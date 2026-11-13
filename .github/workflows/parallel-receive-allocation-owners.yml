@@ -55,13 +55,18 @@ jobs:
           CXX=clang++ cmake -S tools/FrozenAllocationProfiler -B .artifacts/exact-profiler -DPROFILER_SAMPLES="$PWD/profiler-sdk" -DCMAKE_BUILD_TYPE=Release > results/native-configure.log 2>&1
           cmake --build .artifacts/exact-profiler > results/native-build.log 2>&1
           python3 - <<'PYTHON'
-          import os, re, shutil
+          import json, os, re, shutil
           from pathlib import Path
           major = os.environ['FRAMEWORK'][3:].split('.')[0]
           matches = re.findall(r'^Microsoft.NETCore.App (' + major + r'\.\S+) \[(.+)\]$', Path('results/runtimes.txt').read_text(), re.MULTILINE)
           if not matches:
               raise RuntimeError('Matching runtime unavailable')
           version, root = matches[-1]
+          fixture = Path('tools/FrozenAllocationProfiler/Fixture/bin/Release/net10.0/Fixture.runtimeconfig.json')
+          config = json.loads(fixture.read_text())
+          config['runtimeOptions']['framework']['version'] = version
+          config['runtimeOptions']['rollForward'] = 'Disable'
+          fixture.write_text(json.dumps(config, indent=2) + '\n')
           Path('results/selected-runtime.txt').write_text(version + '\n')
           shutil.copytree(Path(root) / version, 'results/runtime-binaries')
           with Path(os.environ['GITHUB_ENV']).open('a') as env:
@@ -76,12 +81,12 @@ jobs:
         run: |
           python3 -m unittest discover -s .github/scripts -p test_native_allocations.py > results/native-tests.log 2>&1
           python3 -m unittest discover -s .github/scripts -p test_parallel_receive_allocations.py > results/correlation-tests.log 2>&1
-      - name: Capture the actual parallel core-test process
+      - name: Prepare core broker images
         # No test filter, scheduling throttle, GC change, threshold change or retry.
         # Keep Testcontainers image acquisition outside test lifecycle deadlines.
         run: |
-          docker pull apache/kafka:4.0.2
-          docker pull postgres:18-alpine
+          docker pull mcr.microsoft.com/mssql/server:2022-CU14-ubuntu-22.04
+          docker pull ghcr.io/shopify/toxiproxy@sha256:5d3dae09bc185dcc5ff6cf43abf6062a4a720aff0c4306a471e773acdcd107aa
       - name: Preserve counters and callbacks from the same execution
         env:
           CORECLR_ENABLE_PROFILING: '1'
