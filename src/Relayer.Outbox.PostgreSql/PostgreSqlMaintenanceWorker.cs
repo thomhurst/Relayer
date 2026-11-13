@@ -1,7 +1,6 @@
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Npgsql;
@@ -10,7 +9,7 @@ using Relayer.Transports;
 
 namespace Relayer.Outbox.PostgreSql;
 
-internal sealed partial class PostgreSqlMaintenanceWorker : BackgroundService
+internal sealed partial class PostgreSqlMaintenanceWorker : OutboxMaintenanceWorker
 {
     private readonly TimeProvider _idleTimeProvider;
     private readonly NpgsqlDataSource _source;
@@ -34,12 +33,11 @@ internal sealed partial class PostgreSqlMaintenanceWorker : BackgroundService
     private readonly CancellationTokenSource _idleStop = new();
     private Guid? _through;
 
-    private int _cleanupStart;
-    internal bool CleanupPending { get; private set; }
-
     internal PostgreSqlMaintenanceWorker(NpgsqlDataSource source, PostgreSqlMaintenanceOptions options,
         IEnumerable<ITransport> transports, ILogger<PostgreSqlMaintenanceWorker> logger,
         ILogger<PostgreSqlDirectDispatcher>? dispatchLogger = null, RelayerInstrumentation? instrumentation = null, TimeProvider? admissionTimeProvider = null, IServiceScopeFactory? scopes = null, TimeProvider? idleTimeProvider = null)
+        : base(3, options.BatchSize, options.CleanupBatchLimit,
+            (options.RetainSentMessages ? 1 : 0) | (options.DeadRetention is not null ? 2 : 0) | (options.InboxRetention is not null ? 4 : 0))
     {
         _source = source;
         _admissionTimeProvider = admissionTimeProvider;
@@ -120,36 +118,8 @@ internal sealed partial class PostgreSqlMaintenanceWorker : BackgroundService
 
     internal ValueTask<int> SweepAsync(CancellationToken cancellationToken) => RunAsync("sweeper", false, cancellationToken);
     internal ValueTask<int> SweepAsync(TimeSpan turnBudget, CancellationToken cancellationToken) => RunAsync("sweeper", false, cancellationToken, turnBudget);
-    internal async ValueTask<int> CleanupAsync(CancellationToken cancellationToken)
-    {
-        var count = 0;
-        var active = 0;
-        if (_options.RetainSentMessages) active |= 1;
-        if (_options.DeadRetention is not null) active |= 2;
-        if (_options.InboxRetention is not null) active |= 4;
-        // Rotate before awaiting: a busy table or cancellation cannot monopolize subsequent turns.
-        var first = _cleanupStart;
-        _cleanupStart = (first + 1) % 3;
-        // Only a successful turn may request an immediate continuation.
-        CleanupPending = false;
-        for (var round = 0; round < _options.CleanupBatchLimit && active != 0; round++)
-        {
-            for (var offset = 0; offset < 3; offset++)
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-                var table = (first + offset) % 3;
-                var bit = 1 << table;
-                if ((active & bit) == 0) continue;
-                var deleted = await RunAsync("cleanup", true, cancellationToken, cleanupTable: table).ConfigureAwait(false);
-                if (deleted < 0) { CleanupPending = false; return count; }
-                count += deleted;
-                if (deleted < _options.BatchSize) active &= ~bit;
-            }
-        }
-        // A full final batch may have more behind it. Yield to recovery before admitting more.
-        CleanupPending = active != 0;
-        return count;
-    }
+    protected override ValueTask<int> DeleteRetentionBatchAsync(int table, CancellationToken cancellationToken) =>
+        RunAsync("cleanup", true, cancellationToken, cleanupTable: table);
 
     // The native replication slot serializes CDC readers. Fenced row claims still arbitrate with
     // direct dispatch and the recovery leader; CDC must not wait for the sweeper's idle lease.

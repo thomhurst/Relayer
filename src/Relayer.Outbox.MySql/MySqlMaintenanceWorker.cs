@@ -1,12 +1,11 @@
 using MySqlConnector;
-using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Relayer.Transports;
 
 namespace Relayer.Outbox.MySql;
 
-internal sealed partial class MySqlMaintenanceWorker : BackgroundService
+internal sealed partial class MySqlMaintenanceWorker : OutboxMaintenanceWorker
 {
     private readonly TimeProvider _idleTimeProvider;
     private readonly MySqlDataSource _dataSource;
@@ -25,12 +24,11 @@ internal sealed partial class MySqlMaintenanceWorker : BackgroundService
     private readonly byte[] _after = new byte[16], _through = new byte[16];
     private bool _hasAfter, _hasThrough;
 
-    private int _cleanupStart;
-    internal bool CleanupPending { get; private set; }
-
     internal MySqlMaintenanceWorker(MySqlDataSource dataSource, MySqlMaintenanceOptions options,
         IEnumerable<ITransport> transports, ILogger<MySqlMaintenanceWorker> logger,
         ILogger<MySqlDirectDispatcher>? dispatchLogger = null, RelayerInstrumentation? instrumentation = null, TimeProvider? idleTimeProvider = null)
+        : base(2, options.BatchSize, options.CleanupBatchLimit,
+            (options.DeadRetention is not null ? 1 : 0) | (options.InboxRetention is not null ? 2 : 0))
     {
         _dataSource = dataSource;
         ValidateDataSource(dataSource);
@@ -120,35 +118,8 @@ internal sealed partial class MySqlMaintenanceWorker : BackgroundService
     }
 
     internal ValueTask<int> SweepAsync(CancellationToken cancellationToken = default) => RunAsync(false, cancellationToken);
-    internal async ValueTask<int> CleanupAsync(CancellationToken cancellationToken = default)
-    {
-        var count = 0;
-        var active = 0;
-        if (_options.DeadRetention is not null) active |= 1;
-        if (_options.InboxRetention is not null) active |= 2;
-        // Rotate before awaiting: a busy table or cancellation cannot monopolize subsequent turns.
-        var first = _cleanupStart;
-        _cleanupStart = (first + 1) % 2;
-        // Only a successful turn may request an immediate continuation.
-        CleanupPending = false;
-        for (var round = 0; round < _options.CleanupBatchLimit && active != 0; round++)
-        {
-            for (var offset = 0; offset < 2; offset++)
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-                var table = (first + offset) % 2;
-                var bit = 1 << table;
-                if ((active & bit) == 0) continue;
-                var deleted = await RunAsync(true, cancellationToken, table).ConfigureAwait(false);
-                if (deleted < 0) { CleanupPending = false; return count; }
-                count += deleted;
-                if (deleted < _options.BatchSize) active &= ~bit;
-            }
-        }
-        // A full final batch may have more behind it. Yield to recovery before admitting more.
-        CleanupPending = active != 0;
-        return count;
-    }
+    protected override ValueTask<int> DeleteRetentionBatchAsync(int table, CancellationToken cancellationToken) =>
+        RunAsync(true, cancellationToken, table);
 
     private async ValueTask<int> RunAsync(bool cleanup, CancellationToken cancellationToken, int cleanupTable = -1)
     {
