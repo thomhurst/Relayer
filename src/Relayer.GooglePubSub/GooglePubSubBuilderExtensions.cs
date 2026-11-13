@@ -86,11 +86,11 @@ internal sealed class GooglePubSubHostedService(IServiceProvider provider, strin
     {
         var count = 0;
         foreach (var header in message.Attributes)
-            if (!header.Key.StartsWith("goog", StringComparison.Ordinal)) count++;
+            if (!header.Key.StartsWith("goog", StringComparison.Ordinal) && !GooglePubSubFailureHeaders.IsHistory(header.Key)) count++;
         var headers = new KeyValuePair<string, WireString>[count];
         var index = 0;
         foreach (var header in message.Attributes)
-            if (!header.Key.StartsWith("goog", StringComparison.Ordinal))
+            if (!header.Key.StartsWith("goog", StringComparison.Ordinal) && !GooglePubSubFailureHeaders.IsHistory(header.Key))
                 headers[index++] = new(header.Key, new(header.Value));
         return new("copy", message.Data.Memory, headers, message.OrderingKey.Length == 0 ? null : new WireString(message.OrderingKey));
     }
