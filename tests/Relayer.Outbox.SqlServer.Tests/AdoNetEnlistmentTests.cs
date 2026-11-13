@@ -1,6 +1,7 @@
 using System.Buffers;
 using System.Data;
 using System.Data.Common;
+using System.Diagnostics;
 using Dapper;
 using Microsoft.Data.SqlClient;
 using Microsoft.Extensions.Configuration;
@@ -483,7 +484,22 @@ public class AdoNetEnlistmentTests(SqlServerFixture fixture)
             {
                 await admin.OpenAsync();
                 await using var create = new SqlCommand($"CREATE DATABASE [{_name.Replace("]", "]]")}]", admin);
-                await create.ExecuteNonQueryAsync();
+                // Concurrent CREATE DATABASE operations can briefly conflict on SQL Server's
+                // model database (1807). Retry that native provisioning conflict only; tests
+                // and their isolated databases still run concurrently.
+                var provisioning = Stopwatch.StartNew();
+                while (true)
+                {
+                    try
+                    {
+                        await create.ExecuteNonQueryAsync();
+                        break;
+                    }
+                    catch (SqlException exception) when (exception.Number == 1807 && provisioning.Elapsed < TimeSpan.FromSeconds(30))
+                    {
+                        await Task.Delay(100);
+                    }
+                }
                 _created = true;
             }
             await using var connection = await Open();

@@ -23,7 +23,7 @@ public sealed class OutageConformanceTests
 
     [Test]
     [Arguments("unexpected", "outage sends")]
-    [Arguments("lost", "receive completion")]
+    [Arguments("lost", "outage recovery receive; outstanding values: 1, 2, 3")]
     public async Task Outage_rejects_unexpected_failures_and_lost_acknowledged_messages(string mode, string phase)
     {
         await Assert.That(async () => await Suite(mode).RunAsync(TransportConformanceCase.SendDuringOutage))
