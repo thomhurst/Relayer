@@ -12,6 +12,7 @@ namespace Relayer.Benchmarks;
 public class FailureSettlementBenchmarks
 {
     [Params(1, 10)] public int Pending { get; set; }
+    [Params(false, true)] public bool PendingHandler { get; set; }
     private ServiceProvider _provider = null!;
     private ConsumePipeline _pipeline = null!;
     private IServiceScopeFactory _scopes = null!;
@@ -21,12 +22,15 @@ public class FailureSettlementBenchmarks
     private ValueTask[] _processing = null!;
     private Gate[] _gates = null!;
     private int _next;
+    private AsyncServiceScope[] _directScopes = null!;
+    private readonly HandlerGates _handlerGates = new();
     private readonly ConsumeMessage _message = new() { MessageId = "id", MessageType = new("benchmark.settlement", 1), Body = default };
 
     [GlobalSetup]
     public void Setup()
     {
         var services = new ServiceCollection();
+        services.AddSingleton(_handlerGates);
         services.AddSingleton<ITransport, Transport>();
         services.AddRelayer(r =>
         {
@@ -40,36 +44,48 @@ public class FailureSettlementBenchmarks
         _pipeline = new ConsumePipelineBuilder(_provider.GetRequiredService<IServiceScopeFactory>(),
             _provider.GetRequiredService<MessageTypeRegistry>(), _serializer, failures)
             .Handler(_provider.GetRequiredService<HandlerRegistry>().GetHandler<Payload, Handler>())
-            .Settle(_ => _gates[_next++].Wait()).Build(Pending);
+            .Settle(_ => PendingHandler ? default : _gates[_next++].Wait()).Build(Pending);
         _contexts = new DefaultMessageContext[Pending];
         _processing = new ValueTask[Pending];
         _gates = new Gate[Pending];
         for (var i = 0; i < Pending; i++) _gates[i] = new();
+        _directScopes = new AsyncServiceScope[Pending];
+        _handlerGates.Gates = PendingHandler ? _gates : null;
     }
 
     [Benchmark(Baseline = true)]
     public void DirectScopedWindow()
     {
+        ResetGates();
         for (var i = 0; i < Pending; i++)
         {
-            var scope = new AsyncServiceScope(_scopes.CreateScope());
-            var handler = _descriptor.Resolve(scope.ServiceProvider);
-            _descriptor.DispatchAsync(handler, _serializer.Deserialize<Payload>(default), null!, default).GetAwaiter().GetResult();
-            scope.DisposeAsync().GetAwaiter().GetResult(); // This fixture has no asynchronous disposers.
+            _directScopes[i] = new AsyncServiceScope(_scopes.CreateScope());
+            var handler = _descriptor.Resolve(_directScopes[i].ServiceProvider);
+            _processing[i] = _descriptor.DispatchAsync(handler, _serializer.Deserialize<Payload>(default), null!, default);
+            if (PendingHandler && _processing[i].IsCompleted)
+                throw new InvalidOperationException("The direct handler must genuinely suspend.");
+        }
+        if (PendingHandler) CompleteGates();
+        for (var i = 0; i < Pending; i++)
+        {
+            _processing[i].GetAwaiter().GetResult();
+            _directScopes[i].DisposeAsync().GetAwaiter().GetResult(); // No asynchronous disposers in this fixture.
+            _directScopes[i] = default;
         }
     }
 
     [Benchmark]
     public void SettlementWindow()
     {
-        _next = 0;
+        ResetGates();
         for (var i = 0; i < Pending; i++)
         {
-            _gates[i].Reset();
             _contexts[i] = _pipeline.RentContext(_message);
             _processing[i] = _pipeline.ProcessAsync(_contexts[i]);
+            if (_processing[i].IsCompleted)
+                throw new InvalidOperationException("The pipeline must genuinely suspend.");
         }
-        for (var i = 0; i < Pending; i++) _gates[i].Complete();
+        CompleteGates();
         for (var i = 0; i < Pending; i++)
         {
             _processing[i].GetAwaiter().GetResult(); // All gates completed synchronously above.
@@ -77,11 +93,28 @@ public class FailureSettlementBenchmarks
         }
     }
 
+    private void ResetGates()
+    {
+        _next = 0;
+        _handlerGates.Next = 0;
+        for (var i = 0; i < Pending; i++) _gates[i].Reset();
+    }
+
+    private void CompleteGates()
+    {
+        for (var i = 0; i < Pending; i++) _gates[i].Complete();
+    }
+
     [GlobalCleanup] public async Task Cleanup() => await _provider.DisposeAsync();
     [Message("benchmark.settlement")] public sealed class Payload;
-    public sealed class Handler : IHandler<Payload>
+    public sealed class Handler(HandlerGates gates) : IHandler<Payload>
     {
-        public ValueTask HandleAsync(Payload message, MessageContext context, CancellationToken cancellationToken) => default;
+        public ValueTask HandleAsync(Payload message, MessageContext context, CancellationToken cancellationToken) => gates.Gates is { } pending ? pending[gates.Next++].Wait() : default;
+    }
+    public sealed class HandlerGates
+    {
+        internal Gate[]? Gates;
+        internal int Next;
     }
     private sealed class Serializer : IMessageSerializer
     {
@@ -101,7 +134,7 @@ public class FailureSettlementBenchmarks
         public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
         public ValueTask DisposeAsync() => default;
     }
-    private sealed class Gate : IValueTaskSource
+    internal sealed class Gate : IValueTaskSource
     {
         private ManualResetValueTaskSourceCore<bool> _completion;
         internal void Reset() => _completion.Reset();
