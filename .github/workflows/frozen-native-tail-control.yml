@@ -12,13 +12,13 @@ on:
         type: string
         default: "43124385683"
       same_image:
-        description: Negative control image (empty keeps baseline/candidate ABBA)
+        description: Negative control image (abba keeps baseline/candidate ABBA)
         type: choice
         options:
-          - ""
+          - abba
           - baseline
           - candidate
-        default: ""
+        default: abba
 
       runtime_version:
         description: Exact runtime patch for a separate native-tail control
@@ -91,7 +91,7 @@ jobs:
       - name: Profile four original adaptive launches with native engine events
         run: |
           control_args=()
-          if [[ -n "$SAME_IMAGE" ]]; then control_args+=(--same-image "$SAME_IMAGE"); fi
+          if [[ -n "$SAME_IMAGE" && "$SAME_IMAGE" != abba ]]; then control_args+=(--same-image "$SAME_IMAGE"); fi
           python3 .github/scripts/frozen_bdn_control.py inputs results/adaptive --trace-tool .diagnostic-tools/dotnet-trace --runtime-version "$CONTROL_RUNTIME" "${control_args[@]}"
       - name: Read all native-tail owner groups even after launch failure
         if: always()
