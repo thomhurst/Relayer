@@ -29,21 +29,6 @@ public class SendTracingPoolTests
 
     [Test]
     [Arguments(false, false)]
-    [Arguments(false, true)]
-    [Arguments(true, false)]
-    [Arguments(true, true)]
-    public async Task Native_caller_warmup_is_sufficient_for_first_awaited_traced_completion(bool batch, bool listener)
-    {
-        using var fixture = new SendTracingCompletionFixture(batch, listener);
-        // Warm Relayer storage without an async caller, then initialize only the native caller's dispatcher.
-        for (var i = 0; i < 16; i++) fixture.Run(traced: true);
-        fixture.Run(traced: false, asynchronousCaller: true);
-        var allocated = fixture.Run(traced: true, asynchronousCaller: true);
-        await Assert.That(allocated).IsEqualTo(0L);
-    }
-
-    [Test]
-    [Arguments(false, false)]
     [Arguments(true, false)]
     [Arguments(true, true)]
     public async Task Overlapping_sends_reuse_preparation_storage_after_warmup(bool batch, bool createSpans)

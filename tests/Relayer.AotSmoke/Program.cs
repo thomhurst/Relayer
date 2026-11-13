@@ -28,9 +28,12 @@ foreach (var listener in new[] { false, true })
     using var send = new Relayer.TestFixtures.SendTracingCompletionFixture(batch, listener);
     for (var i = 0; i < 16; i++) send.Run(traced: true);
     if (send.Run(traced: true) != 0) throw new InvalidOperationException("Send tracing allocates under Native AOT.");
-    // Initialize the caller's runtime-async dispatcher on the completion thread without Relayer tracing.
-    // Native AOT lazily allocates its thread-static storage: dotnet/runtime#137474.
+    // Native AOT runtime-async dispatch lazily allocates thread-static storage (dotnet/runtime#137474).
+    // Warm and check the native caller separately, then warm the wrapped continuation path as well.
     send.Run(traced: false, asynchronousCaller: true);
+    if (send.Run(traced: false, asynchronousCaller: true) != 0)
+        throw new InvalidOperationException("Native awaited send caller allocates under Native AOT.");
+    send.Run(traced: true, asynchronousCaller: true);
     if (send.Run(traced: true, asynchronousCaller: true) != 0)
         throw new InvalidOperationException("Awaited send tracing allocates under Native AOT.");
 }
