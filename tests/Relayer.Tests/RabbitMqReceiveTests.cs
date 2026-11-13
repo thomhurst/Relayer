@@ -15,6 +15,41 @@ namespace Relayer.Tests;
 public class RabbitMqReceiveTests
 {
     [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Default_failure_policy_retries_before_native_ack_or_dead_letter_copy(bool recover)
+    {
+        using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(2));
+        var token = timeout.Token;
+        await using var broker = await RabbitMqTopologyTests.Broker.StartAsync(token);
+        var attempts = 0;
+        var control = new RabbitMqReceiveControl
+        {
+            Handle = _ => Interlocked.Increment(ref attempts) == 4 && recover
+                ? default : ValueTask.FromException(new TimeoutException("dependency unavailable"))
+        };
+        using var host = Host(broker.Factory(), control);
+        await host.StartAsync(token);
+        await host.Services.GetRequiredService<ITransport>().SendAsync(
+            new("orders", "{\"Value\":42}"u8.ToArray(), Headers()), token);
+        for (var i = 0; i < 4; i++)
+            await Assert.That(await control.Values.Reader.ReadAsync(token)).IsEqualTo(42);
+        await host.StopAsync(token);
+        await Assert.That(attempts).IsEqualTo(4);
+        await using var connection = await broker.Factory().CreateConnectionAsync(token);
+        await using var channel = await connection.CreateChannelAsync(cancellationToken: token);
+        await Assert.That((await channel.QueueDeclarePassiveAsync("orders", token)).MessageCount).IsEqualTo(0u);
+        var dead = await channel.BasicGetAsync("orders.dead-letter", true, token);
+        if (recover) await Assert.That(dead).IsNull();
+        else
+        {
+            await Assert.That(dead).IsNotNull();
+            var count = (byte[])dead!.BasicProperties.Headers![FailureHeaders.Attempts]!;
+            await Assert.That(System.Text.Encoding.UTF8.GetString(count)).IsEqualTo("4");
+        }
+    }
+
+    [Test]
     public async Task Poison_copies_are_confirmed_before_ack_and_healthy_messages_continue()
     {
         using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(2));

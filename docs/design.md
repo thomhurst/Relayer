@@ -407,7 +407,7 @@ Composition reuses the hosted validator's endpoint capability cache. It validate
 (including the longest) and the dead-letter destination, and requires each fallback's executor. Native
 redelivery wins within `MaxRedeliveryDelay`, then native scheduled copy within `MaxDeliveryDelay`, then
 a durable scheduler. Native dead-lettering is used only when `DeadLetter` guarantees error metadata.
-Each delay entry permits one further attempt. Empty retry/redelivery lists default to immediate dead-lettering.
+Each delay entry permits one further attempt. The default policy uses three in-process retries at 100 ms, 500 ms and 1 s before jitter, with no durable redelivery (D69). `FailureOptions.None` or explicitly empty retry/redelivery lists select immediate dead-lettering for retryable failures. Permanent failures still bypass retries.
 Jitter shortens delays by up to 20% by default, keeping configured capability boundaries valid.
 
 Each immediate retry uses a fresh async DI scope. Direct `ISender` sends, including `SendNowAsync`, are

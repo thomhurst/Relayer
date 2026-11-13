@@ -71,6 +71,22 @@ public sealed class ServiceBusReceiveTests
     }
 
     [Test]
+    public async Task Default_failure_policy_retries_transient_handler_failure_before_native_completion()
+    {
+        var client = new NativeClient();
+        await using var provider = Provider(client);
+        var attempts = 0;
+        provider.GetRequiredService<Control>().Handle = (_, _, _) => ++attempts == 1
+            ? ValueTask.FromException(new TimeoutException("dependency unavailable")) : ValueTask.CompletedTask;
+        await Start(provider);
+        var receiver = new NativeReceiver();
+        await client.Processors.Single().Emit(Args(receiver, 1));
+        await Assert.That(attempts).IsEqualTo(2);
+        await Assert.That(receiver.Operations.Single()).IsEqualTo("complete");
+        await Stop(provider);
+    }
+
+    [Test]
     public async Task Failure_pipeline_dead_letters_poison_and_continues_with_healthy_delivery()
     {
         var client = new NativeClient();

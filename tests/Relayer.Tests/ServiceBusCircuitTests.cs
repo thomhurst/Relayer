@@ -16,7 +16,11 @@ public sealed class ServiceBusCircuitTests
         var clock = new ConsumerCircuitTests.Clock();
         var client = new ServiceBusReceiveTests.NativeClient();
         var provider = ServiceBusReceiveTests.Provider(client,
-            consumer => consumer.Options.CircuitBreaker = new() { MinimumThroughput = 1 }, health: true, time: clock);
+            consumer =>
+            {
+                consumer.Options.Failure = FailureOptions.None;
+                consumer.Options.CircuitBreaker = new() { MinimumThroughput = 1 };
+            }, health: true, time: clock);
         try
         {
             await ServiceBusReceiveTests.Start(provider, token);
@@ -53,6 +57,7 @@ public sealed class ServiceBusCircuitTests
         var client = new ServiceBusReceiveTests.NativeClient();
         await using var provider = ServiceBusReceiveTests.Provider(client, consumer =>
         {
+            consumer.Options.Failure = FailureOptions.None;
             consumer.Concurrency(2);
             consumer.Options.CircuitBreaker = new() { MinimumThroughput = 1, FailureRatio = 1 };
             if (sessions) consumer.Options.SessionProcessorOptions = new()
@@ -141,7 +146,11 @@ public sealed class ServiceBusCircuitTests
         var clock = new ConsumerCircuitTests.Clock();
         var client = new ServiceBusReceiveTests.NativeClient();
         await using var provider = ServiceBusReceiveTests.Provider(client,
-            consumer => consumer.Options.CircuitBreaker = new() { MinimumThroughput = 1 }, time: clock);
+            consumer =>
+            {
+                consumer.Options.Failure = FailureOptions.None;
+                consumer.Options.CircuitBreaker = new() { MinimumThroughput = 1 };
+            }, time: clock);
         var control = provider.GetRequiredService<ServiceBusReceiveTests.Control>();
         control.Handle = (_, _, _) => ValueTask.FromException(new InvalidOperationException("offline"));
         await ServiceBusReceiveTests.Start(provider, token);
@@ -214,7 +223,11 @@ public sealed class ServiceBusCircuitTests
             return processor.Emit(ServiceBusReceiveTests.Args(new()));
         };
         await using var provider = ServiceBusReceiveTests.Provider(client,
-            consumer => consumer.Options.CircuitBreaker = new() { MinimumThroughput = 1 }, time: clock);
+            consumer =>
+            {
+                consumer.Options.Failure = FailureOptions.None;
+                consumer.Options.CircuitBreaker = new() { MinimumThroughput = 1 };
+            }, time: clock);
         provider.GetRequiredService<ServiceBusReceiveTests.Control>().Handle = (_, _, _) =>
             ValueTask.FromException(new InvalidOperationException("offline"));
         await ServiceBusReceiveTests.Start(provider, token);
