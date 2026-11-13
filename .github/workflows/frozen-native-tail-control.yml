@@ -1,0 +1,97 @@
+name: Frozen adaptive native GC-stat tail profiles
+
+# #537: new instrumented retained-image experiment, never a Performance gate rerun.
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/frozen-native-tail-control.yml'
+  workflow_dispatch:
+    inputs:
+      performance_run:
+        description: Retained net10 Performance run
+        type: string
+        default: "43124385683"
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  tail:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      PERFORMANCE_RUN: ${{ inputs.performance_run || '43124385683' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
+        with:
+          dotnet-version: |
+            10.0.403
+            11.0.100
+      - name: Record environment and build reader
+        run: |
+          mkdir -p results
+          dotnet --info > results/runtime.txt
+          uname -a > results/host.txt
+          lscpu > results/cpu.txt
+          python3 -m unittest discover -s .github/scripts -p test_frozen_bdn_control.py > results/launcher-tests.log 2>&1
+          dotnet build tools/FrozenAllocationReader -c Release > results/reader-build.log 2>&1
+          dotnet tool install dotnet-trace --tool-path .diagnostic-tools --version 10.0.750501 > results/trace-install.log 2>&1
+          cat > results/limits.txt <<'LIMITS'
+          Original retained BDN 0.15.8 adaptive job, waiter and workload images, net10 x64.
+          Native EngineEventSource bounds the final WorkloadActualStop to BenchmarkStop tail.
+          Engine.GetExtraStats runs inside this envelope, but so do final timed-iteration cleanup/GC/logging and stats setup/cleanup.
+          These are not exact MeasureWithGc boundaries. Retain full native event history and compare its final denominator with // GC.
+          Instrumentation changes scheduling. Compare candidates only within this complete ABBA bracket.
+          Weighted allocation samples are not exact bytes or object counts; missing stacks remain unattributed.
+          No subtraction of independent totals, historical owner attribution, demonstrated defect, performance trade-off or threshold change.
+          Retain raw traces, complete stacks/runtime/module events and every failed outcome; missing native coverage fails closed.
+          LIMITS
+      - name: Download original inputs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          [[ "$PERFORMANCE_RUN" =~ ^[0-9]+$ ]] || { echo "Invalid run ID: $PERFORMANCE_RUN" >&2; exit 1; }
+          gh run download "$PERFORMANCE_RUN" --name "performance-$PERFORMANCE_RUN-1" --dir inputs
+      - name: Profile original adaptive ABBA with native engine events
+        run: |
+          python3 .github/scripts/frozen_bdn_control.py inputs results/adaptive --trace-tool .diagnostic-tools/dotnet-trace
+      - name: Read all native-tail owner groups even after launch failure
+        if: always()
+        run: |
+          failed=0
+          for launch in 1-baseline 2-candidate 3-candidate 4-baseline; do
+            dotnet tools/FrozenAllocationReader/bin/Release/net11.0/FrozenAllocationReader.dll "results/adaptive/$launch.nettrace" --bdn-tail > "results/$launch-tail.jsonl" 2> "results/$launch-reader.log" || failed=1
+          done
+          exit "$failed"
+      - name: Cross-check every native tail denominator
+        if: always()
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          outcomes = json.loads(Path('results/adaptive/outcomes.json').read_text())
+          assert len(outcomes) == 4
+          for outcome in outcomes:
+              path = Path(f"results/{outcome['launch']}-{outcome['side']}-tail.jsonl")
+              records = [json.loads(line) for line in path.read_text().splitlines()]
+              scopes = [r for r in records if r['kind'] == 'native-engine-tail']
+              assert len(scopes) == 1, (path, 'missing or ambiguous tail')
+              assert scopes[0]['nativeOperations'] == outcome['operations'], (path, 'denominator mismatch')
+          PY
+      - name: Retain every outcome and executable input
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: frozen-native-tail-control-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            results/
+            inputs/
+            tools/FrozenAllocationReader/
+            .diagnostic-tools/
+            .github/scripts/frozen_bdn_control.py
+            .github/scripts/frozen_concurrent_control.py
+            .github/scripts/test_frozen_bdn_control.py
+            .github/workflows/frozen-native-tail-control.yml
+          retention-days: 90

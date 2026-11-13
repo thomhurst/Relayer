@@ -4,7 +4,8 @@ using Microsoft.Diagnostics.Tracing.Etlx;
 using Microsoft.Diagnostics.Tracing.Parsers.Clr;
 
 var wholeProcess = args.Length == 2 && args[1] == "--whole-process";
-if (args.Length != 1 && !wholeProcess) throw new ArgumentException("Expected one EventPipe trace, optionally followed by --whole-process.");
+var nativeTail = args.Length == 2 && args[1] == "--bdn-tail";
+if (args.Length != 1 && !wholeProcess && !nativeTail) throw new ArgumentException("Expected one EventPipe trace, optionally followed by --whole-process or --bdn-tail.");
 var etlx = TraceLog.CreateFromEventPipeDataFile(args[0], args[0] + ".etlx");
 using var log = new TraceLog(etlx);
 if (log.EventsLost != 0) throw new InvalidDataException($"Trace lost {log.EventsLost} events; recollect before interpreting owners.");
@@ -32,11 +33,30 @@ Console.WriteLine(JsonSerializer.Serialize(new
 var observedFrames = new HashSet<(int Process, string Method, string? Module)>();
 var starts = new List<(int Process, int Thread, double Time)>();
 var stops = new List<(int Process, int Thread, double Time)>();
+var engineTail = new NativeEngineTail();
 foreach (var ev in log.Events)
 {
+    if (nativeTail && ev.ProviderName == NativeEngineTail.Provider)
+    {
+        var id = (int)ev.ID;
+        var operations = id is >= 3 and <= 16 ? Convert.ToInt64(ev.PayloadByName("totalOperations")) : 0;
+        var benchmark = id is 1 or 2 ? ev.PayloadByName("benchmarkName")?.ToString() : null;
+        engineTail.Add(id, ev.ProcessID, ev.ThreadID, ev.TimeStampRelativeMSec, benchmark, operations);
+        Console.WriteLine(JsonSerializer.Serialize(new { kind = "native-engine-event", id,
+            processId = ev.ProcessID, threadId = ev.ThreadID, timeMilliseconds = ev.TimeStampRelativeMSec,
+            benchmark, operations }));
+    }
     if (ev.ProviderName != "Relayer-FrozenMeasurement") continue;
     if ((int)ev.ID == 1) starts.Add((ev.ProcessID, ev.ThreadID, ev.TimeStampRelativeMSec));
     if ((int)ev.ID == 2) stops.Add((ev.ProcessID, ev.ThreadID, ev.TimeStampRelativeMSec));
+}
+if (nativeTail)
+{
+    engineTail.Validate();
+    starts.Clear();
+    stops.Clear();
+    starts.Add((engineTail.Process, engineTail.Thread, engineTail.Start));
+    stops.Add((engineTail.Process, engineTail.Thread, engineTail.Stop));
 }
 if (!wholeProcess && (starts.Count != 1 || stops.Count != 1 || starts[0].Process != stops[0].Process || starts[0].Time >= stops[0].Time))
     throw new InvalidDataException("Trace must contain one ordered measurement start/stop pair from one process.");
@@ -79,13 +99,15 @@ foreach (var ev in log.Events)
 }
 Console.WriteLine(JsonSerializer.Serialize(new
 {
-    kind = wholeProcess ? "whole-process" : "measurement",
+    kind = wholeProcess ? "whole-process" : nativeTail ? "native-engine-tail" : "measurement",
+    nativeOperations = nativeTail ? (long?)engineTail.Operations : null,
+    nativeTimedIterations = nativeTail ? (int?)engineTail.Iterations : null,
     processId = wholeProcess ? (int?)null : start.Process,
     startMilliseconds = wholeProcess ? (double?)null : start.Time,
     stopMilliseconds = wholeProcess ? (double?)null : stop.Time,
     startThreadId = wholeProcess ? (int?)null : start.Thread, stopThreadId = wholeProcess ? (int?)null : stop.Thread,
     eventsLost = log.EventsLost, excludedSamples, samplesWithoutStacks, samplesWithUnnamedFrames,
-    scope = wholeProcess ? "All allocation ticks in every captured process, including startup, pilot, warmup, overhead and GC-stat work; no measurement boundaries." : "Marker-delimited measurement",
+    scope = wholeProcess ? "All allocation ticks in every captured process, including startup, pilot, warmup, overhead and GC-stat work; no measurement boundaries." : nativeTail ? "Native final WorkloadActualStop to BenchmarkStop envelope: includes final timed-iteration cleanup/GC/logging, extra-stat setup, native GC-stat workload and cleanup. Not exact MeasureWithGc boundaries." : "Marker-delimited measurement",
     limits = "Allocation ticks are weighted samples, not exact object/byte counts. A tick can include bytes allocated before the boundary. Instrumentation changes scheduling. Do not subtract samples as an exact allocation delta."
 }));
 foreach (var process in processGroups.OrderBy(p => p.Key))

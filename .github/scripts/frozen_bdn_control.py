@@ -82,13 +82,14 @@ def main():
         protocol["profile_limits"] = (
             "Separate instrumented native-engine ABBA with gc-verbose allocation sampling. "
             "Whole-process traces include startup, pilot, warmup, overhead and GC-stat work; "
-            "there are no Relayer measurement markers. Retain all raw captures and native logs. "
+            "there are no Relayer measurement markers. Native engine events permit a separate final-iteration-stop to benchmark-stop envelope, which includes cleanup/logging and GC-stat setup/work/cleanup, not exact allocation-measurement boundaries. Retain all raw captures and native logs. "
             "Weighted samples are not exact object counts or attribution of a historical delta. "
             "Profiler attachment changes scheduling; do not compare these totals as a gate, "
             "subtract independent controls, or apply the marker-filtered reader to these captures.")
         protocol["limits"] = protocol["profile_limits"]
         protocol["commands"] = [
             [str(args.trace_tool.resolve()), "collect", "--profile", "gc-verbose",
+             "--providers", "BenchmarkDotNet.EngineEventSource:0xffffffffffffffff:4",
              "--output", str((args.output / f"{index}-{side}.nettrace").resolve()),
              "--show-child-io", "--", *command]
             for index, (side, command) in enumerate(zip(LAUNCHES, protocol["commands"]), 1)]

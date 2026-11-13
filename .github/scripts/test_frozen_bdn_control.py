@@ -107,6 +107,7 @@ class OriginalRunnerTests(unittest.TestCase):
                     calls.append(command)
                     self.assertEqual(command[1:4], ["collect", "--profile", "gc-verbose"])
                     self.assertIn("--show-child-io", command)
+                    self.assertEqual(command[command.index("--providers") + 1], "BenchmarkDotNet.EngineEventSource:0xffffffffffffffff:4")
                     original = command[command.index("--") + 1:]
                     self.assertEqual(original[0], "dotnet")
                     self.assertIn("--job", original)
