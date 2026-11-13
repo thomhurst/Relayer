@@ -5,19 +5,19 @@
   "draftPR": true,
   "packageRules": [
     {
-      "description": "Dependency updates use the repository's draft review lifecycle, overriding inherited automerge rules.",
-      "matchPackageNames": ["*"],
-      "automerge": false,
-      "platformAutomerge": false,
-      "draftPR": true
-    },
-    {
       "description": "Workflow dotnet-version inputs install supported target runtimes; global.json owns SDK upgrades.",
       "matchManagers": ["github-actions"],
       "matchDepTypes": ["uses-with"],
       "matchPackageNames": ["dotnet-sdk"],
       "matchUpdateTypes": ["major"],
       "enabled": false
+    },
+    {
+      "description": "Dependency updates use the repository's draft review lifecycle, overriding inherited automerge rules.",
+      "matchPackageNames": ["*"],
+      "automerge": false,
+      "platformAutomerge": false,
+      "draftPR": true
     }
   ]
 }
