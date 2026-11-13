@@ -5,7 +5,7 @@ public sealed class MySqlMaintenanceOptions
 {
     /// <summary>Table prefix, identical to every writer and dispatcher.</summary>
     public string TablePrefix { get; init; } = "relayer_";
-    /// <summary>Failed sends before a row is dead-lettered. Must match other dispatchers for this store.</summary>
+    /// <summary>Preparation failures before dead-lettering; native send failures retry with durable backoff. Must match other dispatchers for this store.</summary>
     public int MaxDispatchAttempts { get; init; } = 10;
     /// <summary>Maximum rows scanned or deleted per pass.</summary>
     public int BatchSize { get; init; } = 100;

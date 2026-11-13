@@ -46,6 +46,7 @@ public abstract class OutboxOrderedDispatchContractTests
         await Assert.That(rows[0]).IsEqualTo(new Row(Id(1), 0, null, false, false));
         await Assert.That(rows[1]).IsEqualTo(new Row(Id(2), 1, "broker offline", false, false));
         fail = false;
+        await fixture.MakeReady(Id(2)); // Retry eligibility may include a durable backoff.
         await Assert.That(await worker.DispatchLaneAsync(0)).IsEqualTo(2);
         await Assert.That(transport.Ids.SequenceEqual([Id(2), Id(1)])).IsTrue();
         await Assert.That(transport.LastBody).IsEquivalentTo(new byte[] { 7, 8, 9 });

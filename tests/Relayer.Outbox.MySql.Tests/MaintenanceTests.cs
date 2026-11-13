@@ -14,7 +14,6 @@ public sealed class MaintenanceTests
     [Test]
     [Arguments("malformed")]
     [Arguments("transport")]
-    [Arguments("send")]
     public async Task Unordered_poison_metrics_follow_committed_deletions_once(string failure)
     {
         await using var data = new MySqlFixture();
@@ -37,7 +36,7 @@ public sealed class MaintenanceTests
         });
         listener.Start();
         instrumentation.AddOutboxPending(1);
-        var transport = failure == "send" ? new Transport(_ => throw new InvalidOperationException("native send failed")) : new Transport();
+        var transport = new Transport();
         using var worker = new MySqlMaintenanceWorker(data.Source,
             new() { BatchSize = 4, RecoveryDelay = TimeSpan.Zero, MaxDispatchAttempts = 2 },
             [transport], NullLogger<MySqlMaintenanceWorker>.Instance, instrumentation: instrumentation);

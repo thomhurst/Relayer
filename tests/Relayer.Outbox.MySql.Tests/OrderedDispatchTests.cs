@@ -160,15 +160,13 @@ public sealed class OrderedDispatchTests
         await using var database = new MySqlFixture();
         await database.StartAsync();
         await Insert(database, Id(3)); await Insert(database, Id(2)); await Insert(database, Id(1), "other");
-        var fail = true;
-        var transport = new RecordingTransport((message, _) => fail && message.OrderingKey!.Value.ToString() == "key"
-            ? ValueTask.FromException(new InvalidOperationException("poison")) : ValueTask.CompletedTask);
+        await database.Execute($"UPDATE relayer_outbox SET transport='missing' WHERE id=UNHEX('{Id(3):N}')");
+        var transport = new RecordingTransport();
         using var worker = new MySqlOrderedDispatcher(database.Source, new() { Lanes = 1, MaxDispatchAttempts = 1 }, [transport], NullLogger<MySqlOrderedDispatcher>.Instance);
         await Assert.That(await worker.DispatchLaneAsync(0, default)).IsEqualTo(0);
         await Assert.That(await worker.DispatchLaneAsync(0, default)).IsEqualTo(1);
         await Assert.That(transport.Ids.SequenceEqual([Id(1)])).IsTrue();
-        fail = false;
-        await database.Execute("UPDATE relayer_outbox SET status = 'pending', attempts = 0 WHERE status = 'parked'");
+        await database.Execute("UPDATE relayer_outbox SET status = 'pending', attempts = 0, transport = 'events' WHERE status = 'parked'");
         await Assert.That(await worker.DispatchLaneAsync(0, default)).IsEqualTo(2);
         await Assert.That(transport.Ids.SequenceEqual([Id(1), Id(3), Id(2)])).IsTrue();
     }

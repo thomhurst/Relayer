@@ -196,7 +196,7 @@ internal sealed class MySqlDirectDispatcher : BackgroundService
                     {
                         try
                         {
-                            (await _store.RecordDispatchFailureAsync(_claims[i], error.Message, DateTimeOffset.UtcNow, cancellationToken).ConfigureAwait(false)).RecordTelemetry(_instrumentation);
+                            await _store.RecordRetryAsync(_claims[i], error.Message, DateTimeOffset.UtcNow, cancellationToken).ConfigureAwait(false);
                         }
                         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
                         catch (Exception failure) { DirectDispatchLog.Failed(_logger, failure); }

@@ -78,6 +78,9 @@ To change a decision, add a new entry that supersedes it rather than editing his
 | [D65](#d65-mysql-maintenance-uses-native-session-admission-and-existing-dispatch) | MySQL maintenance uses native session admission and existing dispatch | Accepted |
 | [D66](#d66-durable-local-work-reuses-outbox-rows-and-native-postgresql-transactions) | Durable local work reuses outbox rows and native PostgreSQL transactions | Accepted |
 | [D67](#d67-sqs-visibility-retries-retain-native-receive-semantics) | SQS visibility retries retain native receive semantics | Accepted |
+| [D68](#d68-offline-cli-export-loads-an-explicit-application-declaration-factory) | Offline CLI export loads an explicit application declaration factory | Accepted |
+| [D69](#d69-retryable-handler-failures-get-three-in-process-retries-by-default) | Retryable handler failures get three in-process retries by default | Accepted |
+| [D70](#d70-mysql-send-failures-retain-durable-retry-eligibility) | MySQL send failures retain durable retry eligibility | Accepted |
 
 ---
 
@@ -1630,3 +1633,32 @@ that same transaction, not exactly-once external effects. Existing broker dispat
 **Decision.** A new `FailureOptions`, including the policy constructed by default for each transport consumer, permits three additional in-process attempts at 100 ms, 500 ms and 1 s. Existing jitter shortens each delay by up to 20%. Durable redelivery remains opt-in. Permanent classification still bypasses retries. `FailureOptions.None` creates an explicit policy with empty retry and redelivery lists; setting `RetryDelays` to empty also disables in-process retries without losing custom dead-letter or redelivery settings. Configuring any retry sequence replaces the default, while configuring only redelivery retains it.
 
 **Consequences.** A retryable delivery has at most four attempts before its configured durable redelivery or dead-letter path. Backoff adds up to 1.6 seconds to an exhausted delivery, within the same native lock/acknowledgement lifetime; applications must account for their handler duration and broker deadlines. Successful deliveries do no additional per-message work or allocation. The default arrays are owned by each options instance, avoiding mutable shared policy storage.
+
+
+## D70. MySQL send failures retain durable retry eligibility
+
+**Context.** #668 found that broker outages consumed MySQL outbox poison budgets, parking ordered
+keys or dead-lettering unordered work. Native retries already run inside each send: Azure Service Bus
+7.21.0's [AmqpSender](https://github.com/Azure/azure-sdk-for-net/blob/Azure.Messaging.ServiceBus_7.21.0/sdk/servicebus/Azure.Messaging.ServiceBus/src/Amqp/AmqpSender.cs)
+uses `ServiceBusRetryPolicy.RunOperation`. Dekaf 1.27.0's Kafka-specific
+[OutboxRelayService](https://github.com/thomhurst/Dekaf/blob/v1.27.0/src/Dekaf.Outbox/OutboxRelayService.cs)
+has in-memory bucket backoff, not durable eligibility for Relayer's multi-transport MySQL rows.
+MySqlConnector 3.0.0 supplies conditional updates and native transactions, not application send scheduling.
+The existing `deliver_at` checks, fenced mutations, direct dispatcher and ordered head barrier already
+provide the required durable mechanism; MySQL Event Scheduler cannot invoke application transports.
+
+**Decision.** After a failed native send, reuse a fenced update to retain the row and persist exponential
+backoff in `deliver_at` (1 second to 5 minutes), clearing its claim. Calculate the delay before incrementing
+`attempts` because MySQL single-table UPDATE assignments are evaluated left to right; cap diagnostic
+attempts at 30 to avoid overflow. No in-process send retry loop, extra table or broker scheduler is added.
+All native send exceptions, including permanent broker rejections and batch failures, retain eligibility:
+`ITransport` has no portable per-row permanent classification for native batch errors. Explicit store
+failure calls and preparation failures retain their poison transitions. Success and completion uncertainty
+retain their existing fenced behavior.
+
+**Consequences.** Broker outages no longer poison durable work. Retry deadlines survive worker replacement;
+a delayed ordered head blocks its lane until eligible, preserving order. Operators must inspect persistent
+native rejections and repair their cause. A failed batch backs off every claimed row, preserving at-least-once
+semantics after partial acceptance. Preparation failures still count previous diagnostic attempts toward
+the poison budget; repair can require resetting attempts. Success does no additional database work or
+allocation. See the [MySQL reference](../website/docs/reference/mysql-store.md#recovery-poison-rows-and-retention).
