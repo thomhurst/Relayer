@@ -1,4 +1,6 @@
 import json
+import shutil
+import sys
 from pathlib import Path
 import subprocess
 import tempfile
@@ -12,6 +14,17 @@ COMPLETE = "WorkloadResult   1: 65536 op, 1 ns, 1 ns/op\n// GC:  0 0 0 45823680 
 
 
 class NativeResultTests(unittest.TestCase):
+    def test_retained_uninstrumented_launcher_needs_no_allocation_readers(self):
+        # Existing control artifacts retain these two scripts without allocation readers.
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for name in ("frozen_bdn_control.py", "frozen_concurrent_control.py"):
+                shutil.copyfile(Path(__file__).with_name(name), root / name)
+            completed = subprocess.run([sys.executable, str(root / "frozen_bdn_control.py"), "--help"],
+                                       cwd=root, capture_output=True, text=True)
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            self.assertIn("--allocation-profiler", completed.stdout)
+
     def test_uses_native_operations_without_dividing_by_eight_again(self):
         actual = result(COMPLETE)
         self.assertEqual(actual["operations"], 65536)
@@ -291,6 +304,76 @@ class OriginalRunnerTests(unittest.TestCase):
                 self.assertEqual(outcomes[3]["runtime"], "10.0.14")
                 self.assertEqual([o["side"] for o in outcomes], ["candidate"] * 4)
                 self.assertEqual(json.loads((output / "protocol.json").read_text())["requestedRuntime"], "10.0.14")
+
+    def test_exact_callbacks_attempt_every_launch_and_fail_closed_on_denominator_mismatch(self):
+        from test_native_tail_allocations import report
+        for invalid, same_image in ((invalid, same) for invalid in (None, "coverage", "denominator", "missing") for same in (False, True)):
+            with self.subTest(invalid=invalid, same_image=same_image), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                for side in ("baseline", "candidate"):
+                    _, image = self.fixture(root / "performance-builds" / side)
+                    image.with_suffix(".runtimeconfig.json").write_text(json.dumps({"runtimeOptions": {
+                        "framework": {"name": "Microsoft.NETCore.App", "version": "10.0.0"}}}))
+                output = root / "results"
+                calls = []
+
+                def execute(command, **kwargs):
+                    calls.append(command)
+                    environment = kwargs["env"]
+                    self.assertEqual(environment["RELAYER_ALLOCATION_BDN_TAIL"], "1")
+                    self.assertEqual(environment["CORECLR_ENABLE_PROFILING"], "1")
+                    self.assertIn("--job", command)
+                    self.assertNotIn("collect", command)
+                    if same_image:
+                        self.assertEqual(command[:5], ["dotnet", "--fx-version", "10.0.14", "--roll-forward", "Disable"])
+                        self.assertIn("/performance-builds/candidate/", command[5])
+                    kwargs["stdout"].write("// Runtime=.NET 10.0.14 (test), X64\n" + COMPLETE)
+                    rows = report()
+                    # Keep every native iteration payload and final scope consistent.
+                    for row in rows:
+                        if row["kind"] == "engine-event" and row["id"] in (15, 16):
+                            row["operations"] = 65536
+                        if row["kind"] == "native-engine-tail":
+                            row["nativeOperations"] = 65536
+                    if len(calls) == 2:
+                        if invalid == "coverage":
+                            rows[-1]["failures"] = 1
+                        elif invalid == "denominator":
+                            rows[-3]["nativeOperations"] = 8
+                        elif invalid == "missing":
+                            return
+                    Path(environment["RELAYER_ALLOCATION_OUTPUT"]).write_text("\n".join(map(json.dumps, rows)))
+
+                with patch("sys.argv", ["control", str(root), str(output), "--allocation-profiler", str(root / "profiler.so"),
+                                        *(["--same-image", "candidate", "--runtime-version", "10.0.14"] if same_image else [])]), \
+                     patch("frozen_bdn_control.verify", return_value="frozen"), \
+                     patch("frozen_bdn_control.subprocess.run", side_effect=execute):
+                    if invalid:
+                        with self.assertRaisesRegex(SystemExit, "launches failed"):
+                            main()
+                    else:
+                        main()
+                self.assertEqual(len(calls), 4)
+                outcomes = json.loads((output / "outcomes.json").read_text())
+                self.assertEqual("allocationError" in outcomes[1], invalid is not None)
+                self.assertEqual(outcomes[3]["callbackBytes"], 72)
+                self.assertTrue((output / f"4-{'candidate' if same_image else 'baseline'}-objects.jsonl").exists())
+                if same_image:
+                    self.assertEqual([item["side"] for item in outcomes], ["candidate"] * 4)
+                    self.assertEqual(outcomes[3]["runtime"], "10.0.14")
+                    self.assertIn("Same-image negative control", json.loads((output / "protocol.json").read_text())["limits"])
+
+    def test_exact_callbacks_reject_other_benchmark_cases_before_launch(self):
+        for case in ("scoped-dispatch", "log-composed", "queue-native"):
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as directory, \
+                 patch("sys.argv", ["control", directory, str(Path(directory) / "results"),
+                                    "--allocation-profiler", "profiler.so", "--case", case]), \
+                 patch("frozen_bdn_control.verify") as verify_input, \
+                 patch("frozen_bdn_control.subprocess.run") as execute:
+                with self.assertRaises(SystemExit):
+                    main()
+                verify_input.assert_not_called()
+                execute.assert_not_called()
 
     def test_invalid_input_prevents_every_process_launch(self):
         with tempfile.TemporaryDirectory() as directory, \

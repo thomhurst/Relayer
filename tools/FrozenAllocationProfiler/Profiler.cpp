@@ -3,6 +3,8 @@
 #include "Callbacks.h"
 #include "ClassFactory.h"
 #include <cstdlib>
+#include <cstring>
+#include <vector>
 #include <fstream>
 #include <map>
 #include <mutex>
@@ -17,6 +19,18 @@ bool initialized = false, active = false, begun = false;
 unsigned long long failures = 0;
 std::map<ClassID, Count> counts;
 ICorProfilerInfo12* info = nullptr;
+// Native BDN events are delivered synchronously on the emitting thread by the
+// profiler EventPipe API (pinned dotnet/samples EventPipeProfiler.cpp).
+bool nativeTail = false, benchmarkStarted = false, benchmarkStopped = false, iterationOpen = false;
+ThreadID engineThread = 0;
+long long pendingOperations = 0, nativeOperations = 0;
+unsigned iterations = 0;
+EVENTPIPE_SESSION session = 0;
+struct EngineEvent { DWORD id; ThreadID thread; long long operations; };
+std::vector<EngineEvent> engineEvents;
+constexpr const char* Benchmark = "Relayer.Benchmarks.EndToEndBenchmarks.ConcurrentRoundTrip";
+
+int writeReport();
 
 std::string narrow(const WCHAR* value)
 {
@@ -77,13 +91,27 @@ public:
     HRESULT STDMETHODCALLTYPE Initialize(IUnknown* unknown) override {
         auto hr = unknown->QueryInterface(__uuidof(ICorProfilerInfo12), reinterpret_cast<void**>(&info));
         if (FAILED(hr)) return hr;
-        hr = info->SetEventMask2(COR_PRF_MONITOR_OBJECT_ALLOCATED | COR_PRF_ENABLE_OBJECT_ALLOCATED, 0);
-        initialized = SUCCEEDED(hr);
+        nativeTail = std::getenv("RELAYER_ALLOCATION_BDN_TAIL") != nullptr;
+        hr = info->SetEventMask2(COR_PRF_MONITOR_OBJECT_ALLOCATED | COR_PRF_ENABLE_OBJECT_ALLOCATED,
+                                nativeTail ? COR_PRF_HIGH_MONITOR_EVENT_PIPE : 0);
+        if (FAILED(hr)) return hr;
+        initialized = true;
+        if (nativeTail) {
+            COR_PRF_EVENTPIPE_PROVIDER_CONFIG provider = {WCHAR("BenchmarkDotNet.EngineEventSource"), 0xffffffffffffffffULL, 4, nullptr};
+            hr = info->EventPipeStartSession(1, &provider, false, &session);
+            if (FAILED(hr)) initialized = false;
+        }
         return hr;
     }
     HRESULT STDMETHODCALLTYPE Shutdown() override {
+        if (session) info->EventPipeStopSession(session);
         std::lock_guard<std::mutex> lock(gate);
-        active = false; initialized = false;
+        active = false;
+        if (nativeTail) {
+            if (!benchmarkStopped || iterationOpen || !iterations) ++failures;
+            if (!writeReport()) std::fprintf(stderr, "Native tail report invalid or could not be written.\n");
+        }
+        initialized = false;
         if (info) { info->Release(); info = nullptr; }
         return S_OK;
     }
@@ -99,8 +127,58 @@ public:
         ++count.objects; count.bytes += size;
         return S_OK;
     }
-    HRESULT STDMETHODCALLTYPE EventPipeEventDelivered(EVENTPIPE_PROVIDER, DWORD, DWORD, ULONG, LPCBYTE,
-        ULONG, LPCBYTE, LPCGUID, LPCGUID, ThreadID, ULONG, UINT_PTR[]) override { return S_OK; }
+    HRESULT STDMETHODCALLTYPE EventPipeEventDelivered(EVENTPIPE_PROVIDER provider, DWORD id, DWORD version, ULONG, LPCBYTE,
+        ULONG length, LPCBYTE data, LPCGUID, LPCGUID, ThreadID thread, ULONG, UINT_PTR[]) override {
+        WCHAR name[256]; ULONG actual;
+        if (!nativeTail) return S_OK;
+        auto hr = info->EventPipeGetProviderInfo(provider, 256, &actual, name);
+        std::lock_guard<std::mutex> lock(gate);
+        if (FAILED(hr) || actual > 256) { ++failures; active = false; return S_OK; }
+        if (narrow(name) != "BenchmarkDotNet.EngineEventSource") return S_OK;
+        // eventThread may be null for an event emitted by the current thread.
+        // Verify synchronous delivery and use the CLR's current managed ThreadID.
+        ThreadID current = 0;
+        auto threadResult = info->GetCurrentThreadID(&current);
+        long long operations = 0;
+        bool valid = version == 0 && SUCCEEDED(threadResult) && current != 0 && (!thread || thread == current) && data;
+        thread = current;
+        if (id == 1 || id == 2) {
+            const auto expected = std::strlen(Benchmark);
+            valid = valid && length == (expected + 1) * 2;
+            for (size_t i = 0; valid && i <= expected; ++i)
+                valid = data[i * 2] == static_cast<unsigned char>(Benchmark[i]) && data[i * 2 + 1] == 0;
+        } else {
+            valid = valid && id >= 3 && id <= 16 && length == sizeof(operations);
+            if (valid) std::memcpy(&operations, data, sizeof(operations));
+            valid = valid && operations > 0 && operations % 8 == 0;
+        }
+        engineEvents.push_back({id, thread, operations});
+        if (!valid || benchmarkStopped || (engineThread && engineThread != thread)) {
+            ++failures; active = false; return S_OK;
+        }
+        engineThread = thread;
+        if (id == 1) {
+            if (benchmarkStarted) ++failures;
+            benchmarkStarted = true;
+        } else if (!benchmarkStarted) {
+            if (id < 3 || id > 6) ++failures; // EngineFactory jitting precedes BenchmarkStart.
+        } else if (id == 15) {
+            if (iterationOpen) ++failures;
+            iterationOpen = true; pendingOperations = operations; active = false;
+        } else if (id == 16) {
+            if (!iterationOpen || pendingOperations != operations) ++failures;
+            iterationOpen = false; nativeOperations = operations; ++iterations;
+            // The final stop is not known until BenchmarkStop. Discard each earlier
+            // tail, without ever discarding a coverage/metadata failure.
+            counts.clear(); active = failures == 0;
+        } else if (id == 2) {
+            if (iterationOpen || !iterations) ++failures;
+            benchmarkStopped = true; active = false;
+        } else if (iterationOpen || iterations) {
+            ++failures; active = false;
+        }
+        return S_OK;
+    }
     HRESULT STDMETHODCALLTYPE EventPipeProviderCreated(EVENTPIPE_PROVIDER) override { return S_OK; }
     HRESULT STDMETHODCALLTYPE QueryInterface(REFIID id, void** result) override {
         if (!result) return E_POINTER;
@@ -132,20 +210,25 @@ extern "C" __attribute__((visibility("default"))) HRESULT STDMETHODCALLTYPE DllG
 extern "C" __attribute__((visibility("default"))) int BeginAllocationRegion()
 {
     std::lock_guard<std::mutex> lock(gate);
-    if (!initialized || begun) return 0;
+    if (!initialized || nativeTail || begun) return 0;
     begun = true; active = true;
     return 1;
 }
 
-extern "C" __attribute__((visibility("default"))) int EndAllocationRegion()
+namespace {
+int writeReport()
 {
-    std::lock_guard<std::mutex> lock(gate);
-    if (!initialized || !active) return 0;
-    active = false;
     const char* path = std::getenv("RELAYER_ALLOCATION_OUTPUT");
     if (!path) return 0;
     std::ofstream output(path, std::ios::out | std::ios::trunc);
     if (!output) return 0;
+    if (nativeTail) {
+        for (const auto& event : engineEvents)
+            output << "{\"kind\":\"engine-event\",\"id\":" << event.id << ",\"thread\":" << event.thread
+                   << ",\"operations\":" << event.operations << "}\n";
+        output << "{\"kind\":\"native-engine-tail\",\"nativeOperations\":" << nativeOperations
+               << ",\"iterations\":" << iterations << ",\"stopped\":" << (benchmarkStopped ? "true" : "false") << "}\n";
+    }
     unsigned long long objects = 0, bytes = 0;
     for (const auto& entry : counts) {
         objects += entry.second.objects; bytes += entry.second.bytes;
@@ -153,7 +236,16 @@ extern "C" __attribute__((visibility("default"))) int EndAllocationRegion()
                << "\",\"objects\":" << entry.second.objects << ",\"bytes\":" << entry.second.bytes << "}\n";
     }
     output << "{\"kind\":\"coverage\",\"objects\":" << objects << ",\"bytes\":" << bytes
-           << ",\"failures\":" << failures << ",\"limits\":\"Exact CLR ObjectAllocated callbacks in this separate instrumented region; callbacks change fast paths and scheduling. No stacks, historical replay or cross-control subtraction.\"}\n";
+           << ",\"failures\":" << failures << ",\"limits\":\"Exact CLR ObjectAllocated callbacks in this separate instrumented region; callbacks change fast paths and scheduling. Native-tail mode includes final timed cleanup/logging and extra-stat setup/work/cleanup, not exact MeasureWithGc. No stacks, historical replay or cross-control subtraction.\"}\n";
     output.flush();
     return output.good() && !failures && objects ? 1 : 0;
+}
+}
+
+extern "C" __attribute__((visibility("default"))) int EndAllocationRegion()
+{
+    std::lock_guard<std::mutex> lock(gate);
+    if (!initialized || nativeTail || !active) return 0;
+    active = false;
+    return writeReport();
 }
