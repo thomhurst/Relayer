@@ -155,6 +155,15 @@ public class PostgreSqlOutboxStoreTests
         var store = new PostgreSqlOutboxStore(source);
         using var cancelled = new CancellationTokenSource();
         var pending = store.TryClaimAsync(claim, now, now.AddMinutes(1), cancelled.Token);
+        // Observe the native command waiting on our row lock before cancelling it. Cancelling
+        // during connection startup does not exercise cancellation of a blocked mutation.
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        await using (var blocked = source.CreateCommand("SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE @pid = ANY(pg_blocking_pids(pid)))"))
+        {
+            blocked.Parameters.AddWithValue("pid", connection.ProcessID);
+            while (await blocked.ExecuteScalarAsync(timeout.Token) is not true)
+                await Task.Delay(10, timeout.Token);
+        }
         await Assert.ThrowsAsync<InvalidOperationException>(async () =>
             await store.TryClaimAsync(new(claim.MessageId, Guid.NewGuid()), now, now.AddMinutes(1), default));
         await cancelled.CancelAsync();
