@@ -119,30 +119,12 @@ internal sealed class SnsOperationState
 // Same lock-free high-water-mark strategy as the Service Bus adapter; no shared mutable static state.
 internal sealed class SnsOperationPool
 {
-    private readonly Page _first = new();
-    internal SnsOperationState Rent()
-    {
-        for (Page? page = _first; page is not null; page = Volatile.Read(ref page.Next))
-            for (var i = 0; i < page.Slots.Length; i++)
-                if (Interlocked.Exchange(ref page.Slots[i], null) is { } state) return state;
-        return new();
-    }
+    private readonly SlotPool<SnsOperationState> _states = new(pageSize: 32);
+    internal SnsOperationState Rent() => _states.TryRent() ?? new();
 
     internal void Return(SnsOperationState state)
     {
         state.Clear();
-        var page = _first;
-        while (true)
-        {
-            for (var i = 0; i < page.Slots.Length; i++)
-                if (Interlocked.CompareExchange(ref page.Slots[i], state, null) is null) return;
-            page = Volatile.Read(ref page.Next) ?? Interlocked.CompareExchange(ref page.Next, new Page(), null) ?? page.Next!;
-        }
-    }
-
-    private sealed class Page
-    {
-        internal readonly SnsOperationState?[] Slots = new SnsOperationState?[32];
-        internal Page? Next;
+        _states.TryReturn(state);
     }
 }

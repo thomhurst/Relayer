@@ -32,6 +32,8 @@
   <ItemGroup>
     <InternalsVisibleTo Include="Relayer.Tests" />
     <InternalsVisibleTo Include="Relayer.Kafka" />
+    <InternalsVisibleTo Include="Relayer.AmazonSqs" />
+    <InternalsVisibleTo Include="Relayer.GooglePubSub" />
     <InternalsVisibleTo Include="Relayer.Kafka.Tests" />
     <InternalsVisibleTo Include="Relayer.AzureServiceBus" />
     <InternalsVisibleTo Include="Relayer.RabbitMQ" />

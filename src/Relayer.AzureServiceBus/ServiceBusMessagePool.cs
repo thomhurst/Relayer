@@ -7,35 +7,10 @@ namespace Relayer.AzureServiceBus;
 // Retain native message containers at the concurrency high-water mark, without a lock or per-send wrapper.
 internal sealed class ServiceBusPool<T>(Func<T> create) where T : class
 {
-    private readonly Page _first = new();
+    private readonly SlotPool<T> _items = new();
 
-    internal T Rent()
-    {
-        for (Page? page = _first; page is not null; page = Volatile.Read(ref page.Next))
-            for (var i = 0; i < page.Slots.Length; i++)
-                if (Interlocked.Exchange(ref page.Slots[i], null) is { } state) return state;
-        return create();
-    }
-
-    internal void Return(T state)
-    {
-        var page = _first;
-        while (true)
-        {
-            for (var i = 0; i < page.Slots.Length; i++)
-                if (Interlocked.CompareExchange(ref page.Slots[i], state, null) is null) return;
-            var next = Volatile.Read(ref page.Next);
-            if (next is null)
-                next = Interlocked.CompareExchange(ref page.Next, new Page(), null) ?? page.Next!;
-            page = next;
-        }
-    }
-
-    private sealed class Page
-    {
-        internal readonly T?[] Slots = new T?[64];
-        internal Page? Next;
-    }
+    internal T Rent() => _items.TryRent() ?? create();
+    internal void Return(T state) => _items.TryReturn(state);
 }
 
 internal sealed class ServiceBusSendState
