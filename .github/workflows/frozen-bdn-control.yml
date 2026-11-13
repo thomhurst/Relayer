@@ -27,6 +27,19 @@ on:
           - log-composed
           - queue-native
 
+      same_image:
+        description: Hold one original image constant (abba preserves the image comparison)
+        required: true
+        default: abba
+        type: choice
+        options: [abba, baseline, candidate]
+      runtime_version:
+        description: Exact runtime patch (auto preserves native host selection)
+        required: true
+        default: auto
+        type: choice
+        options: [auto, '10.0.14', '10.0.15']
+
 permissions:
   contents: read
   actions: read
@@ -43,21 +56,42 @@ jobs:
           dotnet-version: |
             10.0.403
             11.0.100
+      - name: Install supported exact runtime patches when requested
+        if: inputs.runtime_version != '' && inputs.runtime_version != 'auto'
+        uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
+        with:
+          dotnet-version: |
+            10.0.403
+            10.0.404
       - name: Record host and verify launcher
         run: |
           mkdir -p results
           dotnet --info > results/runtime.txt
           uname -a > results/host.txt
+          lscpu > results/cpu.txt
           python3 -m unittest discover -s .github/scripts -p test_frozen_bdn_control.py > results/launcher-tests.log 2>&1
       - name: Download original images and execute native BenchmarkDotNet ABBA
         env:
           GH_TOKEN: ${{ github.token }}
           PERFORMANCE_RUN: ${{ inputs.performance_run || '42310409459' }}
           BENCHMARK_CASE: ${{ inputs.benchmark_case || 'concurrent' }}
+          SAME_IMAGE: ${{ inputs.same_image || 'abba' }}
+          CONTROL_RUNTIME: ${{ inputs.runtime_version || 'auto' }}
         run: |
           [[ "$PERFORMANCE_RUN" =~ ^[0-9]+$ ]] || { echo "Invalid Performance run ID: $PERFORMANCE_RUN" >&2; exit 1; }
           gh run download "$PERFORMANCE_RUN" --name "performance-$PERFORMANCE_RUN-1" --dir inputs
-          python3 .github/scripts/frozen_bdn_control.py inputs results/original-engine --case "$BENCHMARK_CASE"
+          control_args=(--case "$BENCHMARK_CASE")
+          case "$SAME_IMAGE" in
+            abba) ;;
+            baseline|candidate) control_args+=(--same-image "$SAME_IMAGE") ;;
+            *) echo "Invalid image control: $SAME_IMAGE" >&2; exit 1 ;;
+          esac
+          case "$CONTROL_RUNTIME" in
+            auto) ;;
+            10.0.14|10.0.15) control_args+=(--runtime-version "$CONTROL_RUNTIME") ;;
+            *) echo "Invalid runtime control: $CONTROL_RUNTIME" >&2; exit 1 ;;
+          esac
+          python3 .github/scripts/frozen_bdn_control.py inputs results/original-engine "${control_args[@]}"
       - name: Retain all outcomes and executable inputs
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

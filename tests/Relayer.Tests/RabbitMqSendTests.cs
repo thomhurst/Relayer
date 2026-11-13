@@ -44,8 +44,10 @@ public class RabbitMqSendTests
             await Assert.That(initialDelay).IsGreaterThan(0L);
             var send = new RabbitMqSendPool().Rent().Start(transport, endpoint, message, initialDelay, connection, publishers, token);
             await Assert.That(send.IsCompleted).IsFalse();
-            // The publisher remains unavailable until its absolute delivery deadline has elapsed.
-            await Task.Delay(TimeSpan.FromMilliseconds(initialDelay + 1), token);
+            // Timer completion alone does not prove that the wall-clock delivery deadline elapsed.
+            // Keep the publisher unavailable until the same deadline predicate used by the send is zero.
+            while (endpoint.Delay(message.DeliverAt) is var remainingDelay && remainingDelay > 0)
+                await Task.Delay(TimeSpan.FromMilliseconds(remainingDelay), token);
             await publishers.Writer.WriteAsync(publisher, token);
             await send;
             var received = (await reader.BasicGetAsync("orders", true, token))!;
