@@ -121,19 +121,15 @@ internal sealed class KafkaConsumer : IAsyncDisposable
     internal async ValueTask<int> ProcessBatchAsync(ConsumeBatch<byte[], byte[]> batch, CancellationToken cancellationToken)
     {
         if (_stop.IsCancellationRequested) return 0;
-        var version = _ownership.Version;
         var partition = batch.TopicPartition;
         if (!_partitions.TryGetValue(partition.Partition, out var partitionId))
             _partitions.Add(partition.Partition, partitionId = partition.Partition.ToString(CultureInfo.InvariantCulture));
         var count = 0;
-        var complete = true;
         var records = batch.GetEnumerator();
         if (!records.MoveNext()) return 0;
         var rewind = new TopicPartitionOffset(partition.Topic, partition.Partition, records.Current.Offset);
         do
         {
-            if (version != _ownership.Version || !_native.Assignment.Contains(partition))
-            { complete = false; break; }
             var record = records.Current;
             if (_circuit is { } circuit && !circuit.TryEnter())
             {
@@ -155,15 +151,10 @@ internal sealed class KafkaConsumer : IAsyncDisposable
         }
         // Do not advance the native checkpoint to a record we will not handle.
         while (!_stop.IsCancellationRequested && records.MoveNext());
-        // A rebalance invalidates the entire borrowed batch. Never acknowledge its old
-        // offsets under a new ownership epoch, even when the same partition was reassigned.
-        if (!complete || version != _ownership.Version)
-        {
-            // A retained partition keeps its native fetch position. Replay the whole
-            // uncommitted window before a later batch can acknowledge beyond it.
-            if (_native.Assignment.Contains(partition)) _native.Seek(rewind);
-            return 0;
-        }
+        // Dekaf's batch iterator and checkpoint are partition-scoped: retained
+        // partitions keep progressing, while revoked/invalidated windows cannot
+        // yield another record or expose a checkpoint. Do not fence on unrelated
+        // assignment callbacks, which would rewind valid durable work.
         cancellationToken.ThrowIfCancellationRequested();
         if (!batch.TryGetNextOffset(out var checkpoint)) return 0;
         _offset[0] = checkpoint;

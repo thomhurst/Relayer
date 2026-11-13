@@ -30,6 +30,11 @@ public class KafkaReceiveBenchmarks
     [Params(false, true)]
     public bool HealthEnabled { get; set; }
 
+    // Exercise native checkpoint ownership with both small and large poll windows;
+    // the adapter must not add a second assignment lookup for every record.
+    [Params(32, 500)]
+    public int MaxPollRecords { get; set; }
+
     [GlobalSetup]
     public async Task Setup()
     {
@@ -85,7 +90,7 @@ public class KafkaReceiveBenchmarks
     private async Task<IKafkaConsumer<byte[], byte[]>> BuildConsumer(string bootstrap, string suffix)
     {
         var consumer = new ConsumerBuilder<byte[], byte[]>().WithBootstrapServers(bootstrap).WithGroupId(_topic + suffix)
-            .WithOffsetCommitMode(OffsetCommitMode.Manual).WithAutoOffsetStore(false).WithAutoOffsetReset(AutoOffsetReset.Earliest).Build();
+            .WithMaxPollRecords(MaxPollRecords).WithOffsetCommitMode(OffsetCommitMode.Manual).WithAutoOffsetStore(false).WithAutoOffsetReset(AutoOffsetReset.Earliest).Build();
         consumer.Assign(new TopicPartition(_topic, 0));
         await consumer.InitializeAsync();
         return consumer;

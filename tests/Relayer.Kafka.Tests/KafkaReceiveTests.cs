@@ -184,7 +184,7 @@ public class KafkaReceiveTests
     [Arguments(3, false)]
     [Arguments(1, true)]
     [Arguments(3, true)]
-    public async Task Retained_partition_replays_invalidated_batch_before_committing(int invalidateAfter, bool circuitEnabled)
+    public async Task Retained_partition_completes_despite_assignment_notifications(int invalidateAfter, bool circuitEnabled)
     {
         using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(2));
         var token = timeout.Token;
@@ -208,16 +208,9 @@ public class KafkaReceiveTests
         await native.InitializeAsync(token);
         await using var batches = native.ConsumeBatchAsync(token).GetAsyncEnumerator(token);
         await Assert.That(await batches.MoveNextAsync()).IsTrue();
-        await Assert.That(await adapter.ProcessBatchAsync(batches.Current, token)).IsEqualTo(0);
-        await Assert.That(handled.Count).IsEqualTo(invalidateAfter);
-        await Assert.That(native.GetPosition(partition)).IsEqualTo(0L);
-        var committed = await native.GetCommittedOffsetAsync(partition, token);
-        await Assert.That(committed is null or < 0).IsTrue();
-        handled.Clear();
-        var completed = 0;
-        while (completed < 3 && await batches.MoveNextAsync())
-            completed += await adapter.ProcessBatchAsync(batches.Current, token);
+        await Assert.That(await adapter.ProcessBatchAsync(batches.Current, token)).IsEqualTo(3);
         await Assert.That(handled.ToArray()).IsEquivalentTo(new long[] { 0, 1, 2 });
+        await Assert.That(native.GetPosition(partition)).IsEqualTo(3L);
         await Assert.That(await native.GetCommittedOffsetAsync(partition, token)).IsEqualTo(3L);
         if (circuit is not null)
         {
