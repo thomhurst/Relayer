@@ -302,8 +302,11 @@ public class NatsExecutionTests
                 await worker.SettleAsync(new(failed, delivery.Consumer), Disposition.Complete, processing);
                 return Disposition.SettledByHandler;
             }
+            // Confirm settlement before signalling: stopping the pull loop must not race
+            // the assertion, and native at-least-once delivery may include queued duplicates.
+            await worker.SettleAsync(delivery, Disposition.Complete, processing);
             if (delivery.Message.Metadata!.Value.NumDelivered > 1) redelivered.TrySetResult();
-            return Disposition.Complete;
+            return Disposition.SettledByHandler;
         };
         await adapter.StartAsync(token);
         await using var native = new NatsConnection(broker.Options());
@@ -315,7 +318,7 @@ public class NatsExecutionTests
         await adapter.StopAsync(token);
         var consumer = await js.GetConsumerAsync(events, "worker", token);
         await Assert.That(consumer.Info.NumAckPending).IsEqualTo(0L);
-        await Assert.That(calls).IsEqualTo(2);
+        await Assert.That(calls).IsGreaterThanOrEqualTo(2);
     }
 
     [Test]
@@ -359,8 +362,11 @@ public class NatsExecutionTests
                     NatsRawSerializer<ReadOnlyMemory<byte>>.Default, cancellationToken: processing)).EnsureSuccess();
                 throw new InvalidOperationException("Expected native publication to fail.");
             }
+            // Confirm settlement before signalling: stopping the pull loop must not race
+            // the assertion, and native at-least-once delivery may include queued duplicates.
+            await worker.SettleAsync(delivery, Disposition.Complete, processing);
             if (delivery.Message.Metadata!.Value.NumDelivered > 1) redelivered.TrySetResult();
-            return Disposition.Complete;
+            return Disposition.SettledByHandler;
         };
         await adapter.StartAsync(token);
         (await js.PublishAsync(subject, new byte[] { 42 }, NatsRawSerializer<byte[]>.Default, cancellationToken: token)).EnsureSuccess();
@@ -370,7 +376,7 @@ public class NatsExecutionTests
         await adapter.StopAsync(token);
         var consumer = await js.GetConsumerAsync(events, "worker", token);
         await Assert.That(consumer.Info.NumAckPending).IsEqualTo(0L);
-        await Assert.That(calls).IsEqualTo(2);
+        await Assert.That(calls).IsGreaterThanOrEqualTo(2);
     }
 
 }
