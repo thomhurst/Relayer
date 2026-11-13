@@ -15,6 +15,7 @@ yet; use project references from a repository checkout. The runnable
 
 ## Configure a store and dispatch
 
+Provision the Kafka topics externally; Kafka currently requires `TopologyMode.None`.
 Deploy the [PostgreSQL schema](../reference/postgres-schema.md) before starting the host.
 The default schema is `public`, with table prefix `relayer_`; use the same settings for schema
 creation and registration. Register an ordinary scoped DbContext and the combined outbox:
@@ -35,6 +36,7 @@ services.AddRelayer(relayer =>
     relayer.AddMessageTypesFromThisAssembly();
     relayer.Kafka("events", kafka =>
     {
+        kafka.TopologyMode = TopologyMode.None; // Provision topics externally.
         kafka.Options.Configure(options => options.BootstrapServers.Add("localhost:9092"));
         kafka.Send<OrderPlaced>("orders");
         kafka.Consume("orders", consumer =>

@@ -210,6 +210,7 @@ services.AddRelayer(relayer =>
     relayer.AddMessageTypesFromThisAssembly();
     relayer.Kafka("events", kafka =>
     {
+        kafka.TopologyMode = TopologyMode.None; // Provision topics externally.
         kafka.Options.Configure(options => options.BootstrapServers.Add("localhost:9092"));
         kafka.Send<OrderPlaced>("orders.placed", route => route.OrderingKey(m => m.OrderId));
         kafka.Consume("orders.placed", consumer =>

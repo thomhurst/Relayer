@@ -15,6 +15,7 @@ services.AddRelayer(relayer =>
     relayer.AddMessageTypesFromThisAssembly();
     relayer.Kafka("events", kafka =>
     {
+        kafka.TopologyMode = TopologyMode.None; // Provision topics externally.
         kafka.Options.Configure(options => options.BootstrapServers.Add("localhost:9092"));
         kafka.Consume("orders", consumer =>
         {
