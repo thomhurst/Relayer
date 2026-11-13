@@ -24,7 +24,7 @@ public class ServiceBusSendEmulatorTests
         });
         var admin = new ServiceBusAdministrationClient(stack.Emulator.GetHttpConnectionString());
         var queue = TestContext.Current!.Isolation.GetIsolatedName("batch-isolation");
-        var options = new AzureServiceBusTransportOptions { Client = client, AdministrationClient = admin };
+        var options = new ServiceBusTransportOptions { Client = client, AdministrationClient = admin };
         options.Queues.Add(new(queue) { DefaultMessageTimeToLive = TimeSpan.FromHours(1), MaxSizeInMegabytes = 100,
             DuplicateDetectionHistoryTimeWindow = TimeSpan.FromMinutes(10) });
         await using var transport = new ServiceBusSendTransport("isolation", client, false, options,
