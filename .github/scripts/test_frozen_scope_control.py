@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from frozen_scope_control import executable, main, result
+from frozen_scope_control import executable, main, perf_map, result
 import test_frozen_bdn_control as original_tests
 
 COMPLETE = 'WorkloadResult   1: 16 op, 432 ns, 27 ns/op\n// GC:  0 0 0 2048 16\n// AfterAll\n'
@@ -465,6 +465,96 @@ class ScopeControlTests(unittest.TestCase):
                  patch('sys.argv', ['control', 'inputs', 'output', '--aslr-control'] + options), \
                  patch('frozen_scope_control.os.uname') as uname, \
                  patch('frozen_scope_control.shutil.which', return_value=native), \
+                 patch('frozen_scope_control.verify') as verify, \
+                 patch('frozen_scope_control.subprocess.run') as execute:
+                uname.return_value.sysname = system
+                with self.assertRaises(SystemExit):
+                    main()
+                verify.assert_not_called()
+                execute.assert_not_called()
+
+    def test_perf_map_preserves_addresses_tiers_and_repeated_compilations(self):
+        raw = ("00007abc12345000 2a void Bench:WorkloadActionUnroll(int32)[Tier0]\n"
+               "00007abc12346020 31 void Bench:WorkloadActionUnroll(int32)[Tier1]\n"
+               "00007abc12347000 12 void Scope:CreateScope()[Tier1]\n")
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'perf-123.map'
+            with self.assertRaises(ValueError):
+                perf_map(Path(directory))
+            path.write_text(raw)
+            parsed = perf_map(Path(directory))
+            self.assertEqual(parsed['file'], 'perf-123.map')
+            self.assertEqual(parsed['entryCount'], 3)
+            self.assertEqual(parsed['selectedEntries'][1]['address'], '00007abc12346020')
+            self.assertEqual(parsed['selectedEntries'][1]['sizeHex'], '31')
+            self.assertIn('[Tier1]', parsed['selectedEntries'][1]['symbol'])
+            self.assertEqual(path.read_text(), raw)
+            path.write_text(raw.replace('00007abc12345000', '0x7abc12345000'))
+            self.assertEqual(perf_map(Path(directory))['selectedEntries'][0]['address'], '0x7abc12345000')
+            for invalid in ('', raw.rstrip(), raw + 'bad line\n',
+                            raw.replace('00007abc12345000', 'not-an-address'),
+                            raw.replace('WorkloadActionUnroll', 'Unknown')):
+                with self.subTest(invalid=invalid):
+                    path.write_text(invalid)
+                    with self.assertRaises(ValueError):
+                        perf_map(Path(directory))
+            path.write_text(raw)
+            (Path(directory) / 'perf-124.map').write_text(raw)
+            with self.assertRaises(ValueError):
+                perf_map(Path(directory))
+
+    def test_perf_capture_keeps_all_launches_and_excludes_diagnostic_timings(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            environments = []
+
+            def execute(command, **kwargs):
+                environment = kwargs['env']
+                environments.append(environment)
+                kwargs['stdout'].write(COMPLETE.replace('27 ns/op', '60 ns/op'))
+                folder = Path(environment['DOTNET_PerfMapJitDumpPath'])
+                # Retain partial evidence even when the child fails.
+                (folder / 'perf-123.map').write_text(
+                    '00007abc12345000 2a void Bench:WorkloadActionUnroll(int32)[Tier0]\n')
+                if len(environments) == 2:
+                    raise subprocess.CalledProcessError(1, command)
+                if len(environments) == 3:
+                    (folder / 'perf-123.map').write_text('truncated')
+
+            parent = {'DOTNET_PerfMapEnabled': '0'}
+            with patch('sys.argv', ['control', directory, str(root / 'output'),
+                                    '--aslr-control', '--perf-map']), \
+                 patch('frozen_scope_control.os.environ', parent), \
+                 patch('frozen_scope_control.os.uname') as uname, \
+                 patch('frozen_scope_control.shutil.which', return_value='/usr/bin/setarch'), \
+                 patch('frozen_scope_control.verify', return_value='commit') as verify, \
+                 patch('frozen_scope_control.executable', side_effect=lambda path, scoped, method: (path / 'runner.dll', '4')), \
+                 patch('frozen_scope_control.subprocess.run', side_effect=execute):
+                uname.return_value.sysname = 'Linux'
+                with self.assertRaises(SystemExit):
+                    main()
+            self.assertEqual(verify.call_count, 6)
+            self.assertEqual(len(environments), 16)
+            self.assertTrue(all(env['DOTNET_PerfMapEnabled'] == '3' for env in environments))
+            self.assertTrue(all(env['DOTNET_PerfMapShowOptimizationTiers'] == '1' for env in environments))
+            self.assertEqual(len({env['DOTNET_PerfMapJitDumpPath'] for env in environments}), 16)
+            self.assertEqual(parent, {'DOTNET_PerfMapEnabled': '0'})
+            protocol = json.loads((root / 'output/protocol.json').read_text())
+            self.assertTrue(protocol['perfMap'])
+            self.assertIn('Excluded', protocol['timingUse'])
+            outcomes = json.loads((root / 'output/outcomes.json').read_text())
+            self.assertIn('error', outcomes[1])
+            self.assertIn('error', outcomes[2])
+            self.assertIn('perfMap', outcomes[-1])
+            self.assertTrue(all('meanNs' not in item and 'bytesPerOperation' not in item for item in outcomes))
+            self.assertEqual(len(list((root / 'output').glob('*/perf-*.map'))), 16)
+            self.assertTrue(all('60 ns/op' in path.read_text() for path in (root / 'output').glob('*.log')))
+
+    def test_perf_capture_rejects_non_linux_or_mixed_diagnostics_before_launch(self):
+        for system, options in (('Darwin', []), ('Linux', ['--jit-disassembly'])):
+            with self.subTest(system=system, options=options), \
+                 patch('sys.argv', ['control', 'inputs', 'output', '--perf-map'] + options), \
+                 patch('frozen_scope_control.os.uname') as uname, \
                  patch('frozen_scope_control.verify') as verify, \
                  patch('frozen_scope_control.subprocess.run') as execute:
                 uname.return_value.sysname = system
