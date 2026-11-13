@@ -39,7 +39,7 @@ public class OutboxTelemetryTests
         services.AddRelayer(builder =>
         {
             builder.MessageTypes.Add<Probe>("outbox.trace");
-            builder.Handler<Handler>();
+            new ConsumerBuilder<object>(builder.Services, builder.Handlers, "manual").Handler<Handler>();
             builder.InMemory("local", transport =>
             {
                 transport.Send<Probe>("orders");

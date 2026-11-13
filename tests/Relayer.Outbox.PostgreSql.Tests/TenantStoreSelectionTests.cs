@@ -28,7 +28,6 @@ public class TenantStoreSelectionTests
             for (var i = 0; i < units.Length; i++) units[i] = Save(stores[i].Id);
             await Task.WhenAll(units);
             for (var i = 0; i < stores.Count; i++) await Verify(stores[i], 2, 2, 0);
-
             async Task Save(string tenant)
             {
                 await using var scope = provider.CreateAsyncScope();
@@ -343,7 +342,7 @@ public class TenantStoreSelectionTests
         services.AddRelayer(relayer =>
         {
             relayer.MessageTypes.Add<Probe>("tenant.store.probe");
-            relayer.Handler<Handler>();
+            new ConsumerBuilder<object>(relayer.Services, relayer.Handlers, "manual").Handler<Handler>();
             relayer.AddTransport<Empty, Empty, Empty>("events", transport => transport.Send<Probe>("orders"));
         });
         return services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });

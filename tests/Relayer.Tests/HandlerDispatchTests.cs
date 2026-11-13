@@ -41,7 +41,7 @@ public class HandlerDispatchTests
     public async Task Explicit_registration_selects_only_requested_handlers_and_is_idempotent()
     {
         var services = new ServiceCollection();
-        services.AddRelayer(r => r.Handler<SingleHandler>().Handler<SingleHandler>());
+        services.AddRelayer(r => r.AddTransport<object, object, object>("events", b => b.Consume("orders", c => c.Handler<SingleHandler>().Handler<SingleHandler>())));
         await using var provider = services.BuildServiceProvider();
         var registry = provider.GetRequiredService<HandlerRegistry>();
 
@@ -52,20 +52,22 @@ public class HandlerDispatchTests
     }
 
     [Test]
-    public async Task Discovery_registers_single_batch_inherited_and_multiple_contracts()
+    public async Task Inherited_handlers_bind_only_to_their_selected_consumers()
     {
         var services = new ServiceCollection();
-        services.AddRelayer(r => r.AddHandlersFromThisAssembly());
+        services.AddRelayer(r => r.AddTransport<object, object, object>("events", transport =>
+        {
+            transport.Consume("first", c => c.Handler<DerivedHandler>());
+            transport.Consume("second", c => c.Handler<OtherHandler>());
+        }));
         await using var provider = services.BuildServiceProvider();
+        var consumers = provider.GetRequiredService<RelayerConfiguration>().Transports[0].Consumers;
         var registry = provider.GetRequiredService<HandlerRegistry>();
 
-        await Assert.That(registry.GetHandler<int, SingleHandler>()).IsNotNull();
-        await Assert.That(registry.GetHandler<int, OtherHandler>()).IsNotNull();
+        await Assert.That(consumers[0].Handlers).IsEquivalentTo(new[] { typeof(DerivedHandler) });
+        await Assert.That(consumers[1].Handlers).IsEquivalentTo(new[] { typeof(OtherHandler) });
         await Assert.That(registry.GetHandler<int, DerivedHandler>()).IsNotNull();
-        await Assert.That(registry.GetHandler<int, MultipleHandler>()).IsNotNull();
-        await Assert.That(registry.GetHandler<string, MultipleHandler>()).IsNotNull();
-        await Assert.That(registry.GetBatchHandler<int, MultipleHandler>().IsBatch).IsTrue();
-        await Assert.That(registry.Descriptors.Any(d => d.HandlerType == typeof(AbstractHandler))).IsFalse();
+        await Assert.That(registry.GetHandler<int, OtherHandler>()).IsNotNull();
     }
 
     [Test]
@@ -74,7 +76,7 @@ public class HandlerDispatchTests
         var services = new ServiceCollection();
         services.AddScoped<ScopedDependency>();
         services.AddScoped<SingleHandler>(p => new SingleHandler(p.GetRequiredService<ScopedDependency>()));
-        services.AddRelayer(r => r.Handler<SingleHandler>());
+        services.AddRelayer(r => r.AddTransport<object, object, object>("events", b => b.Consume("orders", c => c.Handler<SingleHandler>())));
         await using var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
         var descriptor = provider.GetRequiredService<HandlerRegistry>().GetHandler<int, SingleHandler>();
         using var firstScope = provider.CreateScope();
@@ -91,7 +93,7 @@ public class HandlerDispatchTests
     public async Task Typed_dispatch_forwards_message_context_cancellation_and_incomplete_ValueTask()
     {
         var services = new ServiceCollection();
-        services.AddRelayer(r => r.Handler<SingleHandler>());
+        services.AddRelayer(r => r.AddTransport<object, object, object>("events", b => b.Consume("orders", c => c.Handler<SingleHandler>())));
         await using var provider = services.BuildServiceProvider();
         using var scope = provider.CreateScope();
         using var cancellation = new CancellationTokenSource();
@@ -115,7 +117,7 @@ public class HandlerDispatchTests
     public async Task Batch_and_explicit_interface_dispatch_preserve_results_and_exceptions()
     {
         var services = new ServiceCollection();
-        services.AddRelayer(r => r.Handler<MultipleHandler>());
+        services.AddRelayer(r => r.AddTransport<object, object, object>("events", b => b.Consume("orders", c => c.Handler<MultipleHandler>())));
         await using var provider = services.BuildServiceProvider();
         using var scope = provider.CreateScope();
         var registry = provider.GetRequiredService<HandlerRegistry>();
@@ -142,7 +144,7 @@ public class HandlerDispatchTests
     public async Task Explicit_closed_generic_handlers_are_discovered()
     {
         var services = new ServiceCollection();
-        services.AddRelayer(r => r.Handler<GenericHandler<int>>());
+        services.AddRelayer(r => r.AddTransport<object, object, object>("events", b => b.Consume("orders", c => c.Handler<GenericHandler<int>>())));
         await using var provider = services.BuildServiceProvider();
         var registry = provider.GetRequiredService<HandlerRegistry>();
         await Assert.That(registry.GetHandler<int, GenericHandler<int>>()).IsNotNull();
@@ -151,8 +153,6 @@ public class HandlerDispatchTests
     [Test]
     public async Task Unsupported_handler_registration_fails_during_configuration()
     {
-        await Assert.That(() => new ServiceCollection().AddRelayer(r => r.Handler<MarkerOnly>()))
-            .Throws<InvalidOperationException>().WithMessageContaining("No generated descriptor");
         await Assert.That(() => new ServiceCollection().AddRelayer(r =>
             r.AddTransport<BuilderTests.BrokerOptions, BuilderTests.RouteOptions, BuilderTests.ConsumerOptions>("events", b =>
                 b.Consume("orders", c => c.Handler<MarkerOnly>()))))

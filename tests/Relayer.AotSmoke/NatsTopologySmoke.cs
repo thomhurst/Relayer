@@ -68,7 +68,6 @@ internal static class NatsTopologySmoke
         {
             builder.AddMessageTypesFromThisAssembly();
             builder.UseJsonSerializer(NatsAotJson.Default);
-            builder.Handler<NatsAotHandler>();
             builder.Nats("nats-aot", nats =>
             {
                 nats.TopologyMode = TopologyMode.Provision;

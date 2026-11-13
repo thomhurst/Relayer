@@ -967,8 +967,8 @@ public class FailurePipelineTests
         services.AddRelayer(r =>
         {
             r.AddMessageTypesFromThisAssembly();
-            r.Handler<Handler>();
-            r.Handler<SingletonHandler>();
+            new ConsumerBuilder<object>(r.Services, r.Handlers, "manual").Handler<Handler>();
+            new ConsumerBuilder<object>(r.Services, r.Handlers, "manual").Handler<SingletonHandler>();
             r.DeclareRoute<Payload>("test", "destination");
         });
         configure?.Invoke(services);

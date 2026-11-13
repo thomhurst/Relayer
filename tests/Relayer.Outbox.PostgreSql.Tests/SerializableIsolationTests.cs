@@ -208,7 +208,8 @@ public class SerializableIsolationTests
         services.AddRelayer(builder =>
         {
             builder.MessageTypes.Add<Probe>("serializable.probe");
-            builder.Handler<Handler>();
+            new ConsumerBuilder<object>(builder.Services, builder.Handlers, "manual").Handler<Handler>();
+
         });
         return services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
     }

@@ -209,7 +209,7 @@ public class NatsReceiveBenchmarks
         {
             relayer.AddMessageTypesFromThisAssembly();
             relayer.UseJsonSerializer(NatsBenchmarkJson.Default);
-            relayer.Handler<NatsBenchmarkHandler>();
+            new ConsumerBuilder<object>(relayer.Services, relayer.Handlers, "manual").Handler<NatsBenchmarkHandler>();
         });
         _provider = services.BuildServiceProvider();
         _serializer = _provider.GetRequiredService<IMessageSerializer>();
@@ -290,7 +290,7 @@ public class NatsWireReceiveBenchmarks
         {
             relayer.AddMessageTypesFromThisAssembly();
             relayer.UseJsonSerializer(NatsBenchmarkJson.Default);
-            relayer.Handler<NatsBenchmarkHandler>();
+            new ConsumerBuilder<object>(relayer.Services, relayer.Handlers, "manual").Handler<NatsBenchmarkHandler>();
         });
         _provider = services.BuildServiceProvider();
         _serializer = _provider.GetRequiredService<IMessageSerializer>();

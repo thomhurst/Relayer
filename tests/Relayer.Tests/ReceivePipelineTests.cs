@@ -364,7 +364,7 @@ public class ReceivePipelineTests
         services.AddSingleton<Control>();
         services.AddScoped<Lifetime>();
         services.AddSingleton<Handler>();
-        services.AddRelayer(r => { r.MessageTypes.Add<Payload>("payload"); r.Handler<Handler>(); });
+        services.AddRelayer(r => { r.MessageTypes.Add<Payload>("payload"); new ConsumerBuilder<object>(r.Services, r.Handlers, "manual").Handler<Handler>(); });
         return services.BuildServiceProvider();
     }
 

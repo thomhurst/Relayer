@@ -28,7 +28,7 @@ public class FailureConsumerScopeBenchmarks
         services.AddRelayer(relayer =>
         {
             relayer.MessageTypes.Add<Payload>("benchmark.failure-scope");
-            relayer.Handler<Handler>();
+
             relayer.InMemory("benchmark", memory => memory.Consume("source", consumer => consumer.Handler<Handler>()));
         });
         _provider = services.BuildServiceProvider();

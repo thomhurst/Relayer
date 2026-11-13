@@ -17,7 +17,6 @@ using Relayer.Nats;
 services.AddRelayer(relayer =>
 {
     relayer.AddMessageTypesFromThisAssembly();
-    relayer.AddHandlersFromThisAssembly();
     relayer.Nats("events", nats =>
     {
         nats.TopologyMode = TopologyMode.Provision;

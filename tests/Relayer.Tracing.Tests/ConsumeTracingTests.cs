@@ -450,7 +450,6 @@ public class ConsumeTracingTests
         services.AddRelayer(r =>
         {
             r.MessageTypes.Add<int>("number");
-            r.Handler<BatchHandler>();
             r.AddTransport<BatchOptions, BatchOptions, BatchOptions>("test", transport =>
                 transport.Consume("orders", consumer => consumer.Handler<BatchHandler>().Batch(4, TimeSpan.FromMilliseconds(100))));
         });
@@ -649,7 +648,7 @@ public class ConsumeTracingTests
         var services = new ServiceCollection();
         services.AddSingleton<Control>();
         services.AddSingleton<Handler>();
-        services.AddRelayer(r => { r.MessageTypes.Add<int>("number"); r.Handler<Handler>(); });
+        services.AddRelayer(r => { r.MessageTypes.Add<int>("number"); r.AddTransport<BatchOptions, BatchOptions, BatchOptions>("manual", t => t.Consume("source", c => c.Handler<Handler>())); });
         configure?.Invoke(services);
         return services.BuildServiceProvider();
     }

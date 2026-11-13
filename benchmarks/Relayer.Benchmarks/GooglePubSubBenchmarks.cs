@@ -117,7 +117,7 @@ public class GooglePubSubReceiveBenchmarks
         {
             relayer.AddMessageTypesFromThisAssembly();
             relayer.UseJsonSerializer(PubSubBenchmarkJson.Default);
-            relayer.Handler<PubSubBenchmarkHandler>();
+            new ConsumerBuilder<object>(relayer.Services, relayer.Handlers, "manual").Handler<PubSubBenchmarkHandler>();
         });
         _provider = services.BuildServiceProvider();
         _serializer = _provider.GetRequiredService<IMessageSerializer>();

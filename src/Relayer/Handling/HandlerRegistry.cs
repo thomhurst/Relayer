@@ -46,5 +46,5 @@ public sealed class HandlerRegistry
             ? descriptor
             : throw new InvalidOperationException(
                 $"Handler '{handler}' for message '{message}' (batch: {isBatch}) is not registered. " +
-                "Call Handler<THandler>() or AddHandlersFromThisAssembly() inside AddRelayer.");
+                "Call consumer.Handler<THandler>() inside its consumer configuration callback.");
 }

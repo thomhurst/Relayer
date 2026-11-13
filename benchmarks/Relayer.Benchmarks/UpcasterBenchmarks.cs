@@ -28,7 +28,7 @@ public class UpcasterBenchmarks
         {
             r.AddMessageTypesFromThisAssembly();
             r.Upcasters.Add(new FirstUpgrade()).Add(new SecondUpgrade());
-            r.Handler<Handler>();
+            new ConsumerBuilder<object>(r.Services, r.Handlers, "manual").Handler<Handler>();
             r.AddTransport<Options, Options, Options>("benchmark", t =>
                 t.Consume("versions", c => c.Handler<BatchHandler>().Batch(10, TimeSpan.FromSeconds(1))));
         });

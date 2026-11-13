@@ -281,7 +281,7 @@ public class InboxTests(SqlServerFixture server) : InboxContractTests
             services.AddRelayer(r =>
             {
                 r.MessageTypes.Add<Probe>("inbox.probe");
-                r.Handler<Handler>();
+                r.AddTransport<object, object, object>("manual-1", transport => transport.Consume("source", consumer => consumer.Handler<Handler>()));
                 r.AddTransport<Empty, Empty, Empty>("events", t => t.Send<Probe>("destination"));
             });
             _provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });

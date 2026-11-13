@@ -88,7 +88,8 @@ public sealed class TransportConformanceSuite<TIncoming, TBinding>
         services.AddRelayer(builder =>
         {
             builder.AddMessageTypesFromThisAssembly();
-            builder.Handler<ConformanceHandler>();
+            new ConsumerBuilder<object>(builder.Services, builder.Handlers, "manual").Handler<ConformanceHandler>();
+
         });
         await using var provider = services.BuildServiceProvider();
         var pipeline = new ConsumePipelineBuilder(provider.GetRequiredService<IServiceScopeFactory>(),

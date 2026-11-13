@@ -646,7 +646,7 @@ public class TelemetryTests
         var services = new ServiceCollection();
         services.AddSingleton<Control>();
         services.AddSingleton<Handler>();
-        services.AddRelayer(r => { r.MessageTypes.Add<int>("number"); r.Handler<Handler>(); });
+        services.AddRelayer(r => { r.MessageTypes.Add<int>("number"); new ConsumerBuilder<object>(r.Services, r.Handlers, "manual").Handler<Handler>(); });
         configure?.Invoke(services);
         return services.BuildServiceProvider();
     }

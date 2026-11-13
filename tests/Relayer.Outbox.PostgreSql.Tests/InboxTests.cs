@@ -648,7 +648,7 @@ public class InboxTests : InboxContractTests
             services.AddRelayer(r =>
             {
                 r.MessageTypes.Add<Probe>("inbox.probe");
-                r.Handler<Handler>();
+                new ConsumerBuilder<object>(r.Services, r.Handlers, "manual").Handler<Handler>();
                 r.AddTransport<Empty, Empty, Empty>("events", t => t.Send<Probe>("destination"));
             });
             return services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });

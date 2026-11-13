@@ -50,7 +50,7 @@ public class ConsumePipelineTests
         services.AddScoped<Dependency>();
         services.AddSingleton<Control>();
         services.AddSingleton(events);
-        services.AddRelayer(r => { r.MessageTypes.Add<int>("number"); r.Handler<Handler>().Handler<TextHandler>(); });
+        services.AddRelayer(r => { r.MessageTypes.Add<int>("number"); new ConsumerBuilder<object>(r.Services, r.Handlers, "manual").Handler<Handler>().Handler<TextHandler>(); });
         await using var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
         var dependencies = new List<Dependency>();
         var pipeline = Builder(provider).Handler(Descriptor(provider))
@@ -241,7 +241,7 @@ public class ConsumePipelineTests
         services.AddRelayer(r =>
         {
             r.MessageTypes.Add<int>("number").Add<string>("text", 2);
-            r.Handler<Handler>().Handler<TextHandler>();
+            new ConsumerBuilder<object>(r.Services, r.Handlers, "manual").Handler<Handler>().Handler<TextHandler>();
         });
         await using var provider = services.BuildServiceProvider();
         var failures = new List<Exception>();
@@ -264,7 +264,7 @@ public class ConsumePipelineTests
     {
         var services = new ServiceCollection();
         services.AddScoped<Handler>(_ => throw new InvalidOperationException("resolution failed"));
-        services.AddRelayer(r => { r.MessageTypes.Add<int>("number"); r.Handler<Handler>().Handler<TextHandler>(); });
+        services.AddRelayer(r => { r.MessageTypes.Add<int>("number"); new ConsumerBuilder<object>(r.Services, r.Handlers, "manual").Handler<Handler>().Handler<TextHandler>(); });
         await using var provider = services.BuildServiceProvider();
         Exception? failure = null;
         FailureAction? result = null;
@@ -327,7 +327,7 @@ public class ConsumePipelineTests
         services.AddScoped<Dependency>();
         services.AddSingleton<Control>();
         services.AddSingleton(new List<string>());
-        services.AddRelayer(r => { r.MessageTypes.Add<int>("number"); r.Handler<Handler>().Handler<TextHandler>(); });
+        services.AddRelayer(r => { r.MessageTypes.Add<int>("number"); new ConsumerBuilder<object>(r.Services, r.Handlers, "manual").Handler<Handler>().Handler<TextHandler>(); });
         return services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
     }
 

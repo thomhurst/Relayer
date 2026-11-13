@@ -44,7 +44,7 @@ public class FailureConsumePipelineBenchmarks
         services.AddRelayer(r =>
         {
             r.MessageTypes.Add<Payload>("benchmark.failure-consume");
-            r.Handler<Handler>();
+
             r.InMemory("benchmark", transport => transport.Consume("source", consumer => consumer.Handler<Handler>()));
         });
         _provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });

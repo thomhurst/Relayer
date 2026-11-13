@@ -33,7 +33,7 @@ public sealed class ConcurrentReceiveFixture : IDisposable
     {
         var services = new ServiceCollection();
         services.AddSingleton(_handler);
-        services.AddRelayer(r => { r.MessageTypes.Add<Payload>("pending"); r.Handler<Handler>(); });
+        services.AddRelayer(r => { r.MessageTypes.Add<Payload>("pending"); r.AddTransport<object, object, object>("manual-1", transport => transport.Consume("source", consumer => consumer.Handler<Handler>())); });
         _provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
         _consumer = new ConsumePipelineBuilder(_provider.GetRequiredService<IServiceScopeFactory>(),
             _provider.GetRequiredService<MessageTypeRegistry>(), new Serializer(),

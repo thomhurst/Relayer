@@ -92,12 +92,22 @@ services.AddRelayer(relayer =>
     relayer.MessageTypes.Add<BeginWait>("orders.begin-wait");
     relayer.MessageTypes.Add<WaitExpired>("orders.wait-expired");
     relayer.UseJsonSerializer(OrderJsonContext.Default); // Source-generated metadata for both contracts.
-    relayer.Handler<BeginOrderWait>();
-    relayer.Handler<ExpireOrderWait>();
     relayer.Kafka("events", kafka =>
     {
         kafka.TopologyMode = TopologyMode.None; // Provision the topic externally.
         kafka.Options.Configure(options => options.BootstrapServers.Add("localhost:9092"));
+        kafka.Consume("order-starts", consumer =>
+        {
+            consumer.Options.Group = "orders-process-starts";
+            consumer.Handler<BeginOrderWait>()
+                .Saga<OrdersDbContext, OrderState>("orders.process");
+        });
+        kafka.Consume("order-timeouts", consumer =>
+        {
+            consumer.Options.Group = "orders-process-timeouts";
+            consumer.Handler<ExpireOrderWait>()
+                .Saga<OrdersDbContext, OrderState>("orders.process");
+        });
         kafka.Send<WaitExpired>("order-timeouts", route => route.SendOptions = new()
         {
             RequiredDeliveryDelay = TimeSpan.FromDays(1),
@@ -107,22 +117,9 @@ services.AddRelayer(relayer =>
 });
 ```
 
-This example uses a `Relayer.Kafka` send route; other transports use their native registration.
-Compose the timeout consumer through the existing receive pipeline:
+The Kafka consumer declarations register both handlers and configure the existing saga receive pipeline at startup. Other transports use the same consumer handler and pipeline callbacks with their native registration.
 
-```csharp
-var pipeline = new ConsumePipelineBuilder(scopeFactory, messageTypes, serializer, failures)
-    .Handler(handlers.GetHandler<WaitExpired, ExpireOrderWait>())
-    .Saga<OrdersDbContext, OrderState>("orders.process")
-    .Settle(SettleNativeMessageAsync)
-    .Build();
-```
-
-Supply the native receive/settlement callbacks as in the [consumer inbox guide](../reference/ef-core-inbox.md).
-The starting-message consumer uses `GetHandler<BeginWait, BeginOrderWait>()` and the same saga
-boundary. A single composed consumer can instead register both handlers. This example does not
-register a native adapter's automatic consumer; wire the composed pipeline into your receive
-integration explicitly. Native acknowledgement follows commit.
+Native acknowledgement follows the saga transaction commit.
 Define `OrderJsonContext` with System.Text.Json source generation, or use generated
 `AddMessageTypesFromThisAssembly()` registration as described in the [messages guide](messages.md).
 

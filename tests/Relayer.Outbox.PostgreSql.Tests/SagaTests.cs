@@ -338,7 +338,7 @@ public class SagaTests
             services.AddRelayer(r =>
             {
                 r.MessageTypes.Add<Probe>("saga.probe");
-                r.Handler<Process>();
+                new ConsumerBuilder<object>(r.Services, r.Handlers, "manual").Handler<Process>();
                 r.AddTransport<Empty, Empty, Empty>("events", t => t.Send<Probe>("destination"));
             });
             return services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });

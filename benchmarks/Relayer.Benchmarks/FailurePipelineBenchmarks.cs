@@ -35,7 +35,7 @@ public class FailurePipelineBenchmarks
         services.AddRelayer(r =>
         {
             r.MessageTypes.Add<Payload>("benchmark.failure");
-            r.Handler<Handler>();
+            new ConsumerBuilder<object>(r.Services, r.Handlers, "manual").Handler<Handler>();
             r.AddTransport<Options, Options, Options>("benchmark", t => t.Send<Payload>("destination"));
         });
         _provider = services.BuildServiceProvider();

@@ -33,7 +33,7 @@ public class ConsumePipelineBenchmarks
         var services = new ServiceCollection();
         if (ScopedHandler) services.AddScoped<Handler>();
         else services.AddSingleton<Handler>();
-        services.AddRelayer(r => { r.MessageTypes.Add<Payload>("benchmark.payload"); r.Handler<Handler>(); });
+        services.AddRelayer(r => { r.MessageTypes.Add<Payload>("benchmark.payload"); r.AddTransport<object, object, object>("manual-1", transport => transport.Consume("source", consumer => consumer.Handler<Handler>())); });
         _provider = services.BuildServiceProvider();
         _scopes = _provider.GetRequiredService<IServiceScopeFactory>();
         var handlers = _provider.GetRequiredService<HandlerRegistry>();

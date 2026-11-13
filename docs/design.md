@@ -266,20 +266,23 @@ public sealed class AuditHandler : IBatchHandler<AuditEvent>
 ### 3.3 Registration without scanning
 
 - `.Handler<THandler>()` is generic. The constraint `THandler : IHandlerMarker` together with source-generated descriptors gives the message type with zero reflection.
-- For people who want convenience, the source generator emits an explicit, readable `AddHandlersFromThisAssembly()` that lists every handler it found at compile time. This is "scanning" done by the compiler — it is visible, debuggable, and AOT-safe.
+- Register handlers on their consumer with `consumer.Handler<THandler>()`. This selects dispatch and registers generated descriptors and DI together; there is no separate builder or assembly-wide handler registration (D72).
 - Analyzers report problems at compile time: a handler that is registered nowhere, a message type with no stable name, a consumer with no handler, or a feature the transport does not support (for example, ordering on a non-FIFO SQS queue).
 
 The [diagnostics reference](https://relayer.tomlonghurst.dev/docs/reference/diagnostics) documents `RLY001`–`RLY004`, their limits, suppression and the `[Message]` code fix. Transport capability validation remains a startup check when configuration values are not statically known.
 
-Register handlers inside `AddRelayer`. Both forms use the same generated descriptors; explicit registration adds only the requested handler:
+Register handlers inside their consumer configuration callbacks:
 
 ```csharp
-services.AddRelayer(relayer => relayer.Handler<OrderPlacedHandler>());
-// Or register every concrete, assembly-accessible handler declared in this assembly:
-services.AddRelayer(relayer => relayer.AddHandlersFromThisAssembly());
+services.AddRelayer(relayer => relayer.Kafka("events", kafka =>
+    kafka.Consume("orders", consumer =>
+    {
+        consumer.Options.Group = "orders-handler";
+        consumer.Handler<OrderPlacedHandler>();
+    })));
 ```
 
-Discovery includes inherited contracts, explicit interface implementations, and handlers with multiple message or batch contracts. Open generic, abstract, private nested, and file-local classes are excluded. Message types must be accessible to the generated code; `RLYH001` reports inaccessible contracts. Explicit `Handler<ClosedHandler<OrderPlaced>>()` also supports closed generic handlers and handlers in referenced assemblies. Repeated registration is idempotent. Handlers default to scoped DI registration, preserving an existing registration.
+Generation supports inherited contracts, explicit interface implementations, and handlers with multiple message or batch contracts. Open generic, abstract, private nested, and file-local classes are excluded. Message types must be accessible to the generated code; `RLYH001` reports inaccessible contracts. Explicit `Handler<ClosedHandler<OrderPlaced>>()` also supports closed generic handlers and handlers in referenced assemblies. Repeated registration is idempotent. Handlers default to scoped DI registration, preserving an existing registration.
 
 The core's `HandlerRegistry` freezes after configuration. Pipeline composition selects a `HandlerDescriptor<TMessage>` or `BatchHandlerDescriptor<TMessage>` once. For each message scope, its generated `Resolve` method uses typed DI resolution; `DispatchAsync` then calls the handler through its exact interface and returns its `ValueTask` unchanged. Dispatch does no type lookup, delegate creation, or allocation. Registry metadata uses CLR types only during configuration, never as wire identities.
 

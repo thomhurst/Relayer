@@ -20,7 +20,7 @@ public class HandlerDispatchBenchmarks
     public void Setup()
     {
         var services = new ServiceCollection();
-        services.AddRelayer(r => r.Handler<Handler>());
+        services.AddRelayer(r => new ConsumerBuilder<object>(r.Services, r.Handlers, "manual").Handler<Handler>());
         _provider = services.BuildServiceProvider();
         _scope = _provider.CreateScope();
         _descriptor = _provider.GetRequiredService<HandlerRegistry>().GetHandler<int, Handler>();

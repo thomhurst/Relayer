@@ -51,7 +51,8 @@ it does not register services. Transport configuration can pass non-generic
 descriptors from `HandlerRegistry.Descriptors`: the typed descriptor base creates
 its consume delegate without reflection, generic type construction or runtime
 code generation. Register handlers inside `AddRelayer`
-with `Handler<THandler>()` or `AddHandlersFromThisAssembly()` first. Several
+with `consumer.Handler<THandler>()` in the consumer configuration callback first. This also
+registers their DI services and generated descriptors in the shared registry. Several
 stable message identities can share a consumer. One handler owns each identity;
 that handler can coordinate several operations explicitly.
 

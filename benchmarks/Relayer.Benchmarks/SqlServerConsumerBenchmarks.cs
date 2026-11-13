@@ -33,7 +33,7 @@ public class SqlServerConsumerBenchmarks
         _id = Guid.CreateVersion7().ToString("D");
         var services = new ServiceCollection();
         services.AddRelayerSqlServerOutbox(_options);
-        services.AddRelayer(r => { r.MessageTypes.Add<Probe>("benchmark.sql-consumer"); r.Handler<Handler>(); });
+        services.AddRelayer(r => { r.MessageTypes.Add<Probe>("benchmark.sql-consumer"); new ConsumerBuilder<object>(r.Services, r.Handlers, "manual").Handler<Handler>(); });
         _provider = services.BuildServiceProvider();
         _pipeline = new ConsumePipelineBuilder(_provider.GetRequiredService<IServiceScopeFactory>(),
                 _provider.GetRequiredService<MessageTypeRegistry>(), new Serializer(), static (_, error, _) => ValueTask.FromException(error))
