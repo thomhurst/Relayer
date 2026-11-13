@@ -56,14 +56,17 @@ internal static class RelayerCommand
 
     public static int Run(string[] args, TextWriter output, TextWriter error)
     {
+        if (args.Length >= 2 && args[0] == "topology" && args[1] == "export")
+            return TopologyExportCommand.Run(args, output, error);
         if (args is ["--help"] or ["-h"])
         {
+            output.WriteLine(TopologyExportCommand.Usage);
             output.WriteLine("dotnet relayer message locate --id <UUID> [--schema public] [--prefix relayer_] [--sent-history] (uses RELAYER_POSTGRES_CONNECTION_STRING)");
             output.WriteLine("dotnet relayer db script --provider postgres [--schema public] [--prefix relayer_]");
             return 0;
         }
         if (args.Length < 2 || args[0] != "db" || args[1] != "script")
-            return Fail(error, "Expected: db script --provider postgres [--schema public] [--prefix relayer_]");
+            return Fail(error, "Expected: topology export, db script or message locate. Run --help for usage.");
 
         string? provider = null;
         string? schema = null;

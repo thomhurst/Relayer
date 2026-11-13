@@ -1,13 +1,18 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <OutputType>Exe</OutputType>
+    <!-- This managed CLI loads an explicitly selected application declaration assembly.
+         Runtime libraries retain their AOT contract; see D68. -->
+    <IsAotCompatible>false</IsAotCompatible>
     <PackAsTool>true</PackAsTool>
     <IsPackable>true</IsPackable>
     <ToolCommandName>dotnet-relayer</ToolCommandName>
-    <Description>Relayer database schema scripts.</Description>
+    <Description>Relayer topology export, database schema scripts and message lookup.</Description>
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="../Relayer.Outbox.PostgreSql/Relayer.Outbox.PostgreSql.csproj" />
+    <ProjectReference Include="../Relayer.AzureServiceBus/Relayer.AzureServiceBus.csproj" />
+    <ProjectReference Include="../Relayer.AmazonSqs/Relayer.AmazonSqs.csproj" />
     <InternalsVisibleTo Include="Relayer.Outbox.PostgreSql.Tests" />
   </ItemGroup>
 </Project>
