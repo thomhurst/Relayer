@@ -127,6 +127,42 @@ class OriginalRunnerTests(unittest.TestCase):
                     main()
                 self.assertEqual(len(calls), 4)
 
+    def test_unscoped_composed_native_identity_and_all_outcomes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for side in ("baseline", "candidate"):
+                source, image = self.fixture(root / "performance-builds" / side)
+                text = source.read_text().replace("EndToEndBenchmarks", "ConsumePipelineBenchmarks").replace("ConcurrentRoundTrip()", "ComposedConsumer()").replace("OperationsPerInvoke = 8", "OperationsPerInvoke = 1").replace("workloadDelegate =", "instance.ScopedHandler = false; workloadDelegate =")
+                source.write_text(text + text.replace("Runnable_10", "Runnable_11").replace("ScopedHandler = false", "ScopedHandler = true"))
+                self.assertEqual(executable(root / "performance-builds" / side, "composed-consumer-unscoped"), (image.resolve(), "10"))
+            output = root / "results"
+            calls = []
+
+            def execute(command, **kwargs):
+                calls.append(command)
+                self.assertEqual(command[-1], "composed-consumer-unscoped")
+                Path(command[-2]).write_text(json.dumps({"FoundExecutable": True, "ExitCode": 0,
+                    "IsSuccess": True, "Errors": [],
+                    "benchmarkArguments": '--benchmarkName "Relayer.Benchmarks.ConsumePipelineBenchmarks.ComposedConsumer(ScopedHandler: False)" --job Default --benchmarkId 10',
+                    "selectedCase": "composed-consumer-unscoped", "operationsPerInvoke": 1}))
+                Path(command[-3]).write_text(COMPLETE.replace("65536", "9"))
+                if len(calls) == 2:
+                    raise subprocess.CalledProcessError(1, command)
+
+            with patch("sys.argv", ["control", str(root), str(output), "--case", "composed-consumer-unscoped",
+                                    "--native-executor", str(root / "host.dll")]), \
+                 patch("frozen_bdn_control.verify", return_value="frozen"), \
+                 patch("frozen_bdn_control.subprocess.run", side_effect=execute):
+                with self.assertRaisesRegex(SystemExit, "launches failed"):
+                    main()
+            self.assertEqual(len(calls), 4)
+            outcomes = json.loads((output / "outcomes.json").read_text())
+            self.assertIn("error", outcomes[1])
+            self.assertEqual([row["operations"] for row in outcomes if "error" not in row], [9, 9, 9])
+            source.write_text(text.replace("ScopedHandler = false", "ScopedHandler = true"))
+            with self.assertRaisesRegex(ValueError, "selected parameter"):
+                executable(root / "performance-builds" / "candidate", "composed-consumer-unscoped")
+
     def test_unscoped_scope_selector_rejects_true_parameter(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

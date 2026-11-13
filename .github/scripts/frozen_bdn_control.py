@@ -15,6 +15,7 @@ BENCHMARK = "Relayer.Benchmarks.EndToEndBenchmarks.ConcurrentRoundTrip"
 LAUNCHES = ("baseline", "candidate", "candidate", "baseline")
 # Explicit original generated runner selectors; ConsumptionModel.Queue=0, Log=1.
 CASES = {
+    "composed-consumer-unscoped": ("ConsumePipelineBenchmarks", "ComposedConsumer", "instance.ScopedHandler = false;", 1),
     "concurrent": ("EndToEndBenchmarks", "ConcurrentRoundTrip", None, 8),
     "scope-only-unscoped": ("ConsumePipelineBenchmarks", "ScopeOnly", "instance.ScopedHandler = false;", 1),
     "scope-only": ("ConsumePipelineBenchmarks", "ScopeOnly", "instance.ScopedHandler = true;", 1),
@@ -113,7 +114,7 @@ def main():
             parser.error("--jit-method requires a nonempty native method filter without NUL")
         if not args.native_executor or args.trace_tool or args.allocation_profiler:
             parser.error("--jit-method requires the native parent without other instrumentation")
-    if args.native_executor and (args.case not in ("concurrent", "scoped-dispatch", "scope-only", "scope-only-unscoped", "scope-resolution", "failure-dispatch-sync") or args.trace_tool):
+    if args.native_executor and (args.case not in ("concurrent", "scoped-dispatch", "scope-only", "scope-only-unscoped", "scope-resolution", "failure-dispatch-sync", "composed-consumer-unscoped") or args.trace_tool):
         parser.error("Native parent requires a supported retained runner without an external trace launcher")
     if args.allocation_profiler and args.case != "concurrent":
         parser.error("Exact allocation callbacks support only the concurrent benchmark")
@@ -267,9 +268,9 @@ def main():
                     text = (args.output / f"{index}-{side}-native.log").read_text()
                     # Independently bind the parent's receipt to the selected original
                     # runner, including the parameterized ScopeOnly benchmark name.
-                    scope_parameter = "False" if args.case == "scope-only-unscoped" else "True"
+                    scope_parameter = "False" if args.case in ("scope-only-unscoped", "composed-consumer-unscoped") else "True"
                     name_argument = (f'"{benchmark}(ScopedHandler: {scope_parameter})"'
-                                     if args.case in ("scope-only", "scope-only-unscoped", "scope-resolution")
+                                     if args.case in ("scope-only", "scope-only-unscoped", "scope-resolution", "composed-consumer-unscoped")
                                      else f'"{benchmark}(SuspendHandler: False)"' if args.case == "failure-dispatch-sync"
                                      else benchmark)
                     expected = f"--benchmarkName {name_argument} --job Default --benchmarkId {runners[side][1]}"

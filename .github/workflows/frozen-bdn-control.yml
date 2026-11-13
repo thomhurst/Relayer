@@ -27,6 +27,7 @@ on:
           - scope-only
           - scope-only-unscoped
           - scoped-dispatch
+          - composed-consumer-unscoped
           - log-composed
           - queue-composed
           - queue-native
