@@ -136,7 +136,7 @@ public sealed class FailurePipeline
         }
         else
         {
-            var headers = FailureMetadata.SettlementHeaders(context, context.Redeliveries, request.DeadLetter.Reason, _nativeDeadLetter ? MetadataBudget(context) : null);
+            var headers = FailureMetadata.SettlementHeaders(context, context.Redeliveries, request.DeadLetter.Reason, _nativeDeadLetter ? MetadataBudget(context, System.Text.Encoding.UTF8.GetByteCount(request.DeadLetter.Reason)) : null);
             if (_nativeDeadLetter)
                 context.FailureDisposition = Disposition.DeadLettered(new(request.DeadLetter.Reason, headers: headers));
             else
@@ -184,7 +184,7 @@ public sealed class FailurePipeline
             return;
         }
         var description = FailureMetadata.Description(error);
-        var deadHeaders = FailureMetadata.Headers(context, redelivery, _nativeDeadLetter ? MetadataBudget(context, System.Text.Encoding.UTF8.GetByteCount(description)) : null);
+        var deadHeaders = FailureMetadata.Headers(context, redelivery, _nativeDeadLetter ? MetadataBudget(context, System.Text.Encoding.UTF8.GetByteCount(description) + System.Text.Encoding.UTF8.GetByteCount("Processing failed")) : null);
         if (_nativeDeadLetter)
             context.FailureDisposition = Disposition.DeadLettered(new("Processing failed", description, deadHeaders));
         else
@@ -229,8 +229,8 @@ public sealed class FailurePipeline
         timeout.Token.ThrowIfCancellationRequested();
     }
 
-    private long? MetadataBudget(DefaultMessageContext context, int descriptionBytes = 0) =>
-        _capabilities.MaxMessageBytes is { } maximum ? Math.Max(0, maximum - context.Body.Length - descriptionBytes) : null;
+    private long? MetadataBudget(DefaultMessageContext context, int nativeFieldBytes = 0) =>
+        _capabilities.MaxMessageBytes is { } maximum ? Math.Max(0, maximum - context.Body.Length - nativeFieldBytes) : null;
 
     private enum RedeliveryPath { Native, Copy, Outbox }
 }

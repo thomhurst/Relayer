@@ -659,54 +659,13 @@ public class FailurePipelineTests
             await pipeline.ProcessAsync(incoming);
             _ = serializer.Deserialize<Payload>(new(incoming.Body));
         }
-        // Retain every window before asserting; diagnostics must not replace an unfavorable total.
-        // Storage is allocated before either aggregate counter and output follows both measurements.
-        var jsonWindows = new AllocationWindow[1000];
-        var pipelineWindows = new AllocationWindow[1000];
         var start = GC.GetAllocatedBytesForCurrentThread();
-        for (var i = 0; i < 1000; i++)
-        {
-            var window = AllocationWindow.Start();
-            _ = serializer.Deserialize<Payload>(new(incoming.Body));
-            jsonWindows[i] = window.Stop();
-        }
+        for (var i = 0; i < 1000; i++) _ = serializer.Deserialize<Payload>(new(incoming.Body));
         var jsonBytes = GC.GetAllocatedBytesForCurrentThread() - start;
         start = GC.GetAllocatedBytesForCurrentThread();
-        for (var i = 0; i < 1000; i++)
-        {
-            var window = AllocationWindow.Start();
-            var processing = pipeline.ProcessAsync(incoming);
-            // A suspended await could move the test to another thread and invalidate its counters.
-            // Reject that measurement instead of comparing unrelated thread-local totals.
-            if (!processing.IsCompletedSuccessfully)
-                throw new InvalidOperationException("Singleton allocation measurement must complete synchronously.");
-            _ = processing.GetAwaiter().GetResult();
-            pipelineWindows[i] = window.Stop();
-        }
+        for (var i = 0; i < 1000; i++) await pipeline.ProcessAsync(incoming);
         var pipelineBytes = GC.GetAllocatedBytesForCurrentThread() - start;
-        Console.WriteLine($"Singleton allocation windows: runtime={System.Runtime.InteropServices.RuntimeInformation.FrameworkDescription}; arch={System.Runtime.InteropServices.RuntimeInformation.ProcessArchitecture}; json={jsonBytes}; pipeline={pipelineBytes}");
-        for (var i = 0; i < jsonWindows.Length; i++)
-            Console.WriteLine($"window={i}; json={jsonWindows[i]}; pipeline={pipelineWindows[i]}");
         await Assert.That(pipelineBytes).IsEqualTo(jsonBytes);
-    }
-
-    // Collection counters bracket the per-call byte counter; they correlate collections, not owners.
-    private readonly record struct AllocationWindow(long Bytes, int Gen0, int Gen1, int Gen2)
-    {
-        internal static AllocationWindow Start()
-        {
-            var gen0 = GC.CollectionCount(0);
-            var gen1 = GC.CollectionCount(1);
-            var gen2 = GC.CollectionCount(2);
-            return new(GC.GetAllocatedBytesForCurrentThread(), gen0, gen1, gen2);
-        }
-
-        internal AllocationWindow Stop()
-        {
-            var bytes = GC.GetAllocatedBytesForCurrentThread() - Bytes;
-            return new(bytes, GC.CollectionCount(0) - Gen0,
-                GC.CollectionCount(1) - Gen1, GC.CollectionCount(2) - Gen2);
-        }
     }
 
     [Test]
@@ -1097,6 +1056,35 @@ public class FailurePipelineTests
         await Assert.That(Encoding.UTF8.GetByteCount(json) <= FailureMetadata.MaxHistoryBytes).IsTrue();
         using var parsed = JsonDocument.Parse(json);
         await Assert.That(parsed.RootElement.GetProperty("Attempts").GetArrayLength() <= FailureMetadata.MaxAttempts).IsTrue();
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Native_dead_letter_budget_includes_reason_and_description(bool manual)
+    {
+        const int maximum = 640;
+        using var provider = Provider(new Transport { Capabilities = new() { DeadLetter = true, MaxMessageBytes = maximum } });
+        provider.GetRequiredService<Control>().Invoke = context =>
+        {
+            if (!manual) throw new InvalidOperationException(new string('界', 20));
+            context.Features.GetRequired<ISettlementFeature>().DeadLetter(new string('界', 30));
+            return default;
+        };
+        var incoming = new Incoming();
+        // A long incoming history forces the native settlement to shrink its replacement.
+        incoming.Headers[FailureHeaders.History] = JsonSerializer.Serialize(new FailureHistory
+        {
+            AttemptCount = 1,
+            Attempts = [new() { Attempt = 1, Message = new string('x', 1000) }],
+        }, FailureJsonContext.Default.FailureHistory);
+        var result = await Pipeline(provider, FailureOptions.None).ProcessAsync(incoming);
+        await Assert.That(result.Kind).IsEqualTo(DispositionKind.DeadLetter);
+        var bytes = Encoding.UTF8.GetByteCount("{}") + Encoding.UTF8.GetByteCount(result.DeadLetter.Reason) +
+            Encoding.UTF8.GetByteCount(result.DeadLetter.Description ?? "");
+        foreach (var header in result.DeadLetter.Headers.ToArray())
+            bytes += Encoding.UTF8.GetByteCount(header.Key) + Encoding.UTF8.GetByteCount(header.Value.ToString());
+        await Assert.That(bytes <= maximum).IsTrue();
     }
 
     private sealed class LongFailure : Exception

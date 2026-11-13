@@ -23,6 +23,21 @@ public class GooglePubSubFailureHeaderTests
     }
 
     [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Failure_copy_removes_all_old_history_before_budgeting_even_without_replacement(bool split)
+    {
+        var message = new PubsubMessage();
+        message.Attributes["application"] = "preserved";
+        GooglePubSubFailureHeaders.Write(message, new string('x', split ? 4096 : 32));
+        message.Attributes[FailureHeaders.History + ".part.999"] = "orphan";
+        var copy = GooglePubSubHostedService.Copy(message);
+        await Assert.That(copy.Headers.Length).IsEqualTo(1);
+        await Assert.That(copy.Headers.Span[0].Key).IsEqualTo("application");
+        await Assert.That(copy.Headers.Span[0].Value.ToString()).IsEqualTo("preserved");
+    }
+
+    [Test]
     public async Task Malformed_or_missing_parts_are_treated_as_missing_history()
     {
         var message = new PubsubMessage();

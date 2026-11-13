@@ -1775,4 +1775,3 @@ In-memory consumers use only native redelivery for retries, including manual set
 Copies budget against the destination's declared `MaxMessageBytes`, subtracting portable body, headers and ordering key. Native settlements budget body and failure headers against the source declaration, because the lazy header SPI cannot enumerate original properties. If even the first/latest summary cannot fit, omit only the history header and retain counters. Native overhead, hidden properties, native callbacks and attribute counts remain broker-enforced; application data is never removed to make room. Native send failure still prevents settlement.
 
 **Consequences.** Full exception diagnostics belong in application logs/traces. All new work runs on failure/manual settlement paths; the successful receive and send paths are unchanged. See the site's [failure handling contract](../website/docs/guides/failure-handling.md).
-

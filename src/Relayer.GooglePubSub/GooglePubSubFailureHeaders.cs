@@ -14,6 +14,9 @@ internal static class GooglePubSubFailureHeaders
     private const int MaxAttributes = 100;
     private const int MaxValueBytes = 1024;
 
+    internal static bool IsHistory(string name) => name == FailureHeaders.History || name == Parts ||
+        name.StartsWith(Prefix, StringComparison.Ordinal);
+
     internal static void Write(PubsubMessage message, string history)
     {
         List<string>? previous = null;
