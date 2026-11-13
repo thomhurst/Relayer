@@ -131,6 +131,45 @@ public class ConsumerFailurePolicyTests
     }
 
     [Test]
+    [Arguments(false, 1)]
+    [Arguments(false, 4)]
+    [Arguments(true, 1)]
+    [Arguments(true, 4)]
+    public async Task In_memory_rejects_copy_redelivery_before_receiving(bool log, int capacity)
+    {
+        var services = new ServiceCollection();
+        services.AddRelayer(relayer =>
+        {
+            relayer.AddMessageTypesFromThisAssembly();
+            relayer.InMemory("local", transport =>
+            {
+                transport.Options.Configure(options => options.Endpoints.Add("source", new()
+                {
+                    Capacity = capacity,
+                    Capabilities = new()
+                    {
+                        ConsumptionModel = log ? ConsumptionModel.Log : ConsumptionModel.Queue,
+                        DeadLetter = true,
+                        MaxRedeliveryDelay = TimeSpan.Zero,
+                        MaxDeliveryDelay = TimeSpan.FromMinutes(1),
+                    },
+                }));
+                transport.Consume("source", consumer => consumer
+                    .Failures(new() { RetryDelays = [], RedeliveryDelays = [TimeSpan.FromSeconds(1)] })
+                    .Handler<PolicyHandler>());
+            });
+        });
+        await using var provider = services.BuildServiceProvider();
+        var service = provider.GetServices<IHostedService>().OfType<InMemoryHostedService>().Single();
+        await Assert.That(() => service.StartAsync(default)).Throws<InvalidOperationException>()
+            .WithMessageContaining("Copy and outbox redelivery fallbacks are unavailable");
+        var manual = new FailurePipeline(provider, "local", "source", "group", true,
+            FailureOptions.None, static _ => default, null, null);
+        await Assert.That(() => manual.ValidateSettlement(Disposition.Redeliver(TimeSpan.FromSeconds(1))))
+            .Throws<InvalidOperationException>().WithMessageContaining("MaxRedeliveryDelay");
+    }
+
+    [Test]
     public async Task Failure_configuration_freezes_with_the_consumer()
     {
         ConsumerBuilder<Options>? captured = null;

@@ -56,7 +56,7 @@ internal sealed class InMemoryHostedService(IServiceProvider provider, string na
             if (consumer.BatchSize != 1)
                 throw new NotSupportedException($"In-memory consumer '{consumer.Source}': batch-handler composition is not implemented. Use single-message handlers.");
             var failure = new FailurePipeline(provider, name, consumer.Source, consumer.Options.Group ?? consumer.Source,
-                consumer.Failure, Copy, provider.GetService<IFailureScheduler>(),
+                true, consumer.Failure, Copy, provider.GetService<IFailureScheduler>(),
                 provider.GetRequiredService<IOptionsMonitor<InMemoryTransportOptions>>().Get(name).TimeProvider);
             var pipeline = new ConsumePipelineBuilder(provider.GetRequiredService<IServiceScopeFactory>(),
                 provider.GetRequiredService<MessageTypeRegistry>(), provider.GetMessageSerializer(name),

@@ -24,13 +24,22 @@ public sealed class FailurePipeline
     private readonly TimeProvider _time;
     private readonly RedeliveryPath[] _paths;
     private readonly bool _nativeDeadLetter;
+    private readonly bool _nativeRedeliveryOnly;
     private readonly TransportCapabilities _capabilities;
 
     /// <summary>Validates native paths and available fallback executors for this consumer's complete policy.</summary>
     public FailurePipeline(IServiceProvider services, string transportName, string source, string consumer,
         FailureOptions? options = null, FailureMessageCopyDelegate? copy = null,
         IFailureScheduler? scheduler = null, TimeProvider? timeProvider = null)
+        : this(services, transportName, source, consumer, false, options, copy, scheduler, timeProvider)
     {
+    }
+
+    internal FailurePipeline(IServiceProvider services, string transportName, string source, string consumer,
+        bool nativeRedeliveryOnly, FailureOptions? options, FailureMessageCopyDelegate? copy,
+        IFailureScheduler? scheduler, TimeProvider? timeProvider)
+    {
+        _nativeRedeliveryOnly = nativeRedeliveryOnly;
         ArgumentNullException.ThrowIfNull(services);
         ArgumentException.ThrowIfNullOrWhiteSpace(transportName);
         ArgumentException.ThrowIfNullOrWhiteSpace(source);
@@ -98,6 +107,8 @@ public sealed class FailurePipeline
         if (delay > DateTimeOffset.MaxValue - _time.GetUtcNow())
             throw new ArgumentOutOfRangeException(nameof(delay), "The retry delay must fit a delivery timestamp.");
         if (_capabilities.MaxRedeliveryDelay is { } native && delay <= native) return RedeliveryPath.Native;
+        if (_nativeRedeliveryOnly)
+            throw new InvalidOperationException($"Consumer '{_consumer}' from '{_source}' on transport '{_transport.Name}': redelivery delay {delay} exceeds native MaxRedeliveryDelay. In-memory retries must retain their group and admission credit; increase MaxRedeliveryDelay or shorten the delay. Copy and outbox redelivery fallbacks are unavailable.");
         if (_copy is not null && _capabilities.MaxDeliveryDelay is { } scheduled && delay <= scheduled) return RedeliveryPath.Copy;
         if (_copy is not null && _scheduler is not null) return RedeliveryPath.Outbox;
         throw new InvalidOperationException($"Consumer '{_consumer}' from '{_source}' on transport '{_transport.Name}': redelivery delay {delay} has no executor. Shorten the delay, enable native redelivery/scheduling, or configure a message copy executor and durable IFailureScheduler.");
