@@ -125,14 +125,14 @@ Only generated contracts implementing `IMessage<T>` and `IBufferMessage` are sup
 
 ## Avro
 
-Reference `Relayer.Serialization.Avro` for Dekaf's source-generated Avro codecs and Schema Registry client. Opt each contract into generation with `[AvroRecord]`, then register its generated `AvroCodec` explicitly:
+Reference `Relayer.Kafka.Serialization.Avro` for Dekaf's source-generated Avro codecs and Schema Registry client. The package name makes its dependency on Dekaf's Kafka client explicit; it can still serialize bodies for Service Bus, RabbitMQ or another transport. This is a Schema Registry integration, with no registry-free package. Opt each contract into generation with `[AvroRecord]`, then register its generated `AvroCodec` explicitly:
 
 ```csharp
 using Relayer.Transports;
 using Dekaf.SchemaRegistry;
 using Dekaf.SchemaRegistry.Avro.Poco;
 using Relayer.Serialization;
-using Relayer.Serialization.Avro;
+using Relayer.Kafka.Serialization.Avro;
 
 services.AddSingleton<ISchemaRegistryClient>(_ => new SchemaRegistryClient(
     new SchemaRegistryConfig { Url = "http://localhost:8081" }));
@@ -148,6 +148,8 @@ public sealed partial class OrderPlaced
     public string Customer { get; init; } = "";
 }
 ```
+
+**Migration:** replace the `Relayer.Serialization.Avro` package reference with `Relayer.Kafka.Serialization.Avro` and change `using Relayer.Serialization.Avro;` to `using Relayer.Kafka.Serialization.Avro;`. Keep the same explicit `AvroMessageSerializer` registration, generated codecs and native configuration. Existing stored bodies and registry subjects remain compatible; the content type and wire format are unchanged.
 
 Host startup awaits registry registration or lookup and prepares the native reader before receivers start. Standalone callers must await `InitializeAsync(cancellationToken)` before use. Registry errors fail startup; initialization failures require a new serializer. The registry client remains caller-owned. Dispose the serializer after all operations finish. Declare every contract before initialization, then share the prepared serializer across concurrent sends and receives. Missing and duplicate codecs fail with actionable errors; codec registration does not register the Relayer message identity.
 

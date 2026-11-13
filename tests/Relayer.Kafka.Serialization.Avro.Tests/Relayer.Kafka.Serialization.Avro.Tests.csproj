@@ -3,7 +3,7 @@
   <ItemGroup>
     <PackageReference Include="TUnit" />
     <PackageReference Include="Microsoft.Extensions.Hosting" />
-    <ProjectReference Include="../../src/Relayer.Serialization.Avro/Relayer.Serialization.Avro.csproj" />
+    <ProjectReference Include="../../src/Relayer.Kafka.Serialization.Avro/Relayer.Kafka.Serialization.Avro.csproj" />
   </ItemGroup>
   <ItemGroup><Compile Include="../Shared/AvroFixture.cs" Link="AvroFixture.cs" /></ItemGroup>
 </Project>

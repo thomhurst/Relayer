@@ -1,6 +1,6 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
-    <Description>Startup-prepared, source-generated Avro serialization with Schema Registry integration for Relayer.</Description>
+    <Description>Startup-prepared, source-generated Avro serialization for Relayer using the Dekaf Kafka client and Schema Registry integration.</Description>
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="Dekaf.SchemaRegistry.Avro" />
