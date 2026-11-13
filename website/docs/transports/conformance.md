@@ -60,6 +60,8 @@ The Kafka adapter runs its supported cases against Kafka in Testcontainers, incl
 | `CleanShutdown` | Stop with a handler in flight, drain before closure, native lifecycle/durability evidence and no failure logs through disposal | None; requires `ITransportShutdownConformanceFixture` |
 | `SendDuringOutage` | Concurrent outage sends and offline shutdown finish within deadlines; recovery delivers every successfully acknowledged message at least once | Fixture supplies a positive `OutageSendTimeout` |
 
+`OrderingByKey` lets each handler complete and settle while the 32 same-key sends proceed. It verifies native send order without holding a delivery lease during later sends or requiring capacity for 32 unsettled messages. Native admission backpressure remains active.
+
 Delay assertions use the smaller of 200 ms and the endpoint's native maximum. They compare the declared due time with handler entry; they do not rely on sleeps or require a maximum delivery latency. Queue settlement spans must run inside their process span. Log commits may be amortized outside processing, as the native log model requires.
 
 The copy contract exercises the adapter boundary used by outbox dispatch, scheduled re-sends and dead-letter copies. It does not run a durable outbox worker or replace its integration tests. Native dead-letter preservation has its own case. Transport-specific restart/rebalance chaos tests, batching, replay, transactions and client-specific guarantees remain additional adapter tests.

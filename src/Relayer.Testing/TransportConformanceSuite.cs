@@ -131,7 +131,7 @@ public sealed class TransportConformanceSuite<TIncoming, TBinding>
             }
             if (scenario == TransportConformanceCase.DeadLetter && Encoding.UTF8.GetString(body) == "{\"Value\":1}")
                 return new(Disposition.DeadLettered(new("conformance_poison", "expected failure")));
-            if (scenario is TransportConformanceCase.OrderingByKey or TransportConformanceCase.CleanShutdown)
+            if (scenario == TransportConformanceCase.CleanShutdown)
                 return WaitForOrderAsync(orderRelease.Task, token);
             return new(Disposition.Complete);
         };
@@ -280,7 +280,7 @@ public sealed class TransportConformanceSuite<TIncoming, TBinding>
                 break;
             case TransportConformanceCase.OrderingByKey:
                 for (var i = 0; i < 32; i++) await Send(i, key: new WireString("one-key")).ConfigureAwait(false);
-                orderRelease.SetResult();
+                // Settle as messages arrive: native send admission may depend on prior completion.
                 for (var i = 0; i < 32; i++) CheckBody(await Next().ConfigureAwait(false), i);
                 break;
             case TransportConformanceCase.TracePropagation:

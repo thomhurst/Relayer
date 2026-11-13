@@ -42,6 +42,15 @@ public class InMemoryConformanceTests
     }
 
     [Test]
+    public async Task Ordering_allows_native_backpressure_with_one_unsettled_message()
+    {
+        var suite = new TransportConformanceSuite<InMemoryDelivery, InMemoryMessageBinding>((tracing, _) =>
+            new ValueTask<ITransportConformanceFixture<InMemoryDelivery>>(new InMemoryFixture(tracing, capacity: 1)),
+            TimeSpan.FromSeconds(5));
+        await Assert.That((await suite.RunAsync(TransportConformanceCase.OrderingByKey)).Skipped).IsFalse();
+    }
+
+    [Test]
     [Arguments(TransportConformanceCase.Retry)]
     [Arguments(TransportConformanceCase.DeadLetter)]
     [Arguments(TransportConformanceCase.Delay)]
@@ -111,13 +120,14 @@ internal sealed class InMemoryFixture : ITransportConformanceFixture<InMemoryDel
     private int _completed;
     public ConformanceLogCapture Logs { get; } = new();
 
-    internal InMemoryFixture(MessageTracing? tracing, bool log = false, TransportCapabilities? capabilities = null)
+    internal InMemoryFixture(MessageTracing? tracing, bool log = false, TransportCapabilities? capabilities = null, int capacity = 256)
     {
         _log = log;
         _transport = new("conformance", new Dictionary<string, InMemoryEndpointOptions>
         {
             [Destination] = new()
             {
+                Capacity = capacity,
                 Partitions = capabilities is null ? 2 : 1,
                 Capabilities = capabilities ?? new()
                 {
