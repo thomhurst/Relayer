@@ -49,6 +49,11 @@ on:
         default: auto
         type: choice
         options: [auto, '10.0.14', '10.0.15']
+      jit_method:
+        description: Optional child-only native JIT method filter (native parent required; diagnostic timings excluded)
+        required: false
+        default: ''
+        type: string
 
 permissions:
   contents: read
@@ -91,6 +96,7 @@ jobs:
           SAME_IMAGE: ${{ inputs.same_image || 'abba' }}
           CONTROL_PARENT: ${{ inputs.parent || 'native' }}
           CONTROL_RUNTIME: ${{ inputs.runtime_version || 'auto' }}
+          JIT_METHOD: ${{ inputs.jit_method }}
         run: |
           [[ "$PERFORMANCE_RUN" =~ ^[0-9]+$ ]] || { echo "Invalid Performance run ID: $PERFORMANCE_RUN" >&2; exit 1; }
           gh run download "$PERFORMANCE_RUN" --name "performance-$PERFORMANCE_RUN-1" --dir inputs
@@ -110,6 +116,9 @@ jobs:
             10.0.14|10.0.15) control_args+=(--runtime-version "$CONTROL_RUNTIME") ;;
             *) echo "Invalid runtime control: $CONTROL_RUNTIME" >&2; exit 1 ;;
           esac
+          if [[ -n "$JIT_METHOD" ]]; then
+            control_args+=(--jit-method "$JIT_METHOD")
+          fi
           python3 .github/scripts/frozen_bdn_control.py inputs results/original-engine "${control_args[@]}"
       - name: Retain all outcomes and executable inputs
         if: always()

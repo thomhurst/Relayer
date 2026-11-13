@@ -101,8 +101,15 @@ def main():
                         help="Choose native final-stop tail or exact MeasureWithGc entry/leave.")
     parser.add_argument("--allocation-profiler", type=Path,
                         help="Separate exact CLR callback counts in the selected native boundary.")
+    parser.add_argument("--jit-method",
+                        help="Separate child-only native DOTNET_JitDisasm method filter; all diagnostic timings are excluded.")
     args = parser.parse_args()
     from frozen_scope_control import result as timing_result
+    if args.jit_method is not None:
+        if not args.jit_method.strip() or "\0" in args.jit_method:
+            parser.error("--jit-method requires a nonempty native method filter without NUL")
+        if not args.native_executor or args.trace_tool or args.allocation_profiler:
+            parser.error("--jit-method requires the native parent without other instrumentation")
     if args.native_executor and (args.case not in ("concurrent", "scoped-dispatch", "scope-only", "scope-only-unscoped") or args.trace_tool):
         parser.error("Native parent supports concurrent, scoped-dispatch or either ScopeOnly parameter replay without an external trace launcher")
     if args.allocation_profiler and args.case != "concurrent":
@@ -122,7 +129,7 @@ def main():
                 "case": args.case, "parameter": parameter,
                 "engine": "Original retained BenchmarkDotNet generated executable and Default job",
                 "host": "Native NoAcknowledgementConsoleHost; original anonymous-pipe parent absent",
-                "operationsPerInvoke": operations, "instrumented": args.trace_tool is not None or args.allocation_profiler is not None,
+                "operationsPerInvoke": operations, "instrumented": args.trace_tool is not None or args.allocation_profiler is not None or args.jit_method is not None,
                 "limits": "New original-engine executions, not historical reconstruction, allocation-type attribution, throughput equivalence or native-client budget evidence. No external fixed-count driver, sampled profile, job override or threshold change.",
                 "requestedRuntime": args.runtime_version, "commands": []}
     for side in launches:
@@ -187,12 +194,22 @@ def main():
         protocol["limits"] += " Native-parent child-only profiling; managed parent is unprofiled. Bundled protocol/instrumentation intervention, not isolated pipe effects or historical attribution."
     if args.same_image:
         protocol["limits"] += " Same-image negative control: no candidate-versus-baseline comparison; process order, adaptive operation counts and host drift remain uncontrolled."
+    if args.jit_method is not None:
+        protocol["jitMethod"] = args.jit_method
+        protocol["timingUse"] = "Excluded: child JIT code capture perturbs execution; allocations are excluded too."
+        protocol["limits"] += (
+            " Child-only native JIT listings, not historical compiled-code reconstruction. "
+            "The managed parent is not instrumented. Filtering does not serialize concurrent compilation; "
+            "missing, inlined, precompiled or interleaved methods and unobserved tiers prevent completeness "
+            "or equality claims. Listings do not prove which code executed during timed iterations.")
     (args.output / "protocol.json").write_text(json.dumps(protocol, indent=2) + "\n")
     outcomes = []
     failed = False
     for index, (side, command) in enumerate(zip(launches, protocol["commands"]), 1):
         log_path = args.output / f"{index}-{side}.log"
         outcome = {"launch": index, "side": side}
+        if args.jit_method is not None:
+            outcome["timingUse"] = protocol["timingUse"]
         with log_path.open("w") as log:
             try:
                 environment = None
@@ -206,12 +223,18 @@ def main():
                     environment.pop("RELAYER_ALLOCATION_BDN_TAIL", None)
                     environment.update(RELAYER_ALLOCATION_TYPE="BenchmarkDotNet.Engines.Engine",
                                        RELAYER_ALLOCATION_METHOD="MeasureWithGc")
+                if args.jit_method is not None:
+                    environment = dict(os.environ, DOTNET_JitDisasm=args.jit_method,
+                                       DOTNET_JitDisasmDiffable="1",
+                                       DOTNET_JitStdOutFile=str((args.output / f"{index}-{side}-jit.asm").resolve()))
                 if args.native_executor and environment is not None:
-                    # Profile only the benchmark child. Profiling the managed parent
-                    # too would share/truncate its report and contaminate callbacks.
+                    # Instrument only the benchmark child. The managed parent must
+                    # not share/truncate its reports or contaminate callbacks.
                     child_variables = {key: value for key, value in environment.items()
                                        if key in ("CORECLR_ENABLE_PROFILING", "CORECLR_PROFILER", "CORECLR_PROFILER_PATH")
-                                       or key.startswith("RELAYER_ALLOCATION_")}
+                                       or key.startswith("RELAYER_ALLOCATION_")
+                                       or (args.jit_method is not None and key in
+                                           ("DOTNET_JitDisasm", "DOTNET_JitDisasmDiffable", "DOTNET_JitStdOutFile"))}
                     child_wrapper = args.output.resolve() / f"{index}-{side}-native-dotnet.sh"
                     child_wrapper.write_text(wrapper.read_text().replace(
                         "exec dotnet ", "exec env " + shlex.join(
@@ -257,11 +280,26 @@ def main():
                     outcome["runtime"] = versions[0]
                 # Reuse the existing native WorkloadResult parser; these are new
                 # process samples, never a gate verdict or historical reconstruction.
-                outcome.update(timing_result(text))
+                measurements = timing_result(text)
                 if args.case == "concurrent":
-                    outcome.update(result(text))
+                    measurements.update(result(text))
+                if args.jit_method is not None:
+                    # Retain diagnostic measurements without publishing normal
+                    # timing/allocation fields that could be mistaken for evidence.
+                    outcome["diagnosticResults"] = measurements
+                else:
+                    outcome.update(measurements)
             except (ValueError, OSError, KeyError, TypeError) as error:
                 outcome["error"] = str(error)
+                failed = True
+        if args.jit_method is not None:
+            listing = args.output / f"{index}-{side}-jit.asm"
+            try:
+                if "; Assembly listing for method" not in listing.read_text():
+                    raise ValueError("Missing native assembly listing header; selected methods may not have been JIT-compiled")
+                outcome["jitDisassembly"] = listing.name
+            except (ValueError, OSError, UnicodeError) as error:
+                outcome["jitError"] = str(error)
                 failed = True
         if args.allocation_profiler:
             report = args.output / f"{index}-{side}-objects.jsonl"
