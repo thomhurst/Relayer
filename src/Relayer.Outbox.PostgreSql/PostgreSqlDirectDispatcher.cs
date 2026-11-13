@@ -12,6 +12,7 @@ namespace Relayer.Outbox.PostgreSql;
 internal sealed class PostgreSqlDirectDispatcher : BackgroundService
 {
     private readonly PostgreSqlOutboxStore _store;
+    private readonly TimeProvider _time;
     private readonly PostgreSqlDispatchFailures _failures;
     private readonly PostgreSqlDirectDispatchOptions _options;
     private readonly ILogger<PostgreSqlDirectDispatcher> _logger;
@@ -45,8 +46,9 @@ internal sealed class PostgreSqlDirectDispatcher : BackgroundService
 
     internal PostgreSqlDirectDispatcher(Npgsql.NpgsqlDataSource dataSource, PostgreSqlOutboxOptions storeOptions,
         PostgreSqlDirectDispatchOptions options, IEnumerable<ITransport> transports, ILogger<PostgreSqlDirectDispatcher> logger,
-        PostgreSqlOutboxStore? store = null, RelayerInstrumentation? instrumentation = null, IServiceScopeFactory? scopes = null)
+        PostgreSqlOutboxStore? store = null, RelayerInstrumentation? instrumentation = null, IServiceScopeFactory? scopes = null, TimeProvider? timeProvider = null)
     {
+        _time = timeProvider ?? TimeProvider.System;
         _failures = new(scopes);
         _source = dataSource;
         _retainSentMessages = storeOptions.RetainSentMessages;
@@ -101,7 +103,8 @@ internal sealed class PostgreSqlDirectDispatcher : BackgroundService
         for (var i = 0; i < _pool.Length; i++)
             if ((batch = Interlocked.Exchange(ref _pool[i], null)) is not null) break;
         batch ??= new();
-        batch.Take(rows, count, DateTimeOffset.UtcNow);
+        // Only PostgreSQL can decide schedule eligibility without assuming synchronized host clocks.
+        batch.Take(rows, count, DateTimeOffset.MaxValue);
         if (batch.Count == 0) { Return(batch); return; }
         if (_queue.Writer.TryWrite(batch)) return;
         DirectDispatchLog.NotQueued(_logger, batch.Count);
@@ -208,14 +211,16 @@ internal sealed class PostgreSqlDirectDispatcher : BackgroundService
                     localAdmission = localTransport.TryEnter(first.Destination);
                     if (localAdmission is null) continue; // Durable rows remain available for a later recovery pass.
                 }
-                var now = DateTimeOffset.UtcNow;
-                var expires = now + _options.ClaimDuration;
-                await _store.ClaimBatchAsync(_claims.AsMemory(0, count), _claimed.AsMemory(0, count), now, expires, cancellationToken).ConfigureAwait(false);
+                // Start before the round trip: elapsed time is a conservative bound on lease age,
+                // independent of either wall clock and including database/connection latency.
+                var claimStarted = _time.GetTimestamp();
+                await _store.ClaimDirectBatchAsync(_claims.AsMemory(0, count), _claimed.AsMemory(0, count),
+                    _options.ClaimDuration, cancellationToken).ConfigureAwait(false);
                 var live = CompactClaims(_messages.AsSpan(0, count), _claims.AsSpan(0, count), _claimed.AsSpan(0, count),
                     _created.AsSpan(0, count));
                 if (live == 0) continue;
                 // A slow database response can consume the lease. Never start a send with known expired ownership.
-                if (expires <= DateTimeOffset.UtcNow)
+                if (_time.GetElapsedTime(claimStarted) >= _options.ClaimDuration)
                 {
                     DirectDispatchLog.ClaimExpired(_logger, live);
                     continue;
@@ -224,7 +229,7 @@ internal sealed class PostgreSqlDirectDispatcher : BackgroundService
                 {
                     if (_instrumentation is not null)
                     {
-                        var dispatchTime = DateTimeOffset.UtcNow;
+                        var dispatchTime = _time.GetUtcNow();
                         for (var i = 0; i < live; i++) _instrumentation.RecordOutboxDispatchLag(dispatchTime - _created[i]);
                     }
                     if (PostgreSqlLocalTransport.Find(transport) is { } local)
@@ -249,12 +254,12 @@ internal sealed class PostgreSqlDirectDispatcher : BackgroundService
                             // individually under the same live claim; at-least-once delivery permits duplicates.
                             if (error is IBatchSendFailure result && result.IsConfirmed(i))
                             {
-                                if (await _store.CompleteBatchAsync(_claims.AsMemory(i, 1), DateTimeOffset.UtcNow, cancellationToken).ConfigureAwait(false) == 1)
+                                if (await _store.CompleteDirectBatchAsync(_claims.AsMemory(i, 1), cancellationToken).ConfigureAwait(false) == 1)
                                     _instrumentation?.AddOutboxPending(-1);
                             }
                             else if (live > 1 && PostgreSqlLocalTransport.Find(transport) is null)
                             {
-                                if (expires <= DateTimeOffset.UtcNow)
+                                if (_time.GetElapsedTime(claimStarted) >= _options.ClaimDuration)
                                 {
                                     // Unsent rows retain their claim for recovery; no send outcome is inferred.
                                     continue;
@@ -266,7 +271,7 @@ internal sealed class PostgreSqlDirectDispatcher : BackgroundService
                                 if (singleError is null)
                                 {
                                     // Completion failures must never be classified as failed sends.
-                                    if (await _store.CompleteBatchAsync(_claims.AsMemory(i, 1), DateTimeOffset.UtcNow, cancellationToken).ConfigureAwait(false) == 1)
+                                    if (await _store.CompleteDirectBatchAsync(_claims.AsMemory(i, 1), cancellationToken).ConfigureAwait(false) == 1)
                                         _instrumentation?.AddOutboxPending(-1);
                                     continue;
                                 }
@@ -283,7 +288,7 @@ internal sealed class PostgreSqlDirectDispatcher : BackgroundService
                 // Once the broker succeeds, database errors must not consume send attempts or release claims.
                 try
                 {
-                    var completed = await _store.CompleteBatchAsync(_claims.AsMemory(0, live), DateTimeOffset.UtcNow, cancellationToken).ConfigureAwait(false);
+                    var completed = await _store.CompleteDirectBatchAsync(_claims.AsMemory(0, live), cancellationToken).ConfigureAwait(false);
                     _instrumentation?.AddOutboxPending(-completed);
                     if (completed != live) DirectDispatchLog.Incomplete(_logger, completed, live);
                 }
@@ -312,13 +317,13 @@ internal sealed class PostgreSqlDirectDispatcher : BackgroundService
             row.TenantId, _messages[index], cancellationToken).ConfigureAwait(false);
         if (action == FailureAction.Discard)
         {
-            var completed = await _store.CompleteBatchAsync(_claims.AsMemory(index, 1), DateTimeOffset.UtcNow, cancellationToken).ConfigureAwait(false);
+            var completed = await _store.CompleteDirectBatchAsync(_claims.AsMemory(index, 1), cancellationToken).ConfigureAwait(false);
             _instrumentation?.AddOutboxPending(-completed);
             return;
         }
         if (action is not (FailureAction.Retry or FailureAction.DeadLetter))
             throw new InvalidOperationException("The dispatch failure classifier returned an unknown action.");
-        if (await _store.RecordDispatchFailureAsync(_claims[index], error.Message, DateTimeOffset.UtcNow,
+        if (await _store.RecordDispatchFailureAsync(_claims[index], error.Message, null,
             cancellationToken, permanent: action == FailureAction.DeadLetter, retryable: retryable).ConfigureAwait(false) == 2)
         {
             if (propagateDatabaseFailures) _recoveredPoison++;
@@ -347,7 +352,7 @@ internal sealed class PostgreSqlDirectDispatcher : BackgroundService
             if (_recoveryRows.Count == i) _recoveryRows.Add(new());
             _recoveryRows[i].Copy(rows[i], 1);
         }
-        _recoveryBatch.Take(_recoveryRows, rows.Length, DateTimeOffset.UtcNow);
+        _recoveryBatch.Take(_recoveryRows, rows.Length, DateTimeOffset.MaxValue);
         return _recoveryBatch;
     }
 

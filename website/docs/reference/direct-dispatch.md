@@ -68,8 +68,11 @@ can reuse or dispose its scope. It never uses the committing DbContext in the ba
 
 For each native group, one conditional database update acquires fresh fenced claims for eligible rows.
 Competing instances cannot normally dispatch the same row. The worker excludes rows claimed by another
-instance, and skips sending if the group's shared claim deadline has already passed when the database
-responds. It preserves the stored message ID, body, native headers and
+instance. PostgreSQL evaluates delivery eligibility, claim expiry, completion, sent-history timestamps
+and failure backoff with `clock_timestamp()`, including when recovery reuses this dispatcher.
+Before starting a send or retry, the worker checks monotonic elapsed time since it began claiming.
+This conservative budget includes the database round trip and avoids comparing database deadlines
+with the host wall clock. It can leave a live claim for recovery when the round trip consumes the budget. It preserves the stored message ID, body, native headers and
 creation context; it does not serialize the application message again or generate a new envelope.
 Once a stored delivery time is due, the native send requests immediate delivery. This also works with
 transports such as Kafka that have no native scheduling support.
@@ -122,3 +125,17 @@ overflow, cancellation, process death or a future `DeliverAt`. Register it expli
 Local-handler retries retain the `storeOptions.MaxDispatchAttempts` poison budget (default 10).
 This worker handles immediate commit-triggered sends; maintenance revisits native retries when their
 persisted deadline becomes due.
+
+## Clock assumptions
+
+Keep database wall clocks stable and synchronize application clocks. PostgreSQL direct claim fencing
+and the local transport's transactional completion use the database clock; these checks do not depend
+on the application clock offset. The worker does not renew direct claims during a send. A database
+clock jump can still expire a lease early, and at-least-once delivery still permits duplicates.
+
+Creation timestamps remain application-generated. Recovery compares `created_at` with database time
+and `RecoveryDelay`, so a writer clock ahead of the database can delay recovery; a clock behind can
+make a row eligible sooner. Dispatch-lag telemetry also compares application timestamps. Absolute
+`DeliverAt` values reflect the caller's intended UTC instant, evaluated against database time.
+The low-level [PostgreSQL store](postgres-store.md) methods that accept `now` and an expiry continue
+to honor those explicit instants; application-owned workers must supply a consistent clock.
