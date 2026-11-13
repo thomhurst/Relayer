@@ -16,12 +16,51 @@ public sealed record JsonOrder(string CustomerName, decimal Total, int[] Items);
 [Message("tests.json-value")]
 public readonly record struct JsonValue(int Count);
 
+[JsonSerializable(typeof(Relayer.TestContracts.Orders.Order))]
 [JsonSerializable(typeof(JsonOrder))]
 [JsonSourceGenerationOptions(PropertyNamingPolicy = JsonKnownNamingPolicy.SnakeCaseLower)]
 internal partial class CustomJsonContext : JsonSerializerContext;
 
 public class JsonSerializerTests
 {
+    [Test]
+    public async Task Exported_contexts_compose_and_allow_custom_context_override()
+    {
+        var services = new ServiceCollection().AddRelayer(builder =>
+        {
+            builder.AddOrdersContracts();
+            builder.AddBillingContracts();
+            builder.AddMessageTypesFromThisAssembly();
+            builder.UseJsonSerializer(CustomJsonContext.Default);
+        });
+        using var provider = services.BuildServiceProvider();
+        var serializer = provider.GetRequiredService<IMessageSerializer>();
+        var buffer = new ArrayBufferWriter<byte>();
+        serializer.Serialize(new Relayer.TestContracts.Orders.Order(42), buffer);
+        await Assert.That(Encoding.UTF8.GetString(buffer.WrittenSpan)).IsEqualTo("{\"message_id\":42}");
+        buffer.Clear();
+        serializer.Serialize(new Relayer.TestContracts.Billing.Payment(7), buffer);
+        await Assert.That(Encoding.UTF8.GetString(buffer.WrittenSpan)).IsEqualTo("{\"MessageId\":7}");
+        buffer.Clear();
+        serializer.Serialize(new JsonValue(9), buffer);
+        await Assert.That(serializer.Deserialize<JsonValue>(new ReadOnlySequence<byte>(buffer.WrittenMemory)))
+            .IsEqualTo(new JsonValue(9));
+    }
+
+    [Test]
+    public async Task Exported_contexts_preserve_custom_serializer()
+    {
+        var custom = new CustomSerializer();
+        var services = new ServiceCollection().AddRelayer(builder =>
+        {
+            builder.AddOrdersContracts();
+            builder.AddBillingContracts();
+            builder.Services.AddSingleton<IMessageSerializer>(custom);
+        });
+        using var provider = services.BuildServiceProvider();
+        await Assert.That(provider.GetRequiredService<IMessageSerializer>()).IsSameReferenceAs(custom);
+    }
+
     [Test]
     public async Task Default_serializer_round_trips_declared_messages()
     {

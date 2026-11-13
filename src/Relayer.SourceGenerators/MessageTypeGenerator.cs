@@ -58,6 +58,12 @@ public sealed class MessageTypeGenerator : IIncrementalGenerator
         "Relayer", DiagnosticSeverity.Error, isEnabledByDefault: true,
         helpLinkUri: "https://relayer.tomlonghurst.dev/docs/reference/diagnostics#rlym007");
 
+    private static readonly DiagnosticDescriptor InvalidRegistrationName = new(
+        "RLYM008", "Invalid exported message registration name",
+        "GenerateMessageTypes requires a non-keyword C# identifier other than AddMessageTypesFromThisAssembly; choose a unique method name such as AddOrderMessages",
+        "Relayer", DiagnosticSeverity.Error, isEnabledByDefault: true,
+        helpLinkUri: "https://relayer.tomlonghurst.dev/docs/reference/diagnostics#rlym008");
+
     public void Initialize(IncrementalGeneratorInitializationContext context)
     {
         var refLikeMessages = context.SyntaxProvider.ForAttributeWithMetadataName(
@@ -110,7 +116,23 @@ public sealed class MessageTypeGenerator : IIncrementalGenerator
         });
         var messages = declarations.Where(static m => m.OpenGenericLocation is null && m.InaccessibleLocation is null && m.NullNameLocation is null && m.InvalidIdentityLocation is null).Collect();
 
-        context.RegisterSourceOutput(messages, static (spc, models) => Emit(spc, models));
+        context.RegisterSourceOutput(messages.Combine(context.CompilationProvider), static (spc, input) =>
+        {
+            Emit(spc, input.Left);
+            var attribute = input.Right.Assembly.GetAttributes().FirstOrDefault(static a =>
+                a.AttributeClass?.ToDisplayString() == "Relayer.GenerateMessageTypesAttribute");
+            if (attribute is null) return;
+            var name = attribute.ConstructorArguments.FirstOrDefault().Value as string;
+            if (string.IsNullOrEmpty(name) || !SyntaxFacts.IsValidIdentifier(name!)
+                || SyntaxFacts.GetKeywordKind(name!) != SyntaxKind.None
+                || name == "AddMessageTypesFromThisAssembly")
+            {
+                spc.ReportDiagnostic(Diagnostic.Create(InvalidRegistrationName,
+                    attribute.ApplicationSyntaxReference?.GetSyntax().GetLocation()));
+                return;
+            }
+            Emit(spc, input.Left, name);
+        });
         context.RegisterSourceOutput(messages.Combine(context.CompilationProvider),
             static (spc, input) => EmitJsonContext(spc, input.Left, input.Right));
     }
@@ -173,9 +195,9 @@ public sealed class MessageTypeGenerator : IIncrementalGenerator
             InvalidIdentityLocation: invalidIdentityLocation);
     }
 
-    private static void Emit(SourceProductionContext context, ImmutableArray<MessageModel> models)
+    private static void Emit(SourceProductionContext context, ImmutableArray<MessageModel> models, string? exportedName = null)
     {
-        if (models.IsDefaultOrEmpty)
+        if (models.IsDefaultOrEmpty && exportedName is null)
         {
             return;
         }
@@ -188,10 +210,13 @@ public sealed class MessageTypeGenerator : IIncrementalGenerator
         builder.AppendLine("{");
         builder.AppendLine("    /// <summary>Message types declared with [Message] in this assembly.</summary>");
         builder.AppendLine("    [global::System.CodeDom.Compiler.GeneratedCode(\"Relayer.SourceGenerators\", \"1.0.0\")]");
-        builder.AppendLine("    internal static class RelayerGeneratedMessageTypes");
+        builder.Append("    ").Append(exportedName is null ? "internal" : "public")
+            .Append(" static class ").AppendLine(exportedName is null ? "RelayerGeneratedMessageTypes" : exportedName + "Extensions");
         builder.AppendLine("    {");
         builder.AppendLine("        /// <summary>Registers every [Message] type declared in this assembly.</summary>");
-        builder.AppendLine("        public static global::Relayer.IRelayerBuilder AddMessageTypesFromThisAssembly(this global::Relayer.IRelayerBuilder builder, global::System.Text.Json.JsonSerializerOptions? serializerOptions = null)");
+        builder.Append("        public static global::Relayer.IRelayerBuilder ")
+            .Append(exportedName ?? "AddMessageTypesFromThisAssembly")
+            .AppendLine("(this global::Relayer.IRelayerBuilder builder, global::System.Text.Json.JsonSerializerOptions? serializerOptions = null)");
         builder.AppendLine("        {");
         builder.AppendLine("            global::System.ArgumentNullException.ThrowIfNull(builder);");
 
@@ -206,12 +231,13 @@ public sealed class MessageTypeGenerator : IIncrementalGenerator
                 .AppendLine(");");
         }
 
-        builder.AppendLine("            return global::Relayer.JsonSerializerBuilderExtensions.UseJsonSerializer(builder, serializerOptions is null ? new RelayerGeneratedJsonContext() : new RelayerGeneratedJsonContext(new global::System.Text.Json.JsonSerializerOptions(serializerOptions)));");
+        builder.AppendLine(models.IsDefaultOrEmpty ? "            return builder;" :
+            "            return global::Relayer.JsonSerializerBuilderExtensions.UseJsonSerializer(builder, serializerOptions is null ? new RelayerGeneratedJsonContext() : new RelayerGeneratedJsonContext(new global::System.Text.Json.JsonSerializerOptions(serializerOptions)));");
         builder.AppendLine("        }");
         builder.AppendLine("    }");
         builder.AppendLine("}");
 
-        context.AddSource("RelayerGeneratedMessageTypes.g.cs", SourceText.From(builder.ToString(), Encoding.UTF8));
+        context.AddSource(exportedName is null ? "RelayerGeneratedMessageTypes.g.cs" : exportedName + "Extensions.g.cs", SourceText.From(builder.ToString(), Encoding.UTF8));
     }
 
     private static void EmitJsonContext(SourceProductionContext context, ImmutableArray<MessageModel> models, Compilation compilation)

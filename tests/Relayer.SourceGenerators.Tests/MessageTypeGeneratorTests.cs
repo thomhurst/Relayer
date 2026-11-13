@@ -410,6 +410,132 @@ public class MessageTypeGeneratorTests
         }
     }
 
+    [Test]
+    [Arguments("null")]
+    [Arguments("\"\"")]
+    [Arguments("\"class\"")]
+    [Arguments("\"Add-Orders\"")]
+    [Arguments("\"AddMessageTypesFromThisAssembly\"")]
+    public async Task Invalid_export_names_are_diagnosed(string name)
+    {
+        var compilation = CreateCompilation("InvalidExport", $"[assembly: Relayer.GenerateMessageTypes({name})]");
+        GeneratorDriver driver = CSharpGeneratorDriver.Create(new MessageTypeGenerator());
+        driver = driver.RunGeneratorsAndUpdateCompilation(compilation, out var output, out var diagnostics);
+        await Assert.That(diagnostics.Single().Id).IsEqualTo("RLYM008");
+        await Assert.That(string.Join("\n", output.GetDiagnostics().Where(d => d.Severity == DiagnosticSeverity.Error))).IsEqualTo("");
+    }
+
+    [Test]
+    public async Task Empty_contracts_export_a_callable_no_op()
+    {
+        var output = Generate(CreateCompilation("EmptyExport", "[assembly: Relayer.GenerateMessageTypes(\"AddEmptyMessages\") ]"));
+        using var image = new MemoryStream();
+        var result = output.Emit(image);
+        await Assert.That(string.Join("\n", result.Diagnostics.Where(d => d.Severity == DiagnosticSeverity.Error))).IsEqualTo("");
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Referenced_contracts_compose_with_host_messages_and_validate_duplicate_identities(bool duplicate)
+    {
+        var orders = Generate(CreateCompilation("Orders_" + Guid.NewGuid().ToString("N"), """
+            [assembly: Relayer.GenerateMessageTypes("AddOrderMessages")]
+            namespace Orders;
+            [Relayer.Message("orders.placed", Version = 2)] public sealed record Order(int OrderId);
+            """));
+        var billing = Generate(CreateCompilation("Billing_" + Guid.NewGuid().ToString("N"), $$"""
+            [assembly: Relayer.GenerateMessageTypes("AddBillingMessages")]
+            namespace Billing;
+            [Relayer.Message("{{(duplicate ? "orders.placed" : "billing.paid")}}", Version = 2)]
+            public sealed record Payment(int PaymentId);
+            """));
+        using var ordersImage = new MemoryStream();
+        using var billingImage = new MemoryStream();
+        await Assert.That(orders.Emit(ordersImage).Success).IsTrue();
+        await Assert.That(billing.Emit(billingImage).Success).IsTrue();
+        var host = Generate(CreateCompilation("Host_" + Guid.NewGuid().ToString("N"), """
+            using System;
+            using System.Buffers;
+            using System.Text;
+            using System.Text.Json;
+            using Microsoft.Extensions.DependencyInjection;
+            using Relayer;
+            using Relayer.Serialization;
+            [Message("host.local")] public sealed record Local(int LocalId);
+            public static class Probe
+            {
+                public static string Run()
+                {
+                    var services = new ServiceCollection();
+                    try
+                    {
+                        services.AddRelayer(builder =>
+                        {
+                            builder.AddOrderMessages(new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase });
+                            builder.AddBillingMessages();
+                            builder.AddMessageTypesFromThisAssembly();
+                        });
+                    }
+                    catch (InvalidOperationException e) { return e.Message; }
+                    using var provider = services.BuildServiceProvider();
+                    var serializer = provider.GetRequiredService<IMessageSerializer>();
+                    var registry = provider.GetRequiredService<MessageTypeRegistry>();
+                    if (!registry.TryGetMessageType(typeof(Orders.Order), out var identity)
+                        || identity != new MessageType("orders.placed", 2)) throw new Exception("Missing identity");
+                    var buffer = new ArrayBufferWriter<byte>();
+                    serializer.Serialize(new Orders.Order(42), buffer);
+                    var json = Encoding.UTF8.GetString(buffer.WrittenSpan);
+                    if (serializer.Deserialize<Orders.Order>(new ReadOnlySequence<byte>(buffer.WrittenMemory)).OrderId != 42)
+                        throw new Exception("Roundtrip failed");
+                    buffer.Clear();
+                    serializer.Serialize(new Billing.Payment(7), buffer);
+                    if (serializer.Deserialize<Billing.Payment>(new ReadOnlySequence<byte>(buffer.WrittenMemory)).PaymentId != 7)
+                        throw new Exception("Billing context lost");
+                    buffer.Clear();
+                    serializer.Serialize(new Local(9), buffer);
+                    if (serializer.Deserialize<Local>(new ReadOnlySequence<byte>(buffer.WrittenMemory)).LocalId != 9)
+                        throw new Exception("Host context lost");
+                    return json;
+                }
+            }
+            """).AddReferences(MetadataReference.CreateFromImage(ordersImage.ToArray()), MetadataReference.CreateFromImage(billingImage.ToArray())));
+        using var hostImage = new MemoryStream();
+        var emitted = host.Emit(hostImage);
+        await Assert.That(string.Join("\n", emitted.Diagnostics.Where(d => d.Severity >= DiagnosticSeverity.Warning))).IsEqualTo("");
+        var loader = new AssemblyLoadContext(host.AssemblyName, isCollectible: true);
+        try
+        {
+            ordersImage.Position = billingImage.Position = hostImage.Position = 0;
+            loader.LoadFromStream(ordersImage);
+            loader.LoadFromStream(billingImage);
+            var assembly = loader.LoadFromStream(hostImage);
+            var result = (string)assembly.GetType("Probe")!.GetMethod("Run")!.Invoke(null, null)!;
+            await Assert.That(result).IsEqualTo(duplicate
+                ? "'orders.placed;v=2' is already registered to Orders.Order."
+                : "{\"orderId\":42}");
+        }
+        finally { loader.Unload(); }
+    }
+
+    private static CSharpCompilation CreateCompilation(string name, string source)
+    {
+        var references = ((string)AppContext.GetData("TRUSTED_PLATFORM_ASSEMBLIES")!)
+            .Split(Path.PathSeparator).Select(static p => MetadataReference.CreateFromFile(p)).ToList();
+        references.Add(MetadataReference.CreateFromFile(typeof(MessageAttribute).Assembly.Location));
+        return CSharpCompilation.Create(name, [CSharpSyntaxTree.ParseText(source)], references,
+            new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
+    }
+
+    private static Compilation Generate(CSharpCompilation compilation)
+    {
+        GeneratorDriver driver = CSharpGeneratorDriver.Create(new MessageTypeGenerator());
+        driver.RunGeneratorsAndUpdateCompilation(compilation, out var output, out var diagnostics);
+        var errors = diagnostics.Where(d => d.Severity == DiagnosticSeverity.Error);
+        if (errors.Any()) throw new InvalidOperationException(string.Join("\n", errors));
+        return output;
+    }
+
     private sealed class CompetingGeneratorLoadContext(byte[] competingImage) : AssemblyLoadContext
     {
         protected override Assembly? Load(AssemblyName assemblyName) =>
