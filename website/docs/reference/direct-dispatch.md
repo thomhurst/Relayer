@@ -94,8 +94,13 @@ Delivery remains at-least-once. A crash after a broker send, a partial native ba
 that outlives `ClaimDuration` can deliver a message again. The direct worker does not heartbeat during
 a broker call. Choose a claim duration longer than expected native send and database latency.
 
-A failed send records attempts and its error and releases each live claim. Native exception messages
-are stored in `last_error`; restrict database access as these messages can contain endpoint details.
+Native send failures use the registered `IFailureClassifier` after native client retries finish.
+`Retry` records the error, releases the live claim and persists exponential backoff in `deliver_at`,
+from one second to five minutes; retryable sends remain pending beyond `MaxDispatchAttempts`.
+`DeadLetter` immediately moves the fenced row to dead storage, while `Discard` completes it without
+a dead copy. See [failure classification and batch isolation](postgres-store.md#poison-rows-and-key-release)
+for default classification, native exception rules and partial batch handling. Native exception
+messages are stored in `last_error`; restrict database access as these messages can contain endpoint details.
 A completion failure after a successful send logs a distinct error and leaves claims held until expiry,
 without changing attempts or `last_error`. If completion deletes fewer rows than were sent, a warning
 reports both counts and the duplicate-delivery risk. Increase `ClaimDuration` if native send or database
@@ -114,4 +119,6 @@ queue and drains it within the host's shutdown deadline; cancellation leaves unf
 [Ordered lane dispatch](ordered-dispatch.md) handles rows with ordering keys separately.
 [Leased recovery and cleanup](postgres-maintenance.md) handles due unordered rows left by failure,
 overflow, cancellation, process death or a future `DeliverAt`. Register it explicitly alongside this worker.
-Retry backoff remains planned. [Poison rows](postgres-store.md#poison-rows-and-key-release) move atomically to dead storage after `storeOptions.MaxDispatchAttempts` failed sends (default 10). This worker handles immediate commit-triggered sends.
+Local-handler retries retain the `storeOptions.MaxDispatchAttempts` poison budget (default 10).
+This worker handles immediate commit-triggered sends; maintenance revisits native retries when their
+persisted deadline becomes due.
