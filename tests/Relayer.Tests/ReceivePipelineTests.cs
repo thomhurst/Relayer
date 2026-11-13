@@ -106,6 +106,32 @@ public class ReceivePipelineTests
     }
 
     [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Opt_in_settled_failure_signal_preserves_original_error_and_clears_native_state(bool asynchronous)
+    {
+        await using var provider = Provider();
+        var error = new ApplicationException("after settlement");
+        NativeMessage<Incoming>? observed = null;
+        provider.GetRequiredService<Control>().Invoke = async context =>
+        {
+            observed = context.Features.GetRequired<NativeMessage<Incoming>>();
+            observed.Disposition = Disposition.SettledByHandler;
+            if (asynchronous) await Task.Yield();
+            throw error;
+        };
+        var ordinary = Pipeline(provider);
+        await Assert.That(async () => await ordinary.ProcessAsync(new Incoming())).Throws<ApplicationException>();
+        var optedIn = new ReceivePipeline<Incoming, Binding>(PipelineConsumer(provider), new HeaderNames(), 1, preserveSettledFailures: true);
+        SettledReceiveException? signal = null;
+        try { await optedIn.ProcessAsync(new Incoming()); }
+        catch (SettledReceiveException failure) { signal = failure; }
+        await Assert.That(signal).IsNotNull();
+        await Assert.That(signal!.InnerException).IsSameReferenceAs(error);
+        await Assert.That(observed!.Message).IsNull();
+    }
+
+    [Test]
     public async Task Failure_pipeline_sets_native_dispositions_and_errors_do_not_complete()
     {
         await using var provider = Provider();
@@ -343,13 +369,15 @@ public class ReceivePipelineTests
     }
 
     private static ReceivePipeline<Incoming, Binding> Pipeline(ServiceProvider provider, ConsumeFailureDelegate? failure = null)
+        => new(PipelineConsumer(provider, failure), new HeaderNames(), 1);
+
+    private static ConsumePipeline PipelineConsumer(ServiceProvider provider, ConsumeFailureDelegate? failure = null)
     {
         var control = provider.GetRequiredService<Control>();
-        var consumer = new ConsumePipelineBuilder(provider.GetRequiredService<IServiceScopeFactory>(),
+        return new ConsumePipelineBuilder(provider.GetRequiredService<IServiceScopeFactory>(),
             provider.GetRequiredService<MessageTypeRegistry>(), new Serializer(control),
             failure ?? (static (_, error, _) => ValueTask.FromException(error)))
             .Handler(provider.GetRequiredService<HandlerRegistry>().GetHandler<Payload, Handler>()).Build(1);
-        return new(consumer, new HeaderNames(), 1);
     }
 
     [Message("payload")]

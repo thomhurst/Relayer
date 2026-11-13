@@ -19,17 +19,22 @@ public sealed class ReceivePipeline<TIncoming, TBinding>
     private readonly State?[] _states;
     private readonly BatchState?[] _batches;
     private int _batchCursor;
+    private readonly bool _preserveSettledFailures;
 
     /// <summary>Adapts a consumer with its transport's CloudEvents header binding.</summary>
     public ReceivePipeline(ConsumePipeline consumer, HeaderNames names, int contextPoolCapacity = 64)
+        : this(consumer, names, contextPoolCapacity, false) { }
+
+    internal ReceivePipeline(ConsumePipeline consumer, HeaderNames names, int contextPoolCapacity, bool preserveSettledFailures)
     {
+        _preserveSettledFailures = preserveSettledFailures;
         ArgumentNullException.ThrowIfNull(consumer);
         ArgumentNullException.ThrowIfNull(names);
         ArgumentOutOfRangeException.ThrowIfLessThan(contextPoolCapacity, 1);
         _consumer = consumer;
         _names = names;
         _states = new State[contextPoolCapacity];
-        for (var i = 0; i < _states.Length; i++) _states[i] = new State(consumer, names, i);
+        for (var i = 0; i < _states.Length; i++) _states[i] = new State(consumer, names, preserveSettledFailures, i);
         _batches = consumer.BatchExecution is { } batch
             ? new BatchState[Math.Max(1, contextPoolCapacity / batch.Size)] : [];
         for (var i = 0; i < _batches.Length; i++) _batches[i] = new BatchState(consumer.BatchExecution!.Size);
@@ -147,11 +152,11 @@ public sealed class ReceivePipeline<TIncoming, TBinding>
                 Volatile.Write(ref _batchCursor, index + 1 == _states.Length ? 0 : index + 1);
                 return state;
             }
-            return new State(_consumer, _names);
+            return new State(_consumer, _names, _preserveSettledFailures);
         }
         for (var i = 0; i < _states.Length; i++)
             if (Interlocked.Exchange(ref _states[i], null) is { } state) return state;
-        return new State(_consumer, _names);
+        return new State(_consumer, _names, _preserveSettledFailures);
     }
 
     private void Return(State state)
@@ -178,9 +183,11 @@ public sealed class ReceivePipeline<TIncoming, TBinding>
         private Disposition _result;
         private Exception? _error;
         private bool _asynchronous;
+        private readonly bool _preserveSettledFailures;
 
-        internal State(ConsumePipeline consumer, HeaderNames names, int poolSlot = -1)
+        internal State(ConsumePipeline consumer, HeaderNames names, bool preserveSettledFailures, int poolSlot = -1)
         {
+            _preserveSettledFailures = preserveSettledFailures;
             this.consumer = consumer;
             this.names = names;
             PoolSlot = poolSlot;
@@ -281,6 +288,8 @@ public sealed class ReceivePipeline<TIncoming, TBinding>
             catch (Exception error) { _error = error; }
             finally
             {
+                if (_error is not null && _preserveSettledFailures && Native.Disposition.Kind == DispositionKind.SettledByHandler)
+                    _error = new SettledReceiveException(_error);
                 _context = null;
                 _pending = default;
                 Clear();
@@ -374,3 +383,6 @@ public sealed class ReceivePipeline<TIncoming, TBinding>
         }
     }
 }
+
+// Opt-in transport signal: the native disposition would otherwise be cleared before the failure escapes.
+internal sealed class SettledReceiveException(Exception error) : Exception("Processing failed after native settlement.", error);

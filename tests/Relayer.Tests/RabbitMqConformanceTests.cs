@@ -12,6 +12,7 @@ public class RabbitMqConformanceTests
     [Test]
     [Arguments(TransportConformanceCase.SendReceiveSettle)]
     [Arguments(TransportConformanceCase.Retry)]
+    [Arguments(TransportConformanceCase.FailureHandlingFailure)]
     [Arguments(TransportConformanceCase.DeadLetter)]
     [Arguments(TransportConformanceCase.Delay)]
     [Arguments(TransportConformanceCase.RedeliveryDelay)]

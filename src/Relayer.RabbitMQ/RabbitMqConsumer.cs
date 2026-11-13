@@ -1,4 +1,5 @@
 using System.Runtime.CompilerServices;
+using Microsoft.Extensions.Logging;
 using RabbitMQ.Client;
 using RabbitMQ.Client.Events;
 using RabbitMQ.Client.Exceptions;
@@ -6,7 +7,7 @@ using RabbitMQ.Client.Exceptions;
 namespace Relayer.RabbitMQ;
 
 // RabbitMQ.Client owns dispatch concurrency, recovery, body lifetime and cancellation notifications.
-internal sealed class RabbitMqConsumer
+internal sealed partial class RabbitMqConsumer
 {
     private readonly Func<RabbitMqDelivery, CancellationToken, ValueTask<Disposition>> _receive;
     private readonly RabbitMqConsumerOptions _options;
@@ -23,17 +24,23 @@ internal sealed class RabbitMqConsumer
     private int _running;
     private int _stopping;
     private Exception? _failure;
+    private Exception? _processingFailure;
+    private int _recovering;
+    private static readonly TimeSpan FailureBackoff = TimeSpan.FromSeconds(1);
+    private readonly ILogger? _logger;
     private int _callbacks;
     private TaskCompletionSource _cancelled = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private TaskCompletionSource _drained = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private TaskCompletionSource _completion = new(TaskCreationOptions.RunContinuationsAsynchronously);
     internal Task Completion => _completion.Task;
+    internal int ActiveCallbackCount => Volatile.Read(ref _callbacks);
     internal IConsumerDefinition Declaration { get; }
     internal bool TrackHealth { get; set; }
     internal RabbitMqConsumer(IConsumerDefinition declaration, RabbitMqConsumerOptions options,
-        Func<RabbitMqDelivery, CancellationToken, ValueTask<Disposition>> receive, MessageTracing tracing, TimeProvider? clock = null, ConnectionFactory? factory = null)
+        Func<RabbitMqDelivery, CancellationToken, ValueTask<Disposition>> receive, MessageTracing tracing, TimeProvider? clock = null, ConnectionFactory? factory = null, ILogger? logger = null)
     {
         Declaration = declaration;
+        _logger = logger;
         _options = options;
         _receive = receive;
         _endpoints = new(tracing, declaration.Source, factory?.HostName, factory?.Port);
@@ -59,6 +66,7 @@ internal sealed class RabbitMqConsumer
         if (_channel is not null) return;
         if (_abort.IsCancellationRequested) { _abort.Dispose(); _abort = new(); }
         _failure = null;
+        _processingFailure = null;
         Volatile.Write(ref _stopping, 0);
         _cancelled = new(TaskCreationOptions.RunContinuationsAsynchronously);
         _drained = new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -109,7 +117,7 @@ internal sealed class RabbitMqConsumer
     {
         // The native recoverable connection owns redelivery after a connection outage. Keep
         // its shutdown reason even after recovery so a delayed callback cannot fault the host.
-        // A channel-only protocol error or an unroutable poison copy remains terminal.
+        // Errors that escape processing recovery (including a closed consumer channel) remain terminal.
         if (_automaticRecovery && args.Exception is AlreadyClosedException error &&
             error.ShutdownReason is { Initiator: not ShutdownInitiator.Application, ReplyCode: not 403 } reason &&
             (ReferenceEquals(reason, _connection?.CloseReason) || ReferenceEquals(reason, Volatile.Read(ref _connectionShutdown))))
@@ -160,13 +168,39 @@ internal sealed class RabbitMqConsumer
         {
             var delivery = new RabbitMqDelivery(_channel!, message)
             { Endpoint = _endpoints.Get(message.Exchange, message.RoutingKey) };
-            var disposition = await _receive(delivery, _abort.Token).ConfigureAwait(false);
+            var previousFailure = Volatile.Read(ref _processingFailure);
+            Disposition disposition;
+            try
+            {
+                disposition = await _receive(delivery, _abort.Token).ConfigureAwait(false);
+            }
+            catch (Exception error) when (_channel!.IsOpen && !_abort.IsCancellationRequested)
+            {
+                var alreadySettled = error is SettledReceiveException;
+                if (error is SettledReceiveException settled) error = settled.InnerException!;
+                if (!alreadySettled) Interlocked.Increment(ref _recovering);
+                try
+                {
+                    Volatile.Write(ref _processingFailure, error);
+                    if (_logger is { } logger) ProcessingFailed(logger, error, Declaration.Source);
+                    // A successful native settlement is final even if later scope/telemetry work throws.
+                    if (alreadySettled) return;
+                    // basic.nack requeues immediately; keep the native delivery unacknowledged during
+                    // backoff so an unavailable failure destination cannot create a hot requeue loop.
+                    await Task.Delay(FailureBackoff, _clock, _abort.Token).ConfigureAwait(false);
+                    await delivery.Endpoint.Settlement.SettleAsync(delivery, Disposition.Redeliver(TimeSpan.Zero), _abort.Token).ConfigureAwait(false);
+                }
+                finally { if (!alreadySettled) Interlocked.Decrement(ref _recovering); }
+                return;
+            }
             // The normal pipeline settles while its process activity is still alive. Fixture/custom
             // callbacks may instead return a disposition; honor it once, after durable completion.
             if (disposition.Kind != DispositionKind.SettledByHandler)
             {
                 await delivery.Endpoint.Settlement.SettleAsync(delivery, disposition, _abort.Token).ConfigureAwait(false);
             }
+            if (previousFailure is not null && Volatile.Read(ref _recovering) == 0)
+                Interlocked.CompareExchange(ref _processingFailure, null, previousFailure);
         }
         finally
         {
@@ -179,6 +213,11 @@ internal sealed class RabbitMqConsumer
     {
         if (!TrackHealth || Volatile.Read(ref _running) == 0 || _channel?.IsOpen != true || _native?.IsRunning != true) return null;
         if (Volatile.Read(ref _failure) is { } failure) throw new InvalidOperationException("RabbitMQ receive callback failed.", failure);
+        if (Volatile.Read(ref _recovering) != 0 || Volatile.Read(ref _processingFailure) is not null)
+        {
+            var processingFailure = Volatile.Read(ref _processingFailure);
+            throw new InvalidOperationException("RabbitMQ processing failed; unsettled deliveries are requeued after backoff.", processingFailure);
+        }
         var oldest = long.MaxValue;
         foreach (ref var slot in _active.AsSpan())
         {
@@ -218,6 +257,9 @@ internal sealed class RabbitMqConsumer
             _completion.TrySetResult();
         }
     }
+
+    [LoggerMessage(Level = LogLevel.Error, Message = "RabbitMQ processing failed for {Source}.")]
+    private static partial void ProcessingFailed(ILogger logger, Exception exception, string source);
 
     internal void DisposeCancellation() => _abort.Dispose();
 }

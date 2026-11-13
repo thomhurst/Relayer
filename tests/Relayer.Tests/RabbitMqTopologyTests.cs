@@ -213,6 +213,9 @@ public class RabbitMqTopologyTests
             var builder = new ContainerBuilder("rabbitmq:4.1.4-alpine")
                 .WithEnvironment("RABBITMQ_DEFAULT_USER", "relayer")
                 .WithEnvironment("RABBITMQ_DEFAULT_PASS", "relayer")
+                // Native CLI nodes default to only eleven distribution ports. Parallel virtual-host
+                // provisioning needs independent ports without serializing the tests.
+                .WithEnvironment("RABBITMQ_CTL_DIST_PORT_MAX", "45672")
                 .WithPortBinding(5672, true)
                 .WithWaitStrategy(Wait.ForUnixContainer().UntilMessageIsLogged("Server startup complete"));
             // A dedicated broker serves one test; keep its Erlang VM small.
