@@ -447,7 +447,7 @@ Refines [D8](#d8-systemtextjson-source-generation-by-default).
 **Decision.**
 - Run the official System.Text.Json generator against an augmented compilation containing Relayer's context declaration. Forward only sources for that context; the SDK continues to generate user-declared contexts.
 - Keep the compilation dependency so member and reference changes invalidate JSON generation. Accept the compile-time work on edits rather than silently using stale contracts. Do not retain a mutable driver or compilation in process-wide state.
-- Pin the compile-time generator dependency centrally to the supported .NET 10 System.Text.Json version and ship it with its license and notices in the analyzer directory. It is not a runtime dependency. Validate SDK and packed-package consumers with reflection disabled and Native AOT when changing that version.
+- Pin the compile-time generator dependency centrally to the supported .NET 10 System.Text.Json version. Embed its assembly in the Relayer generator and load its bytes in an independent assembly load context; a normal analyzer dependency can bind to a newer SDK generator already loaded by a long-lived compiler server (#527). Cache only the immutable implementation type, creating a fresh generator for each run. Ship its license and notices in the analyzer directory. It is not a runtime dependency. Validate SDK and packed-package consumers with reflection disabled and Native AOT when changing that version.
 - Forward generator diagnostics, removing a source location only when it refers to the temporary declaration that is not part of the caller's input compilation.
 
 **Consequences.**
