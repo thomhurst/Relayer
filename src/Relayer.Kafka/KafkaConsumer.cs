@@ -80,7 +80,7 @@ internal sealed class KafkaConsumer : IAsyncDisposable
                 {
                     var batches = _native.ConsumeBatchAsync(poll.Token).GetAsyncEnumerator();
                     await using var lease = batches.ConfigureAwait(false);
-                    while (true)
+                    while (!_stop.IsCancellationRequested)
                     {
                         // Only polling cancellation means a control wake-up. A handler or
                         // commit cancellation must still fail the receiver and its batch.
@@ -120,6 +120,7 @@ internal sealed class KafkaConsumer : IAsyncDisposable
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder<>))]
     internal async ValueTask<int> ProcessBatchAsync(ConsumeBatch<byte[], byte[]> batch, CancellationToken cancellationToken)
     {
+        if (_stop.IsCancellationRequested) return 0;
         var version = _ownership.Version;
         var partition = batch.TopicPartition;
         if (!_partitions.TryGetValue(partition.Partition, out var partitionId))
@@ -152,7 +153,8 @@ internal sealed class KafkaConsumer : IAsyncDisposable
             _health?.Progress();
             count++;
         }
-        while (records.MoveNext());
+        // Do not advance the native checkpoint to a record we will not handle.
+        while (!_stop.IsCancellationRequested && records.MoveNext());
         // A rebalance invalidates the entire borrowed batch. Never acknowledge its old
         // offsets under a new ownership epoch, even when the same partition was reassigned.
         if (!complete || version != _ownership.Version)
@@ -162,6 +164,7 @@ internal sealed class KafkaConsumer : IAsyncDisposable
             if (_native.Assignment.Contains(partition)) _native.Seek(rewind);
             return 0;
         }
+        cancellationToken.ThrowIfCancellationRequested();
         if (!batch.TryGetNextOffset(out var checkpoint)) return 0;
         _offset[0] = checkpoint;
         try { await CommitAsync(_offset, count, cancellationToken).ConfigureAwait(false); }
