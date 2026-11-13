@@ -6,7 +6,7 @@ using Azure.Messaging.ServiceBus.Administration;
 namespace Relayer.AzureServiceBus;
 
 internal sealed class ServiceBusTopology(string name, ServiceBusClient client,
-    AzureServiceBusTransportOptions options, ServiceBusAdministrationClient? administration,
+    ServiceBusTransportOptions options, ServiceBusAdministrationClient? administration,
     IReadOnlyList<IConsumerDefinition>? consumers = null, IReadOnlyCollection<string>? destinations = null)
 {
     internal async ValueTask<TopologyReport> ApplyAsync(TopologyMode mode, CancellationToken cancellationToken)

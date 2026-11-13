@@ -3,7 +3,7 @@ title: Service Bus receive primitives
 description: "Use the native Service Bus callback with Relayer's receive pipeline and manual settlement view."
 ---
 
-`Relayer.AzureServiceBus` provides `ServiceBusBinding` for `ProcessMessageEventArgs`, `ServiceBusSessionBinding` for `ProcessSessionMessageEventArgs`, and a borrowed `context.ServiceBus()` view. These are low-level building blocks for applications that already own an Azure SDK processor. Most applications can use [named native processors](service-bus.md#register-receiving), which compose failure handling, settlement, telemetry and lifecycle automatically.
+`Relayer.AzureServiceBus` provides `ServiceBusMessageBinding` for `ProcessMessageEventArgs`, `ServiceBusSessionMessageBinding` for `ProcessSessionMessageEventArgs`, and a borrowed `context.ServiceBus()` view. These are low-level building blocks for applications that already own an Azure SDK processor. Most applications can use [named native processors](service-bus.md#register-receiving), which compose failure handling, settlement, telemetry and lifecycle automatically.
 
 Compose a [consume pipeline](consume-pipeline.md) with generated handlers, serialization and an explicit durable failure delegate. Then adapt your existing native processor:
 
@@ -13,7 +13,7 @@ using Relayer.AzureServiceBus;
 using Relayer.Transports;
 
 // consumerPipeline is the composed ConsumePipeline, built once at startup.
-var receive = new ReceivePipeline<ProcessMessageEventArgs, ServiceBusBinding>(
+var receive = new ReceivePipeline<ProcessMessageEventArgs, ServiceBusMessageBinding>(
     consumerPipeline, new HeaderNames("cloudEvents:"), contextPoolCapacity: 8);
 
 await using var processor = client.CreateProcessor("orders", new ServiceBusProcessorOptions
@@ -57,6 +57,6 @@ await native.DeferAsync();
 
 `Callback` exposes `ProcessMessageEventArgs` for other native operations, including lock renewal. For session deliveries, `SessionCallback` exposes the unchanged `ProcessSessionMessageEventArgs`, including session state and session lock operations; `Callback` fails explicitly on a session delivery. The common `Message` and settlement helpers work with either callback kind. If you settle directly through a callback, set the corresponding `NativeMessage<ProcessMessageEventArgs>` or `NativeMessage<ProcessSessionMessageEventArgs>` disposition to `Disposition.SettledByHandler` after success. The view, callback, message, body and header storage are borrowed for the current processing call; never retain them after it returns.
 
-`ServiceBusBinding` reads only the requested header. The logical `content-type` header comes from the native `ServiceBusReceivedMessage.ContentType` property, as required by the CloudEvents AMQP binding. When the native property is absent, the binding falls back to an application property named `content-type`; when both exist, the native property wins. Other headers come from AMQP application properties. Text stays text; binary values stay borrowed UTF-8 memory. Missing properties and other native value types return `false`; access numeric and other typed values through `native.Message.ApplicationProperties`. CloudEvents attributes use the `cloudEvents:` prefix; creation context remains in `traceparent` and `tracestate`. No SDK tracing header is substituted for the creation context.
+`ServiceBusMessageBinding` reads only the requested header. The logical `content-type` header comes from the native `ServiceBusReceivedMessage.ContentType` property, as required by the CloudEvents AMQP binding. When the native property is absent, the binding falls back to an application property named `content-type`; when both exist, the native property wins. Other headers come from AMQP application properties. Text stays text; binary values stay borrowed UTF-8 memory. Missing properties and other native value types return `false`; access numeric and other typed values through `native.Message.ApplicationProperties`. CloudEvents attributes use the `cloudEvents:` prefix; creation context remains in `traceparent` and `tracestate`. No SDK tracing header is substituted for the creation context.
 
 For an indexed single AMQP data section, the binding borrows the original body memory and creates no allocation. Other body layouts use the SDK's `Body` conversion, preserving native behavior; that conversion may allocate and join multiple sections. Header reads use the raw AMQP property dictionary to avoid the SDK's per-access read-only dictionary wrapper.

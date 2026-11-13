@@ -19,7 +19,7 @@ public sealed class ServiceBusConformanceTests
         var queue = "reprovision-" + Guid.NewGuid().ToString("N");
         await using var client = new ServiceBusClient(broker.ConnectionString);
         var admin = new ServiceBusAdministrationClient(broker.AdministrationConnectionString);
-        var options = new AzureServiceBusTransportOptions { Client = client };
+        var options = new ServiceBusTransportOptions { Client = client };
         options.Queues.Add(new(queue) { DefaultMessageTimeToLive = TimeSpan.FromHours(1),
             MaxSizeInMegabytes = 100, DuplicateDetectionHistoryTimeWindow = TimeSpan.FromMinutes(10) });
         await using var transport = new ServiceBusSendTransport("reprovision", client, false, options,
@@ -53,7 +53,7 @@ public sealed class ServiceBusConformanceTests
         using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(8));
         var token = timeout.Token;
         var destination = "";
-        var queues = new TransportConformanceSuite<ProcessMessageEventArgs, ServiceBusBinding>(
+        var queues = new TransportConformanceSuite<ProcessMessageEventArgs, ServiceBusMessageBinding>(
             (tracing, cancellation) => ServiceBusConformanceFixture<ProcessMessageEventArgs>.CreateAsync(broker, tracing, false, destination, cancellation),
             TimeSpan.FromMinutes(2));
         foreach (var scenario in destinations.Keys)
@@ -67,7 +67,7 @@ public sealed class ServiceBusConformanceTests
             }
             else await Assert.That(result.Skipped).IsFalse();
         }
-        var sessions = new TransportConformanceSuite<ProcessSessionMessageEventArgs, ServiceBusSessionBinding>(
+        var sessions = new TransportConformanceSuite<ProcessSessionMessageEventArgs, ServiceBusSessionMessageBinding>(
             (tracing, cancellation) => ServiceBusConformanceFixture<ProcessSessionMessageEventArgs>.CreateAsync(broker, tracing, true, sessionDestination, cancellation),
             TimeSpan.FromMinutes(2));
         await Assert.That((await sessions.RunAsync(TransportConformanceCase.OrderingByKey, token)).Skipped).IsFalse();
@@ -83,14 +83,14 @@ public sealed class ServiceBusConformanceTests
             sessions ? [] : [destination], sessions ? [destination] : []);
         if (sessions)
         {
-            var suite = new TransportConformanceSuite<ProcessSessionMessageEventArgs, ServiceBusSessionBinding>(
+            var suite = new TransportConformanceSuite<ProcessSessionMessageEventArgs, ServiceBusSessionMessageBinding>(
                 (tracing, token) => ServiceBusConformanceFixture<ProcessSessionMessageEventArgs>.CreateAsync(broker, tracing, true, destination, token),
                 TimeSpan.FromMinutes(2));
             await Assert.That((await suite.RunAsync(TransportConformanceCase.CleanShutdown)).Skipped).IsFalse();
         }
         else
         {
-            var suite = new TransportConformanceSuite<ProcessMessageEventArgs, ServiceBusBinding>(
+            var suite = new TransportConformanceSuite<ProcessMessageEventArgs, ServiceBusMessageBinding>(
                 (tracing, token) => ServiceBusConformanceFixture<ProcessMessageEventArgs>.CreateAsync(broker, tracing, false, destination, token),
                 TimeSpan.FromMinutes(2));
             await Assert.That((await suite.RunAsync(TransportConformanceCase.CleanShutdown)).Skipped).IsFalse();
@@ -138,7 +138,7 @@ internal sealed class ServiceBusConformanceFixture<TIncoming> : ITransportConfor
         var options = new ServiceBusConsumerOptions();
         if (sessions) options.SessionProcessorOptions = new() { AutoCompleteMessages = false, MaxConcurrentSessions = 1 };
         _declaration = new(Destination, options, [], 1, 1, TimeSpan.FromMilliseconds(100));
-        var native = new AzureServiceBusTransportOptions { Client = _client };
+        var native = new ServiceBusTransportOptions { Client = _client };
         native.Queues.Add(new(Destination) { RequiresSession = sessions, DefaultMessageTimeToLive = TimeSpan.FromHours(1) });
         _transport = new("conformance", _client, true, native, [Destination], TopologyMode.Provision, _admin, tracing, _logs,
             consumers: [_declaration]);

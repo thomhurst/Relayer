@@ -20,10 +20,10 @@ public enum ServiceBusTopologyFormat
 public sealed class ServiceBusTopologyExporter
 {
     private readonly ITopology _topology;
-    private readonly IOptionsMonitor<AzureServiceBusTransportOptions> _options;
+    private readonly IOptionsMonitor<ServiceBusTransportOptions> _options;
 
     /// <summary>Uses the existing topology and its named native options, without resolving runtime transports.</summary>
-    public ServiceBusTopologyExporter(ITopology topology, IOptionsMonitor<AzureServiceBusTransportOptions> options)
+    public ServiceBusTopologyExporter(ITopology topology, IOptionsMonitor<ServiceBusTransportOptions> options)
     {
         ArgumentNullException.ThrowIfNull(topology);
         ArgumentNullException.ThrowIfNull(options);
@@ -44,7 +44,7 @@ public sealed class ServiceBusTopologyExporter
             throw new ArgumentOutOfRangeException(nameof(format), "Choose Bicep or Terraform for Service Bus topology export.");
         var declaration = _topology.Transports.SingleOrDefault(item => item.Name == transportName)
             ?? throw new InvalidOperationException($"No transport named '{transportName}' is declared.");
-        if (declaration.OptionsType != typeof(AzureServiceBusTransportOptions))
+        if (declaration.OptionsType != typeof(ServiceBusTransportOptions))
             throw new InvalidOperationException($"Transport '{transportName}' is not a Service Bus transport. Select a Service Bus declaration or use its transport's exporter.");
         var options = _options.Get(transportName);
         ServiceBusSendTransport.ValidateDeclarations(transportName, options, declaration.Routes.Select(route => route.Destination));
@@ -56,7 +56,7 @@ public sealed class ServiceBusTopologyExporter
         writer.Write(text);
     }
 
-    private static void ValidateConsumers(TransportDefinition transport, AzureServiceBusTransportOptions options)
+    private static void ValidateConsumers(TransportDefinition transport, ServiceBusTransportOptions options)
     {
         foreach (var consumer in transport.Consumers)
         {
@@ -70,7 +70,7 @@ public sealed class ServiceBusTopologyExporter
         }
     }
 
-    private static List<Resource> Build(AzureServiceBusTransportOptions options)
+    private static List<Resource> Build(ServiceBusTransportOptions options)
     {
         var resources = new List<Resource>();
         var topics = new Dictionary<string, string>(StringComparer.Ordinal);

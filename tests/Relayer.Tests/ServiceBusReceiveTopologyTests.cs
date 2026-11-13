@@ -11,7 +11,7 @@ public sealed class ServiceBusReceiveTopologyTests
     public async Task Receive_only_validation_uses_Listen_peeks_without_opening_Send_links()
     {
         var client = new ListenClient();
-        var options = new AzureServiceBusTransportOptions { Client = client };
+        var options = new ServiceBusTransportOptions { Client = client };
         options.Queues.Add(new("orders"));
         options.Topics.Add(new("events"));
         options.Subscriptions.Add(new("events", "audit"));
@@ -30,7 +30,7 @@ public sealed class ServiceBusReceiveTopologyTests
     public async Task Trusted_session_subscription_still_validates_a_declared_consumers_Listen_link()
     {
         var client = new ListenClient();
-        var options = new AzureServiceBusTransportOptions { Client = client };
+        var options = new ServiceBusTransportOptions { Client = client };
         options.Topics.Add(new("events"));
         options.Subscriptions.Add(new("events", "audit") { RequiresSession = true });
         options.TrustedSessionEntities.Add("events/Subscriptions/audit");

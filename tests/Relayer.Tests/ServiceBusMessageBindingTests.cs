@@ -9,7 +9,7 @@ using Relayer.Transports;
 
 namespace Relayer.Tests;
 
-public partial class ServiceBusBindingTests
+public partial class ServiceBusMessageBindingTests
 {
     [Test]
     public async Task Binding_preserves_sdk_multi_section_body_conversion()
@@ -17,7 +17,7 @@ public partial class ServiceBusBindingTests
         var message = Args(new RecordingReceiver()).Message;
         message.GetRawAmqpMessage().Body = AmqpMessageBody.FromData(new ReadOnlyMemory<byte>[] { new byte[] { 1, 2 }, new byte[] { 3 } });
         var args = new ProcessMessageEventArgs(message, new RecordingReceiver(), "multi-section", default);
-        await Assert.That(ServiceBusBinding.GetBody(args).ToArray().AsSpan().SequenceEqual(message.Body.ToMemory().Span)).IsTrue();
+        await Assert.That(ServiceBusMessageBinding.GetBody(args).ToArray().AsSpan().SequenceEqual(message.Body.ToMemory().Span)).IsTrue();
     }
 
     [Test]
@@ -34,19 +34,19 @@ public partial class ServiceBusBindingTests
             });
         var args = new ProcessMessageEventArgs(message, new RecordingReceiver(), "test", default);
 
-        await Assert.That(ServiceBusBinding.GetBody(args).First.Equals(body.ToMemory())).IsTrue();
-        await Assert.That(ServiceBusBinding.GetDeliveryCount(args)).IsEqualTo(7);
-        await Assert.That(ServiceBusBinding.TryGetHeader(args, "cloudEvents:type", out var value)).IsTrue();
+        await Assert.That(ServiceBusMessageBinding.GetBody(args).First.Equals(body.ToMemory())).IsTrue();
+        await Assert.That(ServiceBusMessageBinding.GetDeliveryCount(args)).IsEqualTo(7);
+        await Assert.That(ServiceBusMessageBinding.TryGetHeader(args, "cloudEvents:type", out var value)).IsTrue();
         await Assert.That(value.Text).IsSameReferenceAs(text);
         foreach (var name in new[] { "binary", "memory", "segment" })
         {
-            await Assert.That(ServiceBusBinding.TryGetHeader(args, name, out value)).IsTrue();
+            await Assert.That(ServiceBusMessageBinding.TryGetHeader(args, name, out value)).IsTrue();
             await Assert.That(value.Text).IsNull();
             await Assert.That(value.Utf8.Equals((ReadOnlyMemory<byte>)binary)).IsTrue();
         }
-        await Assert.That(ServiceBusBinding.TryGetHeader(args, "missing", out value)).IsFalse();
+        await Assert.That(ServiceBusMessageBinding.TryGetHeader(args, "missing", out value)).IsFalse();
         await Assert.That(value.IsEmpty).IsTrue();
-        await Assert.That(ServiceBusBinding.TryGetHeader(args, "number", out _)).IsFalse();
+        await Assert.That(ServiceBusMessageBinding.TryGetHeader(args, "number", out _)).IsFalse();
         await Assert.That(message.ApplicationProperties["number"]).IsEqualTo(42);
     }
 
@@ -63,11 +63,11 @@ public partial class ServiceBusBindingTests
         var message = ServiceBusModelFactory.ServiceBusReceivedMessage(contentType: native, properties: properties);
         var args = new ProcessMessageEventArgs(message, new RecordingReceiver(), "content-type", default);
 
-        var found = ServiceBusBinding.TryGetHeader(args, "content-type", out var value);
+        var found = ServiceBusMessageBinding.TryGetHeader(args, "content-type", out var value);
         var expected = native ?? fallback;
         await Assert.That(found).IsEqualTo(expected is not null);
         await Assert.That(value.Text).IsSameReferenceAs(expected);
-        await Assert.That(ServiceBusBinding.TryGetHeader(args, "other", out value)).IsTrue();
+        await Assert.That(ServiceBusMessageBinding.TryGetHeader(args, "other", out value)).IsTrue();
         await Assert.That(value.Text).IsEqualTo("unchanged");
         await Assert.That(message.ContentType).IsEqualTo(native);
         await Assert.That(message.ApplicationProperties.ContainsKey("content-type")).IsEqualTo(fallback is not null);
@@ -106,10 +106,10 @@ public partial class ServiceBusBindingTests
 
         static void Read(ProcessMessageEventArgs args)
         {
-            _ = ServiceBusBinding.GetBody(args);
-            _ = ServiceBusBinding.GetDeliveryCount(args);
-            if (!ServiceBusBinding.TryGetHeader(args, "cloudEvents:type", out _)) throw new InvalidOperationException();
-            if (!ServiceBusBinding.TryGetHeader(args, "content-type", out _)) throw new InvalidOperationException();
+            _ = ServiceBusMessageBinding.GetBody(args);
+            _ = ServiceBusMessageBinding.GetDeliveryCount(args);
+            if (!ServiceBusMessageBinding.TryGetHeader(args, "cloudEvents:type", out _)) throw new InvalidOperationException();
+            if (!ServiceBusMessageBinding.TryGetHeader(args, "content-type", out _)) throw new InvalidOperationException();
         }
     }
 
@@ -228,7 +228,7 @@ public partial class ServiceBusBindingTests
         return services.BuildServiceProvider();
     }
 
-    private static ReceivePipeline<ProcessMessageEventArgs, ServiceBusBinding> Pipeline(ServiceProvider provider)
+    private static ReceivePipeline<ProcessMessageEventArgs, ServiceBusMessageBinding> Pipeline(ServiceProvider provider)
     {
         var consumer = new ConsumePipelineBuilder(provider.GetRequiredService<IServiceScopeFactory>(),
             provider.GetRequiredService<MessageTypeRegistry>(), new Serializer(), static (_, error, _) => ValueTask.FromException(error))

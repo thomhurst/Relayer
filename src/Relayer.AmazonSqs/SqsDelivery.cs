@@ -9,7 +9,7 @@ using Amazon.SQS.Model;
 
 namespace Relayer.AmazonSqs;
 
-/// <summary>A borrowed native SQS delivery, valid only until its handler and settlement complete.</summary>
+/// <summary>Receiver-owned SQS storage for transport authors. Applications use the borrowed SqsMessageContext view.</summary>
 public sealed class SqsDelivery : IDisposable
 {
     private byte[] _buffer = [];
@@ -117,5 +117,24 @@ public readonly struct SqsMessageBinding : IMessageBinding<SqsDelivery>
 public static class AmazonSqsMessageContextExtensions
 {
     /// <summary>Returns borrowed SQS native features for this delivery.</summary>
-    public static SqsDelivery AmazonSqs(this MessageContext context) => context.Features.GetRequired<NativeMessage<SqsDelivery>>().Message;
+    public static SqsMessageContext AmazonSqs(this MessageContext context) =>
+        new(context.Features.GetRequired<NativeMessage<SqsDelivery>>().Message);
+}
+
+/// <summary>A borrowed native SQS view, valid only while this message is being processed.</summary>
+/// <remarks>Do not retain this view or its native objects after processing. The receiver owns delivery storage and the native client lifetime.</remarks>
+public readonly struct SqsMessageContext
+{
+    private readonly SqsDelivery _delivery;
+
+    internal SqsMessageContext(SqsDelivery delivery) => _delivery = delivery;
+
+    /// <summary>The unchanged native message.</summary>
+    public Message Message => _delivery.Message;
+    /// <summary>The native client, owned by the transport or caller.</summary>
+    public IAmazonSQS Client => _delivery.Client;
+    /// <summary>The resolved native queue URL.</summary>
+    public string QueueUrl => _delivery.QueueUrl;
+    /// <summary>The request identifier of the native receive.</summary>
+    public string? RequestId => _delivery.RequestId;
 }

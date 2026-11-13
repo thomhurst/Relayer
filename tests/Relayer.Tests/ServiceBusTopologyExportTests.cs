@@ -234,7 +234,7 @@ public sealed class ServiceBusTopologyExportTests
     {
         var definition = new ConsumerDefinition<ServiceBusConsumerOptions>("missing", new() { Subscription = subscription ? "sub" : null },
             [], 1, 1, TimeSpan.FromMilliseconds(100));
-        var topology = new DeclarationTopology(new("bus", typeof(AzureServiceBusTransportOptions), [], [definition], null, (_, _) => { }));
+        var topology = new DeclarationTopology(new("bus", typeof(ServiceBusTransportOptions), [], [definition], null, (_, _) => { }));
         var exporter = new ServiceBusTopologyExporter(topology, new OptionsMonitor(new()));
         using var stream = new MemoryStream();
         await Assert.That(() => exporter.Export("bus", stream, ServiceBusTopologyFormat.Bicep)).Throws<InvalidOperationException>();
@@ -244,11 +244,11 @@ public sealed class ServiceBusTopologyExportTests
     [Test]
     public async Task Consumer_subscription_and_queue_entities_export_without_runtime_processors()
     {
-        var options = new AzureServiceBusTransportOptions();
+        var options = new ServiceBusTransportOptions();
         options.Queues.Add(new("queue"));
         options.Topics.Add(new("topic"));
         options.Subscriptions.Add(new("topic", "sub"));
-        var topology = new DeclarationTopology(new("bus", typeof(AzureServiceBusTransportOptions), [],
+        var topology = new DeclarationTopology(new("bus", typeof(ServiceBusTransportOptions), [],
             [new ConsumerDefinition<ServiceBusConsumerOptions>("queue", new(), [], 1, 1, TimeSpan.FromMilliseconds(100)),
              new ConsumerDefinition<ServiceBusConsumerOptions>("topic", new() { Subscription = "sub" }, [], 1, 1, TimeSpan.FromMilliseconds(100))],
             null, (_, _) => { }));
@@ -256,7 +256,7 @@ public sealed class ServiceBusTopologyExportTests
         await Assert.That(output).Contains("name: 'sub'");
     }
 
-    private static ServiceProvider Provider(Action<AzureServiceBusTransportOptions> configure)
+    private static ServiceProvider Provider(Action<ServiceBusTransportOptions> configure)
     {
         var services = new ServiceCollection();
         services.AddRelayer(builder =>
@@ -286,11 +286,11 @@ public sealed class ServiceBusTopologyExportTests
         return end < 0 ? document[start..] : document[start..end];
     }
 
-    private sealed class OptionsMonitor(AzureServiceBusTransportOptions options) : IOptionsMonitor<AzureServiceBusTransportOptions>
+    private sealed class OptionsMonitor(ServiceBusTransportOptions options) : IOptionsMonitor<ServiceBusTransportOptions>
     {
-        public AzureServiceBusTransportOptions CurrentValue => options;
-        public AzureServiceBusTransportOptions Get(string? name) => options;
-        public IDisposable? OnChange(Action<AzureServiceBusTransportOptions, string?> listener) => null;
+        public ServiceBusTransportOptions CurrentValue => options;
+        public ServiceBusTransportOptions Get(string? name) => options;
+        public IDisposable? OnChange(Action<ServiceBusTransportOptions, string?> listener) => null;
     }
 
     private sealed class DeclarationTopology(TransportDefinition declaration) : ITopology

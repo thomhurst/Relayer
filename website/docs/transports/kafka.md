@@ -319,3 +319,11 @@ Use the same native TLS/SASL settings on all three builders when the cluster req
 `Relayer.AspNetCore` exposes this named Kafka manager through the [shared HTTP management endpoints](service-bus.md#optional-http-management). Pass the Kafka transport's registered name to `MapRelayerDeadLetters`, and use a configured dead-letter topic as `source`. Apply the application's authentication and authorization policy as shown there; mapping alone does not secure inspection or destructive operations.
 
 The HTTP API returns message IDs and base64-encoded body bytes, without native feature objects. A tombstone and an empty body both appear as empty bytes; use `IDeadLetterManager` directly to inspect `KafkaDeadLetterFeature.Record.Value`. HTTP redrive preserves tombstones and follows the same group-offset and filter rules above, and HTTP purge permanently deletes partition prefixes for all groups.
+
+## Native per-send headers
+
+Use `new SendOptions().Kafka(headers => headers.Add("source", "billing"))` to customize
+native `Dekaf.Serialization.Headers` before sending. This wraps the existing native
+header callback seam and works for single and batch sends. Native callbacks cannot be
+persisted in an outbox. Partition and timestamp overrides are not exposed per send;
+the configured Dekaf producer still chooses the partition using its native partitioner.

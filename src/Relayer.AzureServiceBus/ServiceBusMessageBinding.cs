@@ -6,7 +6,7 @@ using Azure.Messaging.ServiceBus;
 namespace Relayer.AzureServiceBus;
 
 /// <summary>Reads a native processor delivery without enumerating its headers.</summary>
-public readonly struct ServiceBusBinding : IMessageBinding<ProcessMessageEventArgs>
+public readonly struct ServiceBusMessageBinding : IMessageBinding<ProcessMessageEventArgs>
 {
     /// <inheritdoc />
     /// <remarks>
@@ -67,14 +67,14 @@ public readonly struct ServiceBusBinding : IMessageBinding<ProcessMessageEventAr
 }
 
 /// <summary>Reads the unchanged native session processor delivery through the same lazy Service Bus binding.</summary>
-public readonly struct ServiceBusSessionBinding : IMessageBinding<ProcessSessionMessageEventArgs>
+public readonly struct ServiceBusSessionMessageBinding : IMessageBinding<ProcessSessionMessageEventArgs>
 {
     /// <inheritdoc />
-    public static ReadOnlySequence<byte> GetBody(ProcessSessionMessageEventArgs message) => ServiceBusBinding.GetBody(message.Message);
+    public static ReadOnlySequence<byte> GetBody(ProcessSessionMessageEventArgs message) => ServiceBusMessageBinding.GetBody(message.Message);
     /// <inheritdoc />
     public static int? GetDeliveryCount(ProcessSessionMessageEventArgs message) => message.Message.DeliveryCount;
     /// <inheritdoc />
-    public static bool TryGetHeader(ProcessSessionMessageEventArgs message, string name, out WireString value) => ServiceBusBinding.TryGetHeader(message.Message, name, out value);
+    public static bool TryGetHeader(ProcessSessionMessageEventArgs message, string name, out WireString value) => ServiceBusMessageBinding.TryGetHeader(message.Message, name, out value);
     /// <inheritdoc />
-    public static void EnrichActivity(Activity activity, ProcessSessionMessageEventArgs message) => ServiceBusBinding.EnrichActivity(activity, message.Message);
+    public static void EnrichActivity(Activity activity, ProcessSessionMessageEventArgs message) => ServiceBusMessageBinding.EnrichActivity(activity, message.Message);
 }

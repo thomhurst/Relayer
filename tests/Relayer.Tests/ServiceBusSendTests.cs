@@ -34,7 +34,7 @@ public class ServiceBusSendTests
         });
         await using (var provider = services.BuildServiceProvider())
         {
-            var options = provider.GetRequiredService<IOptionsMonitor<AzureServiceBusTransportOptions>>();
+            var options = provider.GetRequiredService<IOptionsMonitor<ServiceBusTransportOptions>>();
             await Assert.That(options.Get("first").ClientOptions).IsSameReferenceAs(nativeOptions);
             await Assert.That(options.Get("second").Client).IsSameReferenceAs(second);
             var transports = provider.GetServices<ITransport>().ToArray();
@@ -436,9 +436,9 @@ public class ServiceBusSendTests
         await Assert.That(client.Senders.Count).IsEqualTo(0);
     }
 
-    internal static AzureServiceBusTransportOptions Options(ServiceBusClient client, bool sessions = false)
+    internal static ServiceBusTransportOptions Options(ServiceBusClient client, bool sessions = false)
     {
-        var options = new AzureServiceBusTransportOptions { Client = client };
+        var options = new ServiceBusTransportOptions { Client = client };
         options.Queues.Add(new("orders") { RequiresSession = sessions });
         options.Topics.Add(new("events"));
         return options;

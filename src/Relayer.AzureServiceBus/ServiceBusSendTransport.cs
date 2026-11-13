@@ -22,7 +22,7 @@ internal sealed class ServiceBusSendTransport : ITransport, ITransportSendTracin
     internal List<ServiceBusConsumer> Consumers { get; } = [];
     internal bool HealthTracking { get; set; }
 
-    internal static void ValidateDeclarations(string name, AzureServiceBusTransportOptions options, IEnumerable<string> destinations)
+    internal static void ValidateDeclarations(string name, ServiceBusTransportOptions options, IEnumerable<string> destinations)
     {
         var entities = new HashSet<string>(StringComparer.Ordinal);
         foreach (var queue in options.Queues)
@@ -48,7 +48,7 @@ internal sealed class ServiceBusSendTransport : ITransport, ITransportSendTracin
     }
 
     internal ServiceBusSendTransport(string name, ServiceBusClient client, bool ownsClient,
-        AzureServiceBusTransportOptions options, IEnumerable<string> destinations, TopologyMode mode,
+        ServiceBusTransportOptions options, IEnumerable<string> destinations, TopologyMode mode,
         ServiceBusAdministrationClient? administration = null, MessageTracing? tracing = null, ILoggerFactory? logging = null, IReadOnlyList<IConsumerDefinition>? consumers = null)
     {
         Name = name;

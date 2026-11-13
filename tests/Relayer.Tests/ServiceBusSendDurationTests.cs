@@ -209,7 +209,7 @@ public class ServiceBusSendDurationTests
 
     private static ServiceBusSendTransport Transport(ServiceBusSendTests.NativeClient client, MessageTracing tracing)
     {
-        var options = new AzureServiceBusTransportOptions { Client = client };
+        var options = new ServiceBusTransportOptions { Client = client };
         options.Queues.Add(new("orders"));
         options.Topics.Add(new("events"));
         return new("bus", client, false, options, ["orders", "events"], TopologyMode.None, tracing: tracing);

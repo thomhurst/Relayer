@@ -15,12 +15,12 @@ public static class ServiceBusBuilderExtensions
 {
     /// <summary>Declares native queue/topic sending and queue or subscription processors.</summary>
     public static IRelayerBuilder ServiceBus(this IRelayerBuilder builder, string name,
-        Action<TransportBuilder<AzureServiceBusTransportOptions, ServiceBusRouteOptions, ServiceBusConsumerOptions>> configure)
+        Action<TransportBuilder<ServiceBusTransportOptions, ServiceBusRouteOptions, ServiceBusConsumerOptions>> configure)
     {
         ArgumentNullException.ThrowIfNull(builder);
         ArgumentNullException.ThrowIfNull(configure);
         builder.Services.TryAddSingleton<ServiceBusTopologyExporter>();
-        builder.AddTransport<AzureServiceBusTransportOptions, ServiceBusRouteOptions, ServiceBusConsumerOptions>(name, transport =>
+        builder.AddTransport<ServiceBusTransportOptions, ServiceBusRouteOptions, ServiceBusConsumerOptions>(name, transport =>
         {
             transport.SendDefaults = new() { HeaderNames = new("cloudEvents:") };
             configure(transport);
@@ -29,7 +29,7 @@ public static class ServiceBusBuilderExtensions
         {
             var configuration = provider.GetRequiredService<RelayerConfiguration>();
             var definition = configuration.Transports.Single(item => item.Name == name);
-            var options = provider.GetRequiredService<IOptionsMonitor<AzureServiceBusTransportOptions>>().Get(name);
+            var options = provider.GetRequiredService<IOptionsMonitor<ServiceBusTransportOptions>>().Get(name);
             if ((options.Client is null) == string.IsNullOrWhiteSpace(options.ConnectionString))
                 throw new InvalidOperationException($"Service Bus transport '{name}': configure exactly one of Client or ConnectionString.");
             ArgumentNullException.ThrowIfNull(options.ClientOptions);

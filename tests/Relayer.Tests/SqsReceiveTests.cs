@@ -38,6 +38,42 @@ public sealed class SqsReceiveTests
     }
 
     [Test]
+    public async Task Context_borrows_native_objects_without_exposing_receiver_ownership()
+    {
+        using var client = new ReceiveClient();
+        using var delivery = new SqsDelivery(client, "url");
+        var message = Message("body", 1);
+        delivery.Prepare(message, TimeProvider.System.GetTimestamp(), "request");
+        var context = new NativeContext();
+        context.Features.Set(new NativeMessage<SqsDelivery> { Message = delivery });
+
+        SqsMessageContext view = context.AmazonSqs();
+        await Assert.That(view.Message).IsSameReferenceAs(message);
+        await Assert.That(view.Client).IsSameReferenceAs(client);
+        await Assert.That(view.QueueUrl).IsEqualTo("url");
+        await Assert.That(view.RequestId).IsEqualTo("request");
+        await Assert.That((object)view is IDisposable).IsFalse();
+
+        // Processing a later message must still be able to reuse receiver-owned storage.
+        delivery.Clear();
+        var next = Message("next", 1);
+        delivery.Prepare(next, TimeProvider.System.GetTimestamp(), null);
+        await Assert.That(context.AmazonSqs().Message).IsSameReferenceAs(next);
+        await Assert.That(context.AmazonSqs().RequestId).IsNull();
+    }
+
+    private sealed class NativeContext : MessageContext
+    {
+        public override string MessageId => "id";
+        public override MessageType MessageType => default;
+        public override MessageHeaders Headers => MessageHeaders.Empty;
+        public override int Attempt => 1;
+        public override IServiceProvider Services => throw new NotSupportedException();
+        public override MessageFeatures Features { get; } = new();
+        public override CancellationToken CancellationToken => default;
+    }
+
+    [Test]
     public async Task Receive_errors_retry_without_permanently_losing_worker()
     {
         using var client = new ReceiveClient { PollFailure = new AmazonSQSException("temporarily denied") };

@@ -12,6 +12,10 @@ namespace Relayer.Kafka;
 /// <summary>Registers named Kafka transports backed by Dekaf.</summary>
 public static class KafkaBuilderExtensions
 {
+    /// <summary>Customizes native Kafka headers immediately before single or batch sending.</summary>
+    public static SendOptions Kafka(this SendOptions options, Action<Headers> configure) =>
+        options.ConfigureNative(configure);
+
     /// <summary>Declares Kafka send routes and serial consumers with durable dead-letter copies.</summary>
     public static IRelayerBuilder Kafka(this IRelayerBuilder builder, string name,
         Action<TransportBuilder<KafkaTransportOptions, KafkaRouteOptions, KafkaConsumerOptions>> configure)

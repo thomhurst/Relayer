@@ -121,7 +121,7 @@ public interface IMessageBinding<TIncoming>
 }
 
 // Azure Service Bus: TIncoming is whatever the native receive callback hands over.
-public readonly struct ServiceBusBinding : IMessageBinding<ProcessMessageEventArgs> { … }
+public readonly struct ServiceBusMessageBinding : IMessageBinding<ProcessMessageEventArgs> { … }
 ```
 
 `WireString` is a struct that holds a header value as the native client stores it: a UTF-16 `string` (ASB, SQS) or UTF-8 bytes (Kafka, RabbitMQ). The core compares and parses it in place, and converts it to a `string` only when user code asks. Header names come from the transport's `HeaderNames`, which encodes its CloudEvents protocol binding (`ce_` for Kafka, `cloudEvents:` for AMQP). Relayer's own attributes, such as the attempt count and error metadata, are CloudEvents extensions, so they follow the same binding.
@@ -129,7 +129,7 @@ public readonly struct ServiceBusBinding : IMessageBinding<ProcessMessageEventAr
 **2. The receive loop.** The transport keeps its native receive loop and calls the core once per message. The core returns a `Disposition`, a small struct, and the transport settles natively:
 
 ```csharp
-var pipeline = pipelines.Create<ProcessMessageEventArgs, ServiceBusBinding>(consumer);   // once, at startup
+var pipeline = pipelines.Create<ProcessMessageEventArgs, ServiceBusMessageBinding>(consumer);   // once, at startup
 
 processor.ProcessMessageAsync += async args =>
 {
