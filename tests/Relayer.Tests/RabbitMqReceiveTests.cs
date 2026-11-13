@@ -220,7 +220,12 @@ public class RabbitMqReceiveTests
         if (!automaticRecovery)
         {
             await Assert.That(consumer.Completion.IsFaulted).IsTrue();
+#if NET11_0_OR_GREATER
+            // Hosting 11 propagates the observed background-service fault from StopAsync.
+            await Assert.That(async () => await host.StopAsync(token)).Throws<AlreadyClosedException>();
+#else
             await host.StopAsync(token);
+#endif
             return;
         }
         await Assert.That(consumer.Completion.IsCompleted).IsFalse();
@@ -281,7 +286,12 @@ public class RabbitMqReceiveTests
             await Assert.That(await control.Values.Reader.ReadAsync(token)).IsEqualTo(42);
             await Assert.That(consumer.Completion.IsCompleted).IsFalse();
         }
-        await host.StopAsync(token);
+#if NET11_0_OR_GREATER
+        if (!automaticRecovery)
+            await Assert.That(async () => await host.StopAsync(token)).Throws<AlreadyClosedException>();
+        else
+#endif
+            await host.StopAsync(token);
         if (automaticRecovery) await Assert.That(consumer.Completion.IsCompletedSuccessfully).IsTrue();
     }
 

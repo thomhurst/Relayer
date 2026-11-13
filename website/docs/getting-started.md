@@ -13,6 +13,8 @@ Relayer targets `net10.0` and `net11.0` and needs C# 14 or later. Its Microsoft.
 dotnet run -c Release --project samples/ModularMonolith
 ```
 
+With Microsoft.Extensions.Hosting 11 on `net11.0`, `Host.StopAsync` also rethrows background-service faults that triggered the default `StopHost` policy. This includes permanent consumer or PostgreSQL change-capture failures; callers that stop the host directly should allow these failures to reach their application error handling.
+
 The output includes `Invoice created for order-1 (customer-1)` and the process exits. The sample project references `src/Relayer/Relayer.csproj` and the source generator project explicitly; project-reference consumers need that analyzer reference. Published packages will bundle it.
 
 ## Declare a message
