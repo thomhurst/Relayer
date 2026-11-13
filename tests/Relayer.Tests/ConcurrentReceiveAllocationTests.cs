@@ -10,13 +10,16 @@ public class ConcurrentReceiveAllocationTests
         // Opt-in diagnostic only: retain the real parallel TUnit process, rather than
         // replacing it with an external driver. Load metadata before warmup.
         var region = NativeAllocationRegion.Load(checkpoints: true);
-        using var fixture = new ConcurrentReceiveFixture();
+        var workerThreads = region is null ? null : new ulong[2];
+        using var fixture = new ConcurrentReceiveFixture(region is null ? null : index => workerThreads![index] = region.CurrentThread());
         for (var i = 0; i < 1000; i++)
         {
             fixture.Run(ConcurrentReceiveFixture.Mode.Scoped);
             fixture.Run(ConcurrentReceiveFixture.Mode.Consumer);
             fixture.Run(ConcurrentReceiveFixture.Mode.Receive);
         }
+        if (workerThreads is not null && (workerThreads[0] == 0 || workerThreads[1] == 0 || workerThreads[0] == workerThreads[1]))
+            throw new InvalidOperationException("Profiler could not identify both completion workers.");
         // Allocate storage before measuring; formatting/output happens only after every window.
         // These counters describe this execution, not the historical failure or allocation owners.
         var windows = new (Window Scoped, Window Consumer, Window Receive)[1000];
@@ -45,6 +48,9 @@ public class ConcurrentReceiveAllocationTests
             {
                 // Keep every counter even when the profiler rejects its own report.
                 // Formatting/output stays after all measurements and the final marker.
+                if (workerThreads is not null)
+                    for (var worker = 0; worker < workerThreads.Length; worker++)
+                        Console.WriteLine($"allocation-worker={worker}; thread={workerThreads[worker]}");
                 Console.WriteLine($"Allocation windows: runtime={System.Runtime.InteropServices.RuntimeInformation.FrameworkDescription}; arch={System.Runtime.InteropServices.RuntimeInformation.ProcessArchitecture}; scoped={scoped}; consumer={consumer}; receive={receive}");
                 for (var i = 0; i < windows.Length; i++)
                 {

@@ -148,6 +148,10 @@ class NativeAllocationFixtureTests(unittest.TestCase):
                                 capture_output=True, text=True, timeout=60)
         (evidence / "stack-windows.log").write_text(result.stdout + result.stderr)
         self.assertEqual(result.returncode, 0, result.stderr)
+        worker_threads = {int(line.split("thread=")[1]) for line in result.stdout.splitlines()
+                          if line.startswith("allocation-worker=")}
+        self.assertEqual(len(worker_threads), 4)
+        self.assertNotIn(0, worker_threads)
         actual = read(report)
         snapshot = validate([json.loads(line) for line in stacks.read_text().splitlines()], actual)
         for name in ("FixtureMessage", "FixtureTypes+Box`1[FixtureMessage]"):
@@ -157,6 +161,8 @@ class NativeAllocationFixtureTests(unittest.TestCase):
                 self.assertEqual(sum(row["objects"] for row in rows), 1024)
                 self.assertEqual(sum(row["bytes"] for row in rows), 1024 * 24)
                 self.assertEqual(len({row["thread"] for row in rows}), 4 if index == 0 else 1)
+                if index == 0:
+                    self.assertEqual({row["thread"] for row in rows}, worker_threads)
                 caller = actual["windows"][index]["callerThread"]
                 self.assertGreater(caller, 0)
                 self.assertEqual({row["thread"] == caller for row in rows}, {False} if index == 0 else {True})

@@ -242,8 +242,17 @@ not establish a production or runtime defect. Checkpoint records now include
 `callerThread`, obtained through the CLR's `GetCurrentThreadID` outside the
 fixture's thread-counter windows. It uses the same CLR ID as allocation-stack
 rows, so subsequent captures can distinguish callbacks on the checkpoint caller
-from unrelated parallel threads without guessing from stack names. This does not
-identify the dedicated completion worker, narrow the capture interval, or equate
+from unrelated parallel threads without guessing from stack names. The parallel
+test now also records both dedicated completion workers at startup,
+before warmup, using the same CLR identity API. Its retained output contains
+`allocation-worker=0/1; thread=<CLR ID>`; warmup uses both workers, and zero or
+duplicate IDs fail before capture. The fixture alternates workers, starting with
+worker 0 for checkpoint 0 after its even 3000 warmup invocations. Match the
+window index modulo two to the worker ID as well as checking `callerThread`.
+The startup callback never runs inside a measured invocation. Retained older
+test images lack these lines and cannot acquire worker identities retroactively;
+use a fresh-input capture to obtain them. This does not narrow capture intervals
+or equate
 object sizes with thread-counter bytes. Old retained reports without this field
 remain readable; a present invalid ID fails validation. The native known-count
 fixture checks that worker allocations differ from this ID and caller allocations

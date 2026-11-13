@@ -31,7 +31,7 @@ public sealed class ConcurrentReceiveFixture : IDisposable
     public long CallerBytes { get; private set; }
     public long WorkerBytes => _workerBytes;
 
-    public ConcurrentReceiveFixture()
+    public ConcurrentReceiveFixture(Action<int>? workerStarted = null)
     {
         var services = new ServiceCollection();
         services.AddSingleton(_handler);
@@ -42,7 +42,8 @@ public sealed class ConcurrentReceiveFixture : IDisposable
             static (_, error, _) => ValueTask.FromException(error))
             .Handler(_provider.GetRequiredService<HandlerRegistry>().GetHandler<Payload, Handler>()).Build(Count);
         _receive = new(_consumer, new HeaderNames(), Count);
-        _workers = [new(() => Work(0)), new(() => Work(1))];
+        _workers = [new(() => { workerStarted?.Invoke(0); Work(0); }),
+            new(() => { workerStarted?.Invoke(1); Work(1); })];
         foreach (var worker in _workers) { worker.IsBackground = true; worker.Start(); }
     }
 

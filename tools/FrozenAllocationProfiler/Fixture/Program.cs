@@ -13,12 +13,15 @@ Fill(new object[10]);
 var start = new ManualResetEventSlim();
 var ready = new CountdownEvent(4);
 var workers = new Thread[4];
+var workerThreads = new ulong[workers.Length];
 for (var index = 0; index < workers.Length; index++)
 {
+    var workerIndex = index;
     var from = count * index / workers.Length;
     var to = count * (index + 1) / workers.Length;
     workers[index] = new Thread(() =>
     {
+        workerThreads[workerIndex] = region?.CurrentThread() ?? 0;
         ready.Signal();
         start.Wait();
         FillRange(values, from, to);
@@ -75,6 +78,9 @@ else if (!automatic)
     }
     region!.End();
 }
+if (region is not null)
+    for (var worker = 0; worker < workerThreads.Length; worker++)
+        Console.WriteLine($"allocation-worker={worker}; thread={workerThreads[worker]}");
 GC.KeepAlive(values);
 GC.KeepAlive(second);
 

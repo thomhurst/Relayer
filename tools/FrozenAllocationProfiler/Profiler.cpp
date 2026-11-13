@@ -465,3 +465,11 @@ extern "C" __attribute__((visibility("default"))) int CheckpointAllocationRegion
     if (final) { active = false; windowsCompleted = true; }
     return 1;
 }
+
+// Diagnostic identity lookup, outside the allocation capture and fixture counters.
+extern "C" __attribute__((visibility("default"))) unsigned long long CurrentAllocationThread()
+{
+    std::lock_guard<std::mutex> lock(gate);
+    ThreadID thread = 0;
+    return initialized && SUCCEEDED(info->GetCurrentThreadID(&thread)) ? thread : 0;
+}
