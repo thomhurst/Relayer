@@ -307,11 +307,13 @@ class OriginalRunnerTests(unittest.TestCase):
 
     def test_exact_callbacks_attempt_every_launch_and_fail_closed_on_denominator_mismatch(self):
         from test_native_tail_allocations import report
-        for invalid in (None, "coverage", "denominator", "missing"):
-            with self.subTest(invalid=invalid), tempfile.TemporaryDirectory() as directory:
+        for invalid, same_image in ((invalid, same) for invalid in (None, "coverage", "denominator", "missing") for same in (False, True)):
+            with self.subTest(invalid=invalid, same_image=same_image), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
                 for side in ("baseline", "candidate"):
-                    self.fixture(root / "performance-builds" / side)
+                    _, image = self.fixture(root / "performance-builds" / side)
+                    image.with_suffix(".runtimeconfig.json").write_text(json.dumps({"runtimeOptions": {
+                        "framework": {"name": "Microsoft.NETCore.App", "version": "10.0.0"}}}))
                 output = root / "results"
                 calls = []
 
@@ -322,7 +324,10 @@ class OriginalRunnerTests(unittest.TestCase):
                     self.assertEqual(environment["CORECLR_ENABLE_PROFILING"], "1")
                     self.assertIn("--job", command)
                     self.assertNotIn("collect", command)
-                    kwargs["stdout"].write(COMPLETE)
+                    if same_image:
+                        self.assertEqual(command[:5], ["dotnet", "--fx-version", "10.0.14", "--roll-forward", "Disable"])
+                        self.assertIn("/performance-builds/candidate/", command[5])
+                    kwargs["stdout"].write("// Runtime=.NET 10.0.14 (test), X64\n" + COMPLETE)
                     rows = report()
                     # Keep every native iteration payload and final scope consistent.
                     for row in rows:
@@ -339,7 +344,8 @@ class OriginalRunnerTests(unittest.TestCase):
                             return
                     Path(environment["RELAYER_ALLOCATION_OUTPUT"]).write_text("\n".join(map(json.dumps, rows)))
 
-                with patch("sys.argv", ["control", str(root), str(output), "--allocation-profiler", str(root / "profiler.so")]), \
+                with patch("sys.argv", ["control", str(root), str(output), "--allocation-profiler", str(root / "profiler.so"),
+                                        *(["--same-image", "candidate", "--runtime-version", "10.0.14"] if same_image else [])]), \
                      patch("frozen_bdn_control.verify", return_value="frozen"), \
                      patch("frozen_bdn_control.subprocess.run", side_effect=execute):
                     if invalid:
@@ -351,7 +357,11 @@ class OriginalRunnerTests(unittest.TestCase):
                 outcomes = json.loads((output / "outcomes.json").read_text())
                 self.assertEqual("allocationError" in outcomes[1], invalid is not None)
                 self.assertEqual(outcomes[3]["callbackBytes"], 72)
-                self.assertTrue((output / "4-baseline-objects.jsonl").exists())
+                self.assertTrue((output / f"4-{'candidate' if same_image else 'baseline'}-objects.jsonl").exists())
+                if same_image:
+                    self.assertEqual([item["side"] for item in outcomes], ["candidate"] * 4)
+                    self.assertEqual(outcomes[3]["runtime"], "10.0.14")
+                    self.assertIn("Same-image negative control", json.loads((output / "protocol.json").read_text())["limits"])
 
     def test_invalid_input_prevents_every_process_launch(self):
         with tempfile.TemporaryDirectory() as directory, \
