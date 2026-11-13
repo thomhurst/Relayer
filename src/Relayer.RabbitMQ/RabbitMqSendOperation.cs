@@ -10,35 +10,9 @@ namespace Relayer.RabbitMQ;
 // Unlike the runtime's capped async-builder cache, retain operations at the observed concurrency high-water mark.
 internal sealed class RabbitMqSendPool
 {
-    private readonly Page _first = new();
-    internal RabbitMqSendOperation Rent()
-    {
-        for (Page? page = _first; page is not null; page = Volatile.Read(ref page.Next))
-            for (var i = 0; i < page.Slots.Length; i++)
-                if (Interlocked.Exchange(ref page.Slots[i], null) is { } operation) return operation;
-        return new(this);
-    }
-    internal void Return(RabbitMqSendOperation operation)
-    {
-        var page = _first;
-        while (true)
-        {
-            for (var i = 0; i < page.Slots.Length; i++)
-                if (Interlocked.CompareExchange(ref page.Slots[i], operation, null) is null) return;
-            var next = Volatile.Read(ref page.Next);
-            if (next is null)
-            {
-                var added = new Page();
-                next = Interlocked.CompareExchange(ref page.Next, added, null) ?? added;
-            }
-            page = next;
-        }
-    }
-    private sealed class Page
-    {
-        internal readonly RabbitMqSendOperation?[] Slots = new RabbitMqSendOperation?[64];
-        internal Page? Next;
-    }
+    private readonly SlotPool<RabbitMqSendOperation> _operations = new();
+    internal RabbitMqSendOperation Rent() => _operations.TryRent() ?? new(this);
+    internal void Return(RabbitMqSendOperation operation) => _operations.TryReturn(operation);
 }
 
 internal sealed class RabbitMqSendOperation : IValueTaskSource

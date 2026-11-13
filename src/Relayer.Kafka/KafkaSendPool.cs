@@ -6,44 +6,19 @@ namespace Relayer.Kafka;
 // cap would allocate on every send once steady-state concurrency exceeds that cap.
 internal sealed class KafkaSendPool
 {
-    private readonly Page _first = new();
+    private readonly SlotPool<KafkaSendOperation> _operations = new();
 
     internal KafkaSendOperation Rent(int count)
     {
-        for (Page? page = _first; page is not null; page = Volatile.Read(ref page.Next))
-            for (var i = 0; i < page.Slots.Length; i++)
-                if (Interlocked.Exchange(ref page.Slots[i], null) is { } operation)
-                {
-                    operation.Ensure(count);
-                    return operation;
-                }
-        var created = new KafkaSendOperation();
-        created.Ensure(count);
-        return created;
+        var operation = _operations.TryRent() ?? new KafkaSendOperation();
+        operation.Ensure(count);
+        return operation;
     }
 
     internal void Return(KafkaSendOperation operation)
     {
         operation.Clear();
-        var page = _first;
-        while (true)
-        {
-            for (var i = 0; i < page.Slots.Length; i++)
-                if (Interlocked.CompareExchange(ref page.Slots[i], operation, null) is null) return;
-            var next = Volatile.Read(ref page.Next);
-            if (next is null)
-            {
-                var created = new Page();
-                next = Interlocked.CompareExchange(ref page.Next, created, null) ?? created;
-            }
-            page = next;
-        }
-    }
-
-    private sealed class Page
-    {
-        internal readonly KafkaSendOperation?[] Slots = new KafkaSendOperation?[64];
-        internal Page? Next;
+        _operations.TryReturn(operation);
     }
 }
 
