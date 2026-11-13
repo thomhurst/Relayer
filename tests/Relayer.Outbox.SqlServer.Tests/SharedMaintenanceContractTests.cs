@@ -22,9 +22,9 @@ public sealed class SharedMaintenanceContractTests(SqlServerFixture database) : 
         private string Dead => SqlServerOutboxSchema.DeadTable(data.Options);
         private string Inbox => SqlServerOutboxSchema.InboxTable(data.Options);
         public override MaintenanceWorker Worker(RecordingTransport transport, int batchSize = 1,
-            bool deadRetention = true, bool inboxRetention = true) => new WorkerAdapter(new(connectionString, new()
+            bool deadRetention = true, bool inboxRetention = true, int cleanupBatchLimit = 10) => new WorkerAdapter(new(connectionString, new()
             {
-                TablePrefix = data.Options.TablePrefix, BatchSize = batchSize, RecoveryDelay = TimeSpan.FromHours(1),
+                TablePrefix = data.Options.TablePrefix, BatchSize = batchSize, CleanupBatchLimit = cleanupBatchLimit, RecoveryDelay = TimeSpan.FromHours(1),
                 DeadRetention = deadRetention ? TimeSpan.FromDays(30) : null,
                 InboxRetention = inboxRetention ? TimeSpan.FromDays(7) : null
             }, [transport], NullLogger<SqlServerMaintenanceWorker>.Instance));
@@ -70,6 +70,7 @@ public sealed class SharedMaintenanceContractTests(SqlServerFixture database) : 
     private sealed class WorkerAdapter(SqlServerMaintenanceWorker worker) : MaintenanceWorker
     {
         public override ValueTask<int> SweepAsync(CancellationToken cancellationToken = default) => worker.SweepAsync(cancellationToken);
+        public override bool CleanupPending => worker.CleanupPending;
         public override ValueTask<int> CleanupAsync(CancellationToken cancellationToken = default) => worker.CleanupAsync(cancellationToken);
         public override ValueTask ReleaseAsync(CancellationToken cancellationToken = default) => worker.ReleaseAsync(cancellationToken);
         public override void Dispose() => worker.Dispose();

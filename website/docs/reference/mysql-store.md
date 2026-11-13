@@ -323,6 +323,7 @@ services.AddRelayerMySqlMaintenance("orders", dataSource, new MySqlMaintenanceOp
     ClaimDuration = TimeSpan.FromSeconds(30),
     LeaseDuration = TimeSpan.FromSeconds(30),
     CleanupInterval = TimeSpan.FromMinutes(1),
+    CleanupBatchLimit = 10,
     DeadRetention = TimeSpan.FromDays(30),
     InboxRetention = TimeSpan.FromDays(7)
 });
@@ -377,10 +378,21 @@ including prior diagnostic send attempts: a preparation error after a long outag
 budget immediately. Reset `attempts` when repairing such a row. Clearing `deliver_at` makes a repaired
 row eligible immediately; otherwise its persisted deadline survives process restarts and worker changes.
 
-Cleanup deletes at most `BatchSize` expired dead rows and `BatchSize` expired inbox keys per pass,
-using database UTC time and the `failed_at` / `processed_at` indexes. Pending rows, parked ordered
-barriers and their dead copies are retained. Deleting an inbox key ends deduplication protection;
-choose retention beyond the broker's redelivery window.
+Dead rows expire from their failure time and inbox records from their processing time.
+Pending and parked outbox rows never expire; dead payloads referenced by parked rows are protected.
+Cleanup visits each enabled table in rounds, deleting at most `BatchSize` rows per statement and
+at most `CleanupBatchLimit` batches per table per turn (default 10, range 1–100). A table stops for
+that turn when a delete removes fewer than `BatchSize` rows. Each batch commits and releases its
+connection and native admission lock before the next batch rechecks leadership. Cancellation or
+lease loss stops further admission; already committed batches remain deleted. The first table
+rotates between turns so a busy table cannot repeatedly prevent other tables from making progress.
+
+A full final batch schedules another cleanup after the next recovery sweep, rather than waiting
+`CleanupInterval`. Recovery therefore gets a turn even under sustained expiry. Once all tables have
+returned a partial batch, cleanup returns to `CleanupInterval`. These limits bound work admitted per
+turn, not database latency; native command timeouts and cancellation still govern a blocked delete.
+They are not a measured cleanup capacity guarantee. Tune the limits for your workload and monitor
+retained row counts and database load.
 
 MySQL Event Scheduler executes scheduled SQL but cannot call application transports. It is
 neither enabled nor required; recovery uses bounded application passes.

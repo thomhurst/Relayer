@@ -7,8 +7,10 @@ public sealed class MySqlMaintenanceOptions
     public string TablePrefix { get; init; } = "relayer_";
     /// <summary>Preparation failures before dead-lettering; native send failures retry with durable backoff. Must match other dispatchers for this store.</summary>
     public int MaxDispatchAttempts { get; init; } = 10;
-    /// <summary>Maximum rows scanned or deleted per pass.</summary>
+    /// <summary>Maximum rows scanned per recovery pass or deleted per retention statement.</summary>
     public int BatchSize { get; init; } = 100;
+    /// <summary>Maximum delete batches per enabled table in one cleanup turn (1–100). Full turns resume after the next recovery sweep.</summary>
+    public int CleanupBatchLimit { get; init; } = 10;
     /// <summary>Minimum row age before recovery can dispatch it.</summary>
     public TimeSpan RecoveryDelay { get; init; } = TimeSpan.FromSeconds(30);
     /// <summary>Delay between bounded recovery passes.</summary>
@@ -26,6 +28,7 @@ public sealed class MySqlMaintenanceOptions
 
     internal MySqlOutboxOptions Validate()
     {
+        if (CleanupBatchLimit is < 1 or > 100) throw new ArgumentOutOfRangeException(nameof(CleanupBatchLimit));
         if (BatchSize is < 1 or > 10000) throw new ArgumentOutOfRangeException(nameof(BatchSize));
         if (RecoveryDelay < TimeSpan.Zero) throw new ArgumentOutOfRangeException(nameof(RecoveryDelay));
         if (LeaseDuration < TimeSpan.FromSeconds(1) || LeaseDuration > TimeSpan.FromHours(1))

@@ -11,6 +11,8 @@ public sealed class PostgreSqlTenantDispatchOptions
     public TimeSpan TurnTimeout { get; init; } = TimeSpan.FromSeconds(15);
     /// <summary>Maximum messages in each native dispatch batch or retention delete.</summary>
     public int BatchSize { get; init; } = 100;
+    /// <summary>Maximum delete batches per enabled table in one cleanup turn (1–100).</summary>
+    public int CleanupBatchLimit { get; init; } = 10;
     /// <summary>Maximum buffered commit batches per tenant. Overflow remains durable for recovery.</summary>
     public int QueueCapacity { get; init; } = 16;
     /// <summary>Minimum age of unordered rows before recovery dispatch.</summary>
@@ -43,7 +45,7 @@ public sealed class PostgreSqlTenantDispatchOptions
     internal PostgreSqlMaintenanceOptions Maintenance(PostgreSqlOutboxOptions store) => new()
     {
         Schema = store.Schema, TablePrefix = store.TablePrefix, MaxDispatchAttempts = store.MaxDispatchAttempts, RetainSentMessages = store.RetainSentMessages, SentRetention = SentRetention,
-        BatchSize = BatchSize, RecoveryDelay = RecoveryDelay, CleanupInterval = CleanupInterval,
+        BatchSize = BatchSize, CleanupBatchLimit = CleanupBatchLimit, RecoveryDelay = RecoveryDelay, CleanupInterval = CleanupInterval,
         DeadRetention = DeadRetention, InboxRetention = InboxRetention,
         LeaseDuration = store.LeaseDuration, ClaimDuration = store.LeaseDuration
     };

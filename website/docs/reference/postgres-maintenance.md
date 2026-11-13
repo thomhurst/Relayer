@@ -29,6 +29,7 @@ services.AddRelayerPostgreSqlMaintenance("orders", dataSource,
         LeaseDuration = TimeSpan.FromSeconds(30),
         ClaimDuration = TimeSpan.FromSeconds(30),
         CleanupInterval = TimeSpan.FromMinutes(1),
+        CleanupBatchLimit = 10,
         DeadRetention = TimeSpan.FromDays(30),
         InboxRetention = TimeSpan.FromDays(7)
     });
@@ -52,8 +53,8 @@ All instances sharing these tables must agree on retention and timing settings.
 
 Only one instance holds the `sweeper` lease for these tables. A separate `cleanup` lease permits only one
 retention job. Both use `relayer_leases` (with your configured prefix), the database clock, unique owner
-identities and transaction locks. A connected job holds its lease row lock until its pass finishes; even
-an expired lease cannot let another connected owner overlap that pass. Leadership expiry restarts at completion.
+identities and transaction locks. A connected job holds its lease row lock until its recovery pass or individual retention batch finishes; even
+an expired lease cannot let another connected owner overlap that unit. Leadership expiry restarts at completion.
 An idle leader renews on its next pass; another instance can take over after expiry or explicit release.
 
 Each recovery pass reads at most `BatchSize` pending unordered rows in ID order, with no live claim and a
@@ -82,9 +83,22 @@ Native-send failures use [durable backoff and failure classification](postgres-s
 Successfully dispatched outbox rows are deleted immediately in fenced batches. **Pending and parked outbox
 rows never expire by age.** Cleanup cannot discard undelivered messages, including future schedules.
 
-Each cleanup pass deletes at most `BatchSize` dead rows older than `DeadRetention` (from `failed_at`) and at
-most `BatchSize` inbox records older than `InboxRetention` (from `processed_at`). Recent rows stay intact.
-Cleanup becomes due every `CleanupInterval` and runs after a sweep, so a slow sweep can delay cleanup.
+Dead rows expire from their failure time and inbox records from their processing time.
+Pending and parked outbox rows never expire; dead payloads referenced by parked rows are protected.
+Cleanup visits each enabled table in rounds, deleting at most `BatchSize` rows per statement and
+at most `CleanupBatchLimit` batches per table per turn (default 10, range 1–100). A table stops for
+that turn when a delete removes fewer than `BatchSize` rows. Each batch commits and releases its
+connection and native admission lock before the next batch rechecks leadership. Cancellation or
+lease loss stops further admission; already committed batches remain deleted. The first table
+rotates between turns so a busy table cannot repeatedly prevent other tables from making progress.
+
+A full final batch schedules another cleanup after the next recovery sweep, rather than waiting
+`CleanupInterval`. Recovery therefore gets a turn even under sustained expiry. Once all tables have
+returned a partial batch, cleanup returns to `CleanupInterval`. These limits bound work admitted per
+turn, not database latency; native command timeouts and cancellation still govern a blocked delete.
+They are not a measured cleanup capacity guarantee. Tune the limits for your workload and monitor
+retained row counts and database load.
+
 Retention applies to existing tables. The [EF Core consumer boundary](ef-core-inbox.md) supplies inbox recording;
 [Poison management](postgres-store.md#poison-rows-and-key-release) supplies inspection, redrive and explicit purge. Dead rows with an active ordered key barrier are retained until management releases them.
 
@@ -120,7 +134,8 @@ statement; stale or expired claims record nothing. Ordered and recovery transact
 commit or roll back both changes together. Native acceptance followed by a crash before
 completion can still redeliver the message.
 
-Maintenance deletes at most `BatchSize` history rows per cleanup pass, oldest first,
+Maintenance deletes at most `BatchSize` history rows per statement, oldest first,
+with up to `CleanupBatchLimit` statements per turn as described above,
 using the existing `cleanup` lease. If completion refreshes history for a reused message ID
 while cleanup waits on its row lock, cleanup rechecks the refreshed timestamp and keeps
 the entry until it is old enough. `SentRetention` defaults to seven days and must be

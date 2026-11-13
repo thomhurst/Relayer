@@ -239,7 +239,10 @@ Tenant turns resume with the next dispatch phase after a timeout, so a busy dire
 starve recovery, ordered delivery or cleanup. Ordered passes likewise resume at the next lane;
 a failed lane does not stop healthy lanes. Native operations and transports must honor cancellation. Failures are logged and other stores keep
 running. `PollInterval` controls catalog refresh and scheduling latency, `RecoveryDelay` controls
-unordered recovery age, and cleanup follows `CleanupInterval` and the retention settings. A large
+unordered recovery age, and cleanup follows `CleanupInterval` and the retention settings. Each table admits at most
+`CleanupBatchLimit` delete batches per turn (default 10); a full final batch resumes cleanup on the
+next catalog pass after other phases run. Each batch commits and releases its connection and
+rechecks the cleanup lease before the next batch. A large
 catalog may take several lane lease durations to revisit a store; native ownership is re-established
 on each turn before dispatch. Scheduling settings also bind from `IConfiguration`; `infinite` disables
 a retention limit. Defaults retain dead rows for 30 days and inbox identities for seven days.

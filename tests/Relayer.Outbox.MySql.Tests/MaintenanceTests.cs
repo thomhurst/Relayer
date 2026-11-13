@@ -317,12 +317,13 @@ public sealed class MaintenanceRegistrationTests
     {
         await using var source = new MySqlDataSource("Server=unused;Database=orders");
         var config = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
-        { ["BatchSize"] = "7", ["DeadRetention"] = "infinite", ["InboxRetention"] = "2.00:00:00" }).Build();
+        { ["BatchSize"] = "7", ["CleanupBatchLimit"] = "3", ["DeadRetention"] = "infinite", ["InboxRetention"] = "2.00:00:00" }).Build();
         var services = new ServiceCollection().AddLogging();
         services.AddRelayerMySqlMaintenance("a", source, config);
         config["BatchSize"] = "99";
         await using var provider = services.BuildServiceProvider();
         var options = provider.GetRequiredService<IOptionsMonitor<MySqlMaintenanceOptions>>().Get("a");
+        await Assert.That(options.CleanupBatchLimit).IsEqualTo(3);
         await Assert.That(options.BatchSize).IsEqualTo(7);
         await Assert.That(options.DeadRetention).IsNull();
         await Assert.That(options.InboxRetention).IsEqualTo(TimeSpan.FromDays(2));
@@ -330,6 +331,8 @@ public sealed class MaintenanceRegistrationTests
         await Assert.That(() => services.AddRelayerMySqlMaintenance("a", source)).Throws<InvalidOperationException>();
         await using var undersized = new MySqlDataSource("Server=unused;Database=orders;MaximumPoolSize=1");
         await Assert.That(() => services.AddRelayerMySqlMaintenance("small", undersized)).Throws<ArgumentException>();
+        await Assert.That(() => new MySqlMaintenanceOptions { CleanupBatchLimit = 0 }.Validate()).Throws<ArgumentOutOfRangeException>();
+        await Assert.That(() => new MySqlMaintenanceOptions { CleanupBatchLimit = 101 }.Validate()).Throws<ArgumentOutOfRangeException>();
         await Assert.That(() => new MySqlMaintenanceOptions { BatchSize = 0 }.Validate()).Throws<ArgumentOutOfRangeException>();
         await Assert.That(() => new MySqlMaintenanceOptions { RecoveryDelay = TimeSpan.FromSeconds(-1) }.Validate()).Throws<ArgumentOutOfRangeException>();
         await Assert.That(() => new MySqlMaintenanceOptions { ClaimDuration = TimeSpan.Zero }.Validate()).Throws<ArgumentOutOfRangeException>();

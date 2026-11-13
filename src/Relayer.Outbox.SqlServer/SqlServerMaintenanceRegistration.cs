@@ -55,6 +55,7 @@ public static partial class SqlServerOutboxServiceCollectionExtensions
             TablePrefix = configuration[nameof(defaults.TablePrefix)] ?? defaults.TablePrefix,
             MaxDispatchAttempts = ReadValue(nameof(defaults.MaxDispatchAttempts), defaults.MaxDispatchAttempts),
             BatchSize = ReadValue(nameof(defaults.BatchSize), defaults.BatchSize),
+            CleanupBatchLimit = ReadValue(nameof(defaults.CleanupBatchLimit), defaults.CleanupBatchLimit),
             RecoveryDelay = ReadValue(nameof(defaults.RecoveryDelay), defaults.RecoveryDelay),
             SweepInterval = ReadValue(nameof(defaults.SweepInterval), defaults.SweepInterval),
             LeaseDuration = ReadValue(nameof(defaults.LeaseDuration), defaults.LeaseDuration),

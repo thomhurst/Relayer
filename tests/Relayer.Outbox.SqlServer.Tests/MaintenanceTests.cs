@@ -302,18 +302,21 @@ public sealed class MaintenanceRegistrationTests
     {
         var config = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
         {
-            ["BatchSize"] = "7", ["DeadRetention"] = "infinite", ["InboxRetention"] = "2.00:00:00"
+            ["BatchSize"] = "7", ["CleanupBatchLimit"] = "3", ["DeadRetention"] = "infinite", ["InboxRetention"] = "2.00:00:00"
         }).Build();
         var services = new ServiceCollection().AddLogging();
         services.AddRelayerSqlServerMaintenance("a", "Server=unused;Database=orders", config);
         config["BatchSize"] = "99";
         await using var provider = services.BuildServiceProvider();
         var options = provider.GetRequiredService<IOptionsMonitor<SqlServerMaintenanceOptions>>().Get("a");
+        await Assert.That(options.CleanupBatchLimit).IsEqualTo(3);
         await Assert.That(options.BatchSize).IsEqualTo(7);
         await Assert.That(options.DeadRetention).IsNull();
         await Assert.That(options.InboxRetention).IsEqualTo(TimeSpan.FromDays(2));
         await Assert.That(provider.GetServices<IHostedService>().Count()).IsEqualTo(1);
         await Assert.That(() => services.AddRelayerSqlServerMaintenance("a", "Server=unused;Database=orders")).Throws<InvalidOperationException>();
+        await Assert.That(() => new SqlServerMaintenanceOptions { CleanupBatchLimit = 0 }.Validate()).Throws<ArgumentOutOfRangeException>();
+        await Assert.That(() => new SqlServerMaintenanceOptions { CleanupBatchLimit = 101 }.Validate()).Throws<ArgumentOutOfRangeException>();
         await Assert.That(() => new SqlServerMaintenanceOptions { BatchSize = 0 }.Validate()).Throws<ArgumentOutOfRangeException>();
         await Assert.That(() => new SqlServerMaintenanceOptions { RecoveryDelay = TimeSpan.FromSeconds(-1) }.Validate()).Throws<ArgumentOutOfRangeException>();
         await Assert.That(() => new SqlServerMaintenanceOptions { ClaimDuration = TimeSpan.Zero }.Validate()).Throws<ArgumentOutOfRangeException>();

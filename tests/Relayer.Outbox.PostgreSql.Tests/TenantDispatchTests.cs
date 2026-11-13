@@ -428,13 +428,15 @@ public class TenantDispatchTests
     {
         var configuration = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
         {
-            ["MaxConnections"] = "3", ["QueueCapacity"] = "7", ["DeadRetention"] = "infinite"
+            ["MaxConnections"] = "3", ["QueueCapacity"] = "7", ["CleanupBatchLimit"] = "4", ["DeadRetention"] = "infinite"
         }).Build();
         var services = new ServiceCollection().AddRelayerPostgreSqlTenantDispatch(configuration);
         await using var provider = services.BuildServiceProvider();
         var options = provider.GetRequiredService<IOptions<PostgreSqlTenantDispatchOptions>>().Value;
         await Assert.That(options.MaxConnections).IsEqualTo(3);
         await Assert.That(options.QueueCapacity).IsEqualTo(7);
+        await Assert.That(options.CleanupBatchLimit).IsEqualTo(4);
+        await Assert.That(options.Maintenance(new()).CleanupBatchLimit).IsEqualTo(4);
         await Assert.That(options.DeadRetention).IsNull();
         configuration["MaxConnections"] = "9";
         await Assert.That(options.MaxConnections).IsEqualTo(3);

@@ -826,6 +826,12 @@ Ordered rows remain exclusively with their lane dispatcher.
 
 Delete sent outbox rows on completion, never pending or parked rows by age. Each cleanup pass deletes bounded
 batches of dead rows by `failed_at` and inbox records by `processed_at`; either retention can be disabled.
+Across PostgreSQL, SQL Server and MySQL, cleanup admits at most `CleanupBatchLimit` batches per enabled
+table in one turn (default 10). Visit tables in rounds and rotate the first table across turns. Each
+bounded delete commits and releases native admission and its connection before rechecking leadership
+for the next delete. A full final batch resumes after the next recovery sweep (or tenant catalog pass),
+so sustained expiry cannot monopolize recovery. Cancellation or lease loss stops further admission;
+completed batches remain committed. Keep the existing parked-payload and concurrent-completion guards.
 Inbox retention defines a finite deduplication window and must cover the application's replay horizon.
 
 Opt-in PostgreSQL sent history retains only ID, destination and completion time in a separate table.

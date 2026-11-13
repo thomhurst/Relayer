@@ -33,6 +33,9 @@ internal sealed partial class PostgreSqlMaintenanceWorker : BackgroundService
     private readonly CancellationTokenSource _idleStop = new();
     private Guid? _through;
 
+    private int _cleanupStart;
+    internal bool CleanupPending { get; private set; }
+
     internal PostgreSqlMaintenanceWorker(NpgsqlDataSource source, PostgreSqlMaintenanceOptions options,
         IEnumerable<ITransport> transports, ILogger<PostgreSqlMaintenanceWorker> logger,
         ILogger<PostgreSqlDirectDispatcher>? dispatchLogger = null, RelayerInstrumentation? instrumentation = null, TimeProvider? admissionTimeProvider = null, IServiceScopeFactory? scopes = null)
@@ -84,7 +87,7 @@ internal sealed partial class PostgreSqlMaintenanceWorker : BackgroundService
                     try { await CleanupAsync(stoppingToken).ConfigureAwait(false); }
                     catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { break; }
                     catch (Exception error) { Failed(_logger, "cleanup", error); }
-                    nextCleanup = DateTimeOffset.UtcNow + _options.CleanupInterval;
+                    nextCleanup = DateTimeOffset.UtcNow + (CleanupPending ? TimeSpan.Zero : _options.CleanupInterval);
                 }
                 await Task.Delay(_options.SweepInterval, idleStop.Token).ConfigureAwait(false);
             }
@@ -111,7 +114,35 @@ internal sealed partial class PostgreSqlMaintenanceWorker : BackgroundService
 
     internal ValueTask<int> SweepAsync(CancellationToken cancellationToken) => RunAsync("sweeper", false, cancellationToken);
     internal ValueTask<int> SweepAsync(TimeSpan turnBudget, CancellationToken cancellationToken) => RunAsync("sweeper", false, cancellationToken, turnBudget);
-    internal ValueTask<int> CleanupAsync(CancellationToken cancellationToken) => RunAsync("cleanup", true, cancellationToken);
+    internal async ValueTask<int> CleanupAsync(CancellationToken cancellationToken)
+    {
+        var count = 0;
+        var active = 0;
+        if (_options.RetainSentMessages) active |= 1;
+        if (_options.DeadRetention is not null) active |= 2;
+        if (_options.InboxRetention is not null) active |= 4;
+        // Rotate before awaiting: a busy table or cancellation cannot monopolize subsequent turns.
+        var first = _cleanupStart;
+        _cleanupStart = (first + 1) % 3;
+        CleanupPending = active != 0;
+        for (var round = 0; round < _options.CleanupBatchLimit && active != 0; round++)
+        {
+            for (var offset = 0; offset < 3; offset++)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var table = (first + offset) % 3;
+                var bit = 1 << table;
+                if ((active & bit) == 0) continue;
+                var deleted = await RunAsync("cleanup", true, cancellationToken, cleanupTable: table).ConfigureAwait(false);
+                if (deleted < 0) { CleanupPending = false; return count; }
+                count += deleted;
+                if (deleted < _options.BatchSize) active &= ~bit;
+            }
+        }
+        // A full final batch may have more behind it. Yield to recovery before admitting more.
+        CleanupPending = active != 0;
+        return count;
+    }
 
     // The native replication slot serializes CDC readers. Fenced row claims still arbitrate with
     // direct dispatch and the recovery leader; CDC must not wait for the sweeper's idle lease.
@@ -131,7 +162,7 @@ internal sealed partial class PostgreSqlMaintenanceWorker : BackgroundService
         } while (_through is not null);
     }
 
-    private async ValueTask<int> RunAsync(string name, bool cleanup, CancellationToken cancellationToken, TimeSpan? turnBudget = null)
+    private async ValueTask<int> RunAsync(string name, bool cleanup, CancellationToken cancellationToken, TimeSpan? turnBudget = null, int cleanupTable = -1)
     {
         var started = turnBudget.HasValue ? Stopwatch.GetTimestamp() : 0;
         await using var connection = await _source.OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
@@ -141,9 +172,9 @@ internal sealed partial class PostgreSqlMaintenanceWorker : BackgroundService
         lease.Parameters.AddWithValue("name", name);
         lease.Parameters.AddWithValue("owner", _owner);
         lease.Parameters.AddWithValue("duration", _options.LeaseDuration);
-        if (await lease.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) is not true) return 0;
+        if (await lease.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) is not true) return cleanup ? -1 : 0;
         var count = cleanup
-            ? await DeleteExpiredAsync(connection, transaction, cancellationToken).ConfigureAwait(false)
+            ? await DeleteExpiredAsync(connection, transaction, cleanupTable, cancellationToken).ConfigureAwait(false)
             : await DispatchAsync(connection, transaction, cancellationToken, turnBudget - (turnBudget.HasValue ? Stopwatch.GetElapsedTime(started) : TimeSpan.Zero)).ConfigureAwait(false);
         // Start the idle lease at completion, not at the start of a potentially slow broker call.
         await using var renew = new NpgsqlCommand(_renew, connection, transaction);
@@ -190,16 +221,14 @@ internal sealed partial class PostgreSqlMaintenanceWorker : BackgroundService
         }
     }
 
-    private async ValueTask<int> DeleteExpiredAsync(NpgsqlConnection connection, NpgsqlTransaction transaction, CancellationToken cancellationToken)
+    private async ValueTask<int> DeleteExpiredAsync(NpgsqlConnection connection, NpgsqlTransaction transaction, int table, CancellationToken cancellationToken)
     {
-        var count = 0;
-        if (_options.RetainSentMessages)
-            count += await DeleteAsync(connection, transaction, _sent, _options.SentRetention, cancellationToken).ConfigureAwait(false);
-        if (_options.DeadRetention is { } dead)
-            count += await DeleteAsync(connection, transaction, _dead, dead, cancellationToken).ConfigureAwait(false);
-        if (_options.InboxRetention is { } inbox)
-            count += await DeleteAsync(connection, transaction, _inbox, inbox, cancellationToken).ConfigureAwait(false);
-        return count;
+        return table switch
+        {
+            0 => await DeleteAsync(connection, transaction, _sent, _options.SentRetention, cancellationToken).ConfigureAwait(false),
+            1 => await DeleteAsync(connection, transaction, _dead, _options.DeadRetention.GetValueOrDefault(), cancellationToken).ConfigureAwait(false),
+            _ => await DeleteAsync(connection, transaction, _inbox, _options.InboxRetention.GetValueOrDefault(), cancellationToken).ConfigureAwait(false),
+        };
     }
 
     private async ValueTask<int> DeleteAsync(NpgsqlConnection connection, NpgsqlTransaction transaction,

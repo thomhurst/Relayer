@@ -225,6 +225,7 @@ services.AddRelayerSqlServerMaintenance("orders", connectionString,
         LeaseDuration = TimeSpan.FromSeconds(30),
         ClaimDuration = TimeSpan.FromSeconds(30),
         CleanupInterval = TimeSpan.FromMinutes(1),
+        CleanupBatchLimit = 10,
         MaxDispatchAttempts = 10,
         DeadRetention = TimeSpan.FromDays(30),
         InboxRetention = TimeSpan.FromDays(7)
@@ -278,9 +279,22 @@ A failed native batch applies the same classification to all its claims because 
 Explicit low-level `RecordFailureAsync` calls retain the poison transition. Completion errors after broker
 success do not consume send attempts.
 
-Each cleanup pass deletes at most `BatchSize` expired dead rows and `BatchSize` expired inbox keys,
-ordered by their failure or processing time. A failed recovery pass is logged and retention is still
-attempted on its own schedule. It never expires pending or parked outbox messages.
+Dead rows expire from their failure time and inbox records from their processing time.
+Pending and parked outbox rows never expire; dead payloads referenced by parked rows are protected.
+Cleanup visits each enabled table in rounds, deleting at most `BatchSize` rows per statement and
+at most `CleanupBatchLimit` batches per table per turn (default 10, range 1–100). A table stops for
+that turn when a delete removes fewer than `BatchSize` rows. Each batch commits and releases its
+connection and native admission lock before the next batch rechecks leadership. Cancellation or
+lease loss stops further admission; already committed batches remain deleted. The first table
+rotates between turns so a busy table cannot repeatedly prevent other tables from making progress.
+
+A full final batch schedules another cleanup after the next recovery sweep, rather than waiting
+`CleanupInterval`. Recovery therefore gets a turn even under sustained expiry. Once all tables have
+returned a partial batch, cleanup returns to `CleanupInterval`. These limits bound work admitted per
+turn, not database latency; native command timeouts and cancellation still govern a blocked delete.
+They are not a measured cleanup capacity guarantee. Tune the limits for your workload and monitor
+retained row counts and database load.
+
 
 ## Storage and UUID ordering
 

@@ -29,9 +29,9 @@ public sealed class SharedMaintenanceContractTests : OutboxMaintenanceContractTe
         }
 
         public override MaintenanceWorker Worker(RecordingTransport transport, int batchSize = 1,
-            bool deadRetention = true, bool inboxRetention = true) => new WorkerAdapter(new(_source!, new()
+            bool deadRetention = true, bool inboxRetention = true, int cleanupBatchLimit = 10) => new WorkerAdapter(new(_source!, new()
             {
-                BatchSize = batchSize,
+                BatchSize = batchSize, CleanupBatchLimit = cleanupBatchLimit,
                 RecoveryDelay = TimeSpan.FromHours(1),
                 DeadRetention = deadRetention ? TimeSpan.FromDays(30) : null,
                 InboxRetention = inboxRetention ? TimeSpan.FromDays(7) : null
@@ -121,6 +121,7 @@ public sealed class SharedMaintenanceContractTests : OutboxMaintenanceContractTe
     private sealed class WorkerAdapter(PostgreSqlMaintenanceWorker worker) : MaintenanceWorker
     {
         public override ValueTask<int> SweepAsync(CancellationToken cancellationToken = default) => worker.SweepAsync(cancellationToken);
+        public override bool CleanupPending => worker.CleanupPending;
         public override ValueTask<int> CleanupAsync(CancellationToken cancellationToken = default) => worker.CleanupAsync(cancellationToken);
         public override ValueTask ReleaseAsync(CancellationToken cancellationToken = default) => worker.ReleaseAsync(cancellationToken);
         public override void Dispose() => worker.Dispose();

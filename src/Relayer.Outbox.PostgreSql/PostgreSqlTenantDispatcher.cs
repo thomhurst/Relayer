@@ -160,7 +160,7 @@ internal sealed partial class PostgreSqlTenantDispatcher : BackgroundService
                                     break;
                                 case 3 when DateTimeOffset.UtcNow >= store.NextCleanup:
                                     await store.Maintenance.CleanupAsync(deadline.Token).ConfigureAwait(false);
-                                    store.NextCleanup = DateTimeOffset.UtcNow + _options.CleanupInterval;
+                                    store.NextCleanup = DateTimeOffset.UtcNow + (store.Maintenance.CleanupPending ? TimeSpan.Zero : _options.CleanupInterval);
                                     break;
                             }
                         }

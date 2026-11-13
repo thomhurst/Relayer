@@ -19,7 +19,7 @@ public class MaintenanceTests
         await using var source = NpgsqlDataSource.Create("Host=unused");
         var configuration = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
         {
-            ["BatchSize"] = "7", ["Schema"] = "custom", ["DeadRetention"] = "infinite", ["InboxRetention"] = "2.00:00:00"
+            ["BatchSize"] = "7", ["CleanupBatchLimit"] = "3", ["Schema"] = "custom", ["DeadRetention"] = "infinite", ["InboxRetention"] = "2.00:00:00"
         }).Build();
         var services = new ServiceCollection().AddLogging();
         services.AddRelayerPostgreSqlMaintenance("a", source, configuration);
@@ -27,6 +27,7 @@ public class MaintenanceTests
         configuration["BatchSize"] = "99";
         await using var provider = services.BuildServiceProvider();
         var monitor = provider.GetRequiredService<IOptionsMonitor<PostgreSqlMaintenanceOptions>>();
+        await Assert.That(monitor.Get("a").CleanupBatchLimit).IsEqualTo(3);
         await Assert.That(monitor.Get("a").BatchSize).IsEqualTo(7);
         await Assert.That(monitor.Get("a").Schema).IsEqualTo("custom");
         await Assert.That(monitor.Get("a").DeadRetention).IsNull();
@@ -35,6 +36,8 @@ public class MaintenanceTests
         _ = new PostgreSqlMaintenanceOptions { DeadRetention = TimeSpan.FromDays(365), InboxRetention = TimeSpan.FromDays(365) }.Validate();
         await Assert.That(provider.GetServices<IHostedService>().Count()).IsEqualTo(2);
         await Assert.That(() => services.AddRelayerPostgreSqlMaintenance("a", source)).Throws<InvalidOperationException>();
+        await Assert.That(() => new PostgreSqlMaintenanceOptions { CleanupBatchLimit = 0 }.Validate()).Throws<ArgumentOutOfRangeException>();
+        await Assert.That(() => new PostgreSqlMaintenanceOptions { CleanupBatchLimit = 101 }.Validate()).Throws<ArgumentOutOfRangeException>();
         await Assert.That(() => new PostgreSqlMaintenanceOptions { BatchSize = 0 }.Validate()).Throws<ArgumentOutOfRangeException>();
         await Assert.That(() => new PostgreSqlMaintenanceOptions { RecoveryDelay = TimeSpan.FromSeconds(-1) }.Validate()).Throws<ArgumentOutOfRangeException>();
         await Assert.That(() => new PostgreSqlMaintenanceOptions { ClaimDuration = TimeSpan.Zero }.Validate()).Throws<ArgumentOutOfRangeException>();

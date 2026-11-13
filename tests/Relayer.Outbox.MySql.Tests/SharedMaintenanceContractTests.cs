@@ -21,9 +21,9 @@ public sealed class SharedMaintenanceContractTests : OutboxMaintenanceContractTe
         private string Dead => MySqlOutboxSchema.DeadTable(data.Options);
         private string Inbox => MySqlOutboxSchema.InboxTable(data.Options);
         public override MaintenanceWorker Worker(RecordingTransport transport, int batchSize = 1,
-            bool deadRetention = true, bool inboxRetention = true) => new WorkerAdapter(new(data.Source, new()
+            bool deadRetention = true, bool inboxRetention = true, int cleanupBatchLimit = 10) => new WorkerAdapter(new(data.Source, new()
             {
-                BatchSize = batchSize, RecoveryDelay = TimeSpan.FromHours(1),
+                BatchSize = batchSize, CleanupBatchLimit = cleanupBatchLimit, RecoveryDelay = TimeSpan.FromHours(1),
                 DeadRetention = deadRetention ? TimeSpan.FromDays(30) : null,
                 InboxRetention = inboxRetention ? TimeSpan.FromDays(7) : null
             }, [transport], NullLogger<MySqlMaintenanceWorker>.Instance));
@@ -68,6 +68,7 @@ public sealed class SharedMaintenanceContractTests : OutboxMaintenanceContractTe
     private sealed class WorkerAdapter(MySqlMaintenanceWorker worker) : MaintenanceWorker
     {
         public override ValueTask<int> SweepAsync(CancellationToken cancellationToken = default) => worker.SweepAsync(cancellationToken);
+        public override bool CleanupPending => worker.CleanupPending;
         public override ValueTask<int> CleanupAsync(CancellationToken cancellationToken = default) => worker.CleanupAsync(cancellationToken);
         public override ValueTask ReleaseAsync(CancellationToken cancellationToken = default) => worker.ReleaseAsync(cancellationToken);
         public override void Dispose() => worker.Dispose();

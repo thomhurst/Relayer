@@ -24,6 +24,9 @@ internal sealed partial class MySqlMaintenanceWorker : BackgroundService
     private readonly byte[] _after = new byte[16], _through = new byte[16];
     private bool _hasAfter, _hasThrough;
 
+    private int _cleanupStart;
+    internal bool CleanupPending { get; private set; }
+
     internal MySqlMaintenanceWorker(MySqlDataSource dataSource, MySqlMaintenanceOptions options,
         IEnumerable<ITransport> transports, ILogger<MySqlMaintenanceWorker> logger,
         ILogger<MySqlDirectDispatcher>? dispatchLogger = null, RelayerInstrumentation? instrumentation = null)
@@ -93,7 +96,7 @@ internal sealed partial class MySqlMaintenanceWorker : BackgroundService
                     try
                     {
                         await CleanupAsync(stoppingToken).ConfigureAwait(false);
-                        nextCleanup = DateTimeOffset.UtcNow + _options.CleanupInterval;
+                        nextCleanup = DateTimeOffset.UtcNow + (CleanupPending ? TimeSpan.Zero : _options.CleanupInterval);
                     }
                     catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { break; }
                     catch (Exception error) { Failed(_logger, error); }
@@ -111,9 +114,36 @@ internal sealed partial class MySqlMaintenanceWorker : BackgroundService
     }
 
     internal ValueTask<int> SweepAsync(CancellationToken cancellationToken = default) => RunAsync(false, cancellationToken);
-    internal ValueTask<int> CleanupAsync(CancellationToken cancellationToken = default) => RunAsync(true, cancellationToken);
+    internal async ValueTask<int> CleanupAsync(CancellationToken cancellationToken = default)
+    {
+        var count = 0;
+        var active = 0;
+        if (_options.DeadRetention is not null) active |= 1;
+        if (_options.InboxRetention is not null) active |= 2;
+        // Rotate before awaiting: a busy table or cancellation cannot monopolize subsequent turns.
+        var first = _cleanupStart;
+        _cleanupStart = (first + 1) % 2;
+        CleanupPending = active != 0;
+        for (var round = 0; round < _options.CleanupBatchLimit && active != 0; round++)
+        {
+            for (var offset = 0; offset < 2; offset++)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var table = (first + offset) % 2;
+                var bit = 1 << table;
+                if ((active & bit) == 0) continue;
+                var deleted = await RunAsync(true, cancellationToken, table).ConfigureAwait(false);
+                if (deleted < 0) { CleanupPending = false; return count; }
+                count += deleted;
+                if (deleted < _options.BatchSize) active &= ~bit;
+            }
+        }
+        // A full final batch may have more behind it. Yield to recovery before admitting more.
+        CleanupPending = active != 0;
+        return count;
+    }
 
-    private async ValueTask<int> RunAsync(bool cleanup, CancellationToken cancellationToken)
+    private async ValueTask<int> RunAsync(bool cleanup, CancellationToken cancellationToken, int cleanupTable = -1)
     {
         await using var connection = await _dataSource.OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
         var name = cleanup ? "cleanup" : "sweeper";
@@ -124,13 +154,13 @@ internal sealed partial class MySqlMaintenanceWorker : BackgroundService
         {
             // Cancellation may arrive after MySQL acquired admission but before its reply arrives.
             // Always release, even when acquisition's outcome is unknown.
-            if (Convert.ToInt32(await admission.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false)) != 1) return 0;
+            if (Convert.ToInt32(await admission.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false)) != 1) return cleanup ? -1 : 0;
             await using var acquire = new MySqlCommand(_acquire, connection);
             acquire.Parameters.AddWithValue("name", name);
             acquire.Parameters.AddWithValue("owner", _owner.ToString("N"));
             acquire.Parameters.AddWithValue("duration", Micros(_options.LeaseDuration));
-            if (Convert.ToInt32(await acquire.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false)) != 1) return 0;
-            var count = cleanup ? await DeleteExpiredAsync(connection, cancellationToken).ConfigureAwait(false)
+            if (Convert.ToInt32(await acquire.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false)) != 1) return cleanup ? -1 : 0;
+            var count = cleanup ? await DeleteExpiredAsync(connection, cleanupTable, cancellationToken).ConfigureAwait(false)
                 : await DispatchAsync(connection, cancellationToken).ConfigureAwait(false);
             await using var renew = new MySqlCommand(_renew, connection);
             renew.Parameters.AddWithValue("duration", Micros(_options.LeaseDuration));
@@ -209,14 +239,13 @@ internal sealed partial class MySqlMaintenanceWorker : BackgroundService
         finally { _batch.Clear(); Array.Clear(_rows, 0, count); }
     }
 
-    private async ValueTask<int> DeleteExpiredAsync(MySqlConnection connection, CancellationToken cancellationToken)
+    private async ValueTask<int> DeleteExpiredAsync(MySqlConnection connection, int table, CancellationToken cancellationToken)
     {
-        var count = 0;
-        if (_options.DeadRetention is { } dead)
-            count += await DeleteAsync(_deleteDead, dead, connection, cancellationToken).ConfigureAwait(false);
-        if (_options.InboxRetention is { } inbox)
-            count += await DeleteAsync(_deleteInbox, inbox, connection, cancellationToken).ConfigureAwait(false);
-        return count;
+        return table switch
+        {
+            0 => await DeleteAsync(_deleteDead, _options.DeadRetention.GetValueOrDefault(), connection, cancellationToken).ConfigureAwait(false),
+            _ => await DeleteAsync(_deleteInbox, _options.InboxRetention.GetValueOrDefault(), connection, cancellationToken).ConfigureAwait(false),
+        };
     }
 
     private async ValueTask<int> DeleteAsync(string sql, TimeSpan retention, MySqlConnection connection,

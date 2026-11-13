@@ -236,7 +236,7 @@ public class SentHistoryTests
             await Assert.That(await error).IsEqualTo("");
         }
         await Assert.That((await new PostgreSqlMessageLookup(source).FindAsync(id)).State).IsEqualTo("not present");
-        var settings = new PostgreSqlMaintenanceOptions { RetainSentMessages = true, BatchSize = 1, DeadRetention = null, InboxRetention = null };
+        var settings = new PostgreSqlMaintenanceOptions { RetainSentMessages = true, BatchSize = 1, CleanupBatchLimit = 1, DeadRetention = null, InboxRetention = null };
         using var first = new PostgreSqlMaintenanceWorker(source, settings, [], NullLogger<PostgreSqlMaintenanceWorker>.Instance);
         using var rival = new PostgreSqlMaintenanceWorker(source, settings, [], NullLogger<PostgreSqlMaintenanceWorker>.Instance);
         await Assert.That(await first.CleanupAsync(default)).IsEqualTo(1);
@@ -247,6 +247,99 @@ public class SentHistoryTests
         await Sql(source, "UPDATE relayer_outbox_sent SET sent_at = clock_timestamp() - interval '10 days'");
         await Assert.That(await rival.CleanupAsync(default)).IsEqualTo(1);
         await Assert.That((await new PostgreSqlMessageLookup(source, new() { RetainSentMessages = true }).FindAsync(id)).State).IsEqualTo("not present");
+    }
+
+    [Test]
+    public async Task Sent_cleanup_drains_multiple_batches_and_reports_remaining_budget_work()
+    {
+        await using var fixture = new PostgreSqlFixture();
+        await fixture.StartAsync();
+        await using var source = NpgsqlDataSource.Create(fixture.ConnectionString);
+        await PostgreSqlOutboxStoreTests.CreateSchema(source);
+        await Sql(source, "INSERT INTO relayer_outbox_sent SELECT gen_random_uuid(), 'orders', clock_timestamp() - interval '10 days' FROM generate_series(1, 7)");
+        using var worker = new PostgreSqlMaintenanceWorker(source,
+            new() { RetainSentMessages = true, BatchSize = 2, CleanupBatchLimit = 2, DeadRetention = null, InboxRetention = null },
+            [], NullLogger<PostgreSqlMaintenanceWorker>.Instance);
+        await Assert.That(await worker.CleanupAsync(default)).IsEqualTo(4);
+        await Assert.That(worker.CleanupPending).IsTrue();
+        await Assert.That(await Count(source, "relayer_outbox_sent")).IsEqualTo(3L);
+        await Assert.That(await worker.CleanupAsync(default)).IsEqualTo(3);
+        await Assert.That(worker.CleanupPending).IsFalse();
+        await Assert.That(await Count(source, "relayer_outbox_sent")).IsEqualTo(0L);
+    }
+
+    [Test]
+    public async Task Cleanup_rechecks_lease_between_committed_batches()
+    {
+        await using var fixture = new PostgreSqlFixture();
+        await fixture.StartAsync();
+        await using var source = NpgsqlDataSource.Create(fixture.ConnectionString);
+        await PostgreSqlOutboxStoreTests.CreateSchema(source);
+        await Sql(source, "INSERT INTO relayer_outbox_sent SELECT gen_random_uuid(), 'orders', clock_timestamp() - interval '10 days' FROM generate_series(1, 3)");
+        // Transfer ownership atomically with the first committed delete, at the admission boundary.
+        await Sql(source, """
+            CREATE FUNCTION transfer_cleanup() RETURNS trigger LANGUAGE plpgsql AS $$
+            BEGIN
+                UPDATE relayer_leases SET owner = 'replacement', expires_at = clock_timestamp() + interval '1 hour' WHERE name = 'cleanup';
+                RETURN NULL;
+            END $$;
+            CREATE TRIGGER transfer_cleanup AFTER DELETE ON relayer_outbox_sent FOR EACH STATEMENT EXECUTE FUNCTION transfer_cleanup();
+            """);
+        using var worker = new PostgreSqlMaintenanceWorker(source,
+            new() { RetainSentMessages = true, BatchSize = 1, DeadRetention = null, InboxRetention = null },
+            [], NullLogger<PostgreSqlMaintenanceWorker>.Instance);
+        await Assert.That(await worker.CleanupAsync(default)).IsEqualTo(1);
+        await Assert.That(worker.CleanupPending).IsFalse();
+        await Assert.That(await Count(source, "relayer_outbox_sent")).IsEqualTo(2L);
+        await worker.ReleaseAsync(default);
+        await using var owner = source.CreateCommand("SELECT owner FROM relayer_leases WHERE name = 'cleanup'");
+        await Assert.That((string)(await owner.ExecuteScalarAsync())!).IsEqualTo("replacement");
+    }
+
+    [Test]
+    public async Task Busy_history_cancellation_rotates_tables_and_preserves_committed_batches()
+    {
+        await using var fixture = new PostgreSqlFixture();
+        await fixture.StartAsync();
+        await using var source = NpgsqlDataSource.Create(fixture.ConnectionString);
+        await PostgreSqlOutboxStoreTests.CreateSchema(source);
+        await Sql(source, "INSERT INTO relayer_outbox_sent SELECT gen_random_uuid(), 'orders', clock_timestamp() - interval '10 days' FROM generate_series(1, 3)");
+        await Sql(source, "INSERT INTO relayer_inbox SELECT 'consumer', gen_random_uuid(), clock_timestamp() - interval '10 days' FROM generate_series(1, 3)");
+        await using var blocker = await source.OpenConnectionAsync();
+        await using var transaction = await blocker.BeginTransactionAsync();
+        await using (var command = new NpgsqlCommand("SELECT id FROM relayer_outbox_sent FOR UPDATE", blocker, transaction))
+            await command.ExecuteNonQueryAsync();
+        using var worker = new PostgreSqlMaintenanceWorker(source,
+            new() { RetainSentMessages = true, BatchSize = 1 }, [], NullLogger<PostgreSqlMaintenanceWorker>.Instance);
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        try
+        {
+            // First turn starts with history and is cancelled during its actual native row-lock wait.
+            // The next turn starts with dead/inbox and commits those batches before reaching history.
+            for (var turn = 0; turn < 2; turn++)
+            {
+                using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(timeout.Token);
+                var cleanup = worker.CleanupAsync(cancellation.Token).AsTask();
+                try
+                {
+                    await using var blocked = source.CreateCommand("SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE @pid = ANY(pg_blocking_pids(pid)))");
+                    blocked.Parameters.AddWithValue("pid", blocker.ProcessID);
+                    while (await blocked.ExecuteScalarAsync(timeout.Token) is not true)
+                        await Task.Delay(10, timeout.Token);
+                    await Assert.That(await Count(source, "relayer_inbox")).IsEqualTo(turn == 0 ? 3L : 2L);
+                }
+                finally
+                {
+                    await cancellation.CancelAsync();
+                    await Assert.ThrowsAsync<OperationCanceledException>(async () => await cleanup);
+                }
+            }
+            await transaction.RollbackAsync();
+            await Assert.That(await worker.CleanupAsync(timeout.Token)).IsEqualTo(5);
+            await Assert.That(await Count(source, "relayer_inbox")).IsEqualTo(0L);
+            await Assert.That(await Count(source, "relayer_outbox_sent")).IsEqualTo(0L);
+        }
+        finally { await worker.ReleaseAsync(default); }
     }
 
     [Test]

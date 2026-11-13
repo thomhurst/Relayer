@@ -25,6 +25,9 @@ internal sealed partial class SqlServerMaintenanceWorker : BackgroundService
     private readonly byte[] _after = new byte[16], _through = new byte[16];
     private bool _hasAfter, _hasThrough;
 
+    private int _cleanupStart;
+    internal bool CleanupPending { get; private set; }
+
     [RequiresUnreferencedCode("SqlClient runtime trimming is unsupported.")]
     [RequiresDynamicCode("SqlClient runtime Native AOT is unsupported.")]
     internal SqlServerMaintenanceWorker(string connectionString, SqlServerMaintenanceOptions options,
@@ -95,7 +98,7 @@ internal sealed partial class SqlServerMaintenanceWorker : BackgroundService
                     try
                     {
                         await CleanupAsync(stoppingToken).ConfigureAwait(false);
-                        nextCleanup = DateTimeOffset.UtcNow + _options.CleanupInterval;
+                        nextCleanup = DateTimeOffset.UtcNow + (CleanupPending ? TimeSpan.Zero : _options.CleanupInterval);
                     }
                     catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { break; }
                     catch (Exception error) { Failed(_logger, error); }
@@ -113,9 +116,36 @@ internal sealed partial class SqlServerMaintenanceWorker : BackgroundService
     }
 
     internal ValueTask<int> SweepAsync(CancellationToken cancellationToken = default) => RunAsync(false, cancellationToken);
-    internal ValueTask<int> CleanupAsync(CancellationToken cancellationToken = default) => RunAsync(true, cancellationToken);
+    internal async ValueTask<int> CleanupAsync(CancellationToken cancellationToken = default)
+    {
+        var count = 0;
+        var active = 0;
+        if (_options.DeadRetention is not null) active |= 1;
+        if (_options.InboxRetention is not null) active |= 2;
+        // Rotate before awaiting: a busy table or cancellation cannot monopolize subsequent turns.
+        var first = _cleanupStart;
+        _cleanupStart = (first + 1) % 2;
+        CleanupPending = active != 0;
+        for (var round = 0; round < _options.CleanupBatchLimit && active != 0; round++)
+        {
+            for (var offset = 0; offset < 2; offset++)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var table = (first + offset) % 2;
+                var bit = 1 << table;
+                if ((active & bit) == 0) continue;
+                var deleted = await RunAsync(true, cancellationToken, table).ConfigureAwait(false);
+                if (deleted < 0) { CleanupPending = false; return count; }
+                count += deleted;
+                if (deleted < _options.BatchSize) active &= ~bit;
+            }
+        }
+        // A full final batch may have more behind it. Yield to recovery before admitting more.
+        CleanupPending = active != 0;
+        return count;
+    }
 
-    private async ValueTask<int> RunAsync(bool cleanup, CancellationToken cancellationToken)
+    private async ValueTask<int> RunAsync(bool cleanup, CancellationToken cancellationToken, int cleanupTable = -1)
     {
         await using var connection = new SqlConnection(_connectionString);
         await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
@@ -128,12 +158,12 @@ internal sealed partial class SqlServerMaintenanceWorker : BackgroundService
         acquire.Parameters.AddWithValue("@name", name);
         acquire.Parameters.AddWithValue("@owner", _owner);
         acquire.Parameters.AddWithValue("@duration", (int)_options.LeaseDuration.TotalMilliseconds);
-        if (await acquire.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) is not true) return 0;
+        if (await acquire.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) is not true) return cleanup ? -1 : 0;
         _store.UseDispatchTransaction(connection, transaction);
         var committed = false;
         try
         {
-            var count = cleanup ? await DeleteExpiredAsync(connection, transaction, cancellationToken).ConfigureAwait(false)
+            var count = cleanup ? await DeleteExpiredAsync(connection, transaction, cleanupTable, cancellationToken).ConfigureAwait(false)
                 : await DispatchAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
             await using var renew = new SqlCommand(_renew, connection, transaction);
             renew.Parameters.AddWithValue("@duration", (int)_options.LeaseDuration.TotalMilliseconds);
@@ -202,14 +232,13 @@ internal sealed partial class SqlServerMaintenanceWorker : BackgroundService
         finally { _batch.Clear(); Array.Clear(_rows, 0, count); }
     }
 
-    private async ValueTask<int> DeleteExpiredAsync(SqlConnection connection, SqlTransaction transaction, CancellationToken cancellationToken)
+    private async ValueTask<int> DeleteExpiredAsync(SqlConnection connection, SqlTransaction transaction, int table, CancellationToken cancellationToken)
     {
-        var count = 0;
-        if (_options.DeadRetention is { } dead)
-            count += await DeleteAsync(_deleteDead, dead, connection, transaction, cancellationToken).ConfigureAwait(false);
-        if (_options.InboxRetention is { } inbox)
-            count += await DeleteAsync(_deleteInbox, inbox, connection, transaction, cancellationToken).ConfigureAwait(false);
-        return count;
+        return table switch
+        {
+            0 => await DeleteAsync(_deleteDead, _options.DeadRetention.GetValueOrDefault(), connection, transaction, cancellationToken).ConfigureAwait(false),
+            _ => await DeleteAsync(_deleteInbox, _options.InboxRetention.GetValueOrDefault(), connection, transaction, cancellationToken).ConfigureAwait(false),
+        };
     }
 
     private async ValueTask<int> DeleteAsync(string sql, TimeSpan retention, SqlConnection connection,
