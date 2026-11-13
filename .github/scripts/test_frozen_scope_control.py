@@ -391,6 +391,52 @@ class ScopeControlTests(unittest.TestCase):
             self.assertEqual(outcomes[-1]['meanNs'], 27)
             self.assertEqual(len(list((root / 'output').glob('*.log'))), 16)
 
+    def test_aslr_control_balances_images_and_retains_rejected_personality(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            calls = []
+
+            def execute(command, **kwargs):
+                calls.append(command)
+                self.assertEqual(kwargs['cwd'], Path(command[3] if command[0] == '/usr/bin/setarch' else command[1]).parent)
+                self.assertEqual(kwargs['env'], {})
+                if len(calls) == 5:
+                    raise subprocess.CalledProcessError(1, command)
+                kwargs['stdout'].write(COMPLETE.replace('27 ns/op', '40 ns/op')
+                                       if len(calls) == 6 else COMPLETE)
+
+            with patch('sys.argv', ['control', directory, str(root / 'output'), '--aslr-control']), \
+                 patch('frozen_scope_control.os.environ', {}), \
+                 patch('frozen_scope_control.os.uname') as uname, \
+                 patch('frozen_scope_control.shutil.which', return_value='/usr/bin/setarch'), \
+                 patch('frozen_scope_control.verify', return_value='commit') as verify, \
+                 patch('frozen_scope_control.executable', side_effect=lambda path, scoped, method: (path / 'runner.dll', '4' if scoped else '0')), \
+                 patch('frozen_scope_control.subprocess.run', side_effect=execute):
+                with self.assertRaises(SystemExit):
+                    uname.return_value.sysname = "Linux"
+                    main()
+            self.assertEqual(verify.call_count, 6)
+            self.assertEqual(len(calls), 16)
+            protocol = json.loads((root / 'output/protocol.json').read_text())
+            outcomes = json.loads((root / 'output/outcomes.json').read_text())
+            self.assertTrue(protocol['aslrControl'])
+            self.assertEqual([item['addressRandomization'] for item in outcomes], ['default']*4 + ['disabled']*8 + ['default']*4)
+            abba = ['baseline', 'candidate', 'candidate', 'baseline']
+            baab = ['candidate', 'baseline', 'baseline', 'candidate']
+            expected = abba + baab + abba + baab
+            self.assertEqual([item['imageSide'] for item in outcomes], expected)
+            self.assertTrue(all(item['scoped'] for item in outcomes))
+            for index, command in enumerate(calls):
+                if 4 <= index < 12:
+                    self.assertEqual(command[:3], ['/usr/bin/setarch', '--addr-no-randomize', 'dotnet'])
+                else:
+                    self.assertEqual(command[0], 'dotnet')
+                self.assertEqual(command[-1], '4')
+            self.assertIn('error', outcomes[4])
+            self.assertEqual(outcomes[5]['meanNs'], 40)
+            self.assertEqual(outcomes[-1]['meanNs'], 27)
+            self.assertEqual(len(list((root / 'output').glob('*.log'))), 16)
+
     def test_invalid_affinity_control_never_verifies_or_launches(self):
         for cpus, taskset, options in (({3}, '/usr/bin/taskset', []),
                                       ({3, 7}, None, []),
@@ -404,6 +450,24 @@ class ScopeControlTests(unittest.TestCase):
                  patch('frozen_scope_control.shutil.which', return_value=taskset), \
                  patch('frozen_scope_control.verify') as verify, \
                  patch('frozen_scope_control.subprocess.run') as execute:
+                with self.assertRaises(SystemExit):
+                    main()
+                verify.assert_not_called()
+                execute.assert_not_called()
+
+    def test_invalid_aslr_controls_never_launch(self):
+        for native, system, options in ((None, 'Linux', []), ('/usr/bin/setarch', 'Darwin', []),
+                                        ('/usr/bin/setarch', 'Linux', ['--counterbalanced']),
+                                ('/usr/bin/setarch', 'Linux', ['--jit-disassembly']),
+                                ('/usr/bin/setarch', 'Linux', ['--tiered-compilation', 'off']),
+                                ('/usr/bin/setarch', 'Linux', ['--ready-to-run', 'off'])):
+            with self.subTest(native=native, system=system, options=options), \
+                 patch('sys.argv', ['control', 'inputs', 'output', '--aslr-control'] + options), \
+                 patch('frozen_scope_control.os.uname') as uname, \
+                 patch('frozen_scope_control.shutil.which', return_value=native), \
+                 patch('frozen_scope_control.verify') as verify, \
+                 patch('frozen_scope_control.subprocess.run') as execute:
+                uname.return_value.sysname = system
                 with self.assertRaises(SystemExit):
                     main()
                 verify.assert_not_called()

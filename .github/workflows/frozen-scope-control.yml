@@ -1,4 +1,4 @@
-name: Frozen scope CPU placement control
+name: Frozen scope address randomization control
 
 # New historical-input experiment, never a rerun of the performance gate.
 on:
@@ -37,16 +37,16 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh run download 42772012652 --name performance-42772012652-1 --dir inputs
-      # Separate scheduling hypothesis: default ABBA, pinned BAAB, pinned ABBA,
-      # default BAAB. Native taskset pins the whole process to the first allowed
-      # CPU; no runtime override, rebuild, gate comparison or adaptive retry.
-      - name: Bracket pinned scoped images with unrestricted controls
-        run: python3 .github/scripts/frozen_scope_control.py inputs results/affinity --affinity-control
+      # Separate layout hypothesis: default ABBA, no-ASLR BAAB/ABBA, default BAAB.
+      # Native setarch changes only the child personality; rejected changes remain
+      # failed outcomes. No runtime override, rebuild, gate retry or adaptive stop.
+      - name: Bracket native address-randomization control with defaults
+        run: python3 .github/scripts/frozen_scope_control.py inputs results/aslr --aslr-control
       - name: Retain all outcomes and executable inputs
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: frozen-scope-affinity-${{ github.run_id }}-${{ github.run_attempt }}
+          name: frozen-scope-aslr-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             .github/workflows/frozen-scope-control.yml
             results/

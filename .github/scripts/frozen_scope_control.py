@@ -77,6 +77,8 @@ def main():
     plans = parser.add_mutually_exclusive_group()
     plans.add_argument("--affinity-control", action="store_true",
                        help="Scoped default/pinned/pinned/default blocks, balanced image positions")
+    plans.add_argument("--aslr-control", action="store_true",
+                       help="Scoped default/no-ASLR/no-ASLR/default blocks using native setarch")
     plans.add_argument("--counterbalanced", action="store_true",
                         help="Scoped-only fixed ABBA/BAAB/BAAB/ABBA blocks (16 processes)")
     args = parser.parse_args()
@@ -84,6 +86,13 @@ def main():
         parser.error("--jit-method requires --jit-disassembly")
     if not args.jit_method.strip():
         parser.error("--jit-method must not be empty")
+    setarch = None
+    if args.aslr_control:
+        if args.jit_disassembly or args.tiered_compilation != "default" or args.ready_to_run != "default":
+            parser.error("--aslr-control requires uninstrumented default runtime settings")
+        setarch = shutil.which("setarch")
+        if setarch is None or not hasattr(os, "uname") or os.uname().sysname != "Linux":
+            parser.error("--aslr-control requires Linux and native setarch")
     allowed_cpus = None
     taskset = None
     if args.affinity_control:
@@ -103,11 +112,14 @@ def main():
     args.output.mkdir(parents=True, exist_ok=False)
     protocol = {"commits": commits, "benchmark": benchmark,
                 "plan": ("Scoped default ABBA / pinned BAAB / pinned ABBA / default BAAB; no adaptive stopping"
-                         if args.affinity_control else "Scoped-only ABBA/BAAB/BAAB/ABBA; 4 fixed blocks, no adaptive stopping"
+                         if args.affinity_control else "Scoped default ABBA / no-ASLR BAAB / no-ASLR ABBA / default BAAB; no adaptive stopping"
+                         if args.aslr_control else "Scoped-only ABBA/BAAB/BAAB/ABBA; 4 fixed blocks, no adaptive stopping"
                          if args.counterbalanced else "Scoped ABBA, then unscoped ABBA; A2 reuses first baseline image"),
                 "analysisPlan": "Compare process means within each block by actual image; retain every block difference and process. Counterbalancing addresses fixed launch-position effects, not arbitrary host drift or historical causality. No gate decision or equivalence claim.",
                 "engine": "Original Default job, native NoAcknowledgementConsoleHost without anonymous-pipe parent",
                 "limits": "New host/process executions, not historical reconstruction. Image-associated differences do not identify a production defect; absent differences do not prove equivalence. No threshold changes or gate pass claim.",
+                "aslrControl": args.aslr_control,
+                "aslrLimits": "Native setarch --addr-no-randomize changes address randomization for each selected child only. Compare image differences within all four blocks; retain failures and unfavorable results. This tests sensitivity to address randomization, not fixed image layout, historical causality or equivalence. Host drift and runtime code placement remain confounds. A rejected personality change is a failed condition, never a default-runtime fallback.",
                 "affinityControl": args.affinity_control,
                 "allowedCpus": allowed_cpus,
                 "pinnedCpu": allowed_cpus[0] if allowed_cpus else None,
@@ -123,29 +135,32 @@ def main():
                 "timingUse": "Excluded: JIT diagnostics perturb execution" if args.jit_disassembly else "New fixed-plan experiment only",
                 "launches": []}
     # ABBA is a palindrome: swap A/B, rather than reversing it, for BAAB.
-    if args.counterbalanced or args.affinity_control:
+    if args.counterbalanced or args.affinity_control or args.aslr_control:
         baab = tuple("candidate" if side == "baseline" else "baseline" for side in LAUNCHES)
-        blocks = ((LAUNCHES, baab, LAUNCHES, baab) if args.affinity_control
+        blocks = ((LAUNCHES, baab, LAUNCHES, baab) if args.affinity_control or args.aslr_control
                   else (LAUNCHES, baab, baab, LAUNCHES))
     else:
         blocks = (LAUNCHES,)
-    for scoped in ((True,) if args.counterbalanced or args.affinity_control else (True, False)):
+    for scoped in ((True,) if args.counterbalanced or args.affinity_control or args.aslr_control else (True, False)):
         for block, sides in enumerate(blocks, 1):
             for position, side in enumerate(sides, 1):
                 image_side = args.single_image or side
                 image, identity = runners[image_side, scoped]
                 affinity = "pinned" if args.affinity_control and block in (2, 3) else "default"
+                address_randomization = "disabled" if args.aslr_control and block in (2, 3) else "default"
                 command = ["dotnet", str(image), "--benchmarkName", benchmark,
                            "--job", "Default", "--benchmarkId", identity]
                 if affinity == "pinned":
                     command = [taskset, "--cpu-list", str(allowed_cpus[0]), *command]
-                protocol["launches"].append({"affinity": affinity, "cwd": str(image.parent), "side": side, "imageSide": image_side, "scoped": scoped,
+                if address_randomization == "disabled":
+                    command = [setarch, "--addr-no-randomize", *command]
+                protocol["launches"].append({"addressRandomization": address_randomization, "affinity": affinity, "cwd": str(image.parent), "side": side, "imageSide": image_side, "scoped": scoped,
                     "block": block, "position": position,
                     "command": command})
     (args.output / "protocol.json").write_text(json.dumps(protocol, indent=2) + "\n")
     outcomes = []
     for index, launch in enumerate(protocol["launches"], 1):
-        outcome = {"affinity": launch["affinity"], "launch": index, "side": launch["side"], "imageSide": launch["imageSide"], "scoped": launch["scoped"],
+        outcome = {"addressRandomization": launch["addressRandomization"], "affinity": launch["affinity"], "launch": index, "side": launch["side"], "imageSide": launch["imageSide"], "scoped": launch["scoped"],
                    "block": launch["block"], "position": launch["position"]}
         log_path = args.output / f"{index}-{launch['side']}-{launch['scoped']}.log"
         environment = os.environ.copy()
