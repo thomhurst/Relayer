@@ -177,20 +177,7 @@ Handlers, inbox, failure policy and ordering keys are implemented once in the co
 
 **Log-based transports.** Kafka, Event Hubs, Kinesis, Pulsar, RabbitMQ Streams and JetStream share ordering and durable-checkpoint requirements (§7), but their native clients may already implement scheduling, backpressure and ownership drain. Search the pinned client's source first and wrap those mechanisms (D1, D40, D42). Kafka's parallel receive target wraps Dekaf's `RunPartitionedAsync`; it does not use the core scheduler.
 
-The core's `PartitionScheduler<TIncoming, TBinding, TPartition, TPosition>` is a fallback only for a log transport whose native client has no equivalent. A missing piece in an existing native runtime belongs upstream; it does not justify replacing that runtime. Record any exception and its native-feature gap in the decisions record before building a parallel implementation. When that fallback is justified, the transport feeds records in and implements three calls:
-
-```csharp
-public interface IPartitionSource<TPartition, TPosition>
-{
-    void Commit(TPartition partition, TPosition position);   // last completed position; the transport batches and flushes
-    void Pause(TPartition partition);
-    void Resume(TPartition partition);
-}
-```
-
-`TPosition` is whatever the broker uses: a `long` offset for Kafka, a sequence-number string for Kinesis, a `MessageId` for Pulsar. The scheduler never compares positions; it tracks them in arrival order.
-
-The fallback [partition scheduler](../website/docs/transports/partition-scheduler.md) uses `IPartitionMessageBinding<TIncoming>` for native key equality and lease release, and the [completion-window primitive](../website/docs/transports/partition-completion.md) for bounded arrival-order checkpoints. One transport-owned pump serializes admission, dispatch, completion observation and native calls without per-delivery tasks or continuations. Assignment tokens fence stale completions; configurable global/per-assignment limits include retained work, and global limits include late handlers after ownership ends. Revoke stops dispatch and drains active work up to a monotonic deadline; loss fences immediately. When designing the next log transport, check its native client before choosing the fallback; remove the public scheduler if no planned transport needs it (D23).
+Relayer does not expose a fallback scheduler or completion window: no supported transport needs one. Native clients own scheduling, completion tracking, backpressure and ownership drain. A missing native capability belongs upstream; record a concrete gap and decision before introducing a core fallback (D23, D42).
 
 Every transport proves the SPI contract by passing the transport conformance suite (§15). See the site roadmap for conformance coverage.
 
@@ -592,7 +579,7 @@ Kafka gets its own consumption model instead of being forced into a queue shape 
 
 The transport wraps **[Dekaf](https://github.com/thomhurst/Dekaf)**, a pure C# Kafka client (decision D22). Dekaf has no native dependencies, supports Native AOT, and is built for zero-allocation hot paths, which matches Relayer's own goals. Dekaf already ships features such as partitioned processing, retry and dead-letter topics, an outbox, and OpenTelemetry instrumentation. Following principle 1, search the pinned client's source and reuse its mechanisms. A feature that cannot be used needs a recorded reason and an upstream issue; a parallel implementation needs an explicit decision. Relayer's outbox remains the cross-transport outbox.
 
-- **Key-ordered parallelism (target design):** wrap Dekaf's `RunPartitionedAsync` with `Ordering = PartitionedProcessingOrder.Key` and `MaxConcurrentHandlersPerPartition`. Dekaf compares byte-array keys by content and owns the ordered lanes; Relayer invokes its receive/failure pipeline within the native processor. Kafka does not use the fallback core scheduler (§2.4).
+- **Key-ordered parallelism (target design):** wrap Dekaf's `RunPartitionedAsync` with `Ordering = PartitionedProcessingOrder.Key` and `MaxConcurrentHandlersPerPartition`. Dekaf compares byte-array keys by content and owns the ordered lanes; Relayer invokes its receive/failure pipeline within the native processor. Kafka uses the native runtime (§2.4).
 - **Offset commits by watermark (parallel receive target):** Dekaf tracks the highest *contiguous* completed offset per partition and batches asynchronous commits through `PartitionCommitPolicy.CommitCompletedPeriodically`, including flush on revoke and shutdown (Brighter #2269). Relayer allows native processing completion only after `Complete` or `SettledByHandler` means the work is durable. Relayer supplies its commit span without a second checkpoint tracker.
 - **Rebalance safety (parallel receive target):** use Dekaf's native cooperative assignment, `PartitionStopPolicy.Drain`, `StopTimeout` and `PartitionBackpressureMode.PauseResume`. The native runtime owns revoked lanes, drain and pause tracking, including rebalances while paused (KafkaFlow #456, #681). Preserve the configured native rebalance listeners.
 - **Consume-transform-produce:**

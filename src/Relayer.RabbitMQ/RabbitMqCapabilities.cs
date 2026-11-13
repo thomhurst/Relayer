@@ -2,8 +2,8 @@ using Relayer.Transports;
 
 namespace Relayer.RabbitMQ;
 
-/// <summary>Describes the RabbitMq transport.</summary>
-public static class RabbitMqTransport
+/// <summary>Shared conservative capabilities used by the native RabbitMQ adapter.</summary>
+internal static class RabbitMqCapabilities
 {
     private static readonly TransportCapabilities Defaults = new()
     {

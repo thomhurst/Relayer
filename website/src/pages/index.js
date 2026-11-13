@@ -303,7 +303,6 @@ const status = [
   ['Named transport serializers and independent Kafka JSON schema registries', 'Implemented; explicit startup contracts', true],
   ['Optional Protobuf and MessagePack serializers', 'Implemented; explicit generated contracts and Native AOT coverage', true],
   ['Avro with generated codecs and startup-prepared schema registry', 'Implemented; Native AOT/trimming unsupported', true],
-  ['Fallback partition watermarks, key scheduling, backpressure and bounded drain', 'Implemented core SPI; native runtime first', true],
   ['SQS receiving, health and SNS topic/queue/subscription topology', 'Implemented', true],
   ['RabbitMQ topology, confirmed sends, receive/settlement and health', 'Implemented', true],
   ['RabbitMQ Streams native connection and topology', 'Implemented; message execution awaits native client release', true],

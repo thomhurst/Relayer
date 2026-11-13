@@ -31,48 +31,6 @@ public class ReceivePipelineTests
     }
 
     [Test]
-    public async Task Partition_scheduler_waits_for_existing_receive_failure_pipeline_before_checkpointing()
-    {
-        await using var provider = Provider();
-        var durable = new TaskCompletionSource();
-        provider.GetRequiredService<Control>().Invoke = static _ => ValueTask.FromException(new FormatException("poison"));
-        var receive = Pipeline(provider, (_, _, _) => new(durable.Task));
-        var source = new PartitionSource();
-        Task<Disposition>? processing = null;
-        var scheduler = new PartitionScheduler<Incoming, PartitionBinding, int, long>(source, (message, cancellation) =>
-        {
-            processing = receive.ProcessAsync(message, cancellation).AsTask();
-            return new(processing);
-        });
-        var assignment = scheduler.Assign(1);
-        scheduler.TryEnqueue(assignment, new(), 91);
-        scheduler.Pump();
-        await Assert.That(source.Checkpoint).IsEqualTo(0L);
-        await Assert.That(scheduler.ActiveCount).IsEqualTo(1);
-        durable.SetResult();
-        await processing!;
-        scheduler.Pump();
-        await Assert.That(source.Checkpoint).IsEqualTo(91L);
-        await Assert.That(scheduler.BufferedCount).IsEqualTo(0);
-    }
-
-    private sealed class PartitionSource : IPartitionSource<int, long>
-    {
-        internal long Checkpoint;
-        public void Commit(int partition, long position) => Checkpoint = position;
-        public void Pause(int partition) { }
-        public void Resume(int partition) { }
-    }
-
-    private readonly struct PartitionBinding : IPartitionMessageBinding<Incoming>
-    {
-        public static bool KeysEqual(Incoming first, Incoming second) => ReferenceEquals(first, second);
-        public static ReadOnlySequence<byte> GetBody(Incoming message) => Binding.GetBody(message);
-        public static int? GetDeliveryCount(Incoming message) => Binding.GetDeliveryCount(message);
-        public static bool TryGetHeader(Incoming message, string name, out WireString value) => Binding.TryGetHeader(message, name, out value);
-    }
-
-    [Test]
     public async Task Native_delivery_body_and_lazy_headers_reach_handler_without_copying()
     {
         await using var provider = Provider();

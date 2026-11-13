@@ -67,8 +67,6 @@ static void AssertSendAllocation(Relayer.TestFixtures.SendTracingCompletionFixtu
 }
 
 Console.WriteLine("Cross-thread single and batch send tracing passed under Native AOT.");
-PartitionCompletionSmoke.Run();
-PartitionSchedulerSmoke.Run();
 await KafkaSchemaSmoke.RunAsync();
 await NatsTopologySmoke.RunAsync();
 await RabbitMqStreamsSmoke.RunAsync();
