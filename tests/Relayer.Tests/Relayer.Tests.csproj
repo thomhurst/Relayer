@@ -2,6 +2,8 @@
 
   <PropertyGroup>
     <OutputType>Exe</OutputType>
+    <!-- Prefer the local runtime-async opt-out attribute over copies visible through friend assemblies. -->
+    <NoWarn>$(NoWarn);CS0436</NoWarn>
     <EnableConfigurationBindingGenerator>true</EnableConfigurationBindingGenerator>
     <!-- Background GC can charge unused allocation-context bytes to the measuring thread
          (dotnet/runtime#134724). Keep exact allocation assertions and parallel test execution. -->
@@ -42,6 +44,8 @@
   </ItemGroup>
 
   <ItemGroup>
+    <Compile Include="../../src/Shared/RuntimeAsyncMethodGenerationAttribute.cs" Link="Fixtures/RuntimeAsyncMethodGenerationAttribute.cs" />
+    <Compile Include="../../tests/Shared/PooledBuilderCompletionFixture.cs" Link="Fixtures/PooledBuilderCompletionFixture.cs" />
     <Compile Include="..\..\tests\Shared\ConcurrentReceiveFixture.cs" Link="Fixtures\ConcurrentReceiveFixture.cs" />
     <Compile Include="../../benchmarks/Relayer.Benchmarks/RegressionGate/PendingReadBarrier.cs" Link="Fixtures/PendingReadBarrier.cs" />
   </ItemGroup>
