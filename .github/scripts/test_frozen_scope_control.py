@@ -572,6 +572,88 @@ class ScopeControlTests(unittest.TestCase):
                 main()
             execute.assert_not_called()
 
+    def test_sampling_retains_every_trace_and_map_excludes_timing_and_continues_after_failure(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            environments = []
+
+            def execute(command, **kwargs):
+                environment = kwargs['env']
+                environments.append(environment)
+                kwargs['stdout'].write(COMPLETE.replace('27 ns/op', '60 ns/op'))
+                Path(environment['DOTNET_EventPipeOutputPath']).write_bytes(b'raw-partial-trace')
+                (Path(environment['DOTNET_PerfMapJitDumpPath']) / 'perf-123.map').write_text(
+                    '00007abc12345000 2a void Bench:WorkloadActionUnroll(int32)[Tier0]\n')
+                if len(environments) == 2:
+                    raise subprocess.CalledProcessError(1, command)
+                if len(environments) == 3:
+                    Path(environment['DOTNET_EventPipeOutputPath']).unlink()
+
+            parent = {'DOTNET_EnableEventPipe': '0', 'PRIVATE_TOKEN': 'secret'}
+            with patch('sys.argv', ['control', directory, str(root / 'output'),
+                                    '--counterbalanced', '--eventpipe-sampling', '--perf-map']), \
+                 patch('frozen_scope_control.os.environ', parent), \
+                 patch('frozen_scope_control.os.uname') as uname, \
+                 patch('frozen_scope_control.verify', return_value='commit') as verify, \
+                 patch('frozen_scope_control.executable', side_effect=lambda path, scoped, method: (path / 'runner.dll', '4')), \
+                 patch('frozen_scope_control.subprocess.run', side_effect=execute):
+                uname.return_value.sysname = 'Linux'
+                with self.assertRaises(SystemExit):
+                    main()
+            self.assertEqual(len(environments), 16)
+            self.assertEqual(verify.call_count, 6)
+            self.assertEqual(len({env['DOTNET_EventPipeOutputPath'] for env in environments}), 16)
+            self.assertTrue(all(env['DOTNET_EnableEventPipe'] == '1' for env in environments))
+            self.assertTrue(all('BenchmarkDotNet.EngineEventSource:' in env['DOTNET_EventPipeConfig']
+                                and 'Microsoft-DotNETCore-SampleProfiler:' in env['DOTNET_EventPipeConfig']
+                                for env in environments))
+            self.assertEqual(parent, {'DOTNET_EnableEventPipe': '0', 'PRIVATE_TOKEN': 'secret'})
+            outcomes = json.loads((root / 'output/outcomes.json').read_text())
+            self.assertIn('error', outcomes[1])
+            self.assertIn('Missing native EventPipe trace', outcomes[2]['error'])
+            self.assertIn('eventPipeTrace', outcomes[-1])
+            self.assertIn('perfMap', outcomes[-1])
+            self.assertIn('Pending', outcomes[-1]['traceValidation'])
+            self.assertTrue(all('meanNs' not in item and 'bytesPerOperation' not in item for item in outcomes))
+            self.assertTrue(all('PRIVATE_TOKEN' not in item['diagnosticEnvironment'] for item in outcomes))
+            self.assertEqual(len(list((root / 'output').glob('*-samples.nettrace'))), 15)
+            protocol = json.loads((root / 'output/protocol.json').read_text())
+            self.assertTrue(protocol['eventPipeSampling'])
+            self.assertIn('sampled instruction addresses', protocol['analysisPlan'])
+            self.assertEqual([item['side'] for item in outcomes],
+                             ['baseline', 'candidate', 'candidate', 'baseline'] +
+                             ['candidate', 'baseline', 'baseline', 'candidate'] * 2 +
+                             ['baseline', 'candidate', 'candidate', 'baseline'])
+
+    def test_sampling_without_maps_still_excludes_timings(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+
+            def execute(command, **kwargs):
+                kwargs['stdout'].write(COMPLETE)
+                Path(kwargs['env']['DOTNET_EventPipeOutputPath']).write_bytes(b'trace')
+
+            with patch('sys.argv', ['control', directory, str(root / 'output'), '--eventpipe-sampling']), \
+                 patch('frozen_scope_control.verify', return_value='commit'), \
+                 patch('frozen_scope_control.executable', return_value=(root / 'runner.dll', '4')), \
+                 patch('frozen_scope_control.subprocess.run', side_effect=execute):
+                main()
+            outcomes = json.loads((root / 'output/outcomes.json').read_text())
+            self.assertTrue(all('eventPipeTrace' in item and 'meanNs' not in item and
+                                'bytesPerOperation' not in item for item in outcomes))
+
+    def test_sampling_rejects_mixed_runtime_controls_before_launch(self):
+        for options in (['--jit-disassembly'], ['--aslr-control'], ['--affinity-control'],
+                        ['--tiered-compilation', 'off'], ['--ready-to-run', 'off']):
+            with self.subTest(options=options), \
+                 patch('sys.argv', ['control', 'inputs', 'output', '--eventpipe-sampling'] + options), \
+                 patch('frozen_scope_control.verify') as verify, \
+                 patch('frozen_scope_control.subprocess.run') as execute:
+                with self.assertRaises(SystemExit):
+                    main()
+                verify.assert_not_called()
+                execute.assert_not_called()
+
 
 if __name__ == '__main__':
     unittest.main()

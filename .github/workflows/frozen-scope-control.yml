@@ -1,4 +1,4 @@
-name: Frozen scope native code placement capture
+name: Frozen scope native execution sampling
 
 # New historical-input experiment, never a rerun of the performance gate.
 on:
@@ -8,6 +8,8 @@ on:
       - '.github/scripts/test_frozen_scope_control.py'
       - '.github/scripts/frozen_concurrent_control.py'
       - '.github/workflows/frozen-scope-control.yml'
+      - 'tools/FrozenScopeSampleReader/**'
+      - 'tools/FrozenAllocationReader/RuntimeIdentityScope.cs'
   workflow_dispatch:
 
 permissions:
@@ -32,22 +34,36 @@ jobs:
           dotnet --info > results/runtime.txt
           uname -a > results/host.txt
           python3 -m unittest discover -s .github/scripts -p test_frozen_scope_control.py > results/launcher-tests.log 2>&1
+          dotnet build tools/FrozenScopeSampleReader -c Release > results/reader-build.log 2>&1
       - name: Download original images for code attribution
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh run download 42772012652 --name performance-42772012652-1 --dir inputs
-      # Earlier timing controls recorded successful setarch requests but no actual
-      # code addresses. Capture native JIT maps under the same fixed image plan.
-      # Diagnostic timing is excluded: compare addresses/tiers, not performance.
-      # Missing maps or denied personality requests fail without fallback.
-      - name: Capture native code placement with default and disabled randomization
-        run: python3 .github/scripts/frozen_scope_control.py inputs results/code-placement --aslr-control --perf-map
+      # Placement maps do not say which code executed. Capture native samples,
+      # method events, workload markers and same-process maps in a distinct fixed
+      # default-runtime plan. Never use instrumented timings as performance data.
+      - name: Sample original scope execution with native workload markers
+        run: python3 .github/scripts/frozen_scope_control.py inputs results/sampling --counterbalanced --perf-map --eventpipe-sampling
+      - name: Parse every retained trace even after launch failure
+        if: always()
+        run: |
+          failed=0
+          shopt -s nullglob
+          traces=(results/sampling/*-samples.nettrace)
+          if (( ${#traces[@]} != 16 )); then
+            echo "Expected sixteen native sample captures" >&2
+            failed=1
+          fi
+          for trace in "${traces[@]}"; do
+            dotnet tools/FrozenScopeSampleReader/bin/Release/net11.0/FrozenScopeSampleReader.dll "$trace" > "$trace.jsonl" 2> "$trace.reader.log" || failed=1
+          done
+          exit "$failed"
       - name: Retain all outcomes and executable inputs
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: frozen-scope-code-placement-${{ github.run_id }}-${{ github.run_attempt }}
+          name: frozen-scope-sampling-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             .github/workflows/frozen-scope-control.yml
             results/
@@ -57,4 +73,7 @@ jobs:
             .github/scripts/test_frozen_bdn_control.py
             .github/scripts/frozen_bdn_control.py
             .github/scripts/frozen_concurrent_control.py
+            tools/FrozenScopeSampleReader/*.cs
+            tools/FrozenScopeSampleReader/*.csproj
+            tools/FrozenAllocationReader/RuntimeIdentityScope.cs
           retention-days: 90
