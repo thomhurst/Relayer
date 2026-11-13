@@ -14,7 +14,7 @@ public class KafkaConfigurationTests
         services.AddRelayer(builder => builder.Kafka("events", kafka => kafka.Consume("orders", consumer =>
         {
             consumer.Options.Group = "orders";
-            consumer.Options.Failure = new() { RedeliveryDelays = new[] { TimeSpan.FromSeconds(1) } };
+            consumer.Failures(new() { RedeliveryDelays = new[] { TimeSpan.FromSeconds(1) } });
             consumer.Handler<KafkaReceiveHandler>();
         })));
         await using var provider = services.BuildServiceProvider();

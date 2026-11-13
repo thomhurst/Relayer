@@ -138,7 +138,7 @@ public class NatsExecutionTests
                 {
                     consumer.Options.Stream = events;
                     consumer.Options.Settings = new() { MaxMsgs = 1, Expires = TimeSpan.FromSeconds(1), DrainOnCancel = true };
-                    consumer.Options.Failure = new() { RetryDelays = new[] { TimeSpan.Zero }, DeadLetterEndpoint = deadSubject };
+                    consumer.Failures(new() { RetryDelays = new[] { TimeSpan.Zero }, DeadLetterEndpoint = deadSubject });
                     consumer.Handler<ExecutionHandler>();
                 });
             });
@@ -230,7 +230,7 @@ public class NatsExecutionTests
                 transport.Consume("worker", consumer =>
                 {
                     consumer.Options.Stream = events;
-                    consumer.Options.Failure = new() { DeadLetterEndpoint = deadSubject };
+                    consumer.Failures(new() { DeadLetterEndpoint = deadSubject });
                     consumer.Handler<ExecutionHandler>();
                 });
             });
@@ -301,7 +301,7 @@ public class NatsExecutionTests
                 transport.Consume("worker", consumer =>
                 {
                     consumer.Options.Stream = events;
-                    consumer.Options.Failure = new() { DeadLetterEndpoint = deadSubject };
+                    consumer.Failures(new() { DeadLetterEndpoint = deadSubject });
                     consumer.Handler<ExecutionHandler>();
                 });
             });

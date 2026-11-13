@@ -987,7 +987,7 @@ public class InMemoryTransportTests
         await Assert.That(async () =>
         {
             foreach (var service in provider.GetServices<IHostedService>()) await service.StartAsync(default);
-        }).Throws<InvalidOperationException>().WithMessageContaining("Options.Failure");
+        }).Throws<InvalidOperationException>().WithMessageContaining("DeadLetterEndpoint");
     }
 
     [Test]

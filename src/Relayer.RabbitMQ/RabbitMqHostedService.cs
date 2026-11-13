@@ -61,7 +61,7 @@ internal sealed class RabbitMqReceiveComposer
             System = "rabbitmq", Destination = "::" + _consumer.Source,
             ServerAddress = _options.ConnectionFactory.HostName, ServerPort = _options.ConnectionFactory.Port,
         };
-        var policy = _consumer.Options.Failure;
+        var policy = _consumer.Failure;
         var failures = new FailurePipeline(_provider, _name, _consumer.Source, _consumer.Source, new()
         {
             RetryDelays = policy.RetryDelays, RedeliveryDelays = policy.RedeliveryDelays,
@@ -72,7 +72,7 @@ internal sealed class RabbitMqReceiveComposer
         var settlement = new RabbitMqSettlement(tracing, endpoint);
         var pipeline = new ConsumePipelineBuilder(_provider.GetRequiredService<IServiceScopeFactory>(),
             _provider.GetRequiredService<MessageTypeRegistry>(), _provider.GetMessageSerializer(_name), failures,
-            _provider.GetService<IFailureClassifier>());
+            _consumer.FailureClassifier ?? _provider.GetService<IFailureClassifier>());
         var telemetry = _provider.GetRequiredService<RelayerInstrumentation>().CreateEndpoint(new()
         { System = "rabbitmq", Destination = _consumer.Source, ServerAddress = endpoint.ServerAddress, ServerPort = endpoint.ServerPort });
         pipeline.Tracing(tracing, endpoint).Telemetry(telemetry).Settle(settlement.SettleAsync);

@@ -52,12 +52,12 @@ internal sealed partial class RabbitMqConsumer
     internal static void Validate(ConsumerDefinition<RabbitMqConsumerOptions> consumer)
     {
         ArgumentNullException.ThrowIfNull(consumer.Options.ChannelOptions);
-        ArgumentNullException.ThrowIfNull(consumer.Options.Failure);
+        ArgumentNullException.ThrowIfNull(consumer.Failure);
         if (consumer.BatchSize != 1)
             throw new NotSupportedException($"RabbitMQ consumer '{consumer.Source}': native callbacks support single-message handlers only.");
         if (consumer.Options.ChannelOptions.ConsumerDispatchConcurrency != consumer.Concurrency)
             throw new InvalidOperationException($"RabbitMQ consumer '{consumer.Source}': ChannelOptions.ConsumerDispatchConcurrency must equal Concurrency({consumer.Concurrency}).");
-        if (!consumer.Options.Failure.RedeliveryDelays.IsEmpty)
+        if (consumer.Failure.RedeliveryDelays.Length != 0)
             throw new NotSupportedException($"RabbitMQ consumer '{consumer.Source}': nack cannot persist retry metadata. Use RetryDelays for in-process retries and confirmed dead-letter copies.");
     }
 

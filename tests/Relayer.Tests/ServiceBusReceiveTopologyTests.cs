@@ -46,8 +46,8 @@ public sealed class ServiceBusReceiveTopologyTests
     public async Task Delayed_redelivery_fails_at_composition_without_starting_a_processor()
     {
         var client = new ServiceBusReceiveTests.NativeClient();
-        await using var provider = ServiceBusReceiveTests.Provider(client, consumer => consumer.Options.Failure = new()
-        { RedeliveryDelays = new[] { TimeSpan.FromSeconds(1) } });
+        await using var provider = ServiceBusReceiveTests.Provider(client, consumer => consumer.Failures(new()
+        { RedeliveryDelays = new[] { TimeSpan.FromSeconds(1) } }));
         await Assert.That(async () => await ServiceBusReceiveTests.Start(provider)).Throws<InvalidOperationException>();
         await Assert.That(client.Processors.Count).IsEqualTo(0);
     }

@@ -14,6 +14,8 @@ public sealed class ConsumerBuilder<TConsumerOptions> : IConsumerBuilder where T
     private int _batchSize = 1;
     private TimeSpan _batchWait = TimeSpan.FromMilliseconds(100);
     private bool _built;
+    private FailureOptions? _failure;
+    private IFailureClassifier? _classifier;
 
     internal ConsumerBuilder(IServiceCollection services, HandlerRegistry registry, string source)
     {
@@ -66,6 +68,27 @@ public sealed class ConsumerBuilder<TConsumerOptions> : IConsumerBuilder where T
 
     IConsumerBuilder IConsumerBuilder.ConfigurePipeline(Action<ConsumePipelineBuilder> configure) => ConfigurePipeline(configure);
 
+    /// <summary>Sets this consumer's portable retry, redelivery and dead-letter policy.</summary>
+    public ConsumerBuilder<TConsumerOptions> Failures(FailureOptions options)
+    {
+        EnsureMutable();
+        ArgumentNullException.ThrowIfNull(options);
+        _failure = options;
+        return this;
+    }
+
+    /// <summary>Overrides the global classifier for this consumer. The classifier must be thread-safe.</summary>
+    public ConsumerBuilder<TConsumerOptions> Classify(IFailureClassifier classifier)
+    {
+        EnsureMutable();
+        ArgumentNullException.ThrowIfNull(classifier);
+        _classifier = classifier;
+        return this;
+    }
+
+    IConsumerBuilder IConsumerBuilder.Failures(FailureOptions options) => Failures(options);
+    IConsumerBuilder IConsumerBuilder.Classify(IFailureClassifier classifier) => Classify(classifier);
+
     private void EnsureMutable()
     {
         if (_built) throw new InvalidOperationException("The consumer declaration is frozen.");
@@ -74,6 +97,6 @@ public sealed class ConsumerBuilder<TConsumerOptions> : IConsumerBuilder where T
     internal IConsumerDefinition Build()
     {
         _built = true;
-        return new ConsumerDefinition<TConsumerOptions>(_source, Options, _handlers.ToArray(), _concurrency, _batchSize, _batchWait, _pipelineConfiguration.ToArray());
+        return new ConsumerDefinition<TConsumerOptions>(_source, Options, _handlers.ToArray(), _concurrency, _batchSize, _batchWait, _pipelineConfiguration.ToArray(), _failure, _classifier);
     }
 }

@@ -36,11 +36,11 @@ services.AddRelayer(relayer =>
         nats.Consume("billing", consumer =>
         {
             consumer.Options.Stream = "orders";
-            consumer.Options.Failure = new()
+            consumer.Failures(new()
             {
                 RetryDelays = new[] { TimeSpan.FromSeconds(1) },
                 DeadLetterEndpoint = "orders.dead",
-            };
+            });
             consumer.Handler<BillingHandler>();
         });
     });

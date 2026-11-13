@@ -43,12 +43,12 @@ public class FailurePipelineTests
         using var provider = Provider(new Transport());
         var control = provider.GetRequiredService<Control>();
         control.Invoke = Throw;
-        var options = namedPolicy ? FailureOptions.None : new FailureOptions { RetryDelays = ReadOnlyMemory<TimeSpan>.Empty };
+        var options = namedPolicy ? FailureOptions.None : new FailureOptions { RetryDelays = [] };
         var result = await Pipeline(provider, options, time: time).ProcessAsync(new());
         await Assert.That(result.Kind).IsEqualTo(DispositionKind.DeadLetter);
         await Assert.That(control.Calls).IsEqualTo(1);
         await Assert.That(time.Delays.Count).IsEqualTo(0);
-        await Assert.That(options.RedeliveryDelays.IsEmpty).IsTrue();
+        await Assert.That(options.RedeliveryDelays.Length == 0).IsTrue();
     }
 
     [Test]
@@ -115,7 +115,7 @@ public class FailurePipelineTests
         using var provider = Provider(transport);
         provider.GetRequiredService<Control>().Invoke = Throw;
         var scheduler = new Scheduler();
-        var pipeline = Pipeline(provider, new() { RetryDelays = ReadOnlyMemory<TimeSpan>.Empty, RedeliveryDelays = new[] { delay + TimeSpan.FromTicks(ticks) }, Jitter = 0 }, Copy, scheduler);
+        var pipeline = Pipeline(provider, new() { RetryDelays = [], RedeliveryDelays = new[] { delay + TimeSpan.FromTicks(ticks) }, Jitter = 0 }, Copy, scheduler);
         var result = await pipeline.ProcessAsync(new());
         await Assert.That(result.Kind).IsEqualTo(DispositionKind.Complete);
         await Assert.That(scheduler.Copies.Count).IsEqualTo(outbox ? 1 : 0);
@@ -227,7 +227,7 @@ public class FailurePipelineTests
         var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         transport.Pending = gate.Task;
         var scheduler = new Scheduler { Pending = gate.Task };
-        var options = new FailureOptions { DeadLetterEndpoint = "errors", RedeliveryDelays = durableScheduler ? new[] { TimeSpan.FromMinutes(1) } : default };
+        var options = new FailureOptions { DeadLetterEndpoint = "errors", RedeliveryDelays = durableScheduler ? new[] { TimeSpan.FromMinutes(1) } : [] };
         var pipeline = Pipeline(provider, options, Copy, scheduler);
         var pending = pipeline.ProcessAsync(new());
         await Assert.That(pending.IsCompleted).IsFalse();

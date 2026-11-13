@@ -38,7 +38,7 @@ builder.Services.AddRelayer(relayer =>
         transport.Send<SmokeOrder>(topic);
         transport.Consume(subscription, consumer =>
         {
-            consumer.Options.Failure = new() { DeadLetterEndpoint = topic + "-dead" };
+            consumer.Failures(new() { DeadLetterEndpoint = topic + "-dead" });
             consumer.Handler<SmokeHandler>();
         });
     });

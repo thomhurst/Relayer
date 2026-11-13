@@ -34,7 +34,7 @@ public sealed class ServiceBusCircuitEmulatorTests
                     bus.Options.Configure(options => { options.Client = client; options.Queues.Add(new(queue) { RequiresSession = sessions }); });
                     bus.Consume(queue, consumer =>
                     {
-                        consumer.Options.Failure = FailureOptions.None;
+                        consumer.Failures(FailureOptions.None);
                         consumer.Options.CircuitBreaker = new() { MinimumThroughput = 1, FailureRatio = 1 };
                         if (sessions) consumer.Options.SessionProcessorOptions = new() { AutoCompleteMessages = false, MaxConcurrentSessions = 1 };
                         consumer.Handler<Handler>();

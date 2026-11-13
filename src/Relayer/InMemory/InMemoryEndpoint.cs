@@ -326,6 +326,9 @@ internal sealed class InMemoryReceiver(InMemoryEndpoint endpoint, InMemoryReadSt
     private InMemoryMessage? _pending;
     private bool _manual;
     private Disposition _settlement;
+    private ReadOnlyMemory<KeyValuePair<string, WireString>> _redeliveryHeaders;
+    internal ReadOnlyMemory<KeyValuePair<string, WireString>> RedeliveryHeaders =>
+        _redeliveryHeaders.IsEmpty ? _pending!.RedeliveryHeaders : _redeliveryHeaders;
     private Exception? _loggedSettlementError;
     private long _committed = -1;
     private TimeSpan _retryDelay;
@@ -407,9 +410,12 @@ internal sealed class InMemoryReceiver(InMemoryEndpoint endpoint, InMemoryReadSt
                 endpoint.ValidateSettlement(disposition);
                 if (disposition.Kind == DispositionKind.Redeliver)
                 {
+                    if (!disposition.Headers.IsEmpty) _redeliveryHeaders = disposition.Headers;
                     Attempt++;
                     if (endpoint.Capabilities.ConsumptionModel == ConsumptionModel.Queue && !endpoint.Capabilities.OrderedByKey)
                     {
+                        _pending.RedeliveryHeaders = RedeliveryHeaders;
+                        _redeliveryHeaders = default;
                         _pending.QueueAttempt = Attempt;
                         _pending.DeliverAt = endpoint.Clock.GetUtcNow().Add(disposition.Delay);
                         await endpoint.EnqueueAsync(_pending, abort).ConfigureAwait(false);
@@ -431,13 +437,14 @@ internal sealed class InMemoryReceiver(InMemoryEndpoint endpoint, InMemoryReadSt
                 Interlocked.Exchange(ref _committed, _pending.Position);
                 endpoint.Release(_pending);
                 _pending = null;
+                _redeliveryHeaders = default;
                 Attempt = 1;
             }
         }
         catch (OperationCanceledException) when (stop.IsCancellationRequested || abort.IsCancellationRequested) { }
     }
 
-    internal void Clear() { _pending = null; _loggedSettlementError = null; }
+    internal void Clear() { _redeliveryHeaders = default; _pending = null; _loggedSettlementError = null; }
 }
 
 // One cancellation registration per loop, rather than one allocating channel read per message.

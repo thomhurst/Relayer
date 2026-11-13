@@ -30,8 +30,8 @@ public class KafkaDeadLetterTests
         var services = new ServiceCollection();
         services.AddRelayer(r => r.Kafka("events", kafka =>
         {
-            kafka.Consume("one", c => { c.Options.Failure = new() { DeadLetterEndpoint = "shared" }; c.Handler<TombstoneValueHandler>(); });
-            kafka.Consume("two", c => { c.Options.Failure = new() { DeadLetterEndpoint = "shared" }; c.Handler<TombstoneValueHandler>(); });
+            kafka.Consume("one", c => { c.Failures(new() { DeadLetterEndpoint = "shared" }); c.Handler<TombstoneValueHandler>(); });
+            kafka.Consume("two", c => { c.Failures(new() { DeadLetterEndpoint = "shared" }); c.Handler<TombstoneValueHandler>(); });
         }));
         await using var provider = services.BuildServiceProvider();
         await Assert.That(() => provider.GetRequiredKeyedService<IDeadLetterManager>("events"))

@@ -28,7 +28,7 @@ internal sealed class KafkaHostedService(IServiceProvider provider, string name)
         foreach (var declaration in definition.Consumers)
         {
             var consumer = (ConsumerDefinition<KafkaConsumerOptions>)declaration;
-            var policy = consumer.Options.Failure;
+            var policy = consumer.Failure;
             var failures = new FailurePipeline(provider, name, consumer.Source, consumer.Options.Group!, new()
             {
                 RetryDelays = policy.RetryDelays, RedeliveryDelays = policy.RedeliveryDelays,
@@ -37,7 +37,7 @@ internal sealed class KafkaHostedService(IServiceProvider provider, string name)
             }, Copy);
             var pipeline = new ConsumePipelineBuilder(provider.GetRequiredService<IServiceScopeFactory>(),
                 provider.GetRequiredService<MessageTypeRegistry>(), provider.GetMessageSerializer(name), failures,
-                provider.GetService<IFailureClassifier>());
+                consumer.FailureClassifier ?? provider.GetService<IFailureClassifier>());
             var endpoint = new MessagingEndpoint { System = "kafka", Destination = consumer.Source, ConsumerGroup = consumer.Options.Group };
             var telemetry = provider.GetRequiredService<RelayerInstrumentation>().CreateEndpoint(new()
             { System = "kafka", Destination = consumer.Source, ConsumerGroup = consumer.Options.Group });

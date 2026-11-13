@@ -47,7 +47,7 @@ public sealed class SqsReceiveLocalStackTests
                     consumer.Handler<Handler>();
                     consumer.Options.HeaderNames = names;
                     consumer.Options.ConfigureReceive = request => { request.WaitTimeSeconds = 1; request.VisibilityTimeout = 60; };
-                    consumer.Options.Failure = new() { RetryDelays = ReadOnlyMemory<TimeSpan>.Empty, DeadLetterEndpoint = dead, RedeliveryDelays = new[] { TimeSpan.FromSeconds(1) }, Jitter = 0 };
+                    consumer.Failures(new() { RetryDelays = [], DeadLetterEndpoint = dead, RedeliveryDelays = new[] { TimeSpan.FromSeconds(1) }, Jitter = 0 });
                 });
             });
         });

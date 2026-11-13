@@ -21,7 +21,7 @@ services.AddRelayer(relayer =>
 
 Declared endpoints already exist as native in-memory entities when the adapter is constructed. Topology validation and provisioning report no external differences; unknown names still fail.
 
-Starting the host composes generated handlers into the core receive pipeline and starts native receivers. The default endpoint is a bounded queue with native scheduling, redelivery and dead-lettering. Handler failures go to the native dead-letter collection, so a poison message does not stall the queue. `Options.Failure` accepts an explicit core failure executor; a consumer with no native dead-letter capability must provide one. The common failure-policy implementation and durable fallbacks belong to the core failure pipeline.
+Starting the host composes generated handlers into the core receive pipeline and starts native receivers. The default endpoint is a bounded queue with native scheduling, redelivery and dead-lettering. Consumers use the same `consumer.Failures(policy)` and `consumer.Classify(classifier)` calls as broker transports. Retryable failures get three in-process retries by default, then go to the native dead-letter collection. Redelivery delays use native scheduling and retain attempt counts and error history independently for each log group. With native dead-lettering disabled, configure `DeadLetterEndpoint` to a declared endpoint for the core copy fallback. An unavailable failure path fails at startup.
 
 Configure declared endpoints through named Options. An endpoint with no override uses queue defaults. An override for an undeclared endpoint fails startup.
 

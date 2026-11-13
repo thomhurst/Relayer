@@ -376,7 +376,7 @@ public class ConsumeTracingTests
         using var capture = new Capture();
         await using var provider = BatchProvider();
         if (poison) provider.GetRequiredService<BatchControl>().Handle = static _ => throw new ApplicationException("batch");
-        var failures = new FailurePipeline(provider, "test", "orders", "billing", new() { RetryDelays = ReadOnlyMemory<TimeSpan>.Empty });
+        var failures = new FailurePipeline(provider, "test", "orders", "billing", new() { RetryDelays = [] });
         var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var finished = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var settled = 0;

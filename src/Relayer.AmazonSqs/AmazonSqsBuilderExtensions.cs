@@ -50,8 +50,6 @@ public sealed class AmazonSqsConsumerOptions
     public HeaderNames HeaderNames { get; set; } = new();
     /// <summary>Configures each worker's native ReceiveMessageRequest once before polling. QueueUrl, one-message receives and all attributes are required.</summary>
     public Action<ReceiveMessageRequest>? ConfigureReceive { get; set; }
-    /// <summary>Retry policy and explicit dead-letter copy destination. Native redrive cannot attach failure metadata.</summary>
-    public FailureOptions Failure { get; set; } = new();
 }
 
 // SNS uses the same simple send-only lifecycle.

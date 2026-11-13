@@ -55,22 +55,12 @@ internal sealed class InMemoryHostedService(IServiceProvider provider, string na
             var consumer = (ConsumerDefinition<InMemoryConsumerOptions>)declaration;
             if (consumer.BatchSize != 1)
                 throw new NotSupportedException($"In-memory consumer '{consumer.Source}': batch-handler composition is not implemented. Use single-message handlers.");
-            var capabilities = _transport.GetCapabilities(consumer.Source);
-            var failure = consumer.Options.Failure;
-            if (failure is null)
-            {
-                if (!capabilities.DeadLetter)
-                    throw new InvalidOperationException($"In-memory consumer '{consumer.Source}': enable DeadLetter or configure Options.Failure with a durable core failure executor.");
-                failure = static (context, error, action) =>
-                {
-                    context.Features.GetRequired<NativeMessage<InMemoryDelivery>>().Disposition = action == FailureAction.Discard
-                        ? Disposition.Complete : Disposition.DeadLettered(new("handler_failure", error.Message));
-                    return default;
-                };
-            }
+            var failure = new FailurePipeline(provider, name, consumer.Source, consumer.Options.Group ?? consumer.Source,
+                consumer.Failure, Copy, provider.GetService<IFailureScheduler>(),
+                provider.GetRequiredService<IOptionsMonitor<InMemoryTransportOptions>>().Get(name).TimeProvider);
             var pipeline = new ConsumePipelineBuilder(provider.GetRequiredService<IServiceScopeFactory>(),
                 provider.GetRequiredService<MessageTypeRegistry>(), provider.GetMessageSerializer(name),
-                failure, provider.GetService<IFailureClassifier>());
+                failure, consumer.FailureClassifier ?? provider.GetService<IFailureClassifier>());
             pipeline.Tracing(provider.GetRequiredService<MessageTracing>(), new()
             {
                 System = InMemoryTransport.MessagingSystem, Destination = consumer.Source, ConsumerGroup = consumer.Options.Group,
@@ -85,6 +75,12 @@ internal sealed class InMemoryHostedService(IServiceProvider provider, string na
         await base.StartAsync(cancellationToken).ConfigureAwait(false);
     }
 
+    private static OutgoingMessage Copy(MessageContext context)
+    {
+        var message = context.Features.GetRequired<NativeMessage<InMemoryDelivery>>().Message.Message;
+        return new("failure-copy", message.Body, message.Headers, message.OrderingKey);
+    }
+
     private static ValueTask SettleAsync(MessageContext context)
     {
         var native = context.Features.GetRequired<NativeMessage<InMemoryDelivery>>();
@@ -93,7 +89,7 @@ internal sealed class InMemoryHostedService(IServiceProvider provider, string na
         {
             case DispositionKind.SettledByHandler: return default;
             case DispositionKind.Complete: native.Message.Complete(); break;
-            case DispositionKind.Redeliver: native.Message.Redeliver(disposition.Delay); break;
+            case DispositionKind.Redeliver: native.Message.Settle(disposition); break;
             case DispositionKind.DeadLetter: native.Message.DeadLetter(disposition.DeadLetter); break;
             default: throw new InvalidOperationException("Unknown in-memory settlement disposition.");
         }

@@ -18,6 +18,7 @@ public sealed class FailurePipeline
     private readonly TimeSpan[] _retries;
     private readonly TimeSpan[] _redeliveries;
     private readonly FailureOptions _options;
+    private readonly TimeSpan _copyTimeout;
     private readonly FailureMessageCopyDelegate? _copy;
     private readonly IFailureScheduler? _scheduler;
     private readonly TimeProvider _time;
@@ -37,14 +38,16 @@ public sealed class FailurePipeline
         _source = source;
         _consumer = consumer;
         _options = options ?? new();
+        _copyTimeout = _options.CopyTimeout ?? TimeSpan.FromSeconds(30);
         _copy = copy;
         _scheduler = scheduler;
         _time = timeProvider ?? TimeProvider.System;
-        _retries = _options.RetryDelays.ToArray();
+        _retries = _options.RetryDelays?.ToArray() ??
+            [TimeSpan.FromMilliseconds(100), TimeSpan.FromMilliseconds(500), TimeSpan.FromSeconds(1)];
         _redeliveries = _options.RedeliveryDelays.ToArray();
         if (!double.IsFinite(_options.Jitter) || _options.Jitter < 0 || _options.Jitter > 1)
             throw new ArgumentOutOfRangeException(nameof(options), "Jitter must be between zero and one.");
-        if (_options.CopyTimeout <= TimeSpan.Zero || _options.CopyTimeout.TotalMilliseconds > uint.MaxValue - 1)
+        if (_copyTimeout <= TimeSpan.Zero || _copyTimeout.TotalMilliseconds > uint.MaxValue - 1)
             throw new ArgumentOutOfRangeException(nameof(options), "CopyTimeout must be positive and fit a CancellationTokenSource timer.");
         foreach (var delay in _retries)
             if (delay < TimeSpan.Zero || delay.TotalMilliseconds > uint.MaxValue - 1)
@@ -201,7 +204,7 @@ public sealed class FailurePipeline
         if (schedule) copy.ValidateForOutbox();
         // Fallback work is on the error path. Its timeout covers the whole durable operation.
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(context.CancellationToken);
-        timeout.CancelAfter(_options.CopyTimeout);
+        timeout.CancelAfter(_copyTimeout);
         if (schedule)
             await _scheduler!.ScheduleAsync(_transport.Name, copy, timeout.Token).ConfigureAwait(false);
         else

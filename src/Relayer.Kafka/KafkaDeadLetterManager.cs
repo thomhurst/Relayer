@@ -28,7 +28,7 @@ internal sealed class KafkaDeadLetterManager : IDeadLetterManager
         foreach (var declaration in consumers)
         {
             var consumer = (ConsumerDefinition<KafkaConsumerOptions>)declaration;
-            var topic = consumer.Options.Failure.DeadLetterEndpoint ?? consumer.Source + ".dead-letter";
+            var topic = consumer.Failure.DeadLetterEndpoint ?? consumer.Source + ".dead-letter";
             if (_sources.TryGetValue(topic, out var destination) && destination != consumer.Source)
                 throw new InvalidOperationException($"Kafka dead-letter topic '{topic}' has multiple redrive destinations. Configure a distinct dead-letter topic for each source.");
             _sources[topic] = consumer.Source;

@@ -141,7 +141,7 @@ public sealed class SqsReceiveTests
         await using var transport = new SqsSendTransport("sqs", client, false, options);
         await transport.ResolveUrlsAsync(default);
         client.Redrive = "{\"maxReceiveCount\":\"1\",\"deadLetterTargetArn\":\"arn\"}";
-        var declaration = new ConsumerDefinition<AmazonSqsConsumerOptions>("orders", new() { Failure = new() { RedeliveryDelays = new[] { TimeSpan.Zero } } }, [], 1, 1, default);
+        var declaration = new ConsumerDefinition<AmazonSqsConsumerOptions>("orders", new(), [], 1, 1, default, failure: new() { RedeliveryDelays = new[] { TimeSpan.Zero } });
         await Assert.That(async () => await transport.ValidateRedriveAsync(declaration, default)).Throws<InvalidOperationException>();
         client.Redrive = "{\"maxReceiveCount\":2,\"deadLetterTargetArn\":\"arn\"}";
         await transport.ValidateRedriveAsync(declaration, default);
@@ -186,7 +186,7 @@ public sealed class SqsReceiveTests
     }
 
     internal static ConsumerDefinition<AmazonSqsConsumerOptions> Declaration(int concurrency = 1) =>
-        new("orders", new() { Failure = new() { DeadLetterEndpoint = "dead" } }, [], concurrency, 1, default);
+        new("orders", new(), [], concurrency, 1, default, failure: new() { DeadLetterEndpoint = "dead" });
     internal static Message Message(string body, int count) => new()
     {
         Body = body, ReceiptHandle = Guid.NewGuid().ToString(),

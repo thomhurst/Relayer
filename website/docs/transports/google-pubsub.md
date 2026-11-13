@@ -43,11 +43,11 @@ services.AddRelayer(relayer =>
         pubsub.Send<OrderPlaced>(topic.ToString());
         pubsub.Consume(subscription.ToString(), consumer =>
         {
-            consumer.Options.Failure = new()
+            consumer.Failures(new()
             {
                 DeadLetterEndpoint = deadLetter.ToString(),
                 RetryDelays = new[] { TimeSpan.FromSeconds(1) },
-            };
+            });
             consumer.Handler<OrderPlacedHandler>();
         });
     });

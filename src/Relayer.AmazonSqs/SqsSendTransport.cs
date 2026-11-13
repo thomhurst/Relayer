@@ -43,7 +43,7 @@ internal sealed class SqsSendTransport : ITransport, ITransportSendTracing
         using var json = JsonDocument.Parse(policy);
         var count = json.RootElement.GetProperty("maxReceiveCount");
         var maximum = count.ValueKind == JsonValueKind.String ? int.Parse(count.GetString()!, CultureInfo.InvariantCulture) : count.GetInt32();
-        if (maximum <= consumer.Options.Failure.RedeliveryDelays.Length)
+        if (maximum <= consumer.Failure.RedeliveryDelays.Length)
             throw new InvalidOperationException($"SQS consumer '{consumer.Source}': native RedrivePolicy.maxReceiveCount must exceed the configured redelivery count so Relayer can attach failure metadata before native redrive. Disable redrive or increase maxReceiveCount.");
     }
 

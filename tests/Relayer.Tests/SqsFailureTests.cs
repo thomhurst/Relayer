@@ -212,8 +212,8 @@ public sealed class SqsFailureTests
                 sqs.Consume("orders", consumer =>
                 {
                     consumer.Handler<SqsReceiveLocalStackTests.Handler>();
-                    consumer.Options.Failure = new() { DeadLetterEndpoint = "dead", Jitter = 0,
-                        RedeliveryDelays = scheduler is null ? default : new[] { TimeSpan.FromHours(13) } };
+                    consumer.Failures(new() { DeadLetterEndpoint = "dead", Jitter = 0,
+                        RedeliveryDelays = scheduler is null ? [] : new[] { TimeSpan.FromHours(13) } });
                 });
             });
         });
