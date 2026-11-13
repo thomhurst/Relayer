@@ -2,6 +2,7 @@ using System.Collections.Frozen;
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using System.Threading.Channels;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Relayer.Transports;
@@ -11,6 +12,7 @@ namespace Relayer.Outbox.PostgreSql;
 internal sealed class PostgreSqlDirectDispatcher : BackgroundService
 {
     private readonly PostgreSqlOutboxStore _store;
+    private readonly PostgreSqlDispatchFailures _failures;
     private readonly PostgreSqlDirectDispatchOptions _options;
     private readonly ILogger<PostgreSqlDirectDispatcher> _logger;
     private readonly Channel<OutboxDispatchBatch> _queue;
@@ -43,8 +45,9 @@ internal sealed class PostgreSqlDirectDispatcher : BackgroundService
 
     internal PostgreSqlDirectDispatcher(Npgsql.NpgsqlDataSource dataSource, PostgreSqlOutboxOptions storeOptions,
         PostgreSqlDirectDispatchOptions options, IEnumerable<ITransport> transports, ILogger<PostgreSqlDirectDispatcher> logger,
-        PostgreSqlOutboxStore? store = null, RelayerInstrumentation? instrumentation = null)
+        PostgreSqlOutboxStore? store = null, RelayerInstrumentation? instrumentation = null, IServiceScopeFactory? scopes = null)
     {
+        _failures = new(scopes);
         _source = dataSource;
         _retainSentMessages = storeOptions.RetainSentMessages;
         _maxDispatchAttempts = storeOptions.MaxDispatchAttempts;
@@ -238,15 +241,43 @@ internal sealed class PostgreSqlDirectDispatcher : BackgroundService
                 catch (Exception error)
                 {
                     DirectDispatchLog.Failed(_logger, error);
+                    Exception? retryError = null;
                     for (var i = 0; i < live; i++)
                     {
                         try
                         {
-                            if (await _store.RecordDispatchFailureAsync(_claims[i], error.Message, DateTimeOffset.UtcNow, cancellationToken, error is PostgreSqlLocalFailure { Action: FailureAction.DeadLetter }).ConfigureAwait(false) == 2)
+                            // Native batches may reject every row because one row is invalid. Retry each
+                            // individually under the same live claim; at-least-once delivery permits duplicates.
+                            if (retryError is not null)
                             {
-                                if (propagateDatabaseFailures) _recoveredPoison++;
-                                else _instrumentation?.RecordOutboxPoison();
+                                await RecordSendFailureAsync(batch, i, retryError, cancellationToken, propagateDatabaseFailures, FailureAction.Retry).ConfigureAwait(false);
                             }
+                            else if (live > 1 && PostgreSqlLocalTransport.Find(transport) is null)
+                            {
+                                if (expires <= DateTimeOffset.UtcNow)
+                                {
+                                    // Stop native sends, but still attempt fenced backoff for every remaining
+                                    // claim. Expired or replaced ownership remains protected by the store.
+                                    retryError = error;
+                                    await RecordSendFailureAsync(batch, i, error, cancellationToken, propagateDatabaseFailures, FailureAction.Retry).ConfigureAwait(false);
+                                    continue;
+                                }
+                                Exception? singleError = null;
+                                try { await transport.SendAsync(_messages[i], cancellationToken).ConfigureAwait(false); }
+                                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
+                                catch (Exception failure) { singleError = failure; }
+                                if (singleError is null)
+                                {
+                                    // Completion failures must never be classified as failed sends.
+                                    if (await _store.CompleteBatchAsync(_claims.AsMemory(i, 1), DateTimeOffset.UtcNow, cancellationToken).ConfigureAwait(false) == 1)
+                                        _instrumentation?.AddOutboxPending(-1);
+                                    continue;
+                                }
+                                if (await RecordSendFailureAsync(batch, i, singleError, cancellationToken, propagateDatabaseFailures).ConfigureAwait(false) == FailureAction.Retry)
+                                    retryError = singleError; // A retryable failure ends this isolation pass.
+                            }
+                            else await RecordSendFailureAsync(batch, i, error, cancellationToken, propagateDatabaseFailures,
+                                retryable: PostgreSqlLocalTransport.Find(transport) is null).ConfigureAwait(false);
                         }
                         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
                         catch (Exception failure) when (!propagateDatabaseFailures) { DirectDispatchLog.Failed(_logger, failure); }
@@ -272,6 +303,32 @@ internal sealed class PostgreSqlDirectDispatcher : BackgroundService
                 Array.Clear(_claims, 0, count);
             }
         }
+    }
+
+    private async ValueTask<FailureAction> RecordSendFailureAsync(OutboxDispatchBatch batch, int index, Exception error,
+        CancellationToken cancellationToken, bool propagateDatabaseFailures, FailureAction? knownAction = null, bool retryable = true)
+    {
+        BufferedOutboxMessage? row = null;
+        for (var i = 0; i < batch.Count; i++)
+            if (batch.Rows[i].Id == _claims[index].MessageId) { row = batch.Rows[i]; break; }
+        if (row is null) throw new InvalidOperationException("The failed claim has no dispatch row.");
+        var action = knownAction ?? await _failures.ClassifyAsync(error, row.Id, row.MessageType, row.Attempts + 1,
+            row.TenantId, _messages[index], cancellationToken).ConfigureAwait(false);
+        if (action == FailureAction.Discard)
+        {
+            var completed = await _store.CompleteBatchAsync(_claims.AsMemory(index, 1), DateTimeOffset.UtcNow, cancellationToken).ConfigureAwait(false);
+            _instrumentation?.AddOutboxPending(-completed);
+            return action;
+        }
+        if (action is not (FailureAction.Retry or FailureAction.DeadLetter))
+            throw new InvalidOperationException("The dispatch failure classifier returned an unknown action.");
+        if (await _store.RecordDispatchFailureAsync(_claims[index], error.Message, DateTimeOffset.UtcNow,
+            cancellationToken, permanent: action == FailureAction.DeadLetter, retryable: retryable).ConfigureAwait(false) == 2)
+        {
+            if (propagateDatabaseFailures) _recoveredPoison++;
+            else _instrumentation?.RecordOutboxPoison();
+        }
+        return action;
     }
 
     // Recovery owns a separate dispatcher instance, so these buffers never overlap the commit queue.

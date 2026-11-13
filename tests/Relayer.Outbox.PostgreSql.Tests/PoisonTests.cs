@@ -163,8 +163,8 @@ public class PoisonTests
     {
         public string Name => "events";
         public TransportCapabilities GetCapabilities(string endpoint) => new();
-        public ValueTask SendAsync(OutgoingMessage message, CancellationToken cancellationToken) => throw new InvalidOperationException("broker failed");
-        public ValueTask SendBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken) => throw new InvalidOperationException("broker failed");
+        public ValueTask SendAsync(OutgoingMessage message, CancellationToken cancellationToken) => throw new PostgreSqlLocalFailure(new InvalidOperationException("broker failed"), FailureAction.DeadLetter);
+        public ValueTask SendBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken) => throw new PostgreSqlLocalFailure(new InvalidOperationException("broker failed"), FailureAction.DeadLetter);
         public ValueTask<TopologyReport> ApplyTopologyAsync(TopologyMode mode, CancellationToken cancellationToken) => new(new TopologyReport([]));
         public Task StartAsync(CancellationToken cancellationToken) => Task.CompletedTask;
         public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;

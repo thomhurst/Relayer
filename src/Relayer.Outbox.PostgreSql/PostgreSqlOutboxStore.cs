@@ -23,6 +23,7 @@ public sealed class PostgreSqlOutboxStore : IOutboxStore
     private readonly string _completeInTransaction;
     private readonly string _completeBatch;
     private readonly string _fail;
+    private readonly string _retry;
     private readonly string _failImmediately;
     private readonly string _count;
     private readonly ScalarOperation<int> _failure = new(static value => (int)value!);
@@ -62,6 +63,7 @@ public sealed class PostgreSqlOutboxStore : IOutboxStore
             _complete = PostgreSqlSentSql.Complete($"DELETE FROM {table} AS row WHERE {fenced}", sent, "@now", false);
             _completeBatch = PostgreSqlSentSql.Complete($"DELETE FROM {table} AS row USING unnest(@ids, @tokens) AS claims(id, token) WHERE row.id = claims.id AND row.claim_token = claims.token AND row.claim_expires_at > @now", sent, "@now", true);
         }
+        _retry = PostgreSqlPoisonSql.Retry(table, fenced, "@now");
         _fail = PostgreSqlPoisonSql.Failure(table, dead, fenced, options.MaxDispatchAttempts);
         _failImmediately = PostgreSqlPoisonSql.Failure(table, dead, fenced, 1);
         _count = $"SELECT count(*) FROM {table} WHERE {eligible}";
@@ -210,11 +212,11 @@ public sealed class PostgreSqlOutboxStore : IOutboxStore
         => await RecordDispatchFailureAsync(claim, error, now, cancellationToken).ConfigureAwait(false) != 0;
 
     internal ValueTask<int> RecordDispatchFailureAsync(OutboxClaim claim, string error, DateTimeOffset now,
-        CancellationToken cancellationToken, bool permanent = false)
+        CancellationToken cancellationToken, bool permanent = false, bool retryable = false)
     {
         Validate(claim);
         ArgumentNullException.ThrowIfNull(error);
-        var command = CreateMutation(permanent ? _failImmediately : _fail, claim, now);
+        var command = CreateMutation(permanent ? _failImmediately : retryable ? _retry : _fail, claim, now);
         Add(command, "error", NpgsqlDbType.Text, error);
         return _failure.Start(command, cancellationToken);
     }

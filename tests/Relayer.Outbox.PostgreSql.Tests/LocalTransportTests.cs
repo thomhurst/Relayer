@@ -150,7 +150,7 @@ public class LocalTransportTests(PostgreSqlLocalSessionFixture server)
         await using var source = NpgsqlDataSource.Create(database.ConnectionString);
         await PostgreSqlOutboxStoreTests.CreateSchema(source);
         await using (var command = source.CreateCommand("CREATE TABLE local_business (value integer PRIMARY KEY)")) await command.ExecuteNonQueryAsync();
-        await using var provider = Provider(source, ordered);
+        await using var provider = Provider(source, ordered, failureAction: FailureAction.Retry);
         foreach (var starter in provider.GetServices<IHostedService>()) if (starter is not PostgreSqlDirectDispatcher) await starter.StartAsync(default);
         var transport = provider.GetServices<ITransport>().Single();
         await Enqueue(provider, source, new(value), true);
@@ -169,7 +169,7 @@ public class LocalTransportTests(PostgreSqlLocalSessionFixture server)
             await worker.DispatchRecoveredAsync(rows.AsMemory(0, count), default);
         }
         await Assert.That(await Count(source, "local_business")).IsEqualTo(value > 0 ? 1L : 0L);
-        await Assert.That(await Count(source, "relayer_outbox_dead")).IsEqualTo(value > 0 ? 0L : 1L);
+        await Assert.That(await Count(source, "relayer_outbox_dead")).IsEqualTo(value < 0 ? 1L : 0L);
         // Failed attempts must not leave child rows, including sends made during scope disposal.
         await using var children = source.CreateCommand("SELECT count(*) FROM relayer_outbox WHERE id <> @parent");
         children.Parameters.AddWithValue("parent", parentId);
@@ -198,7 +198,7 @@ public class LocalTransportTests(PostgreSqlLocalSessionFixture server)
         await using var source = NpgsqlDataSource.Create(database.ConnectionString);
         await PostgreSqlOutboxStoreTests.CreateSchema(source);
         await using (var command = source.CreateCommand("CREATE TABLE local_business (value integer PRIMARY KEY)")) await command.ExecuteNonQueryAsync();
-        await using var provider = Provider(source, ordered);
+        await using var provider = Provider(source, ordered, failureAction: FailureAction.Retry);
         foreach (var starter in provider.GetServices<IHostedService>()) if (starter is not PostgreSqlDirectDispatcher) await starter.StartAsync(default);
         var transport = provider.GetServices<ITransport>().Single();
         await Enqueue(provider, source, new(-1), true);

@@ -118,9 +118,45 @@ or the history table grows without a bound.
 
 ## Poison rows and key release
 
-Dispatch stops retrying after `MaxDispatchAttempts` failed sends (default **10**).
-Set this positive limit on the direct dispatch's `PostgreSqlOutboxOptions` and on the ordered,
-maintenance and CDC worker options. Keep dispatchers for the same store consistent.
+Retryable native send failures stay pending indefinitely. Each failed send releases its claim and
+persists `deliver_at` with exponential backoff: 1, 2, 4, 8 seconds, up to 5 minutes. Native client
+retries run first; recovery, direct and ordered dispatch share the persisted deadline. A retrying
+ordered head holds its lane until due, preserving send order. Failed-send diagnostics saturate at
+30 attempts so an extended outage cannot overflow the counter.
+
+Native send failures use the registered `IFailureClassifier`, resolved in a fresh DI scope after
+native client retries finish. `Retry` persists backoff, `DeadLetter` immediately takes the fenced
+poison transition, and `Discard` completes the fenced row without a dead copy. The classifier receives
+the original ID, stable message type, headers, attempt and scoped services; native receive/settlement
+features are unavailable because this is an outgoing send. Tenant rows restore their tenant context
+in that scope. Local-handler failures retain the consume pipeline's classification.
+
+Register typed native exception rules to distinguish permanent broker rejections from outages.
+For example, with Azure Service Bus:
+
+```csharp
+services.AddSingleton<IFailureClassifier>(new FailureClassifierBuilder()
+    .On<Azure.Messaging.ServiceBus.ServiceBusException>(FailureAction.DeadLetter,
+        static (error, _) => !error.IsTransient)
+    .Build());
+```
+
+This reuses the native client's transient signal; PostgreSQL does not depend on broker client packages.
+Unmatched exceptions fall back to `DefaultFailureClassifier`: contract failures dead-letter and other
+errors retry. Unclassified permanent rejections therefore still require operator repair; there is no
+automatic attempt or age ceiling for `Retry`. Configure permanent rules for your native clients and
+monitor pending rows. A retrying ordered head blocks later rows with its key until it succeeds or is
+classified permanent.
+
+After a native batch fails, dispatch tries each row once through native `SendAsync` while its claim
+remains live, then completes or classifies that row independently. This prevents one rejected row
+from repeatedly backing off healthy neighbours. A partially successful batch can produce duplicate
+sends during isolation, consistent with at-least-once delivery. Cancellation stops isolation; expired
+claims remain for recovery. Successful batches retain the existing batch send and completion path. The first single-send `Retry` stops isolation and applies fenced durable backoff to the remaining claims with the same error. An outage therefore costs at most one failed batch send and one failed single send per pass; `DeadLetter` and `Discard` allow isolation to continue. Expired or replaced claims cannot be updated and remain eligible for recovery under the existing fencing rules.
+
+Local-handler failures classified as `Retry`, ordered preparation errors (missing transport, key or ordering capability) and explicit low-level
+`RecordFailureAsync` calls retain the positive `MaxDispatchAttempts` budget (default **10**).
+Configure that limit consistently on store and worker options; classified retryable native sends never exhaust it. Local-handler retries dead-letter at the limit and park their ordered key.
 Broker success followed by database completion failure does not consume an attempt.
 
 One fenced statement persists the final error and attempt count and copies the original identity,

@@ -125,8 +125,8 @@ public class OutboxRegistrationTests
             await Assert.That(transport.Attempts).IsEqualTo(1);
             await using (var query = source.CreateCommand("SELECT attempts FROM relayer_outbox"))
                 await Assert.That((int)(await query.ExecuteScalarAsync())!).IsEqualTo(1);
-            // Advance persisted age rather than waiting for the default recovery delay.
-            await using (var age = source.CreateCommand("UPDATE relayer_outbox SET created_at = clock_timestamp() - interval '1 minute'"))
+            // Advance persisted age and retry eligibility without waiting for wall-clock delays.
+            await using (var age = source.CreateCommand("UPDATE relayer_outbox SET created_at = clock_timestamp() - interval '1 minute', deliver_at = clock_timestamp() - interval '1 second'"))
                 await age.ExecuteNonQueryAsync();
             var recovery = provider.GetRequiredKeyedService<PostgreSqlMaintenanceWorker>("default");
             await Assert.That(await recovery.SweepAsync(default)).IsEqualTo(1);

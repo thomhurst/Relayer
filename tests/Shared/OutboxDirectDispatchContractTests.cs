@@ -5,6 +5,8 @@ namespace Relayer.TestFixtures;
 
 public abstract class OutboxDirectDispatchContractTests
 {
+    protected virtual bool IsolatesFailedNativeBatches => false;
+
     protected abstract Task<DispatchFixture> CreateFixtureAsync(RecordingTransport transport, int batchSize = 100,
         int queueCapacity = 256);
 
@@ -150,7 +152,7 @@ public abstract class OutboxDirectDispatchContractTests
     }
 
     [Test]
-    public async Task Partial_native_batch_failure_preserves_every_row_for_at_least_once_recovery()
+    public async Task Partial_native_batch_failure_preserves_or_completes_every_row_for_at_least_once_delivery()
     {
         var transport = new RecordingTransport { PartialFirst = 1 };
         await using var fixture = await CreateFixtureAsync(transport);
@@ -160,6 +162,15 @@ public abstract class OutboxDirectDispatchContractTests
         await transport.Entered.Task.WaitAsync(TimeSpan.FromSeconds(30));
         await fixture.CommitAsync(Record(3));
         await fixture.StopAsync();
+        if (IsolatesFailedNativeBatches)
+        {
+            // The failed batch accepted one row before throwing. Single-send isolation
+            // completes both rows, duplicating the accepted row under at-least-once delivery.
+            await Assert.That(transport.Calls.Select(call => call.Count)).IsEquivalentTo(new[] { 2, 1, 1, 1 });
+            await Assert.That(transport.Received.Select(sent => sent.Body[0])).IsEquivalentTo(new byte[] { 1, 1, 2, 3 });
+            await Assert.That((await fixture.ReadRowsAsync()).Length).IsEqualTo(0);
+            return;
+        }
         await Assert.That(transport.Calls.Select(call => call.Count)).IsEquivalentTo(new[] { 2, 1 });
         await Assert.That(transport.Received.Count).IsEqualTo(2);
         await Assert.That(transport.Received.Count(sent => sent.Body[0] == 3)).IsEqualTo(1);

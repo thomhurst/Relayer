@@ -156,6 +156,10 @@ public class ChangeCaptureTests
             }
             finally { await first.StopAsync(timeout.Token); }
         }
+        // Startup recovery must honor the persisted deadline. Simulate a later
+        // restart explicitly; a quiet INSERT-only stream does not wake on UPDATE.
+        await using (var retry = source.CreateCommand("UPDATE relayer_outbox SET deliver_at = clock_timestamp() - interval '1 second'"))
+            await retry.ExecuteNonQueryAsync(timeout.Token);
         var replay = new RecordingTransport();
         using var second = Worker(source, fixture.ConnectionString, replay);
         await second.StartAsync(timeout.Token);
@@ -336,18 +340,22 @@ public class ChangeCaptureTests
         return position;
     }
 
-    private static Task Streaming(NpgsqlDataSource source, CancellationToken token) => Until(async () =>
+    private static async Task Streaming(NpgsqlDataSource source, CancellationToken token)
     {
-        await using var command = source.CreateCommand($"SELECT EXISTS (SELECT 1 FROM pg_replication_slots s JOIN pg_stat_replication r ON r.pid = s.active_pid WHERE s.slot_name = '{Slot}' AND r.state = 'streaming')");
-        return (bool)(await command.ExecuteScalarAsync(token))!;
-    }, token);
+        // These test sources are unpooled. Reuse one connection while polling rather
+        // than repeatedly opening backend sessions alongside the parallel test suite.
+        await using var connection = await source.OpenConnectionAsync(token);
+        await using var command = new NpgsqlCommand($"SELECT EXISTS (SELECT 1 FROM pg_replication_slots s JOIN pg_stat_replication r ON r.pid = s.active_pid WHERE s.slot_name = '{Slot}' AND r.state = 'streaming')", connection);
+        await Until(async () => (bool)(await command.ExecuteScalarAsync(token))!, token);
+    }
 
-    private static Task Acknowledged(NpgsqlDataSource source, NpgsqlLogSequenceNumber position, CancellationToken token) => Until(async () =>
+    private static async Task Acknowledged(NpgsqlDataSource source, NpgsqlLogSequenceNumber position, CancellationToken token)
     {
-        await using var command = source.CreateCommand($"SELECT confirmed_flush_lsn >= @position FROM pg_replication_slots WHERE slot_name = '{Slot}'");
+        await using var connection = await source.OpenConnectionAsync(token);
+        await using var command = new NpgsqlCommand($"SELECT confirmed_flush_lsn >= @position FROM pg_replication_slots WHERE slot_name = '{Slot}'", connection);
         command.Parameters.AddWithValue("position", NpgsqlDbType.PgLsn, position);
-        return await command.ExecuteScalarAsync(token) is true;
-    }, token);
+        await Until(async () => await command.ExecuteScalarAsync(token) is true, token);
+    }
 
     private static async Task Until(Func<Task<bool>> condition, CancellationToken token)
     {

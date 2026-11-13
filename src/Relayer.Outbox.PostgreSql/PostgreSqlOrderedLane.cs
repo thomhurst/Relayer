@@ -13,6 +13,7 @@ internal sealed class PostgreSqlOrderedLane : IDisposable
     private readonly List<int> _assigned = [];
     private readonly NpgsqlCommand _claim;
     private readonly NpgsqlCommand _complete;
+    private readonly NpgsqlCommand _retry;
     private readonly NpgsqlCommand _fail;
     private readonly NpgsqlCommand _failImmediately;
 
@@ -42,6 +43,8 @@ internal sealed class PostgreSqlOrderedLane : IDisposable
             PostgreSqlOutboxSchema.QuoteIdentifier(options.TablePrefix + "outbox_dead");
         _fail = CreateMutation(PostgreSqlPoisonSql.Failure(table, dead, fenced, options.MaxDispatchAttempts));
         _fail.Parameters.Add(new NpgsqlParameter<string>("error", NpgsqlDbType.Text));
+        _retry = CreateMutation(PostgreSqlPoisonSql.Retry(table, fenced, "clock_timestamp()"));
+        _retry.Parameters.Add(new NpgsqlParameter<string>("error", NpgsqlDbType.Text));
         _failImmediately = CreateMutation(PostgreSqlPoisonSql.Failure(table, dead, fenced, 1));
         _failImmediately.Parameters.Add(new NpgsqlParameter<string>("error", NpgsqlDbType.Text));
     }
@@ -79,7 +82,7 @@ internal sealed class PostgreSqlOrderedLane : IDisposable
         OutboxClaim claim, CancellationToken cancellationToken) => MutateAsync(connection, transaction, _complete, claim, null, cancellationToken);
 
     internal ValueTask<bool> FailAsync(NpgsqlConnection connection, NpgsqlTransaction transaction,
-        OutboxClaim claim, string error, CancellationToken cancellationToken, bool permanent = false) => MutateAsync(connection, transaction, permanent ? _failImmediately : _fail, claim, error, cancellationToken);
+        OutboxClaim claim, string error, CancellationToken cancellationToken, bool permanent = false, bool retryable = false) => MutateAsync(connection, transaction, permanent ? _failImmediately : retryable ? _retry : _fail, claim, error, cancellationToken);
 
     [RuntimeAsyncMethodGeneration(false)]
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder<>))]
@@ -123,6 +126,7 @@ internal sealed class PostgreSqlOrderedLane : IDisposable
     {
         _claim.Dispose();
         _complete.Dispose();
+        _retry.Dispose();
         _fail.Dispose();
         _failImmediately.Dispose();
     }

@@ -1,4 +1,5 @@
 using System.Runtime.CompilerServices;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Npgsql;
@@ -9,6 +10,7 @@ namespace Relayer.Outbox.PostgreSql;
 internal sealed partial class PostgreSqlOrderedDispatcher : BackgroundService
 {
     private readonly NpgsqlDataSource _source;
+    private readonly PostgreSqlDispatchFailures _failures;
     private readonly PostgreSqlOrderedDispatchOptions _options;
     private readonly PostgreSqlLaneCoordinator _coordinator;
     private readonly PostgreSqlOrderedLane _lane;
@@ -25,8 +27,9 @@ internal sealed partial class PostgreSqlOrderedDispatcher : BackgroundService
     private readonly RelayerInstrumentation? _instrumentation;
 
     internal PostgreSqlOrderedDispatcher(NpgsqlDataSource source, PostgreSqlOrderedDispatchOptions options,
-        IEnumerable<ITransport> transports, ILogger<PostgreSqlOrderedDispatcher> logger, TimeProvider? timeProvider = null, RelayerInstrumentation? instrumentation = null)
+        IEnumerable<ITransport> transports, ILogger<PostgreSqlOrderedDispatcher> logger, TimeProvider? timeProvider = null, RelayerInstrumentation? instrumentation = null, IServiceScopeFactory? scopes = null)
     {
+        _failures = new(scopes);
         _source = source;
         _instrumentation = instrumentation;
         _options = options;
@@ -204,6 +207,8 @@ internal sealed partial class PostgreSqlOrderedDispatcher : BackgroundService
                 {
                     var claim = new OutboxClaim(row.Id, Guid.NewGuid());
                     if (!await _lane.ClaimAsync(connection, transaction, claim, cancellationToken).ConfigureAwait(false)) break;
+                    var preparedForSend = false;
+                    var nativeSend = false;
                     try
                     {
                         var prepared = Prepare(row, _transports, _capabilities);
@@ -211,15 +216,34 @@ internal sealed partial class PostgreSqlOrderedDispatcher : BackgroundService
                         if (PostgreSqlLocalTransport.Find(prepared.Transport) is { } local)
                         {
                             local.ValidateStore(_source, _options.Schema, _options.TablePrefix, _options.RetainSentMessages, _options.MaxDispatchAttempts);
+                            preparedForSend = true;
                             await local.ConsumeAsync(prepared.Message, claim, row.Attempts + 1, transaction, cancellationToken).ConfigureAwait(false);
                         }
-                        else await prepared.Transport.SendAsync(prepared.Message, cancellationToken).ConfigureAwait(false);
+                        else
+                        {
+                            preparedForSend = true;
+                            nativeSend = true;
+                            await prepared.Transport.SendAsync(prepared.Message, cancellationToken).ConfigureAwait(false);
+                        }
                     }
                     catch (Exception error) when (!cancellationToken.IsCancellationRequested)
                     {
-                        if (!await _lane.FailAsync(connection, transaction, claim, error.Message, cancellationToken, error is PostgreSqlLocalFailure { Action: FailureAction.DeadLetter }).ConfigureAwait(false))
+                        var action = preparedForSend
+                            ? await _failures.ClassifyAsync(error, row.Id, row.MessageType, row.Attempts + 1, row.TenantId, row.Message, cancellationToken).ConfigureAwait(false)
+                            : FailureAction.Retry;
+                        if (action == FailureAction.Discard)
+                        {
+                            if (!await _lane.CompleteAsync(connection, transaction, claim, cancellationToken).ConfigureAwait(false))
+                                throw new InvalidOperationException("Ordered outbox claim expired while discarding a failed send.", error);
+                            sent++;
+                            continue;
+                        }
+                        if (action is not (FailureAction.Retry or FailureAction.DeadLetter))
+                            throw new InvalidOperationException("The dispatch failure classifier returned an unknown action.");
+                        var permanent = action == FailureAction.DeadLetter;
+                        if (!await _lane.FailAsync(connection, transaction, claim, error.Message, cancellationToken, permanent, retryable: nativeSend).ConfigureAwait(false))
                             throw new InvalidOperationException("Ordered outbox claim expired while recording a dispatch failure.", error);
-                        poisoned = row.Attempts + 1 >= _options.MaxDispatchAttempts || error is PostgreSqlLocalFailure { Action: FailureAction.DeadLetter };
+                        poisoned = permanent || (!nativeSend && row.Attempts + 1 >= _options.MaxDispatchAttempts);
                         DispatchFailed(_logger, error);
                         break;
                     }
@@ -253,7 +277,7 @@ internal sealed partial class PostgreSqlOrderedDispatcher : BackgroundService
         return (transport, new OutgoingMessage(message.Destination, message.Body, message.Headers, message.OrderingKey).ForOutboxDispatch());
     }
 
-    [LoggerMessage(Level = LogLevel.Error, Message = "Ordered outbox dispatch failed; durable rows remain available for retry or, after attempt exhaustion, dead-letter management.")]
+    [LoggerMessage(Level = LogLevel.Error, Message = "Ordered outbox dispatch failed; retryable sends retain durable backoff; permanent failures require dead-letter management.")]
     private static partial void DispatchFailed(ILogger logger, Exception error);
     [LoggerMessage(Level = LogLevel.Warning, Message = "Could not release ordered outbox leases; they expire automatically.")]
     private static partial void ReleaseFailed(ILogger logger, Exception error);

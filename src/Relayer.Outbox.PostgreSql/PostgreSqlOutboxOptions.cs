@@ -22,6 +22,6 @@ public sealed class PostgreSqlOutboxOptions
     /// <summary>Retain sent IDs, destinations and completion times. Disabled by default; enable on every dispatcher and maintenance worker for this store.</summary>
     public bool RetainSentMessages { get; init; }
 
-    /// <summary>Dispatch attempts before a row is moved to the dead table.</summary>
+    /// <summary>Failure budget for local-handler failures and explicit store failure recording. Retryable native sends use durable backoff without exhausting this budget.</summary>
     public int MaxDispatchAttempts { get; init; } = 10;
 }

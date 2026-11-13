@@ -3,6 +3,17 @@ namespace Relayer.Outbox.PostgreSql;
 // One fenced statement owns the attempt increment, dead copy and ordered key barrier.
 internal static class PostgreSqlPoisonSql
 {
+    // Retry after the native send operation has exhausted its own retries. Keep the deadline in
+    // the row so a process restart cannot turn a broker outage into a hot retry loop.
+    internal static string Retry(string table, string fenced, string now) => $"""
+        WITH retried AS (
+            UPDATE {table} SET attempts = LEAST(attempts, 29) + 1, last_error = @error,
+                deliver_at = {now} + LEAST(300, power(2, LEAST(attempts, 9))) * interval '1 second',
+                claim_token = NULL, claim_expires_at = NULL
+            WHERE {fenced} RETURNING id
+        ) SELECT CASE WHEN EXISTS (SELECT 1 FROM retried) THEN 1 ELSE 0 END
+        """;
+
     internal static string Failure(string table, string dead, string fenced, int limit) => $"""
         WITH exhausted AS (
             DELETE FROM {table} WHERE {fenced} AND lane IS NULL AND attempts + 1 >= {limit}

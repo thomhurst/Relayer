@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -34,7 +35,7 @@ internal sealed partial class PostgreSqlMaintenanceWorker : BackgroundService
 
     internal PostgreSqlMaintenanceWorker(NpgsqlDataSource source, PostgreSqlMaintenanceOptions options,
         IEnumerable<ITransport> transports, ILogger<PostgreSqlMaintenanceWorker> logger,
-        ILogger<PostgreSqlDirectDispatcher>? dispatchLogger = null, RelayerInstrumentation? instrumentation = null, TimeProvider? admissionTimeProvider = null)
+        ILogger<PostgreSqlDirectDispatcher>? dispatchLogger = null, RelayerInstrumentation? instrumentation = null, TimeProvider? admissionTimeProvider = null, IServiceScopeFactory? scopes = null)
     {
         _source = source;
         _admissionTimeProvider = admissionTimeProvider;
@@ -43,7 +44,7 @@ internal sealed partial class PostgreSqlMaintenanceWorker : BackgroundService
         _store = new(source, store);
         _logger = logger;
         _dispatcher = new(source, store, new() { BatchSize = options.BatchSize, QueueCapacity = 1, ClaimDuration = options.ClaimDuration },
-            transports, dispatchLogger ?? NullLogger<PostgreSqlDirectDispatcher>.Instance, _store, instrumentation);
+            transports, dispatchLogger ?? NullLogger<PostgreSqlDirectDispatcher>.Instance, _store, instrumentation, scopes);
         _rows = new OutboxRecord[options.BatchSize];
         var schema = PostgreSqlOutboxSchema.QuoteIdentifier(options.Schema ?? "public") + ".";
         string Table(string suffix) => schema + PostgreSqlOutboxSchema.QuoteIdentifier(options.TablePrefix + suffix);
