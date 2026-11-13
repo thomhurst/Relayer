@@ -3,15 +3,21 @@ title: Sending messages
 description: "Send messages with ISender: routing, per-send options, middleware, timeouts and the outbox."
 ---
 
-`ISender` is scoped. Register message identities, an `ITransport` service for each named transport, and one route per message type:
+Register a native transport and a route, then inject the scoped `ISender` into your
+endpoint or application service. For example, with `Relayer.Kafka`:
 
 ```csharp
-services.AddSingleton<ITransport>(myTransport); // Name == "events"
+using Relayer;
+using Relayer.Kafka;
+
 services.AddRelayer(relayer =>
 {
     relayer.AddMessageTypesFromThisAssembly();
-    relayer.AddTransport<BrokerOptions, NativeRouteOptions, NativeConsumerOptions>("events", broker =>
-        broker.Send<OrderPlaced>("orders", route =>
+    relayer.Kafka("events", kafka =>
+    {
+        kafka.TopologyMode = TopologyMode.None; // Provision topics externally.
+        kafka.Options.Configure(options => options.BootstrapServers.Add("localhost:9092"));
+        kafka.Send<OrderPlaced>("orders", route =>
         {
             route.OrderingKey(static message => message.CustomerId);
             route.SendOptions = new SendRouteOptions
@@ -19,13 +25,22 @@ services.AddRelayer(relayer =>
                 Source = "/orders",
                 Timeout = TimeSpan.FromSeconds(30)
             };
-        }));
+        });
+    });
 });
 
+// In an application scope, using the injected sender:
 await sender.SendAsync(new OrderPlaced(customerId), cancellationToken);
+
+[Message("orders.placed", Version = 1)]
+public sealed record OrderPlaced(string CustomerId);
 ```
 
-This uses the existing [typed configuration declarations](../guides/configuration.md). Native registration extensions wrap this seam with their own option types. Native options remain unchanged; portable send settings live on `RouteBuilder.SendOptions`.
+The native registration extension owns client and runtime adapter registration. Use your
+broker's [transport guide](../transports/index.md) for connection settings and native options.
+Portable send settings live on `RouteBuilder.SendOptions`; see [configuration](configuration.md).
+Transport authors use the lower-level [registration seam](../transports/authoring.md#registration).
+For atomic business changes and outgoing messages, follow the [outbox guide](outbox.md).
 
 When runtime `ITransport` services are registered, route composition resolves message identities, named transports, and destination capabilities once at host startup. Unknown transports, duplicate names, duplicate routes, missing message identities, nonpositive or infinite timeouts, and ordering-key declarations on endpoints without `OrderedByKey` support fail at startup. Declaration-only hosts remain usable without native adapters; resolving `ISender` still validates its routes. A send without a route fails with an actionable error. Routing uses the generic message type passed to `SendAsync<TMessage>`, so send the concrete contract type rather than `object`.
 

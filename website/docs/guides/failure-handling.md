@@ -3,6 +3,40 @@ title: Failure handling
 description: "Classify errors, retry in process, redeliver with delay and dead-letter with full error history, using native broker features where they exist."
 ---
 
+Configure the failure policy on the consumer you register with your transport. For example,
+Kafka supports in-process retries and durable dead-letter copies:
+
+```csharp
+using Relayer;
+using Relayer.Kafka;
+
+services.AddRelayer(relayer =>
+{
+    relayer.AddMessageTypesFromThisAssembly();
+    relayer.Kafka("events", kafka =>
+    {
+        kafka.TopologyMode = TopologyMode.None; // Provision topics externally.
+        kafka.Options.Configure(options => options.BootstrapServers.Add("localhost:9092"));
+        kafka.Consume("orders", consumer =>
+        {
+            consumer.Options.Group = "billing";
+            consumer.Failures(new FailureOptions
+            {
+                RetryDelays = [TimeSpan.FromMilliseconds(100), TimeSpan.FromMilliseconds(500)],
+                DeadLetterEndpoint = "orders.errors"
+            });
+            consumer.Handler<OrderPlacedHandler>();
+        });
+    });
+});
+```
+
+`OrderPlacedHandler` is your registered [message handler](handlers.md). Provision the source and
+error topics through your normal Kafka deployment process. Kafka currently rejects `RedeliveryDelays`,
+even when an outbox is registered; see the [Kafka guide](../transports/kafka.md). Other adapters
+validate delayed redelivery against their native capabilities and available durable fallback executors.
+Applications configure `FailureOptions`; transport authors [compose the failure pipeline](../transports/consume-pipeline.md#failure-policy-composition).
+
 There is one failure pipeline for every transport:
 
 ```text
@@ -38,6 +72,8 @@ Rules match the declared exception type and its derived types, in registration o
 Consumers retry retryable handler failures three times by default, with backoffs of 100 ms, 500 ms and 1 s before jitter (four total attempts). Jitter shortens each backoff by up to 20%. A brief dependency failure can recover without a dead-letter or another broker delivery. Permanent failures still dead-letter immediately, and durable redelivery is disabled until configured. Retries keep the current native delivery open, so account for this delay in broker lock or acknowledgement deadlines.
 
 To opt out and dead-letter on the first failure, call `consumer.Failures(FailureOptions.None)`. To disable only in-process retries while retaining other settings, set `RetryDelays = []` on your `FailureOptions`. Custom retry lists replace the default sequence; setting only `RedeliveryDelays` retains the default in-process retries before each redelivery.
+
+For adapters that support delayed redelivery, add `RedeliveryDelays` to the same options:
 
 ```csharp
 var policy = new FailureOptions

@@ -30,6 +30,11 @@ builder.Services.AddRelayer(relayer =>
         kafka.Consume("sample-orders", consumer =>
         {
             consumer.Options.Group = "sample-billing";
+            consumer.Failures(new FailureOptions
+            {
+                RetryDelays = [TimeSpan.FromMilliseconds(100), TimeSpan.FromMilliseconds(500)],
+                DeadLetterEndpoint = "sample-orders.errors"
+            });
             consumer.EntityFrameworkCore<OrdersDbContext>("sample-billing");
             consumer.Handler<OrderPlacedHandler>();
         });
@@ -48,7 +53,7 @@ app.MapPost("/orders/{id}", async (string id, OrdersDbContext db, ISender sender
 {
     await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
     db.Orders.Add(new Order { Id = id });
-    await sender.SendAsync(new OrderPlaced(id), cancellationToken);
+    await sender.SendViaOutboxAsync(new OrderPlaced(id), cancellationToken);
     await db.SaveChangesAsync(cancellationToken);
     await transaction.CommitAsync(cancellationToken);
     return Results.Accepted();

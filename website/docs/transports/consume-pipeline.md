@@ -214,3 +214,22 @@ The `BatchConsumePipelineBenchmarks` comparison reports per-batch allocations ag
 matching fresh DI scope, scoped sender, cached serializer, and generated dispatch.
 It does not establish the end-to-end native-client throughput budget; #19 owns that
 transport regression measurement.
+
+## Failure policy composition
+
+Applications configure `consumer.Failures(...)` on the shared consumer declaration as shown in
+[failure handling](../guides/failure-handling.md). Adapters read the resulting
+`ConsumerDefinition.Failure` policy, rather than native consumer options, and compose the executable
+pipeline once using that policy, their endpoint capabilities and native copy/scheduling executors:
+
+```csharp
+var failures = new FailurePipeline(services, "broker", "orders", "billing",
+    consumer.Failure, copy: CopyOriginalDelivery, scheduler: durableScheduler);
+```
+
+`CopyOriginalDelivery` and `durableScheduler` represent adapter/integration-provided executors,
+not application callbacks. Preserve the original identity, creation context and native payload
+when copying a delivery. Supply a durable scheduler only when one is executable; options alone
+do not enable a fallback. Capability validation must fail before receive starts when a configured
+redelivery or dead-letter action has no executor. See [Receive SPI](receive.md) for native binding
+and settlement, and [failure handling](../guides/failure-handling.md) for policy selection.
