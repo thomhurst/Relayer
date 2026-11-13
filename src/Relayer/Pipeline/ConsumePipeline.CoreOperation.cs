@@ -19,6 +19,7 @@ public sealed partial class ConsumePipeline
         private ConfiguredValueTaskAwaitable.ConfiguredValueTaskAwaiter _pending;
         private ExecutionContext? _executionContext;
         private AsyncServiceScope _scope;
+        // ProcessDurableWithFailuresAsync owns policy state until Stage.Policy completes.
         internal Activity? TraceActivity;
         internal Exception? Failure;
         private Exception? _error;
