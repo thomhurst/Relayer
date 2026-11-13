@@ -160,3 +160,33 @@ collected and a passing run does not explain a historical failure. Preserve all
 windows and types, including baseline excesses, failed equality and failed coverage.
 Use an unfavorable same-execution window to narrow candidate objects before choosing
 further stack diagnostics or a demonstrated fix.
+
+## Actual parallel core-test capture (#687)
+
+`parallel-receive-allocation-owners.yml` runs the complete `Relayer.Tests` process
+on Linux x64, independently on net10/net11, with its normal TUnit parallelism.
+Unlike `FrozenReceiveProbe`, it retains the other tests in that process. The test
+links the existing `NativeAllocationRegion` helper and enables checkpoints only
+when `RELAYER_ALLOCATION_PROFILER` is set. Loading occurs before the unchanged
+1000 warmup triples; markers surround the unchanged 1000 measured triples, outside
+the fixture's thread counters. With no profiler configured, the test keeps its
+original exact scope comparisons. It introduces no concurrency throttle or GC
+change. Counters are printed even when final diagnostic validation fails.
+
+The workflow reuses the exact callback profiler, known-count fixture and readers;
+it retains the full test log, every checkpoint/type report, selected runtime
+binaries, test executables, before/after input hashes and SHA256SUMS, including
+unfavorable outcomes. The TUnit-output adapter verifies every one of the 3000
+checkpoint counters against that same execution's 1000 test triples. Identical
+captured-output echoes are accepted; conflicting echoes fail validation. Exact
+equality remains the test's assertion, not a parser prerequisite, so an excess is
+retained and correlated rather than discarded.
+
+These are all-thread process envelopes: allocations from unrelated parallel tests,
+checkpoint bookkeeping and work outside the fixture's counters are included.
+Callback overhead and marker calls alter scheduling. Type presence in a window
+therefore identifies candidates, not the allocating owner of a counter excess;
+there are no stacks, and the capture does not reproduce historical scheduling or
+permit subtraction across separate executions. Preserve any unfavorable window
+and obtain stacks for a reproduced candidate before proposing a production or
+runtime correction. A passing parallel capture still cannot close #687.

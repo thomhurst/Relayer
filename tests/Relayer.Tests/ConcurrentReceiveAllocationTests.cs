@@ -7,6 +7,9 @@ public class ConcurrentReceiveAllocationTests
     [Test]
     public async Task Pending_cross_thread_receives_allocate_only_native_scopes_after_warmup()
     {
+        // Opt-in diagnostic only: retain the real parallel TUnit process, rather than
+        // replacing it with an external driver. Load metadata before warmup.
+        var region = NativeAllocationRegion.Load(checkpoints: true);
         using var fixture = new ConcurrentReceiveFixture();
         for (var i = 0; i < 1000; i++)
         {
@@ -18,22 +21,37 @@ public class ConcurrentReceiveAllocationTests
         // These counters describe this execution, not the historical failure or allocation owners.
         var windows = new (Window Scoped, Window Consumer, Window Receive)[1000];
         long scoped = 0, consumer = 0, receive = 0;
-        for (var i = 0; i < 1000; i++)
+        region?.Begin();
+        try
         {
-            var native = Capture(fixture, ConcurrentReceiveFixture.Mode.Scoped);
-            var consume = Capture(fixture, ConcurrentReceiveFixture.Mode.Consumer);
-            var fullReceive = Capture(fixture, ConcurrentReceiveFixture.Mode.Receive);
-            windows[i] = (native, consume, fullReceive);
-            scoped += native.Bytes;
-            consumer += consume.Bytes;
-            receive += fullReceive.Bytes;
+            for (var i = 0; i < 1000; i++)
+            {
+                var native = Capture(fixture, ConcurrentReceiveFixture.Mode.Scoped);
+                region?.Checkpoint(i * 3, native.Bytes);
+                var consume = Capture(fixture, ConcurrentReceiveFixture.Mode.Consumer);
+                region?.Checkpoint(i * 3 + 1, consume.Bytes);
+                var fullReceive = Capture(fixture, ConcurrentReceiveFixture.Mode.Receive);
+                region?.Checkpoint(i * 3 + 2, fullReceive.Bytes, final: i == windows.Length - 1);
+                windows[i] = (native, consume, fullReceive);
+                scoped += native.Bytes;
+                consumer += consume.Bytes;
+                receive += fullReceive.Bytes;
+            }
         }
-        // Keep all windows, including unfavorable results. No logging runs between measurements.
-        Console.WriteLine($"Allocation windows: runtime={System.Runtime.InteropServices.RuntimeInformation.FrameworkDescription}; arch={System.Runtime.InteropServices.RuntimeInformation.ProcessArchitecture}; scoped={scoped}; consumer={consumer}; receive={receive}");
-        for (var i = 0; i < windows.Length; i++)
+        finally
         {
-            var window = windows[i];
-            Console.WriteLine($"window={i}; scoped={window.Scoped}; consumer={window.Consumer}; receive={window.Receive}");
+            try { region?.End(); }
+            finally
+            {
+                // Keep every counter even when the profiler rejects its own report.
+                // Formatting/output stays after all measurements and the final marker.
+                Console.WriteLine($"Allocation windows: runtime={System.Runtime.InteropServices.RuntimeInformation.FrameworkDescription}; arch={System.Runtime.InteropServices.RuntimeInformation.ProcessArchitecture}; scoped={scoped}; consumer={consumer}; receive={receive}");
+                for (var i = 0; i < windows.Length; i++)
+                {
+                    var window = windows[i];
+                    Console.WriteLine($"window={i}; scoped={window.Scoped}; consumer={window.Consumer}; receive={window.Receive}");
+                }
+            }
         }
         await Assert.That(scoped).IsGreaterThan(0);
         await Assert.That(consumer).IsEqualTo(scoped);

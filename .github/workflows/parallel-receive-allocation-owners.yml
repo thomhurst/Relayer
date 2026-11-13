@@ -1,0 +1,128 @@
+name: Parallel core receive allocation owners
+
+# Independent instrumented experiment for #687, never a retry of failing CI.
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/parallel-receive-allocation-owners.yml'
+      - '.github/scripts/read_parallel_receive_allocations.py'
+      - '.github/scripts/test_parallel_receive_allocations.py'
+      - 'tests/Relayer.Tests/ConcurrentReceiveAllocationTests.cs'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  parallel-owners:
+    strategy:
+      fail-fast: false
+      matrix:
+        framework: [net10.0, net11.0]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: dotnet/samples
+          ref: 3810558800760fc39282cc939bac645735514209
+          path: profiler-sdk
+          sparse-checkout: core/profiling
+          persist-credentials: false
+      - uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
+        with:
+          dotnet-version: |
+            10.0.x
+            11.0.100
+      - name: Set up Docker for the parallel core tests
+        uses: docker/setup-docker-action@3f1ab1ab0e29231562e4db4ca600c1a49653bac6 # v5
+        with:
+          version: v29.9.3
+          set-host: true
+      - name: Build and retain diagnostic inputs
+        env:
+          FRAMEWORK: ${{ matrix.framework }}
+        run: |
+          mkdir -p results
+          dotnet --info > results/runtime.txt
+          dotnet --list-runtimes > results/runtimes.txt
+          uname -a > results/host.txt
+          git rev-parse HEAD > results/commit.txt
+          git -C profiler-sdk rev-parse HEAD > results/profiler-sdk-commit.txt
+          dotnet build tests/Relayer.Tests -c Release > results/test-build.log 2>&1
+          dotnet build tools/FrozenAllocationProfiler/Fixture -c Release > results/fixture-build.log 2>&1
+          CXX=clang++ cmake -S tools/FrozenAllocationProfiler -B .artifacts/exact-profiler -DPROFILER_SAMPLES="$PWD/profiler-sdk" -DCMAKE_BUILD_TYPE=Release > results/native-configure.log 2>&1
+          cmake --build .artifacts/exact-profiler > results/native-build.log 2>&1
+          python3 - <<'PYTHON'
+          import os, re, shutil
+          from pathlib import Path
+          major = os.environ['FRAMEWORK'][3:].split('.')[0]
+          matches = re.findall(r'^Microsoft.NETCore.App (' + major + r'\.\S+) \[(.+)\]$', Path('results/runtimes.txt').read_text(), re.MULTILINE)
+          if not matches:
+              raise RuntimeError('Matching runtime unavailable')
+          version, root = matches[-1]
+          Path('results/selected-runtime.txt').write_text(version + '\n')
+          shutil.copytree(Path(root) / version, 'results/runtime-binaries')
+          with Path(os.environ['GITHUB_ENV']).open('a') as env:
+              env.write('CAPTURE_RUNTIME=' + version + '\n')
+          PYTHON
+          find "tests/Relayer.Tests/bin/Release/$FRAMEWORK" -type f -exec sha256sum {} + > results/test-inputs-before.sha256
+      - name: Validate callback and correlation diagnostics
+        env:
+          TEST_NATIVE_PROFILER: .artifacts/exact-profiler/libFrozenAllocationProfiler.so
+          TEST_NATIVE_FIXTURE: tools/FrozenAllocationProfiler/Fixture/bin/Release/net10.0/Fixture.dll
+          TEST_NATIVE_OUTPUT: results/fixture
+        run: |
+          python3 -m unittest discover -s .github/scripts -p test_native_allocations.py > results/native-tests.log 2>&1
+          python3 -m unittest discover -s .github/scripts -p test_parallel_receive_allocations.py > results/correlation-tests.log 2>&1
+      - name: Capture the actual parallel core-test process
+        # No test filter, scheduling throttle, GC change, threshold change or retry.
+        # Keep Testcontainers image acquisition outside test lifecycle deadlines.
+        run: |
+          docker pull apache/kafka:4.0.2
+          docker pull postgres:18-alpine
+      - name: Preserve counters and callbacks from the same execution
+        env:
+          CORECLR_ENABLE_PROFILING: '1'
+          CORECLR_PROFILER: '{32B7EF07-25E8-4AC7-B011-9A4321D702C8}'
+        run: |
+          export CORECLR_PROFILER_PATH="$PWD/.artifacts/exact-profiler/libFrozenAllocationProfiler.so"
+          export RELAYER_ALLOCATION_PROFILER="$CORECLR_PROFILER_PATH"
+          export RELAYER_ALLOCATION_OUTPUT="$PWD/results/parallel-objects.jsonl"
+          failed=0
+          dotnet --fx-version "$CAPTURE_RUNTIME" "tests/Relayer.Tests/bin/Release/${{ matrix.framework }}/Relayer.Tests.dll" --output Detailed > results/parallel-tests.log 2>&1 || failed=1
+          python3 .github/scripts/read_parallel_receive_allocations.py results/parallel-objects.jsonl results/parallel-tests.log > results/validated-parallel-types.json || failed=1
+          sha256sum --check results/test-inputs-before.sha256 > results/test-inputs-after.log 2>&1 || failed=1
+          exit "$failed"
+      - name: Inventory every outcome and executable input
+        if: always()
+        run: |
+          paths=()
+          for path in results tests/Relayer.Tests/bin/Release tools/FrozenAllocationProfiler .artifacts/exact-profiler profiler-sdk/core/profiling .github/scripts tests/Shared/ConcurrentReceiveFixture.cs tests/Relayer.Tests/ConcurrentReceiveAllocationTests.cs tests/Relayer.Tests/Relayer.Tests.csproj tools/FrozenConcurrentProbe/NativeAllocationRegion.cs .github/workflows/parallel-receive-allocation-owners.yml Directory.Build.props Directory.Build.targets Directory.Packages.props global.json; do
+            if [ -e "$path" ]; then paths+=("$path"); fi
+          done
+          find "${paths[@]}" -type f -exec sha256sum {} + > SHA256SUMS
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: parallel-receive-owners-${{ matrix.framework }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            results/
+            tests/Relayer.Tests/bin/Release/
+            tools/FrozenAllocationProfiler/
+            .artifacts/exact-profiler/
+            profiler-sdk/core/profiling/
+            .github/scripts/
+            tests/Shared/ConcurrentReceiveFixture.cs
+            tests/Relayer.Tests/ConcurrentReceiveAllocationTests.cs
+            tests/Relayer.Tests/Relayer.Tests.csproj
+            tools/FrozenConcurrentProbe/NativeAllocationRegion.cs
+            .github/workflows/parallel-receive-allocation-owners.yml
+            Directory.Build.props
+            Directory.Build.targets
+            Directory.Packages.props
+            global.json
+            SHA256SUMS
+          include-hidden-files: true
+          retention-days: 90
