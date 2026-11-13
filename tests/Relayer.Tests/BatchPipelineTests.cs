@@ -541,8 +541,6 @@ public class BatchPipelineTests
     [Arguments(true)]
     public async Task Warmed_batches_add_no_allocations_beyond_identical_fresh_DI_scope_and_sender(bool bufferedSends)
     {
-        // Optional exact-callback capture for the separate hosted diagnostic, never normal CI.
-        var allocationRegion = bufferedSends ? NativeAllocationRegion.Load() : null;
         await using var provider = Provider(size: 10);
         provider.GetRequiredService<AllocationHandler>().BufferedSends = bufferedSends;
         using var batchCancellation = new CancellationTokenSource();
@@ -568,9 +566,6 @@ public class BatchPipelineTests
             _ = scope.ServiceProvider.GetRequiredService<ScopedBaseline>();
         }
         var baseline = GC.GetAllocatedBytesForCurrentThread() - start;
-        var thread = Environment.CurrentManagedThreadId;
-        var collections = (GC.CollectionCount(0), GC.CollectionCount(1), GC.CollectionCount(2));
-        allocationRegion?.Begin();
         start = GC.GetAllocatedBytesForCurrentThread();
         for (var iteration = 0; iteration < 1000; iteration++)
         {
@@ -579,10 +574,6 @@ public class BatchPipelineTests
             for (var i = 0; i < contexts.Length; i++) contexts[i].Dispose();
         }
         var composed = GC.GetAllocatedBytesForCurrentThread() - start;
-        allocationRegion?.End();
-        Console.WriteLine($"Batch allocation diagnostic: buffered={bufferedSends}, baseline={baseline}, composed={composed}, " +
-            $"thread={thread}->{Environment.CurrentManagedThreadId}, collections={collections}->" +
-            $"({GC.CollectionCount(0)}, {GC.CollectionCount(1)}, {GC.CollectionCount(2)}), runtime={Environment.Version}");
         foreach (var delivery in deliveries) delivery.Dispose();
         await Assert.That(composed).IsEqualTo(baseline);
     }
