@@ -1,0 +1,139 @@
+name: Frozen exact core crossover
+
+# Separate instrumented execution for #488; never a Performance-gate rerun.
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/frozen-exact-crossover.yml'
+      - '.github/scripts/frozen_exact_crossover.py'
+      - '.github/scripts/test_frozen_exact_crossover.py'
+  workflow_dispatch:
+    inputs:
+      performance_run:
+        description: Retained Performance inputs
+        type: string
+        default: '42823238841'
+      runtime_version:
+        description: Exact runtime patch for this separate control (historical run used 10.0.14)
+        type: choice
+        options: ['10.0.14', '10.0.15']
+        default: '10.0.14'
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  allocations:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      PERFORMANCE_RUN: ${{ inputs.performance_run || '42823238841' }}
+      CONTROL_RUNTIME: ${{ inputs.runtime_version || '10.0.14' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: dotnet/samples
+          ref: 3810558800760fc39282cc939bac645735514209
+          path: profiler-sdk
+          sparse-checkout: core/profiling
+          persist-credentials: false
+      - uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
+        with:
+          dotnet-version: |
+            10.0.403
+            10.0.404
+            11.0.100
+      - name: Build native profiler and net10 external probe
+        run: |
+          mkdir -p results
+          dotnet --info > results/runtime.txt
+          uname -a > results/host.txt
+          git -C profiler-sdk rev-parse HEAD > results/profiler-sdk-commit.txt
+          CXX=clang++ cmake -S tools/FrozenAllocationProfiler -B .artifacts/exact-profiler -DPROFILER_SAMPLES="$PWD/profiler-sdk" -DCMAKE_BUILD_TYPE=Release > results/native-configure.log 2>&1
+          cmake --build .artifacts/exact-profiler > results/native-build.log 2>&1
+          dotnet build tools/FrozenAllocationProfiler/Fixture -c Release > results/fixture-build.log 2>&1
+          dotnet restore tools/FrozenConcurrentProbe -p:TargetFramework=net10.0 > results/probe-restore.log 2>&1
+          dotnet build tools/FrozenConcurrentProbe -c Release -p:TargetFramework=net10.0 --no-restore > results/probe-build.log 2>&1
+      - name: Bind only external tools to the selected patch and retain runtime inventory
+        run: |
+          python3 - <<'PYTHON'
+          import hashlib, json, os
+          from pathlib import Path
+          version = os.environ['CONTROL_RUNTIME']
+          if version not in ('10.0.14', '10.0.15'):
+              raise ValueError('Unsupported control runtime: ' + version)
+          framework = Path(os.environ['DOTNET_ROOT']) / 'shared/Microsoft.NETCore.App' / version
+          if not framework.is_dir():
+              raise ValueError('Requested runtime is not installed: ' + str(framework))
+          configs = [Path('tools/FrozenConcurrentProbe/bin/Release/net10.0/FrozenConcurrentProbe.runtimeconfig.json'),
+                     Path('tools/FrozenAllocationProfiler/Fixture/bin/Release/net10.0/Fixture.runtimeconfig.json')]
+          for path in configs:
+              config = json.loads(path.read_text())
+              options = config['runtimeOptions']
+              if options['framework']['name'] != 'Microsoft.NETCore.App':
+                  raise ValueError('Unexpected external framework: ' + str(path))
+              options['framework']['version'] = version
+              options['rollForward'] = 'Disable'
+              path.write_text(json.dumps(config, indent=2) + '\n')
+          inventory = [{'path': str(path.relative_to(framework)), 'length': path.stat().st_size,
+                        'sha256': hashlib.sha256(path.read_bytes()).hexdigest()}
+                       for path in sorted(framework.rglob('*')) if path.is_file()]
+          Path('results/selected-runtime.json').write_text(json.dumps(
+              {'version': version, 'root': str(framework), 'files': inventory,
+               'limits': 'Installed runtime bytes, not proof of historical loaded binary equality.'}, indent=2) + '\n')
+          PYTHON
+      - name: Validate exact known-type counts before interpreting frozen workloads
+        env:
+          TEST_NATIVE_PROFILER: .artifacts/exact-profiler/libFrozenAllocationProfiler.so
+          TEST_NATIVE_FIXTURE: tools/FrozenAllocationProfiler/Fixture/bin/Release/net10.0/Fixture.dll
+          TEST_NATIVE_OUTPUT: results/fixture
+        run: |
+          python3 -m unittest discover -s .github/scripts -p test_native_allocations.py > results/native-tests.log 2>&1
+          python3 -m unittest discover -s .github/scripts -p test_frozen_concurrent_control.py > results/launcher-tests.log 2>&1
+          python3 -m unittest discover -s .github/scripts -p test_frozen_exact_crossover.py > results/crossover-tests.log 2>&1
+          python3 -m unittest discover -s .github/scripts -p test_frozen_core_crossover.py > results/preparation-tests.log 2>&1
+      - name: Verify original inputs and count heap owners in reciprocal core brackets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          [[ "$PERFORMANCE_RUN" =~ ^[0-9]+$ ]] || { echo "Invalid run ID: $PERFORMANCE_RUN" >&2; exit 1; }
+          gh run download "$PERFORMANCE_RUN" --name "performance-$PERFORMANCE_RUN-1" --dir inputs
+          python3 .github/scripts/frozen_exact_crossover.py inputs tools/FrozenConcurrentProbe/bin/Release/net10.0/FrozenConcurrentProbe.dll .artifacts/exact-profiler/libFrozenAllocationProfiler.so results/exact-allocations --runtime "$CONTROL_RUNTIME"
+          python3 .github/scripts/read_native_allocations.py results/exact-allocations/*-objects.jsonl > results/exact-allocations/validated-types.json
+          python3 - <<'PYTHON'
+          import json, os
+          from pathlib import Path
+          logs = sorted(Path('results/exact-allocations').glob('*.log'))
+          if len(logs) != 8:
+              raise ValueError('Expected all eight launch logs')
+          for path in logs:
+              outcomes = [json.loads(line) for line in path.read_text().splitlines() if line.startswith('{')]
+              if len(outcomes) != 1 or outcomes[0]['runtime'] != '.NET ' + os.environ['CONTROL_RUNTIME']:
+                  raise ValueError('Missing outcome or unexpected loaded runtime: ' + str(path))
+          PYTHON
+      - name: Preserve every outcome and executable input, including failures
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: frozen-exact-crossover-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            results/
+            inputs/
+            profiler-sdk/core/profiling/
+            profiler-sdk/LICENSE
+            .artifacts/exact-profiler/
+            tools/FrozenAllocationProfiler/
+            tools/FrozenConcurrentProbe/
+            tools/FrozenFixtureProbe/InvocationAllocations.cs
+            tools/FrozenMeasurementEvents.cs
+            .github/scripts/frozen_concurrent_control.py
+            .github/scripts/frozen_core_crossover.py
+            .github/scripts/frozen_bdn_control.py
+            .github/scripts/frozen_exact_crossover.py
+            .github/scripts/test_frozen_exact_crossover.py
+            .github/scripts/read_native_allocations.py
+            .github/scripts/test_native_allocations.py
+            .github/workflows/frozen-exact-crossover.yml
+          retention-days: 90
