@@ -69,6 +69,7 @@ public sealed class DefaultMessageContext : MessageContext, IDisposable
         Redeliveries = FailureMetadata.ReadCount(Headers, FailureHeaders.Redeliveries);
     }
     internal void NextAttempt() => _attempt = checked(Attempt + 1);
+    internal ConsumeDelegate? ResolvedDispatch => _receive?.ResolvedDispatch;
     internal ConsumeDelegate Dispatch { get; set; } = null!;
     internal HeaderNames EnvelopeNames => _receive?.EnvelopeNames ?? _owner.EnvelopeNames;
     internal MessageOperationTracing? ProcessTracing => _receive?.ProcessTracing;

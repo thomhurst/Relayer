@@ -83,10 +83,11 @@ public sealed partial class ConsumePipeline
         _contexts = new DefaultMessageContext[capacity];
         _wireIdentities = new WireIdentity[dispatch.Count];
         var identityIndex = 0;
-        foreach (var identity in dispatch.Keys)
+        foreach (var pair in dispatch)
         {
+            var identity = pair.Key;
             var text = identity.ToString();
-            _wireIdentities[identityIndex++] = new(identity, text, Encoding.UTF8.GetBytes(text));
+            _wireIdentities[identityIndex++] = new(identity, text, Encoding.UTF8.GetBytes(text), pair.Value);
         }
         for (var i = 0; i < capacity; i++)
         {
@@ -143,14 +144,18 @@ public sealed partial class ConsumePipeline
         return context;
     }
 
-    internal MessageType ResolveWireIdentity(WireString wire)
+    internal MessageType ResolveWireIdentity(WireString wire, out ConsumeDelegate? dispatch)
     {
         foreach (var identity in _wireIdentities)
         {
             if (wire.Text is { } text ? text == identity.Text : wire.Utf8.Span.SequenceEqual(identity.Utf8))
+            {
+                dispatch = identity.Dispatch;
                 return identity.Identity;
+            }
         }
 
+        dispatch = null;
         // Unknown identities are an error path. Preserve them for the consume failure classifier.
         var unknown = wire.ToString();
         var separator = unknown.LastIndexOf(";v=", StringComparison.Ordinal);
@@ -158,6 +163,14 @@ public sealed partial class ConsumePipeline
                 CultureInfo.InvariantCulture, out var version) || version < 1)
             throw new MessageEnvelopeException("The incoming message type must contain a stable name and positive version, for example 'orders;v=1'.");
         return new(unknown[..separator], version);
+    }
+
+    internal ConsumeDelegate ResolveDispatch(DefaultMessageContext context)
+    {
+        // Native receive already selected the delegate while decoding the wire identity.
+        if (context.ResolvedDispatch is { } resolved) return resolved;
+        if (_dispatch.TryGetValue(context.MessageType, out var dispatch)) return dispatch;
+        throw new UnknownMessageTypeException(context.MessageType);
     }
 
     internal string GetWireIdentityText(MessageType messageType)
@@ -169,7 +182,7 @@ public sealed partial class ConsumePipeline
         return messageType.ToString();
     }
 
-    private readonly record struct WireIdentity(MessageType Identity, string Text, byte[] Utf8);
+    private readonly record struct WireIdentity(MessageType Identity, string Text, byte[] Utf8, ConsumeDelegate Dispatch);
 
     /// <summary>Processes one delivery in a fresh async DI scope, then invokes the configured native settlement callback.</summary>
     /// <remarks>Cancellation propagates. Failure-pipeline and scope-disposal errors propagate, preventing successful settlement.</remarks>

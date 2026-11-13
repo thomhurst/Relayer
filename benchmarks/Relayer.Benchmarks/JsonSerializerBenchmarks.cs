@@ -21,6 +21,7 @@ public class JsonSerializerBenchmarks
     private IMessageSerializer _serializer = null!;
     private Utf8JsonWriter _writer = null!;
     private ReadOnlySequence<byte> _source;
+    private Func<ReadOnlySequence<byte>, JsonOrder> _read = null!;
     private JsonTypeInfo<JsonOrder> _typeInfo = null!;
 
     [Params(1, 100)]
@@ -43,6 +44,7 @@ public class JsonSerializerBenchmarks
             builder.UseJsonSerializer(context);
         }).BuildServiceProvider();
         _serializer = _provider.GetRequiredService<IMessageSerializer>();
+        _read = ((JsonMessageSerializer)_serializer).CreateDeserializer<JsonOrder>();
         _typeInfo = (JsonTypeInfo<JsonOrder>)context.GetTypeInfo(typeof(JsonOrder))!;
         _serializer.Serialize(_message, _buffer);
         _source = new ReadOnlySequence<byte>(_buffer.WrittenMemory.ToArray());
@@ -81,6 +83,10 @@ public class JsonSerializerBenchmarks
     [Benchmark]
     [BenchmarkCategory("Read")]
     public JsonOrder RelayerDeserialize() => _serializer.Deserialize<JsonOrder>(_source);
+
+    [Benchmark]
+    [BenchmarkCategory("Read")]
+    public JsonOrder ComposedDeserialize() => _read(_source);
 
     [GlobalCleanup]
     public void Cleanup()

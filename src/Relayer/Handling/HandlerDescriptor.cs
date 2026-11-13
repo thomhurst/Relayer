@@ -1,4 +1,5 @@
 using Relayer.Serialization;
+using System.Buffers;
 
 namespace Relayer.Pipeline;
 
@@ -42,7 +43,8 @@ public abstract class HandlerDescriptor<TMessage>(Type handlerType)
         IHandlerMarker handler, TMessage message, MessageContext context, CancellationToken cancellationToken);
 
     internal override ConsumeDelegate CreateConsumeDelegate(IMessageSerializer serializer)
-        => new Dispatch(serializer, this).InvokeAsync;
+        => new Dispatch(serializer is JsonMessageSerializer json
+            ? json.CreateDeserializer<TMessage>() : serializer.Deserialize<TMessage>, this).InvokeAsync;
 
     internal sealed override ConsumeDelegate CreateUpcastDelegate(UpcastReader reader)
         => new UpcastDispatch((UpcastReader<TMessage>)reader, this).InvokeAsync;
@@ -58,7 +60,7 @@ public abstract class HandlerDescriptor<TMessage>(Type handlerType)
         }
     }
 
-    private sealed class Dispatch(IMessageSerializer serializer, HandlerDescriptor<TMessage> descriptor)
+    private sealed class Dispatch(Func<ReadOnlySequence<byte>, TMessage> deserialize, HandlerDescriptor<TMessage> descriptor)
     {
         public ValueTask InvokeAsync(MessageContext context)
         {
@@ -66,7 +68,7 @@ public abstract class HandlerDescriptor<TMessage>(Type handlerType)
             TMessage message;
             try
             {
-                message = serializer.Deserialize<TMessage>(incoming.Body);
+                message = deserialize(incoming.Body);
             }
             catch (OperationCanceledException) when (context.CancellationToken.IsCancellationRequested) { throw; }
             catch (Exception error)

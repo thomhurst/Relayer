@@ -38,13 +38,16 @@ public class UpcasterTests
         await receive.ProcessAsync(new(old.Body, "upgrade;v=99"u8.ToArray()));
         await receive.ProcessAsync(new(old.Body, "unrecognized;v=1"u8.ToArray()));
         await receive.ProcessAsync(new(new("bad json"u8.ToArray()), "upgrade;v=1"u8.ToArray()));
-        await Assert.That(provider.GetRequiredService<Observed>().Messages.Count).IsEqualTo(1);
-        await Assert.That(failures.Count).IsEqualTo(3);
+        await receive.ProcessAsync(new(Message(provider, 3).Body, "upgrade;v=3"u8.ToArray()));
+        await receive.ProcessAsync(new(new("null"u8.ToArray()), "upgrade;v=3"u8.ToArray()));
+        await Assert.That(provider.GetRequiredService<Observed>().Messages.Count).IsEqualTo(2);
+        await Assert.That(failures.Count).IsEqualTo(4);
         await Assert.That(failures.All(f => f.Action == FailureAction.DeadLetter)).IsTrue();
         await Assert.That(failures[0].Error).IsTypeOf<UnknownMessageTypeException>();
         await Assert.That(failures[0].Error.Message).Contains("upgrade;v=99");
         await Assert.That(failures[1].Error).IsTypeOf<UnknownMessageTypeException>();
         await Assert.That(failures[2].Error).IsTypeOf<MessageDeserializationException>();
+        await Assert.That(failures[3].Error).IsTypeOf<MessageDeserializationException>();
     }
 
     [Test]

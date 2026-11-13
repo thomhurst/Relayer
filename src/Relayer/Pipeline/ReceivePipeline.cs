@@ -321,6 +321,7 @@ public sealed class ReceivePipeline<TIncoming, TBinding>
         private WireString _id;
         private string? _messageId;
         private MessageType? _messageType;
+        private ConsumeDelegate? _dispatch;
         private int _attempt;
         private ReadOnlySequence<byte> _body;
         internal NativeMessage<TIncoming> Native { get; } = new();
@@ -355,11 +356,19 @@ public sealed class ReceivePipeline<TIncoming, TBinding>
                 if (_messageType is { } identity) return identity;
                 if (!_headers.TryGetValue(names.Type, out var type) || type.IsEmpty)
                     throw new MessageEnvelopeException($"The incoming message has no '{names.Type}' header.");
-                var resolved = consumer.ResolveWireIdentity(type);
+                var resolved = consumer.ResolveWireIdentity(type, out _dispatch);
                 _messageType = resolved;
                 if (!TryGetValue(names.Id, out _id) || _id.IsEmpty)
                     throw new MessageEnvelopeException($"The incoming message has no '{names.Id}' header.");
                 return resolved;
+            }
+        }
+        internal override ConsumeDelegate? ResolvedDispatch
+        {
+            get
+            {
+                _ = MessageType;
+                return _dispatch;
             }
         }
         internal override int Attempt => _attempt;
@@ -379,6 +388,7 @@ public sealed class ReceivePipeline<TIncoming, TBinding>
             _id = default;
             _messageId = null;
             _messageType = null;
+            _dispatch = null;
             _attempt = 0;
             _body = default;
         }
