@@ -1106,17 +1106,29 @@ public class FailurePipelineTests
     }
 
     [Test]
-    [Arguments(false, false)]
-    [Arguments(true, false)]
-    [Arguments(false, true)]
-    public async Task Pending_native_settlement_preserves_execution_context_and_failed_probe_cleanup(bool failSettlement, bool cancelSettlement)
+    [Arguments(false, false, false)]
+    [Arguments(true, false, false)]
+    [Arguments(false, true, false)]
+    [Arguments(false, false, true)]
+    [Arguments(true, false, true)]
+    [Arguments(false, true, true)]
+    public async Task Pending_native_settlement_preserves_execution_context_and_failed_probe_cleanup(bool failSettlement, bool cancelSettlement, bool suspendDurable)
     {
         using var provider = Provider(new Transport());
         var control = provider.GetRequiredService<Control>();
         var ambient = new AsyncLocal<string>();
         var scopeDisposed = false;
-        control.Invoke = _ => { ambient.Value = "handler"; return default; };
-        control.Dispose = () => { ambient.Value = "disposed"; scopeDisposed = true; return default; };
+        var handlerGate = new TaskCompletionSource();
+        var disposalGate = new TaskCompletionSource();
+        var disposalEntered = new TaskCompletionSource();
+        control.Invoke = _ => { ambient.Value = "handler"; return suspendDurable ? new(handlerGate.Task) : default; };
+        control.Dispose = () =>
+        {
+            ambient.Value = "disposed";
+            scopeDisposed = true;
+            disposalEntered.SetResult();
+            return suspendDurable ? new(disposalGate.Task) : default;
+        };
         var gate = new TaskCompletionSource();
         var entered = new TaskCompletionSource();
         var failures = new FailurePipeline(provider, "test", "source", "consumer");
@@ -1139,6 +1151,14 @@ public class FailurePipelineTests
         ambient.Value = "caller";
         using var cancellation = new CancellationTokenSource();
         var processing = receive.ProcessAsync(new(), cancellation.Token);
+        if (suspendDurable)
+        {
+            await Assert.That(ambient.Value).IsEqualTo("caller");
+            handlerGate.SetResult();
+            await disposalEntered.Task;
+            await Assert.That(entered.Task.IsCompleted).IsFalse();
+            disposalGate.SetResult();
+        }
         await entered.Task;
         await Assert.That(processing.IsCompleted).IsFalse();
         await Assert.That(circuit.State).IsEqualTo(2);
