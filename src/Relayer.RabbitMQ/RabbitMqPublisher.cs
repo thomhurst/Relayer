@@ -9,13 +9,31 @@ internal sealed class RabbitMqPublisher(IChannel channel)
 {
     internal IChannel Channel { get; set; } = channel;
     internal readonly BasicProperties Properties = new();
+    private readonly List<RabbitMqBatchSlot> _batchSlots = [];
+    private ConfiguredValueTaskAwaitable.ConfiguredValueTaskAwaiter[] _batchSends = [];
+
+    internal ConfiguredValueTaskAwaitable.ConfiguredValueTaskAwaiter[] BatchSends(int count)
+    {
+        if (_batchSends.Length < count) Array.Resize(ref _batchSends, count);
+        return _batchSends;
+    }
+
+    internal RabbitMqBatchSlot BatchSlot(int index)
+    {
+        if (index == _batchSlots.Count) _batchSlots.Add(new(Channel));
+        var slot = _batchSlots[index];
+        slot.Publisher.Channel = Channel;
+        return slot;
+    }
+
     private readonly RabbitMqHeaders _headers = new();
     internal const int CacheCapacity = 256;
-    private readonly Dictionary<(int Index, int Length), byte[]> _buffers = new(CacheCapacity);
-    private readonly (int Index, int Length)[] _bufferOrder = new (int, int)[CacheCapacity];
+    // Grow boundary caches only for shapes actually used; most batch slots need very few entries.
+    private readonly Dictionary<(int Index, int Length), byte[]> _buffers = new();
+    private readonly List<(int Index, int Length)> _bufferOrder = [];
     private int _nextBuffer;
     private int _nextContentType;
-    private readonly List<(byte[] Utf8, string Text)> _contentTypes = new(CacheCapacity);
+    private readonly List<(byte[] Utf8, string Text)> _contentTypes = new();
     // The native field-table API requires a boxed integer. This publisher exclusively owns and reuses its box.
     private readonly object _delay = 0L;
 
@@ -57,7 +75,8 @@ internal sealed class RabbitMqPublisher(IChannel channel)
             buffer = new byte[value.Utf8.Length];
             if (_buffers.Count == CacheCapacity) _buffers.Remove(_bufferOrder[_nextBuffer]);
             _buffers.Add(key, buffer);
-            _bufferOrder[_nextBuffer] = key;
+            if (_bufferOrder.Count < CacheCapacity) _bufferOrder.Add(key);
+            else _bufferOrder[_nextBuffer] = key;
             _nextBuffer = (_nextBuffer + 1) % CacheCapacity;
         }
         value.Utf8.Span.CopyTo(buffer);
@@ -112,4 +131,32 @@ internal sealed class RabbitMqHeaders : Dictionary<string, object?>, IDictionary
             this[key] = value;
         }
     }
+}
+
+// Retained at the leased channel's batch high-water mark, separate from its single-send properties.
+internal sealed class RabbitMqBatchSlot(IChannel channel)
+{
+    internal readonly RabbitMqPublisher Publisher = new(channel);
+    // The batch drains this operation before the exclusively leased slot is reused.
+    private readonly RabbitMqSendOperation _operation = new();
+    private readonly Dictionary<RabbitMqSendEndpoint, SendTracing> _tracing = [];
+    private RabbitMqNativeTransport _transport = null!;
+    private RabbitMqSendEndpoint _endpoint = null!;
+
+    internal ValueTask Send(RabbitMqNativeTransport transport, RabbitMqSendEndpoint endpoint,
+        OutgoingMessage message, CancellationToken token, bool trace)
+    {
+        _transport = transport;
+        _endpoint = endpoint;
+        if (!trace || !endpoint.TraceEnabled) return Publish(message, token);
+        if (!_tracing.TryGetValue(endpoint, out var tracing))
+        {
+            tracing = endpoint.CreateTracing(Publish);
+            _tracing.Add(endpoint, tracing);
+        }
+        return tracing.SendAsync(message, token);
+    }
+
+    private ValueTask Publish(OutgoingMessage message, CancellationToken token) =>
+        _operation.StartBorrowed(_transport, _endpoint, Publisher, message, token);
 }

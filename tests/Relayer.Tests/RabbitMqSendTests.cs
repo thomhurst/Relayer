@@ -186,13 +186,18 @@ public class RabbitMqSendTests
             long deliveredAt = 0;
             consumer.ReceivedAsync += (_, args) =>
             {
-                deliveredAt = Stopwatch.GetTimestamp();
-                delivery.TrySetResult(args);
+                if (args.Body.Span[0] == 42)
+                {
+                    deliveredAt = Stopwatch.GetTimestamp();
+                    delivery.TrySetResult(args);
+                }
                 return Task.CompletedTask;
             };
             await channel.BasicConsumeAsync("orders", true, consumer, token);
             var started = Stopwatch.GetTimestamp();
-            await transport.SendAsync(new("orders", new byte[] { 42 }, deliverAt: DateTimeOffset.UtcNow.AddMilliseconds(500)), token);
+            await transport.SendBatchAsync(new OutgoingMessage[]
+            { new("orders", new byte[] { 42 }, deliverAt: DateTimeOffset.UtcNow.AddMilliseconds(500)),
+              new("orders", new byte[] { 43 }) }, token);
             await delivery.Task.WaitAsync(token);
             await Assert.That(Stopwatch.GetElapsedTime(started, deliveredAt).TotalMilliseconds >= 450).IsTrue();
         }
@@ -376,6 +381,117 @@ public class RabbitMqSendTests
         await send;
         await stop;
         await Assert.That((await channel.QueueDeclarePassiveAsync("orders", token)).MessageCount).IsEqualTo(1u);
+    }
+
+    [Test]
+    public async Task Batch_admits_before_confirms_and_drains_before_releasing_publisher_on_failure_or_cancellation()
+    {
+        using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(3));
+        var token = timeout.Token;
+        // This test changes the server-wide memory alarm, so it needs its own broker.
+        await using var broker = await RabbitMqTopologyTests.Broker.StartAsync(token, dedicated: true);
+        var factory = broker.Factory();
+        await using var connection = await factory.CreateConnectionAsync(token);
+        await using var reader = await connection.CreateChannelAsync(cancellationToken: token);
+        await reader.QueueDeclareAsync("orders", true, false, false, cancellationToken: token);
+        var publisher = new RabbitMqPublisher(await connection.CreateChannelAsync(new(true, true), token));
+        try
+        {
+            await using var transport = new RabbitMqNativeTransport("rabbit", new() { ConnectionFactory = factory }, ["orders"]);
+            var publishers = Channel.CreateBounded<RabbitMqPublisher>(1);
+            foreach (var outcome in new[] { "success", "preparation", "cancellation", "success" })
+            {
+                using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(token);
+                var prepared = 0;
+                var messages = new OutgoingMessage[8];
+                var lastPrepared = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+                for (var i = 0; i < messages.Length; i++)
+                {
+                    var index = i;
+                    var bytes = new byte[] { 0, (byte)i, 0 };
+                    messages[i] = new("orders", bytes.AsMemory(1, 1),
+                        new KeyValuePair<string, WireString>[] { new("id", new(bytes.AsMemory(1, 1))) },
+                        options: new SendOptions().RabbitMQ(properties =>
+                        {
+                            Interlocked.Increment(ref prepared);
+                            properties.Priority = (byte)index;
+                            if (index != messages.Length - 1) return;
+                            lastPrepared.SetResult();
+                            if (outcome == "preparation") throw new InvalidOperationException("preparation failed");
+                            if (outcome == "cancellation") cancellation.Cancel();
+                        }));
+                }
+                // The broker withholds confirmations while its memory alarm is active.
+                await broker.CommandAsync(["rabbitmqctl", "set_vm_memory_high_watermark", "absolute", "1"], token);
+                await publishers.Writer.WriteAsync(publisher, token);
+                var batch = new RabbitMqSendPool().Rent().StartBatch(transport, messages, connection,
+                    publishers, cancellation.Token, traceMessages: false);
+                try
+                {
+                    await lastPrepared.Task.WaitAsync(token);
+                    await Assert.That(prepared).IsEqualTo(messages.Length);
+                    if (outcome != "cancellation")
+                    {
+                        await Assert.That(batch.IsCompleted).IsFalse();
+                        await Assert.That(publishers.Reader.TryRead(out _)).IsFalse();
+                    }
+                }
+                finally
+                {
+                    await broker.CommandAsync(["rabbitmqctl", "set_vm_memory_high_watermark", "0.6"], token);
+                }
+                if (outcome == "success") await batch;
+                else if (outcome == "preparation")
+                    await Assert.That(async () => await batch).Throws<InvalidOperationException>();
+                else await Assert.That(async () => await batch).Throws<OperationCanceledException>();
+                await Assert.That(publishers.Reader.TryRead(out var returned)).IsTrue();
+                await Assert.That(ReferenceEquals(returned, publisher)).IsTrue();
+                if (outcome == "success")
+                    for (var i = 0; i < messages.Length; i++)
+                    {
+                        var received = (await reader.BasicGetAsync("orders", true, token))!;
+                        await Assert.That(received.Body.Span[0]).IsEqualTo((byte)i);
+                        await Assert.That(received.BasicProperties.Priority).IsEqualTo((byte)i);
+                        await Assert.That(((byte[])received.BasicProperties.Headers!["id"]!)[0]).IsEqualTo((byte)i);
+                    }
+                await reader.QueuePurgeAsync("orders", token);
+            }
+        }
+        finally { await publisher.Channel.DisposeAsync(); }
+    }
+
+    [Test]
+    [Arguments("missing")]
+    [Arguments("full")]
+    [Arguments("absent:key")]
+    public async Task Batch_native_failures_are_reported_and_the_single_publisher_can_be_reused(string failedDestination)
+    {
+        using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(3));
+        var token = timeout.Token;
+        await using var broker = await RabbitMqTopologyTests.Broker.StartAsync(token);
+        await using var connection = await broker.Factory().CreateConnectionAsync(token);
+        await using var reader = await connection.CreateChannelAsync(cancellationToken: token);
+        await reader.QueueDeclareAsync("orders", true, false, false, cancellationToken: token);
+        await reader.QueueDeclareAsync("full", true, false, false, new Dictionary<string, object?>
+        { ["x-max-length"] = 1, ["x-overflow"] = "reject-publish" }, cancellationToken: token);
+        await using var provider = Provider(broker.Factory(), ["orders", failedDestination], options => options.PublisherCount = 1);
+        var transport = provider.GetRequiredService<ITransport>();
+        await transport.StartAsync(token);
+        if (failedDestination == "full") await transport.SendAsync(new("full", new byte[] { 0 }), token);
+        var error = await Assert.That(async () => await transport.SendBatchAsync(new OutgoingMessage[]
+        {
+            new("orders", new byte[] { 1 }), new(failedDestination, new byte[] { 2 }), new("orders", new byte[] { 3 }),
+        }, token)).Throws<Exception>();
+        if (failedDestination != "absent:key")
+        {
+            await Assert.That(error is PublishException).IsTrue();
+            await Assert.That(((PublishException)error!).IsReturn).IsEqualTo(failedDestination == "missing");
+        }
+        // A failed batch must drain and return its sole channel, recovering a protocol-closed one.
+        await transport.SendBatchAsync(new OutgoingMessage[] { new("orders", new byte[] { 4 }) }, token);
+        var bodies = new List<byte>();
+        while (await reader.BasicGetAsync("orders", true, token) is { } received) bodies.Add(received.Body.Span[0]);
+        await Assert.That(bodies.Contains(4)).IsTrue();
     }
 
     private static string Header(BasicGetResult message, string name) => Encoding.UTF8.GetString((byte[])message.BasicProperties.Headers![name]!);
