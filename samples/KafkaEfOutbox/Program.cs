@@ -30,11 +30,11 @@ builder.Services.AddRelayer(relayer =>
         kafka.Consume("sample-orders", consumer =>
         {
             consumer.Options.Group = "sample-billing";
-            consumer.Options.Failure = new FailureOptions
+            consumer.Failures(new FailureOptions
             {
-                RetryDelays = new[] { TimeSpan.FromMilliseconds(100), TimeSpan.FromMilliseconds(500) },
+                RetryDelays = [TimeSpan.FromMilliseconds(100), TimeSpan.FromMilliseconds(500)],
                 DeadLetterEndpoint = "sample-orders.errors"
-            };
+            });
             consumer.EntityFrameworkCore<OrdersDbContext>("sample-billing");
             consumer.Handler<OrderPlacedHandler>();
         });

@@ -67,4 +67,4 @@ docker rm -f relayer-sample-postgres relayer-sample-kafka
 
 Removing the PostgreSQL container discards its demonstration data.
 
-The application [outbox and inbox guide](../../website/docs/guides/outbox.md) walks through this setup. The endpoint uses `SendViaOutboxAsync` to require active enlistment; the consumer configures in-process retries and a dead-letter topic through `Options.Failure`. Kafka delayed redelivery, parallel handlers and batch handlers remain unsupported.
+The application [outbox and inbox guide](../../website/docs/guides/outbox.md) walks through this setup. The endpoint uses `SendViaOutboxAsync` to require active enlistment; the consumer configures in-process retries and a dead-letter topic through `consumer.Failures(...)`. Kafka delayed redelivery, parallel handlers and batch handlers remain unsupported.
