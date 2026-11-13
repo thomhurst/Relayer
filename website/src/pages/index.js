@@ -297,7 +297,7 @@ const status = [
     ['Service Bus processors, sessions, telemetry and health', 'Implemented', true],
   ['Packaged transport conformance suite', 'Implemented', true],
   ['Test harness and standalone handler context', 'Implemented', true],
-  ['CI performance regression gate and in-memory benchmarks', 'Implemented; raw broker cases planned', true],
+  ['CI performance regression gate, in-memory and native-client benchmarks', <>Implemented, including Kafka and RabbitMQ broker-backed receive comparisons; remaining coverage planned. <Link to="/docs/transports/kafka#performance-validation">Kafka comparison scope</Link></>, true],
   ['Kafka producers, serial consumers, typed tombstones, dead-letter copies, circuit breaking and offset/timestamp replay', 'Implemented', true],
   ['Named transport serializers and independent Kafka JSON schema registries', 'Implemented; explicit startup contracts', true],
   ['Optional Protobuf and MessagePack serializers', 'Implemented; explicit generated contracts and Native AOT coverage', true],
@@ -336,7 +336,7 @@ const status = [
   ['Send and delivery tracing, settlement, metrics and logs', 'Implemented', true],
   ['PostgreSQL durable local work transport', 'Implemented with native transactional completion and shared dispatch', true],
   ['PostgreSQL outbox tracing and metrics', 'Implemented', true],
-  ['Other native receive telemetry', 'Planned', false],
+  ['SQS and RabbitMQ delivery tracing, metrics and settlement telemetry', <>Implemented; process and native settlement instrumentation, no Relayer receive spans. <Link to="/docs/guides/telemetry">Telemetry scope</Link></>, true],
 ];
 
 function Status() {
@@ -359,6 +359,10 @@ function Status() {
             ))}
           </tbody>
         </table>
+        <p>
+          Implemented benchmark cases do not establish that the 5% throughput overhead budget
+          against raw native clients has passed across transports and send/receive paths.
+        </p>
         <Link to="/docs/roadmap">See the full roadmap</Link>
       </div>
     </section>
