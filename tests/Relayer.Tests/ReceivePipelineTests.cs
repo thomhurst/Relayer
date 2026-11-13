@@ -7,6 +7,28 @@ namespace Relayer.Tests;
 public class ReceivePipelineTests
 {
     [Test]
+    public async Task Default_disposition_is_unset_and_completion_is_explicit()
+    {
+        await Assert.That(default(Disposition).Kind).IsEqualTo(DispositionKind.Unset);
+        await Assert.That(Disposition.Complete.Kind).IsEqualTo(DispositionKind.Complete);
+    }
+
+    [Test]
+    public async Task Explicit_unset_disposition_is_not_replaced_by_completion()
+    {
+        await using var provider = Provider();
+        provider.GetRequiredService<Control>().Invoke = context =>
+        {
+            context.Features.GetRequired<NativeMessage<Incoming>>().Disposition = default;
+            return default;
+        };
+        var receive = Pipeline(provider);
+        await Assert.That((await receive.ProcessAsync(new())).Kind).IsEqualTo(DispositionKind.Unset);
+        provider.GetRequiredService<Control>().Invoke = null;
+        await Assert.That((await receive.ProcessAsync(new())).Kind).IsEqualTo(DispositionKind.Complete);
+    }
+
+    [Test]
     public async Task Partition_scheduler_waits_for_existing_receive_failure_pipeline_before_checkpointing()
     {
         await using var provider = Provider();

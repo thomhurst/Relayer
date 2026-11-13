@@ -3,6 +3,8 @@ namespace Relayer;
 /// <summary>The native settlement to perform after core processing completes successfully.</summary>
 public enum DispositionKind
 {
+    /// <summary>No settlement decision was assigned. Transports must reject this value.</summary>
+    Unset,
     /// <summary>Acknowledge the delivery.</summary>
     Complete,
     /// <summary>Request native redelivery after the specified delay.</summary>
@@ -35,7 +37,7 @@ public readonly struct DeadLetterInfo
     public ReadOnlyMemory<KeyValuePair<string, WireString>> Headers { get; }
 }
 
-/// <summary>A core decision that the adapter maps to native settlement. The default value completes the delivery.</summary>
+/// <summary>A core decision that the adapter maps to native settlement. The default value is unset and must never acknowledge a delivery.</summary>
 /// <remarks>The failure pipeline must resolve capabilities and finish durable fallbacks before selecting this decision.</remarks>
 public readonly struct Disposition
 {
@@ -57,7 +59,7 @@ public readonly struct Disposition
     /// <summary>The error metadata, used only for DeadLetter.</summary>
     public DeadLetterInfo DeadLetter { get; }
     /// <summary>Acknowledge the delivery after durable processing.</summary>
-    public static Disposition Complete => default;
+    public static Disposition Complete => new(DispositionKind.Complete);
     /// <summary>Do not settle again after a handler uses native settlement.</summary>
     public static Disposition SettledByHandler => new(DispositionKind.SettledByHandler);
 
