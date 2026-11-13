@@ -77,7 +77,14 @@ creation context; it does not serialize the application message again or generat
 Once a stored delivery time is due, the native send requests immediate delivery. This also works with
 transports such as Kafka that have no native scheduling support.
 
-Messages are grouped by named transport and destination. A group is bounded by `BatchSize` and the
+Before sending, the single reader drains already queued commit notifications into a working batch,
+up to `BatchSize` rows and `QueueCapacity` notifications. It never waits to fill a batch. A notification
+that does not fit stays queued for the next pass; a larger transaction keeps its existing within-commit
+grouping. PostgreSQL, SQL Server and MySQL use this behavior. Business transactions remain separate,
+and ordered rows never enter this path. Owned serialized buffers remain live until dispatch finishes,
+even when the committing scope is reused or disposed.
+
+Messages are grouped by named transport and destination across the collected commits. A group is bounded by `BatchSize` and the
 endpoint's native `MaxBatchSize`. Groups with several messages use `ITransport.SendBatchAsync`; a
 single message uses `SendAsync`. Native byte limits and partial-delivery behavior still apply. After
 success, one SQL statement deletes the group's rows, checking every token and live expiry separately.

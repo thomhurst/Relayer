@@ -13,6 +13,8 @@ public class OutboxDirectDispatchBenchmarks
 {
     private readonly List<BufferedOutboxMessage> _source = [];
     private readonly OutboxDispatchBatch _batch = new();
+    private readonly OutboxDispatchBatch _notification = new();
+    private readonly List<BufferedOutboxMessage> _one = [new()];
     private OutboxRecord _record;
     private DateTimeOffset _now;
     private OutgoingMessage[] _messages = [];
@@ -73,6 +75,49 @@ public class OutboxDirectDispatchBenchmarks
             throw new InvalidOperationException("The benchmark must project every unordered message.");
         if (CommitHandoffAndPartialClaimProjection() != ((MessageCount + 1) / 2) * 256)
             throw new InvalidOperationException("The benchmark must project only acquired claims.");
+        CoalescedCommitProjection();
+        CoalescedCommitProjection();
+        CoalescedCommitProjection();
+        SeparateCommitProjection();
+    }
+
+    // Same one-row commits without coalescing, before database/native I/O.
+    [Benchmark]
+    public int SeparateCommitProjection()
+    {
+        var bytes = 0;
+        for (var i = 0; i < MessageCount; i++)
+        {
+            _one[0].Copy(_record, 32);
+            _notification.Take(_one, 1, _now);
+            _notification.Sort();
+            bytes += _notification.Rows[0].ToMessage().Body.Length;
+            _notification.Clear();
+        }
+        return bytes;
+    }
+
+    // Models several one-row committed notifications sharing one bounded working batch.
+    // Includes ownership swaps, destination grouping and projection; excludes native/database I/O.
+    [Benchmark]
+    public int CoalescedCommitProjection()
+    {
+        for (var i = 0; i < MessageCount; i++)
+        {
+            _one[0].Copy(_record, 32);
+            if (i == 0) _batch.Take(_one, 1, _now);
+            else
+            {
+                _notification.Take(_one, 1, _now);
+                _batch.Append(_notification);
+            }
+            _notification.Clear();
+        }
+        _batch.Sort();
+        var bytes = 0;
+        for (var i = 0; i < _batch.Count; i++) bytes += _batch.Rows[i].ToMessage().Body.Length;
+        _batch.Clear();
+        return bytes;
     }
 
     [GlobalCleanup]

@@ -67,7 +67,8 @@ public sealed class SharedDirectDispatchContractTests(SqlServerFixture database)
         await using var fixture = new Fixture(ConnectionString, transport);
         await fixture.Start(10, 10, startWorker: false);
         var claimed = Record(1);
-        await fixture.CommitAsync(claimed, Record(2));
+        await fixture.CommitAsync(claimed);
+        await fixture.CommitAsync(Record(2));
         var store = new SqlServerOutboxStore(ConnectionString, fixture.Options);
         var now = DateTimeOffset.UtcNow;
         var competitor = new OutboxClaim(claimed.Id, Guid.NewGuid());
@@ -88,13 +89,15 @@ public sealed class SharedDirectDispatchContractTests(SqlServerFixture database)
         await fixture.Start(10, 10);
         await fixture.CommitAsync(Record(1));
         await transport.Entered.Task.WaitAsync(TimeSpan.FromSeconds(30));
+        await fixture.CommitAsync(Record(3));
+        await fixture.CommitAsync(Record(4));
         using var canceled = new CancellationTokenSource();
         canceled.Cancel();
         await Assert.That(async () => await fixture.Worker!.StopAsync(canceled.Token)).Throws<OperationCanceledException>();
         await fixture.Worker!.ExecuteTask!.WaitAsync(TimeSpan.FromSeconds(30));
         await fixture.CommitAsync(Record(2));
         await Assert.That(transport.Received.Count).IsEqualTo(0);
-        await Assert.That((await fixture.ReadRowsAsync()).Length).IsEqualTo(2);
+        await Assert.That((await fixture.ReadRowsAsync()).Length).IsEqualTo(4);
     }
 
     [Test]

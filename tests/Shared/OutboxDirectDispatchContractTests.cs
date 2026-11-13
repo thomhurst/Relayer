@@ -121,6 +121,32 @@ public abstract class OutboxDirectDispatchContractTests
     }
 
     [Test]
+    public async Task Queued_commits_share_native_batches_without_waiting_or_crossing_destinations()
+    {
+        var transport = new RecordingTransport { Block = true };
+        await using var fixture = await CreateFixtureAsync(transport, batchSize: 4);
+        // Hold the first send so all following commits are immediately available to the reader.
+        await fixture.CommitAsync(Record(0));
+        await transport.Entered.Task.WaitAsync(TimeSpan.FromSeconds(30));
+        await using (var session = await fixture.OpenSessionAsync())
+        {
+            foreach (var record in new[] { Record(1, "alpha"), Record(2, "beta"), Record(3, "alpha"), Record(4, "beta"), Record(5, "alpha") })
+            {
+                await session.BeginTransactionAsync();
+                await session.EnlistAsync(record);
+                await session.SaveAsync();
+                await session.CommitAsync();
+            }
+        }
+        transport.Release.TrySetResult();
+        await fixture.StopAsync();
+        await Assert.That(transport.Calls.Select(call => $"{call.Destination}:{call.Count}")).IsEquivalentTo(new[]
+            { "destination:1", "alpha:2", "beta:2", "alpha:1" });
+        await Assert.That(transport.Received.Select(sent => sent.Body[0])).IsEquivalentTo(new byte[] { 0, 1, 2, 3, 4, 5 });
+        await Assert.That((await fixture.ReadRowsAsync()).Length).IsEqualTo(0);
+    }
+
+    [Test]
     public async Task Ordered_and_future_rows_remain_durable_while_due_unordered_rows_dispatch()
     {
         var transport = new RecordingTransport();
