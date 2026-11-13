@@ -76,6 +76,102 @@ public class RabbitMqReceiveTests
     }
 
     [Test]
+    public async Task Failure_after_manual_ack_does_not_settle_twice_or_close_the_channel()
+    {
+        using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(2));
+        var token = timeout.Token;
+        await using var broker = await RabbitMqTopologyTests.Broker.StartAsync(token);
+        MessageContext? current = null;
+        var control = new RabbitMqReceiveControl
+        {
+            NativeCallback = context => current = context,
+            Handle = async value =>
+            {
+                if (value != 1) return;
+                var native = current!.Features.GetRequired<NativeMessage<RabbitMqDelivery>>();
+                await native.Message.Channel.BasicAckAsync(native.Message.Message.DeliveryTag, false, token);
+                native.Disposition = Disposition.SettledByHandler;
+                throw new InvalidOperationException("Failure after successful native ack.");
+            },
+        };
+        using var host = Host(broker.Factory(), control);
+        await host.StartAsync(token);
+        var transport = (RabbitMqNativeTransport)host.Services.GetRequiredService<ITransport>();
+        var consumer = transport.Consumers.Single();
+        await transport.SendAsync(new("orders", "{\"Value\":1}"u8.ToArray(), Headers()), token);
+        await control.Values.Reader.ReadAsync(token);
+        var health = host.Services.GetRequiredService<HealthCheckService>();
+        await WaitAsync(async () => (await health.CheckHealthAsync(registration => registration.Name == "relayer.consumer", token)).Status == HealthStatus.Unhealthy, token);
+        await transport.SendAsync(new("orders", "{\"Value\":2}"u8.ToArray(), Headers()), token);
+        await Assert.That(await control.Values.Reader.ReadAsync(token)).IsEqualTo(2);
+        await WaitAsync(async () => (await health.CheckHealthAsync(registration => registration.Name == "relayer.consumer", token)).Status == HealthStatus.Healthy, token);
+        await Assert.That(consumer.Completion.IsCompleted).IsFalse();
+        await host.StopAsync(token);
+    }
+
+    [Test]
+    public async Task Concurrent_success_does_not_hide_a_delivery_in_failure_backoff()
+    {
+        using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(2));
+        var token = timeout.Token;
+        await using var broker = await RabbitMqTopologyTests.Broker.StartAsync(token);
+        await using var connection = await broker.Factory().CreateConnectionAsync(token);
+        await using var channel = await connection.CreateChannelAsync(cancellationToken: token);
+        await channel.QueueDeclareAsync("backoff", false, false, false, cancellationToken: token);
+        using var tracing = new MessageTracing(Microsoft.Extensions.Options.Options.Create(new TracingOptions()), []);
+        await using var transport = new RabbitMqNativeTransport("backoff", new() { ConnectionFactory = broker.Factory() }, ["backoff"], tracing) { HealthTracking = true };
+        var clock = new BackoffClock();
+        var options = new RabbitMqConsumerOptions { ChannelOptions = new(false, false, consumerDispatchConcurrency: 2), PrefetchCount = 2 };
+        var declaration = new ConsumerDefinition<RabbitMqConsumerOptions>("backoff", options, [], 2, 1, TimeSpan.Zero);
+        var calls = 0;
+        var succeeded = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var consumer = new RabbitMqConsumer(declaration, options, (_, _) =>
+        {
+            if (Interlocked.Increment(ref calls) == 1) throw new InvalidOperationException("copy failed");
+            succeeded.TrySetResult();
+            return new(Disposition.Complete);
+        }, tracing, clock);
+        transport.Consumers.Add(consumer);
+        await transport.StartAsync(token);
+        await transport.SendAsync(new("backoff", "first"u8.ToArray(), Headers()), token);
+        var timer = await clock.Timers.Reader.ReadAsync(token);
+        try
+        {
+            await transport.SendAsync(new("backoff", "second"u8.ToArray(), Headers()), token);
+            await succeeded.Task.WaitAsync(token);
+            // Drain the successful callback, while the failed callback's timer remains held.
+            await WaitAsync(() => Task.FromResult(consumer.ActiveCallbackCount == 1), token);
+            await Assert.That(() => consumer.GetHealthState()).Throws<InvalidOperationException>();
+        }
+        finally { timer.Fire(); }
+        await WaitAsync(() =>
+        {
+            try { return Task.FromResult(consumer.GetHealthState()?.IsIdle == true); }
+            catch (InvalidOperationException) { return Task.FromResult(false); }
+        }, token);
+        await Assert.That(consumer.Completion.IsCompleted).IsFalse();
+        await transport.StopAsync(token);
+    }
+
+    private sealed class BackoffClock : TimeProvider
+    {
+        internal Channel<BackoffTimer> Timers { get; } = Channel.CreateUnbounded<BackoffTimer>();
+        public override ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period)
+        {
+            var timer = new BackoffTimer(callback, state);
+            Timers.Writer.TryWrite(timer);
+            return timer;
+        }
+    }
+    private sealed class BackoffTimer(TimerCallback callback, object? state) : ITimer
+    {
+        internal void Fire() => callback(state);
+        public bool Change(TimeSpan dueTime, TimeSpan period) => true;
+        public void Dispose() { }
+        public ValueTask DisposeAsync() => default;
+    }
+
+    [Test]
     public async Task Optional_health_tracks_oldest_active_callback_and_stop_drains_before_closing_channel()
     {
         using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(2));

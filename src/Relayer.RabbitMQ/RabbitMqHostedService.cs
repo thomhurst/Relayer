@@ -79,7 +79,7 @@ internal sealed class RabbitMqReceiveComposer
         pipeline.ConfigureConsumer(_provider, _consumer);
         foreach (var handler in _provider.GetRequiredService<HandlerRegistry>().Descriptors)
             if (_consumer.Handlers.Contains(handler.HandlerType)) pipeline.Handler(handler);
-        return new(pipeline.Build(_consumer.Concurrency), new("cloudEvents:"), _consumer.Concurrency);
+        return new(pipeline.Build(_consumer.Concurrency), new("cloudEvents:"), _consumer.Concurrency, preserveSettledFailures: true);
     }
 
     internal static OutgoingMessage Copy(MessageContext context)
