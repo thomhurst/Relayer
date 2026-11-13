@@ -13,6 +13,11 @@ on:
         description: Retained Performance inputs
         type: string
         default: '42823238841'
+      same_image:
+        description: Negative control using one unchanged retained image (comparison preserves ABBA)
+        type: choice
+        options: ['comparison', 'baseline', 'candidate']
+        default: 'comparison'
       runtime_version:
         description: Exact runtime patch for this separate control (historical run used 10.0.14)
         type: choice
@@ -30,6 +35,7 @@ jobs:
     env:
       PERFORMANCE_RUN: ${{ inputs.performance_run || '42823238841' }}
       CONTROL_RUNTIME: ${{ inputs.runtime_version || '10.0.14' }}
+      SAME_IMAGE: ${{ inputs.same_image || 'comparison' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -95,7 +101,15 @@ jobs:
         run: |
           [[ "$PERFORMANCE_RUN" =~ ^[0-9]+$ ]] || { echo "Invalid run ID: $PERFORMANCE_RUN" >&2; exit 1; }
           gh run download "$PERFORMANCE_RUN" --name "performance-$PERFORMANCE_RUN-1" --dir inputs
-          python3 .github/scripts/frozen_bdn_control.py inputs results/exact-allocations --runtime-version "$CONTROL_RUNTIME" --allocation-boundary method --allocation-profiler .artifacts/exact-profiler/libFrozenAllocationProfiler.so
+          # Reuse the launcher's existing same-image mode; never relabel its four
+          # identical-image launches as a baseline/candidate comparison.
+          control_args=()
+          case "$SAME_IMAGE" in
+            comparison) ;;
+            baseline|candidate) control_args+=(--same-image "$SAME_IMAGE") ;;
+            *) echo "Invalid same-image control: $SAME_IMAGE" >&2; exit 1 ;;
+          esac
+          python3 .github/scripts/frozen_bdn_control.py inputs results/exact-allocations --runtime-version "$CONTROL_RUNTIME" --allocation-boundary method --allocation-profiler .artifacts/exact-profiler/libFrozenAllocationProfiler.so "${control_args[@]}"
           python3 .github/scripts/read_native_allocations.py results/exact-allocations/*-objects.jsonl > results/exact-allocations/validated-types.json
       - name: Validate every completed method report even after a launch failure
         if: always()
