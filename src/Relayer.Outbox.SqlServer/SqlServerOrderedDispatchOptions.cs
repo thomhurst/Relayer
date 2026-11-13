@@ -13,7 +13,7 @@ public sealed class SqlServerOrderedDispatchOptions
     public TimeSpan LeaseDuration { get; init; } = TimeSpan.FromSeconds(30);
     /// <summary>Delay between scans, less than one third of the lease duration.</summary>
     public TimeSpan PollInterval { get; init; } = TimeSpan.FromSeconds(1);
-    /// <summary>Failed sends before the original row is parked with its error. Must match other dispatchers for this store.</summary>
+    /// <summary>Permanent preparation failures before the original row is parked. Native sends retry durably. Must match other dispatchers for this store.</summary>
     public int MaxDispatchAttempts { get; init; } = 10;
     /// <summary>Maximum sequential sends in one bounded lane transaction.</summary>
     public int BatchSize { get; init; } = 100;

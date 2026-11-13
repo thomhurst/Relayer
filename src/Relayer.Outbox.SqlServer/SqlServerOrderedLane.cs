@@ -14,6 +14,7 @@ internal sealed class SqlServerOrderedLane : IDisposable
     private readonly SqlCommand _claim;
     private readonly SqlCommand _complete;
     private readonly SqlCommand _fail;
+    private readonly SqlCommand _retry;
     private readonly byte[] _id = new byte[16];
     private readonly byte[] _token = new byte[16];
 
@@ -34,6 +35,8 @@ internal sealed class SqlServerOrderedLane : IDisposable
         _fail = Create($"UPDATE {table} SET attempts = attempts + 1, last_error = @error, status = CASE WHEN attempts + 1 >= @maxAttempts THEN 'parked' ELSE 'pending' END, claim_token = NULL, claim_expires_at = NULL WHERE {fenced}; SELECT CAST(@@ROWCOUNT AS bit)");
         _fail.Parameters.Add("@error", SqlDbType.NVarChar, -1);
         _fail.Parameters.Add("@maxAttempts", SqlDbType.Int).Value = maxAttempts;
+        _retry = Create(SqlServerDispatchSql.Retry(table, fenced, "SYSUTCDATETIME()"));
+        _retry.Parameters.Add("@error", SqlDbType.NVarChar, -1);
     }
 
     internal async ValueTask FindReadyAsync(bool[] assigned, bool[] ready, CancellationToken cancellationToken)
@@ -66,6 +69,7 @@ internal sealed class SqlServerOrderedLane : IDisposable
     internal ValueTask<bool> ClaimAsync(SqlConnection connection, SqlTransaction transaction, OutboxClaim claim, CancellationToken token) => MutateAsync(connection, transaction, _claim, claim, null, token);
     internal ValueTask<bool> CompleteAsync(SqlConnection connection, SqlTransaction transaction, OutboxClaim claim, CancellationToken token) => MutateAsync(connection, transaction, _complete, claim, null, token);
     internal ValueTask<bool> FailAsync(SqlConnection connection, SqlTransaction transaction, OutboxClaim claim, string error, CancellationToken token) => MutateAsync(connection, transaction, _fail, claim, error, token);
+    internal ValueTask<bool> RetryAsync(SqlConnection connection, SqlTransaction transaction, OutboxClaim claim, string error, CancellationToken token) => MutateAsync(connection, transaction, _retry, claim, error, token);
 
     [RuntimeAsyncMethodGeneration(false)]
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder<>))]
@@ -93,5 +97,5 @@ internal sealed class SqlServerOrderedLane : IDisposable
         return command;
     }
 
-    public void Dispose() { _claim.Dispose(); _complete.Dispose(); _fail.Dispose(); }
+    public void Dispose() { _claim.Dispose(); _complete.Dispose(); _fail.Dispose(); _retry.Dispose(); }
 }
