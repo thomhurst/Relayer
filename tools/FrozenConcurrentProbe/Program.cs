@@ -2,6 +2,7 @@ using Relayer.Diagnostics;
 using System.Reflection;
 using System.Runtime.Loader;
 using System.Text.Json;
+using System.Threading.Channels;
 
 // Investigation tool only: bind once to the original executable; never rebuild its workload.
 if (args.Length is < 1 or > 2 || (args.Length == 2 && args[1] is not ("--exact-roundtrips" or "--bdn-await")))
@@ -11,6 +12,11 @@ var bdnAwait = args.Length == 2 && args[1] == "--bdn-await";
 var nativeAllocations = NativeAllocationRegion.Load();
 if (nativeAllocations is not null && !bdnAwait)
     throw new ArgumentException("Native allocation profiling requires the original BDN waiter control.");
+var releaseArm = Environment.GetEnvironmentVariable("RELAYER_FROZEN_RELEASE_CHANNEL");
+if (releaseArm is not (null or "async" or "sync") || (releaseArm is not null && !bdnAwait))
+    throw new ArgumentException("Release-channel intervention requires async or sync and --bdn-await.");
+var replaceRelease = releaseArm is not null;
+var synchronousRelease = releaseArm == "sync";
 var image = Path.GetFullPath(args[0]);
 var context = new AssemblyLoadContext("Frozen", isCollectible: false);
 context.Resolving += (_, name) =>
@@ -21,6 +27,26 @@ context.Resolving += (_, name) =>
 var assembly = context.LoadFromAssemblyPath(Path.Combine(image, "Relayer.Benchmarks.dll"));
 var type = assembly.GetType("Relayer.Benchmarks.EndToEndBenchmarks", throwOnError: true)!;
 var fixture = Activator.CreateInstance(type)!;
+// Owner intervention only: replace the fixture's release channel before setup. Both
+// arms replace it, differing only in the native scheduling option. Keep capacity,
+// full mode and multi-reader/writer contracts; never rebuild the frozen workload.
+if (replaceRelease)
+{
+    var signals = type.GetField("_signals", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(fixture)!;
+    var release = signals.GetType().GetField("<Release>k__BackingField", BindingFlags.Instance | BindingFlags.NonPublic)!;
+    if (release.GetValue(signals) is not Channel<byte> original || original.Reader.TryPeek(out _))
+        throw new InvalidOperationException("Expected the empty original release channel before setup.");
+    var replacement = Channel.CreateBounded<byte>(new BoundedChannelOptions(8)
+    {
+        AllowSynchronousContinuations = synchronousRelease,
+        FullMode = BoundedChannelFullMode.Wait,
+        SingleReader = false,
+        SingleWriter = false
+    });
+    release.SetValue(signals, replacement);
+    if (!ReferenceEquals(release.GetValue(signals), replacement))
+        throw new InvalidOperationException("Release-channel intervention did not bind to the frozen fixture.");
+}
 var setup = type.GetMethod("Setup")!.CreateDelegate<Func<Task>>(fixture);
 var cleanup = type.GetMethod("Cleanup")!.CreateDelegate<Func<Task>>(fixture);
 var run = type.GetMethod("ConcurrentRoundTrip")!.CreateDelegate<Func<ValueTask<int>>>(fixture);
@@ -74,10 +100,12 @@ try
         throw new InvalidOperationException($"Unexpected delivery sum: {result}.");
     Console.WriteLine(JsonSerializer.Serialize(new
     {
-        instrumentation = nativeAllocations is not null ? "native-object-allocation-callbacks" : exactRoundTrips ? "exact-synchronous-roundtrip-calls" : "none",
+        instrumentation = nativeAllocations is not null ? "native-object-allocation-callbacks" : replaceRelease ? "native-release-channel-scheduling-intervention" : exactRoundTrips ? "exact-synchronous-roundtrip-calls" : "none",
         exactRegion = nativeAllocations is not null
             ? "Process-wide CLR ObjectAllocated callbacks from native Begin after warmup through native End after all measured deliveries complete, including counter and timing boundaries. Reports heap objects and runtime sizes by type; no stacks or historical attribution. Do not subtract from other controls."
             : "One original ConcurrentRoundTrip delegate call per record (eight messages), before awaiting its returned ValueTask. Calling-thread work only; excludes other threads and later continuations. No type or historical attribution; do not subtract from other controls.",
+        releaseChannel = new { replaced = replaceRelease, allowSynchronousContinuations = synchronousRelease, capacity = 8 },
+        interventionLimits = "Only the fixture release channel is replaced; each arm uses the native bounded channel with identical capacity/full-mode/multi-reader-writer settings. Synchronous continuations alter scheduling and downstream execution. These new fixed-count executions cannot identify the historical delta, exact allocated objects, or justify a production trade-off. Do not subtract sampled weights or independent totals.",
         invocationAllocations = invocationReport,
         image, completionBoundary = bdnAwait ? "original-BenchmarkDotNet-AwaitHelper.GetResult" : "asynchronous-await",
         limits = "Fixed-count diagnostic, not original adaptive BDN replay or historical allocation-owner attribution.",
