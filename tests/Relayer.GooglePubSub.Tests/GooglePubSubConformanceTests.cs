@@ -156,7 +156,7 @@ internal sealed class PubSubFixture : ITransportConformanceFixture<GooglePubSubD
     {
         // StartAsync returns before the native initial write. Cut an established subscriber,
         // rather than racing that write into the client's documented fatal startup path.
-        await _native.WaitForInitialWriteAsync(token);
+        await _native.InitialWriteCompleted.Task.WaitAsync(token);
         await DisconnectBeforeStartAsync(token);
     }
 

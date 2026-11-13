@@ -11,8 +11,7 @@ internal sealed class PubSubShutdownInterceptor : Interceptor
     private readonly ConcurrentQueue<string> _violations = new();
     private readonly ConcurrentDictionary<string, byte> _acks = new();
     internal IOException? InitialWriteFailure;
-    private volatile TaskCompletionSource _initialWrite = new(TaskCreationOptions.RunContinuationsAsynchronously);
-    internal Task WaitForInitialWriteAsync(CancellationToken token) => _initialWrite.Task.WaitAsync(token);
+    internal TaskCompletionSource InitialWriteCompleted { get; private set; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private int _streams;
     private int _closedStreams;
     private int _publisherClosed;
@@ -62,10 +61,15 @@ internal sealed class PubSubShutdownInterceptor : Interceptor
         finally { Interlocked.Decrement(ref _settling); }
     }
 
+    internal void ReceiverStarting()
+    {
+        InitialWriteCompleted = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        Interlocked.Exchange(ref _receiverClosed, 0);
+    }
+
     internal void ReceiverClosed()
     {
         Interlocked.Exchange(ref _receiverClosed, 1);
-        _initialWrite = new(TaskCreationOptions.RunContinuationsAsynchronously);
         if (Volatile.Read(ref _settling) != 0) _violations.Enqueue("Subscriber closed before settlement RPCs completed");
     }
 
@@ -75,7 +79,7 @@ internal sealed class PubSubShutdownInterceptor : Interceptor
         var call = continuation(context);
         if (typeof(TRequest) != typeof(StreamingPullRequest)) return call;
         Interlocked.Increment(ref _streams);
-        var writer = new Writer<TRequest>(call.RequestStream, this);
+        var writer = new Writer<TRequest>(call.RequestStream, this, InitialWriteCompleted);
         return new(writer, call.ResponseStream, call.ResponseHeadersAsync, call.GetStatus, call.GetTrailers, () =>
         {
             writer.Close();
@@ -106,17 +110,23 @@ internal sealed class PubSubShutdownInterceptor : Interceptor
             throw new InvalidOperationException("Native Pub/Sub publisher remained open after disposal.");
     }
 
-    private sealed class Writer<T>(IClientStreamWriter<T> native, PubSubShutdownInterceptor owner) : IClientStreamWriter<T>
+    private sealed class Writer<T>(IClientStreamWriter<T> native, PubSubShutdownInterceptor owner, TaskCompletionSource initialWriteCompleted) : IClientStreamWriter<T>
     {
         private int _closed;
         public WriteOptions? WriteOptions { get => native.WriteOptions; set => native.WriteOptions = value; }
         public async Task WriteAsync(T message)
         {
             if (Volatile.Read(ref _closed) != 0) owner._violations.Enqueue("Ack, renewal or receive request after stream closure");
-            if (message is StreamingPullRequest { Subscription.Length: > 0 }
-                && Interlocked.Exchange(ref owner.InitialWriteFailure, null) is { } failure) throw failure;
-            await native.WriteAsync(message);
-            if (message is StreamingPullRequest { Subscription.Length: > 0 }) owner._initialWrite.TrySetResult();
+            var initial = message is StreamingPullRequest { Subscription.Length: > 0 };
+            try
+            {
+                if (initial && Interlocked.Exchange(ref owner.InitialWriteFailure, null) is { } failure) throw failure;
+                await native.WriteAsync(message);
+            }
+            finally
+            {
+                if (initial) initialWriteCompleted.TrySetResult();
+            }
             if (message is StreamingPullRequest pull)
                 foreach (var ack in pull.AckIds) owner._acks.TryAdd(ack, 0);
         }
