@@ -363,6 +363,18 @@ class OriginalRunnerTests(unittest.TestCase):
                     self.assertEqual(outcomes[3]["runtime"], "10.0.14")
                     self.assertIn("Same-image negative control", json.loads((output / "protocol.json").read_text())["limits"])
 
+    def test_exact_callbacks_reject_other_benchmark_cases_before_launch(self):
+        for case in ("scoped-dispatch", "log-composed", "queue-native"):
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as directory, \
+                 patch("sys.argv", ["control", directory, str(Path(directory) / "results"),
+                                    "--allocation-profiler", "profiler.so", "--case", case]), \
+                 patch("frozen_bdn_control.verify") as verify_input, \
+                 patch("frozen_bdn_control.subprocess.run") as execute:
+                with self.assertRaises(SystemExit):
+                    main()
+                verify_input.assert_not_called()
+                execute.assert_not_called()
+
     def test_invalid_input_prevents_every_process_launch(self):
         with tempfile.TemporaryDirectory() as directory, \
              patch("sys.argv", ["control", directory, str(Path(directory) / "results")]), \

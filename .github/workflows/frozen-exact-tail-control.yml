@@ -104,6 +104,7 @@ jobs:
             tools/FrozenConcurrentProbe/NativeAllocationRegion.cs
             .github/scripts/frozen_concurrent_control.py
             .github/scripts/frozen_bdn_control.py
+            .github/scripts/frozen_scope_control.py
             .github/scripts/test_frozen_bdn_control.py
             .github/scripts/read_native_tail_allocations.py
             .github/scripts/test_native_tail_allocations.py

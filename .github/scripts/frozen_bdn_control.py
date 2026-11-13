@@ -8,7 +8,6 @@ import re
 import subprocess
 
 from frozen_concurrent_control import verify
-from frozen_scope_control import result as timing_result
 
 
 BENCHMARK = "Relayer.Benchmarks.EndToEndBenchmarks.ConcurrentRoundTrip"
@@ -95,6 +94,9 @@ def main():
     parser.add_argument("--allocation-profiler", type=Path,
                         help="Separate exact CLR callback counts in the native final-stop tail envelope.")
     args = parser.parse_args()
+    from frozen_scope_control import result as timing_result
+    if args.allocation_profiler and args.case != "concurrent":
+        parser.error("Exact allocation callbacks support only the concurrent benchmark")
     owner, method, parameter, operations = CASES[args.case]
     benchmark = f"Relayer.Benchmarks.{owner}.{method}"
     if args.trace_tool and args.allocation_profiler:

@@ -25,7 +25,9 @@ ABBA launcher. Each process has a separate report; complete inputs, native SDK, 
 all outcomes (including failures) are uploaded. No Performance threshold changes or retries.
 
 For #537, `frozen-exact-tail-control.yml` reuses this profiler with
-`frozen_bdn_control.py --allocation-profiler <library>`. Set
+`frozen_bdn_control.py --allocation-profiler <library>`. This mode supports only
+the default `--case concurrent`; the native callback provider and operation-count
+validation are specific to that retained benchmark. Other cases fail before launch. Set
 `RELAYER_ALLOCATION_BDN_TAIL=1` only for this mode. The existing pinned official
 [EventPipe profiler sample](https://github.com/dotnet/samples/blob/3810558800760fc39282cc939bac645735514209/core/profiling/eventpipe/src/EventPipeProfiler.cpp)
 documents synchronous delivery on the emitting thread. The profiler enables only
