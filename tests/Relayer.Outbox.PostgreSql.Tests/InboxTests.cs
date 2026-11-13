@@ -3,6 +3,8 @@ using System.Collections.Concurrent;
 using System.Data;
 using System.Data.Common;
 using Microsoft.EntityFrameworkCore.Diagnostics;
+using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Metadata.Conventions;
 using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
@@ -17,6 +19,16 @@ namespace Relayer.Outbox.PostgreSql.Tests;
 [InheritsTests]
 public class InboxTests : InboxContractTests
 {
+    [Test]
+    public async Task Orders_model_is_ready_before_concurrent_database_work()
+    {
+        var options = new DbContextOptionsBuilder<OrdersContext>().UseNpgsql("Host=unused").Options;
+        await using var context = new OrdersContext(options, new Control());
+        // Reading Model constructs the native runtime model without issuing a database operation.
+        // EF's first-use race is reachable if the relational model is still lazy at this point.
+        await Assert.That(context.Model.FindRuntimeAnnotationValue(RelationalAnnotationNames.RelationalModel)).IsNotNull();
+    }
+
     [Test]
     [Arguments(false, false, 2)]
     [Arguments(false, true, 1)]
@@ -551,6 +563,9 @@ public class InboxTests : InboxContractTests
 
     public sealed class OrdersContext(DbContextOptions<OrdersContext> options, Control control) : DbContext(options)
     {
+        protected override void ConfigureConventions(ModelConfigurationBuilder configurationBuilder) =>
+            configurationBuilder.Conventions.Add(static _ => new InitializeRelationalModel());
+
         protected override void OnModelCreating(ModelBuilder modelBuilder) => modelBuilder.Entity<Order>().ToTable("orders").HasKey(x => x.Id);
         public override async ValueTask DisposeAsync()
         {
@@ -558,6 +573,18 @@ public class InboxTests : InboxContractTests
             control.OnDispose?.Invoke();
         }
     }
+    // EF 10.0.15 has a first-use relational-model race (dotnet/efcore#39214).
+    // Build it in EF's existing model-construction pipeline before publishing the cached
+    // runtime model. Tests still execute concurrently; remove after upgrading to 10.0.16.
+    private sealed class InitializeRelationalModel : IModelFinalizedConvention
+    {
+        public IModel ProcessModelFinalized(IModel model)
+        {
+            _ = model.GetRelationalModel();
+            return model;
+        }
+    }
+
     public sealed class OtherContext(DbContextOptions<OtherContext> options) : DbContext(options);
     public sealed class Order { public Guid Id { get; set; } }
     [Message("inbox.probe")]
