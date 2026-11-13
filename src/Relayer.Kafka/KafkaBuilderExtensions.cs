@@ -44,7 +44,7 @@ public static class KafkaBuilderExtensions
                 .WithLoggerFactory(loggerFactory);
             options.ConfigureProducer?.Invoke(native);
             return new KafkaProducerTransport(name, native.Build(), endpoints,
-                provider.GetRequiredService<MessageTracing>(), loggerFactory);
+                provider.GetRequiredService<MessageTracing>(), loggerFactory, options);
         });
         builder.Services.AddKeyedSingleton<IDeadLetterManager>(name, (provider, _) =>
         {

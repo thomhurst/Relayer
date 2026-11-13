@@ -19,6 +19,8 @@ builder.Services.AddRelayer(relayer =>
     relayer.AddMessageTypesFromThisAssembly();
     relayer.Kafka("events", kafka =>
     {
+        // This sample delegates topic creation and validation to deployment tooling.
+        // Omit this override to validate send, receive and dead-letter topics at startup.
         kafka.TopologyMode = TopologyMode.None;
         kafka.Options.Configure(options =>
         {

@@ -1,5 +1,6 @@
 using System.Collections.Frozen;
 using System.Runtime.CompilerServices;
+using Dekaf.Admin;
 using Dekaf.Producer;
 using Dekaf.Serialization;
 using Microsoft.Extensions.Logging;
@@ -13,6 +14,7 @@ internal sealed class KafkaProducerTransport : ITransport, ITransportSendTracing
     private readonly FrozenDictionary<string, SendTracing?> _endpoints;
     private readonly KafkaSendPool _operations = new();
     private readonly FrozenDictionary<string, ITopicProducer<WireString?, (ReadOnlyMemory<byte> Body, Headers Headers)?>> _topics;
+    private readonly KafkaTransportOptions? _options;
     private bool _disposed;
     internal List<KafkaConsumer> Consumers { get; } = [];
     private static readonly TransportCapabilities Capabilities = new()
@@ -24,9 +26,10 @@ internal sealed class KafkaProducerTransport : ITransport, ITransportSendTracing
     };
 
     internal KafkaProducerTransport(string name, IKafkaProducer<WireString?, (ReadOnlyMemory<byte> Body, Headers Headers)?> producer,
-        IEnumerable<string> destinations, MessageTracing? tracing = null, ILoggerFactory? loggerFactory = null)
+        IEnumerable<string> destinations, MessageTracing? tracing = null, ILoggerFactory? loggerFactory = null, KafkaTransportOptions? options = null)
     {
         Name = name;
+        _options = options;
         _producer = producer;
         var endpoints = new Dictionary<string, SendTracing?>(StringComparer.Ordinal);
         foreach (var destination in destinations)
@@ -47,12 +50,26 @@ internal sealed class KafkaProducerTransport : ITransport, ITransportSendTracing
     private SendTracing? Endpoint(string destination) => _endpoints.TryGetValue(destination, out var tracing) ? tracing
         : throw new InvalidOperationException($"Kafka transport '{Name}': undeclared topic '{destination}'. Declare a send route first.");
 
-    public ValueTask<TopologyReport> ApplyTopologyAsync(TopologyMode mode, CancellationToken cancellationToken)
+    public async ValueTask<TopologyReport> ApplyTopologyAsync(TopologyMode mode, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        if (mode != TopologyMode.None)
-            throw new NotSupportedException($"Kafka transport '{Name}': topology validation and provisioning are not implemented. Set TopologyMode.None and manage topics externally.");
-        return new(new TopologyReport([]));
+        if (mode == TopologyMode.None) return new TopologyReport([]);
+        if (mode != TopologyMode.Validate)
+            throw new NotSupportedException($"Kafka transport '{Name}': topology provisioning is not implemented. Create topics externally and use TopologyMode.Validate or TopologyMode.None.");
+        if (_endpoints.Count == 0) return new TopologyReport([]);
+        var options = _options ?? throw new InvalidOperationException("Kafka topology validation requires native admin configuration.");
+        var builder = new AdminClientBuilder().WithBootstrapServers(options.BootstrapServers.ToArray());
+        options.ConfigureAdmin?.Invoke(builder);
+        await using var admin = builder.Build();
+        // Listing all topics never requests metadata for a missing name: unlike targeted
+        // DescribeTopicsAsync in Dekaf 1.27, it cannot trigger broker auto-creation.
+        var topics = await admin.ListTopicsAsync(new ListTopicsOptions { ListInternal = true }, cancellationToken).ConfigureAwait(false);
+        var existing = new HashSet<string>(topics.Select(static topic => topic.Name), StringComparer.Ordinal);
+        var differences = new List<string>();
+        foreach (var topic in _endpoints.Keys.Order(StringComparer.Ordinal))
+            if (!existing.Contains(topic))
+                differences.Add($"Topic '{topic}' is missing or not visible to the admin client. Create it externally and grant topic metadata access (ConfigureAdmin).");
+        return new TopologyReport(differences);
     }
 
     public ValueTask SendAsync(OutgoingMessage message, CancellationToken cancellationToken) =>

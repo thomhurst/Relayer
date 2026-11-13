@@ -299,7 +299,7 @@ const status = [
   ['Packaged transport conformance suite', 'Implemented', true],
   ['Test harness and standalone handler context', 'Implemented', true],
   ['CI performance regression gate, in-memory and native-client benchmarks', <>Implemented, including Kafka and RabbitMQ broker-backed receive comparisons; remaining coverage planned. <Link to="/docs/transports/kafka#performance-validation">Kafka comparison scope</Link></>, true],
-  ['Kafka producers, serial consumers, typed tombstones, dead-letter copies, circuit breaking and offset/timestamp replay', 'Implemented', true],
+  ['Kafka producers, serial consumers, topic existence validation, typed tombstones, dead-letter copies, circuit breaking and offset/timestamp replay', 'Implemented', true],
   ['Named transport serializers and independent Kafka JSON schema registries', 'Implemented; explicit startup contracts', true],
   ['Optional Protobuf and MessagePack serializers', 'Implemented; explicit generated contracts and Native AOT coverage', true],
   ['Avro with generated codecs and startup-prepared schema registry', 'Implemented; Native AOT/trimming unsupported', true],
