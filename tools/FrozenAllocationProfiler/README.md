@@ -104,3 +104,23 @@ execution, not the historical allocation stream. All existing ELT/JIT, callback,
 locking, adaptive-count and host-drift limits apply. It does not isolate pipe
 effects or permit subtraction of independent runs. Use explicit original inputs
 and inspect every type family and failed outcome before choosing an intervention.
+
+## Concurrent receive test fixture (#687)
+
+`concurrent-allocation-owners.yml` builds and retains the test image, then executes
+its unchanged TUnit allocation test, a plain external fixture control and an exact
+callback control. `FrozenReceiveProbe` binds once to that image's original
+`ConcurrentReceiveFixture.Run`; it does not compile a substitute fixture. It keeps
+1000 warmup triples and 1000 measured Scoped/Consumer/Receive triples, every window,
+and exact native-scope equality. All three outcomes are attempted and retained even
+when a comparison fails. The profiler's existing known-count checks run first.
+
+The exact region surrounds all measured triples, including the external loop and
+all process threads; it reports aggregate object types, not individual window
+owners or allocation stacks. The external delegate driver excludes TUnit and its
+parallel test activity. It is a separate execution: callback scheduling and fastpath
+changes can hide or expose the failure. A passing run cannot explain the historical
+12,360-byte window, and callback object sizes cannot be subtracted from thread byte
+counters or independent runs. Preserve every unfavorable outcome and correlate any
+new excess with its own exact report before proposing a production fix. Original
+unit-test assertions, warmup and normal test parallelism remain unchanged.

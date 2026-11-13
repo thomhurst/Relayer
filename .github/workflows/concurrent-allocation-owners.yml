@@ -1,0 +1,112 @@
+name: Concurrent receive exact allocation owners
+
+# Independent diagnostic, never a retry or replacement of a failed CI execution.
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/concurrent-allocation-owners.yml'
+      - 'tools/FrozenReceiveProbe/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  owners:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: dotnet/samples
+          ref: 3810558800760fc39282cc939bac645735514209
+          path: profiler-sdk
+          sparse-checkout: core/profiling
+          persist-credentials: false
+      - uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
+        with:
+          dotnet-version: |
+            10.0.x
+            11.0.100
+      - name: Build and record executable inputs
+        id: inputs
+        run: |
+          mkdir -p results
+          dotnet --info > results/runtime.txt
+          uname -a > results/host.txt
+          git rev-parse HEAD > results/commit.txt
+          git -C profiler-sdk rev-parse HEAD > results/profiler-sdk-commit.txt
+          dotnet build tests/Relayer.Tests -c Release > results/test-build.log 2>&1
+          dotnet build tools/FrozenReceiveProbe -c Release > results/probe-build.log 2>&1
+          dotnet build tools/FrozenAllocationProfiler/Fixture -c Release > results/fixture-build.log 2>&1
+          CXX=clang++ cmake -S tools/FrozenAllocationProfiler -B .artifacts/exact-profiler -DPROFILER_SAMPLES="$PWD/profiler-sdk" -DCMAKE_BUILD_TYPE=Release > results/native-configure.log 2>&1
+          cmake --build .artifacts/exact-profiler > results/native-build.log 2>&1
+          python3 - <<'PYTHON'
+          import json
+          import re
+          import shutil
+          import subprocess
+          from pathlib import Path
+          path = Path('tools/FrozenAllocationProfiler/Fixture/bin/Release/net10.0/Fixture.runtimeconfig.json')
+          config = json.loads(path.read_text())
+          runtimes = subprocess.check_output(['dotnet', '--list-runtimes'], text=True)
+          matches = re.findall(r'^Microsoft.NETCore.App (11\.\S+) \[(.+)\]$', runtimes, re.MULTILINE)
+          if not matches:
+              raise RuntimeError('No installed .NET 11 runtime; see results/runtime.txt')
+          version, root = matches[-1]
+          Path('results/selected-runtime.txt').write_text(version + '\n')
+          config['runtimeOptions']['framework']['version'] = version
+          config['runtimeOptions']['rollForward'] = 'Disable'
+          path.write_text(json.dumps(config, indent=2) + '\n')
+          shutil.copytree(Path(root) / version, 'results/runtime-binaries')
+          PYTHON
+          find tests/Relayer.Tests/bin/Release -type f -exec sha256sum {} + > results/test-inputs-before.sha256
+      - name: Validate known-type callback counts
+        env:
+          TEST_NATIVE_PROFILER: .artifacts/exact-profiler/libFrozenAllocationProfiler.so
+          TEST_NATIVE_FIXTURE: tools/FrozenAllocationProfiler/Fixture/bin/Release/net10.0/Fixture.dll
+          TEST_NATIVE_OUTPUT: results/fixture
+        run: python3 -m unittest discover -s .github/scripts -p test_native_allocations.py > results/native-tests.log 2>&1
+      - name: Capture every outcome against the same original fixture image
+        if: ${{ always() && steps.inputs.outcome == 'success' }}
+        run: |
+          failed=0
+          dotnet test --no-build -c Release -f net11.0 --project tests/Relayer.Tests --treenode-filter '/*/*/ConcurrentReceiveAllocationTests/*' --output Detailed > results/test.log 2>&1 || failed=1
+          dotnet tools/FrozenReceiveProbe/bin/Release/net11.0/FrozenReceiveProbe.dll tests/Relayer.Tests/bin/Release/net11.0 > results/plain.log 2>&1 || failed=1
+          export CORECLR_ENABLE_PROFILING=1
+          export CORECLR_PROFILER='{32B7EF07-25E8-4AC7-B011-9A4321D702C8}'
+          export CORECLR_PROFILER_PATH="$PWD/.artifacts/exact-profiler/libFrozenAllocationProfiler.so"
+          export RELAYER_ALLOCATION_PROFILER="$CORECLR_PROFILER_PATH"
+          export RELAYER_ALLOCATION_OUTPUT="$PWD/results/objects.jsonl"
+          dotnet tools/FrozenReceiveProbe/bin/Release/net11.0/FrozenReceiveProbe.dll tests/Relayer.Tests/bin/Release/net11.0 > results/exact.log 2>&1 || failed=1
+          python3 .github/scripts/read_native_allocations.py results/objects.jsonl > results/validated-types.json || failed=1
+          sha256sum --check results/test-inputs-before.sha256 > results/test-inputs-after.log 2>&1 || failed=1
+          exit "$failed"
+      - name: Retain all outcomes and executable inputs
+        if: always()
+        run: |
+          find results tests/Relayer.Tests/bin/Release tools/FrozenReceiveProbe/bin/Release tools/FrozenAllocationProfiler/Fixture/bin/Release .artifacts/exact-profiler profiler-sdk/core/profiling -type f -exec sha256sum {} + > SHA256SUMS
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: concurrent-allocation-owners-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            results/
+            SHA256SUMS
+            tests/Relayer.Tests/bin/Release/
+            tools/FrozenReceiveProbe/
+            tools/FrozenConcurrentProbe/NativeAllocationRegion.cs
+            tools/FrozenAllocationProfiler/
+            .artifacts/exact-profiler/
+            profiler-sdk/core/profiling/
+            .github/scripts/read_native_allocations.py
+            .github/scripts/test_native_allocations.py
+            .github/workflows/concurrent-allocation-owners.yml
+            tests/Shared/ConcurrentReceiveFixture.cs
+            Directory.Build.props
+            Directory.Build.targets
+            Directory.Packages.props
+            global.json
+          include-hidden-files: true
+          retention-days: 90
