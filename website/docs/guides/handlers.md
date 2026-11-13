@@ -101,7 +101,11 @@ Relayer never scans assemblies at runtime. Register handlers inside `AddRelayer`
 
 ```csharp
 services.AddRelayer(relayer => relayer.Kafka("events", kafka =>
-    kafka.Consume("orders", consumer => consumer.Handler<OrderPlacedHandler>())));
+    kafka.Consume("orders", consumer =>
+    {
+        consumer.Options.Group = "orders-handler";
+        consumer.Handler<OrderPlacedHandler>();
+    })));
 ```
 
 `consumer.Handler<THandler>()` both selects the handler for that consumer and registers its generated descriptors and scoped DI service. No separate builder registration or assembly-wide handler registration is needed. The generator supports inherited contracts, explicit interface implementations, and handlers with several message or batch contracts. Explicit `Handler<ClosedHandler<OrderPlaced>>()` supports closed generic handlers and handlers in referenced assemblies. Repeated registration is idempotent, and an existing DI lifetime is preserved.

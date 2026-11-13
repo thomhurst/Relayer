@@ -42,7 +42,11 @@ Message names are case-sensitive. The default version is 1. Two different types 
 Select a concrete, assembly-accessible handler inside its consumer configuration callback:
 
 ```csharp
-kafka.Consume("orders", consumer => consumer.Handler<OrderPlacedHandler>());
+kafka.Consume("orders", consumer =>
+{
+    consumer.Options.Group = "orders-handler";
+    consumer.Handler<OrderPlacedHandler>();
+});
 ```
 
 This call registers the generated descriptors and DI service as well as binding the consumer. Builder-level `Handler<T>()` and `AddHandlersFromThisAssembly()` are no longer generated; move each registration into the consumer that handles its messages. Both static and extension forms of generated consumer registration calls are recognized throughout the compilation. Batch handlers, inherited contracts and explicit interface implementations are supported. Abstract, open generic, inaccessible and file-local handlers are excluded. Closed generic and referenced handlers can be registered explicitly.

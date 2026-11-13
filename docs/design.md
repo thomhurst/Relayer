@@ -275,7 +275,11 @@ Register handlers inside their consumer configuration callbacks:
 
 ```csharp
 services.AddRelayer(relayer => relayer.Kafka("events", kafka =>
-    kafka.Consume("orders", consumer => consumer.Handler<OrderPlacedHandler>())));
+    kafka.Consume("orders", consumer =>
+    {
+        consumer.Options.Group = "orders-handler";
+        consumer.Handler<OrderPlacedHandler>();
+    })));
 ```
 
 Generation supports inherited contracts, explicit interface implementations, and handlers with multiple message or batch contracts. Open generic, abstract, private nested, and file-local classes are excluded. Message types must be accessible to the generated code; `RLYH001` reports inaccessible contracts. Explicit `Handler<ClosedHandler<OrderPlaced>>()` also supports closed generic handlers and handlers in referenced assemblies. Repeated registration is idempotent. Handlers default to scoped DI registration, preserving an existing registration.
