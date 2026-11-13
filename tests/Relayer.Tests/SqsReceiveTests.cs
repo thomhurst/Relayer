@@ -189,7 +189,7 @@ public sealed class SqsReceiveTests
     {
         using var client = new ReceiveClient();
         var invalid = new ConsumerDefinition<AmazonSqsConsumerOptions>("orders", new()
-            { ConfigureReceive = request => request.MaxNumberOfMessages = 10 }, [], 1, 1, default);
+            { ConfigureReceive = request => request.MaxNumberOfMessages = 11 }, [], 1, 1, default);
         await using (var receiver = new SqsConsumer(invalid, client, "url", static (_, _) => default))
             await Assert.That(async () => await receiver.StartAsync(default)).Throws<InvalidOperationException>();
         await Assert.That(client.Polls).IsEqualTo(0);

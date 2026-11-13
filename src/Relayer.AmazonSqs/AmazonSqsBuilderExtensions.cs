@@ -48,7 +48,7 @@ public sealed class AmazonSqsConsumerOptions
 {
     /// <summary>CloudEvents header binding used by this queue. Match the sending route's HeaderNames.</summary>
     public HeaderNames HeaderNames { get; set; } = new();
-    /// <summary>Configures each worker's native ReceiveMessageRequest once before polling. QueueUrl, one-message receives and all attributes are required.</summary>
+    /// <summary>Configures each worker's native ReceiveMessageRequest once before polling. QueueUrl and all attributes are required. Standard queues allow 1–10 messages; FIFO requires 1.</summary>
     public Action<ReceiveMessageRequest>? ConfigureReceive { get; set; }
 }
 

@@ -2,11 +2,12 @@ using Relayer.Transports;
 using Amazon.SQS;
 using Amazon.SQS.Model;
 using Microsoft.Extensions.Logging;
+using System.Runtime.CompilerServices;
 
 namespace Relayer.AmazonSqs;
 
 // The SDK owns request retries; workers issue new long polls after exhausted transient failures.
-// One message per poll lets SQS itself serialize FIFO groups, including across processes.
+// FIFO polls stay single-message so SQS itself serializes groups across processes.
 internal sealed partial class SqsConsumer : IAsyncDisposable
 {
     private readonly IAmazonSQS _client;
@@ -82,16 +83,18 @@ internal sealed partial class SqsConsumer : IAsyncDisposable
             MessageAttributeNames = ["All"], MessageSystemAttributeNames = ["All"],
         };
         Declaration.Options.ConfigureReceive?.Invoke(request);
-        if (request.QueueUrl != _url || request.MaxNumberOfMessages != 1 || request.WaitTimeSeconds is not (>= 1 and <= 20) ||
+        if (request.QueueUrl != _url || request.MaxNumberOfMessages is not (>= 1 and <= 10) ||
+            (Declaration.Source.EndsWith(".fifo", StringComparison.Ordinal) && request.MaxNumberOfMessages != 1) || request.WaitTimeSeconds is not (>= 1 and <= 20) ||
             request.VisibilityTimeout is < 0 or > 43_200 || request.ReceiveRequestAttemptId is not null ||
             request.MessageAttributeNames?.Contains("All") != true || request.MessageSystemAttributeNames?.Contains("All") != true)
-            throw new InvalidOperationException("SQS receive request requires the declared QueueUrl, MaxNumberOfMessages=1, WaitTimeSeconds=1–20, all message/system attributes and no fixed ReceiveRequestAttemptId. Native visibility is 0–43200 seconds.");
+            throw new InvalidOperationException("SQS receive request requires the declared QueueUrl, MaxNumberOfMessages=1–10 (FIFO: 1), WaitTimeSeconds=1–20, all message/system attributes and no fixed ReceiveRequestAttemptId. Native visibility is 0–43200 seconds.");
         return request;
     }
 
     private async Task RunAsync(int slot, ReceiveMessageRequest request, CancellationToken poll, CancellationToken abort)
     {
         using var delivery = new SqsDelivery(_client, _url, _time);
+        using var batch = request.MaxNumberOfMessages > 1 ? new SqsReceiveBatch(this, request.MaxNumberOfMessages.Value) : null;
         var retrySeconds = 1;
         while (!poll.IsCancellationRequested)
         {
@@ -109,7 +112,14 @@ internal sealed partial class SqsConsumer : IAsyncDisposable
             }
             retrySeconds = 1;
             if (response.Messages is not { Count: > 0 }) continue;
-            // A poll that won the stop race still drains its returned message before clients close.
+            // A poll that won the stop race still drains every returned message before clients close.
+            if (batch is not null)
+            {
+                if (TrackHealth) Volatile.Write(ref _active[slot], _time.GetUtcNow().UtcTicks);
+                try { await batch.ProcessAsync(response, receivedAt, abort).ConfigureAwait(false); }
+                finally { if (TrackHealth) Volatile.Write(ref _active[slot], 0); }
+                continue;
+            }
             try
             {
                 delivery.Prepare(response.Messages[0], receivedAt, response.ResponseMetadata?.RequestId);
@@ -124,6 +134,89 @@ internal sealed partial class SqsConsumer : IAsyncDisposable
             }
             finally { if (TrackHealth) Volatile.Write(ref _active[slot], 0); delivery.Clear(); }
         }
+    }
+
+    // Serial handlers can retain their contexts at the settlement boundary. The native batch
+    // response then releases each pipeline separately, including its tracing/error observers.
+    internal sealed class SqsReceiveBatch : IDisposable
+    {
+        private readonly SqsConsumer _owner;
+        private readonly SqsBatchSlot[] _slots;
+        private readonly DeleteMessageBatchRequest _delete;
+
+        internal SqsReceiveBatch(SqsConsumer owner, int size)
+        {
+            _owner = owner;
+            _slots = new SqsBatchSlot[size];
+            for (var i = 0; i < size; i++) _slots[i] = new(owner._client, owner._url, owner._time, i);
+            _delete = new() { QueueUrl = owner._url, Entries = new(size) };
+        }
+
+        [RuntimeAsyncMethodGeneration(false)]
+        [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
+        internal async ValueTask ProcessAsync(ReceiveMessageResponse response, long receivedAt, CancellationToken abort)
+        {
+            var started = 0;
+            _delete.Entries.Clear();
+            for (var i = 0; i < response.Messages.Count && !abort.IsCancellationRequested; i++)
+            {
+                var slot = _slots[i];
+                slot.Reset();
+                slot.Delivery.Prepare(response.Messages[i], receivedAt, response.ResponseMetadata?.RequestId);
+                slot.Process(_owner, abort);
+                started++;
+                await slot.Ready.ConfigureAwait(false);
+                if (slot.PendingDelete) _delete.Entries.Add(slot.Entry);
+            }
+            DeleteMessageBatchResponse? deleted = null;
+            Exception? failure = null;
+            if (_delete.Entries.Count > 0)
+            {
+                try { deleted = await _owner._client.DeleteMessageBatchAsync(_delete, abort).ConfigureAwait(false); }
+                catch (Exception error) { failure = error; }
+            }
+            for (var i = 0; i < started; i++)
+            {
+                var slot = _slots[i];
+                if (!slot.PendingDelete) continue;
+                Exception? error = failure;
+                if (error is null)
+                {
+                    var success = false;
+                    if (deleted?.Successful is { } successes)
+                        foreach (var entry in successes)
+                            if (entry.Id == slot.Entry.Id) { success = true; break; }
+                    if (deleted?.Failed is { } failures)
+                        foreach (var entry in failures)
+                            if (entry.Id == slot.Entry.Id)
+                            {
+                                error = new AmazonSQSException(entry.Message) { ErrorCode = entry.Code, RequestId = deleted.ResponseMetadata?.RequestId };
+                                break;
+                            }
+                    if (error is null && !success)
+                        error = new InvalidOperationException("SQS DeleteMessageBatch omitted the delivery's result; native redelivery remains enabled.");
+                }
+                slot.DeleteRequestId = deleted?.ResponseMetadata?.RequestId;
+                slot.CompleteDelete(error);
+            }
+            for (var i = 0; i < started; i++)
+            {
+                await _slots[i].Processing.ConfigureAwait(false);
+                _slots[i].Entry.ReceiptHandle = null;
+            }
+            _delete.Entries.Clear();
+        }
+
+        public void Dispose()
+        {
+            foreach (var slot in _slots) slot.Dispose();
+        }
+    }
+
+    internal ValueTask Receive(SqsDelivery delivery, CancellationToken abort) => _receive(delivery, abort);
+    internal void ReportProcessingFailure(Exception error)
+    {
+        if (_logger is { } logger) ProcessingFailed(logger, error, Declaration.Source);
     }
 
     internal async Task StopAsync(CancellationToken token)

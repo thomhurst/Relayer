@@ -16,9 +16,22 @@ internal sealed class SqsSettlement(MessageTracing tracing, MessagingEndpoint en
         return SettleAsync(native.Message, native.Disposition, context.CancellationToken);
     }
 
+    internal ValueTask SettleAsync(SqsDelivery delivery, Disposition disposition, CancellationToken token)
+    {
+        if (disposition.Kind == DispositionKind.Complete && delivery.BatchSlot is { } batch)
+        {
+            var parent = Activity.Current;
+            var activity = _delete.Start();
+            if (activity is { IsAllDataRequested: true }) SqsMessageBinding.EnrichActivity(activity, delivery);
+            Activity.Current = parent;
+            return batch.DeleteAsync(activity);
+        }
+        return SettleSingleAsync(delivery, disposition, token);
+    }
+
     [RuntimeAsyncMethodGeneration(false)]
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
-    internal async ValueTask SettleAsync(SqsDelivery delivery, Disposition disposition, CancellationToken token)
+    private async ValueTask SettleSingleAsync(SqsDelivery delivery, Disposition disposition, CancellationToken token)
     {
         if (disposition.Kind == DispositionKind.SettledByHandler) return;
         if (disposition.Kind is not (DispositionKind.Complete or DispositionKind.Redeliver))
