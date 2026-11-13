@@ -110,6 +110,8 @@ class OriginalRunnerTests(unittest.TestCase):
              "instance.ScopedHandler = true;", "instance.ScopedHandler = false;"),
             ("log-composed", "InMemoryTransportBenchmarks", "ComposedRoundTrip",
              "instance.Mode = (Relayer.Transports.ConsumptionModel)(1);", "instance.Mode = (Relayer.Transports.ConsumptionModel)(0);"),
+            ("queue-composed", "InMemoryTransportBenchmarks", "ComposedRoundTrip",
+             "instance.Mode = (Relayer.Transports.ConsumptionModel)(0);", "instance.Mode = (Relayer.Transports.ConsumptionModel)(1);"),
             ("queue-native", "InMemoryTransportBenchmarks", "NativeRoundTrip",
              "instance.Mode = (Relayer.Transports.ConsumptionModel)(0);", "instance.Mode = (Relayer.Transports.ConsumptionModel)(1);"),
         )
@@ -413,7 +415,7 @@ class OriginalRunnerTests(unittest.TestCase):
                     self.assertIn("Same-image negative control", json.loads((output / "protocol.json").read_text())["limits"])
 
     def test_exact_callbacks_reject_other_benchmark_cases_before_launch(self):
-        for case in ("scoped-dispatch", "log-composed", "queue-native"):
+        for case in ("scoped-dispatch", "log-composed", "queue-composed", "queue-native"):
             with self.subTest(case=case), tempfile.TemporaryDirectory() as directory, \
                  patch("sys.argv", ["control", directory, str(Path(directory) / "results"),
                                     "--allocation-profiler", "profiler.so", "--case", case]), \
