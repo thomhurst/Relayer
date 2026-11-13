@@ -64,7 +64,8 @@ internal sealed class SendRoute<TMessage>
     {
         for (var i = 0; i < _operations.Length; i++)
         {
-            if (Interlocked.Exchange(ref _operations[i], null) is { } operation) return operation;
+            if (Volatile.Read(ref _operations[i]) is not null &&
+                Interlocked.Exchange(ref _operations[i], null) is { } operation) return operation;
         }
         return new Operation(this);
     }
@@ -75,7 +76,8 @@ internal sealed class SendRoute<TMessage>
         if (operation.CanRetain)
         {
             for (var i = 0; i < _operations.Length; i++)
-                if (Interlocked.CompareExchange(ref _operations[i], operation, null) is null) return;
+                if (Volatile.Read(ref _operations[i]) is null &&
+                    Interlocked.CompareExchange(ref _operations[i], operation, null) is null) return;
         }
         operation.Timeout.Dispose();
     }

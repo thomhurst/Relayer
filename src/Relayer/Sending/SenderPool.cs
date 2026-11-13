@@ -20,7 +20,8 @@ internal sealed class SenderPool(SendPipeline pipeline)
         if (first is null) return new Sender(_pipeline, outbox) { Tenant = tenant };
         for (var i = 0; i < first.Items.Length; i++)
         {
-            if (Interlocked.Exchange(ref first.Items[i], null) is not { } sender) continue;
+            if (Volatile.Read(ref first.Items[i]) is null ||
+                Interlocked.Exchange(ref first.Items[i], null) is not { } sender) continue;
             sender.Outbox = outbox;
             sender.Tenant = tenant;
             return sender;
@@ -32,7 +33,8 @@ internal sealed class SenderPool(SendPipeline pipeline)
     {
         var segment = _senders!;
         for (var i = 0; i < segment.Items.Length; i++)
-            if (Interlocked.CompareExchange(ref segment.Items[i], sender, null) is null) return;
+            if (Volatile.Read(ref segment.Items[i]) is null &&
+                Interlocked.CompareExchange(ref segment.Items[i], sender, null) is null) return;
         // Overflow senders become collectible after the attempt instead of retaining peak concurrency.
     }
 
