@@ -11,6 +11,14 @@ on:
         description: Retained net10 Performance run
         type: string
         default: "43124385683"
+      same_image:
+        description: Negative control image (empty keeps baseline/candidate ABBA)
+        type: choice
+        options:
+          - ""
+          - baseline
+          - candidate
+        default: ""
 
       runtime_version:
         description: Exact runtime patch for a separate native-tail control
@@ -29,6 +37,7 @@ jobs:
     env:
       PERFORMANCE_RUN: ${{ inputs.performance_run || '42823238841' }}
       CONTROL_RUNTIME: ${{ inputs.runtime_version || '10.0.14' }}
+      SAME_IMAGE: ${{ inputs.same_image }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
@@ -67,7 +76,8 @@ jobs:
           Native EngineEventSource bounds the final WorkloadActualStop to BenchmarkStop tail.
           Engine.GetExtraStats runs inside this envelope, but so do final timed-iteration cleanup/GC/logging and stats setup/cleanup.
           These are not exact MeasureWithGc boundaries. Retain full native event history and compare its final denominator with // GC.
-          Instrumentation changes scheduling. Compare candidates only within this complete ABBA bracket.
+          Instrumentation changes scheduling. In default ABBA mode, compare candidates only within their complete bracket.
+          A requested same-image control holds the executable constant; it is not a baseline/candidate comparison.
           Weighted allocation samples are not exact bytes or object counts; missing stacks remain unattributed.
           No subtraction of independent totals, historical owner attribution, demonstrated defect, performance trade-off or threshold change.
           Retain raw traces, complete stacks/runtime/module events and every failed outcome; missing native coverage fails closed.
@@ -78,14 +88,23 @@ jobs:
         run: |
           [[ "$PERFORMANCE_RUN" =~ ^[0-9]+$ ]] || { echo "Invalid run ID: $PERFORMANCE_RUN" >&2; exit 1; }
           gh run download "$PERFORMANCE_RUN" --name "performance-$PERFORMANCE_RUN-1" --dir inputs
-      - name: Profile original adaptive ABBA with native engine events
+      - name: Profile four original adaptive launches with native engine events
         run: |
-          python3 .github/scripts/frozen_bdn_control.py inputs results/adaptive --trace-tool .diagnostic-tools/dotnet-trace --runtime-version "$CONTROL_RUNTIME"
+          control_args=()
+          if [[ -n "$SAME_IMAGE" ]]; then control_args+=(--same-image "$SAME_IMAGE"); fi
+          python3 .github/scripts/frozen_bdn_control.py inputs results/adaptive --trace-tool .diagnostic-tools/dotnet-trace --runtime-version "$CONTROL_RUNTIME" "${control_args[@]}"
       - name: Read all native-tail owner groups even after launch failure
         if: always()
         run: |
           failed=0
-          for launch in 1-baseline 2-candidate 3-candidate 4-baseline; do
+          shopt -s nullglob
+          traces=(results/adaptive/*.nettrace)
+          if (( ${#traces[@]} != 4 )); then
+            echo "Expected four native allocation captures" >&2
+            failed=1
+          fi
+          for trace in "${traces[@]}"; do
+            launch="$(basename "$trace" .nettrace)"
             dotnet tools/FrozenAllocationReader/bin/Release/net11.0/FrozenAllocationReader.dll "results/adaptive/$launch.nettrace" --bdn-tail > "results/$launch-tail.jsonl" 2> "results/$launch-reader.log" || failed=1
           done
           exit "$failed"
