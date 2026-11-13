@@ -41,7 +41,7 @@ public class OrderedDispatchTests
         };
         listener.SetMeasurementEventCallback<long>((_, count, _, _) => Interlocked.Add(ref poisonCount, count));
         listener.Start();
-        var failing = new RecordingTransport((_, _) => throw new InvalidOperationException("poison"));
+        var failing = new RecordingTransport((_, _) => throw new PostgreSqlLocalFailure(new InvalidOperationException("poison"), FailureAction.DeadLetter));
         using (var worker = new PostgreSqlOrderedDispatcher(source, new() { Lanes = 1, MaxDispatchAttempts = 1 },
             [failing], NullLogger<PostgreSqlOrderedDispatcher>.Instance, instrumentation: instrumentation))
             await Assert.That(await worker.DispatchLaneAsync(0, default)).IsEqualTo(0);

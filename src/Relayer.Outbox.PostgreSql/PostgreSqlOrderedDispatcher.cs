@@ -204,9 +204,11 @@ internal sealed partial class PostgreSqlOrderedDispatcher : BackgroundService
                 {
                     var claim = new OutboxClaim(row.Id, Guid.NewGuid());
                     if (!await _lane.ClaimAsync(connection, transaction, claim, cancellationToken).ConfigureAwait(false)) break;
+                    var preparedForSend = false;
                     try
                     {
                         var prepared = Prepare(row, _transports, _capabilities);
+                        preparedForSend = true;
                         _instrumentation?.RecordOutboxDispatchLag(_timeProvider.GetUtcNow() - row.CreatedAt);
                         if (PostgreSqlLocalTransport.Find(prepared.Transport) is { } local)
                         {
@@ -217,9 +219,10 @@ internal sealed partial class PostgreSqlOrderedDispatcher : BackgroundService
                     }
                     catch (Exception error) when (!cancellationToken.IsCancellationRequested)
                     {
-                        if (!await _lane.FailAsync(connection, transaction, claim, error.Message, cancellationToken, error is PostgreSqlLocalFailure { Action: FailureAction.DeadLetter }).ConfigureAwait(false))
+                        var permanent = error is PostgreSqlLocalFailure { Action: FailureAction.DeadLetter };
+                        if (!await _lane.FailAsync(connection, transaction, claim, error.Message, cancellationToken, permanent, retryable: preparedForSend).ConfigureAwait(false))
                             throw new InvalidOperationException("Ordered outbox claim expired while recording a dispatch failure.", error);
-                        poisoned = row.Attempts + 1 >= _options.MaxDispatchAttempts || error is PostgreSqlLocalFailure { Action: FailureAction.DeadLetter };
+                        poisoned = permanent || (!preparedForSend && row.Attempts + 1 >= _options.MaxDispatchAttempts);
                         DispatchFailed(_logger, error);
                         break;
                     }
@@ -253,7 +256,7 @@ internal sealed partial class PostgreSqlOrderedDispatcher : BackgroundService
         return (transport, new OutgoingMessage(message.Destination, message.Body, message.Headers, message.OrderingKey).ForOutboxDispatch());
     }
 
-    [LoggerMessage(Level = LogLevel.Error, Message = "Ordered outbox dispatch failed; durable rows remain available for retry or, after attempt exhaustion, dead-letter management.")]
+    [LoggerMessage(Level = LogLevel.Error, Message = "Ordered outbox dispatch failed; retryable sends retain durable backoff; permanent failures require dead-letter management.")]
     private static partial void DispatchFailed(ILogger logger, Exception error);
     [LoggerMessage(Level = LogLevel.Warning, Message = "Could not release ordered outbox leases; they expire automatically.")]
     private static partial void ReleaseFailed(ILogger logger, Exception error);

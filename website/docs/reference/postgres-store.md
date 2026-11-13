@@ -118,9 +118,16 @@ or the history table grows without a bound.
 
 ## Poison rows and key release
 
-Dispatch stops retrying after `MaxDispatchAttempts` failed sends (default **10**).
-Set this positive limit on the direct dispatch's `PostgreSqlOutboxOptions` and on the ordered,
-maintenance and CDC worker options. Keep dispatchers for the same store consistent.
+Retryable native send failures stay pending indefinitely. Each failed send releases its claim and
+persists `deliver_at` with exponential backoff: 1, 2, 4, 8 seconds, up to 5 minutes. Native client
+retries run first; recovery, direct and ordered dispatch share the persisted deadline. A retrying
+ordered head holds its lane until due, preserving send order. Failed-send diagnostics saturate at
+30 attempts so an extended outage cannot overflow the counter.
+
+Explicit local `FailureAction.DeadLetter` decisions take the poison transition immediately.
+Ordered preparation errors (missing transport, key or ordering capability) and explicit low-level
+`RecordFailureAsync` calls retain the positive `MaxDispatchAttempts` budget (default **10**).
+Configure that limit consistently on store and worker options; native send failures never exhaust it.
 Broker success followed by database completion failure does not consume an attempt.
 
 One fenced statement persists the final error and attempt count and copies the original identity,

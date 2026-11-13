@@ -1702,3 +1702,29 @@ classification. See [SQL Server recovery](https://relayer.tomlonghurst.dev/docs/
 **Decision.** Generate `Handler<THandler>()` only for `IConsumerBuilder`. Remove the root builder overload and `AddHandlersFromThisAssembly()`. Applications explicitly select each handler inside its consumer callback. RLY003 points to that call. Source generation continues to discover contracts at compile time; it does not register discovered handlers automatically. Manual pipeline composers use descriptors registered by their consumer declaration.
 
 **Consequences.** One application call selects dispatch and registers DI, preserving explicit topology, typed native options, AOT safety and existing handler lifetimes. Existing applications move builder-level registrations into consumer callbacks. Dispatch and native broker behavior are unchanged, with no additional steady-state work or allocation.
+## D70. PostgreSQL retryable outbox sends retain durable eligibility
+
+**Context.** Native sends already retry within their operation: Azure.Messaging.ServiceBus 7.21.0
+[`ServiceBusRetryPolicy.RunOperation`](https://github.com/Azure/azure-sdk-for-net/blob/Azure.Messaging.ServiceBus_7.21.0/sdk/servicebus/Azure.Messaging.ServiceBus/src/Primitives/ServiceBusRetryPolicy.cs)
+keeps its attempt count in memory and throws after exhaustion. Dekaf 1.27.0's
+[`OutboxRelayService`](https://github.com/thomhurst/Dekaf/blob/v1.27.0/src/Dekaf.Outbox/OutboxRelayService.cs)
+also backs off a failed head, but belongs to the separate Kafka-specific Dekaf.Outbox package and
+tracks bucket backoff in memory. Neither can persist eligibility for Relayer's multi-transport
+PostgreSQL rows across worker replacement. Existing dispatch used its poison budget for broker outages.
+
+**Decision.** After a native send fails, reuse the fenced PostgreSQL mutation and `deliver_at`
+column to persist exponential delays from one second to five minutes. Do not add native send
+retry loops or replace broker retry policies. Retryable sends never enter the poison-budget
+transition; their diagnostic attempt counter saturates at 30. Explicit local dead-letter
+decisions retain immediate poison handling. Preparation failures and explicit low-level
+RecordFailureAsync retain their existing attempt budget. Ordered heads retain their existing
+due-time lane barrier. No new schema or broker scheduling feature is introduced.
+
+**Consequences.** PostgreSQL outages recover automatically without manual redrive. Local handlers
+that need poison isolation must classify permanent failures explicitly. SQL Server and MySQL
+follow-ups are tracked independently under #646. The low-level store mutation contract remains
+unchanged; callers using it directly still own their failure classification.
+
+Preparation failures retain the existing diagnostic attempt count, including previous retryable sends.
+If routing becomes invalid after an extended outage, its first preparation failure can exhaust that
+budget. Repair such configuration through the existing dead-letter redrive workflow.

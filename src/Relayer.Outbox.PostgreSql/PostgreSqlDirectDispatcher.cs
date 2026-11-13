@@ -242,7 +242,7 @@ internal sealed class PostgreSqlDirectDispatcher : BackgroundService
                     {
                         try
                         {
-                            if (await _store.RecordDispatchFailureAsync(_claims[i], error.Message, DateTimeOffset.UtcNow, cancellationToken, error is PostgreSqlLocalFailure { Action: FailureAction.DeadLetter }).ConfigureAwait(false) == 2)
+                            if (await _store.RecordDispatchFailureAsync(_claims[i], error.Message, DateTimeOffset.UtcNow, cancellationToken, error is PostgreSqlLocalFailure { Action: FailureAction.DeadLetter }, retryable: true).ConfigureAwait(false) == 2)
                             {
                                 if (propagateDatabaseFailures) _recoveredPoison++;
                                 else _instrumentation?.RecordOutboxPoison();
