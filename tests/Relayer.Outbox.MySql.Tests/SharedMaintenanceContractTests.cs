@@ -1,6 +1,5 @@
 using System.Buffers;
 using MySqlConnector;
-using Microsoft.Extensions.Logging.Abstractions;
 using Relayer.TestFixtures;
 
 namespace Relayer.Outbox.MySql.Tests;
@@ -21,12 +20,13 @@ public sealed class SharedMaintenanceContractTests : OutboxMaintenanceContractTe
         private string Dead => MySqlOutboxSchema.DeadTable(data.Options);
         private string Inbox => MySqlOutboxSchema.InboxTable(data.Options);
         public override MaintenanceWorker Worker(RecordingTransport transport, int batchSize = 1,
-            bool deadRetention = true, bool inboxRetention = true, int cleanupBatchLimit = 10) => new WorkerAdapter(new(data.Source, new()
+            bool deadRetention = true, bool inboxRetention = true, int cleanupBatchLimit = 10, Action? failure = null) => new WorkerAdapter(new(data.Source, new()
             {
-                BatchSize = batchSize, CleanupBatchLimit = cleanupBatchLimit, RecoveryDelay = TimeSpan.FromHours(1),
+                BatchSize = batchSize, CleanupBatchLimit = cleanupBatchLimit,
+                SweepInterval = TimeSpan.FromMilliseconds(1), CleanupInterval = TimeSpan.FromHours(1), RecoveryDelay = TimeSpan.FromHours(1),
                 DeadRetention = deadRetention ? TimeSpan.FromDays(30) : null,
                 InboxRetention = inboxRetention ? TimeSpan.FromDays(7) : null
-            }, [transport], NullLogger<MySqlMaintenanceWorker>.Instance));
+            }, [transport], new FailureLogger<MySqlMaintenanceWorker>(failure)));
 
         public override async Task Insert(Guid id, DateTimeOffset createdAt, int? lane = null,
             DateTimeOffset? deliverAt = null, string status = "pending", DateTimeOffset? claimExpiresAt = null)
@@ -54,6 +54,7 @@ public sealed class SharedMaintenanceContractTests : OutboxMaintenanceContractTe
             command.Parameters.Add(new MySqlParameter("at", processedAt));
             await command.ExecuteNonQueryAsync();
         }
+        public override Task DropInboxTable() => data.Execute($"DROP TABLE {Inbox}");
         public override Task MakeDueAndExpireClaims() => data.Execute($"UPDATE {Outbox} SET deliver_at=UTC_TIMESTAMP(6)-INTERVAL 1 SECOND WHERE deliver_at IS NOT NULL; UPDATE {Outbox} SET claim_expires_at=UTC_TIMESTAMP(6)-INTERVAL 1 SECOND WHERE claim_token IS NOT NULL");
         public override async Task<int> Attempts(Guid id) => Convert.ToInt32(await Scalar($"SELECT attempts FROM {Outbox} WHERE id=X'{Convert.ToHexString(id.ToByteArray(bigEndian: true))}'"));
         public override async Task<long> Count(Table table) => Convert.ToInt64(await Scalar($"SELECT COUNT(*) FROM {table switch { Table.Outbox => Outbox, Table.Dead => Dead, Table.Inbox => Inbox, _ => throw new ArgumentOutOfRangeException(nameof(table)) }}"));
@@ -71,6 +72,8 @@ public sealed class SharedMaintenanceContractTests : OutboxMaintenanceContractTe
         public override bool CleanupPending => worker.CleanupPending;
         public override ValueTask<int> CleanupAsync(CancellationToken cancellationToken = default) => worker.CleanupAsync(cancellationToken);
         public override ValueTask ReleaseAsync(CancellationToken cancellationToken = default) => worker.ReleaseAsync(cancellationToken);
+        public override Task StartAsync(CancellationToken cancellationToken) => worker.StartAsync(cancellationToken);
+        public override Task StopAsync(CancellationToken cancellationToken) => worker.StopAsync(cancellationToken);
         public override void Dispose() => worker.Dispose();
     }
 }

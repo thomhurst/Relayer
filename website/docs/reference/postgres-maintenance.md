@@ -92,6 +92,7 @@ connection and native admission lock before the next batch rechecks leadership. 
 lease loss stops further admission; already committed batches remain deleted. The first table
 rotates between turns so a busy table cannot repeatedly prevent other tables from making progress.
 
+A failed cleanup waits for `CleanupInterval` before retrying, while recovery sweeps continue.
 A full final batch schedules another cleanup after the next recovery sweep, rather than waiting
 `CleanupInterval`. Recovery therefore gets a turn even under sustained expiry. Once all tables have
 returned a partial batch, cleanup returns to `CleanupInterval`. These limits bound work admitted per

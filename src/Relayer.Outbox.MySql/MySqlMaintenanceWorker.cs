@@ -96,10 +96,10 @@ internal sealed partial class MySqlMaintenanceWorker : BackgroundService
                     try
                     {
                         await CleanupAsync(stoppingToken).ConfigureAwait(false);
-                        nextCleanup = DateTimeOffset.UtcNow + (CleanupPending ? TimeSpan.Zero : _options.CleanupInterval);
                     }
                     catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { break; }
                     catch (Exception error) { Failed(_logger, error); }
+                    nextCleanup = DateTimeOffset.UtcNow + (CleanupPending ? TimeSpan.Zero : _options.CleanupInterval);
                 }
                 await Task.Delay(_options.SweepInterval, stoppingToken).ConfigureAwait(false);
             }
@@ -123,7 +123,8 @@ internal sealed partial class MySqlMaintenanceWorker : BackgroundService
         // Rotate before awaiting: a busy table or cancellation cannot monopolize subsequent turns.
         var first = _cleanupStart;
         _cleanupStart = (first + 1) % 2;
-        CleanupPending = active != 0;
+        // Only a successful turn may request an immediate continuation.
+        CleanupPending = false;
         for (var round = 0; round < _options.CleanupBatchLimit && active != 0; round++)
         {
             for (var offset = 0; offset < 2; offset++)

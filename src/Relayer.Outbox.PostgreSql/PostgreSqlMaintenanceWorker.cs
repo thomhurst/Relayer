@@ -124,7 +124,8 @@ internal sealed partial class PostgreSqlMaintenanceWorker : BackgroundService
         // Rotate before awaiting: a busy table or cancellation cannot monopolize subsequent turns.
         var first = _cleanupStart;
         _cleanupStart = (first + 1) % 3;
-        CleanupPending = active != 0;
+        // Only a successful turn may request an immediate continuation.
+        CleanupPending = false;
         for (var round = 0; round < _options.CleanupBatchLimit && active != 0; round++)
         {
             for (var offset = 0; offset < 3; offset++)
