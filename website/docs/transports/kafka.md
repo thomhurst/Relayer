@@ -320,10 +320,41 @@ Use the same native TLS/SASL settings on all three builders when the cluster req
 
 The HTTP API returns message IDs and base64-encoded body bytes, without native feature objects. A tombstone and an empty body both appear as empty bytes; use `IDeadLetterManager` directly to inspect `KafkaDeadLetterFeature.Record.Value`. HTTP redrive preserves tombstones and follows the same group-offset and filter rules above, and HTTP purge permanently deletes partition prefixes for all groups.
 
-## Native per-send headers
+## Native per-send records and headers
 
 Use `new SendOptions().Kafka(headers => headers.Add("source", "billing"))` to customize
 native `Dekaf.Serialization.Headers` before sending. This wraps the existing native
 header callback seam and works for single and batch sends. Native callbacks cannot be
-persisted in an outbox. Partition and timestamp overrides are not exposed per send;
-the configured Dekaf producer still chooses the partition using its native partitioner.
+persisted in an outbox.
+
+Use an immutable native record transform for an explicit partition or event timestamp:
+
+```csharp
+await sender.SendAsync(order, options => options
+    .Kafka(headers => headers.Add("source", "billing"))
+    .KafkaRecord(record => record with
+    {
+        Partition = 2,
+        Timestamp = eventTime,
+    }));
+```
+
+`KafkaRecord` receives Dekaf's `ProducerMessage<WireString?, (ReadOnlyMemory<byte> Body, Headers Headers)?>`.
+Return the record to send, normally with a `with` expression. Unset partition and timestamp
+keep Dekaf's native defaults; broker timestamp settings still apply. The topic must remain
+the declared route destination. Header callbacks and record transforms run in registration
+order. The original tuple's headers preserve the resolved envelope during serialization;
+use `Kafka(...)` for changes to those headers.
+
+Transforms work for individual sends, same-topic and mixed-topic batches, and tombstones.
+Batches containing a transform use native individual sends and drain every admitted operation
+before returning borrowed storage, including on failure. Dekaf still owns network batching,
+partitioning, ordering and acknowledgments. The record and all referenced memory are borrowed
+until the send completes: do not retain them, and keep application-provided replacement memory
+alive and unchanged until completion. Return a non-null record. Transforms cannot be persisted
+in an outbox; use a direct send outside the active outbox transaction.
+
+Only this opt-in path creates immutable native records (including copies made by `with`).
+Ordinary sends retain the allocation-free component overloads. `KafkaSendBenchmarks.NativeRecord`
+compares the opt-in path alongside ordinary sends and tombstones; its raw baseline reuses
+preconfigured native records, so record construction cost appears on the Relayer side.

@@ -63,6 +63,18 @@ public readonly struct OutgoingMessage
         _options?.ApplyNativeCore(nativeMessage);
     }
 
+    /// <summary>Whether this send needs an immutable native record for its transforms.</summary>
+    public bool HasNativeTransforms => _options?.HasNativeTransforms ?? false;
+
+    /// <summary>Applies mutable native callbacks and immutable record transforms in registration order.</summary>
+    public TRecord ApplyNative<TNative, TRecord>(TNative nativeMessage, TRecord record)
+        where TNative : class where TRecord : class
+    {
+        ArgumentNullException.ThrowIfNull(nativeMessage);
+        ArgumentNullException.ThrowIfNull(record);
+        return _options is null ? record : _options.ApplyNativeCore(nativeMessage, record);
+    }
+
     internal OutgoingMessage Forward(string destination, ReadOnlyMemory<KeyValuePair<string, WireString>> headers,
         DateTimeOffset? deliverAt) => new(destination, Body, headers, OrderingKey, deliverAt, _options, IsTombstone);
 

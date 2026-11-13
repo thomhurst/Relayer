@@ -1,4 +1,5 @@
 using Dekaf;
+using Dekaf.Producer;
 using Dekaf.Serialization;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -15,6 +16,13 @@ public static class KafkaBuilderExtensions
     /// <summary>Customizes native Kafka headers immediately before single or batch sending.</summary>
     public static SendOptions Kafka(this SendOptions options, Action<Headers> configure) =>
         options.ConfigureNative(configure);
+
+    /// <summary>Transforms Dekaf's immutable record immediately before sending, including partition and timestamp.</summary>
+    /// <remarks>The record and its memory are borrowed until send completion. Do not retain them. Cannot be persisted in an outbox.</remarks>
+    public static SendOptions KafkaRecord(this SendOptions options,
+        Func<ProducerMessage<WireString?, (ReadOnlyMemory<byte> Body, Headers Headers)?>,
+            ProducerMessage<WireString?, (ReadOnlyMemory<byte> Body, Headers Headers)?>> configure) =>
+        options.TransformNative(configure);
 
     /// <summary>Declares Kafka send routes and serial consumers with durable dead-letter copies.</summary>
     public static IRelayerBuilder Kafka(this IRelayerBuilder builder, string name,
