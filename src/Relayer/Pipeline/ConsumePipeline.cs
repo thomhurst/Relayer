@@ -204,6 +204,8 @@ public sealed partial class ConsumePipeline
                 admitted = circuit.TryEnter(out probe);
                 if (!admitted)
                 {
+                    context.FailureDisposition = Disposition.Redeliver(TimeSpan.Zero);
+                    context.ApplyFailureDisposition();
                     // Service Bus leaves rejected callbacks unsettled: native lock expiry returns them
                     // without repeatedly abandoning the same delivery while a probe is running.
                     return;

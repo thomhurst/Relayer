@@ -11,11 +11,11 @@ public sealed class NativeMessage<TIncoming>
 
     /// <summary>The resolved native settlement. Set only after durable failure handling or successful manual settlement.</summary>
     /// <remarks>Defaults to Complete. A native transport extension sets SettledByHandler after manual settlement succeeds.</remarks>
-    public Disposition Disposition { get; set; }
+    public Disposition Disposition { get; set; } = Disposition.Complete;
 
     internal void Clear()
     {
         Message = default!;
-        Disposition = default;
+        Disposition = Disposition.Complete;
     }
 }

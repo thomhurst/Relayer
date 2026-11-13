@@ -279,6 +279,8 @@ internal sealed class InMemoryEndpoint
 
     internal void ValidateSettlement(Disposition disposition)
     {
+        if (disposition.Kind is not (DispositionKind.Complete or DispositionKind.Redeliver or DispositionKind.DeadLetter))
+            throw new InvalidOperationException($"Endpoint '{_name}': settlement requires an explicit Complete, Redeliver or DeadLetter decision.");
         if (disposition.Kind == DispositionKind.Redeliver &&
             (Capabilities.MaxRedeliveryDelay is not { } maximum || disposition.Delay > maximum))
             throw new InvalidOperationException($"Endpoint '{_name}': Redeliver exceeds MaxRedeliveryDelay or native redelivery is unavailable.");

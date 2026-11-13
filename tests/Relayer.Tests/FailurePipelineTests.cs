@@ -10,6 +10,28 @@ namespace Relayer.Tests;
 public class FailurePipelineTests
 {
     [Test]
+    public async Task Circuit_rejected_delivery_explicitly_requests_redelivery_without_settlement()
+    {
+        using var provider = Provider(new Transport());
+        var failure = new FailurePipeline(provider, "test", "source", "consumer");
+        var settlements = 0;
+        var pipeline = new ConsumePipelineBuilder(provider.GetRequiredService<IServiceScopeFactory>(),
+            provider.GetRequiredService<MessageTypeRegistry>(), provider.GetRequiredService<Relayer.Serialization.IMessageSerializer>(), failure)
+            .Handler(provider.GetRequiredService<HandlerRegistry>().GetHandler<Payload, Handler>())
+            .Settle(_ => { settlements++; return default; }).Build(1);
+        using var circuit = new ConsumerCircuit(1, 1, TimeSpan.FromMinutes(1), TimeSpan.FromMinutes(1), new ConsumerCircuitTests.Clock());
+        circuit.TryEnter(out var probe);
+        circuit.Complete(probe, true);
+        pipeline.Circuit = circuit;
+        var receive = new ReceivePipeline<Incoming, Binding>(pipeline, new HeaderNames(), 1);
+        var result = await receive.ProcessAsync(new());
+        await Assert.That(result.Kind).IsEqualTo(DispositionKind.Redeliver);
+        await Assert.That(result.Delay).IsEqualTo(TimeSpan.Zero);
+        await Assert.That(provider.GetRequiredService<Control>().Calls).IsEqualTo(0);
+        await Assert.That(settlements).IsEqualTo(0);
+    }
+
+    [Test]
     [Arguments(false, false)]
     [Arguments(false, true)]
     [Arguments(true, false)]
