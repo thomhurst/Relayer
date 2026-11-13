@@ -170,6 +170,76 @@ public class MessageTypeGeneratorTests
         await Assert.That(result.Diagnostics.Single().Location.GetLineSpan().Path).IsEqualTo("Message.cs");
     }
 
+    [Test]
+    [Arguments("orders.placed")]
+    [Arguments("orders\nplaced")]
+    [Arguments("orders\rplaced")]
+    [Arguments("orders\r\nplaced")]
+    [Arguments("orders\u0085placed")]
+    [Arguments("orders\u2028placed")]
+    [Arguments("orders\u2029placed")]
+    [Arguments("orders\"placed")]
+    [Arguments("orders\\placed")]
+    [Arguments("orders\0\tplaced")]
+    public async Task Generated_registration_preserves_message_name(string name)
+    {
+        var references = ((string)AppContext.GetData("TRUSTED_PLATFORM_ASSEMBLIES")!)
+            .Split(Path.PathSeparator).Select(static p => MetadataReference.CreateFromFile(p)).ToList();
+        references.Add(MetadataReference.CreateFromFile(typeof(MessageAttribute).Assembly.Location));
+        var source = $$"""
+            using Relayer;
+            using Microsoft.Extensions.DependencyInjection;
+            [Message({{SymbolDisplay.FormatLiteral(name, quote: true)}}, Version = 2)]
+            public sealed record Order(int Id);
+            public static class Registration
+            {
+                public static MessageType Register()
+                {
+                    MessageType identity = default;
+                    new ServiceCollection().AddRelayer(builder =>
+                    {
+                        builder.AddMessageTypesFromThisAssembly();
+                        if (!builder.MessageTypes.TryGetMessageType(typeof(Order), out identity))
+                            throw new System.InvalidOperationException("Message was not registered");
+                    });
+                    return identity;
+                }
+            }
+            """;
+        var compilation = CSharpCompilation.Create("MessageConsumer_" + Guid.NewGuid().ToString("N"),
+            [CSharpSyntaxTree.ParseText(source)], references,
+            new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
+        GeneratorDriver driver = CSharpGeneratorDriver.Create(new MessageTypeGenerator());
+        driver = driver.RunGeneratorsAndUpdateCompilation(compilation, out var output, out var diagnostics);
+        await Assert.That(string.Join("\n", diagnostics.Where(d => d.Severity == DiagnosticSeverity.Error)))
+            .IsEqualTo("");
+        using var image = new MemoryStream();
+        var result = output.Emit(image);
+        await Assert.That(string.Join("\n", result.Diagnostics.Where(d => d.Severity == DiagnosticSeverity.Error)))
+            .IsEqualTo("");
+        await Assert.That(result.Success).IsTrue();
+
+        var loader = new AssemblyLoadContext(compilation.AssemblyName, isCollectible: true);
+        try
+        {
+            image.Position = 0;
+            var assembly = loader.LoadFromStream(image);
+            var identity = (MessageType)assembly.GetType("Registration")!.GetMethod("Register")!.Invoke(null, null)!;
+            await Assert.That(identity.Name).IsEqualTo(name);
+            await Assert.That(identity.Version).IsEqualTo(2);
+            if (name == "orders.placed")
+            {
+                var registration = driver.GetRunResult().GeneratedTrees
+                    .Single(t => t.FilePath.EndsWith("RelayerGeneratedMessageTypes.g.cs", StringComparison.Ordinal));
+                await Assert.That(registration.ToString()).Contains("Add<global::Order>(\"orders.placed\", 2)");
+            }
+        }
+        finally
+        {
+            loader.Unload();
+        }
+    }
+
     private sealed class CompetingGeneratorLoadContext(byte[] competingImage) : AssemblyLoadContext
     {
         protected override Assembly? Load(AssemblyName assemblyName) =>
