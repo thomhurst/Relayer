@@ -104,6 +104,58 @@ class OriginalRunnerTests(unittest.TestCase):
                     if profiled:
                         self.assertEqual(len(list(output.glob("*.nettrace"))), 4)
 
+    def test_native_parent_retains_broker_receipts_and_all_failed_launches(self):
+        for invalid in (None, "exit", "errors", "missing", "malformed"):
+            with self.subTest(invalid=invalid), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                output = root / "results"
+                calls = []
+                (root / "image.runtimeconfig.json").write_text(json.dumps({"runtimeOptions": {"framework": {"name": "Microsoft.NETCore.App", "version": "10.0.0"}}}))
+
+                def execute(command, **kwargs):
+                    calls.append(command)
+                    self.assertEqual(command[1], str((root / "host.dll").resolve()))
+                    self.assertEqual(command[3], "10")
+                    receipt = {"FoundExecutable": True, "ExitCode": 0, "IsSuccess": True, "Errors": [],
+                               "Results": ["WorkloadResult   1: 65536 op, 1 ns, 1 ns/op"],
+                               "PrefixedLines": ["// GC:  0 0 0 45823680 65536", "// AfterAll"],
+                               "StandardOutput": ["// Runtime=.NET 10.0.15 (test), ARM64"]}
+                    if len(calls) == 2:
+                        if invalid == "exit": receipt["ExitCode"] = 1
+                        if invalid == "errors": receipt["Errors"] = ["native error"]
+                        if invalid == "missing": return
+                        if invalid == "malformed":
+                            Path(command[-1]).write_text("{")
+                            return
+                    Path(command[-1]).write_text(json.dumps(receipt))
+                    Path(command[-2]).write_text("// Runtime=.NET 10.0.15 (test), ARM64\n" + COMPLETE)
+
+                with patch("sys.argv", ["control", str(root), str(output), "--native-executor", str(root / "host.dll"),
+                                        "--runtime-version", "10.0.15"]), \
+                     patch("frozen_bdn_control.verify", return_value="frozen"), \
+                     patch("frozen_bdn_control.executable", return_value=(root / "image.dll", "10")), \
+                     patch("frozen_bdn_control.subprocess.run", side_effect=execute):
+                    if invalid:
+                        with self.assertRaisesRegex(SystemExit, "launches failed"):
+                            main()
+                    else:
+                        main()
+                self.assertEqual(len(calls), 4)
+                outcomes = json.loads((output / "outcomes.json").read_text())
+                self.assertEqual("error" in outcomes[1], invalid is not None)
+                self.assertEqual(outcomes[3]["operations"], 65536)
+                self.assertEqual(outcomes[3]["runtime"], "10.0.15")
+                self.assertIn("--fx-version 10.0.15 --roll-forward Disable", (output / "native-dotnet.sh").read_text())
+                protocol = json.loads((output / "protocol.json").read_text())
+                self.assertIn("anonymous pipes/Broker", protocol["host"])
+                self.assertIn("bundled protocol intervention", protocol["limits"])
+
+    def test_native_parent_rejects_unsupported_combinations(self):
+        for extra in (["--case", "scoped-dispatch"], ["--trace-tool", "trace"], ["--allocation-profiler", "profiler"]):
+            with self.subTest(extra=extra), patch("sys.argv", ["control", "inputs", "output", "--native-executor", "host", *extra]):
+                with self.assertRaises(SystemExit):
+                    main()
+
     def test_selects_throughput_cases_from_original_parameterized_runners(self):
         cases = (
             ("scoped-dispatch", "ConsumePipelineBenchmarks", "DirectScopedDispatch",

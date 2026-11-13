@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shlex
 import subprocess
 
 from frozen_concurrent_control import verify
@@ -86,6 +87,8 @@ def main():
     parser.add_argument("output", type=Path)
     parser.add_argument("--case", choices=tuple(CASES), default="concurrent",
                         help="Select an original generated runner and parameter, preserving its native job.")
+    parser.add_argument("--native-executor", type=Path,
+                        help="Opt-in concurrent replay with BenchmarkDotNet native anonymous-pipe parent (FrozenNativeHost.dll).")
     parser.add_argument("--trace-tool", type=Path,
                         help="Separate instrumented replay; retain whole-process raw allocation profiles.")
     parser.add_argument("--runtime-version", choices=("10.0.14", "10.0.15"),
@@ -98,6 +101,8 @@ def main():
                         help="Separate exact CLR callback counts in the selected native boundary.")
     args = parser.parse_args()
     from frozen_scope_control import result as timing_result
+    if args.native_executor and (args.case != "concurrent" or args.trace_tool or args.allocation_profiler):
+        parser.error("Native parent currently supports only uninstrumented concurrent replay")
     if args.allocation_profiler and args.case != "concurrent":
         parser.error("Exact allocation callbacks support only the concurrent benchmark")
     owner, method, parameter, operations = CASES[args.case]
@@ -122,6 +127,20 @@ def main():
         image, identity = runners[side]
         protocol["commands"].append([*runtime_command(image, args.runtime_version), "--benchmarkName", benchmark,
                                      "--job", "Default", "--benchmarkId", identity])
+    if args.native_executor:
+        # The native executor receives a CLI wrapper only to select the exact
+        # runtime. It owns the pipes, Broker, priority and process lifetime.
+        wrapper = args.output.resolve() / "native-dotnet.sh"
+        runtime = ["--fx-version", args.runtime_version, "--roll-forward", "Disable"] if args.runtime_version else []
+        wrapper.write_text("#!/bin/sh\nexec dotnet " + shlex.join(runtime) + ' "$@"\n')
+        wrapper.chmod(0o700)
+        protocol["host"] = "BenchmarkDotNet 0.15.8 DotNetCliExecutor: native anonymous pipes/Broker/process priority"
+        protocol["limits"] += " Native-parent replay is a bundled protocol intervention, not isolation of pipe effects or reconstruction of the original process scheduling."
+        protocol["commands"] = [
+            ["dotnet", str(args.native_executor.resolve()), str(runners[side][0]), runners[side][1], str(wrapper),
+             str((args.output / f"{index}-{side}-native.log").resolve()),
+             str((args.output / f"{index}-{side}-native.json").resolve())]
+            for index, side in enumerate(launches, 1)]
     if args.trace_tool:
         protocol["profile_limits"] = (
             "Separate instrumented native-engine four-launch bracket with gc-verbose allocation sampling. "
@@ -189,6 +208,15 @@ def main():
         if "error" not in outcome:
             try:
                 text = log_path.read_text()
+                if args.native_executor:
+                    receipt = json.loads((args.output / f"{index}-{side}-native.json").read_text())
+                    if (receipt["ExitCode"] != 0 or not receipt["FoundExecutable"]
+                            or not receipt["IsSuccess"] or receipt["Errors"]):
+                        raise ValueError("Native executor did not report successful completion")
+                    # The native logger includes Broker signal lines (AfterAll),
+                    # which ExecuteResult intentionally omits from PrefixedLines.
+                    text = (args.output / f"{index}-{side}-native.log").read_text()
+                    outcome["nativeReceipt"] = f"{index}-{side}-native.json"
                 if args.runtime_version:
                     versions = re.findall(r"^// Runtime=\.NET ([0-9.]+) ", text, re.M)
                     if versions != [args.runtime_version]:
@@ -199,7 +227,7 @@ def main():
                 outcome.update(timing_result(text))
                 if args.case == "concurrent":
                     outcome.update(result(text))
-            except ValueError as error:
+            except (ValueError, OSError, KeyError, TypeError) as error:
                 outcome["error"] = str(error)
                 failed = True
         if args.allocation_profiler:
