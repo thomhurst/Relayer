@@ -8,6 +8,9 @@ on:
       - '.github/scripts/read_parallel_receive_allocations.py'
       - '.github/scripts/test_parallel_receive_allocations.py'
       - 'tests/Relayer.Tests/ConcurrentReceiveAllocationTests.cs'
+      - 'tools/FrozenAllocationProfiler/**'
+      - '.github/scripts/read_native_allocations.py'
+      - '.github/scripts/test_native_allocations.py'
   workflow_dispatch:
     inputs:
       ci_run_id:

@@ -31,6 +31,24 @@ class NativeAllocationReportTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "failures"):
             self.check(lambda rows: rows[-1].update(failures=1))
 
+    def test_explicit_metadata_unavailable_keeps_exact_counts(self):
+        def mark(rows):
+            rows[0].update(type="<metadata-unavailable:0x80131351>", metadataUnavailable=True)
+            rows[-1].update(metadataUnavailableTypes=1)
+        result = self.check(mark)
+        self.assertEqual(result["coverage"]["objects"], 10)
+        self.assertTrue(result["types"][0]["metadataUnavailable"])
+
+    def test_metadata_unavailable_requires_explicit_matching_status(self):
+        for name, marked, total in (("<metadata-unavailable:0xdeadbeef>", True, 1),
+                                    ("<metadata-unavailable:0x80131351>", False, 0),
+                                    ("Message", True, 1),
+                                    ("<metadata-unavailable:0x80131351>", True, 0),
+                                    ("<unresolved-class>", False, 0)):
+            with self.subTest(name=name, marked=marked, total=total), self.assertRaises(ValueError):
+                self.check(lambda rows: (rows[0].update(type=name, metadataUnavailable=marked),
+                                        rows[-1].update(metadataUnavailableTypes=total)))
+
     def test_inconsistent_sum(self):
         with self.assertRaisesRegex(ValueError, "total"):
             self.check(lambda rows: rows[-1].update(bytes=241))
@@ -59,6 +77,16 @@ class WindowAllocationReportTests(unittest.TestCase):
         result = read_rows(self.rows())
         self.assertEqual([row["measured"] for row in result["windows"]], [111, 222, 333])
         self.assertEqual(result["windows"][1]["types"], [])
+
+    def test_metadata_unavailable_window_status_matches_aggregate(self):
+        rows = self.rows()
+        for row in (rows[0], rows[-2]):
+            row.update(type="<metadata-unavailable:0x80131351>", metadataUnavailable=True)
+        rows[-1]["metadataUnavailableTypes"] = 1
+        self.assertTrue(read_rows(rows)["windows"][0]["types"][0]["metadataUnavailable"])
+        rows[0]["metadataUnavailable"] = False
+        with self.assertRaisesRegex(ValueError, "metadata-unavailable"):
+            read_rows(rows)
 
     def test_incomplete_triplet(self):
         rows = self.rows()

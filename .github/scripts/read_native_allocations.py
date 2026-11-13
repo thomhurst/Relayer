@@ -19,11 +19,20 @@ def read_rows(rows):
             raise ValueError("Incomplete or repeated method boundary")
     if len({row["classId"] for row in types}) != len(types):
         raise ValueError("Duplicate ClassID records")
+    unavailable = 0
     for row in types:
+        if "<metadata-unavailable" in row["type"].replace("<metadata-unavailable:0x80131351>", ""):
+            raise ValueError("Unknown metadata-unavailable HRESULT")
+        marked = row.get("metadataUnavailable", False)
+        if type(marked) is not bool or marked != ("<metadata-unavailable:0x80131351>" in row["type"]):
+            raise ValueError("Invalid metadata-unavailable type status")
+        unavailable += marked
         if not row["type"] or "<unresolved" in row["type"] or "<type-depth" in row["type"]:
             raise ValueError("Unresolved type")
         if any(type(row[key]) is not int or row[key] <= 0 for key in ("classId", "objects", "bytes")):
             raise ValueError("Invalid allocation counts")
+    if type(coverage[0].get("metadataUnavailableTypes", 0)) is not int or coverage[0].get("metadataUnavailableTypes", 0) != unavailable:
+        raise ValueError("Metadata-unavailable coverage does not match types")
     for key in ("objects", "bytes"):
         if sum(row[key] for row in types) != coverage[0][key]:
             raise ValueError("Coverage total does not match type counts")
@@ -40,6 +49,7 @@ def validate_windows(rows, coverage, types):
         raise ValueError("Unordered or duplicate window boundaries")
     totals = {row["classId"]: [0, 0] for row in types}
     names = {row["classId"]: row["type"] for row in types}
+    unavailable = {row["classId"]: row.get("metadataUnavailable", False) for row in types}
     result = []
     cursor = 0
     for index, window in enumerate(windows):
@@ -52,6 +62,8 @@ def validate_windows(rows, coverage, types):
             entry = rows[cursor]
             if entry["index"] != index or entry["classId"] not in totals or entry["type"] != names[entry["classId"]]:
                 raise ValueError("Invalid window type association")
+            if entry.get("metadataUnavailable", False) != unavailable[entry["classId"]]:
+                raise ValueError("Invalid window metadata-unavailable status")
             if any(type(entry[key]) is not int or entry[key] <= 0 for key in ("objects", "bytes")):
                 raise ValueError("Invalid window allocation counts")
             entries.append(entry)

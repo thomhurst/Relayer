@@ -14,7 +14,7 @@
 
 namespace {
 constexpr GUID ProfilerId = {0x32b7ef07,0x25e8,0x4ac7,{0xb0,0x11,0x9a,0x43,0x21,0xd7,0x02,0xc8}};
-struct Count { unsigned long long objects = 0, bytes = 0; std::string name; };
+struct Count { unsigned long long objects = 0, bytes = 0; std::string name; bool metadataUnavailable = false; };
 std::mutex gate;
 bool initialized = false, active = false, begun = false;
 unsigned long long failures = 0;
@@ -149,15 +149,22 @@ std::string definitionName(IMetaDataImport* metadata, mdTypeDef token, unsigned 
     return narrow(name);
 }
 
-std::string typeName(ClassID id, unsigned depth = 0)
+std::string typeName(ClassID id, bool& metadataUnavailable, unsigned depth = 0)
 {
     if (depth > 12) { ++failures; return "<type-depth-exceeded>"; }
     CorElementType element; ClassID elementId; ULONG rank;
     if (info->IsArrayClass(id, &element, &elementId, &rank) == S_OK)
-        return (elementId ? typeName(elementId, depth + 1) : "<primitive:" + std::to_string(element) + ">") + "[rank=" + std::to_string(rank) + "]";
+        return (elementId ? typeName(elementId, metadataUnavailable, depth + 1) : "<primitive:" + std::to_string(element) + ">") + "[rank=" + std::to_string(rank) + "]";
     ModuleID module; mdTypeDef token; ClassID parent; ULONG actual;
     ClassID arguments[32];
     auto classResult = info->GetClassIDInfo2(id, &module, &token, &parent, 32, &actual, arguments);
+    // .NET 11 runtime-async continuation MethodTables have no backing metadata.
+    // Preserve the HRESULT and ClassID instead of inventing a CLR type name.
+    // Other metadata/callback errors still invalidate the entire report.
+    if (classResult == CORPROF_E_DATAINCOMPLETE) {
+        metadataUnavailable = true;
+        return "<metadata-unavailable:0x80131351>";
+    }
     if (FAILED(classResult) || actual > 32) {
         std::fprintf(stderr, "GetClassIDInfo2 failed: 0x%x, class %llu, type arguments %u\n",
             static_cast<unsigned>(classResult), static_cast<unsigned long long>(id),
@@ -174,7 +181,7 @@ std::string typeName(ClassID id, unsigned depth = 0)
     metadata->Release();
     if (actual) {
         result += "[";
-        for (ULONG i = 0; i < actual; ++i) { if (i) result += ","; result += typeName(arguments[i], depth + 1); }
+        for (ULONG i = 0; i < actual; ++i) { if (i) result += ","; result += typeName(arguments[i], metadataUnavailable, depth + 1); }
         result += "]";
     }
     return result;
@@ -242,7 +249,7 @@ public:
         auto& count = counts[type];
         // GetModuleMetaData requires a profiler callback context. Resolve once here,
         // never asynchronously from the P/Invoke boundary that writes the report.
-        if (count.name.empty()) count.name = typeName(type);
+        if (count.name.empty()) count.name = typeName(type, count.metadataUnavailable);
         ++count.objects; count.bytes += size;
         if (!stackPath.empty()) {
             ThreadID thread = 0;
@@ -393,18 +400,22 @@ int writeReport()
             objects += entry.second.objects; bytes += entry.second.bytes;
             output << "{\"kind\":\"window-type\",\"index\":" << index
                    << ",\"classId\":" << entry.first << ",\"type\":\"" << entry.second.name
-                   << "\",\"objects\":" << entry.second.objects << ",\"bytes\":" << entry.second.bytes << "}\n";
+                   << "\",\"metadataUnavailable\":" << (entry.second.metadataUnavailable ? "true" : "false")
+                   << ",\"objects\":" << entry.second.objects << ",\"bytes\":" << entry.second.bytes << "}\n";
         }
         output << "{\"kind\":\"window\",\"index\":" << index << ",\"mode\":" << index % 3
                << ",\"callerThread\":" << window.caller << ",\"measured\":" << window.measured << ",\"objects\":" << objects << ",\"bytes\":" << bytes << "}\n";
     }
-    unsigned long long objects = 0, bytes = 0;
+    unsigned long long objects = 0, bytes = 0, metadataUnavailableTypes = 0;
     for (const auto& entry : counts) {
         objects += entry.second.objects; bytes += entry.second.bytes;
+        if (entry.second.metadataUnavailable) ++metadataUnavailableTypes;
         output << "{\"kind\":\"type\",\"classId\":" << entry.first << ",\"type\":\"" << entry.second.name
-               << "\",\"objects\":" << entry.second.objects << ",\"bytes\":" << entry.second.bytes << "}\n";
+               << "\",\"metadataUnavailable\":" << (entry.second.metadataUnavailable ? "true" : "false")
+               << ",\"objects\":" << entry.second.objects << ",\"bytes\":" << entry.second.bytes << "}\n";
     }
     output << "{\"kind\":\"coverage\",\"objects\":" << objects << ",\"bytes\":" << bytes
+           << ",\"metadataUnavailableTypes\":" << metadataUnavailableTypes
            << ",\"failures\":" << failures
            << ",\"windows\":" << windows.size()
            << ",\"methodEntries\":" << methodEntries << ",\"methodLeaves\":" << methodLeaves
@@ -458,7 +469,7 @@ extern "C" __attribute__((visibility("default"))) int CheckpointAllocationRegion
         auto previous = previousCounts.find(entry.first);
         const auto objects = entry.second.objects - (previous == previousCounts.end() ? 0 : previous->second.objects);
         const auto bytes = entry.second.bytes - (previous == previousCounts.end() ? 0 : previous->second.bytes);
-        if (objects) window.counts.emplace(entry.first, Count{objects, bytes, entry.second.name});
+        if (objects) window.counts.emplace(entry.first, Count{objects, bytes, entry.second.name, entry.second.metadataUnavailable});
     }
     previousCounts = counts;
     windows.push_back(std::move(window));

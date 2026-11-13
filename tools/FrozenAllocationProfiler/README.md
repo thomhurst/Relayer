@@ -8,7 +8,23 @@ official dotnet/samples SDK and no-op callback scaffolding at commit
 Unlike EventPipe allocation ticks, these are individual CLR heap allocation notifications,
 not weighted samples. Counts distinguish the pooled handler state-machine boxes suggested
 by #488's sampled traces. Nested type definitions and generic arguments are resolved inside
-the allocation callback, once per ClassID. Resolution/callback failures make the report invalid.
+the allocation callback, once per ClassID. Unexpected resolution/callback failures make the report invalid.
+
+.NET 11 runtime async also allocates internal types with no backing metadata.
+`GetClassIDInfo2` deliberately returns `CORPROF_E_DATAINCOMPLETE` for these types
+([runtime source](https://github.com/dotnet/runtime/blob/v11.0.0/src/coreclr/vm/proftoeeinterfaceimpl.cpp#L3774),
+[upstream tracking](https://github.com/dotnet/runtime/issues/120800)). The profiler
+retains their exact ClassID, object count and bytes with the literal
+`<metadata-unavailable:0x80131351>` marker and `metadataUnavailable: true`.
+`coverage.metadataUnavailableTypes` counts these aggregate ClassID records; it
+is separate from callback failures. A report with this status has complete
+callback counts but incomplete type names and cannot establish full named-type
+attribution. No CLR type name or allocation owner is inferred from this HRESULT.
+Generic arguments can carry the same explicit marker. Other HRESULTs, missing
+counts, inconsistent flags and unresolved names still fail validation. Reader regression tests check this status and reject inconsistent coverage;
+the full parallel capture exercises metadata-less types when the runtime creates them.
+Earlier reports that failed metadata resolution remain failed evidence; this
+support applies to new executions.
 The fixture checks known object counts/sizes from four simultaneous allocating threads,
 including nested generic types, while excluding warmup allocations.
 
