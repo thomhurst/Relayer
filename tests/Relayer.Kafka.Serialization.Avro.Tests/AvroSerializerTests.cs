@@ -1,3 +1,4 @@
+using Relayer.Serialization;
 using System.Buffers;
 using Dekaf.SchemaRegistry;
 using Dekaf.SchemaRegistry.Avro;
@@ -6,7 +7,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Relayer.TestFixtures;
 
-namespace Relayer.Serialization.Avro.Tests;
+namespace Relayer.Kafka.Serialization.Avro.Tests;
 
 public class AvroSerializerTests
 {

@@ -35,7 +35,7 @@ The packages are `Relayer`, `Relayer.Testing`, `Relayer.HealthChecks`, `Relayer.
 `Relayer.RabbitMQ.Streams`, `Relayer.Nats`,
 `Relayer.Outbox.PostgreSql`, `Relayer.Outbox.EntityFrameworkCore`, `Relayer.Sagas`,
 `Relayer.Sagas.EntityFrameworkCore` and the `dotnet-relayer` tool.
-`Relayer.Kafka.SchemaRegistry`, `Relayer.Serialization.Protobuf` and `Relayer.Serialization.Avro` are optional integration packages.
+`Relayer.Kafka.SchemaRegistry`, `Relayer.Serialization.Protobuf` and `Relayer.Kafka.Serialization.Avro` are optional integration packages.
 `Relayer.Sagas` provides [process diagram declarations and export](../guides/saga-diagrams.md) and
 typed execution. [Transactional state transitions](../guides/sagas.md) use the optional EF Core
 integration; [durable process timeouts](../guides/saga-timeouts.md) reuse transactional scheduled sends.

@@ -1,3 +1,4 @@
+using Relayer.Serialization;
 using System.Buffers;
 using System.Collections.Frozen;
 using System.Diagnostics.CodeAnalysis;
@@ -6,7 +7,7 @@ using Dekaf.SchemaRegistry.Avro;
 using Dekaf.SchemaRegistry.Avro.Poco;
 using Dekaf.Serialization;
 
-namespace Relayer.Serialization.Avro;
+namespace Relayer.Kafka.Serialization.Avro;
 
 /// <summary>Uses Dekaf's generated Avro codecs and prepares registry contracts before message processing starts.</summary>
 /// <remarks>The registry client is caller-owned. Declare contracts before initialization; thereafter concurrent reads and writes are supported.

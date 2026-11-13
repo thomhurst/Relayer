@@ -30,7 +30,7 @@
     <ProjectReference Include="../../src/Relayer.RabbitMQ/Relayer.RabbitMQ.csproj" />
     <ProjectReference Include="../../src/Relayer.Kafka.SchemaRegistry/Relayer.Kafka.SchemaRegistry.csproj" />
     <ProjectReference Include="../../src/Relayer.Serialization.Protobuf/Relayer.Serialization.Protobuf.csproj" />
-    <ProjectReference Include="../../src/Relayer.Serialization.Avro/Relayer.Serialization.Avro.csproj" />
+    <ProjectReference Include="../../src/Relayer.Kafka.Serialization.Avro/Relayer.Kafka.Serialization.Avro.csproj" />
     <ProjectReference Include="..\..\src\Relayer.SourceGenerators\Relayer.SourceGenerators.csproj"
                       ReferenceOutputAssembly="false" OutputItemType="Analyzer" />
   </ItemGroup>

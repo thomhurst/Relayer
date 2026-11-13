@@ -4,7 +4,7 @@ using BenchmarkDotNet.Configs;
 using Dekaf.SchemaRegistry;
 using Dekaf.SchemaRegistry.Avro.Poco;
 using Dekaf.Serialization;
-using Relayer.Serialization.Avro;
+using Relayer.Kafka.Serialization.Avro;
 using Relayer.TestFixtures;
 
 namespace Relayer.Benchmarks;
