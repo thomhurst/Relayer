@@ -17,6 +17,7 @@ public sealed class SqsDelivery : IDisposable
     private int _redeliveryLength;
     private string? _invalidRedeliveries;
     internal readonly DeleteMessageRequest Delete = new();
+    internal SqsBatchSlot? BatchSlot { get; init; }
     internal readonly ChangeMessageVisibilityRequest Visibility = new();
     internal long ReceivedAt { get; private set; }
     internal TimeProvider Time { get; }

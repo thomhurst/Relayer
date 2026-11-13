@@ -62,6 +62,7 @@ relayer.AmazonSqs("orders", sqs =>
         {
             request.WaitTimeSeconds = 20;
             request.VisibilityTimeout = 120;
+            request.MaxNumberOfMessages = 10; // Standard queues only; FIFO requires 1.
         };
         consumer.Failures(new FailureOptions
         {
@@ -72,7 +73,9 @@ relayer.AmazonSqs("orders", sqs =>
 });
 ```
 
-Each worker owns one reusable native `ReceiveMessageRequest`, receives one message per long poll, and retains pooled UTF-8 body storage at its high-water mark. Native request configuration runs once per worker. `QueueUrl`, `MaxNumberOfMessages = 1`, all message/system attributes and a long poll of 1–20 seconds are required; invalid customization fails before receives start. A fixed `ReceiveRequestAttemptId` is rejected because it would replay old requests. `Concurrency` sets the worker count. Batch handlers are not supported.
+Each worker owns one reusable native `ReceiveMessageRequest` and retains pooled UTF-8 body storage at its high-water mark. Native request configuration runs once per worker. Standard queues accept `MaxNumberOfMessages` from 1–10 (default 1); FIFO queues require 1. `QueueUrl`, all message/system attributes and a long poll of 1–20 seconds are required; invalid customization fails before receives start. A fixed `ReceiveRequestAttemptId` is rejected because it would replay old requests. `Concurrency` sets the worker count. Handlers remain single-message and execute serially within each worker. Batch handlers are not supported.
+
+For a standard queue configured to receive multiple messages, the worker retains each borrowed delivery independently and waits until its handler and durable work finish before adding its receipt to native `DeleteMessageBatch`. It deletes completed receipts together after processing the returned batch. Each pipeline stays active until its own delete entry succeeds. A partial batch failure or missing result fails that delivery; successful entries complete normally. The SDK owns request retries; failed entries remain subject to native visibility and redelivery. Handler or failure-copy errors never enter the delete batch. Graceful shutdown drains every returned message and its deletion; an aborted drain leaves unprocessed deliveries undeleted. Set visibility to cover the entire batch, including serial handler work, retries and the final delete request. Holding up to ten delivery contexts per worker increases bounded startup storage; it adds no per-message adapter allocations.
 
 FIFO ordering comes from SQS's invisible-message-group semantics, including across application instances. No group dispatcher is added. Set native visibility long enough for all durable work and in-process retries: this adapter does not renew visibility automatically, and native expiration can cause duplicate delivery and release the group. Graceful stop cancels polls while draining active work; the host's drain deadline cancels processing. An aborted drain requires a new host. The SDK owns request retries. Workers issue another poll after any exhausted native request failure, with cancellable exponential backoff from one to thirty seconds, reset by a successful poll. This also allows recovery after credentials, permissions or queue availability change; persistent configuration errors remain visible in warning logs.
 
@@ -223,3 +226,5 @@ Default `Validate` uses read APIs for topics, tags, subscriptions and optional q
 SNS send spans and native metrics use `messaging.system = aws.sns`, with `aws.sns.topic.arn` and native `aws.request_id` on sends. Duration covers each native request through acknowledgement or failure; partial batch failures remain failures, and native attempt counts include each submitted entry.
 
 `SnsSendBenchmarks` compares acknowledged single and batch publishing against raw AWS requests with `MemoryDiagnoser`, including optional metrics. Set `RELAYER_SNS_SERVICE_URL` for LocalStack or use the native AWS credential chain in a test account. `SnsBindingBenchmarks` isolates default envelope/body conversion for standard and FIFO sends. Required native `PublishRequest.Message`, `MessageAttributeValue.StringValue` and UTF-8 `MessageGroupId` strings are native-client cost under D52; request, entry and attribute containers are reused. Its `DefaultJson` category compares `ISender.SendAsync` with raw SDK publishing of the same default-JSON model and fresh CloudEvents metadata. `Single` and `Batch` isolate pre-serialized sends. Local measurements are diagnostic; benchmark coverage alone does not establish the 5% throughput budget.
+
+`SqsReceiveBatchBenchmarks` compares equivalent native receive/delete batches (2 and 10 messages) with retained adapter delivery storage and per-entry settlement. Cached native responses exclude SDK HTTP/serialization costs so the benchmark isolates adapter scheduling and binding; it does not establish end-to-end throughput against a live queue.

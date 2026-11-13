@@ -29,8 +29,16 @@ internal sealed class SqsSettlement(MessageTracing tracing, MessagingEndpoint en
         {
             if (disposition.Kind == DispositionKind.Complete)
             {
-                var response = await delivery.Client.DeleteMessageAsync(delivery.Delete, token).ConfigureAwait(false);
-                activity?.SetTag("aws.request_id", response.ResponseMetadata?.RequestId);
+                if (delivery.BatchSlot is { } batch)
+                    {
+                    await batch.DeleteAsync().ConfigureAwait(false);
+                    activity?.SetTag("aws.request_id", batch.DeleteRequestId);
+                }
+                else
+                {
+                    var response = await delivery.Client.DeleteMessageAsync(delivery.Delete, token).ConfigureAwait(false);
+                    activity?.SetTag("aws.request_id", response.ResponseMetadata?.RequestId);
+                }
             }
             else
             {
