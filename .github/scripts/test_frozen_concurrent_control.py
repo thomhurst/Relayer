@@ -41,6 +41,38 @@ class FrozenInventoryTests(unittest.TestCase):
 
 
 class ProfileLaunchTests(unittest.TestCase):
+    def test_native_callbacks_require_original_waiter_and_separate_instrumentation(self):
+        for extra in ([], ["--bdn-await", "--trace-tool", "trace", "--profile-reader", "reader"]):
+            with self.subTest(extra=extra), patch("sys.argv", ["control", "inputs", "probe", "output", "--allocation-profiler", "profiler", *extra]), self.assertRaises(SystemExit):
+                main()
+
+    def test_native_callbacks_retain_distinct_reports_and_all_outcomes_after_failure(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for side in ("baseline", "candidate", "baseline-after"):
+                image = root / "performance-builds" / side / "builds/net10.0/Relayer.Benchmarks-DefaultJob-1/bin/Release/net10.0/Relayer.Benchmarks.dll"
+                image.parent.mkdir(parents=True)
+                image.touch()
+            reports = []
+
+            def execute(command, **kwargs):
+                self.assertEqual(command[-1], "--bdn-await")
+                environment = kwargs["env"]
+                self.assertEqual(environment["CORECLR_ENABLE_PROFILING"], "1")
+                path = Path(environment["RELAYER_ALLOCATION_OUTPUT"])
+                reports.append(path)
+                path.write_text('{"kind":"type","classId":1,"type":"Known","objects":1,"bytes":24}\n'
+                                '{"kind":"coverage","objects":1,"bytes":24,"failures":0}\n')
+                if len(reports) == 2:
+                    raise subprocess.CalledProcessError(1, command)
+
+            with patch("sys.argv", ["control", str(root), "probe", str(root / "output"), "--bdn-await", "--allocation-profiler", "profiler"]), patch("frozen_concurrent_control.verify", return_value="original"), patch("frozen_concurrent_control.subprocess.run", side_effect=execute), self.assertRaisesRegex(SystemExit, "One or more launches failed"):
+                main()
+            self.assertEqual(len(reports), 4)
+            self.assertEqual(len(set(reports)), 4)
+            self.assertTrue(all(path.exists() for path in reports))
+            self.assertTrue(json.loads((root / "output/protocol.json").read_text())["instrumented"])
+
     def run_profile(self, extraction_fails, keep_traces=False):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

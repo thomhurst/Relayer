@@ -8,6 +8,9 @@ if (args.Length is < 1 or > 2 || (args.Length == 2 && args[1] is not ("--exact-r
     throw new ArgumentException("Expected the retained benchmark dependency directory and optional --exact-roundtrips or --bdn-await.");
 var exactRoundTrips = args.Length == 2 && args[1] == "--exact-roundtrips";
 var bdnAwait = args.Length == 2 && args[1] == "--bdn-await";
+var nativeAllocations = NativeAllocationRegion.Load();
+if (nativeAllocations is not null && !bdnAwait)
+    throw new ArgumentException("Native allocation profiling requires the original BDN waiter control.");
 var image = Path.GetFullPath(args[0]);
 var context = new AssemblyLoadContext("Frozen", isCollectible: false);
 context.Resolving += (_, name) =>
@@ -52,6 +55,7 @@ try
     if (invocations is not null) invocations.Enabled = true;
     // Markers sit outside the inclusive counter; profiles are separate instrumented launches.
     FrozenMeasurementEvents.Log.MeasurementStart();
+    nativeAllocations?.Begin();
     var allocated = GC.GetTotalAllocatedBytes(precise: true);
     var start = System.Diagnostics.Stopwatch.GetTimestamp();
     if (getResult is not null)
@@ -60,6 +64,7 @@ try
         for (var i = 0; i < measuredBatches; i++) result += await (invocations is null ? run() : invocations.Invoke(run));
     var elapsed = System.Diagnostics.Stopwatch.GetElapsedTime(start);
     var bytes = GC.GetTotalAllocatedBytes(precise: true) - allocated;
+    nativeAllocations?.End();
     FrozenMeasurementEvents.Log.MeasurementStop();
     if (invocations is not null) invocations.Enabled = false;
     var invocationReport = invocations?.Report();
@@ -69,7 +74,7 @@ try
         throw new InvalidOperationException($"Unexpected delivery sum: {result}.");
     Console.WriteLine(JsonSerializer.Serialize(new
     {
-        instrumentation = exactRoundTrips ? "exact-synchronous-roundtrip-calls" : "none",
+        instrumentation = nativeAllocations is not null ? "native-object-allocation-callbacks" : exactRoundTrips ? "exact-synchronous-roundtrip-calls" : "none",
         exactRegion = "One original ConcurrentRoundTrip delegate call per record (eight messages), before awaiting its returned ValueTask. Calling-thread work only; excludes other threads and later continuations. No type or historical attribution; do not subtract from other controls.",
         invocationAllocations = invocationReport,
         image, completionBoundary = bdnAwait ? "original-BenchmarkDotNet-AwaitHelper.GetResult" : "asynchronous-await",
