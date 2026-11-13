@@ -1,11 +1,13 @@
 using System.Runtime.CompilerServices;
 
-var automatic = args.Length > 1 && args[1].StartsWith("--", StringComparison.Ordinal);
-var tail = args.Length > 1 && !automatic;
-var region = tail || automatic ? null : NativeAllocationRegion.Load() ?? throw new InvalidOperationException("Profiler path is required.");
+var checkpoints = args.Length > 1 && args[1].StartsWith("--windows", StringComparison.Ordinal);
+var automatic = args.Length > 1 && args[1].StartsWith("--", StringComparison.Ordinal) && !checkpoints;
+var tail = args.Length > 1 && !automatic && !checkpoints;
+var region = tail || automatic ? null : NativeAllocationRegion.Load(checkpoints) ?? throw new InvalidOperationException("Profiler path is required.");
 var engine = tail ? FixtureEngine.Log : null;
 var count = int.Parse(args[0], System.Globalization.CultureInfo.InvariantCulture);
 var values = new object[count];
+var second = checkpoints ? new object[count] : [];
 // JIT all fixture allocation code before the marker, without counting warmup objects.
 Fill(new object[10]);
 var start = new ManualResetEventSlim();
@@ -62,8 +64,19 @@ if (engine is not null)
     if (args[1] == "extra-event") engine.WorkloadActualStart(8);
     Fill(new object[29]); // After benchmark excluded.
 }
-else if (!automatic) region!.End();
+else if (!automatic)
+{
+    if (checkpoints)
+    {
+        region!.Checkpoint(0, 111);
+        Fill(second);
+        region.Checkpoint(1, 222);
+        if (args[1] != "--windows-missing") region.Checkpoint(2, 333, final: true);
+    }
+    region!.End();
+}
 GC.KeepAlive(values);
+GC.KeepAlive(second);
 
 [MethodImpl(MethodImplOptions.NoInlining)]
 static void Fill(object[] values)

@@ -18,6 +18,10 @@ std::mutex gate;
 bool initialized = false, active = false, begun = false;
 unsigned long long failures = 0;
 std::map<ClassID, Count> counts;
+struct Window { long long measured; std::map<ClassID, Count> counts; };
+std::vector<Window> windows;
+bool windowsCompleted = false;
+std::map<ClassID, Count> previousCounts;
 ICorProfilerInfo12* info = nullptr;
 // Native BDN events are delivered synchronously on the emitting thread by the
 // profiler EventPipe API (pinned dotnet/samples EventPipeProfiler.cpp).
@@ -307,6 +311,18 @@ int writeReport()
         output << "{\"kind\":\"native-engine-tail\",\"nativeOperations\":" << nativeOperations
                << ",\"iterations\":" << iterations << ",\"stopped\":" << (benchmarkStopped ? "true" : "false") << "}\n";
     }
+    for (size_t index = 0; index < windows.size(); ++index) {
+        const auto& window = windows[index];
+        unsigned long long objects = 0, bytes = 0;
+        for (const auto& entry : window.counts) {
+            objects += entry.second.objects; bytes += entry.second.bytes;
+            output << "{\"kind\":\"window-type\",\"index\":" << index
+                   << ",\"classId\":" << entry.first << ",\"type\":\"" << entry.second.name
+                   << "\",\"objects\":" << entry.second.objects << ",\"bytes\":" << entry.second.bytes << "}\n";
+        }
+        output << "{\"kind\":\"window\",\"index\":" << index << ",\"mode\":" << index % 3
+               << ",\"measured\":" << window.measured << ",\"objects\":" << objects << ",\"bytes\":" << bytes << "}\n";
+    }
     unsigned long long objects = 0, bytes = 0;
     for (const auto& entry : counts) {
         objects += entry.second.objects; bytes += entry.second.bytes;
@@ -315,6 +331,7 @@ int writeReport()
     }
     output << "{\"kind\":\"coverage\",\"objects\":" << objects << ",\"bytes\":" << bytes
            << ",\"failures\":" << failures
+           << ",\"windows\":" << windows.size()
            << ",\"methodEntries\":" << methodEntries << ",\"methodLeaves\":" << methodLeaves
            << ",\"boundary\":\"" << (selectedMethod.empty() ? "external-marker" : "method-enter-leave") << "\""
            << ",\"limits\":\"Exact CLR ObjectAllocated callbacks in this separate instrumented region; callbacks change fast paths and scheduling. Native-tail mode includes final timed cleanup/logging and extra-stat setup/work/cleanup, not exact MeasureWithGc. No stacks, historical replay or cross-control subtraction.\"}\n";
@@ -326,7 +343,43 @@ int writeReport()
 extern "C" __attribute__((visibility("default"))) int EndAllocationRegion()
 {
     std::lock_guard<std::mutex> lock(gate);
-    if (!initialized || nativeTail || !active || !selectedMethod.empty()) return 0;
+    if (!initialized || nativeTail || (!active && !windowsCompleted) || !selectedMethod.empty()) return 0;
     active = false;
+    if (!windows.empty() && !windowsCompleted) ++failures;
+    windowsCompleted = false;
+    if (!windows.empty()) {
+        if (windows.size() % 3 != 0) ++failures;
+        // The final checkpoint stops capture atomically. Every observed allocation
+        // must therefore belong to a checkpoint.
+        for (const auto& entry : counts) {
+            const auto found = previousCounts.find(entry.first);
+            if (found == previousCounts.end() || found->second.objects != entry.second.objects
+                || found->second.bytes != entry.second.bytes) ++failures;
+        }
+    }
     return writeReport();
+}
+
+// External probe markers partition this instrumented process envelope, not the
+// fixture's thread-byte counters. Native lock order assigns racing allocations.
+extern "C" __attribute__((visibility("default"))) int CheckpointAllocationRegion(int index, long long measured, int final)
+{
+    std::lock_guard<std::mutex> lock(gate);
+    if (!initialized || nativeTail || !active || !selectedMethod.empty()
+        || index < 0 || static_cast<size_t>(index) != windows.size() || measured < 0
+        || (final != 0 && final != 1) || (final && index % 3 != 2)) {
+        ++failures;
+        return 0;
+    }
+    Window window{measured, {}};
+    for (const auto& entry : counts) {
+        auto previous = previousCounts.find(entry.first);
+        const auto objects = entry.second.objects - (previous == previousCounts.end() ? 0 : previous->second.objects);
+        const auto bytes = entry.second.bytes - (previous == previousCounts.end() ? 0 : previous->second.bytes);
+        if (objects) window.counts.emplace(entry.first, Count{objects, bytes, entry.second.name});
+    }
+    previousCounts = counts;
+    windows.push_back(std::move(window));
+    if (final) { active = false; windowsCompleted = true; }
+    return 1;
 }
