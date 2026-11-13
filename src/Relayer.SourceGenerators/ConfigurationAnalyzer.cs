@@ -11,7 +11,7 @@ namespace Relayer.SourceGenerators;
 public sealed class ConfigurationAnalyzer : DiagnosticAnalyzer
 {
     private static readonly DiagnosticDescriptor MissingMessage = Rule("RLY001", "Message has no stable identity",
-        "Message type '{0}' has no [Message] attribute. Add [Message(\"stable.name\")] to declare its wire identity.");
+        "Message type '{0}' has no stable identity. Add [Message(\"stable.name\")] or call MessageTypes.Add<T>(\"stable.name\") in this compilation.");
     private static readonly DiagnosticDescriptor DuplicateMessage = Rule("RLY002", "Duplicate message identity",
         "Message type '{0}' duplicates message identity '{1}' version {2}. Choose a unique name and version.", DiagnosticSeverity.Error);
     private static readonly DiagnosticDescriptor UnregisteredHandler = Rule("RLY003", "Handler is never registered",
@@ -42,6 +42,8 @@ public sealed class ConfigurationAnalyzer : DiagnosticAnalyzer
             var consumer = compilation.GetTypeByMetadataName("Relayer.ConsumerBuilder`1");
             var consumerInterface = compilation.GetTypeByMetadataName("Relayer.IConsumerBuilder");
             var registration = compilation.GetTypeByMetadataName("Relayer.RelayerGeneratedHandlers");
+            var messageRegistry = compilation.GetTypeByMetadataName("Relayer.MessageTypeRegistry");
+            var explicitIdentities = new ConcurrentDictionary<ITypeSymbol, byte>(SymbolEqualityComparer.Default);
             var handlers = new ConcurrentDictionary<INamedTypeSymbol, byte>(SymbolEqualityComparer.Default);
             var registered = new ConcurrentDictionary<ITypeSymbol, byte>(SymbolEqualityComparer.Default);
             var messages = new ConcurrentDictionary<INamedTypeSymbol, AttributeData>(SymbolEqualityComparer.Default);
@@ -54,7 +56,6 @@ public sealed class ConfigurationAnalyzer : DiagnosticAnalyzer
                 if (message is INamedTypeSymbol wrapper && SymbolEqualityComparer.Default.Equals(wrapper.OriginalDefinition,
                         compilation.GetTypeByMetadataName("Relayer.Tombstone`1")))
                     message = wrapper.TypeArguments[0];
-                if (message is INamedTypeSymbol named) message = named.OriginalDefinition;
                 if (message.GetAttributes().Any(a => SymbolEqualityComparer.Default.Equals(a.AttributeClass, attribute))) return;
                 var location = message.Locations.FirstOrDefault(static l => l.IsInSource) ?? use;
                 missing.GetOrAdd(message, static _ => new ConcurrentDictionary<Location, byte>()).TryAdd(location, 0);
@@ -80,6 +81,10 @@ public sealed class ConfigurationAnalyzer : DiagnosticAnalyzer
             {
                 var invocation = (IInvocationOperation)operationContext.Operation;
                 var method = invocation.TargetMethod;
+                if (method.Name == "Add" && method.TypeArguments.Length == 1
+                    && SymbolEqualityComparer.Default.Equals(method.ContainingType, messageRegistry))
+                    explicitIdentities.TryAdd(method.TypeArguments[0], 0);
+
                 if (SymbolEqualityComparer.Default.Equals(method.ContainingType.OriginalDefinition, transport))
                 {
                     if (method.Name == "Send" && method.TypeArguments.Length == 1)
@@ -106,6 +111,7 @@ public sealed class ConfigurationAnalyzer : DiagnosticAnalyzer
             {
                 foreach (var pair in missing)
                 {
+                    if (explicitIdentities.ContainsKey(pair.Key)) continue;
                     var declaration = pair.Key.DeclaringSyntaxReferences.FirstOrDefault();
                     var locations = declaration is null ? ImmutableArray<Location>.Empty
                         : ImmutableArray.Create(Location.Create(declaration.SyntaxTree, declaration.Span));

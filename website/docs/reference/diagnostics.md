@@ -7,7 +7,7 @@ Relayer ships compile-time analyzers and an IDE code fix in its NuGet package. T
 
 | ID | Default severity | Problem |
 | --- | --- | --- |
-| [RLY001](#rly001) | Warning | A message used by a route or handler has no `[Message]` attribute. |
+| [RLY001](#rly001) | Warning | A message used by a route or handler has neither `[Message]` nor an explicit identity registration. |
 | [RLY002](#rly002) | Error | Two types declare the same message name and version. |
 | [RLY003](#rly003) | Warning | A concrete handler is never registered in this compilation. |
 | [RLY004](#rly004) | Warning | An inline consumer configuration has no handler. |
@@ -25,7 +25,9 @@ Declare a stable wire identity on each message used by `Send<TMessage>`, `IHandl
 public sealed record OrderPlaced(string OrderId);
 ```
 
-The code fix adds `[global::Relayer.MessageAttribute("OrderPlaced")]` to the message declaration. **Edit this suggestion to the permanent wire name before publishing.** It is an explicit source declaration, not a runtime fallback to CLR names. The fix preserves comments and supports classes, structs and records. Referenced types cannot be edited; add the attribute in their owning project or introduce a named message contract. Each missing message type is reported once per compilation, even when routes and multiple handlers use it.
+The code fix adds `[global::Relayer.MessageAttribute("OrderPlaced")]` to the message declaration. **Edit this suggestion to the permanent wire name before publishing.** It is an explicit source declaration, not a runtime fallback to CLR names. The fix preserves comments and supports classes, structs and records. Referenced types cannot be edited; add the attribute in their owning project or register their identity explicitly. Each missing message type is reported once per compilation, even when routes and multiple handlers use it.
+
+Alternatively, call `builder.MessageTypes.Add<OrderPlaced>("orders.placed")`. RLY001 recognizes calls to Relayer's `MessageTypeRegistry.Add<T>` anywhere in the current compilation, including after the route or handler use. The registration covers that exact type and its `Tombstone<T>` wrapper; registering one closed generic type does not cover other instantiations. Calls hidden inside a referenced assembly or generic helper are not inferred. If registration happens outside this compilation, suppress RLY001 at the reported location or through `.editorconfig` after checking that startup registers the identity. The analyzer does not prove that a visible registration executes; startup validation remains authoritative.
 
 ## RLY002
 

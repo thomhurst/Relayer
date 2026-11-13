@@ -304,7 +304,7 @@ Messages are identified by a stable string name, never by the CLR type name. Tha
 public sealed record ChargeCard(Guid OrderId, decimal Amount);
 ```
 
-If the attribute is missing, an analyzer warns and suggests one. A fallback convention exists but is discouraged.
+The identity is declared with `[Message]` or explicitly through `MessageTypeRegistry.Add<T>`. RLY001 warns when neither is visible in the current compilation; there is no CLR-name fallback. See the [message guide](../website/docs/guides/messages.md) for explicit registration and its analyzer limits.
 
 ### 4.2 CloudEvents by default
 
