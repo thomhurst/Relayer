@@ -7,7 +7,7 @@ using Relayer.Transports;
 
 namespace Relayer.Outbox.SqlServer;
 
-internal sealed partial class SqlServerOrderedDispatcher : BackgroundService
+internal sealed partial class SqlServerOrderedDispatcher : BackgroundService, IOrderedLaneWorker
 {
     private readonly string _source;
     private readonly SqlServerOrderedDispatchOptions _options;
@@ -43,67 +43,20 @@ internal sealed partial class SqlServerOrderedDispatcher : BackgroundService
             throw new InvalidOperationException("Ordered outbox dispatch requires at least one named ITransport adapter.");
     }
 
-    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
-    {
-        // Reuse the deadline source across successful batches. Cancellation is an exceptional path.
-        var deadline = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
-        long? lastRebalance = null;
-        try
-        {
-            while (!stoppingToken.IsCancellationRequested)
-            {
-                var madeProgress = false;
-                try
-                {
-                    await RebalanceIfDueAsync().ConfigureAwait(false);
-                    await _lane.FindReadyAsync(_coordinator.Assigned, _ready, stoppingToken).ConfigureAwait(false);
-                    for (var lane = 0; lane < _options.Lanes; lane++)
-                    {
-                        if (!_ready[lane] || !_coordinator.Assigned[lane]) continue;
-                        // A preceding slow batch can consume the heartbeat interval. Refresh before renewing another lane.
-                        await RebalanceIfDueAsync().ConfigureAwait(false);
-                        if (!_coordinator.Assigned[lane]) continue;
-                        deadline.CancelAfter(_options.LeaseDuration / 2);
-                        try
-                        {
-                            madeProgress |= await DispatchLaneAsync(lane, deadline.Token).ConfigureAwait(false) > 0;
-                        }
-                        catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { throw; }
-                        catch (Exception error) { DispatchFailed(_logger, error); }
-                        finally
-                        {
-                            deadline.CancelAfter(Timeout.InfiniteTimeSpan);
-                            if (!deadline.TryReset())
-                            {
-                                deadline.Dispose();
-                                deadline = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
-                            }
-                        }
-                    }
-                }
-                catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { break; }
-                catch (Exception error) { DispatchFailed(_logger, error); }
-                if (!madeProgress)
-                    await Task.Delay(_options.PollInterval, _timeProvider, stoppingToken).ConfigureAwait(false);
-            }
-        }
-        catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { }
-        finally
-        {
-            deadline.Dispose();
-            using var cleanup = new CancellationTokenSource(_options.LeaseDuration / 2);
-            try { await _coordinator.ReleaseAsync(cleanup.Token).ConfigureAwait(false); }
-            catch (Exception error) { ReleaseFailed(_logger, error); }
-        }
+    protected override Task ExecuteAsync(CancellationToken stoppingToken) =>
+        OrderedLaneWorker.RunAsync(this, _options.LeaseDuration, _options.PollInterval,
+            _timeProvider, stoppingToken, stoppingToken);
 
-        async ValueTask RebalanceIfDueAsync()
-        {
-            if (lastRebalance is { } last && _timeProvider.GetElapsedTime(last) < _options.LeaseDuration / 3) return;
-            var started = _timeProvider.GetTimestamp();
-            await _coordinator.RebalanceAsync(stoppingToken).ConfigureAwait(false);
-            lastRebalance = started;
-        }
-    }
+    int IOrderedLaneWorker.Lanes => _options.Lanes;
+    bool IOrderedLaneWorker.StopRequested => false;
+    bool IOrderedLaneWorker.IsReady(int lane) => _ready[lane];
+    bool IOrderedLaneWorker.IsAssigned(int lane) => _coordinator.Assigned[lane];
+    ValueTask IOrderedLaneWorker.FindReadyAsync(CancellationToken token) => _lane.FindReadyAsync(_coordinator.Assigned, _ready, token);
+    ValueTask IOrderedLaneWorker.RebalanceAsync(CancellationToken token) => _coordinator.RebalanceAsync(token);
+    ValueTask<int> IOrderedLaneWorker.DispatchLaneAsync(int lane, CancellationToken token) => DispatchLaneAsync(lane, token);
+    ValueTask IOrderedLaneWorker.ReleaseAsync(CancellationToken token) => _coordinator.ReleaseAsync(token);
+    void IOrderedLaneWorker.DispatchFailed(Exception error) => DispatchFailed(_logger, error);
+    void IOrderedLaneWorker.ReleaseFailed(Exception error) => ReleaseFailed(_logger, error);
 
     [RuntimeAsyncMethodGeneration(false)]
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder<>))]
