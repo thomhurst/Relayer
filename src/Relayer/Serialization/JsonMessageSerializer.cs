@@ -83,7 +83,7 @@ internal sealed class JsonMessageSerializer : IMessageSerializer
 
     private sealed class WriterPool(JsonSerializerOptions options)
     {
-        private readonly Utf8JsonWriter?[] _writers = new Utf8JsonWriter?[Math.Max(1, Environment.ProcessorCount)];
+        private readonly SlotPool<Utf8JsonWriter> _writers = new(Math.Max(1, Environment.ProcessorCount), Math.Max(1, Environment.ProcessorCount));
         private readonly ArrayBufferWriter<byte> _idleDestination = new(1);
         private readonly JsonWriterOptions _options = new()
         {
@@ -97,13 +97,8 @@ internal sealed class JsonMessageSerializer : IMessageSerializer
 
         public Utf8JsonWriter Rent(IBufferWriter<byte> destination)
         {
-            for (var i = 0; i < _writers.Length; i++)
+            if (_writers.TryRent() is { } writer)
             {
-                var writer = Interlocked.Exchange(ref _writers[i], null);
-                if (writer is null)
-                {
-                    continue;
-                }
                 writer.Reset(destination);
                 return writer;
             }
@@ -115,13 +110,7 @@ internal sealed class JsonMessageSerializer : IMessageSerializer
             // Reset() alone retains the caller's destination. Detach it even on failure.
             // The idle destination is never written to.
             writer.Reset(_idleDestination);
-            for (var i = 0; i < _writers.Length; i++)
-            {
-                if (Interlocked.CompareExchange(ref _writers[i], writer, null) is null)
-                {
-                    return;
-                }
-            }
+            if (_writers.TryReturn(writer)) return;
             writer.Dispose();
         }
     }

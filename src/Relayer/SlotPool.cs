@@ -46,9 +46,55 @@ internal sealed class SlotPool<T> where T : class
         }
     }
 
+    // Fixed sender pools avoid atomic writes to slots already known to be unavailable.
+    internal T? TryRentGuarded()
+    {
+        System.Diagnostics.Debug.Assert(_pageSize == _capacity);
+        var slots = _first.Slots;
+        for (var i = 0; i < slots.Length; i++)
+            if (Volatile.Read(ref slots[i]) is not null &&
+                Interlocked.Exchange(ref slots[i], null) is { } item) return Unsafe.As<T>(item);
+        return null;
+    }
+
+    internal bool TryReturnGuarded(T item)
+    {
+        System.Diagnostics.Debug.Assert(_pageSize == _capacity);
+        var slots = _first.Slots;
+        for (var i = 0; i < slots.Length; i++)
+            if (Volatile.Read(ref slots[i]) is null &&
+                Interlocked.CompareExchange(ref slots[i], item, null) is null) return true;
+        return false;
+    }
+
+    // Indexed owners use one fixed page so slot identity remains stable through a batch.
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal T? TryRent(ref int cursor)
+    {
+        System.Diagnostics.Debug.Assert(_pageSize == _capacity, "Indexed rentals require one fixed page.");
+        var slots = _first.Slots;
+        var start = Volatile.Read(ref cursor);
+        for (var offset = 0; offset < slots.Length; offset++)
+        {
+            var index = start + offset;
+            if (index >= slots.Length) index -= slots.Length;
+            if (Interlocked.Exchange(ref slots[index], null) is not { } item) continue;
+            Volatile.Write(ref cursor, index + 1 == slots.Length ? 0 : index + 1);
+            return Unsafe.As<T>(item);
+        }
+        return null;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal bool TryReturn(T item, int index)
+    {
+        System.Diagnostics.Debug.Assert(_pageSize == _capacity, "Indexed returns require one fixed page.");
+        return index >= 0 && Interlocked.CompareExchange(ref _first.Slots[index], item, null) is null;
+    }
+
     private sealed class Page(int size)
     {
-        // Only TryReturn(T) writes these slots. Object storage keeps Interlocked intrinsic
+        // Only typed return methods write these slots. Object storage keeps Interlocked intrinsic
         // in shared generic code; Unsafe.As on rent is safe by that ownership invariant.
         internal readonly object?[] Slots = new object?[size];
         internal Page? Next;

@@ -24,7 +24,7 @@ internal sealed class SendRoute<TMessage>
     private readonly MessageEnvelope _envelope;
     private readonly SendTracing? _tracing;
     private readonly string _wireType;
-    private readonly Operation?[] _operations = new Operation?[64];
+    private readonly SlotPool<Operation> _operations = new(capacity: 64);
     private readonly bool _isTombstone;
 
     internal SendRouteOptions Options => _options;
@@ -60,25 +60,12 @@ internal sealed class SendRoute<TMessage>
         ReplyMetadata reply = default, WireString tenant = default)
         => Rent().Start(message, configure, outbox, callerToken, buffer, reply, tenant);
 
-    private Operation Rent()
-    {
-        for (var i = 0; i < _operations.Length; i++)
-        {
-            if (Volatile.Read(ref _operations[i]) is not null &&
-                Interlocked.Exchange(ref _operations[i], null) is { } operation) return operation;
-        }
-        return new Operation(this);
-    }
+    private Operation Rent() => _operations.TryRentGuarded() ?? new Operation(this);
 
     private void Return(Operation operation)
     {
-        // Large messages and bursts may allocate, but cannot permanently enlarge the idle pool (D52).
-        if (operation.CanRetain)
-        {
-            for (var i = 0; i < _operations.Length; i++)
-                if (Volatile.Read(ref _operations[i]) is null &&
-                    Interlocked.CompareExchange(ref _operations[i], operation, null) is null) return;
-        }
+        // Large messages and bursts cannot permanently enlarge the idle pool (D52).
+        if (operation.CanRetain && _operations.TryReturnGuarded(operation)) return;
         operation.Timeout.Dispose();
     }
 

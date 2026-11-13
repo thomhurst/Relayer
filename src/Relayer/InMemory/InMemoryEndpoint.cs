@@ -7,7 +7,7 @@ namespace Relayer.InMemory;
 internal sealed class InMemoryEndpoint
 {
     private readonly string _name;
-    private readonly InMemoryMessage?[] _pool;
+    private readonly SlotPool<InMemoryMessage> _pool;
     private readonly Channel<InMemoryMessage>[] _partitions;
     private readonly Channel<InMemoryMessage>[] _scheduled;
     private readonly ScheduleWake[] _scheduleWake;
@@ -44,8 +44,8 @@ internal sealed class InMemoryEndpoint
         if (Capabilities.ConsumptionModel == ConsumptionModel.Queue && !Capabilities.OrderedByKey && options.Partitions != 1)
             throw new ArgumentException($"Endpoint '{name}': unordered queues require Partitions = 1. Enable OrderedByKey or use ConsumptionModel.Log.", nameof(options));
         _capacity = options.Capacity;
-        _pool = new InMemoryMessage[options.MessagePoolCapacity];
-        for (var i = 0; i < _pool.Length; i++) _pool[i] = new();
+        _pool = new(options.MessagePoolCapacity, options.MessagePoolCapacity);
+        for (var i = 0; i < options.MessagePoolCapacity; i++) _pool.TryReturn(new(), i);
         var sharedQueue = Capabilities.ConsumptionModel == ConsumptionModel.Queue && !Capabilities.OrderedByKey;
         _partitions = CreatePartitions(options.Partitions, sharedQueue);
         if (sharedQueue) _queueReader = new(_partitions[0], _wakeup, shared: true);
@@ -125,8 +125,7 @@ internal sealed class InMemoryEndpoint
     internal InMemoryMessage Rent()
     {
         Observer?.WorkStarted();
-        for (var i = 0; i < _pool.Length; i++)
-            if (Interlocked.Exchange(ref _pool[i], null) is { } message) { message.References = 1; return message; }
+        if (_pool.TryRent() is { } message) { message.References = 1; return message; }
         return new() { References = 1 };
     }
 
@@ -134,8 +133,7 @@ internal sealed class InMemoryEndpoint
     {
         if (Interlocked.Decrement(ref message.References) != 0) return;
         message.Clear();
-        for (var i = 0; i < _pool.Length; i++)
-            if (Interlocked.CompareExchange(ref _pool[i], message, null) is null) break;
+        _pool.TryReturn(message);
         _sendSlots.Writer.TryWrite(0);
         Observer?.WorkCompleted();
     }
@@ -298,7 +296,7 @@ internal sealed class InMemoryEndpoint
             foreach (var partition in group) { partition.Writer.TryComplete(); while (partition.Reader.TryRead(out _)) { } }
         foreach (var receiver in _receivers) receiver.Clear();
         foreach (var state in _fanOut) state.Pending = null;
-        Array.Clear(_pool);
+        while (_pool.TryRent() is not null) { }
         DeadLetters.Writer.TryComplete();
         _sendSlots.Writer.TryComplete();
     }

@@ -17,8 +17,8 @@ public sealed class ReceivePipeline<TIncoming, TBinding>
 {
     private readonly ConsumePipeline _consumer;
     private readonly HeaderNames _names;
-    private readonly State?[] _states;
-    private readonly BatchState?[] _batches;
+    private readonly SlotPool<State> _states;
+    private readonly SlotPool<BatchState>? _batches;
     private int _batchCursor;
     private readonly bool _preserveSettledFailures;
 
@@ -34,11 +34,14 @@ public sealed class ReceivePipeline<TIncoming, TBinding>
         ArgumentOutOfRangeException.ThrowIfLessThan(contextPoolCapacity, 1);
         _consumer = consumer;
         _names = names;
-        _states = new State[contextPoolCapacity];
-        for (var i = 0; i < _states.Length; i++) _states[i] = new State(consumer, names, preserveSettledFailures, i);
-        _batches = consumer.BatchExecution is { } batch
-            ? new BatchState[Math.Max(1, contextPoolCapacity / batch.Size)] : [];
-        for (var i = 0; i < _batches.Length; i++) _batches[i] = new BatchState(consumer.BatchExecution!.Size);
+        _states = new(contextPoolCapacity, contextPoolCapacity);
+        for (var i = 0; i < contextPoolCapacity; i++) _states.TryReturn(new State(consumer, names, preserveSettledFailures, i), i);
+        if (consumer.BatchExecution is { } batch)
+        {
+            var capacity = Math.Max(1, contextPoolCapacity / batch.Size);
+            _batches = new(capacity, capacity);
+            for (var i = 0; i < capacity; i++) _batches.TryReturn(new BatchState(batch.Size), i);
+        }
     }
 
     /// <summary>Processes one delivery and releases all native references before returning its disposition.</summary>
@@ -94,9 +97,7 @@ public sealed class ReceivePipeline<TIncoming, TBinding>
         var maximum = _consumer.BatchExecution!.Size;
         if (messages.Length > maximum) throw new ArgumentOutOfRangeException(nameof(messages), "Batch exceeds the configured maximum size.");
         if (messages.IsEmpty) return;
-        BatchState? batch = null;
-        for (var i = 0; i < _batches.Length && batch is null; i++) batch = Interlocked.Exchange(ref _batches[i], null);
-        batch ??= new BatchState(maximum);
+        var batch = _batches!.TryRent() ?? new BatchState(maximum);
         var count = 0;
         try
         {
@@ -129,8 +130,7 @@ public sealed class ReceivePipeline<TIncoming, TBinding>
                 Return(state);
                 batch.States[i] = null;
             }
-            for (var i = 0; i < _batches.Length; i++)
-                if (Interlocked.CompareExchange(ref _batches[i], batch, null) is null) break;
+            _batches.TryReturn(batch);
         }
     }
 
@@ -141,34 +141,13 @@ public sealed class ReceivePipeline<TIncoming, TBinding>
     }
 
     private State Rent()
-    {
-        if (_consumer.IsBatch)
-        {
-            var start = Volatile.Read(ref _batchCursor);
-            for (var offset = 0; offset < _states.Length; offset++)
-            {
-                var index = start + offset;
-                if (index >= _states.Length) index -= _states.Length;
-                if (Interlocked.Exchange(ref _states[index], null) is not { } state) continue;
-                Volatile.Write(ref _batchCursor, index + 1 == _states.Length ? 0 : index + 1);
-                return state;
-            }
-            return new State(_consumer, _names, _preserveSettledFailures);
-        }
-        for (var i = 0; i < _states.Length; i++)
-            if (Interlocked.Exchange(ref _states[i], null) is { } state) return state;
-        return new State(_consumer, _names, _preserveSettledFailures);
-    }
+        => (_consumer.IsBatch ? _states.TryRent(ref _batchCursor) : _states.TryRent())
+            ?? new State(_consumer, _names, _preserveSettledFailures);
 
     private void Return(State state)
     {
-        if (_consumer.IsBatch)
-        {
-            if (state.PoolSlot >= 0) Interlocked.CompareExchange(ref _states[state.PoolSlot], state, null);
-            return;
-        }
-        for (var i = 0; i < _states.Length; i++)
-            if (Interlocked.CompareExchange(ref _states[i], state, null) is null) return;
+        if (_consumer.IsBatch) _states.TryReturn(state, state.PoolSlot);
+        else _states.TryReturn(state);
     }
 
     private sealed class State : ReceiveMessageState, IValueTaskSource<Disposition>, IValueTaskSource

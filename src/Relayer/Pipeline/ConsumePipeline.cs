@@ -46,7 +46,7 @@ public sealed partial class ConsumePipeline
     private readonly IFailureClassifier _classifier;
     private readonly FailurePipeline? _failures;
     private readonly ConsumeDelegate _pipeline;
-    private readonly DefaultMessageContext?[] _contexts;
+    private readonly SlotPool<DefaultMessageContext> _contexts;
     private readonly WireIdentity[] _wireIdentities;
     private readonly EndpointTelemetry? _telemetry;
     private readonly ConsumeDelegate? _settlement;
@@ -80,7 +80,7 @@ public sealed partial class ConsumePipeline
         _process = static context => ProcessCoreAsync((DefaultMessageContext)context);
         _tracing = tracing;
         _logger = telemetry?.Logger ?? tracing?.Logger;
-        _contexts = new DefaultMessageContext[capacity];
+        _contexts = new(capacity, capacity);
         _wireIdentities = new WireIdentity[dispatch.Count];
         var identityIndex = 0;
         foreach (var identity in dispatch.Keys)
@@ -90,7 +90,7 @@ public sealed partial class ConsumePipeline
         }
         for (var i = 0; i < capacity; i++)
         {
-            _contexts[i] = new DefaultMessageContext(this, i);
+            _contexts.TryReturn(new DefaultMessageContext(this, i), i);
         }
         _pipeline = InvokeHandlerAsync;
         for (var i = middleware.Count - 1; i >= 0; i--)
@@ -112,29 +112,7 @@ public sealed partial class ConsumePipeline
     }
 
     private DefaultMessageContext RentContext()
-    {
-        if (IsBatch)
-        {
-            var start = Volatile.Read(ref _batchCursor);
-            for (var offset = 0; offset < _contexts.Length; offset++)
-            {
-                var index = start + offset;
-                if (index >= _contexts.Length) index -= _contexts.Length;
-                if (Interlocked.Exchange(ref _contexts[index], null) is not { } context) continue;
-                Volatile.Write(ref _batchCursor, index + 1 == _contexts.Length ? 0 : index + 1);
-                return context;
-            }
-            return new DefaultMessageContext(this);
-        }
-        for (var i = 0; i < _contexts.Length; i++)
-        {
-            if (Interlocked.Exchange(ref _contexts[i], null) is { } context)
-            {
-                return context;
-            }
-        }
-        return new DefaultMessageContext(this);
-    }
+        => (IsBatch ? _contexts.TryRent(ref _batchCursor) : _contexts.TryRent()) ?? new DefaultMessageContext(this);
 
     internal DefaultMessageContext RentContext(ReceiveMessageState message, CancellationToken cancellationToken)
     {
@@ -221,16 +199,7 @@ public sealed partial class ConsumePipeline
 
     internal void Return(DefaultMessageContext context)
     {
-        if (IsBatch)
-        {
-            // Batch rentals retain their original slot, avoiding a scan for each item in a full batch.
-            if (context.PoolSlot >= 0) Interlocked.CompareExchange(ref _contexts[context.PoolSlot], context, null);
-            return;
-        }
-        for (var i = 0; i < _contexts.Length; i++)
-        {
-            if (Interlocked.CompareExchange(ref _contexts[i], context, null) is null) return;
-        }
-        // Concurrency beyond the configured capacity must not grow the retained pool without a bound.
+        if (IsBatch) _contexts.TryReturn(context, context.PoolSlot);
+        else _contexts.TryReturn(context);
     }
 }
