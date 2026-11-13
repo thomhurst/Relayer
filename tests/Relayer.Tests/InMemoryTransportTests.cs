@@ -414,6 +414,34 @@ public class InMemoryTransportTests
     }
 
     [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Unset_callback_disposition_faults_without_committing_and_retains_delivery(bool defaultValueTask)
+    {
+        await using var transport = Transport(new()
+        {
+            Capabilities = new() { ConsumptionModel = ConsumptionModel.Log },
+        });
+        var calls = 0;
+        var received = Channel.CreateUnbounded<int>();
+        transport.RegisterConsumer("orders", (delivery, _) =>
+        {
+            if (Interlocked.Increment(ref calls) == 1)
+                return defaultValueTask ? default : new ValueTask<Disposition>(default(Disposition));
+            received.Writer.TryWrite(Value(delivery));
+            return new(Disposition.Complete);
+        }, "workers");
+        await transport.StartAsync(default);
+        await Send(transport, 42);
+        await Assert.That(async () => await transport.Completion.WaitAsync(Limit)).Throws<InvalidOperationException>();
+        await Assert.That(transport.GetCommittedPosition("orders", "workers", 0)).IsEqualTo(-1);
+        await transport.StartAsync(default);
+        await Assert.That(await Next(received)).IsEqualTo(42);
+        await transport.StopAsync(default);
+        await Assert.That(transport.GetCommittedPosition("orders", "workers", 0)).IsEqualTo(0);
+    }
+
+    [Test]
     public async Task Invalid_settlement_does_not_complete_a_delivery()
     {
         await using var transport = Transport(new() { Capabilities = new() });
