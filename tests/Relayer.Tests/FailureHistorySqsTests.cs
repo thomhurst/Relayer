@@ -15,11 +15,13 @@ public sealed class FailureHistorySqsTests
     [Test]
     public async Task Long_poison_history_reaches_a_size_limited_native_queue_before_source_deletion()
     {
+        // Shared provisioning has its own five-minute budget; message assertions start after readiness.
+        var serviceUrl = await SharedBrokers.LocalStackUrlAsync(CancellationToken.None);
         using var deadline = new CancellationTokenSource(TimeSpan.FromMinutes(3));
         var token = deadline.Token;
         using var client = new AmazonSQSClient(new BasicAWSCredentials("test", "test"), new AmazonSQSConfig
         {
-            ServiceURL = await SharedBrokers.LocalStackUrlAsync(token), AuthenticationRegion = "us-east-1", MaxErrorRetry = 0,
+            ServiceURL = serviceUrl, AuthenticationRegion = "us-east-1", MaxErrorRetry = 0,
         });
         var source = TestContext.Current!.Isolation.GetIsolatedName("history-source");
         var dead = TestContext.Current!.Isolation.GetIsolatedName("history-dead");
