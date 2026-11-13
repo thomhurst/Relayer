@@ -15,16 +15,31 @@ public sealed class MessageTypeGenerator : IIncrementalGenerator
 {
     private const string MessageAttributeName = "Relayer.MessageAttribute";
 
+    private static readonly DiagnosticDescriptor InaccessibleMessage = new(
+        "RLYM002", "Message type is inaccessible",
+        "Message type '{0}' cannot be accessed by generated registration and JSON metadata. Make the message and its containing types assembly-accessible and non-file-local.",
+        "Relayer", DiagnosticSeverity.Error, isEnabledByDefault: true,
+        helpLinkUri: "https://relayer.tomlonghurst.dev/docs/reference/diagnostics#rlym002");
+
     public void Initialize(IncrementalGeneratorInitializationContext context)
     {
-        var messages = context.SyntaxProvider
+        var declarations = context.SyntaxProvider
             .ForAttributeWithMetadataName(
                 MessageAttributeName,
                 predicate: static (_, _) => true,
                 transform: static (ctx, _) => ToModel(ctx))
             .Where(static m => m is not null)
-            .Select(static (m, _) => m!)
-            .Collect();
+            .Select(static (m, _) => m!);
+
+        context.RegisterSourceOutput(declarations, static (spc, model) =>
+        {
+            if (model.InaccessibleLocation is { } location)
+            {
+                spc.ReportDiagnostic(Diagnostic.Create(InaccessibleMessage,
+                    Location.Create(location.FilePath, location.Span, location.LineSpan), model.FullyQualifiedName));
+            }
+        });
+        var messages = declarations.Where(static m => m.InaccessibleLocation is null).Collect();
 
         context.RegisterSourceOutput(messages, static (spc, models) => Emit(spc, models));
         context.RegisterSourceOutput(messages.Combine(context.CompilationProvider),
@@ -36,6 +51,13 @@ public sealed class MessageTypeGenerator : IIncrementalGenerator
         if (context.TargetSymbol is not INamedTypeSymbol type || context.Attributes.Length == 0)
         {
             return null;
+        }
+
+        if (!CanReference(type, context.SemanticModel.Compilation))
+        {
+            var location = context.TargetNode.GetLocation();
+            return new MessageModel(type.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat), "", 1,
+                new DiagnosticLocation(location.GetLineSpan().Path, location.SourceSpan, location.GetLineSpan().Span));
         }
 
         var attribute = context.Attributes[0];
@@ -146,7 +168,14 @@ public sealed class MessageTypeGenerator : IIncrementalGenerator
         }
     }
 
+    private static bool CanReference(INamedTypeSymbol type, Compilation compilation) =>
+        !type.IsFileLocal
+        && compilation.IsSymbolAccessibleWithin(type, compilation.Assembly)
+        && (type.ContainingType is null || CanReference(type.ContainingType, compilation));
+
     private static string Escape(string value) => value.Replace("\\", "\\\\").Replace("\"", "\\\"");
 
-    private sealed record MessageModel(string FullyQualifiedName, string Name, int Version);
+    private sealed record MessageModel(string FullyQualifiedName, string Name, int Version, DiagnosticLocation? InaccessibleLocation = null);
+
+    private sealed record DiagnosticLocation(string FilePath, TextSpan Span, LinePositionSpan LineSpan);
 }
