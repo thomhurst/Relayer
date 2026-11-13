@@ -60,7 +60,7 @@ public class ConsumerMiddlewareTests
         new ServiceCollection().AddRelayer(relayer =>
         {
             saved = relayer;
-            relayer.AddTransport<object, object, object>("test", transport => transport.Consume("source", c =>
+            relayer.AddTransport<object, object>("test", transport => transport.Consume("source", c =>
             {
                 consumer = c;
                 c.Handler<MiddlewareHandler>();

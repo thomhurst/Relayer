@@ -105,7 +105,7 @@ public class TopologyTests
         var second = new InMemoryTransport("commands");
         await using var provider = Create(first, TopologyMode.None, builder =>
         {
-            builder.AddTransport<BuilderTests.BrokerOptions, BuilderTests.RouteOptions, BuilderTests.ConsumerOptions>("commands", transport =>
+            builder.AddTransport<BuilderTests.BrokerOptions, BuilderTests.ConsumerOptions>("commands", transport =>
             {
                 transport.TopologyMode = TopologyMode.Provision;
                 transport.Send<OrderCancelled>("orders");
@@ -135,7 +135,7 @@ public class TopologyTests
         var first = new InMemoryTransport("events");
         var second = new InMemoryTransport("commands");
         await using var provider = Create(first, extra: builder =>
-            builder.AddTransport<BuilderTests.BrokerOptions, BuilderTests.RouteOptions, BuilderTests.ConsumerOptions>("commands", transport =>
+            builder.AddTransport<BuilderTests.BrokerOptions, BuilderTests.ConsumerOptions>("commands", transport =>
                 transport.Send<OrderCancelled>("commands")), second: second);
         var failure = await Start(provider);
         await Assert.That(failure!.Failures.Count()).IsEqualTo(2);
@@ -147,7 +147,7 @@ public class TopologyTests
     {
         var adapter = new InMemoryTransport("events");
         await using var provider = Create(adapter, extra: builder =>
-            builder.AddTransport<BuilderTests.BrokerOptions, BuilderTests.RouteOptions, BuilderTests.ConsumerOptions>("invalid", transport =>
+            builder.AddTransport<BuilderTests.BrokerOptions, BuilderTests.ConsumerOptions>("invalid", transport =>
                 transport.TopologyMode = (TopologyMode)99));
         await Assert.That((await Start(provider))!.Message).Contains("TopologyMode");
         await Assert.That(adapter.Calls.Count).IsEqualTo(0);
@@ -203,7 +203,7 @@ public class TopologyTests
         var receiver = new Receiver();
         await using var provider = Create(adapter, TopologyMode.Provision, builder =>
         {
-            builder.AddTransport<BuilderTests.BrokerOptions, BuilderTests.RouteOptions, BuilderTests.ConsumerOptions>("inbound", transport =>
+            builder.AddTransport<BuilderTests.BrokerOptions, BuilderTests.ConsumerOptions>("inbound", transport =>
                 transport.Consume("inbound-only", consumer => consumer.Handler<BuilderTests.OrderHandler>()));
             builder.Services.AddSingleton<IHostedService>(receiver);
         }, new InMemoryTransport("inbound"));
@@ -224,7 +224,7 @@ public class TopologyTests
         {
             relayer.AddMessageTypesFromThisAssembly();
             relayer.TopologyMode = mode;
-            relayer.AddTransport<BuilderTests.BrokerOptions, BuilderTests.RouteOptions, BuilderTests.ConsumerOptions>("events",
+            relayer.AddTransport<BuilderTests.BrokerOptions, BuilderTests.ConsumerOptions>("events",
                 transport => transport.Send<OrderPlaced>("orders"));
         });
         var host = builder.Build();
@@ -242,7 +242,7 @@ public class TopologyTests
         {
             builder.AddMessageTypesFromThisAssembly();
             if (mode.HasValue) builder.TopologyMode = mode.Value;
-            builder.AddTransport<BuilderTests.BrokerOptions, BuilderTests.RouteOptions, BuilderTests.ConsumerOptions>("events", transport =>
+            builder.AddTransport<BuilderTests.BrokerOptions, BuilderTests.ConsumerOptions>("events", transport =>
             {
                 transport.Send<OrderPlaced>("orders");
                 transport.Consume("orders", consumer => consumer.Handler<BuilderTests.OrderHandler>());

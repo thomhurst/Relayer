@@ -16,8 +16,8 @@ internal static class UpcasterSmoke
         {
             r.AddMessageTypesFromThisAssembly();
             r.Infrastructure().Upcasters.Add(new UpgradeFirst()).Add(new UpgradeSecond());
-            r.AddTransport<object, object, object>("manual-1", transport => transport.Consume("source", consumer => consumer.Handler<UpgradeHandler>()));
-            r.AddTransport<UpgradeOptions, UpgradeOptions, UpgradeOptions>("upgrades", t =>
+            r.AddTransport<object, object>("manual-1", transport => transport.Consume("source", consumer => consumer.Handler<UpgradeHandler>()));
+            r.AddTransport<UpgradeOptions, UpgradeOptions>("upgrades", t =>
                 t.Consume("versions", c => c.Handler<UpgradeBatchHandler>().Batch(2, TimeSpan.FromSeconds(1))));
         });
         await using var provider = services.BuildServiceProvider();

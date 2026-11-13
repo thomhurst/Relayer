@@ -10,7 +10,7 @@ public static class RabbitMqStreamsBuilderExtensions
 {
     /// <summary>Registers native connection and topology management. Message execution remains planned under #316.</summary>
     public static IRelayerBuilder RabbitMQStreams(this IRelayerBuilder builder, string name,
-        Action<TransportBuilder<RabbitMqStreamsOptions, RabbitMqStreamsRouteOptions, RabbitMqStreamsConsumerOptions>> configure)
+        Action<TransportBuilder<RabbitMqStreamsOptions, RabbitMqStreamsConsumerOptions>> configure)
     {
         ArgumentNullException.ThrowIfNull(builder);
         ArgumentException.ThrowIfNullOrWhiteSpace(name);
@@ -27,9 +27,6 @@ public static class RabbitMqStreamsBuilderExtensions
         return builder;
     }
 }
-
-/// <summary>Reserved for native RabbitMQ Streams send composition.</summary>
-public sealed class RabbitMqStreamsRouteOptions;
 
 /// <summary>Reserved for native RabbitMQ Streams receive composition.</summary>
 public sealed class RabbitMqStreamsConsumerOptions;

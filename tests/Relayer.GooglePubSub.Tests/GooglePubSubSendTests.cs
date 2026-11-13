@@ -157,7 +157,7 @@ public class GooglePubSubSendTests
     }
 
     private static ServiceProvider Provider(PublisherServiceApiClient publisher,
-        Action<TransportBuilder<GooglePubSubTransportOptions, GooglePubSubRouteOptions, GooglePubSubConsumerOptions>>? configure = null)
+        Action<TransportBuilder<GooglePubSubTransportOptions, GooglePubSubConsumerOptions>>? configure = null)
     {
         var services = new ServiceCollection();
         services.AddRelayer(relayer => relayer.GooglePubSub("test", transport =>

@@ -167,7 +167,7 @@ Service Bus sending uses native queue/topic/subscription declarations. Least-pri
 **5. Builders.** The core ships generic builders, and the transport supplies its own option types:
 
 ```csharp
-public sealed class RouteBuilder<TMessage, TRouteOptions>   { … OrderingKey(…) … }      // core
+public sealed class RouteBuilder<TMessage>   { … OrderingKey(…) … }      // core
 public sealed class ConsumerBuilder<TConsumerOptions>        { … Handler<T>(), Inbox(), Failures(…) … }  // core
 
 public static ConsumerBuilder<KafkaConsumerOptions> Group(this ConsumerBuilder<KafkaConsumerOptions> consumer, string group);  // Kafka

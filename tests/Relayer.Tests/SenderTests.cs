@@ -8,7 +8,7 @@ using Relayer.Transports;
 
 namespace Relayer.Tests;
 
-// These call sites are the low-level send seam. Transport-specific builders can reuse RouteBuilder<TMessage, TRouteOptions>.
+// These call sites are the low-level send seam. Transport-specific builders can reuse RouteBuilder<TMessage>.
 public class SenderTests
 {
     [Test]
@@ -467,7 +467,7 @@ public class SenderTests
     [Test]
     public async Task Route_builders_freeze_with_configuration()
     {
-        RouteBuilder<OrderPlaced, SendRouteOptions>? route = null;
+        RouteBuilder<OrderPlaced>? route = null;
         IRelayerBuilder? captured = null;
         new ServiceCollection().AddRelayer(builder =>
         {
@@ -519,7 +519,7 @@ public class SenderTests
         services.AddRelayer(builder =>
         {
             builder.AddMessageTypesFromThisAssembly();
-            builder.AddTransport<SenderTransportOptions, SendRouteOptions, SenderTransportOptions>(error == "unknown" ? "missing" : "events", broker =>
+            builder.AddTransport<SenderTransportOptions, SenderTransportOptions>(error == "unknown" ? "missing" : "events", broker =>
             {
                 broker.Send<OrderPlaced>("orders", route => route.SendOptions =
                     new()
@@ -995,8 +995,8 @@ public class SenderTests
 internal static class SenderTestRoutes
 {
     internal static void DeclareRoute<TMessage>(this IRelayerBuilder builder, string transportName, string destination,
-        Action<RouteBuilder<TMessage, SendRouteOptions>>? configure = null, SendRouteOptions? options = null) =>
-        builder.AddTransport<SenderTransportOptions, SendRouteOptions, SenderTransportOptions>(transportName,
+        Action<RouteBuilder<TMessage>>? configure = null, SendRouteOptions? options = null) =>
+        builder.AddTransport<SenderTransportOptions, SenderTransportOptions>(transportName,
             transport => transport.Send<TMessage>(destination, route =>
             {
                 route.SendOptions = options ?? new();

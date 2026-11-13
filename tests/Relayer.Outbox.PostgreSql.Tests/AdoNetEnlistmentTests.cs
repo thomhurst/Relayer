@@ -513,7 +513,7 @@ public class AdoNetEnlistmentTests
             services.AddRelayer(builder =>
             {
                 builder.Infrastructure().MessageTypes.Add<Probe>("ado.probe");
-                builder.AddTransport<Empty, Empty, Empty>("events", transport => transport.Send<Probe>("destination"));
+                builder.AddTransport<Empty, Empty>("events", transport => transport.Send<Probe>("destination"));
             });
             return services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
         }

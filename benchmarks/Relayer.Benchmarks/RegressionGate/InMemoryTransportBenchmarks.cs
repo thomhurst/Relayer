@@ -45,7 +45,11 @@ public class InMemoryTransportBenchmarks
         services.AddRelayer(builder =>
         {
             builder.AddMessageTypesFromThisAssembly();
+#if RELAYER_REDUCED_BUILDERS
+            builder.AddTransport<object, object>("manual", transport =>
+#else
             builder.AddTransport<object, object, object>("manual", transport =>
+#endif
                 transport.Consume("orders", consumer => consumer.Handler<InMemoryBenchmarkHandler>()));
         });
         _provider = services.BuildServiceProvider();

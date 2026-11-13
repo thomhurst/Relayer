@@ -768,7 +768,7 @@ public class BatchPipelineTests
         {
             builder.Infrastructure().MessageTypes.Add<Payload>("batch.payload");
             new ConsumerBuilder<object>(builder.Services, builder.Infrastructure().Handlers, "manual").Handler<AllocationHandler>();
-            builder.AddTransport<Options, Options, Options>("test", transport =>
+            builder.AddTransport<Options, Options>("test", transport =>
             {
                 transport.Send<Payload>("destination");
                 transport.Consume("source", consumer => consumer.Handler<Handler>().Batch(size, TimeSpan.FromSeconds(10)));

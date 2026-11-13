@@ -46,7 +46,7 @@ public class BatchConsumePipelineBenchmarks
         services.AddRelayer(builder =>
         {
             builder.Infrastructure().MessageTypes.Add<Payload>("benchmark.batch");
-            builder.AddTransport<Options, Options, Options>("benchmark", transport =>
+            builder.AddTransport<Options, Options>("benchmark", transport =>
                 transport.Consume("source", consumer => consumer.Handler<Handler>().Batch(BatchSize, TimeSpan.FromMilliseconds(100))));
         });
         _provider = services.BuildServiceProvider();

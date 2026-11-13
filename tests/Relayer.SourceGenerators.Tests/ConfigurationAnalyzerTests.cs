@@ -17,7 +17,7 @@ public class ConfigurationAnalyzerTests
         using Relayer.Transports;
         using System.Threading;
         using System.Threading.Tasks;
-        using Broker = Relayer.TransportBuilder<object, object, object>;
+        using Broker = Relayer.TransportBuilder<object, object>;
 
         """;
     private const string Handler = """
@@ -298,7 +298,7 @@ public class ConfigurationAnalyzerTests
             public class Options { public int Prefetch { get; set; } }
             static class Setup
             {
-                public static void Add(TransportBuilder<object, object, Options> broker)
+                public static void Add(TransportBuilder<object, Options> broker)
                     => broker.Consume("orders", c => { c.Options.Prefetch = 10; });
             }
             """, "RLY004");

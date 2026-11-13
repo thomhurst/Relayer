@@ -13,12 +13,12 @@ public static class NatsBuilderExtensions
 {
     /// <summary>Registers an owned connection, explicit topology, confirmed sends and durable pull consumers.</summary>
     public static IRelayerBuilder Nats(this IRelayerBuilder builder, string name,
-        Action<TransportBuilder<NatsTransportOptions, NatsRouteOptions, NatsConsumerOptions>> configure)
+        Action<TransportBuilder<NatsTransportOptions, NatsConsumerOptions>> configure)
     {
         ArgumentNullException.ThrowIfNull(builder);
         ArgumentException.ThrowIfNullOrWhiteSpace(name);
         ArgumentNullException.ThrowIfNull(configure);
-        builder.AddTransport<NatsTransportOptions, NatsRouteOptions, NatsConsumerOptions>(name, transport =>
+        builder.AddTransport<NatsTransportOptions, NatsConsumerOptions>(name, transport =>
         {
             transport.SendDefaults = new() { HeaderNames = new("ce-") };
             configure(transport);
@@ -32,9 +32,6 @@ public static class NatsBuilderExtensions
         return builder;
     }
 }
-
-/// <summary>JetStream route configuration. Native headers can be customized with SendOptions.Nats.</summary>
-public sealed class NatsRouteOptions;
 
 /// <summary>Native durable pull consumer selection and failure policy.</summary>
 public sealed class NatsConsumerOptions

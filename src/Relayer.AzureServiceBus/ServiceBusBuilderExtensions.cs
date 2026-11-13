@@ -15,12 +15,12 @@ public static class ServiceBusBuilderExtensions
 {
     /// <summary>Declares native queue/topic sending and queue or subscription processors.</summary>
     public static IRelayerBuilder ServiceBus(this IRelayerBuilder builder, string name,
-        Action<TransportBuilder<ServiceBusTransportOptions, ServiceBusRouteOptions, ServiceBusConsumerOptions>> configure)
+        Action<TransportBuilder<ServiceBusTransportOptions, ServiceBusConsumerOptions>> configure)
     {
         ArgumentNullException.ThrowIfNull(builder);
         ArgumentNullException.ThrowIfNull(configure);
         builder.Services.TryAddSingleton<ServiceBusTopologyExporter>();
-        builder.AddTransport<ServiceBusTransportOptions, ServiceBusRouteOptions, ServiceBusConsumerOptions>(name, transport =>
+        builder.AddTransport<ServiceBusTransportOptions, ServiceBusConsumerOptions>(name, transport =>
         {
             transport.SendDefaults = new() { HeaderNames = new("cloudEvents:") };
             configure(transport);
@@ -63,9 +63,6 @@ public static class ServiceBusBuilderExtensions
     public static SendOptions ServiceBus(this SendOptions options, Action<ServiceBusMessage> configure) =>
         options.ConfigureNative(configure);
 }
-
-/// <summary>Service Bus send route options. Declare native entities on the named transport options.</summary>
-public sealed class ServiceBusRouteOptions;
 
 /// <summary>Native processor configuration and the common durable failure policy.</summary>
 public sealed class ServiceBusConsumerOptions

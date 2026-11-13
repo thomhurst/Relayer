@@ -8,8 +8,8 @@ public static class AspireConnectionExtensions
 {
     /// <summary>Sets Kafka bootstrap servers from ConnectionStrings:connectionName. Native Dekaf callbacks remain unchanged.</summary>
     /// <remarks>Call once per transport, before other Options configuration. Values are captured at registration; restart to change the connection.</remarks>
-    public static TransportBuilder<KafkaTransportOptions, KafkaRouteOptions, KafkaConsumerOptions> UseAspireConnection(
-        this TransportBuilder<KafkaTransportOptions, KafkaRouteOptions, KafkaConsumerOptions> builder,
+    public static TransportBuilder<KafkaTransportOptions, KafkaConsumerOptions> UseAspireConnection(
+        this TransportBuilder<KafkaTransportOptions, KafkaConsumerOptions> builder,
         IConfiguration configuration, string connectionName)
     {
         ArgumentNullException.ThrowIfNull(builder);

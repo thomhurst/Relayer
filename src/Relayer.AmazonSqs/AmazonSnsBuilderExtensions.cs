@@ -13,7 +13,7 @@ public static class AmazonSnsBuilderExtensions
 {
     /// <summary>Declares a named SNS transport with explicit native topics and subscriptions.</summary>
     public static IRelayerBuilder AmazonSns(this IRelayerBuilder builder, string name,
-        Action<TransportBuilder<AmazonSnsTransportOptions, AmazonSnsRouteOptions, AmazonSnsConsumerOptions>> configure)
+        Action<TransportBuilder<AmazonSnsTransportOptions, AmazonSnsConsumerOptions>> configure)
     {
         ArgumentNullException.ThrowIfNull(builder);
         ArgumentNullException.ThrowIfNull(configure);
@@ -38,7 +38,5 @@ public static class AmazonSnsBuilderExtensions
     public static SendOptions AmazonSns(this SendOptions options, Action<PublishRequest> configure) => options.ConfigureNative(configure);
 }
 
-/// <summary>SNS route options; topic configuration belongs on native declarations.</summary>
-public sealed class AmazonSnsRouteOptions;
 /// <summary>SNS consumption requires a native subscription, rather than an SNS receiver.</summary>
 public sealed class AmazonSnsConsumerOptions;

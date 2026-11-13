@@ -12,7 +12,7 @@ public class HandlerDispatchTests
     {
         var services = new ServiceCollection();
         services.AddScoped<ScopedDependency>();
-        services.AddRelayer(r => r.AddTransport<BuilderTests.BrokerOptions, BuilderTests.RouteOptions, BuilderTests.ConsumerOptions>(
+        services.AddRelayer(r => r.AddTransport<BuilderTests.BrokerOptions, BuilderTests.ConsumerOptions>(
             "events", b => b.Consume("orders", c => c.Handler<SingleHandler>().Handler<MultipleHandler>()
                 .Handler<GenericHandler<int>>().Handler<SingleHandler>().Concurrency(2))));
         await using var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
@@ -43,7 +43,7 @@ public class HandlerDispatchTests
     public async Task Explicit_registration_selects_only_requested_handlers_and_is_idempotent()
     {
         var services = new ServiceCollection();
-        services.AddRelayer(r => r.AddTransport<object, object, object>("events", b => b.Consume("orders", c => c.Handler<SingleHandler>().Handler<SingleHandler>())));
+        services.AddRelayer(r => r.AddTransport<object, object>("events", b => b.Consume("orders", c => c.Handler<SingleHandler>().Handler<SingleHandler>())));
         await using var provider = services.BuildServiceProvider();
         var registry = provider.GetRequiredService<HandlerRegistry>();
 
@@ -57,7 +57,7 @@ public class HandlerDispatchTests
     public async Task Inherited_handlers_bind_only_to_their_selected_consumers()
     {
         var services = new ServiceCollection();
-        services.AddRelayer(r => r.AddTransport<object, object, object>("events", transport =>
+        services.AddRelayer(r => r.AddTransport<object, object>("events", transport =>
         {
             transport.Consume("first", c => c.Handler<DerivedHandler>());
             transport.Consume("second", c => c.Handler<OtherHandler>());
@@ -78,7 +78,7 @@ public class HandlerDispatchTests
         var services = new ServiceCollection();
         services.AddScoped<ScopedDependency>();
         services.AddScoped<SingleHandler>(p => new SingleHandler(p.GetRequiredService<ScopedDependency>()));
-        services.AddRelayer(r => r.AddTransport<object, object, object>("events", b => b.Consume("orders", c => c.Handler<SingleHandler>())));
+        services.AddRelayer(r => r.AddTransport<object, object>("events", b => b.Consume("orders", c => c.Handler<SingleHandler>())));
         await using var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
         var descriptor = provider.GetRequiredService<HandlerRegistry>().GetHandler<int, SingleHandler>();
         using var firstScope = provider.CreateScope();
@@ -95,7 +95,7 @@ public class HandlerDispatchTests
     public async Task Typed_dispatch_forwards_message_context_cancellation_and_incomplete_ValueTask()
     {
         var services = new ServiceCollection();
-        services.AddRelayer(r => r.AddTransport<object, object, object>("events", b => b.Consume("orders", c => c.Handler<SingleHandler>())));
+        services.AddRelayer(r => r.AddTransport<object, object>("events", b => b.Consume("orders", c => c.Handler<SingleHandler>())));
         await using var provider = services.BuildServiceProvider();
         using var scope = provider.CreateScope();
         using var cancellation = new CancellationTokenSource();
@@ -119,7 +119,7 @@ public class HandlerDispatchTests
     public async Task Batch_and_explicit_interface_dispatch_preserve_results_and_exceptions()
     {
         var services = new ServiceCollection();
-        services.AddRelayer(r => r.AddTransport<object, object, object>("events", b => b.Consume("orders", c => c.Handler<MultipleHandler>())));
+        services.AddRelayer(r => r.AddTransport<object, object>("events", b => b.Consume("orders", c => c.Handler<MultipleHandler>())));
         await using var provider = services.BuildServiceProvider();
         using var scope = provider.CreateScope();
         var registry = provider.GetRequiredService<HandlerRegistry>();
@@ -146,7 +146,7 @@ public class HandlerDispatchTests
     public async Task Explicit_closed_generic_handlers_are_discovered()
     {
         var services = new ServiceCollection();
-        services.AddRelayer(r => r.AddTransport<object, object, object>("events", b => b.Consume("orders", c => c.Handler<GenericHandler<int>>())));
+        services.AddRelayer(r => r.AddTransport<object, object>("events", b => b.Consume("orders", c => c.Handler<GenericHandler<int>>())));
         await using var provider = services.BuildServiceProvider();
         var registry = provider.GetRequiredService<HandlerRegistry>();
         await Assert.That(registry.GetHandler<int, GenericHandler<int>>()).IsNotNull();
@@ -156,7 +156,7 @@ public class HandlerDispatchTests
     public async Task Unsupported_handler_registration_fails_during_configuration()
     {
         await Assert.That(() => new ServiceCollection().AddRelayer(r =>
-            r.AddTransport<BuilderTests.BrokerOptions, BuilderTests.RouteOptions, BuilderTests.ConsumerOptions>("events", b =>
+            r.AddTransport<BuilderTests.BrokerOptions, BuilderTests.ConsumerOptions>("events", b =>
                 b.Consume("orders", c => c.Handler<MarkerOnly>()))))
             .Throws<InvalidOperationException>().WithMessageContaining("No generated descriptor");
     }

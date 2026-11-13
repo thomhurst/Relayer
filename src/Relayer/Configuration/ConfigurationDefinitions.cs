@@ -57,17 +57,16 @@ public interface IRouteDefinition
     public bool HasOrderingKey { get; }
 }
 
-/// <summary>A route with unchanged transport-specific options and a typed native ordering selector.</summary>
-public sealed class RouteDefinition<TMessage, TRouteOptions> : IRouteDefinition, ISendRouteDefinition where TRouteOptions : class
+/// <summary>A message route with a typed native ordering selector.</summary>
+public sealed class RouteDefinition<TMessage> : IRouteDefinition, ISendRouteDefinition
 {
     private readonly Delegate? _orderingKey;
     private readonly IOrderingKeySelector<TMessage>? _sendOrderingKey;
 
-    internal RouteDefinition(string destination, TRouteOptions options, Delegate? orderingKey,
+    internal RouteDefinition(string destination, Delegate? orderingKey,
         IOrderingKeySelector<TMessage>? sendOrderingKey, SendRouteOptions sendOptions)
     {
         Destination = destination;
-        Options = options;
         _orderingKey = orderingKey;
         _sendOrderingKey = sendOrderingKey;
         SendOptions = sendOptions;
@@ -78,8 +77,6 @@ public sealed class RouteDefinition<TMessage, TRouteOptions> : IRouteDefinition,
     /// <inheritdoc />
     public string Destination { get; }
 
-    /// <summary>The transport-specific route options, unchanged.</summary>
-    public TRouteOptions Options { get; }
     /// <summary>Portable send settings captured during registration.</summary>
     public SendRouteOptions SendOptions { get; }
 

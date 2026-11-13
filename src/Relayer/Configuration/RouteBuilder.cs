@@ -1,8 +1,8 @@
 using Relayer.Transports;
 namespace Relayer;
 
-/// <summary>Configures a route while preserving the transport's option type.</summary>
-public sealed class RouteBuilder<TMessage, TRouteOptions> where TRouteOptions : class, new()
+/// <summary>Configures a message route and its portable send settings.</summary>
+public sealed class RouteBuilder<TMessage>
 {
     private readonly string _destination;
     private Delegate? _orderingKey;
@@ -11,9 +11,6 @@ public sealed class RouteBuilder<TMessage, TRouteOptions> where TRouteOptions : 
     private bool _built;
 
     internal RouteBuilder(string destination) => _destination = destination;
-
-    /// <summary>The transport's native route options.</summary>
-    public TRouteOptions Options { get; } = new();
 
     /// <summary>Portable send settings captured when the route declaration is frozen.</summary>
     public SendRouteOptions SendOptions
@@ -28,7 +25,7 @@ public sealed class RouteBuilder<TMessage, TRouteOptions> where TRouteOptions : 
     }
 
     /// <summary>Derives a native partition key, session ID or message group ID from a string.</summary>
-    public RouteBuilder<TMessage, TRouteOptions> OrderingKey(Func<TMessage, string> selector)
+    public RouteBuilder<TMessage> OrderingKey(Func<TMessage, string> selector)
     {
         SetOrderingKey(selector);
         _sendOrderingKey = new StringOrderingKeySelector<TMessage>(selector);
@@ -36,7 +33,7 @@ public sealed class RouteBuilder<TMessage, TRouteOptions> where TRouteOptions : 
     }
 
     /// <summary>Keeps a scalar selector typed so transports can format it into a pooled buffer without boxing.</summary>
-    public RouteBuilder<TMessage, TRouteOptions> OrderingKey<TKey>(Func<TMessage, TKey> selector)
+    public RouteBuilder<TMessage> OrderingKey<TKey>(Func<TMessage, TKey> selector)
         where TKey : IUtf8SpanFormattable
     {
         SetOrderingKey(selector);
@@ -44,7 +41,7 @@ public sealed class RouteBuilder<TMessage, TRouteOptions> where TRouteOptions : 
         return this;
     }
 
-    private RouteBuilder<TMessage, TRouteOptions> SetOrderingKey(Delegate selector)
+    private RouteBuilder<TMessage> SetOrderingKey(Delegate selector)
     {
         ArgumentNullException.ThrowIfNull(selector);
         if (_built) throw new InvalidOperationException("The route declaration is frozen.");
@@ -55,6 +52,6 @@ public sealed class RouteBuilder<TMessage, TRouteOptions> where TRouteOptions : 
     internal IRouteDefinition Build()
     {
         _built = true;
-        return new RouteDefinition<TMessage, TRouteOptions>(_destination, Options, _orderingKey, _sendOrderingKey, _sendOptions);
+        return new RouteDefinition<TMessage>(_destination, _orderingKey, _sendOrderingKey, _sendOptions);
     }
 }

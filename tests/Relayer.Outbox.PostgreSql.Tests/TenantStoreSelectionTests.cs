@@ -344,7 +344,7 @@ public class TenantStoreSelectionTests
         {
             relayer.Infrastructure().MessageTypes.Add<Probe>("tenant.store.probe");
             new ConsumerBuilder<object>(relayer.Services, relayer.Infrastructure().Handlers, "manual").Handler<Handler>();
-            relayer.AddTransport<Empty, Empty, Empty>("events", transport => transport.Send<Probe>("orders"));
+            relayer.AddTransport<Empty, Empty>("events", transport => transport.Send<Probe>("orders"));
         });
         return services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
     }

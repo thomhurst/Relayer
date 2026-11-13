@@ -262,7 +262,7 @@ public sealed class ServiceBusTopologyExportTests
         services.AddRelayer(builder =>
         {
             builder.ServiceBus("bus", transport => transport.Options.Configure(configure));
-            builder.AddTransport<object, object, object>("other", _ => { });
+            builder.AddTransport<object, object>("other", _ => { });
         });
         return services.BuildServiceProvider();
     }

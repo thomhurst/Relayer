@@ -233,7 +233,7 @@ public sealed class OrderPlacedHandler(AppDbContext db) : IHandler<OrderPlaced>
 services.AddRelayer(relayer =>
 {
     relayer.AddMessageTypesFromThisAssembly();
-    relayer.AddTransport<BrokerOptions, RouteOptions, ConsumerOptions>("events", broker =>
+    relayer.AddTransport<BrokerOptions, ConsumerOptions>("events", broker =>
     {
         broker.Send<OrderPlaced>("orders.placed",
             route => route.OrderingKey(static m => m.CustomerId));

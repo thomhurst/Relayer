@@ -38,7 +38,7 @@ public sealed class ConfigurationAnalyzer : DiagnosticAnalyzer
 
             var single = compilation.GetTypeByMetadataName("Relayer.IHandler`1");
             var batch = compilation.GetTypeByMetadataName("Relayer.IBatchHandler`1");
-            var transport = compilation.GetTypeByMetadataName("Relayer.TransportBuilder`3");
+            var transport = compilation.GetTypeByMetadataName("Relayer.TransportBuilder`2");
             var consumer = compilation.GetTypeByMetadataName("Relayer.ConsumerBuilder`1");
             var consumerInterface = compilation.GetTypeByMetadataName("Relayer.IConsumerBuilder");
             var registration = compilation.GetTypeByMetadataName("Relayer.RelayerGeneratedHandlers");

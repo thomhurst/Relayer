@@ -77,8 +77,8 @@ public class KafkaConfigurationTests
         await Assert.That(options.Get("first").BootstrapServers.Single()).IsEqualTo("first:9092");
         await Assert.That(options.Get("second").BootstrapServers.Single()).IsEqualTo("second:9092");
         var transports = provider.GetRequiredService<RelayerConfiguration>().Transports;
-        var first = (RouteDefinition<Order, KafkaRouteOptions>)transports[0].Routes.Single();
-        var second = (RouteDefinition<OtherOrder, KafkaRouteOptions>)transports[1].Routes.Single();
+        var first = (RouteDefinition<Order>)transports[0].Routes.Single();
+        var second = (RouteDefinition<OtherOrder>)transports[1].Routes.Single();
         await Assert.That(first.GetOrderingKeySelector<string>()!(new("customer-1", 1))).IsEqualTo("customer-1");
         await Assert.That(second.GetOrderingKeySelector<int>()!(new(42))).IsEqualTo(42);
     }

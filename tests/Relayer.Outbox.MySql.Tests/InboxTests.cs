@@ -221,7 +221,7 @@ public class InboxTests : InboxContractTests
         {
             r.Infrastructure().MessageTypes.Add<Probe>("inbox.probe");
             new ConsumerBuilder<object>(r.Services, r.Infrastructure().Handlers, "manual").Handler<Handler>();
-            r.AddTransport<Empty, Empty, Empty>("events", t => t.Send<Probe>("destination"));
+            r.AddTransport<Empty, Empty>("events", t => t.Send<Probe>("destination"));
         });
         return services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
     }

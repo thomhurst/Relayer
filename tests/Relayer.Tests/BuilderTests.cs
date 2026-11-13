@@ -10,12 +10,39 @@ namespace Relayer.Tests;
 public class BuilderTests
 {
     [Test]
+    public async Task Request_declaration_preserves_route_settings_and_native_reply_options()
+    {
+        var services = new ServiceCollection();
+        Action<RouteBuilder<OrderPlaced>> configureRequest = route =>
+        {
+            route.OrderingKey(static message => message.OrderId);
+            route.SendOptions = new() { Source = "/requests" };
+        };
+        services.AddRelayer(relayer => relayer.AddTransport<BrokerOptions, ConsumerOptions>("requests", broker =>
+            broker.Request<OrderPlaced, OrderCancelled>("orders", "replies",
+                request => request
+                    .Replies(replies => replies.Options.Group = "requester")
+                    .Send(configureRequest))));
+
+        await using var provider = services.BuildServiceProvider();
+        var transport = provider.GetRequiredService<RelayerConfiguration>().Transports[0];
+        var route = (RouteDefinition<OrderPlaced>)transport.Routes[0];
+        var replies = (ConsumerDefinition<ConsumerOptions>)transport.Consumers[0];
+        var orderId = Guid.NewGuid();
+        await Assert.That(route.Destination).IsEqualTo("orders");
+        await Assert.That(route.SendOptions.Source).IsEqualTo("/requests");
+        await Assert.That(route.GetOrderingKeySelector<Guid>()!(new OrderPlaced(orderId))).IsEqualTo(orderId);
+        await Assert.That(replies.Source).IsEqualTo("replies");
+        await Assert.That(replies.Options.Group).IsEqualTo("requester");
+    }
+
+    [Test]
     [Arguments(false)]
     [Arguments(true)]
     public async Task Send_defaults_apply_to_later_routes_and_route_overrides_take_precedence(bool replace)
     {
         var services = new ServiceCollection();
-        services.AddRelayer(relayer => relayer.AddTransport<BrokerOptions, RouteOptions, ConsumerOptions>("events", broker =>
+        services.AddRelayer(relayer => relayer.AddTransport<BrokerOptions, ConsumerOptions>("events", broker =>
         {
             broker.Send<OrderPlaced>("before");
             broker.SendDefaults = new() { Source = "/defaults", HeaderNames = new("cloudEvents:") };
@@ -26,8 +53,8 @@ public class BuilderTests
         }));
         await using var provider = services.BuildServiceProvider();
         var routes = provider.GetRequiredService<RelayerConfiguration>().Transports[0].Routes;
-        var before = (RouteDefinition<OrderPlaced, RouteOptions>)routes[0];
-        var after = (RouteDefinition<OrderCancelled, RouteOptions>)routes[1];
+        var before = (RouteDefinition<OrderPlaced>)routes[0];
+        var after = (RouteDefinition<OrderCancelled>)routes[1];
         await Assert.That(before.SendOptions.HeaderNames.Id).IsEqualTo("ce_id");
         await Assert.That(after.SendOptions.HeaderNames.Id).IsEqualTo(replace ? "custom:id" : "cloudEvents:id");
         await Assert.That(after.SendOptions.Source).IsEqualTo(replace ? "/override" : "/defaults");
@@ -41,7 +68,7 @@ public class BuilderTests
         services.AddRelayer(relayer =>
         {
             relayer.AddMessageTypesFromThisAssembly();
-            relayer.AddTransport<BrokerOptions, RouteOptions, ConsumerOptions>("events", broker =>
+            relayer.AddTransport<BrokerOptions, ConsumerOptions>("events", broker =>
             {
                 broker.Options.Configure(o => o.Server = "localhost");
                 broker.Send<OrderPlaced>("orders", route => route.OrderingKey(m => m.OrderId));
@@ -56,7 +83,7 @@ public class BuilderTests
         await Start(provider);
         var configuration = provider.GetRequiredService<RelayerConfiguration>();
         var transport = configuration.Transports[0];
-        var route = (RouteDefinition<OrderPlaced, RouteOptions>)transport.Routes[0];
+        var route = (RouteDefinition<OrderPlaced>)transport.Routes[0];
         var consumer = (ConsumerDefinition<ConsumerOptions>)transport.Consumers[0];
         await Assert.That(configuration.TopologyMode).IsEqualTo(TopologyMode.Validate);
         await Assert.That(route.Destination).IsEqualTo("orders");
@@ -82,9 +109,9 @@ public class BuilderTests
         var services = new ServiceCollection();
         services.AddRelayer(relayer =>
         {
-            relayer.AddTransport<BrokerOptions, RouteOptions, ConsumerOptions>("events", b =>
+            relayer.AddTransport<BrokerOptions, ConsumerOptions>("events", b =>
                 b.Options.Bind(configuration.GetSection("Events")));
-            relayer.AddTransport<BrokerOptions, RouteOptions, ConsumerOptions>("commands", b =>
+            relayer.AddTransport<BrokerOptions, ConsumerOptions>("commands", b =>
                 b.Options.Bind(configuration.GetSection("Commands")));
         });
         await using var provider = services.BuildServiceProvider();
@@ -105,14 +132,14 @@ public class BuilderTests
         services.AddRelayer(relayer =>
         {
             relayer.TopologyMode = (TopologyMode)123;
-            relayer.AddTransport<BrokerOptions, RouteOptions, ConsumerOptions>("events", b =>
+            relayer.AddTransport<BrokerOptions, ConsumerOptions>("events", b =>
             {
                 b.Options.Validate(_ => false, "server required");
                 b.Send<OrderPlaced>("");
                 b.Consume("", c => c.Concurrency(0).Batch(0, TimeSpan.Zero));
             });
-            relayer.AddTransport<BrokerOptions, RouteOptions, ConsumerOptions>("events", b => b.Send<OrderPlaced>("other"));
-            relayer.AddTransport<OtherBrokerOptions, RouteOptions, ConsumerOptions>("commands", b =>
+            relayer.AddTransport<BrokerOptions, ConsumerOptions>("events", b => b.Send<OrderPlaced>("other"));
+            relayer.AddTransport<OtherBrokerOptions, ConsumerOptions>("commands", b =>
                 b.Options.Validate(_ => false, "credentials required"));
         });
         await using var provider = services.BuildServiceProvider();
@@ -130,7 +157,7 @@ public class BuilderTests
     public async Task Validation_runs_before_transport_hosted_services()
     {
         var services = new ServiceCollection();
-        services.AddRelayer(relayer => relayer.AddTransport<BrokerOptions, RouteOptions, ConsumerOptions>("events", b =>
+        services.AddRelayer(relayer => relayer.AddTransport<BrokerOptions, ConsumerOptions>("events", b =>
         {
             services.AddSingleton<IHostedService, TransportService>();
             b.Consume("orders", _ => { });
@@ -148,7 +175,7 @@ public class BuilderTests
         services.AddRelayer(relayer =>
         {
             relayer.AddMessageTypesFromThisAssembly();
-            relayer.AddTransport<BrokerOptions, RouteOptions, ConsumerOptions>("events", b =>
+            relayer.AddTransport<BrokerOptions, ConsumerOptions>("events", b =>
             {
                 b.Send<OrderPlaced>("placed", r => r.OrderingKey(_ => "customer"));
                 b.Send<OrderCancelled>("cancelled");
@@ -157,8 +184,8 @@ public class BuilderTests
         await using var provider = services.BuildServiceProvider();
         await Start(provider);
         var routes = provider.GetRequiredService<RelayerConfiguration>().Transports[0].Routes;
-        var placed = (RouteDefinition<OrderPlaced, RouteOptions>)routes[0];
-        var cancelled = (RouteDefinition<OrderCancelled, RouteOptions>)routes[1];
+        var placed = (RouteDefinition<OrderPlaced>)routes[0];
+        var cancelled = (RouteDefinition<OrderCancelled>)routes[1];
         await Assert.That(placed.GetOrderingKeySelector<string>()!(new OrderPlaced(Guid.Empty))).IsEqualTo("customer");
         await Assert.That(cancelled.HasOrderingKey).IsFalse();
         await Assert.That(cancelled.GetOrderingKeySelector<Guid>()).IsNull();
@@ -169,20 +196,20 @@ public class BuilderTests
     public async Task Captured_builders_cannot_add_declarations_after_registration()
     {
         IRelayerBuilder? root = null;
-        TransportBuilder<BrokerOptions, RouteOptions, ConsumerOptions>? transport = null;
+        TransportBuilder<BrokerOptions, ConsumerOptions>? transport = null;
         ConsumerBuilder<ConsumerOptions>? consumer = null;
-        RouteBuilder<OrderPlaced, RouteOptions>? route = null;
+        RouteBuilder<OrderPlaced>? route = null;
         new ServiceCollection().AddRelayer(relayer =>
         {
             root = relayer;
-            relayer.AddTransport<BrokerOptions, RouteOptions, ConsumerOptions>("events", b =>
+            relayer.AddTransport<BrokerOptions, ConsumerOptions>("events", b =>
             {
                 transport = b;
                 b.Send<OrderPlaced>("orders", r => route = r);
                 b.Consume("orders", c => consumer = c);
             });
         });
-        await Assert.That(() => root!.AddTransport<BrokerOptions, RouteOptions, ConsumerOptions>("late", _ => { }))
+        await Assert.That(() => root!.AddTransport<BrokerOptions, ConsumerOptions>("late", _ => { }))
             .Throws<InvalidOperationException>();
         await Assert.That(() => transport!.Send<OrderCancelled>("late")).Throws<InvalidOperationException>();
         await Assert.That(() => transport!.SendDefaults = new()).Throws<InvalidOperationException>();
@@ -204,8 +231,8 @@ public class BuilderTests
         var services = new ServiceCollection();
         services.AddRelayer(relayer =>
         {
-            relayer.AddTransport<NumericOptions, RouteOptions, ConsumerOptions>("numeric", b => b.Options.Bind(configuration));
-            relayer.AddTransport<BrokerOptions, RouteOptions, ConsumerOptions>("other", b =>
+            relayer.AddTransport<NumericOptions, ConsumerOptions>("numeric", b => b.Options.Bind(configuration));
+            relayer.AddTransport<BrokerOptions, ConsumerOptions>("other", b =>
                 b.Options.Validate(_ => false, "other failure"));
         });
         await using var provider = services.BuildServiceProvider();
@@ -223,7 +250,7 @@ public class BuilderTests
         var handler = new OrderHandler();
         var services = new ServiceCollection();
         services.AddSingleton(handler);
-        services.AddRelayer(relayer => relayer.AddTransport<BrokerOptions, RouteOptions, ConsumerOptions>("events", b =>
+        services.AddRelayer(relayer => relayer.AddTransport<BrokerOptions, ConsumerOptions>("events", b =>
             b.Consume("orders", c => c.Handler<OrderHandler>().Handler<OrderHandler>())));
         await using var provider = services.BuildServiceProvider();
         await Start(provider);
@@ -245,7 +272,6 @@ public class BuilderTests
     public sealed class BrokerOptions { public string Server { get; set; } = ""; }
     public sealed class OtherBrokerOptions { }
     public sealed class NumericOptions { public int Count { get; set; } }
-    public sealed class RouteOptions { }
     public sealed class ConsumerOptions { public string Group { get; set; } = ""; }
     public sealed class OrderHandler : IHandler<OrderPlaced>
     {

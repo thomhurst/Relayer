@@ -31,7 +31,7 @@ public class UpcasterBenchmarks
             r.AddMessageTypesFromThisAssembly();
             r.Infrastructure().Upcasters.Add(new FirstUpgrade()).Add(new SecondUpgrade());
             new ConsumerBuilder<object>(r.Services, r.Infrastructure().Handlers, "manual").Handler<Handler>();
-            r.AddTransport<Options, Options, Options>("benchmark", t =>
+            r.AddTransport<Options, Options>("benchmark", t =>
                 t.Consume("versions", c => c.Handler<BatchHandler>().Batch(10, TimeSpan.FromSeconds(1))));
         });
         _provider = services.BuildServiceProvider();

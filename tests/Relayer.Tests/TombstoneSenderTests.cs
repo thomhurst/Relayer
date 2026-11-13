@@ -16,7 +16,7 @@ public class TombstoneSenderTests
         services.AddRelayer(r =>
         {
             r.Infrastructure().MessageTypes.Add<Payload>("tests.tombstone-send", 7);
-            r.AddTransport<Options, Options, Options>("sink", t => t.Send<Payload>("orders"));
+            r.AddTransport<Options, Options>("sink", t => t.Send<Payload>("orders"));
             r.AddMessageTypesFromThisAssembly();
         });
         await using var provider = services.BuildServiceProvider();
@@ -52,7 +52,7 @@ public class TombstoneSenderTests
         services.AddRelayer(r =>
         {
             r.AddMessageTypesFromThisAssembly();
-            r.AddTransport<Options, Options, Options>("sink", t => t.Send<Tombstone<Payload>>("orders"));
+            r.AddTransport<Options, Options>("sink", t => t.Send<Tombstone<Payload>>("orders"));
         });
         await using var provider = services.BuildServiceProvider();
         using var scope = provider.CreateScope();
@@ -68,7 +68,7 @@ public class TombstoneSenderTests
         services.AddRelayer(r =>
         {
             r.AddMessageTypesFromThisAssembly();
-            r.AddTransport<Options, Options, Options>("sink", t => t.Send<Payload>("orders"));
+            r.AddTransport<Options, Options>("sink", t => t.Send<Payload>("orders"));
         });
         await using var provider = services.BuildServiceProvider();
         using var scope = provider.CreateScope();

@@ -11,11 +11,11 @@ public static class GooglePubSubBuilderExtensions
 {
     /// <summary>Declares topics, streaming consumers and durable failure copies using prepared native API clients.</summary>
     public static IRelayerBuilder GooglePubSub(this IRelayerBuilder builder, string name,
-        Action<TransportBuilder<GooglePubSubTransportOptions, GooglePubSubRouteOptions, GooglePubSubConsumerOptions>> configure)
+        Action<TransportBuilder<GooglePubSubTransportOptions, GooglePubSubConsumerOptions>> configure)
     {
         ArgumentNullException.ThrowIfNull(builder);
         ArgumentNullException.ThrowIfNull(configure);
-        builder.AddTransport<GooglePubSubTransportOptions, GooglePubSubRouteOptions, GooglePubSubConsumerOptions>(name, transport =>
+        builder.AddTransport<GooglePubSubTransportOptions, GooglePubSubConsumerOptions>(name, transport =>
         {
             transport.SendDefaults = new() { HeaderNames = new("ce-") };
             configure(transport);

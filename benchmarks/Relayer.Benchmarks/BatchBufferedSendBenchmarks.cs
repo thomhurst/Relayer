@@ -37,7 +37,7 @@ public class BatchBufferedSendBenchmarks
         services.AddRelayer(builder =>
         {
             builder.Infrastructure().MessageTypes.Add<Payload>("benchmark.buffered-batch");
-            builder.AddTransport<Options, Options, Options>("benchmark", transport =>
+            builder.AddTransport<Options, Options>("benchmark", transport =>
             {
                 transport.Send<Payload>("destination");
                 transport.Consume("source", consumer => consumer.Handler<Handler>().Batch(BatchSize, TimeSpan.FromSeconds(1)));

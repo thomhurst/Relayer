@@ -37,7 +37,7 @@ public class FailurePipelineBenchmarks
         {
             r.Infrastructure().MessageTypes.Add<Payload>("benchmark.failure");
             new ConsumerBuilder<object>(r.Services, r.Infrastructure().Handlers, "manual").Handler<Handler>();
-            r.AddTransport<Options, Options, Options>("benchmark", t => t.Send<Payload>("destination"));
+            r.AddTransport<Options, Options>("benchmark", t => t.Send<Payload>("destination"));
         });
         _provider = services.BuildServiceProvider();
         _scopes = _provider.GetRequiredService<IServiceScopeFactory>();

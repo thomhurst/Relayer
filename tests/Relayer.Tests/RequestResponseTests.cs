@@ -31,10 +31,10 @@ public class RequestResponseTests
     public async Task Request_configuration_preserves_native_builders_and_composes_callbacks()
     {
         var services = new ServiceCollection();
-        services.AddRelayer(builder => builder.AddTransport<Options, Options, Options>("sink", transport =>
+        services.AddRelayer(builder => builder.AddTransport<Options, Options>("sink", transport =>
             transport.Request<RpcRequest, RpcResponse>("requests", "replies", request =>
             {
-                request.Send(route => route.Options.NativeSetting = "request-route")
+                request.Send(route => route.SendOptions = new() { Source = "/request-route" })
                     .Send(route => route.OrderingKey(message => message.Value));
                 request.Replies(consumer => consumer.Options.NativeSetting = "reply-group")
                     .Replies(consumer => consumer.Concurrency(4));
@@ -43,10 +43,10 @@ public class RequestResponseTests
         var transport = provider.GetRequiredService<RelayerConfiguration>().Transports[0];
         await Assert.That(transport.Routes.Count).IsEqualTo(1);
         await Assert.That(transport.Consumers.Count).IsEqualTo(1);
-        var route = (RouteDefinition<RpcRequest, Options>)transport.Routes[0];
+        var route = (RouteDefinition<RpcRequest>)transport.Routes[0];
         var replies = (ConsumerDefinition<Options>)transport.Consumers[0];
         await Assert.That(route.Destination).IsEqualTo("requests");
-        await Assert.That(route.Options.NativeSetting).IsEqualTo("request-route");
+        await Assert.That(route.SendOptions.Source).IsEqualTo("/request-route");
         await Assert.That(route.GetOrderingKeySelector<int>()!(new RpcRequest(7))).IsEqualTo(7);
         await Assert.That(replies.Source).IsEqualTo("replies");
         await Assert.That(replies.Options.NativeSetting).IsEqualTo("reply-group");
@@ -376,7 +376,7 @@ public class RequestResponseTests
             services.AddRelayer(builder =>
             {
                 builder.AddMessageTypesFromThisAssembly();
-                builder.AddTransport<Options, Options, Options>("sink", transport =>
+                builder.AddTransport<Options, Options>("sink", transport =>
                 {
                     transport.SendDefaults = new() { HeaderNames = Names };
                     transport.Request<RpcRequest, RpcResponse>("requests", "replies", request => request.Options = new() { MaxPendingRequests = 1, TimeProvider = clock ?? TimeProvider.System });

@@ -68,7 +68,7 @@ public class CapabilityValidationTests
     {
         var services = new ServiceCollection();
         services.AddSingleton<ITransport>(new TestTransport("events", _ => new() { MaxBatchSize = 0 }));
-        services.AddRelayer(relayer => relayer.AddTransport<BuilderTests.BrokerOptions, BuilderTests.RouteOptions,
+        services.AddRelayer(relayer => relayer.AddTransport<BuilderTests.BrokerOptions,
             BuilderTests.ConsumerOptions>("events", broker =>
             broker.Consume("inbound", consumer => consumer.Handler<BuilderTests.OrderHandler>())));
         await using var provider = services.BuildServiceProvider();
@@ -192,7 +192,7 @@ public class CapabilityValidationTests
             _ = provider.GetRequiredService<IOptionsMonitor<BuilderTests.BrokerOptions>>().Get("events");
             return new TestTransport("events", _ => new());
         });
-        services.AddRelayer(relayer => relayer.AddTransport<BuilderTests.BrokerOptions, BuilderTests.RouteOptions,
+        services.AddRelayer(relayer => relayer.AddTransport<BuilderTests.BrokerOptions,
             BuilderTests.ConsumerOptions>("events", broker =>
         {
             broker.Options.Validate(_ => false, "credentials required");
@@ -219,9 +219,9 @@ public class CapabilityValidationTests
         services.AddRelayer(relayer =>
         {
             relayer.AddMessageTypesFromThisAssembly();
-            relayer.AddTransport<BuilderTests.BrokerOptions, BuilderTests.RouteOptions, BuilderTests.ConsumerOptions>("events", broker =>
+            relayer.AddTransport<BuilderTests.BrokerOptions, BuilderTests.ConsumerOptions>("events", broker =>
                 broker.Send<OrderPlaced>("orders", route => route.OrderingKey(message => message.OrderId)));
-            relayer.AddTransport<BuilderTests.BrokerOptions, BuilderTests.RouteOptions, BuilderTests.ConsumerOptions>("commands", broker =>
+            relayer.AddTransport<BuilderTests.BrokerOptions, BuilderTests.ConsumerOptions>("commands", broker =>
                 broker.Send<OrderCancelled>("orders", route => route.OrderingKey(_ => "customer")));
         });
         await using var provider = services.BuildServiceProvider();
@@ -375,8 +375,8 @@ public class CapabilityValidationTests
     }
 
     private static ServiceProvider Create(TestTransport? transport,
-        Action<RouteBuilder<OrderPlaced, BuilderTests.RouteOptions>>? route = null,
-        Action<TransportBuilder<BuilderTests.BrokerOptions, BuilderTests.RouteOptions, BuilderTests.ConsumerOptions>>? additional = null,
+        Action<RouteBuilder<OrderPlaced>>? route = null,
+        Action<TransportBuilder<BuilderTests.BrokerOptions, BuilderTests.ConsumerOptions>>? additional = null,
         TestTransport? extra = null, Receiver? receiver = null, IOutboxEnlistment? outbox = null)
     {
         var services = new ServiceCollection();
@@ -386,7 +386,7 @@ public class CapabilityValidationTests
         services.AddRelayer(relayer =>
         {
             relayer.AddMessageTypesFromThisAssembly();
-            relayer.AddTransport<BuilderTests.BrokerOptions, BuilderTests.RouteOptions, BuilderTests.ConsumerOptions>("events", broker =>
+            relayer.AddTransport<BuilderTests.BrokerOptions, BuilderTests.ConsumerOptions>("events", broker =>
             {
                 broker.Send("orders", route);
                 additional?.Invoke(broker);

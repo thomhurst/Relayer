@@ -238,7 +238,7 @@ await using (var maintenanceSource = new Npgsql.NpgsqlSlimDataSourceBuilder("Hos
     maintenanceServices.AddRelayer(builder =>
     {
         builder.AddMessageTypesFromThisAssembly();
-        builder.AddTransport<SmokeOptions, SmokeOptions, SmokeOptions>("smoke", broker =>
+        builder.AddTransport<SmokeOptions, SmokeOptions>("smoke", broker =>
             broker.Send<Order>("orders", route => route.SendOptions = new()
             {
                 RequiredDeliveryDelay = TimeSpan.FromDays(1),
@@ -312,7 +312,7 @@ await using var provider = services.AddRelayer(builder =>
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase
     });
-    builder.AddTransport<SmokeOptions, SmokeOptions, SmokeOptions>("smoke", broker =>
+    builder.AddTransport<SmokeOptions, SmokeOptions>("smoke", broker =>
     {
         broker.Send<Order>("orders", route => route.OrderingKey(static order => order.Id));
         broker.Send<Count>("counts");

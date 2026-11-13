@@ -19,7 +19,7 @@ public class TransportCapabilityInitializationTests
             services.AddRelayer(builder =>
             {
                 builder.AddMessageTypesFromThisAssembly();
-                builder.AddTransport<Options, Options, Options>("native", native =>
+                builder.AddTransport<Options, Options>("native", native =>
                 {
                     native.TopologyMode = TopologyMode.None;
                     native.Send<Sample>("orders", route => route.SendOptions = new() { RequiredDeliveryDelay = TimeSpan.FromMinutes(1) });
