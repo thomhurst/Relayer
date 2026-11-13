@@ -45,6 +45,11 @@ public sealed class MessageTypeRegistry
             throw new InvalidOperationException($"'{identity}' is already registered to {existingType}.");
         }
 
+        if (_byType.TryGetValue(typeof(Tombstone<TMessage>), out var existingTombstone) && existingTombstone != identity)
+        {
+            throw new InvalidOperationException($"{typeof(Tombstone<TMessage>)} is already registered as '{existingTombstone}'. Register only the payload type {typeof(TMessage)}; its tombstone alias is registered automatically.");
+        }
+
         if (!_byType.ContainsKey(typeof(TMessage)))
         {
             _jsonTypes.Add(static contexts => ResolveJsonType<TMessage>(contexts));
