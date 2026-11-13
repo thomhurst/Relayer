@@ -47,7 +47,7 @@ JSON export uses schema version 1, transport declaration order, effective modes,
 
 ## Service Bus infrastructure export
 
-`Relayer.AzureServiceBus` provides `ServiceBusTopologyExporter` for **one explicitly selected named Service Bus transport**. It reads `ITopology` and the same named `AzureServiceBusTransportOptions` used by the application, including native `CreateQueueOptions`, `CreateTopicOptions` and `CreateSubscriptionOptions`. It does not create clients, resolve runtime adapters, start the host, connect to Azure or provision anything. Other named transports are outside this selection; exporting one of them through this exporter fails.
+`Relayer.AzureServiceBus` provides `ServiceBusTopologyExporter` for **one explicitly selected named Service Bus transport**. It reads `ITopology` and the same named `ServiceBusTransportOptions` used by the application, including native `CreateQueueOptions`, `CreateTopicOptions` and `CreateSubscriptionOptions`. It does not create clients, resolve runtime adapters, start the host, connect to Azure or provision anything. Other named transports are outside this selection; exporting one of them through this exporter fails.
 
 Here is a standalone export application. Create a .NET 10 console project, add `Relayer.AzureServiceBus` and `Microsoft.Extensions.DependencyInjection`, and replace `Program.cs` with:
 

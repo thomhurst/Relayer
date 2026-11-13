@@ -54,7 +54,7 @@ internal sealed class SqsHostedService(IServiceProvider provider, string name) :
 
     internal static OutgoingMessage Copy(MessageContext context, string sourceIdentityHeader = "ce_id", string deadIdentityHeader = "ce_id")
     {
-        var delivery = context.AmazonSqs();
+        var delivery = context.Features.GetRequired<NativeMessage<SqsDelivery>>().Message;
         var attributes = delivery.Message.MessageAttributes;
         var fifo = delivery.QueueUrl.EndsWith(".fifo", StringComparison.Ordinal);
         var headers = new List<KeyValuePair<string, WireString>>(attributes?.Count ?? 0);

@@ -35,7 +35,7 @@ public class ServiceBusSendEmulatorTests
         using var capture = new SendDurationCapture(instrumentation);
         await using var client = new ServiceBusClient(emulator.GetConnectionString());
         var admin = new ServiceBusAdministrationClient(emulator.GetHttpConnectionString());
-        var options = new AzureServiceBusTransportOptions { Client = client, AdministrationClient = admin };
+        var options = new ServiceBusTransportOptions { Client = client, AdministrationClient = admin };
         // Match the emulator's documented TTL/size quotas and its duplicate-window default.
         options.Queues.Add(new("send-orders") { DefaultMessageTimeToLive = TimeSpan.FromHours(1), MaxSizeInMegabytes = 100, DuplicateDetectionHistoryTimeWindow = TimeSpan.FromMinutes(10) });
         options.Queues.Add(new("send-sessions") { RequiresSession = true, DefaultMessageTimeToLive = TimeSpan.FromHours(1), MaxSizeInMegabytes = 100, DuplicateDetectionHistoryTimeWindow = TimeSpan.FromMinutes(10) });
@@ -109,7 +109,7 @@ public class ServiceBusSendEmulatorTests
             // Externally managed session queues work with least-privilege topology modes.
             foreach (var mode in new[] { TopologyMode.Validate, TopologyMode.None })
             {
-                var trustedOptions = new AzureServiceBusTransportOptions { Client = client };
+                var trustedOptions = new ServiceBusTransportOptions { Client = client };
                 trustedOptions.Queues.Add(new("send-sessions") { RequiresSession = true });
                 trustedOptions.TrustedSessionEntities.Add("send-sessions");
                 await using var trusted = new ServiceBusSendTransport("trusted", client, false, trustedOptions,
@@ -124,7 +124,7 @@ public class ServiceBusSendEmulatorTests
                 await Assert.That(received.SessionId).IsEqualTo(key);
                 await trustedSession.CompleteMessageAsync(received, token);
 
-                var untrustedOptions = new AzureServiceBusTransportOptions { Client = client };
+                var untrustedOptions = new ServiceBusTransportOptions { Client = client };
                 untrustedOptions.Queues.Add(new("send-sessions") { RequiresSession = true });
                 await using var untrusted = new ServiceBusSendTransport("untrusted", client, false, untrustedOptions,
                     ["send-sessions"], mode);

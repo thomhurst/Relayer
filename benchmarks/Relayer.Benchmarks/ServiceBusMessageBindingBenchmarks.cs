@@ -6,7 +6,7 @@ namespace Relayer.Benchmarks;
 
 /// <summary>Compares receive projection with equivalent direct, zero-copy native AMQP property reads.</summary>
 [MemoryDiagnoser]
-public class ServiceBusBindingBenchmarks
+public class ServiceBusMessageBindingBenchmarks
 {
     private ProcessMessageEventArgs _incoming = null!;
 
@@ -31,9 +31,9 @@ public class ServiceBusBindingBenchmarks
     [Benchmark]
     public int RelayerBindingProjection()
     {
-        var body = ServiceBusBinding.GetBody(_incoming);
-        ServiceBusBinding.TryGetHeader(_incoming, "cloudEvents:type", out var type);
-        return checked((int)body.Length) + type.Text!.Length + ServiceBusBinding.GetDeliveryCount(_incoming)!.Value;
+        var body = ServiceBusMessageBinding.GetBody(_incoming);
+        ServiceBusMessageBinding.TryGetHeader(_incoming, "cloudEvents:type", out var type);
+        return checked((int)body.Length) + type.Text!.Length + ServiceBusMessageBinding.GetDeliveryCount(_incoming)!.Value;
     }
 
     private sealed class BenchmarkReceiver : ServiceBusReceiver;

@@ -10,7 +10,7 @@ using Testcontainers.ServiceBus;
 
 namespace Relayer.Tests;
 
-public partial class ServiceBusBindingTests
+public partial class ServiceBusMessageBindingTests
 {
     [Test]
     [Arguments(false)]
@@ -56,7 +56,7 @@ public partial class ServiceBusBindingTests
                 await Assert.That(context.ServiceBus().Message.ApplicationProperties.ContainsKey("content-type")).IsFalse();
                 await Assert.That(context.Headers.TryGetValue("content-type", out var contentType)).IsTrue();
                 await Assert.That(contentType.Text).IsEqualTo(outgoing.ContentType);
-                await Assert.That(ServiceBusBinding.GetBody(context.ServiceBus().Callback).First.Span[0]).IsEqualTo((byte)42);
+                await Assert.That(ServiceBusMessageBinding.GetBody(context.ServiceBus().Callback).First.Span[0]).IsEqualTo((byte)42);
                 await Settle(context.ServiceBus(), operation, properties);
             };
             var args = new ProcessMessageEventArgs(incoming, receiver, "emulator", token);

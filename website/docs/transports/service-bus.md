@@ -274,3 +274,10 @@ Set `consumer.Options.CircuitBreaker` to `ConsumerCircuitOptions` to stop queue 
 Abandoning a failed delivery and allowing a rejected delivery's lock to expire both consume native delivery attempts. During a prolonged outage, Service Bus can dead-letter messages at `MaxDeliveryCount` even while the circuit is open. Size `BreakDuration` together with the queue or subscription's `MaxDeliveryCount` and expected outage duration; circuit retention does not override broker limits or message expiry.
 
 If a native circuit stop or recovery start fails, consumption stops and the failure is logged and retained for shutdown. With `AddRelayerServiceBusHealthProviders` and `AddRelayerHealthChecks` registered, consumer health reports the failure as unhealthy. Recreate the application host to resume consumption.
+
+## API naming
+
+The transport's client options are `ServiceBusTransportOptions`, matching
+`relayer.ServiceBus(...)` and `ServiceBusConsumerOptions`. The receive binding is
+`ServiceBusMessageBinding` (or `ServiceBusSessionMessageBinding` for sessions). These replace the former `AzureServiceBusTransportOptions`
+`ServiceBusBinding` and `ServiceBusSessionBinding` names; update explicit type references when upgrading.

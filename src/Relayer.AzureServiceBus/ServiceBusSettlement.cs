@@ -81,8 +81,8 @@ internal sealed class ServiceBusSettlement : IConsumeMiddleware
         using var activity = tracing.Start();
         if (activity is { IsAllDataRequested: true })
         {
-            ServiceBusBinding.EnrichActivity(activity, delivery.Message);
-            activity.SetTag("messaging.message.id", ServiceBusBinding.TryGetHeader(delivery.Message, "cloudEvents:id", out var id)
+            ServiceBusMessageBinding.EnrichActivity(activity, delivery.Message);
+            activity.SetTag("messaging.message.id", ServiceBusMessageBinding.TryGetHeader(delivery.Message, "cloudEvents:id", out var id)
                 ? id.ToString() : delivery.Message.MessageId);
             if (_subscription is not null) activity.SetTag("messaging.destination.subscription.name", _subscription);
             activity.SetTag("messaging.servicebus.disposition_status", operation switch

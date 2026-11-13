@@ -80,7 +80,7 @@ public class ServiceBusSendBenchmarks
         await _admin.CreateQueueAsync(queueOptions);
         _client = new(connection);
         _raw = _client.CreateSender(_queue);
-        var options = new AzureServiceBusTransportOptions { Client = _client };
+        var options = new ServiceBusTransportOptions { Client = _client };
         options.Queues.Add(new(_queue));
         _transport = new("benchmark", _client, false, options, [_queue], TopologyMode.None, tracing: _tracing);
         _body = "{\"orderId\":42,\"customer\":\"customer-1\"}"u8.ToArray();

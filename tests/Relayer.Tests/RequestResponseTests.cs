@@ -190,7 +190,7 @@ public class RequestResponseTests
             ["cloudEvents:id"] = "native-reply", ["cloudEvents:type"] = "tests.rpc.response;v=1",
             ["cloudEvents:correlationid"] = correlation,
         });
-        var receive = new ReceivePipeline<ProcessMessageEventArgs, ServiceBusBinding>(
+        var receive = new ReceivePipeline<ProcessMessageEventArgs, ServiceBusMessageBinding>(
             fixture.Pipeline(new ReplyDescriptor<RpcRequest, RpcResponse>()), fixture.Names);
         await receive.ProcessAsync(new ProcessMessageEventArgs(native, new Receiver(), "rpc", default));
         await Assert.That((await request).Value).IsEqualTo(5);

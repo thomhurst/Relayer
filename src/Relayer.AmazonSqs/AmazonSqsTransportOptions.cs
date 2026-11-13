@@ -1,4 +1,3 @@
-using Amazon.SimpleNotificationService;
 using Amazon.SQS;
 using Amazon.SQS.Model;
 
@@ -15,7 +14,4 @@ public sealed class AmazonSqsTransportOptions
 
     /// <summary>Native SQS client configuration.</summary>
     public AmazonSQSConfig Sqs { get; set; } = new();
-
-    /// <summary>Native SNS client configuration.</summary>
-    public AmazonSimpleNotificationServiceConfig Sns { get; set; } = new();
 }

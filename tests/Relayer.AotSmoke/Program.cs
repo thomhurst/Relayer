@@ -97,9 +97,9 @@ await ServiceBusReceiversSmoke.RunAsync();
 var serviceBusMessage = ServiceBusModelFactory.ServiceBusReceivedMessage(new BinaryData(new byte[] { 42 }),
     properties: new Dictionary<string, object> { ["cloudEvents:type"] = "smoke;v=1" }, deliveryCount: 2);
 var serviceBusArgs = new ProcessMessageEventArgs(serviceBusMessage, new SmokeServiceBusReceiver(), "aot", default);
-if (ServiceBusBinding.GetBody(serviceBusArgs).First.Span[0] != 42 ||
-    ServiceBusBinding.GetDeliveryCount(serviceBusArgs) != 2 ||
-    !ServiceBusBinding.TryGetHeader(serviceBusArgs, "cloudEvents:type", out var serviceBusType) || serviceBusType.Text != "smoke;v=1")
+if (ServiceBusMessageBinding.GetBody(serviceBusArgs).First.Span[0] != 42 ||
+    ServiceBusMessageBinding.GetDeliveryCount(serviceBusArgs) != 2 ||
+    !ServiceBusMessageBinding.TryGetHeader(serviceBusArgs, "cloudEvents:type", out var serviceBusType) || serviceBusType.Text != "smoke;v=1")
     throw new InvalidOperationException("Service Bus binding failed under Native AOT.");
 
 var postgresConnectionString = Environment.GetEnvironmentVariable("RELAYER_AOT_POSTGRES_CONNECTION");

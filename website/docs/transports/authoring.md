@@ -31,6 +31,70 @@ Generated code accesses message/handler/upcaster registries through `builder.Inf
 
 `SendOptions.ConfigureNative<TNative>` remains application-facing. Adapters import `Relayer.Transports` to call `options.ApplyNative(native)` and persistence integrations call `options.HasNativeConfigurators()`; neither is an application-facing instance member. Prefer `OutgoingMessage.ApplyNative` and `ValidateForOutbox` when working with an outgoing message. Consumer pipeline composition and serializer resolution use `Relayer.Pipeline.ConsumerPipelineExtensions.ConfigureConsumer` and `Relayer.Transports.TransportServiceProviderExtensions.GetMessageSerializer`.
 
+## Naming and borrowed native access
+
+Use the transport's application name followed by the concept: `KafkaTransportOptions`,
+`ServiceBusTransportOptions`, `AmazonSqsTransportOptions` and `RabbitMqTransportOptions`.
+Consumer settings use `ConsumerOptions`; an `IMessageBinding<T>` implementation uses
+`MessageBinding` (`ServiceBusMessageBinding`, for example). `RabbitMqBinding` represents a
+native exchange-to-queue topology binding, so its name describes a different concept.
+Keep native product spelling on fluent extensions (`RabbitMQ`) and normal .NET casing on types (`RabbitMq`).
+
+`relayer.Kafka(...)`, `relayer.ServiceBus(...)`, `relayer.AmazonSqs(...)` and
+`relayer.RabbitMQ(...)` declare a transport. `UseJsonSerializer` selects a serializer on a
+builder; `services.AddRelayerTenancy` and `services.AddRelayerHarness` register services.
+These verbs describe different operations and are not aliases for transport registration.
+
+Kafka, Service Bus, SQS and RabbitMQ `context.<Transport>()` accessors return borrowed readonly struct views. The view
+exposes native objects unchanged; it never transfers their ownership. Keep the view,
+messages, body memory, callbacks and native clients within the processing lifetime. A
+struct copy does not extend that lifetime. Receiver storage such as `SqsDelivery` is an
+authoring detail; application handlers use `SqsMessageContext`, which has no disposal API.
+
+```csharp
+var kafkaRecord = context.Kafka().ConsumeResult;
+var serviceBusMessage = context.ServiceBus().Message;
+var sqsMessage = context.AmazonSqs().Message;
+var rabbitDelivery = context.RabbitMQ().Message;
+```
+
+Each line belongs in a handler for that transport. Wrong-transport access fails instead
+of returning an empty substitute. Native settlement remains transport-specific: Service
+Bus exposes callback operations through its view; other transports retain their existing
+native settlement contracts. Prefer portable settlement when the pipeline must perform
+durable work before acknowledging.
+
+For native per-send customization, expose `SendOptions.<Transport>(Action<TNative>)`
+only when the adapter actually applies that native type:
+
+```csharp
+var kafka = new SendOptions().Kafka(headers => headers.Add("source", "billing"));
+var serviceBus = new SendOptions().ServiceBus(message => message.Subject = "invoice");
+var sqs = new SendOptions().AmazonSqs(request => request.DelaySeconds = 5);
+var rabbit = new SendOptions().RabbitMQ(properties => properties.Priority = 3);
+```
+
+These callbacks run before the native send; they cannot be persisted in an outbox.
+Native capabilities still differ. Kafka exposes its native `Dekaf.Serialization.Headers`
+through this seam, not an entire producer record.
+[Dekaf 1.27.0](https://github.com/thomhurst/Dekaf/blob/48edcaa1065edf0ff76bc35b9a7f174e43a3bb6b/src/Dekaf/Producer/IKafkaProducer.cs#L522-L554) supports `ProducerMessage.Partition` and `Timestamp`, but Relayer's current
+producer path uses its allocation-free key/value overload. A future Kafka seam must wrap
+that existing native support and preserve the send-path performance contract; do not
+promise those settings through the current API or emulate partition selection. This
+separate runtime feature is tracked in [#738](https://github.com/thomhurst/Relayer/issues/738).
+
+Transport `Options` is a named `OptionsBuilder<T>` for client-level configuration.
+Consumer `Options` is the declaration's own mutable options instance, captured at startup.
+It can still bind from configuration with `configuration.GetSection("OrdersConsumer").Bind(consumer.Options)`
+when the application's configuration binder is enabled; this does not add reload to an
+already composed consumer. Do not replace native client configuration types with portable copies.
+
+`BackgroundService` versus `IHostedService` is an implementation choice driven by the
+native client's polling or callback lifecycle, not an application contract. Likewise,
+dead-letter management and circuit pause/resume are advertised only by adapters that
+implement them with native facilities. Do not synthesize missing broker features to
+make a capability table look uniform.
+
 ## Registration
 
 `RelayerInfrastructureExtensions.AddTransport<TTransportOptions, TRouteOptions, TConsumerOptions>` is the core seam for a transport package's typed registration extension. It declares routes and consumers; it does not substitute for a native client or start a broker receive loop. The application-side call site is in [Configuration](../guides/configuration.md), with executable coverage in `BuilderTests`.
@@ -118,7 +182,7 @@ The seam borrows prepared headers and batch memory until the native delegate com
 
 Each endpoint retains send preparation and continuation storage up to its observed concurrency high-water mark, including workloads above 64 overlapping single or batch sends. Prepared headers and batch memory stay exclusive until the native delegate completes, including failure or cancellation. The continuation slot stays reserved until the caller consumes its returned `ValueTask`, so await each send exactly once. Native completion on a different thread does not discard warmed continuation storage. Initial concurrency growth and larger batches can allocate; repeated bursts at the warmed concurrency and batch size reuse that storage without per-message locks. Each slot retains its largest preparation arrays and header buffers for the endpoint lifetime, so a temporary concurrency or batch-size spike can increase retained memory. `System.Diagnostics` activity allocations remain separate. Run `SendTracingConcurrencyBenchmarks` for complete burst costs with dropped and recorded spans, and `SendTracingCompletionBenchmarks` for cross-thread native completion with a synchronous outer caller. `SendTracingPoolTests` also verifies asynchronously awaited callers.
 
-`InMemoryTransport` implements this seam. DI registration supplies `MessageTracing` automatically. For a standalone instance, pass `tracing:` to its constructor. Its homogeneous batches use one batch span; mixed-destination batches retain native input order and use one single-message span per message. The Kafka producer adapter also implements this seam. Other broker adapters must provide this integration when implemented.
+`InMemoryTransport` implements this seam. DI registration supplies `MessageTracing` automatically. For a standalone instance, pass `tracing:` to its constructor. Its homogeneous batches use one batch span; mixed-destination batches retain native input order and use one single-message span per message. The Kafka, Service Bus, SQS/SNS and RabbitMQ adapters also implement this seam. New adapters must provide this integration.
 
 Run the reusable [transport conformance suite](conformance.md) against the real broker or emulator before shipping an adapter.
 

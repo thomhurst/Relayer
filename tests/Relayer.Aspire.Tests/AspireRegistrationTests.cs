@@ -41,7 +41,7 @@ public class AspireRegistrationTests
         var kafka = provider.GetRequiredService<IOptionsMonitor<KafkaTransportOptions>>().Get("events");
         await Assert.That(kafka.BootstrapServers.ToArray()).IsEquivalentTo(new[] { "first:9092", "[::1]:9093" });
         await Assert.That(kafka.ConfigureConsumer).IsSameReferenceAs(nativeConsumer);
-        var bus = provider.GetRequiredService<IOptionsMonitor<AzureServiceBusTransportOptions>>().Get("commands");
+        var bus = provider.GetRequiredService<IOptionsMonitor<ServiceBusTransportOptions>>().Get("commands");
         await Assert.That(bus.ConnectionString).IsEqualTo("native-connection");
         await Assert.That(bus.ClientOptions).IsSameReferenceAs(nativeOptions);
         await Assert.That(provider.GetRequiredService<IOptionsMonitor<KafkaTransportOptions>>().Get("other").BootstrapServers.Count).IsEqualTo(0);

@@ -53,7 +53,7 @@ internal sealed class ServiceBusHostedService(IServiceProvider provider, string 
                 ServiceBusConsumer receiver;
                 if (consumer.Options.SessionProcessorOptions is { } sessionOptions)
                 {
-                    var receive = new ReceivePipeline<ProcessSessionMessageEventArgs, ServiceBusSessionBinding>(composed,
+                    var receive = new ReceivePipeline<ProcessSessionMessageEventArgs, ServiceBusSessionMessageBinding>(composed,
                         new("cloudEvents:"), consumer.Concurrency);
                     var native = consumer.Options.Subscription is { } sub
                         ? _transport.Client.CreateSessionProcessor(consumer.Source, sub, sessionOptions)
@@ -62,7 +62,7 @@ internal sealed class ServiceBusHostedService(IServiceProvider provider, string 
                 }
                 else
                 {
-                    var receive = new ReceivePipeline<ProcessMessageEventArgs, ServiceBusBinding>(composed,
+                    var receive = new ReceivePipeline<ProcessMessageEventArgs, ServiceBusMessageBinding>(composed,
                         new("cloudEvents:"), consumer.Concurrency);
                     var native = consumer.Options.Subscription is { } sub
                         ? _transport.Client.CreateProcessor(consumer.Source, sub, consumer.Options.ProcessorOptions)

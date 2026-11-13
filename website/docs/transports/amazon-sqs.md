@@ -76,7 +76,7 @@ Each worker owns one reusable native `ReceiveMessageRequest`, receives one messa
 
 FIFO ordering comes from SQS's invisible-message-group semantics, including across application instances. No group dispatcher is added. Set native visibility long enough for all durable work and in-process retries: this adapter does not renew visibility automatically, and native expiration can cause duplicate delivery and release the group. Graceful stop cancels polls while draining active work; the host's drain deadline cancels processing. An aborted drain requires a new host. The SDK owns request retries. Workers issue another poll after any exhausted native request failure, with cancellable exponential backoff from one to thirty seconds, reset by a successful poll. This also allows recovery after credentials, permissions or queue availability change; persistent configuration errors remain visible in warning logs.
 
-`context.AmazonSqs()` exposes the borrowed native `Message`, `IAmazonSQS`, queue URL and receive request ID. Keep these references within the handler lifetime. Use the portable settlement feature for completion, retry or dead-letter decisions so settlement follows durable work.
+`context.AmazonSqs()` returns a readonly `SqsMessageContext` view exposing the borrowed native `Message`, `IAmazonSQS`, queue URL and receive request ID. Keep these references within the handler lifetime. The view has no disposal API; the receiver owns and reuses the underlying delivery storage. Use the portable settlement feature for completion, retry or dead-letter decisions so settlement follows durable work.
 
 Consumers use the default `ce_` CloudEvents headers. For a custom send binding such as `new HeaderNames("event_")`, set `consumer.Options.HeaderNames` to the same binding. The receiver uses it for envelope decoding and preserves those attributes in failure copies.
 
@@ -157,7 +157,7 @@ Native request, entry and attribute containers are pooled per concurrent operati
 
 ## SNS topic publishing
 
-Use the same package and sender API with an explicit SNS transport and native topic declarations:
+Use the same package and sender API with an explicit SNS transport and native topic declarations. Configure SNS through `AmazonSnsTransportOptions.Sns`; SQS transport options configure only SQS and do not contain an SNS client configuration:
 
 ```csharp
 relayer.AmazonSns("events", sns =>

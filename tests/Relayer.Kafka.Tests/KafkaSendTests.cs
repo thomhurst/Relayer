@@ -51,7 +51,7 @@ public class KafkaSendTests
         var state = new KafkaSendState();
         byte[] bytes = [1, 2, 3];
         KeyValuePair<string, WireString>[] headers = [new("bytes", new(bytes)), new("text", new("héllo"))];
-        var options = new SendOptions().ConfigureNative<Headers>(static native => native.Add("custom", "yes"));
+        var options = new SendOptions().Kafka(static native => native.Add("custom", "yes"));
         state.Prepare(new("orders", bytes, headers, new WireString(bytes), options: options));
         await Assert.That(state.Key!.Value.Utf8.Equals(bytes.AsMemory())).IsTrue();
         await Assert.That(state.Headers[0].Value.Equals(bytes.AsMemory())).IsTrue();
@@ -101,7 +101,7 @@ public class KafkaSendTests
     public async Task Native_callback_errors_and_mismatches_do_not_leak_prepared_headers()
     {
         var state = new KafkaSendState();
-        var options = new SendOptions().ConfigureNative<Headers>(static headers =>
+        var options = new SendOptions().Kafka(static headers =>
         {
             headers.Add("failed", "value");
             throw new InvalidOperationException("callback failure");

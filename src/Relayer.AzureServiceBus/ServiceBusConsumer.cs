@@ -58,7 +58,7 @@ internal sealed partial class ServiceBusConsumer : IAsyncDisposable
         processor.ProcessErrorAsync += ErrorAsync;
     }
 
-    internal static void ValidateDeclaration(string name, AzureServiceBusTransportOptions transport,
+    internal static void ValidateDeclaration(string name, ServiceBusTransportOptions transport,
         ConsumerDefinition<ServiceBusConsumerOptions> consumer)
     {
         var options = consumer.Options;

@@ -4,7 +4,7 @@ using Azure.Messaging.ServiceBus.Administration;
 namespace Relayer.AzureServiceBus;
 
 /// <summary>Options for the AzureServiceBus transport. Native client configuration is passed through unchanged (docs/decisions.md D1).</summary>
-public sealed class AzureServiceBusTransportOptions
+public sealed class ServiceBusTransportOptions
 {
     /// <summary>Connection string for a client owned and disposed by Relayer. Do not also set Client.</summary>
     public string? ConnectionString { get; set; }
