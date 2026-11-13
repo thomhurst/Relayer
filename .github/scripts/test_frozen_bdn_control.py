@@ -91,6 +91,42 @@ class OriginalRunnerTests(unittest.TestCase):
             self.assertEqual(protocol["operationsPerInvoke"], 1)
             self.assertEqual(protocol["parameter"], "instance.ScopedHandler = true;")
 
+    def test_resolution_and_sync_failure_native_identity(self):
+        cases = (
+            ("scope-resolution", "ConsumePipelineBenchmarks", "ScopeAndHandlerResolution",
+             "ScopedHandler", "true", "AwaitHelper.GetResult(ScopeAndHandlerResolution())"),
+            ("failure-dispatch-sync", "FailureConsumePipelineBenchmarks", "DirectScopedDispatch",
+             "SuspendHandler", "false", "DirectScopedDispatch"),
+        )
+        for case, owner, method, parameter, value, invocation in cases:
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                for side in ("baseline", "candidate"):
+                    source, image = self.fixture(root / "performance-builds" / side)
+                    source.write_text(f"""public unsafe class Runnable_10 : global::Relayer.Benchmarks.{owner}
+                    {{ OperationsPerInvoke = 1, MeasureExtraStats = true,
+                    instance.{parameter} = {value}; workloadDelegate = {invocation}; }}""")
+                    self.assertEqual(executable(root / "performance-builds" / side, case), (image.resolve(), "10"))
+                    source.write_text(source.read_text().replace(f"= {value};", f"= {'false' if value == 'true' else 'true'};"))
+                    with self.assertRaisesRegex(ValueError, "selected parameter"):
+                        executable(root / "performance-builds" / side, case)
+                    source.write_text(source.read_text().replace(f"= {'false' if value == 'true' else 'true'};", f"= {value};"))
+                calls = []
+                def execute(command, **kwargs):
+                    calls.append(command)
+                    self.assertEqual(command[-1], case)
+                    name = f'"Relayer.Benchmarks.{owner}.{method}({parameter}: {value.title()})"'
+                    Path(command[-2]).write_text(json.dumps({"FoundExecutable": True, "ExitCode": 0,
+                        "IsSuccess": True, "Errors": [], "selectedCase": case, "operationsPerInvoke": 1,
+                        "benchmarkArguments": f"--benchmarkName {name} --job Default --benchmarkId 10"}))
+                    Path(command[-3]).write_text(COMPLETE.replace("65536", "9"))
+                with patch("sys.argv", ["control", str(root), str(root / "results"), "--case", case,
+                                        "--native-executor", str(root / "host.dll")]), \
+                     patch("frozen_bdn_control.verify", return_value="frozen"), \
+                     patch("frozen_bdn_control.subprocess.run", side_effect=execute):
+                    main()
+                self.assertEqual(len(calls), 4)
+
     def test_unscoped_scope_selector_rejects_true_parameter(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

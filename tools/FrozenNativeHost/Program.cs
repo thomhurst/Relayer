@@ -13,7 +13,7 @@ using BenchmarkDotNet.Toolchains.Results;
 
 if (args.Length is not (5 or 6))
 {
-    Console.Error.WriteLine("Usage: FrozenNativeHost <original-image> <benchmark-id> <dotnet-wrapper> <native-log> <receipt> [concurrent|scoped-dispatch|scope-only|scope-only-unscoped]");
+    Console.Error.WriteLine("Usage: FrozenNativeHost <original-image> <benchmark-id> <dotnet-wrapper> <native-log> <receipt> [concurrent|scoped-dispatch|scope-only|scope-only-unscoped|scope-resolution|failure-dispatch-sync]");
     return 2;
 }
 
@@ -29,6 +29,8 @@ var (owner, methodName, operations) = selectedCase switch
 {
     "concurrent" => ("EndToEndBenchmarks", "ConcurrentRoundTrip", 8),
     "scope-only" or "scope-only-unscoped" => ("ConsumePipelineBenchmarks", "ScopeOnly", 1),
+    "scope-resolution" => ("ConsumePipelineBenchmarks", "ScopeAndHandlerResolution", 1),
+    "failure-dispatch-sync" => ("FailureConsumePipelineBenchmarks", "DirectScopedDispatch", 1),
     "scoped-dispatch" => ("ConsumePipelineBenchmarks", "DirectScopedDispatch", 1),
     _ => throw new ArgumentException("Unsupported original benchmark case.")
 };
@@ -37,17 +39,21 @@ var method = type.GetMethod(methodName) ?? throw new MissingMethodException(type
 // The inventoried generated runner ID selects the parameter and original job.
 // The descriptor supplies only the method name required by the native executor.
 var descriptor = new Descriptor(type, method, operationsPerInvoke: operations);
-var scopeOnly = selectedCase is "scope-only" or "scope-only-unscoped";
+var scopeOnly = selectedCase is "scope-only" or "scope-only-unscoped" or "scope-resolution";
 var scopedHandler = selectedCase != "scope-only-unscoped";
 ParameterInstance[] parameters = scopeOnly
     ? [new(new ParameterDefinition("ScopedHandler", false, [scopedHandler], false, typeof(bool), 0), scopedHandler, BenchmarkDotNet.Reports.SummaryStyle.Default)]
-    : [];
+    : selectedCase == "failure-dispatch-sync"
+        ? [new(new ParameterDefinition("SuspendHandler", false, [false], false, typeof(bool), 0), false, BenchmarkDotNet.Reports.SummaryStyle.Default)]
+        : [];
 using var benchmarkCase = BenchmarkCase.Create(descriptor, Job.Default.WithId("Default"),
     new ParameterInstances(parameters), ManualConfig.CreateEmpty().CreateImmutableConfig());
 var benchmarkId = new BenchmarkId(identity, benchmarkCase);
 var nameArgument = scopeOnly
-    ? $"\"Relayer.Benchmarks.ConsumePipelineBenchmarks.ScopeOnly(ScopedHandler: {scopedHandler})\""
-    : $"Relayer.Benchmarks.{owner}.{methodName}";
+    ? $"\"Relayer.Benchmarks.ConsumePipelineBenchmarks.{methodName}(ScopedHandler: {scopedHandler})\""
+    : selectedCase == "failure-dispatch-sync"
+        ? "\"Relayer.Benchmarks.FailureConsumePipelineBenchmarks.DirectScopedDispatch(SuspendHandler: False)\""
+        : $"Relayer.Benchmarks.{owner}.{methodName}";
 var expected = $"--benchmarkName {nameArgument} --job Default --benchmarkId {identity}";
 if (benchmarkId.ToArguments() != expected)
     throw new InvalidOperationException("Native parent identity differs from the verified original runner.");
