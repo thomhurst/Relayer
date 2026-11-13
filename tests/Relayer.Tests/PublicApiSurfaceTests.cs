@@ -28,6 +28,7 @@ public class PublicApiSurfaceTests
             "FailureClassifierBuilder",
             "FailureHeaders",
             "FailureOptions",
+            "GenerateMessageTypesAttribute",
             "IActivityEnricher",
             "IBatchHandler",
             "IConsumeMiddleware",

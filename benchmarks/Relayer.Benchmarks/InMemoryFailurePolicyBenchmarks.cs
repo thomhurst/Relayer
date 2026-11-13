@@ -1,3 +1,4 @@
+using Relayer.Pipeline;
 #pragma warning disable RLY004 // The benchmark composes its generated handler into the receive pipeline below.
 using System.Buffers;
 using System.Runtime.CompilerServices;
