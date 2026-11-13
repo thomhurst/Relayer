@@ -86,7 +86,8 @@ To change a decision, add a new entry that supersedes it rather than editing his
 | [D73](#d73-postgresql-retryable-outbox-sends-retain-durable-eligibility) | PostgreSQL retryable outbox sends retain durable eligibility | Accepted |
 | [D74](#d74-portable-consumer-failure-declarations) | Portable consumer failure declarations | Accepted |
 | [D75](#d75-failure-diagnostics-are-bounded) | Failure diagnostics are bounded | Accepted |
-| [D76](#d76-batch-items-report-their-own-failures) | Batch items report their own failures | Accepted |
+| [D76](#d76-ef-transaction-coordination-is-independent-of-the-database-provider) | EF transaction coordination is independent of the database provider | Accepted |
+| [D77](#d77-batch-items-report-their-own-failures) | Batch items report their own failures | Accepted |
 
 ---
 

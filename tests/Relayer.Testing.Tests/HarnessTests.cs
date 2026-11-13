@@ -568,6 +568,9 @@ public sealed class OtherProbeHandler : IHandler<OtherProbe>
 
 public sealed class BatchProbeHandler : IBatchHandler<Probe>
 {
-    public ValueTask<BatchResult> HandleAsync(Batch<Probe> batch, CancellationToken cancellationToken) =>
-        new(BatchResult.PartialFailure(new Dictionary<int, Exception> { [1] = new InvalidOperationException("partial") }));
+    public ValueTask<BatchResult> HandleAsync(Batch<Probe> batch, CancellationToken cancellationToken)
+    {
+        batch.Items[1].Fail(new InvalidOperationException("partial"));
+        return new(BatchResult.Success);
+    }
 }
