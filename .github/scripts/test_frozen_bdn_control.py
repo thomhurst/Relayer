@@ -159,6 +159,55 @@ class OriginalRunnerTests(unittest.TestCase):
             self.assertEqual(protocol["operationsPerInvoke"], 1)
             self.assertEqual(protocol["parameter"], "instance.ScopedHandler = true;")
 
+    def test_exact_engine_callbacks_preserve_every_launch_and_reject_incomplete_boundaries(self):
+        for invalid in (None, "missing", "manual", "repeated", "callback", "malformed"):
+            with self.subTest(invalid=invalid), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                for side in ("baseline", "candidate"):
+                    self.fixture(root / "performance-builds" / side)
+                output = root / "results"
+                calls = []
+
+                def execute(command, **kwargs):
+                    calls.append(command)
+                    self.assertNotIn("--anonymousPipes", command)
+                    env = kwargs["env"]
+                    self.assertEqual(env["RELAYER_ALLOCATION_TYPE"], "BenchmarkDotNet.Engines.Engine")
+                    self.assertEqual(env["RELAYER_ALLOCATION_METHOD"], "MeasureWithGc")
+                    self.assertEqual(env["CORECLR_PROFILER_PATH"], str((root / "profiler.so").resolve()))
+                    kwargs["stdout"].write(COMPLETE)
+                    if len(calls) == 2 and invalid == "missing":
+                        return
+                    coverage = {"kind": "coverage", "objects": 1, "bytes": 24, "failures": 0,
+                                "boundary": "method-enter-leave", "methodEntries": 1, "methodLeaves": 1}
+                    if len(calls) == 2 and invalid == "malformed":
+                        Path(env["RELAYER_ALLOCATION_OUTPUT"]).write_text('{"kind":"coverage"}\n')
+                        return
+                    if len(calls) == 2:
+                        if invalid == "manual": coverage["boundary"] = "external-marker"
+                        if invalid == "repeated": coverage["methodEntries"] = 2
+                        if invalid == "callback": coverage["failures"] = 1
+                    rows = [{"kind": "type", "classId": 42, "type": "Message", "objects": 1, "bytes": 24}, coverage]
+                    Path(env["RELAYER_ALLOCATION_OUTPUT"]).write_text("\n".join(map(json.dumps, rows)))
+
+                with patch("sys.argv", ["control", str(root), str(output), "--allocation-profiler", str(root / "profiler.so"), "--allocation-boundary", "method"]), \
+                     patch("frozen_bdn_control.verify", return_value="frozen") as verified, \
+                     patch("frozen_bdn_control.subprocess.run", side_effect=execute):
+                    if invalid:
+                        with self.assertRaisesRegex(SystemExit, "launches failed"):
+                            main()
+                    else:
+                        main()
+                self.assertEqual(len(calls), 4)
+                self.assertEqual(verified.call_count, 6)
+                outcomes = json.loads((output / "outcomes.json").read_text())
+                self.assertEqual("allocationError" in outcomes[1], invalid is not None)
+                self.assertEqual(outcomes[3]["callbackCoverage"]["methodEntries"], 1)
+                self.assertEqual(outcomes[3]["operations"], 65536)
+                protocol = json.loads((output / "protocol.json").read_text())
+                self.assertTrue(protocol["instrumented"])
+                self.assertEqual(protocol["allocationMethod"], "BenchmarkDotNet.Engines.Engine.MeasureWithGc")
+
     def test_rejects_uninventoried_or_wrong_job_input(self):
         for invalid in ("inventory", "operations", "stats", "runner"):
             with self.subTest(invalid=invalid), tempfile.TemporaryDirectory() as directory:

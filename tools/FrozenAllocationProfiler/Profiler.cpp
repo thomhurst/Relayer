@@ -30,7 +30,61 @@ struct EngineEvent { DWORD id; ThreadID thread; long long operations; };
 std::vector<EngineEvent> engineEvents;
 constexpr const char* Benchmark = "Relayer.Benchmarks.EndToEndBenchmarks.ConcurrentRoundTrip";
 
+std::string selectedType, selectedMethod;
+unsigned long long methodEntries = 0, methodLeaves = 0;
+FunctionID selectedFunction = 0;
 int writeReport();
+std::string narrow(const WCHAR* value);
+std::string definitionName(IMetaDataImport*, mdTypeDef, unsigned depth = 0);
+
+// Slowpath hooks use the runtime's ABI-preserving stubs, as in dotnet/runtime's
+// native SlowPathELTProfiler. Do not substitute the fastpath hooks with C++ bodies.
+void STDMETHODCALLTYPE methodEnter(FunctionIDOrClientID, COR_PRF_ELT_INFO)
+{
+    std::lock_guard<std::mutex> lock(gate);
+    ++methodEntries;
+    if (begun) { ++failures; return; }
+    begun = true; active = true;
+}
+void STDMETHODCALLTYPE methodLeave(FunctionIDOrClientID, COR_PRF_ELT_INFO)
+{
+    std::lock_guard<std::mutex> lock(gate);
+    ++methodLeaves;
+    if (!active) ++failures;
+    active = false;
+}
+void STDMETHODCALLTYPE methodTailcall(FunctionIDOrClientID, COR_PRF_ELT_INFO)
+{
+    std::lock_guard<std::mutex> lock(gate);
+    ++failures; active = false;
+}
+
+UINT_PTR STDMETHODCALLTYPE mapFunction(FunctionID function, void*, BOOL* hook)
+{
+    *hook = FALSE;
+    ClassID type; ModuleID module; mdToken token;
+    if (FAILED(info->GetFunctionInfo(function, &type, &module, &token))) return function;
+    IMetaDataImport* metadata = nullptr;
+    if (FAILED(info->GetModuleMetaData(module, ofRead, IID_IMetaDataImport,
+                                     reinterpret_cast<IUnknown**>(&metadata)))) return function;
+    mdTypeDef owner; WCHAR name[2048]; ULONG length; DWORD flags, implFlags;
+    PCCOR_SIGNATURE signature; ULONG signatureLength; ULONG rva;
+    auto hr = metadata->GetMethodProps(token, &owner, name, 2048, &length, &flags,
+                                      &signature, &signatureLength, &rva, &implFlags);
+    // Only the explicitly selected non-inlined method can begin a region. Name
+    // collisions/overloads cause multiple entries or target functions and fail closed.
+    if (SUCCEEDED(hr) && length <= 2048 && narrow(name) == selectedMethod) {
+        std::lock_guard<std::mutex> lock(gate);
+        if (definitionName(metadata, owner) == selectedType) {
+            if (!(implFlags & miNoInlining)) ++failures;
+            if (selectedFunction && selectedFunction != function) ++failures;
+            selectedFunction = function;
+            *hook = TRUE;
+        }
+    }
+    metadata->Release();
+    return function;
+}
 
 std::string narrow(const WCHAR* value)
 {
@@ -44,7 +98,7 @@ std::string narrow(const WCHAR* value)
     return result.str();
 }
 
-std::string definitionName(IMetaDataImport* metadata, mdTypeDef token, unsigned depth = 0)
+std::string definitionName(IMetaDataImport* metadata, mdTypeDef token, unsigned depth)
 {
     if (depth > 12) { ++failures; return "<type-depth-exceeded>"; }
     WCHAR name[2048]; ULONG length; DWORD flags; mdToken base;
@@ -92,10 +146,25 @@ public:
         auto hr = unknown->QueryInterface(__uuidof(ICorProfilerInfo12), reinterpret_cast<void**>(&info));
         if (FAILED(hr)) return hr;
         nativeTail = std::getenv("RELAYER_ALLOCATION_BDN_TAIL") != nullptr;
-        hr = info->SetEventMask2(COR_PRF_MONITOR_OBJECT_ALLOCATED | COR_PRF_ENABLE_OBJECT_ALLOCATED,
-                                nativeTail ? COR_PRF_HIGH_MONITOR_EVENT_PIPE : 0);
+        DWORD mask = COR_PRF_MONITOR_OBJECT_ALLOCATED | COR_PRF_ENABLE_OBJECT_ALLOCATED;
+        const char* type = std::getenv("RELAYER_ALLOCATION_TYPE");
+        const char* method = std::getenv("RELAYER_ALLOCATION_METHOD");
+        if ((type != nullptr) != (method != nullptr)) return E_INVALIDARG;
+        if (nativeTail && type) return E_INVALIDARG;
+        if (type && method) {
+            if (!*type || !*method) return E_INVALIDARG;
+            selectedType = type; selectedMethod = method;
+            // FRAME_INFO selects slowpath runtime stubs (ordinary C++ callback ABI).
+            mask |= COR_PRF_MONITOR_ENTERLEAVE | COR_PRF_ENABLE_FRAME_INFO | COR_PRF_MONITOR_EXCEPTIONS;
+        }
+        hr = info->SetEventMask2(mask, nativeTail ? COR_PRF_HIGH_MONITOR_EVENT_PIPE : 0);
+        if (SUCCEEDED(hr) && !selectedMethod.empty()) {
+            hr = info->SetFunctionIDMapper2(mapFunction, nullptr);
+            if (SUCCEEDED(hr)) hr = info->SetEnterLeaveFunctionHooks3WithInfo(methodEnter, methodLeave, methodTailcall);
+        }
+        initialized = SUCCEEDED(hr);
+        if (FAILED(hr)) std::fprintf(stderr, "Profiler initialization failed: 0x%x\n", static_cast<unsigned>(hr));
         if (FAILED(hr)) return hr;
-        initialized = true;
         if (nativeTail) {
             COR_PRF_EVENTPIPE_PROVIDER_CONFIG provider = {WCHAR("BenchmarkDotNet.EngineEventSource"), 0xffffffffffffffffULL, 4, nullptr};
             hr = info->EventPipeStartSession(1, &provider, false, &session);
@@ -111,6 +180,10 @@ public:
             if (!benchmarkStopped || iterationOpen || !iterations) ++failures;
             if (!writeReport()) std::fprintf(stderr, "Native tail report invalid or could not be written.\n");
         }
+        if (!selectedMethod.empty()) {
+            if (!selectedFunction || methodEntries != 1 || methodLeaves != 1) ++failures;
+            if (!writeReport()) std::fprintf(stderr, "Exact method allocation report failed\n");
+        }
         initialized = false;
         if (info) { info->Release(); info = nullptr; }
         return S_OK;
@@ -125,6 +198,11 @@ public:
         // never asynchronously from the P/Invoke boundary that writes the report.
         if (count.name.empty()) count.name = typeName(type);
         ++count.objects; count.bytes += size;
+        return S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE ExceptionUnwindFunctionEnter(FunctionID function) override {
+        std::lock_guard<std::mutex> lock(gate);
+        if (function == selectedFunction && active) { ++failures; active = false; }
         return S_OK;
     }
     HRESULT STDMETHODCALLTYPE EventPipeEventDelivered(EVENTPIPE_PROVIDER provider, DWORD id, DWORD version, ULONG, LPCBYTE,
@@ -210,7 +288,7 @@ extern "C" __attribute__((visibility("default"))) HRESULT STDMETHODCALLTYPE DllG
 extern "C" __attribute__((visibility("default"))) int BeginAllocationRegion()
 {
     std::lock_guard<std::mutex> lock(gate);
-    if (!initialized || nativeTail || begun) return 0;
+    if (!initialized || nativeTail || begun || !selectedMethod.empty()) return 0;
     begun = true; active = true;
     return 1;
 }
@@ -236,7 +314,10 @@ int writeReport()
                << "\",\"objects\":" << entry.second.objects << ",\"bytes\":" << entry.second.bytes << "}\n";
     }
     output << "{\"kind\":\"coverage\",\"objects\":" << objects << ",\"bytes\":" << bytes
-           << ",\"failures\":" << failures << ",\"limits\":\"Exact CLR ObjectAllocated callbacks in this separate instrumented region; callbacks change fast paths and scheduling. Native-tail mode includes final timed cleanup/logging and extra-stat setup/work/cleanup, not exact MeasureWithGc. No stacks, historical replay or cross-control subtraction.\"}\n";
+           << ",\"failures\":" << failures
+           << ",\"methodEntries\":" << methodEntries << ",\"methodLeaves\":" << methodLeaves
+           << ",\"boundary\":\"" << (selectedMethod.empty() ? "external-marker" : "method-enter-leave") << "\""
+           << ",\"limits\":\"Exact CLR ObjectAllocated callbacks in this separate instrumented region; callbacks change fast paths and scheduling. Native-tail mode includes final timed cleanup/logging and extra-stat setup/work/cleanup, not exact MeasureWithGc. No stacks, historical replay or cross-control subtraction.\"}\n";
     output.flush();
     return output.good() && !failures && objects ? 1 : 0;
 }
@@ -245,7 +326,7 @@ int writeReport()
 extern "C" __attribute__((visibility("default"))) int EndAllocationRegion()
 {
     std::lock_guard<std::mutex> lock(gate);
-    if (!initialized || nativeTail || !active) return 0;
+    if (!initialized || nativeTail || !active || !selectedMethod.empty()) return 0;
     active = false;
     return writeReport();
 }

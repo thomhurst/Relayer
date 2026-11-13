@@ -67,6 +67,37 @@ class NativeAllocationFixtureTests(unittest.TestCase):
                 self.assertEqual(records[0]["objects"], count)
                 self.assertEqual(records[0]["bytes"], count * 24)
 
+    def test_exact_method_counts_exclude_outside_work_and_reject_missing_or_repeated_boundaries(self):
+        profiler = str(Path(os.environ["TEST_NATIVE_PROFILER"]).resolve())
+        fixture = str(Path(os.environ["TEST_NATIVE_FIXTURE"]).resolve())
+        evidence = Path(os.environ["TEST_NATIVE_OUTPUT"])
+        evidence.mkdir(parents=True, exist_ok=True)
+        for mode in ("--method", "--twice", "--missing", "--throw"):
+            for count in (1, 1024, 16384) if mode == "--method" else (1024,):
+                report = (evidence / f"method-{mode[2:]}-{count}.jsonl").resolve()
+                environment = dict(os.environ, CORECLR_ENABLE_PROFILING="1",
+                                   CORECLR_PROFILER="{32B7EF07-25E8-4AC7-B011-9A4321D702C8}",
+                                   CORECLR_PROFILER_PATH=profiler, RELAYER_ALLOCATION_OUTPUT=str(report),
+                                   RELAYER_ALLOCATION_TYPE="FixtureMeasurement",
+                                   RELAYER_ALLOCATION_METHOD="Absent" if mode == "--missing" else "MeasureWithGc")
+                result = subprocess.run(["dotnet", fixture, str(count), mode], env=environment,
+                                        capture_output=True, text=True, timeout=60)
+                (evidence / f"method-{mode[2:]}-{count}.log").write_text(result.stdout + result.stderr)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                if mode != "--method":
+                    with self.assertRaises(ValueError):
+                        read(report)
+                    continue
+                actual = read(report)
+                self.assertEqual(actual["coverage"]["boundary"], "method-enter-leave")
+                self.assertEqual(actual["coverage"]["methodEntries"], 1)
+                self.assertEqual(actual["coverage"]["methodLeaves"], 1)
+                for name in ("FixtureMessage", "FixtureTypes+Box`1[FixtureMessage]"):
+                    records = [row for row in actual["types"] if row["type"] == name]
+                    self.assertEqual(len(records), 1, actual)
+                    self.assertEqual(records[0]["objects"], count)
+                    self.assertEqual(records[0]["bytes"], count * 24)
+
     def test_missing_startup_profiler_fails_instead_of_emitting_empty_success(self):
         profiler = str(Path(os.environ["TEST_NATIVE_PROFILER"]).resolve())
         environment = dict(os.environ, CORECLR_ENABLE_PROFILING="0", RELAYER_ALLOCATION_PROFILER=profiler)

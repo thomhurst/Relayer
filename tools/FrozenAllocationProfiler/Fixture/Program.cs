@@ -1,7 +1,8 @@
 using System.Runtime.CompilerServices;
 
-var tail = args.Length > 1;
-var region = tail ? null : NativeAllocationRegion.Load() ?? throw new InvalidOperationException("Profiler path is required.");
+var automatic = args.Length > 1 && args[1].StartsWith("--", StringComparison.Ordinal);
+var tail = args.Length > 1 && !automatic;
+var region = tail || automatic ? null : NativeAllocationRegion.Load() ?? throw new InvalidOperationException("Profiler path is required.");
 var engine = tail ? FixtureEngine.Log : null;
 var count = int.Parse(args[0], System.Globalization.CultureInfo.InvariantCulture);
 var values = new object[count];
@@ -23,7 +24,20 @@ for (var index = 0; index < workers.Length; index++)
     workers[index].Start();
 }
 ready.Wait();
-if (engine is not null)
+if (automatic)
+{
+    if (args[1] == "--twice")
+    {
+        FixtureMeasurement.MeasureWithGc(start, workers);
+        FixtureMeasurement.MeasureWithGc(start, workers);
+    }
+    else
+    {
+        try { FixtureMeasurement.MeasureWithGc(start, workers, args[1] == "--throw"); }
+        catch (InvalidOperationException) when (args[1] == "--throw") { }
+    }
+}
+else if (engine is not null)
 {
     engine.WorkloadJittingStart(8);
     engine.WorkloadJittingStop(8);
@@ -37,15 +51,18 @@ if (engine is not null)
     if (args[1] != "missing-stop") engine.WorkloadActualStop(8);
 }
 else region!.Begin();
-start.Set();
-foreach (var worker in workers) worker.Join();
+if (!automatic)
+{
+    start.Set();
+    foreach (var worker in workers) worker.Join();
+}
 if (engine is not null)
 {
     if (args[1] != "missing-benchmark") engine.BenchmarkStop(FixtureEngine.Benchmark);
     if (args[1] == "extra-event") engine.WorkloadActualStart(8);
     Fill(new object[29]); // After benchmark excluded.
 }
-else region!.End();
+else if (!automatic) region!.End();
 GC.KeepAlive(values);
 
 [MethodImpl(MethodImplOptions.NoInlining)]
@@ -84,4 +101,15 @@ internal sealed class FixtureEngine : System.Diagnostics.Tracing.EventSource
     [System.Diagnostics.Tracing.Event(6)] public void WorkloadJittingStop(long operations) => WriteEvent(6, operations);
     [System.Diagnostics.Tracing.Event(15)] public void WorkloadActualStart(long operations) => WriteEvent(15, operations);
     [System.Diagnostics.Tracing.Event(16)] public void WorkloadActualStop(long operations) => WriteEvent(16, operations);
+}
+
+internal static class FixtureMeasurement
+{
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void MeasureWithGc(ManualResetEventSlim start, Thread[] workers, bool throwAfter = false)
+    {
+        start.Set();
+        foreach (var worker in workers) worker.Join();
+        if (throwAfter) throw new InvalidOperationException("Expected boundary unwind");
+    }
 }

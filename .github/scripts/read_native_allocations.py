@@ -10,6 +10,9 @@ def read_rows(rows):
         raise ValueError("Incomplete or unknown allocation report records")
     if coverage[0]["failures"] != 0:
         raise ValueError("Profiler reported unresolved metadata or callback failures")
+    if coverage[0].get("boundary") == "method-enter-leave":
+        if coverage[0].get("methodEntries") != 1 or coverage[0].get("methodLeaves") != 1:
+            raise ValueError("Incomplete or repeated method boundary")
     if len({row["classId"] for row in types}) != len(types):
         raise ValueError("Duplicate ClassID records")
     for row in types:
