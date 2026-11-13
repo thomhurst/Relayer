@@ -110,7 +110,9 @@ and inspect every type family and failed outcome before choosing an intervention
 `concurrent-allocation-owners.yml` covers net10/net11 independently. By default it
 builds and retains the test image. Manual dispatch can instead set `ci_run_id` and
 `ci_run_attempt` to download that failed CI run's original core-test artifact. The
-workflow verifies its binary manifest and commit against the selected CI run,
+workflow verifies its binary manifest and commit against the selected CI run
+(PR merge parents must match the run's recorded base/head; other events require
+the run's exact head commit),
 selects the matching recorded runtime (failing if unavailable), and executes those
 binaries without rebuilding or modifying them. It retains the downloaded inputs,
 source-run metadata and before/after hashes along with every new outcome. These

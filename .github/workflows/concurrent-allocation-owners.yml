@@ -5,6 +5,8 @@ on:
   pull_request:
     paths:
       - '.github/workflows/concurrent-allocation-owners.yml'
+      - '.github/scripts/verify_retained_ci.py'
+      - '.github/scripts/test_verify_retained_ci.py'
       - 'tools/FrozenReceiveProbe/**'
   workflow_dispatch:
     inputs:
@@ -57,6 +59,10 @@ jobs:
           gh api "repos/$GH_REPO/actions/runs/$SOURCE_RUN" > results/source-run.json
           gh run download "$SOURCE_RUN" -n "ci-test-failure-$FRAMEWORK-$SOURCE_RUN-$SOURCE_ATTEMPT" -D retained
           (cd retained && sha256sum --check .artifacts/ci-test-failure/binaries.sha256) > results/source-verification.log
+          commit=$(cat retained/.artifacts/ci-test-failure/commit.txt)
+          [[ "$commit" =~ ^[0-9a-f]{40}$ ]]
+          gh api "repos/$GH_REPO/git/commits/$commit" > results/source-git-commit.json
+          python3 .github/scripts/verify_retained_ci.py results/source-run.json retained/.artifacts/ci-test-failure/commit.txt results/source-git-commit.json
       - name: Build and record executable inputs
         id: inputs
         env:
@@ -94,10 +100,6 @@ jobs:
               raise RuntimeError('No installed matching runtime; see results/runtime.txt')
           version, root = matches[-1]
           if os.environ['SOURCE_RUN']:
-              source = json.loads(Path('results/source-run.json').read_text())
-              commit = Path('retained/.artifacts/ci-test-failure/commit.txt').read_text().strip()
-              if source['head_sha'] != commit or source['path'] != '.github/workflows/ci.yml':
-                  raise RuntimeError('Retained commit does not match the selected CI run')
               original = Path('retained/.artifacts/ci-test-failure/runtime.txt').read_text()
               versions = re.findall(r'^  Microsoft.NETCore.App (' + major + r'\.\S+) ', original, re.MULTILINE)
               if not versions:
@@ -161,6 +163,8 @@ jobs:
             profiler-sdk/core/profiling/
             .github/scripts/read_native_allocations.py
             .github/scripts/test_native_allocations.py
+            .github/scripts/verify_retained_ci.py
+            .github/scripts/test_verify_retained_ci.py
             .github/workflows/concurrent-allocation-owners.yml
             tests/Shared/ConcurrentReceiveFixture.cs
             Directory.Build.props
