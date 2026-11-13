@@ -117,6 +117,7 @@ public class AmazonTerraformTests
         var services = new ServiceCollection();
         services.AddRelayer(builder => builder.AmazonSqs("sqs", transport => transport.Options.Configure(options =>
         {
+            options.Sqs.RegionEndpoint = Amazon.RegionEndpoint.EUWest1;
             options.Queues.Add(new("dead"));
             options.Queues.Add(new("live") { Attributes = new() { ["RedrivePolicy"] = "{\"deadLetterTargetArn\":\"arn:aws:sqs:eu-west-1:123456789012:dead\",\"maxReceiveCount\":5}" } });
         })));
@@ -198,7 +199,13 @@ public class AmazonTerraformTests
     private static ServiceProvider Create(Action<AmazonSnsTransportOptions> configure)
     {
         var services = new ServiceCollection();
-        services.AddRelayer(builder => builder.AmazonSns("sns", transport => transport.Options.Configure(configure)));
+        services.AddRelayer(builder => builder.AmazonSns("sns", transport => transport.Options.Configure(options =>
+        {
+            // Keep fixtures independent of the host's AWS region resolution chain.
+            options.Sns.RegionEndpoint = Amazon.RegionEndpoint.EUWest1;
+            options.QueueTopology.Sqs.RegionEndpoint = Amazon.RegionEndpoint.EUWest1;
+            configure(options);
+        })));
         return services.BuildServiceProvider();
     }
     private static string Export(ServiceProvider provider)
