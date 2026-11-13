@@ -106,6 +106,47 @@ public class MessageTypeGeneratorTests
         }
     }
 
+    [Test]
+    [Arguments("public sealed record Order<T>(T Value);", "Order<T>")]
+    [Arguments("public class Container<T> { [Relayer.Message(\"invalid\")] public sealed record Order(int Value); }", "Container<T>.Order")]
+    [Arguments("public class Outer<T> { public class Inner { [Relayer.Message(\"invalid\")] public sealed record Order(int Value); } }", "Outer<T>.Inner.Order")]
+    public async Task Open_generic_messages_report_diagnostic_without_emitting_invalid_references(string declaration, string typeName)
+    {
+        var source = (declaration.StartsWith("public sealed", StringComparison.Ordinal)
+            ? "[Relayer.Message(\"invalid\")] " : "") + declaration + """
+
+            [Relayer.Message("concrete")]
+            public sealed record Concrete(int Value);
+            """;
+        var references = ((string)AppContext.GetData("TRUSTED_PLATFORM_ASSEMBLIES")!)
+            .Split(Path.PathSeparator).Select(static p => MetadataReference.CreateFromFile(p)).ToList();
+        references.Add(MetadataReference.CreateFromFile(typeof(MessageAttribute).Assembly.Location));
+        var tree = CSharpSyntaxTree.ParseText(source);
+        var compilation = CSharpCompilation.Create("GenericMessageConsumer", [tree], references,
+            new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
+
+        GeneratorDriver driver = CSharpGeneratorDriver.Create(new MessageTypeGenerator());
+        driver = driver.RunGeneratorsAndUpdateCompilation(compilation, out var output, out var diagnostics);
+
+        await Assert.That(diagnostics.Length).IsEqualTo(1);
+        var diagnostic = diagnostics[0];
+        await Assert.That(diagnostic.Id).IsEqualTo("RLYM001");
+        await Assert.That(diagnostic.Severity).IsEqualTo(DiagnosticSeverity.Error);
+        await Assert.That(diagnostic.Location.SourceTree).IsEqualTo(tree);
+        await Assert.That(tree.GetText().ToString(diagnostic.Location.SourceSpan)).Contains("record Order");
+        await Assert.That(diagnostic.GetMessage()).Contains(typeName);
+        await Assert.That(diagnostic.Descriptor.HelpLinkUri)
+            .IsEqualTo("https://relayer.tomlonghurst.dev/docs/reference/diagnostics#rlym001");
+        await Assert.That(string.Join("\n", output.GetDiagnostics().Where(d => d.Severity == DiagnosticSeverity.Error)))
+            .IsEqualTo("");
+        var generated = string.Join("\n", driver.GetRunResult().GeneratedTrees.Select(t => t.ToString()));
+        await Assert.That(generated).DoesNotContain(typeName);
+        await Assert.That(generated).Contains("Add<global::Concrete>(\"concrete\", 1)");
+        await Assert.That(generated).Contains("typeof(global::Concrete)");
+        using var image = new MemoryStream();
+        await Assert.That(output.Emit(image).Success).IsTrue();
+    }
+
     private sealed class CompetingGeneratorLoadContext(byte[] competingImage) : AssemblyLoadContext
     {
         protected override Assembly? Load(AssemblyName assemblyName) =>

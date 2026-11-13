@@ -1,6 +1,6 @@
 ---
 title: Diagnostics
-description: "Compile-time analyzers RLY001 to RLY004 and generator error RLYH001: what each reports and how to fix it."
+description: "Compile-time analyzers RLY001 to RLY004 and generator errors RLYH001 and RLYM001: what each reports and how to fix it."
 ---
 
 Relayer ships compile-time analyzers and an IDE code fix in its NuGet package. They inspect symbols, not naming conventions, and add no runtime work. Startup validation still checks the complete configuration, including declarations assembled through helpers or other assemblies.
@@ -13,6 +13,7 @@ Relayer ships compile-time analyzers and an IDE code fix in its NuGet package. T
 | [RLY004](#rly004) | Warning | An inline consumer configuration has no handler. |
 | [RLYM002](#rlym002) | Error | A declared message type is inaccessible to generated registration and JSON metadata. |
 | [RLYH001](#rlyh001) | Error | A handler message type is inaccessible to generated dispatch. |
+| [RLYM001](#rlym001) | Error | A message declaration has type parameters on itself or a containing type. |
 
 ## RLY001
 
@@ -69,3 +70,7 @@ A `[Message]` declaration must be accessible from the generated assembly-wide re
 ## Suppression and generated code
 
 Use `dotnet_diagnostic.<ID>.severity` in `.editorconfig`, or a targeted `#pragma warning disable <ID>` for intentionally invalid test fixtures. Generated code is excluded. Diagnostics run concurrently, with all mutable state scoped to one compilation.
+
+## RLYM001
+
+`[Message]` requires a concrete, non-generic declaration outside generic containing types. An open generic message such as `Order<T>`, or even a non-generic message nested inside `Container<T>`, cannot be referenced from generated registration and JSON metadata. Declare a concrete contract such as `OrderPlaced` at namespace scope or inside a non-generic containing type. The generator reports this error at the unsupported declaration and excludes it from both generated outputs; other valid messages still generate normally.

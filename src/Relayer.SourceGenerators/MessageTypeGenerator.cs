@@ -21,6 +21,12 @@ public sealed class MessageTypeGenerator : IIncrementalGenerator
         "Relayer", DiagnosticSeverity.Error, isEnabledByDefault: true,
         helpLinkUri: "https://relayer.tomlonghurst.dev/docs/reference/diagnostics#rlym002");
 
+    private static readonly DiagnosticDescriptor OpenGenericMessage = new(
+        "RLYM001", "Message declaration has unbound type parameters",
+        "Message '{0}' has type parameters on itself or a containing type. Declare a concrete, non-generic message outside generic containing types.",
+        "Relayer", DiagnosticSeverity.Error, isEnabledByDefault: true,
+        helpLinkUri: "https://relayer.tomlonghurst.dev/docs/reference/diagnostics#rlym001");
+
     public void Initialize(IncrementalGeneratorInitializationContext context)
     {
         var declarations = context.SyntaxProvider
@@ -38,8 +44,12 @@ public sealed class MessageTypeGenerator : IIncrementalGenerator
                 spc.ReportDiagnostic(Diagnostic.Create(InaccessibleMessage,
                     Location.Create(location.FilePath, location.Span, location.LineSpan), model.FullyQualifiedName));
             }
+            if (model.OpenGenericLocation is { } location)
+            {
+                spc.ReportDiagnostic(Diagnostic.Create(OpenGenericMessage, location, model.FullyQualifiedName));
+            }
         });
-        var messages = declarations.Where(static m => m.InaccessibleLocation is null).Collect();
+        var messages = declarations.Where(static m => m.OpenGenericLocation is null && m.InaccessibleLocation is null).Collect();
 
         context.RegisterSourceOutput(messages, static (spc, models) => Emit(spc, models));
         context.RegisterSourceOutput(messages.Combine(context.CompilationProvider),
@@ -57,7 +67,7 @@ public sealed class MessageTypeGenerator : IIncrementalGenerator
         {
             var location = context.TargetNode.GetLocation();
             return new MessageModel(type.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat), "", 1,
-                new DiagnosticLocation(location.GetLineSpan().Path, location.SourceSpan, location.GetLineSpan().Span));
+                InaccessibleLocation: new DiagnosticLocation(location.GetLineSpan().Path, location.SourceSpan, location.GetLineSpan().Span));
         }
 
         var attribute = context.Attributes[0];
@@ -76,7 +86,16 @@ public sealed class MessageTypeGenerator : IIncrementalGenerator
         }
 
         var fullyQualifiedName = type.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
-        return new MessageModel(fullyQualifiedName, name, version);
+        Location? openGenericLocation = null;
+        for (var current = type; current is not null; current = current.ContainingType)
+        {
+            if (current.Arity != 0)
+            {
+                openGenericLocation = context.TargetNode.GetLocation();
+                break;
+            }
+        }
+        return new MessageModel(fullyQualifiedName, name, version, openGenericLocation);
     }
 
     private static void Emit(SourceProductionContext context, ImmutableArray<MessageModel> models)
@@ -175,7 +194,7 @@ public sealed class MessageTypeGenerator : IIncrementalGenerator
 
     private static string Escape(string value) => value.Replace("\\", "\\\\").Replace("\"", "\\\"");
 
-    private sealed record MessageModel(string FullyQualifiedName, string Name, int Version, DiagnosticLocation? InaccessibleLocation = null);
+    private sealed record MessageModel(string FullyQualifiedName, string Name, int Version, Location? OpenGenericLocation = null, DiagnosticLocation? InaccessibleLocation = null);
 
     private sealed record DiagnosticLocation(string FilePath, TextSpan Span, LinePositionSpan LineSpan);
 }

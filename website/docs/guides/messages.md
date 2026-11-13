@@ -14,6 +14,8 @@ public sealed record ChargeCard(Guid OrderId, decimal Amount);
 
 On the wire this becomes the CloudEvents type `billing.charge-card;v=2`. Renaming or moving the class never breaks consumers. Names are case-sensitive and the default version is 1. Two types cannot declare the same name and version; analyzer [RLY002](../reference/diagnostics.md#rly002) reports the conflict at compile time and startup validation checks referenced assemblies too.
 
+`[Message]` declarations must be concrete and non-generic, and any containing types must also be non-generic. Generator error [RLYM001](../reference/diagnostics.md#rlym001) identifies unsupported open generic declarations; declare a concrete contract such as `OrderPlaced` instead.
+
 Register message types explicitly, or with the source-generated method that lists every `[Message]` type in the assembly:
 
 ```csharp
