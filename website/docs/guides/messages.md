@@ -16,6 +16,8 @@ On the wire this becomes the CloudEvents type `billing.charge-card;v=2`. Renamin
 
 `[Message]` declarations must be concrete and non-generic, and any containing types must also be non-generic. Generator error [RLYM001](../reference/diagnostics.md#rlym001) identifies unsupported open generic declarations; declare a concrete contract such as `OrderPlaced` instead.
 
+Generated registration preserves the exact name, including C# escape sequences such as `\n`, `\r`, `\u2028`, quotes, and backslashes. These characters remain part of the wire identity; generation does not normalize names.
+
 Register message types explicitly, or with the source-generated method that lists every `[Message]` type in the assembly:
 
 ```csharp

@@ -128,9 +128,9 @@ public sealed class MessageTypeGenerator : IIncrementalGenerator
         {
             builder.Append("            builder.MessageTypes.Add<")
                 .Append(model.FullyQualifiedName)
-                .Append(">(\"")
-                .Append(Escape(model.Name))
-                .Append("\", ")
+                .Append(">(")
+                .Append(SymbolDisplay.FormatLiteral(model.Name, quote: true))
+                .Append(", ")
                 .Append(model.Version)
                 .AppendLine(");");
         }
@@ -195,8 +195,6 @@ public sealed class MessageTypeGenerator : IIncrementalGenerator
         !type.IsFileLocal
         && compilation.IsSymbolAccessibleWithin(type, compilation.Assembly)
         && (type.ContainingType is null || CanReference(type.ContainingType, compilation));
-
-    private static string Escape(string value) => value.Replace("\\", "\\\\").Replace("\"", "\\\"");
 
     private sealed record MessageModel(string FullyQualifiedName, string Name, int Version, DiagnosticLocation? OpenGenericLocation = null, DiagnosticLocation? InaccessibleLocation = null);
 
