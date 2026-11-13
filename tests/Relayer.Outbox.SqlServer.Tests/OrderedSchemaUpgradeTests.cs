@@ -51,7 +51,7 @@ public sealed class OrderedSchemaUpgradeTests(SqlServerFixture database)
     public async Task Explicit_upgrade_preserves_historical_UUID_order_and_continues_native_sequence()
     {
         // Exercise both identifier and SQL literal escaping through the dynamic migration batches.
-        var options = new SqlServerOutboxOptions { TablePrefix = "m_]'" + Guid.NewGuid().ToString("N") + "_" };
+        var options = new SqlServerOutboxOptions { TablePrefix = "m_]'" + TestContext.Current!.Isolation.GetIsolatedName("upgrade") + "_" };
         var table = SqlServerOutboxSchema.Table(options);
         await using var connection = new SqlConnection(database.ConnectionString);
         await connection.OpenAsync();

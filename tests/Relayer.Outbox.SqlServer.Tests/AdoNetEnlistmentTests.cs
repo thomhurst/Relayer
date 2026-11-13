@@ -472,7 +472,7 @@ public class AdoNetEnlistmentTests(SqlServerFixture fixture)
     {
         private readonly string _name = TestContext.Current!.Isolation.GetIsolatedName("ado");
         private bool _created;
-        internal SqlServerOutboxOptions Options { get; } = new() { Schema = "ADO]" + Guid.NewGuid().ToString("N"), TablePrefix = "t_" + Guid.NewGuid().ToString("N") + "_", Lanes = 8 };
+        internal SqlServerOutboxOptions Options { get; } = new() { Schema = "ADO]" + TestContext.Current!.Isolation.GetIsolatedName("schema"), TablePrefix = TestContext.Current!.Isolation.GetIsolatedName("ado") + "_", Lanes = 8 };
         internal string Table => "[" + Options.Schema!.Replace("]", "]]") + "].[" + Options.TablePrefix + "outbox]";
         internal string BatchLog => "[" + Options.Schema!.Replace("]", "]]") + "].[" + Options.TablePrefix + "batch_log]";
         internal string Business => "[" + Options.Schema!.Replace("]", "]]") + "].[" + Options.TablePrefix + "business]";

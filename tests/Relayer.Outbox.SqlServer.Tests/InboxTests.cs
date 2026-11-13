@@ -223,7 +223,7 @@ public class InboxTests(SqlServerFixture server) : InboxContractTests
 
     private sealed class Database(string connectionString) : InboxFixture
     {
-        internal string Prefix { get; } = "inbox_" + Guid.NewGuid().ToString("N") + "_";
+        internal string Prefix { get; } = TestContext.Current!.Isolation.GetIsolatedName("inbox") + "_";
         internal string ConnectionString => connectionString;
         internal SqlServerOutboxOptions Options => new() { TablePrefix = Prefix };
         internal string Table(string name) => $"[dbo].[{Prefix}{name}]";
