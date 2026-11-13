@@ -45,13 +45,14 @@ def executable(root, scoped, method="ScopeOnly"):
 
 def result(text):
     gc = re.findall(r"^// GC: +(\d+) +(\d+) +(\d+) +(\d+) +(\d+)\s*$", text, re.M)
-    samples = re.findall(r"^WorkloadResult +\d+: +\d+ op, +[0-9.]+ ns, +([0-9.]+) ns/op\s*$", text, re.M)
+    samples = re.findall(r"^WorkloadResult +\d+: +\d+ op, +[0-9.]+ ns, +([0-9.]+) (ns|us|µs|μs|ms|s)/op\s*$", text, re.M)
     if len(gc) != 1 or len(re.findall(r"^// GC:", text, re.M)) != 1 or not samples or len(re.findall(r"^// AfterAll\s*$", text, re.M)) != 1:
         raise ValueError("Incomplete or ambiguous native results")
     gen0, gen1, gen2, allocated, operations = map(int, gc[0])
     if operations <= 0:
         raise ValueError("Expected positive native operation count")
-    values = list(map(float, samples))
+    scales = {"ns": 1, "us": 1_000, "µs": 1_000, "μs": 1_000, "ms": 1_000_000, "s": 1_000_000_000}
+    values = [float(value) * scales[unit] for value, unit in samples]
     return {"collections": [gen0, gen1, gen2], "allocatedBytes": allocated,
             "operations": operations, "bytesPerOperation": allocated / operations,
             "workloadResultNs": values, "meanNs": statistics.mean(values)}
