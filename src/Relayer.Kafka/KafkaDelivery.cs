@@ -2,13 +2,58 @@ using System.Buffers;
 using System.Diagnostics;
 using System.Text;
 using Dekaf.Consumer;
+using Dekaf.Serialization;
 
 namespace Relayer.Kafka;
 
 /// <summary>A borrowed Kafka record, valid only while the receive callback runs.</summary>
-public readonly record struct KafkaDelivery(ConsumeResult<byte[], byte[]> Result, string PartitionId);
+public readonly record struct KafkaDelivery
+{
+    private readonly ConsumeResult<byte[], byte[]> _result;
+    private readonly IReadOnlyList<Header>? _headers;
 
-/// <summary>Reads the native Kafka binary CloudEvents binding. Header snapshots follow native client ownership.</summary>
+    /// <summary>Creates a borrowed delivery with one native header view shared by its copies.</summary>
+    public KafkaDelivery(ConsumeResult<byte[], byte[]> Result, string PartitionId)
+    {
+        _result = Result;
+        _headers = Result.Headers;
+        this.PartitionId = PartitionId;
+    }
+
+    /// <summary>The untouched native record.</summary>
+    public ConsumeResult<byte[], byte[]> Result
+    {
+        get => _result;
+        init
+        {
+            _result = value;
+            // A with-expression replacing the record must also replace its header view.
+            _headers = value.Headers;
+        }
+    }
+
+    /// <summary>The native partition identifier.</summary>
+    public string PartitionId { get; init; }
+
+    internal IReadOnlyList<Header> Headers => _headers ?? Array.Empty<Header>();
+
+    /// <summary>Deconstructs the native record and partition identifier.</summary>
+    public void Deconstruct(out ConsumeResult<byte[], byte[]> Result, out string PartitionId)
+        => (Result, PartitionId) = (this.Result, this.PartitionId);
+
+    // The shared native view is an implementation detail, not part of delivery identity.
+    /// <inheritdoc />
+    public bool Equals(KafkaDelivery other)
+        => EqualityComparer<ConsumeResult<byte[], byte[]>>.Default.Equals(Result, other.Result)
+            && EqualityComparer<string>.Default.Equals(PartitionId, other.PartitionId);
+
+    /// <inheritdoc />
+    public override int GetHashCode()
+        => unchecked(EqualityComparer<ConsumeResult<byte[], byte[]>>.Default.GetHashCode(Result) * -1521134295
+            + EqualityComparer<string>.Default.GetHashCode(PartitionId!));
+}
+
+/// <summary>Reads the native Kafka binary CloudEvents binding using one safe native header snapshot and the borrowed body.</summary>
 public readonly struct KafkaMessageBinding : IMessageBinding<KafkaDelivery>
 {
     /// <inheritdoc />
@@ -24,7 +69,7 @@ public readonly struct KafkaMessageBinding : IMessageBinding<KafkaDelivery>
     /// <inheritdoc />
     public static bool TryGetHeader(KafkaDelivery message, string name, out WireString value)
     {
-        var headers = message.Result.Headers;
+        var headers = message.Headers;
         for (var i = 0; i < headers.Count; i++)
         {
             if (headers[i].Key != name) continue;
