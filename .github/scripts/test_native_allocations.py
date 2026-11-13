@@ -72,6 +72,16 @@ class WindowAllocationReportTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "window boundaries"):
             read_rows(rows)
 
+    def test_checkpoint_caller_thread_is_positive_and_preserved(self):
+        for caller in (0, -1, True, "7"):
+            rows = self.rows()
+            rows[1]["callerThread"] = caller
+            with self.assertRaisesRegex(ValueError, "checkpoint caller"):
+                read_rows(rows)
+        rows = self.rows()
+        rows[1]["callerThread"] = 7
+        self.assertEqual(read_rows(rows)["windows"][0]["callerThread"], 7)
+
     def test_wrong_type_window(self):
         rows = self.rows()
         rows[0]["index"] = 1
@@ -147,6 +157,9 @@ class NativeAllocationFixtureTests(unittest.TestCase):
                 self.assertEqual(sum(row["objects"] for row in rows), 1024)
                 self.assertEqual(sum(row["bytes"] for row in rows), 1024 * 24)
                 self.assertEqual(len({row["thread"] for row in rows}), 4 if index == 0 else 1)
+                caller = actual["windows"][index]["callerThread"]
+                self.assertGreater(caller, 0)
+                self.assertEqual({row["thread"] == caller for row in rows}, {False} if index == 0 else {True})
                 for row in rows:
                     self.assertTrue(any("g__FillRange|" in snapshot["frames"][frame] for frame in row["frames"]), row)
 

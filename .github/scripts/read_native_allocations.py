@@ -45,6 +45,8 @@ def validate_windows(rows, coverage, types):
     for index, window in enumerate(windows):
         if window["mode"] != index % 3 or type(window["measured"]) is not int or window["measured"] < 0:
             raise ValueError("Invalid window mode or measured counter")
+        if "callerThread" in window and (type(window["callerThread"]) is not int or window["callerThread"] <= 0):
+            raise ValueError("Invalid checkpoint caller thread")
         entries = []
         while cursor < len(rows) and rows[cursor]["kind"] == "window-type":
             entry = rows[cursor]

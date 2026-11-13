@@ -19,7 +19,7 @@ std::mutex gate;
 bool initialized = false, active = false, begun = false;
 unsigned long long failures = 0;
 std::map<ClassID, Count> counts;
-struct Window { long long measured; std::map<ClassID, Count> counts; };
+struct Window { long long measured; ThreadID caller; std::map<ClassID, Count> counts; };
 std::vector<Window> windows;
 bool windowsCompleted = false;
 std::map<ClassID, Count> previousCounts;
@@ -396,7 +396,7 @@ int writeReport()
                    << "\",\"objects\":" << entry.second.objects << ",\"bytes\":" << entry.second.bytes << "}\n";
         }
         output << "{\"kind\":\"window\",\"index\":" << index << ",\"mode\":" << index % 3
-               << ",\"measured\":" << window.measured << ",\"objects\":" << objects << ",\"bytes\":" << bytes << "}\n";
+               << ",\"callerThread\":" << window.caller << ",\"measured\":" << window.measured << ",\"objects\":" << objects << ",\"bytes\":" << bytes << "}\n";
     }
     unsigned long long objects = 0, bytes = 0;
     for (const auto& entry : counts) {
@@ -448,7 +448,12 @@ extern "C" __attribute__((visibility("default"))) int CheckpointAllocationRegion
         ++failures;
         return 0;
     }
-    Window window{measured, {}};
+    ThreadID caller = 0;
+    if (FAILED(info->GetCurrentThreadID(&caller)) || !caller) {
+        ++failures;
+        return 0;
+    }
+    Window window{measured, caller, {}};
     for (const auto& entry : counts) {
         auto previous = previousCounts.find(entry.first);
         const auto objects = entry.second.objects - (previous == previousCounts.end() ? 0 : previous->second.objects);

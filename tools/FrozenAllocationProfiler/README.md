@@ -234,3 +234,17 @@ The pinned .NET 11 `GetClassIDInfo2` implementation returns
 stack alone does not prove that was this call’s HRESULT. Class-lookup failures
 therefore log the exact HRESULT, ClassID and returned argument count for the
 next diagnostic execution. The readers still reject incomplete reports.
+
+Run 43462634362 confirmed three `GetClassIDInfo2` failures with HRESULT
+`0x80131351` (`CORPROF_E_DATAINCOMPLETE`), and retained ten failed snapshots.
+Its five excess counter windows still have incomplete global coverage; they do
+not establish a production or runtime defect. Checkpoint records now include
+`callerThread`, obtained through the CLR's `GetCurrentThreadID` outside the
+fixture's thread-counter windows. It uses the same CLR ID as allocation-stack
+rows, so subsequent captures can distinguish callbacks on the checkpoint caller
+from unrelated parallel threads without guessing from stack names. This does not
+identify the dedicated completion worker, narrow the capture interval, or equate
+object sizes with thread-counter bytes. Old retained reports without this field
+remain readable; a present invalid ID fails validation. The native known-count
+fixture checks that worker allocations differ from this ID and caller allocations
+match it. Metadata and snapshot failures continue to reject the whole report.
