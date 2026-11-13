@@ -174,6 +174,8 @@ public class HandlerGeneratorTests
         GeneratorDriver driver = CSharpGeneratorDriver.Create(new HandlerGenerator());
         driver = driver.RunGeneratorsAndUpdateCompilation(compilation, out var output, out var diagnostics);
         await Assert.That(diagnostics.Single().Id).IsEqualTo("RLYH001");
+        await Assert.That(diagnostics.Single().Descriptor.HelpLinkUri)
+            .IsEqualTo("https://relayer.tomlonghurst.dev/docs/reference/diagnostics#rlyh001");
         await Assert.That(diagnostics.Single().GetMessage()).Contains("Make the message type assembly-accessible");
         await Assert.That(output.GetDiagnostics().Any(d => d.Severity == DiagnosticSeverity.Error)).IsFalse();
     }
