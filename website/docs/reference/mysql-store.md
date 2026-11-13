@@ -224,8 +224,11 @@ It uses native `SendAsync`/`SendBatchAsync`, preserving message identity, bytes 
 Each due unordered row receives a fresh expiring claim token through native conditional updates.
 Claim and completion commands use `MySqlBatch`, including native `ROW_COUNT()` results for exact
 per-command outcomes. A successful broker send deletes only rows whose token still matches and
-whose claim has not expired. A broker failure records the error and increments attempts; a
-completion error after a successful send leaves attempts unchanged. An expired or interrupted
+whose claim has not expired. After the native client finishes its own send retries, a broker failure
+records the error and a durable exponential retry deadline in `deliver_at`: 1 second, 2 seconds,
+4 seconds, up to 5 minutes. The diagnostic attempt count saturates at 30. Native send errors do
+not exhaust `MaxDispatchAttempts` or move rows to dead storage. A completion error after a successful
+send leaves attempts unchanged. An expired or interrupted
 send may be delivered again: this is at-least-once delivery, not an atomic broker/database commit.
 Size `ClaimDuration` for the slowest expected database and broker operation.
 
@@ -272,8 +275,11 @@ lease and request cancellation after half a lease; native completion is awaited 
 ownership, including shutdown. Size leases for expected send and database latency.
 
 A future-due or live-claimed head blocks later rows. Database due checks remove `deliver_at`
-from the native send. Failures persist attempts and errors, commit a successful prefix and retry
-on later scans. At `MaxDispatchAttempts`, the original row parks with its sequence intact;
+from the native send. Native send failures persist attempts, errors and the same exponential retry
+deadline as direct dispatch, and commit a successful prefix. They never park a row. Until its deadline,
+a retrying head stalls its lane, including other keys. Preparation failures such as missing transports,
+unsupported ordering and malformed rows retain the poison budget. At `MaxDispatchAttempts`,
+the original row parks with its sequence intact;
 only later rows for that exact key are blocked, while other keys continue. Malformed headers and
 empty required routing fields also consume attempts and park the original raw row. Inspect and repair
 parked rows through application-owned SQL. Resume by updating the original row to
@@ -345,7 +351,8 @@ Each bounded recovery pass selects due, old-enough **unordered** pending rows wi
 A fixed upper UUID boundary ensures failed, scheduled and previously claimed rows are revisited
 while new rows keep arriving. Ordered lanes and parked barriers stay untouched. The existing
 direct dispatcher performs native sends and fenced completion; there is no second sender.
-Native send failures consume attempts; failed completion after a successful send does not.
+Native send failures use the durable backoff above and remain pending regardless of
+`MaxDispatchAttempts`; failed completion after a successful send does not consume attempts.
 Expired claims and an unknown broker outcome can duplicate delivery, as with direct dispatch.
 
 Malformed headers or empty routing fields are copied **raw** to dead storage under a live claim,
@@ -357,8 +364,17 @@ limit records the outbox poison counter once.
 
 Unordered recovery records `relayer.outbox.dead_lettered` and decrements
 `relayer.outbox.pending` only after the fenced transaction commits a poison deletion.
-This includes exhausted native sends, invalid transport destinations and malformed-row
-quarantine. Retries, stale claims and rolled-back transitions do not change these counters.
+This includes invalid transport destinations and malformed-row quarantine. Retries, stale claims and
+rolled-back transitions do not change these counters.
+
+All native send exceptions are retried indefinitely, including a permanent broker rejection, because
+native batch errors do not supply a portable per-row permanent classification. A failed native batch
+applies backoff to every claimed row in that batch; partial acceptance can duplicate delivery on retry.
+Inspect persistent errors and repair routing, payloads or broker configuration through application-owned
+SQL. `MaxDispatchAttempts` governs explicit `RecordFailureAsync` calls and preparation failures,
+including prior diagnostic send attempts: a preparation error after a long outage may exhaust that
+budget immediately. Reset `attempts` when repairing such a row. Clearing `deliver_at` makes a repaired
+row eligible immediately; otherwise its persisted deadline survives process restarts and worker changes.
 
 Cleanup deletes at most `BatchSize` expired dead rows and `BatchSize` expired inbox keys per pass,
 using database UTC time and the `failed_at` / `processed_at` indexes. Pending rows, parked ordered

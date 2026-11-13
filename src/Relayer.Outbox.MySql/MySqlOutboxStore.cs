@@ -20,6 +20,7 @@ public sealed class MySqlOutboxStore : IOutboxStore, IDisposable
     private readonly MySqlStoreParameters _renew;
     private readonly MySqlStoreParameters _complete;
     private readonly MySqlStoreParameters _fail;
+    private readonly MySqlStoreParameters _retry;
     private readonly MySqlStoreParameters _count;
     private readonly MySqlDispatchMutations _claimBatch;
     private readonly MySqlDispatchMutations _completeBatch;
@@ -43,6 +44,7 @@ public sealed class MySqlOutboxStore : IOutboxStore, IDisposable
         _claim = new($"UPDATE {table} SET claim_token = @token, claim_expires_at = @expires WHERE id = @id AND {eligible}");
         _renew = new($"UPDATE {table} SET claim_expires_at = GREATEST(claim_expires_at, @expires) WHERE {fenced}");
         _complete = new($"DELETE FROM {table} WHERE {fenced}");
+        _retry = new(MySqlRetrySql.Update(table, fenced, "@now"));
         _fail = new($"UPDATE {table} SET attempts=attempts+1,last_error=@error WHERE {fenced}");
         _failureSql = $"""
             REPLACE INTO {dead} (id,lane,ordering_key,transport,destination,message_type,headers,body,created_at,deliver_at,attempts,last_error,tenant_id,failed_at)
@@ -172,6 +174,16 @@ public sealed class MySqlOutboxStore : IOutboxStore, IDisposable
 
     internal ValueTask<FailureOutcome> RecordDispatchFailureAsync(OutboxClaim claim, string error, DateTimeOffset now,
         CancellationToken cancellationToken) => FailAsync(claim, error, now, _failureLimit, cancellationToken);
+
+    // Native send failures remain pending, independently of the explicit poison budget.
+    internal ValueTask<bool> RecordRetryAsync(OutboxClaim claim, string error, DateTimeOffset now,
+        CancellationToken cancellationToken)
+    {
+        Validate(claim);
+        ArgumentNullException.ThrowIfNull(error);
+        _retry.Command.Parameters["error"].Value = error;
+        return MutateAsync(_retry, claim, now, cancellationToken);
+    }
 
     // Only returned after the native transaction commits; stale claims and rollback have no terminal outcome.
     internal readonly record struct FailureOutcome(bool Accepted, bool Removed)
@@ -317,6 +329,7 @@ public sealed class MySqlOutboxStore : IOutboxStore, IDisposable
         _renew.Command.Dispose();
         _complete.Command.Dispose();
         _fail.Command.Dispose();
+        _retry.Command.Dispose();
         _count.Command.Dispose();
         _claimBatch.Dispose();
         _completeBatch.Dispose();

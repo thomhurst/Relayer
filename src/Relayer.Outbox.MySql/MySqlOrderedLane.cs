@@ -12,6 +12,7 @@ internal sealed class MySqlOrderedLane : IDisposable
     private readonly MySqlStoreParameters _claim;
     private readonly MySqlStoreParameters _complete;
     private readonly MySqlStoreParameters _fail;
+    private readonly MySqlStoreParameters _retry;
 
     internal MySqlOrderedLane(MySqlDataSource source, MySqlOutboxOptions options, TimeSpan duration, int maxAttempts)
     {
@@ -25,6 +26,7 @@ internal sealed class MySqlOrderedLane : IDisposable
         _claim = new($"UPDATE {table} SET claim_token = @token, claim_expires_at = TIMESTAMPADD(MICROSECOND, @duration, UTC_TIMESTAMP(6)) WHERE id = @id AND status = 'pending' AND (deliver_at IS NULL OR deliver_at <= UTC_TIMESTAMP(6)) AND (claim_expires_at IS NULL OR claim_expires_at <= UTC_TIMESTAMP(6))");
         _claim.Command.Parameters.AddWithValue("duration", duration.Ticks / 10);
         _complete = new($"DELETE FROM {table} WHERE {fenced}");
+        _retry = new(MySqlRetrySql.Update(table, fenced, "UTC_TIMESTAMP(6)"));
         _fail = new($"UPDATE {table} SET status = IF(attempts + 1 >= @maximum, 'parked', 'pending'), attempts = attempts + 1, last_error = @error, claim_token = NULL, claim_expires_at = NULL WHERE {fenced}");
         _fail.Command.Parameters.AddWithValue("maximum", maxAttempts);
     }
@@ -73,6 +75,9 @@ internal sealed class MySqlOrderedLane : IDisposable
     internal ValueTask<bool> FailAsync(MySqlConnection connection, MySqlTransaction transaction, OutboxClaim claim,
         string error, CancellationToken cancellationToken) => MutateAsync(connection, transaction, _fail, claim, error, cancellationToken);
 
+    internal ValueTask<bool> RetryAsync(MySqlConnection connection, MySqlTransaction transaction, OutboxClaim claim,
+        string error, CancellationToken cancellationToken) => MutateAsync(connection, transaction, _retry, claim, error, cancellationToken);
+
     [RuntimeAsyncMethodGeneration(false)]
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder<>))]
     private static async ValueTask<bool> MutateAsync(MySqlConnection connection, MySqlTransaction transaction,
@@ -90,6 +95,6 @@ internal sealed class MySqlOrderedLane : IDisposable
     public void Dispose()
     {
         _reader.Dispose(); _read.Command.Dispose(); _ready.Command.Dispose();
-        _claim.Command.Dispose(); _complete.Command.Dispose(); _fail.Command.Dispose();
+        _claim.Command.Dispose(); _complete.Command.Dispose(); _fail.Command.Dispose(); _retry.Command.Dispose();
     }
 }

@@ -136,18 +136,23 @@ internal sealed partial class MySqlOrderedDispatcher : BackgroundService
                 var row = _rows[index];
                 var claim = new OutboxClaim(row.Id, Guid.NewGuid());
                 if (!await _lane.ClaimAsync(connection, transaction, claim, cancellationToken).ConfigureAwait(false)) break;
+                var sending = false;
                 try
                 {
                     if (row.TransportName.Length == 0) throw new InvalidDataException(row.LastError);
                     var prepared = Prepare(row, _transports, _capabilities);
                     _instrumentation?.RecordOutboxDispatchLag(_timeProvider.GetUtcNow() - row.CreatedAt);
+                    sending = true;
                     await prepared.Transport.SendAsync(prepared.Message, cancellationToken).ConfigureAwait(false);
                 }
                 catch (Exception error) when (!cancellationToken.IsCancellationRequested)
                 {
-                    if (!await _lane.FailAsync(connection, transaction, claim, error.Message, cancellationToken).ConfigureAwait(false))
+                    var recorded = sending
+                        ? await _lane.RetryAsync(connection, transaction, claim, error.Message, cancellationToken).ConfigureAwait(false)
+                        : await _lane.FailAsync(connection, transaction, claim, error.Message, cancellationToken).ConfigureAwait(false);
+                    if (!recorded)
                         throw new InvalidOperationException("Ordered outbox claim expired while recording a dispatch failure.", error);
-                    poisoned = row.Attempts + 1 >= _options.MaxDispatchAttempts;
+                    poisoned = !sending && row.Attempts + 1 >= _options.MaxDispatchAttempts;
                     DispatchFailed(_logger, error);
                     break;
                 }
