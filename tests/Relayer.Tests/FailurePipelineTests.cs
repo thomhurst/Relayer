@@ -473,26 +473,29 @@ public class FailurePipelineTests
         var scopes = provider.GetRequiredService<IServiceScopeFactory>();
         for (var i = 0; i < 1000; i++)
         {
-            await pipeline.ProcessAsync(incoming);
-            var scope = new AsyncServiceScope(scopes.CreateScope());
-            _ = scope.ServiceProvider.GetRequiredService<Handler>();
-            _ = serializer.Deserialize<Payload>(new(incoming.Body));
-            await scope.DisposeAsync();
+            ProcessSynchronously(pipeline, incoming);
+            NativeSynchronously(scopes, serializer, incoming);
         }
         var start = GC.GetAllocatedBytesForCurrentThread();
         // The pooled attempt sender is attached without any DI disposal bookkeeping, so it is absent here.
-        for (var i = 0; i < 1000; i++)
+        for (var i = 0; i < 1000; i++) NativeSynchronously(scopes, serializer, incoming);
+        var nativeBytes = GC.GetAllocatedBytesForCurrentThread() - start;
+        start = GC.GetAllocatedBytesForCurrentThread();
+        for (var i = 0; i < 1000; i++) ProcessSynchronously(pipeline, incoming);
+        var pipelineBytes = GC.GetAllocatedBytesForCurrentThread() - start;
+        await Assert.That(pipelineBytes).IsEqualTo(nativeBytes);
+
+        static void NativeSynchronously(IServiceScopeFactory scopes,
+            Relayer.Serialization.IMessageSerializer serializer, Incoming incoming)
         {
             var scope = new AsyncServiceScope(scopes.CreateScope());
             _ = scope.ServiceProvider.GetRequiredService<Handler>();
             _ = serializer.Deserialize<Payload>(new(incoming.Body));
-            await scope.DisposeAsync();
+            var pending = scope.DisposeAsync();
+            if (!pending.IsCompletedSuccessfully)
+                throw new InvalidOperationException("The allocation fixture must dispose synchronously.");
+            pending.GetAwaiter().GetResult();
         }
-        var nativeBytes = GC.GetAllocatedBytesForCurrentThread() - start;
-        start = GC.GetAllocatedBytesForCurrentThread();
-        for (var i = 0; i < 1000; i++) await pipeline.ProcessAsync(incoming);
-        var pipelineBytes = GC.GetAllocatedBytesForCurrentThread() - start;
-        await Assert.That(pipelineBytes).IsEqualTo(nativeBytes);
     }
 
     [Test]
@@ -657,16 +660,27 @@ public class FailurePipelineTests
         var serializer = provider.GetRequiredService<Relayer.Serialization.IMessageSerializer>();
         for (var i = 0; i < 1000; i++)
         {
-            await pipeline.ProcessAsync(incoming);
+            ProcessSynchronously(pipeline, incoming);
             _ = serializer.Deserialize<Payload>(new(incoming.Body));
         }
         var start = GC.GetAllocatedBytesForCurrentThread();
         for (var i = 0; i < 1000; i++) _ = serializer.Deserialize<Payload>(new(incoming.Body));
         var jsonBytes = GC.GetAllocatedBytesForCurrentThread() - start;
         start = GC.GetAllocatedBytesForCurrentThread();
-        for (var i = 0; i < 1000; i++) await pipeline.ProcessAsync(incoming);
+        // Measure the synchronous pipeline, excluding the test caller's runtime-async await machinery.
+        // Requiring completion also keeps both per-thread counters on the same thread.
+        for (var i = 0; i < 1000; i++) ProcessSynchronously(pipeline, incoming);
         var pipelineBytes = GC.GetAllocatedBytesForCurrentThread() - start;
         await Assert.That(pipelineBytes).IsEqualTo(jsonBytes);
+    }
+
+    // Allocation samples must exclude the test caller's await machinery and stay on one thread.
+    private static void ProcessSynchronously(ReceivePipeline<Incoming, Binding> pipeline, Incoming incoming)
+    {
+        var pending = pipeline.ProcessAsync(incoming);
+        if (!pending.IsCompletedSuccessfully)
+            throw new InvalidOperationException("The allocation fixture must complete synchronously.");
+        _ = pending.GetAwaiter().GetResult();
     }
 
     [Test]
