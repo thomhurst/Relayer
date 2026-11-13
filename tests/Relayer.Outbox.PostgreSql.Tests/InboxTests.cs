@@ -266,9 +266,11 @@ public class InboxTests : InboxContractTests
     }
 
     [Test]
-    [Arguments(PostgresErrorCodes.SerializationFailure, false)]
-    [Arguments(PostgresErrorCodes.DeadlockDetected, true)]
-    public async Task Conflict_retry_exhaustion_uses_normal_failure_handling(string sqlState, bool wrapped)
+    [Arguments(PostgresErrorCodes.SerializationFailure, false, false)]
+    [Arguments(PostgresErrorCodes.DeadlockDetected, true, false)]
+    [Arguments(PostgresErrorCodes.SerializationFailure, false, true)]
+    [Arguments(PostgresErrorCodes.DeadlockDetected, true, true)]
+    public async Task Conflict_retry_exhaustion_uses_normal_failure_handling(string sqlState, bool wrapped, bool defaultRetries)
     {
         await using var database = new Database();
         await database.Start();
@@ -287,12 +289,15 @@ public class InboxTests : InboxContractTests
             }
             catch (PostgresException error) when (wrapped) { throw new DbUpdateException("Save failed", error); }
         };
-        var failures = new FailurePipeline(provider, "events", "source", "orders", new());
+        var failures = new FailurePipeline(provider, "events", "source", "orders",
+            defaultRetries ? new() : FailureOptions.None);
         var pipeline = Pipeline(provider, failures: failures, isolationLevel: IsolationLevel.Serializable).Build();
         using var context = pipeline.RentContext(Message());
         await pipeline.ProcessAsync(context);
-        await Assert.That(control.Invocations).IsEqualTo(4);
-        await Assert.That(scopes.Count).IsEqualTo(4);
+        // Each handler-level attempt exhausts the four transaction-conflict attempts first.
+        var expectedInvocations = defaultRetries ? 16 : 4;
+        await Assert.That(control.Invocations).IsEqualTo(expectedInvocations);
+        await Assert.That(scopes.Count).IsEqualTo(expectedInvocations);
         await Assert.That(context.ObservedDisposition.Kind).IsEqualTo(DispositionKind.DeadLetter);
         await Assert.That(await database.Orders()).IsEqualTo(0L);
         await Assert.That(await database.Count("inbox")).IsEqualTo(0L);
