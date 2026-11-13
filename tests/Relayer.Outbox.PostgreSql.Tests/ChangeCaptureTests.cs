@@ -257,7 +257,16 @@ public class ChangeCaptureTests
             var failure = await Assert.That(async () => await worker.ExecuteTask!).Throws<PostgresException>();
             await Assert.That(failure!.SqlState).IsEqualTo(PostgresErrorCodes.InvalidPassword);
         }
-        finally { await host.StopAsync(timeout.Token); }
+        finally
+        {
+#if NET11_0_OR_GREATER
+            // Hosting 11 propagates the observed background-service fault from StopAsync.
+            var failure = await Assert.That(async () => await host.StopAsync(timeout.Token)).Throws<PostgresException>();
+            await Assert.That(failure!.SqlState).IsEqualTo(PostgresErrorCodes.InvalidPassword);
+#else
+            await host.StopAsync(timeout.Token);
+#endif
+        }
     }
 
     [Test]
