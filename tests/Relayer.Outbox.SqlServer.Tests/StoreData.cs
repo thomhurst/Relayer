@@ -6,7 +6,8 @@ namespace Relayer.Outbox.SqlServer.Tests;
 
 internal sealed class StoreData(SqlServerFixture database, SqlServerOutboxOptions? options = null)
 {
-    internal SqlServerOutboxOptions Options { get; } = options ?? new() { TablePrefix = "t_" + Guid.NewGuid().ToString("N") + "_" };
+    // A fixed base plus TUnit's integer isolation ID stays SQL-safe and leaves room for schema suffixes.
+    internal SqlServerOutboxOptions Options { get; } = options ?? new() { TablePrefix = TestContext.Current!.Isolation.GetIsolatedName("t") + "_" };
     internal string Table => "[" + (Options.Schema ?? "dbo").Replace("]", "]]") + "].[" + Options.TablePrefix.Replace("]", "]]") + "outbox]";
     internal SqlServerOutboxStore Store() => new(database.ConnectionString, Options);
 
