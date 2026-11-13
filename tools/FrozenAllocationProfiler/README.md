@@ -190,3 +190,15 @@ there are no stacks, and the capture does not reproduce historical scheduling or
 permit subtraction across separate executions. Preserve any unfavorable window
 and obtain stacks for a reproduced candidate before proposing a production or
 runtime correction. A passing parallel capture still cannot close #687.
+
+The parallel workflow also accepts `ci_run_id`, `ci_run_attempt` and `framework`
+(`both`, `net10.0` or `net11.0`). Select the framework whose failure artifact
+exists. This reuses the retained-input manifest and Git/run provenance checks
+from the isolated receive workflow, then runs the original test image and its
+recorded installed runtime without rebuilding or editing that image. The image
+must include the opt-in checkpoint integration introduced by #705; older images
+cannot supply the required 3000 checkpoints and fail report validation.
+The before/after hashes and original artifact remain in every outcome's archive.
+This is a new parallel execution of the same inputs, not historical scheduling
+replay or a rerun of the failed CI check. A passing result still does not assign
+an owner to an earlier counter excess.

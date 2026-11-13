@@ -9,16 +9,31 @@ on:
       - '.github/scripts/test_parallel_receive_allocations.py'
       - 'tests/Relayer.Tests/ConcurrentReceiveAllocationTests.cs'
   workflow_dispatch:
+    inputs:
+      ci_run_id:
+        description: 'Optional failed CI run with original checkpoint-enabled core-test binaries'
+        type: string
+        default: ''
+      ci_run_attempt:
+        description: 'Artifact attempt for that run'
+        type: string
+        default: '1'
+      framework:
+        description: 'Framework with a retained failure artifact; both captures both'
+        type: choice
+        options: [both, net10.0, net11.0]
+        default: 'both'
 
 permissions:
   contents: read
+  actions: read
 
 jobs:
   parallel-owners:
     strategy:
       fail-fast: false
       matrix:
-        framework: [net10.0, net11.0]
+        framework: ${{ inputs.framework != '' && inputs.framework != 'both' && fromJSON(format('["{0}"]', inputs.framework)) || fromJSON('["net10.0", "net11.0"]') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -40,9 +55,28 @@ jobs:
         with:
           version: v29.9.3
           set-host: true
+      - name: Download retained failing inputs
+        if: inputs.ci_run_id != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          SOURCE_RUN: ${{ inputs.ci_run_id }}
+          SOURCE_ATTEMPT: ${{ inputs.ci_run_attempt }}
+          FRAMEWORK: ${{ matrix.framework }}
+        run: |
+          [[ "$SOURCE_RUN" =~ ^[0-9]+$ && "$SOURCE_ATTEMPT" =~ ^[0-9]+$ ]]
+          mkdir -p results
+          gh api "repos/$GH_REPO/actions/runs/$SOURCE_RUN" > results/source-run.json
+          gh run download "$SOURCE_RUN" -n "ci-test-failure-$FRAMEWORK-$SOURCE_RUN-$SOURCE_ATTEMPT" -D retained
+          (cd retained && sha256sum --check .artifacts/ci-test-failure/binaries.sha256) > results/source-verification.log
+          commit=$(cat retained/.artifacts/ci-test-failure/commit.txt)
+          [[ "$commit" =~ ^[0-9a-f]{40}$ ]]
+          gh api "repos/$GH_REPO/git/commits/$commit" > results/source-git-commit.json
+          python3 .github/scripts/verify_retained_ci.py results/source-run.json retained/.artifacts/ci-test-failure/commit.txt results/source-git-commit.json
       - name: Build and retain diagnostic inputs
         env:
           FRAMEWORK: ${{ matrix.framework }}
+          SOURCE_RUN: ${{ inputs.ci_run_id }}
         run: |
           mkdir -p results
           dotnet --info > results/runtime.txt
@@ -50,7 +84,13 @@ jobs:
           uname -a > results/host.txt
           git rev-parse HEAD > results/commit.txt
           git -C profiler-sdk rev-parse HEAD > results/profiler-sdk-commit.txt
-          dotnet build tests/Relayer.Tests -c Release > results/test-build.log 2>&1
+          if [ -z "$SOURCE_RUN" ]; then
+            dotnet build tests/Relayer.Tests -c Release > results/test-build.log 2>&1
+            image="$PWD/tests/Relayer.Tests/bin/Release/$FRAMEWORK"
+          else
+            image="$PWD/retained/tests/Relayer.Tests/bin/Release/$FRAMEWORK"
+          fi
+          echo "TEST_IMAGE=$image" >> "$GITHUB_ENV"
           dotnet build tools/FrozenAllocationProfiler/Fixture -c Release > results/fixture-build.log 2>&1
           CXX=clang++ cmake -S tools/FrozenAllocationProfiler -B .artifacts/exact-profiler -DPROFILER_SAMPLES="$PWD/profiler-sdk" -DCMAKE_BUILD_TYPE=Release > results/native-configure.log 2>&1
           cmake --build .artifacts/exact-profiler > results/native-build.log 2>&1
@@ -62,6 +102,16 @@ jobs:
           if not matches:
               raise RuntimeError('Matching runtime unavailable')
           version, root = matches[-1]
+          if os.environ['SOURCE_RUN']:
+              original = Path('retained/.artifacts/ci-test-failure/runtime.txt').read_text()
+              versions = re.findall(r'^  Microsoft.NETCore.App (' + major + r'\.\S+) ', original, re.MULTILINE)
+              if not versions:
+                  raise RuntimeError('Original runtime version not retained')
+              version = versions[-1]
+              installed = [(v, r) for v, r in matches if v == version]
+              if not installed:
+                  raise RuntimeError('Original runtime is not installed: ' + version)
+              _, root = installed[-1]
           fixture = Path('tools/FrozenAllocationProfiler/Fixture/bin/Release/net10.0/Fixture.runtimeconfig.json')
           config = json.loads(fixture.read_text())
           config['runtimeOptions']['framework']['version'] = version
@@ -72,7 +122,7 @@ jobs:
           with Path(os.environ['GITHUB_ENV']).open('a') as env:
               env.write('CAPTURE_RUNTIME=' + version + '\n')
           PYTHON
-          find "tests/Relayer.Tests/bin/Release/$FRAMEWORK" -type f -exec sha256sum {} + > results/test-inputs-before.sha256
+          find "$image" -type f -exec sha256sum {} + > results/test-inputs-before.sha256
       - name: Validate callback and correlation diagnostics
         env:
           TEST_NATIVE_PROFILER: .artifacts/exact-profiler/libFrozenAllocationProfiler.so
@@ -96,7 +146,7 @@ jobs:
           export RELAYER_ALLOCATION_PROFILER="$CORECLR_PROFILER_PATH"
           export RELAYER_ALLOCATION_OUTPUT="$PWD/results/parallel-objects.jsonl"
           failed=0
-          dotnet --fx-version "$CAPTURE_RUNTIME" "tests/Relayer.Tests/bin/Release/${{ matrix.framework }}/Relayer.Tests.dll" --output Detailed > results/parallel-tests.log 2>&1 || failed=1
+          dotnet --fx-version "$CAPTURE_RUNTIME" "$TEST_IMAGE/Relayer.Tests.dll" --output Detailed > results/parallel-tests.log 2>&1 || failed=1
           python3 .github/scripts/read_parallel_receive_allocations.py results/parallel-objects.jsonl results/parallel-tests.log > results/validated-parallel-types.json || failed=1
           sha256sum --check results/test-inputs-before.sha256 > results/test-inputs-after.log 2>&1 || failed=1
           exit "$failed"
@@ -104,7 +154,7 @@ jobs:
         if: always()
         run: |
           paths=()
-          for path in results tests/Relayer.Tests/bin/Release tools/FrozenAllocationProfiler .artifacts/exact-profiler profiler-sdk/core/profiling .github/scripts tests/Shared/ConcurrentReceiveFixture.cs tests/Relayer.Tests/ConcurrentReceiveAllocationTests.cs tests/Relayer.Tests/Relayer.Tests.csproj tools/FrozenConcurrentProbe/NativeAllocationRegion.cs .github/workflows/parallel-receive-allocation-owners.yml Directory.Build.props Directory.Build.targets Directory.Packages.props global.json; do
+          for path in results retained tests/Relayer.Tests/bin/Release tools/FrozenAllocationProfiler .artifacts/exact-profiler profiler-sdk/core/profiling .github/scripts tests/Shared/ConcurrentReceiveFixture.cs tests/Relayer.Tests/ConcurrentReceiveAllocationTests.cs tests/Relayer.Tests/Relayer.Tests.csproj tools/FrozenConcurrentProbe/NativeAllocationRegion.cs .github/workflows/parallel-receive-allocation-owners.yml Directory.Build.props Directory.Build.targets Directory.Packages.props global.json; do
             if [ -e "$path" ]; then paths+=("$path"); fi
           done
           find "${paths[@]}" -type f -exec sha256sum {} + > SHA256SUMS
@@ -114,6 +164,7 @@ jobs:
           name: parallel-receive-owners-${{ matrix.framework }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             results/
+            retained/
             tests/Relayer.Tests/bin/Release/
             tools/FrozenAllocationProfiler/
             .artifacts/exact-profiler/
