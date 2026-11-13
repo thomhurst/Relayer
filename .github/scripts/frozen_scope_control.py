@@ -94,7 +94,7 @@ def main():
     parser.add_argument("--eventpipe-sampling", action="store_true",
                         help="Native startup sample/CLR/BDN trace; diagnostic timings are excluded")
     parser.add_argument("--eventpipe-contention", action="store_true",
-                        help="Native contention/CLR/BDN trace without sampling; timings are excluded")
+                        help="Native contention/CLR/BDN trace without sampling or perf maps; timings are excluded")
     parser.add_argument("--tiered-compilation", choices=("default", "off"), default="default",
                         help="Diagnostic runtime control; off uses native DOTNET_TieredCompilation=0")
     parser.add_argument("--method", choices=("ScopeOnly", "ScopeAndHandlerResolution"),
@@ -115,6 +115,8 @@ def main():
     args = parser.parse_args()
     if args.eventpipe_sampling and args.eventpipe_contention:
         parser.error("Choose sampling or contention-only capture")
+    if args.eventpipe_contention and args.perf_map:
+        parser.error("Contention-only capture cannot be mixed with perf maps")
     eventpipe = args.eventpipe_sampling or args.eventpipe_contention
     if eventpipe and (args.jit_disassembly or args.aslr_control or args.affinity_control or
                                    args.tiered_compilation != "default" or args.ready_to_run != "default"):

@@ -662,7 +662,7 @@ class ScopeControlTests(unittest.TestCase):
             self.assertIn('without the sampling profiler', protocol['analysisPlan'])
 
     def test_contention_rejects_sampling_and_runtime_policy_changes(self):
-        for option in ('--eventpipe-sampling', '--jit-disassembly', '--aslr-control'):
+        for option in ('--eventpipe-sampling', '--jit-disassembly', '--aslr-control', '--perf-map'):
             with self.subTest(option=option), \
                  patch('sys.argv', ['control', 'inputs', 'output', '--eventpipe-contention', option]), \
                  patch('frozen_scope_control.verify') as verify:
