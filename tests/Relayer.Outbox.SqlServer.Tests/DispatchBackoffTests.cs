@@ -15,7 +15,7 @@ public sealed class DispatchBackoffTests(SqlServerFixture database)
     {
         var data = new StoreData(database, new()
         {
-            TablePrefix = "backoff_" + Guid.NewGuid().ToString("N") + "_", Lanes = 1, MaxDispatchAttempts = 2
+            TablePrefix = TestContext.Current!.Isolation.GetIsolatedName("backoff") + "_", Lanes = 1, MaxDispatchAttempts = 2
         });
         await data.Create();
         var id = Guid.CreateVersion7();
@@ -66,7 +66,7 @@ public sealed class DispatchBackoffTests(SqlServerFixture database)
     public async Task Retry_mutation_fences_expired_and_replaced_tokens_and_saturates_without_poison()
     {
         var data = new StoreData(database, new()
-        { TablePrefix = "fence_" + Guid.NewGuid().ToString("N") + "_", MaxDispatchAttempts = 1 });
+        { TablePrefix = TestContext.Current!.Isolation.GetIsolatedName("fence") + "_", MaxDispatchAttempts = 1 });
         await data.Create();
         var id = Guid.CreateVersion7();
         await data.Insert(id, DateTimeOffset.UtcNow);
@@ -100,7 +100,8 @@ public sealed class DispatchBackoffTests(SqlServerFixture database)
     [Test]
     public async Task Ordered_retry_rollback_and_stale_claims_cannot_change_a_new_owner()
     {
-        var data = new StoreData(database);
+        var data = new StoreData(database, new()
+        { TablePrefix = TestContext.Current!.Isolation.GetIsolatedName("rollback") + "_" });
         await data.Create();
         var id = Guid.CreateVersion7();
         await data.Insert(id, DateTimeOffset.UtcNow, 0, orderedHeaders: true);
