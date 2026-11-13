@@ -50,16 +50,18 @@ public class AdoNetEnlistmentTests(SqlServerFixture fixture)
             transaction.Connection!.Execute($"INSERT INTO {database.Business} VALUES (@id)", new { id = 1 }, transaction);
         else
             await transaction.Connection!.ExecuteAsync($"INSERT INTO {database.Business} VALUES (@id)", new { id = 1 }, transaction);
-        // Enough rows to show one native batch. The copy runs at roughly a thousand rows a second on a
-        // busy shared server, so a larger count only eats into SqlBulkCopy's 30-second default timeout.
-        for (var i = 0; i < 1_000; i++) await enlistment.EnlistAsync(Record(), default);
+        // The trigger must observe all rows in one invocation, rather than one invocation per row.
+        // This is a batching/atomicity contract test, not a throughput test; keep its fixture small
+        // so concurrent CI work cannot turn the native bulk-copy timeout into a load assertion.
+        const int rowCount = 16;
+        for (var i = 0; i < rowCount; i++) await enlistment.EnlistAsync(Record(), default);
         await Assert.That(await database.Count()).IsEqualTo(0L);
         if (synchronous) transaction.Commit(); else await transaction.CommitAsync();
         await Assert.That(enlistment.IsActive).IsFalse();
         await Assert.That(connection.State).IsEqualTo(ConnectionState.Open);
-        await Assert.That(await database.Count()).IsEqualTo(1_000L);
+        await Assert.That(await database.Count()).IsEqualTo((long)rowCount);
         await Assert.That(await database.Scalar($"SELECT count_big(*) FROM {database.BatchLog}")).IsEqualTo(1L);
-        await Assert.That(await database.Scalar($"SELECT SUM(rows_inserted) FROM {database.BatchLog}")).IsEqualTo(1_000L);
+        await Assert.That(await database.Scalar($"SELECT SUM(rows_inserted) FROM {database.BatchLog}")).IsEqualTo((long)rowCount);
         await Assert.That(await database.Scalar($"SELECT count_big(*) FROM {database.Business}")).IsEqualTo(1L);
     }
 
