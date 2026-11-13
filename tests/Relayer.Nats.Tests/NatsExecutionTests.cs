@@ -33,6 +33,82 @@ public class NatsExecutionTests
     [Test]
     [Arguments(false)]
     [Arguments(true)]
+    public async Task Restart_after_cancelled_offline_stop_replaces_the_drained_worker(bool drainCompleted)
+    {
+        using var deadline = new CancellationTokenSource(TimeSpan.FromMinutes(1));
+        var token = deadline.Token;
+        await using var broker = await NatsTopologyTests.Broker.StartAsync(token);
+        var stream = TestContext.Current!.Isolation.GetIsolatedName("restart_events");
+        var subject = TestContext.Current!.Isolation.GetIsolatedName("restart_orders");
+        await using var provider = NatsConfigurationTests.Provider(options =>
+        {
+            options.ConnectionOptions = broker.Options();
+            options.Streams.Add(new(stream) { Configuration = new(stream, [subject]) });
+            options.Consumers.Add(new(stream, "worker") { Configuration = new("worker") { FilterSubject = subject } });
+        });
+        var adapter = (NatsNativeTransport)provider.GetRequiredService<Relayer.Transports.ITransport>();
+        await adapter.ApplyTopologyAsync(TopologyMode.Provision, token);
+        await using var native = new NatsConnection(broker.Options());
+        var js = new NatsJSContext(native);
+        var worker = adapter.AddConsumer(stream, "worker", new() { MaxMsgs = 1, DrainOnCancel = true }, 1);
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var recovered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        worker.Receive = async (delivery, processing) =>
+        {
+            if (delivery.Message.Data.Span[0] == 0)
+            {
+                entered.TrySetResult();
+                // Keep native drain incomplete until StopAsync has returned cancellation.
+                await release.Task.WaitAsync(token);
+                processing.ThrowIfCancellationRequested();
+            }
+            else recovered.TrySetResult();
+            return Disposition.Complete;
+        };
+        try
+        {
+            await adapter.StartAsync(token);
+            (await js.PublishAsync(subject, new byte[] { 0 }, NatsRawSerializer<byte[]>.Default, cancellationToken: token)).EnsureSuccess();
+            await entered.Task.WaitAsync(token);
+            await broker.SetConnectedAsync(false, token);
+            using var stop = new CancellationTokenSource();
+            var stopping = adapter.StopAsync(stop.Token);
+            stop.Cancel();
+            await Assert.That(async () => await stopping).Throws<OperationCanceledException>();
+            await Assert.That(worker.Completion.IsCompleted).IsFalse();
+            await broker.SetConnectedAsync(true, token);
+            if (drainCompleted)
+            {
+                release.TrySetResult();
+                // Observe the native worker reaching its terminal state before the restart.
+                try { await worker.Completion.WaitAsync(token); }
+                catch (OperationCanceledException) when (!token.IsCancellationRequested) { }
+            }
+            else
+            {
+                // A canceled restart must not lose the unfinished shutdown state.
+                using var start = new CancellationTokenSource();
+                var starting = adapter.StartAsync(start.Token);
+                await Assert.That(starting.IsCompleted).IsFalse();
+                start.Cancel();
+                await Assert.That(async () => await starting).Throws<OperationCanceledException>();
+                release.TrySetResult();
+            }
+            await adapter.StartAsync(token);
+            await Assert.That(worker.Completion.IsCompleted).IsFalse();
+            (await js.PublishAsync(subject, new byte[] { 4 }, NatsRawSerializer<byte[]>.Default, cancellationToken: token)).EnsureSuccess();
+            await Task.WhenAny(recovered.Task, worker.Completion).WaitAsync(token);
+            if (worker.Completion.IsCompleted) await worker.Completion;
+            await recovered.Task.WaitAsync(token);
+            await adapter.StopAsync(token);
+        }
+        finally { release.TrySetResult(); }
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
     public async Task Hosted_pipeline_retries_and_confirms_poison_copy_before_acknowledging_original(bool multipleTraceHeaders)
     {
         using var deadline = new CancellationTokenSource(TimeSpan.FromMinutes(2));

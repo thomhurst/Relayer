@@ -176,9 +176,9 @@ public sealed class TransportConformanceSuite<TIncoming, TBinding>
         ChannelReader<Delivery> received, ConcurrentQueue<Activity> spans, Func<DateTimeOffset> redeliverAt,
         TaskCompletionSource orderRelease, ScenarioProgress progress, ShutdownProgress shutdown, CancellationToken token)
     {
-        async Task<Delivery> Next()
+        async Task<Delivery> Next(string phase = "receive completion")
         {
-            progress.Phase = "receive completion";
+            progress.Phase = phase;
             return await received.ReadAsync(token).ConfigureAwait(false);
         }
         async Task Send(int value, bool creation = false, WireString? key = null, DateTimeOffset? at = null)
@@ -352,7 +352,7 @@ public sealed class TransportConformanceSuite<TIncoming, TBinding>
                         if (acknowledged[i]) required.Add(i + 1);
                     while (required.Count != 0)
                     {
-                        var message = await Next().ConfigureAwait(false);
+                        var message = await Next($"outage recovery receive; outstanding values: {string.Join(", ", required)}").ConfigureAwait(false);
                         using var document = JsonDocument.Parse(message.Body);
                         var value = document.RootElement.GetProperty("Value").GetInt32();
                         CheckBody(message, value);
