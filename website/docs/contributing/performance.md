@@ -90,7 +90,8 @@ slow baseline cannot prevent a candidate that fixes startup from being measured.
 | `EndToEndBenchmarks.DirectSend` | Public `ISender`, routing, default source-generated JSON, headers, timeout, and native in-memory send admission/backpressure. A native receiver drains messages without core receive processing. |
 | `EndToEndBenchmarks.SynchronousRoundTrip` | Public send through hosted receive composition, a handler that completes synchronously, and an acknowledgement channel. |
 | `EndToEndBenchmarks.ConcurrentRoundTrip` | Eight messages in flight through eight consumer workers. A barrier holds all handlers on pending asynchronous reads before releasing them. Results are normalized per message with `OperationsPerInvoke = 8`. |
-| `ConsumePipelineBenchmarks` | Scope-only, scope and handler resolution, direct scoped dispatch, and composed receive, with singleton and scoped handlers. A cached serializer isolates non-serializer allocations. |
+| `ConsumePipelineBenchmarks` | Scope-only, scope and handler resolution, direct scoped dispatch, and explicit-failure-delegate receive, with singleton and scoped handlers. A cached serializer isolates non-serializer allocations. |
+| `FailureConsumePipelineBenchmarks` | Direct scoped dispatch, explicit-failure-delegate receive, and the executable `FailurePipeline` used by broker transports. Both pipelines attach tracing and telemetry with no listeners. A scoped handler either completes immediately or returns a pending reusable source, completed by the driver only after dispatch suspends. Cached serialization and identical DI lifetimes expose incremental composition costs. |
 | `InMemoryTransportBenchmarks` | Native opaque, native JSON, and composed JSON round trips, in queue and log modes. |
 | `InMemoryQueuedBatchBenchmarks` (outside the gate) | A native queue with 64 admitted messages before the first delivery can settle, an extra pooled-callback comparison, and a channel-only coordination control. All results are per **batch**, not per message. |
 | `ConcurrentChannelControlBenchmarks` (outside the gate) | Eight channel workers execute the gate's asynchronous handler and entry/release/completion protocol without JSON, DI or a transport. Results are per **item**, normalized with `OperationsPerInvoke = 8`. |
@@ -179,6 +180,16 @@ uses these counters to compare composition with direct scopes after warmup.
 Matching totals establish zero incremental continuation allocations in this case,
 not zero total receive allocations. Batch dispatch, executable retry policies,
 application handlers and native transports need their own attribution.
+
+The gated `FailureConsumePipelineBenchmarks` adds executable failure handling and
+scoped handlers to that coverage. Its completion source resumes on the driver
+thread, so its allocation results do not establish reuse across worker changes.
+Compare `ProductionFailurePipeline` with `ExplicitFailureDelegate` to assess the
+two consume implementations, and with `DirectScopedDispatch` to attribute the DI
+scope and handler costs excluded by D52. These are composition comparisons;
+the broker-backed Kafka comparison measures receive against the native client.
+Neither a relative regression pass nor a single local timing result proves the
+5% native-client budget.
 
 ## CI thresholds and evidence
 
