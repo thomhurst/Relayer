@@ -79,4 +79,13 @@ Relayer is in early development. Track progress in [GitHub issues](https://githu
 | 3 | SQS/SNS and RabbitMQ; SQL Server and MySQL outbox; topology export; multi-tenancy | Every transport passes the conformance suite |
 | 4 | Sagas, request/response, change-data-capture dispatch, more transports | — |
 
-The [design document](https://github.com/thomhurst/Relayer/blob/main/docs/design.md) describes each planned feature in detail.
+The [design document](https://github.com/thomhurst/Relayer/blob/main/docs/design.md) records architectural contracts and target designs; this page records implementation status.
+
+For application setup, see [the outbox and inbox guide](guides/outbox.md). Kafka parallel receive, application batch handlers and configurable concurrency remain planned; the serial adapter rejects those declarations at startup. The target parallel adapter must reuse Dekaf's native processing, consumer-wide limits, outstanding-record monitor and runtime-aware replay APIs (#22), rather than the fallback core scheduler. SQL Server CDC and the Azure Service Bus emulator profile remain planned.
+
+
+Dekaf 1.26.0 supplies the parallel adapter prerequisites: `PartitionedProcessingOptions.MaxConcurrentHandlers`
+and `MaxBufferedRecords`, `PartitionedProcessingMonitor.OldestOutstandingRecordAt`, and
+`PartitionedProcessingControl.SeekAsync`. These close Dekaf #4054, #4055 and #4056;
+Relayer #22 consolidates #182. Upgrading the native client alone does not enable parallel receive.
+No production adapter currently uses the fallback core partition scheduler.

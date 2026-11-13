@@ -25,7 +25,7 @@ Wait for PostgreSQL and Kafka to become ready, then create both the source and f
 ```shell
 docker exec relayer-sample-postgres pg_isready -U postgres -d orders
 docker exec relayer-sample-kafka /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --create --if-not-exists --topic sample-orders --partitions 1 --replication-factor 1
-docker exec relayer-sample-kafka /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --create --if-not-exists --topic sample-orders.dead-letter --partitions 1 --replication-factor 1
+docker exec relayer-sample-kafka /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --create --if-not-exists --topic sample-orders.errors --partitions 1 --replication-factor 1
 ```
 
 The Docker commands use Bash/zsh line continuations; PowerShell users can put each command on one line. These fixed names and ports are for a single local run; choose unused ones if other applications use them. Use native SASL/TLS builder settings for a secured cluster.
@@ -66,3 +66,5 @@ docker rm -f relayer-sample-postgres relayer-sample-kafka
 ```
 
 Removing the PostgreSQL container discards its demonstration data.
+
+The application [outbox and inbox guide](../../website/docs/guides/outbox.md) walks through this setup. The endpoint uses `SendViaOutboxAsync` to require active enlistment; the consumer configures in-process retries and a dead-letter topic through `Options.Failure`. Kafka delayed redelivery, parallel handlers and batch handlers remain unsupported.

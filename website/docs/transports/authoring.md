@@ -11,6 +11,22 @@ A transport author writes five small pieces: a [message binding and receive loop
 
 `IRelayerBuilder.AddTransport<TTransportOptions, TRouteOptions, TConsumerOptions>` is the core seam for a transport package's typed registration extension. It declares routes and consumers; it does not substitute for a native client or start a broker receive loop. The application-side call site is in [Configuration](../guides/configuration.md), with executable coverage in `BuilderTests`.
 
+For example, the declaration seam and runtime adapter registration can be composed as follows:
+
+```csharp
+services.AddSingleton<ITransport>(myTransport); // Name == "events"
+services.AddRelayer(relayer =>
+{
+    relayer.AddMessageTypesFromThisAssembly();
+    relayer.AddTransport<BrokerOptions, NativeRouteOptions, NativeConsumerOptions>("events", broker =>
+        broker.Send<OrderPlaced>("orders", route =>
+            route.OrderingKey(static message => message.CustomerId)));
+});
+```
+
+Here the option types and `myTransport` belong to the transport package. Application guides
+use the package's typed registration extension instead.
+
 Pass native option types through unchanged. `TransportBuilder.Options` is an ordinary named `OptionsBuilder<TTransportOptions>`: use `Configure`, `Bind`, and `Validate` rather than inventing another configuration model. Every transport has a unique, case-sensitive name, shared by its named options. Register native client factories and hosted services in the same `IServiceCollection` exposed by `IRelayerBuilder.Services`.
 
 Register each runtime adapter as an `ITransport` singleton with `Name` equal to its transport declaration's name. Before receive services start, the core calls `GetCapabilities(endpoint)` once for each distinct declared source or destination on that adapter. Resolve endpoint-specific values from native options or already available topology metadata; capability discovery must not start consumers. Duplicate adapter names fail startup. When any runtime adapter is registered, every transport declaration must have a matching adapter. With no runtime adapters, declaration-only applications can still validate and inspect configuration without a broker.
