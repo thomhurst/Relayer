@@ -13,7 +13,7 @@ using BenchmarkDotNet.Toolchains.Results;
 
 if (args.Length is not (5 or 6))
 {
-    Console.Error.WriteLine("Usage: FrozenNativeHost <original-image> <benchmark-id> <dotnet-wrapper> <native-log> <receipt> [concurrent|scoped-dispatch|scope-only|scope-only-unscoped|scope-resolution|failure-dispatch-sync]");
+    Console.Error.WriteLine("Usage: FrozenNativeHost <original-image> <benchmark-id> <dotnet-wrapper> <native-log> <receipt> [concurrent|scoped-dispatch|scope-only|scope-only-unscoped|scope-resolution|failure-dispatch-sync|composed-consumer-unscoped]");
     return 2;
 }
 
@@ -27,6 +27,7 @@ var assembly = metadata.LoadFromAssemblyPath(Path.Combine(directory, "Relayer.Be
 var selectedCase = args.Length == 6 ? args[5] : "concurrent";
 var (owner, methodName, operations) = selectedCase switch
 {
+    "composed-consumer-unscoped" => ("ConsumePipelineBenchmarks", "ComposedConsumer", 1),
     "concurrent" => ("EndToEndBenchmarks", "ConcurrentRoundTrip", 8),
     "scope-only" or "scope-only-unscoped" => ("ConsumePipelineBenchmarks", "ScopeOnly", 1),
     "scope-resolution" => ("ConsumePipelineBenchmarks", "ScopeAndHandlerResolution", 1),
@@ -39,8 +40,8 @@ var method = type.GetMethod(methodName) ?? throw new MissingMethodException(type
 // The inventoried generated runner ID selects the parameter and original job.
 // The descriptor supplies only the method name required by the native executor.
 var descriptor = new Descriptor(type, method, operationsPerInvoke: operations);
-var scopeOnly = selectedCase is "scope-only" or "scope-only-unscoped" or "scope-resolution";
-var scopedHandler = selectedCase != "scope-only-unscoped";
+var scopeOnly = selectedCase is "scope-only" or "scope-only-unscoped" or "scope-resolution" or "composed-consumer-unscoped";
+var scopedHandler = selectedCase is not ("scope-only-unscoped" or "composed-consumer-unscoped");
 ParameterInstance[] parameters = scopeOnly
     ? [new(new ParameterDefinition("ScopedHandler", false, [scopedHandler], false, typeof(bool), 0), scopedHandler, BenchmarkDotNet.Reports.SummaryStyle.Default)]
     : selectedCase == "failure-dispatch-sync"

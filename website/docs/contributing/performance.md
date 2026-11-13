@@ -404,6 +404,18 @@ or prove the raw-client 5% or zero-allocation budgets. Use allocation stacks and
 appropriate controls before assigning bytes to a particular component. Document
 remaining uncertainty rather than changing thresholds to make a signal pass.
 
+The **Frozen unscoped consume native parent control** workflow tests the retained
+unscoped `ComposedConsumer` images from run 43456694323 in one predeclared
+baseline/candidate/candidate/baseline sequence. It reuses the original generated
+runner, default job, BenchmarkDotNet native pipe parent and exact .NET 10.0.15
+runtime selection. All three original build inventories are checked before and
+after execution; the final A slot repeats the first baseline image. All launch
+logs, native receipts, operation counts, timings, allocations and failures are
+retained with the original inputs. This asks whether the image difference
+persists in these new executions. It cannot identify the historical cause or
+establish throughput equivalence; host drift and adaptive operation counts
+remain limitations. It does not rerun or relax the strict regression gate.
+
 Startup allocation totals remain visible but are informational. D18 sets an
 allocation budget per message and a time budget for startup. Building frozen
 dispatch tables can allocate different bucket layouts across processes because

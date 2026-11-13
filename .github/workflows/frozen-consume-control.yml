@@ -1,0 +1,70 @@
+name: Frozen unscoped consume native parent control
+
+# New historical-input experiment, never a rerun of the performance gate.
+on:
+  pull_request:
+    paths:
+      - '.github/scripts/frozen_concurrent_control.py'
+      - '.github/workflows/frozen-consume-control.yml'
+      - 'tools/FrozenNativeHost/**'
+      - '.github/scripts/frozen_bdn_control.py'
+      - '.github/scripts/test_frozen_bdn_control.py'
+      - 'tools/FrozenAllocationReader/RuntimeIdentityScope.cs'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  control:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
+        with:
+          # SDK 10.0.404 supplies the exact 10.0.15 runtime pinned by the replay.
+          # The 11.0 SDK builds the net11.0 probes.
+          dotnet-version: |
+            10.0.404
+            11.0.100
+      - name: Record host and verify launcher
+        run: |
+          mkdir -p results
+          dotnet --info > results/runtime.txt
+          uname -a > results/host.txt
+          dotnet build tools/FrozenNativeHost -c Release > results/parent-build.log 2>&1
+          python3 -m unittest discover -s .github/scripts -p test_frozen_bdn_control.py > results/native-launcher-tests.log 2>&1
+      - name: Download original images for code attribution
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh run download 43456694323 --name performance-43456694323-1 --dir inputs
+      # One predeclared ABBA asks whether the original unscoped composed images
+      # still differ in this new native-parent execution. No retry, adaptive stop,
+      # threshold relaxation, historical attribution or equivalence claim.
+      - name: Execute original unscoped composed consumer in fixed ABBA
+        run: >-
+          python3 .github/scripts/frozen_bdn_control.py inputs results/native-consume
+          --case composed-consumer-unscoped --runtime-version 10.0.15
+          --native-executor tools/FrozenNativeHost/bin/Release/net10.0/FrozenNativeHost.dll
+      - name: Retain all outcomes and executable inputs
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: frozen-consume-native-parent-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            .github/workflows/frozen-consume-control.yml
+            results/
+            inputs/
+            .github/scripts/frozen_scope_control.py
+            .github/scripts/test_frozen_scope_control.py
+            .github/scripts/test_frozen_bdn_control.py
+            .github/scripts/frozen_bdn_control.py
+            .github/scripts/frozen_concurrent_control.py
+            tools/FrozenNativeHost/Program.cs
+            tools/FrozenNativeHost/FrozenNativeHost.csproj
+            tools/FrozenNativeHost/bin/Release/net10.0/
+            tools/FrozenAllocationReader/RuntimeIdentityScope.cs
+          retention-days: 90
