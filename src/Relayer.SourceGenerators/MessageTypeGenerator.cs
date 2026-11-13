@@ -2,6 +2,7 @@ using System.Collections.Immutable;
 using System.Text;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
+using Microsoft.CodeAnalysis.CSharp.Syntax;
 using Microsoft.CodeAnalysis.Text;
 
 namespace Relayer.SourceGenerators;
@@ -27,6 +28,12 @@ public sealed class MessageTypeGenerator : IIncrementalGenerator
         "Relayer", DiagnosticSeverity.Error, isEnabledByDefault: true,
         helpLinkUri: "https://relayer.tomlonghurst.dev/docs/reference/diagnostics#rlym001");
 
+    private static readonly DiagnosticDescriptor RefLikeMessage = new(
+        "RLYM003", "Message type is ref-like",
+        "Message type '{0}' is ref-like and cannot be registered or serialized. Use an ordinary struct, class or record for the wire message.",
+        "Relayer", DiagnosticSeverity.Error, isEnabledByDefault: true,
+        helpLinkUri: "https://relayer.tomlonghurst.dev/docs/reference/diagnostics#rlym003");
+
     private static readonly DiagnosticDescriptor StaticMessage = new(
         "RLYM004", "Message type is static",
         "Message type '{0}' is static and cannot be used by generated registration or JSON metadata. Declare a non-static message class, struct or record.",
@@ -35,6 +42,19 @@ public sealed class MessageTypeGenerator : IIncrementalGenerator
 
     public void Initialize(IncrementalGeneratorInitializationContext context)
     {
+        var refLikeMessages = context.SyntaxProvider.ForAttributeWithMetadataName(
+                MessageAttributeName,
+                predicate: static (_, _) => true,
+                transform: static (ctx, _) => ctx.TargetSymbol is INamedTypeSymbol { IsRefLikeType: true } type
+                    && ctx.TargetNode is TypeDeclarationSyntax declaration
+                        ? new RefLikeMessageModel(type.ToDisplayString(), declaration.SyntaxTree.FilePath,
+                            declaration.Identifier.Span, declaration.Identifier.GetLocation().GetLineSpan().Span)
+                        : null)
+            .Where(static model => model is not null);
+        context.RegisterSourceOutput(refLikeMessages, static (spc, model) =>
+            spc.ReportDiagnostic(Diagnostic.Create(RefLikeMessage,
+                Location.Create(model!.Path, model.Span, model.LineSpan), model.Name)));
+
         var declarations = context.SyntaxProvider
             .ForAttributeWithMetadataName(
                 MessageAttributeName,
@@ -66,7 +86,7 @@ public sealed class MessageTypeGenerator : IIncrementalGenerator
 
     private static MessageModel? ToModel(GeneratorAttributeSyntaxContext context)
     {
-        if (context.TargetSymbol is not INamedTypeSymbol type || context.Attributes.Length == 0)
+        if (context.TargetSymbol is not INamedTypeSymbol type || type.IsRefLikeType || context.Attributes.Length == 0)
         {
             return null;
         }
@@ -205,4 +225,6 @@ public sealed class MessageTypeGenerator : IIncrementalGenerator
     private sealed record MessageModel(string FullyQualifiedName, string Name, int Version, DiagnosticLocation? OpenGenericLocation = null, DiagnosticLocation? InaccessibleLocation = null, bool IsStatic = false);
 
     private sealed record DiagnosticLocation(string FilePath, TextSpan Span, LinePositionSpan LineSpan);
+
+    private sealed record RefLikeMessageModel(string Name, string Path, TextSpan Span, LinePositionSpan LineSpan);
 }

@@ -18,6 +18,8 @@ On the wire this becomes the CloudEvents type `billing.charge-card;v=2`. Renamin
 
 Generated registration preserves the exact name, including C# escape sequences such as `\n`, `\r`, `\u2028`, quotes, and backslashes. These characters remain part of the wire identity; generation does not normalize names.
 
+Message contracts can be ordinary structs, classes or records. A `ref struct` or `readonly ref struct` is stack-only and cannot be a wire message; [RLYM003](../reference/diagnostics.md#rlym003) reports these declarations before generating registration or JSON metadata.
+
 Register message types explicitly, or with the source-generated method that lists every `[Message]` type in the assembly:
 
 ```csharp
