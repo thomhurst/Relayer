@@ -9,6 +9,12 @@ It depends on `Relayer.Outbox.EntityFrameworkCore` for provider-neutral transact
 Npgsql or PostgreSQL package dependency; installing it alone does not configure a database provider.
 
 The provider split moves registration and migration extensions into the PostgreSQL EF package.
+`EntityFrameworkCoreOutboxOptions` and the transaction coordinator belong to the neutral
+`Relayer.Outbox.EntityFrameworkCore` package. Registration extensions (`AddRelayerOutbox`,
+`AddRelayerEntityFrameworkCoreOutbox`, `UsePostgreSqlOutbox`) and PostgreSQL migration extensions
+belong to `Relayer.Outbox.PostgreSql.EntityFrameworkCore`. Both use the
+`Relayer.Outbox.EntityFrameworkCore` namespace.
+
 Existing `using Relayer.Outbox.EntityFrameworkCore;` declarations and method call sites remain valid;
 update the package/project reference and rebuild. Unsupported providers fail while configuring options
 when already known, or when EF initializes completed options if configured later, before database I/O.

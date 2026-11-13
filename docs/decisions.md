@@ -1797,6 +1797,10 @@ commands, conflict classification and public registration/migration extensions i
 The PostgreSQL integration continues to use the existing Npgsql batch, dispatcher, SQL schema and
 EF execution strategies/interceptors; the provider seam does not introduce a transaction or retry engine.
 Other providers can supply their native operations without adding reverse dependencies to coordination.
+`Relayer.Sagas.EntityFrameworkCore` remains intentionally PostgreSQL-only: its state contract uses
+PostgreSQL `xmin`, and its consumer composes the PostgreSQL inbox/outbox registration. It therefore
+depends on `Relayer.Outbox.PostgreSql.EntityFrameworkCore`; making saga persistence portable is
+separate work, not a consequence of making transaction coordination provider-neutral.
 Unsupported providers fail at options configuration when known, otherwise at native EF options validation.
 Tenant-selected contexts retain delivery-scope validation before opening a transaction.
 
