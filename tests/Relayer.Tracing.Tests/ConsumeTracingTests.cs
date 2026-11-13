@@ -519,7 +519,7 @@ public class ConsumeTracingTests
     public async Task Native_settlement_failure_logs_once_per_delivery_even_when_caught(bool caught)
     {
         var logger = new Logger();
-        await using var provider = HostedProvider(new LoggerFactory(logger));
+        await using var provider = HostedProvider(new LoggerFactory(logger), new() { RetryDelays = [] });
         provider.GetRequiredService<Control>().Handle = context =>
         {
             try { context.Features.GetRequired<NativeMessage<InMemoryDelivery>>().Message.Redeliver(TimeSpan.MaxValue); }
@@ -562,7 +562,7 @@ public class ConsumeTracingTests
             a.Status == (caught ? ActivityStatusCode.Unset : ActivityStatusCode.Error))).IsTrue();
     }
 
-    private static ServiceProvider HostedProvider(ILoggerFactory? loggerFactory = null)
+    private static ServiceProvider HostedProvider(ILoggerFactory? loggerFactory = null, FailureOptions? failures = null)
     {
         var services = new ServiceCollection();
         services.AddSingleton<Control>();
@@ -579,7 +579,11 @@ public class ConsumeTracingTests
                     Capabilities = new() { DeadLetter = true, MaxRedeliveryDelay = TimeSpan.FromMinutes(1), MaxBatchSize = 100 },
                 });
                 transport.Send<int>("orders");
-                transport.Consume("orders", consumer => consumer.Handler<Handler>());
+                transport.Consume("orders", consumer =>
+                {
+                    consumer.Handler<Handler>();
+                    if (failures is not null) consumer.Failures(failures);
+                });
             });
         });
         return services.BuildServiceProvider();

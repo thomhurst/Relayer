@@ -78,14 +78,15 @@ public class HarnessTests
     [Test]
     public async Task Poison_failure_and_native_dead_letter_are_recorded_before_idle()
     {
+        // Observe one failed attempt; retry policy behavior is covered separately.
         var error = new InvalidOperationException("poison");
-        await using var fixture = await Fixture.Start(new() { Handle = (_, _) => ValueTask.FromException(error) });
+        await using var fixture = await Fixture.Start(new() { Handle = (_, _) => ValueTask.FromException(error) }, failures: new() { RetryDelays = [] });
         await fixture.Send(new Probe(1));
         await fixture.Idle();
         await Assert.That(fixture.Harness.Failed.Count).IsEqualTo(1);
         await Assert.That(fixture.Harness.Failed[0].Error).IsSameReferenceAs(error);
         await Assert.That(fixture.Harness.DeadLettered.Count).IsEqualTo(1);
-        await Assert.That(fixture.Harness.DeadLettered[0].Error.Reason).IsEqualTo("handler_failure");
+        await Assert.That(fixture.Harness.DeadLettered[0].Error.Reason).IsEqualTo("Processing failed");
         await Assert.That(fixture.Harness.DeadLettered[0].Message.Read<Probe>(fixture.Serializer).Value).IsEqualTo(1);
         fixture.Harness.Reset();
         await Assert.That(fixture.Harness.Failed.Count).IsEqualTo(0);
@@ -118,7 +119,7 @@ public class HarnessTests
         {
             context.Features.GetRequired<NativeMessage<InMemoryDelivery>>().Message.Redeliver(TimeSpan.FromSeconds(1));
             return default;
-        } }, logging: loggingEnabled ? logger : null, maxRedeliveryDelay: TimeSpan.Zero);
+        } }, logging: loggingEnabled ? logger : null, maxRedeliveryDelay: TimeSpan.Zero, failures: new() { RetryDelays = [] });
         await fixture.Send(new Probe(1));
         await fixture.Idle();
         await Assert.That(fixture.Harness.Failed.Count).IsEqualTo(1);
@@ -453,7 +454,7 @@ public class HarnessTests
         private bool _started;
 
         internal static Task<Fixture> Create(ProbeControl? control = null, bool log = false,
-            TestOutbox? outbox = null, TimeProvider? clock = null, ILoggerFactory? logging = null, TimeSpan? maxRedeliveryDelay = null)
+            TestOutbox? outbox = null, TimeProvider? clock = null, ILoggerFactory? logging = null, TimeSpan? maxRedeliveryDelay = null, FailureOptions? failures = null)
         {
             var services = new ServiceCollection();
             services.AddSingleton(control ?? new ProbeControl());
@@ -474,8 +475,8 @@ public class HarnessTests
                             MaxBatchSize = 100,
                         } };
                     });
-                    transport.Consume("probes", consumer => { consumer.Handler<ProbeHandler>(); consumer.Options.Group = log ? "one" : null; });
-                    if (log) transport.Consume("probes", consumer => { consumer.Handler<ProbeHandler>(); consumer.Options.Group = "two"; });
+                    transport.Consume("probes", consumer => { consumer.Handler<ProbeHandler>(); if (failures is not null) consumer.Failures(failures); consumer.Options.Group = log ? "one" : null; });
+                    if (log) transport.Consume("probes", consumer => { consumer.Handler<ProbeHandler>(); if (failures is not null) consumer.Failures(failures); consumer.Options.Group = "two"; });
                 });
                 builder.InMemory("second", transport =>
                 {
@@ -491,9 +492,9 @@ public class HarnessTests
         }
 
         internal static async Task<Fixture> Start(ProbeControl? control = null, bool log = false,
-            TestOutbox? outbox = null, TimeProvider? clock = null, ILoggerFactory? logging = null, TimeSpan? maxRedeliveryDelay = null)
+            TestOutbox? outbox = null, TimeProvider? clock = null, ILoggerFactory? logging = null, TimeSpan? maxRedeliveryDelay = null, FailureOptions? failures = null)
         {
-            var fixture = await Create(control, log, outbox, clock, logging, maxRedeliveryDelay);
+            var fixture = await Create(control, log, outbox, clock, logging, maxRedeliveryDelay, failures);
             await fixture.StartServices();
             return fixture;
         }
