@@ -413,8 +413,6 @@ public class SenderTests
         await Assert.That(transport.ObservedToken.IsCancellationRequested).IsFalse();
     }
 
-    // Runtime timer queues share locks across tests and allocate wait state on first contention.
-    [NotInParallel]
     [Test]
     [Arguments(false)]
     [Arguments(true)]
@@ -428,14 +426,13 @@ public class SenderTests
         var sender = scope.ServiceProvider.GetRequiredService<ISender>();
         var message = new OrderPlaced(Guid.NewGuid());
         for (var i = 0; i < 1000; i++) await sender.SendAsync(message);
+        TimerQueueWarmup.WarmContention();
         var before = GC.GetAllocatedBytesForCurrentThread();
         for (var i = 0; i < 1000; i++) await sender.SendAsync(message);
         var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
         await Assert.That(allocated).IsEqualTo(0L);
     }
 
-    // Runtime timer queues share locks across tests and allocate wait state on first contention.
-    [NotInParallel]
     [Test]
     public async Task Overlapping_asynchronous_sends_retain_the_peak_pool_and_allocate_zero_bytes_after_warmup()
     {
@@ -454,6 +451,7 @@ public class SenderTests
             transport.CompleteBatch();
             for (var i = 0; i < concurrency; i++) await pending[i];
         }
+        TimerQueueWarmup.WarmContention();
         var before = GC.GetAllocatedBytesForCurrentThread();
         for (var batch = 0; batch < 20; batch++)
         {
