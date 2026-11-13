@@ -50,7 +50,8 @@ internal sealed class KafkaHostedService(IServiceProvider provider, string name)
             var native = new Dekaf.ConsumerBuilder<byte[], byte[]>().WithBootstrapServers(options.BootstrapServers.ToArray())
                 .WithLoggerFactory(provider.GetService<ILoggerFactory>() ?? NullLoggerFactory.Instance);
             options.ConfigureConsumer?.Invoke(native);
-            // Offset ownership belongs to durable processing, never polling or native auto-commit.
+            // Polling cannot store unfinished work. Explicit commits retain operation
+            // duration/error/count telemetry until native commit observation is available (D22).
             native.WithGroupId(consumer.Options.Group!).SubscribeTo(consumer.Source)
                 .WithOffsetCommitMode(OffsetCommitMode.Manual).WithAutoOffsetStore(false).AddRebalanceListener(ownership);
             var receiver = new KafkaConsumer(native.Build(), receive.ProcessAsync, tracing, endpoint, ownership,
