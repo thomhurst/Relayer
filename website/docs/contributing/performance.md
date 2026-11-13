@@ -416,6 +416,16 @@ persists in these new executions. It cannot identify the historical cause or
 establish throughput equivalence; host drift and adaptive operation counts
 remain limitations. It does not rerun or relax the strict regression gate.
 
+For a separately declared code-generation question, **Frozen original BenchmarkDotNet
+engine control** also accepts `benchmark_case=composed-consumer-unscoped` with
+`parent=native`, `performance_run=43456694323` and `runtime_version=10.0.15`.
+Its optional `jit_method` captures native JIT listings in the child only; `*`
+retains all emitted methods, including async state machines. Retain all four
+outcomes and listings. Exclude instrumented timings and allocations from
+performance comparisons. Listings cannot reconstruct historical code, prove
+which tier executed during measurements, or establish completeness for inlined,
+precompiled or interleaved methods.
+
 Startup allocation totals remain visible but are informational. D18 sets an
 allocation budget per message and a time budget for startup. Building frozen
 dispatch tables can allocate different bucket layouts across processes because
