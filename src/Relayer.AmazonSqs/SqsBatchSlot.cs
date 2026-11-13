@@ -1,4 +1,7 @@
 using System.Globalization;
+using System.Diagnostics;
+using System.Runtime.CompilerServices;
+using Relayer.Transports;
 using System.Threading.Tasks.Sources;
 using Amazon.SQS;
 using Amazon.SQS.Model;
@@ -13,18 +16,26 @@ internal sealed class SqsBatchSlot : IValueTaskSource, IValueTaskSource<bool>, I
     private ManualResetValueTaskSourceCore<bool> _deleted;
     internal readonly SqsDelivery Delivery;
     internal readonly DeleteMessageBatchRequestEntry Entry;
-    internal ValueTask Processing;
+    private readonly Completion _processed = new();
+    private ConfiguredValueTaskAwaitable.ConfiguredValueTaskAwaiter _processing;
+    private readonly Action _continueProcessing;
+    private SqsConsumer? _owner;
+    private CancellationToken _abort;
+    private Activity? _deleteActivity;
+    internal ValueTask<bool> Processing => _processed.Task;
     internal string? DeleteRequestId;
     internal bool PendingDelete { get; private set; }
 
     internal SqsBatchSlot(IAmazonSQS client, string url, TimeProvider time, int index)
     {
+        _continueProcessing = FinishProcessing;
         Delivery = new(client, url, time) { BatchSlot = this };
         Entry = new() { Id = index.ToString(CultureInfo.InvariantCulture) };
     }
 
     internal void Reset()
     {
+        _processed.Reset();
         _ready.Reset();
         _deleted.Reset();
         PendingDelete = false;
@@ -38,8 +49,40 @@ internal sealed class SqsBatchSlot : IValueTaskSource, IValueTaskSource<bool>, I
         if (!PendingDelete) _ready.SetResult(true);
     }
 
-    internal ValueTask DeleteAsync()
+    internal void Process(SqsConsumer owner, CancellationToken abort)
     {
+        _owner = owner;
+        _abort = abort;
+        try
+        {
+            _processing = owner.Receive(Delivery, abort).ConfigureAwait(false).GetAwaiter();
+            if (!_processing.IsCompleted) { _processing.UnsafeOnCompleted(_continueProcessing); return; }
+        }
+        catch (Exception error) { FinishProcessing(error); return; }
+        FinishProcessing();
+    }
+
+    private void FinishProcessing()
+    {
+        Exception? error = null;
+        try { _processing.GetResult(); }
+        catch (Exception caught) { error = caught; }
+        FinishProcessing(error);
+    }
+
+    private void FinishProcessing(Exception? error)
+    {
+        if (error is not null && !(error is OperationCanceledException && _abort.IsCancellationRequested))
+            _owner!.ReportProcessingFailure(error);
+        Delivery.Clear();
+        Finished();
+        _owner = null;
+        _processed.Complete();
+    }
+
+    internal ValueTask DeleteAsync(Activity? activity)
+    {
+        _deleteActivity = activity;
         Entry.ReceiptHandle = Delivery.Message.ReceiptHandle;
         PendingDelete = true;
         _ready.SetResult(true);
@@ -48,8 +91,24 @@ internal sealed class SqsBatchSlot : IValueTaskSource, IValueTaskSource<bool>, I
 
     internal void CompleteDelete(Exception? error)
     {
+        var activity = _deleteActivity;
+        _deleteActivity = null;
+        activity?.SetTag("aws.request_id", DeleteRequestId ?? (error as AmazonSQSException)?.RequestId);
+        if (error is not null) MessageOperationTracing.Fail(activity, (error as AmazonSQSException)?.ErrorCode ?? "_OTHER");
+        activity?.Dispose();
         if (error is null) _deleted.SetResult(true);
         else _deleted.SetException(error);
+    }
+
+    private sealed class Completion : IValueTaskSource<bool>
+    {
+        private ManualResetValueTaskSourceCore<bool> _core;
+        internal ValueTask<bool> Task => new(this, _core.Version);
+        internal void Reset() => _core.Reset();
+        internal void Complete() => _core.SetResult(true);
+        public bool GetResult(short token) => _core.GetResult(token);
+        public ValueTaskSourceStatus GetStatus(short token) => _core.GetStatus(token);
+        public void OnCompleted(Action<object?> continuation, object? state, short token, ValueTaskSourceOnCompletedFlags flags) => _core.OnCompleted(continuation, state, token, flags);
     }
 
     public void Dispose() => Delivery.Dispose();

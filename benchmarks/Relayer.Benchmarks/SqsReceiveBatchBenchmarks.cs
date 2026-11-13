@@ -1,3 +1,4 @@
+using Relayer.Transports;
 using System.Text;
 using Amazon.Runtime;
 using Amazon.SQS;
@@ -53,7 +54,16 @@ public class SqsReceiveBatchBenchmarks
             Encoding.UTF8.GetBytes(response.Messages[i].Body, _body);
             _delete.Entries[i].ReceiptHandle = response.Messages[i].ReceiptHandle;
         }
-        await _client.DeleteMessageBatchAsync(_delete);
+        var deleted = await _client.DeleteMessageBatchAsync(_delete);
+        foreach (var entry in _delete.Entries)
+        {
+            var success = false;
+            foreach (var result in deleted.Successful)
+                if (result.Id == entry.Id) { success = true; break; }
+            foreach (var failure in deleted.Failed)
+                if (failure.Id == entry.Id) throw new AmazonSQSException(failure.Message);
+            if (!success) throw new InvalidOperationException("Missing native delete result.");
+        }
     }
 
     [Benchmark]

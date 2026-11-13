@@ -1,4 +1,6 @@
+using Relayer.Transports;
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.Text;
 using System.Threading.Channels;
 using Amazon.Runtime;
@@ -117,6 +119,43 @@ public sealed class SqsBatchReceiveTests
         await consumer.StopAsync(default).WaitAsync(TimeSpan.FromSeconds(10));
         await Assert.That(visited.ToArray()).IsEquivalentTo(new[] { "one", "two" });
         await Assert.That(client.Deleted.Count).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task Reused_slots_preserve_parent_tracing_until_native_delete_completes()
+    {
+        using var client = new BatchClient { AllSucceed = true };
+        using var tracing = new MessageTracing(Options.Create(new TracingOptions()), []);
+        var stopped = new List<Activity>();
+        using var listener = new ActivityListener
+        {
+            ShouldListenTo = source => ReferenceEquals(source, tracing.Source),
+            Sample = (ref ActivityCreationOptions<ActivityContext> _) => ActivitySamplingResult.AllData,
+            ActivityStopped = stopped.Add,
+        };
+        ActivitySource.AddActivityListener(listener);
+        var settlement = new SqsSettlement(tracing, new() { System = "aws_sqs", Destination = "orders" });
+        using var parent = new Activity("parent").Start();
+        var completions = 0;
+        await using var consumer = new SqsConsumer(Declaration(10), client, "url", async (delivery, token) =>
+        {
+            var pending = settlement.SettleAsync(delivery, Disposition.Complete, token);
+            await Assert.That(Activity.Current).IsSameReferenceAs(parent);
+            await Assert.That(pending.IsCompleted).IsFalse();
+            await pending;
+            completions++;
+        });
+        using var batch = new SqsConsumer.SqsReceiveBatch(consumer, 10);
+        for (var i = 0; i < 3; i++)
+            await batch.ProcessAsync(new() { Messages = [Message("one"), Message("two")] }, TimeProvider.System.GetTimestamp(), default);
+        await Assert.That(completions).IsEqualTo(6);
+        await Assert.That(stopped.Count).IsEqualTo(6);
+        foreach (var activity in stopped)
+        {
+            await Assert.That(activity.ParentId).IsEqualTo(parent.Id);
+            await Assert.That(activity.Duration > TimeSpan.Zero).IsTrue();
+        }
+        await Assert.That(Activity.Current).IsSameReferenceAs(parent);
     }
 
     internal static ConsumerDefinition<AmazonSqsConsumerOptions> Declaration(int size, string source = "orders") =>

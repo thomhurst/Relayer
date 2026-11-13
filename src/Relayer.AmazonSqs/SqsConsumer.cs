@@ -163,7 +163,7 @@ internal sealed partial class SqsConsumer : IAsyncDisposable
                 var slot = _slots[i];
                 slot.Reset();
                 slot.Delivery.Prepare(response.Messages[i], receivedAt, response.ResponseMetadata?.RequestId);
-                slot.Processing = ProcessOneAsync(slot, abort);
+                slot.Process(_owner, abort);
                 started++;
                 await slot.Ready.ConfigureAwait(false);
                 if (slot.PendingDelete) _delete.Entries.Add(slot.Entry);
@@ -207,23 +207,16 @@ internal sealed partial class SqsConsumer : IAsyncDisposable
             _delete.Entries.Clear();
         }
 
-        [RuntimeAsyncMethodGeneration(false)]
-        [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
-        private async ValueTask ProcessOneAsync(SqsBatchSlot slot, CancellationToken abort)
-        {
-            try { await _owner._receive(slot.Delivery, abort).ConfigureAwait(false); }
-            catch (OperationCanceledException) when (abort.IsCancellationRequested) { }
-            catch (Exception error)
-            {
-                if (_owner._logger is { } logger) ProcessingFailed(logger, error, _owner.Declaration.Source);
-            }
-            finally { slot.Delivery.Clear(); slot.Finished(); }
-        }
-
         public void Dispose()
         {
             foreach (var slot in _slots) slot.Dispose();
         }
+    }
+
+    internal ValueTask Receive(SqsDelivery delivery, CancellationToken abort) => _receive(delivery, abort);
+    internal void ReportProcessingFailure(Exception error)
+    {
+        if (_logger is { } logger) ProcessingFailed(logger, error, Declaration.Source);
     }
 
     internal async Task StopAsync(CancellationToken token)
