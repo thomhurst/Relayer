@@ -1,0 +1,75 @@
+name: Batch allocation diagnostic
+
+# Separate instrumented investigation of #571, never a replacement CI gate.
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/batch-allocation-control.yml'
+      - '.github/scripts/batch_allocation_control.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  capture:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: dotnet/samples
+          ref: 3810558800760fc39282cc939bac645735514209
+          path: profiler-sdk
+          sparse-checkout: core/profiling
+          persist-credentials: false
+      - uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
+        with:
+          dotnet-version: |
+            10.0.403
+            11.0.100
+      - name: Build original comparison and existing exact CLR profiler
+        run: |
+          mkdir -p results
+          dotnet --info > results/runtime.txt
+          uname -a > results/host.txt
+          CXX=clang++ cmake -S tools/FrozenAllocationProfiler -B .artifacts/exact-profiler -DPROFILER_SAMPLES="$PWD/profiler-sdk" -DCMAKE_BUILD_TYPE=Release > results/native-configure.log 2>&1
+          cmake --build .artifacts/exact-profiler > results/native-build.log 2>&1
+          dotnet build tools/FrozenAllocationProfiler/Fixture -c Release > results/fixture-build.log 2>&1
+          dotnet build tests/Relayer.Tests -c Release -f net10.0 > results/test-build.log 2>&1
+      - name: Verify exact counts with existing four-thread known-type fixture
+        env:
+          TEST_NATIVE_PROFILER: .artifacts/exact-profiler/libFrozenAllocationProfiler.so
+          TEST_NATIVE_FIXTURE: tools/FrozenAllocationProfiler/Fixture/bin/Release/net10.0/Fixture.dll
+          TEST_NATIVE_OUTPUT: results/fixture
+        run: python3 -m unittest discover -s .github/scripts -p test_native_allocations.py > results/native-tests.log 2>&1
+      - name: Capture all sixteen predeclared original and instrumented trials
+        run: |
+          python3 .github/scripts/batch_allocation_control.py tests/Relayer.Tests/bin/Release/net10.0/Relayer.Tests.dll .artifacts/exact-profiler/libFrozenAllocationProfiler.so results/trials
+          echo 'Diagnostic only: all test exit codes are in outcomes.json. Callbacks change fast paths and scheduling; counts include all threads, have no stacks, and cannot attribute the historical +56 B window. Original CI failure is not replaced.' >> "$GITHUB_STEP_SUMMARY"
+      - name: Inventory diagnostic inputs and retain the installed runtime
+        if: always()
+        run: |
+          mkdir -p results/runtime
+          cp -a "$DOTNET_ROOT/shared/Microsoft.NETCore.App/10.0."* results/runtime/
+          find results tests/Relayer.Tests src tools/FrozenAllocationProfiler .artifacts/exact-profiler profiler-sdk/core/profiling -type f -exec sha256sum {} + > results-SHA256SUMS
+      - name: Retain all outcomes, sources, loaded test binaries and profiler inputs
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: batch-allocation-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            results/
+            results-SHA256SUMS
+            tests/Relayer.Tests/
+            src/
+            tools/FrozenConcurrentProbe/NativeAllocationRegion.cs
+            tools/FrozenAllocationProfiler/
+            .artifacts/exact-profiler/
+            profiler-sdk/core/profiling/
+            .github/scripts/batch_allocation_control.py
+            .github/scripts/read_native_allocations.py
+            .github/workflows/batch-allocation-control.yml
+          include-hidden-files: true
+          retention-days: 90
