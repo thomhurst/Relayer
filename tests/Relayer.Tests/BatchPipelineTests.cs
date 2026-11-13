@@ -534,8 +534,6 @@ public class BatchPipelineTests
         await Assert.That(provider.GetRequiredService<Control>().Scopes.Count).IsEqualTo(1);
     }
 
-    // Runtime timer queues share locks across tests and allocate wait state on first contention.
-    [NotInParallel]
     [Test]
     [Arguments(false)]
     [Arguments(true)]
@@ -559,6 +557,9 @@ public class BatchPipelineTests
             using var scope = scopes.CreateScope();
             _ = scope.ServiceProvider.GetRequiredService<ScopedBaseline>();
         }
+        // Preserve native finite deadlines and parallel execution; warm their shared
+        // runtime lock state separately from the native-DI versus pipeline comparison.
+        if (bufferedSends) TimerQueueWarmup.WarmContention();
         var start = GC.GetAllocatedBytesForCurrentThread();
         for (var iteration = 0; iteration < 1000; iteration++)
         {
