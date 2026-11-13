@@ -24,7 +24,7 @@ internal sealed class SendRoute<TMessage>
     private readonly MessageEnvelope _envelope;
     private readonly SendTracing? _tracing;
     private readonly string _wireType;
-    private readonly PoolSegment _operations = new();
+    private readonly Operation?[] _operations = new Operation?[64];
     private readonly bool _isTombstone;
 
     internal SendRouteOptions Options => _options;
@@ -62,46 +62,24 @@ internal sealed class SendRoute<TMessage>
 
     private Operation Rent()
     {
-        for (var segment = _operations; segment is not null; segment = Volatile.Read(ref segment.Next))
+        for (var i = 0; i < _operations.Length; i++)
         {
-            for (var i = 0; i < segment.Items.Length; i++)
-            {
-                if (Interlocked.Exchange(ref segment.Items[i], null) is { } operation)
-                {
-                    return operation;
-                }
-            }
+            if (Volatile.Read(ref _operations[i]) is not null &&
+                Interlocked.Exchange(ref _operations[i], null) is { } operation) return operation;
         }
         return new Operation(this);
     }
 
     private void Return(Operation operation)
     {
-        var segment = _operations;
-        while (true)
+        // Large messages and bursts may allocate, but cannot permanently enlarge the idle pool (D52).
+        if (operation.CanRetain)
         {
-            for (var i = 0; i < segment.Items.Length; i++)
-            {
-                if (Interlocked.CompareExchange(ref segment.Items[i], operation, null) is null)
-                {
-                    return;
-                }
-            }
-            // Retain the peak number of overlapping sends instead of allocating again on every burst.
-            var next = Volatile.Read(ref segment.Next);
-            if (next is null)
-            {
-                var added = new PoolSegment();
-                next = Interlocked.CompareExchange(ref segment.Next, added, null) ?? added;
-            }
-            segment = next;
+            for (var i = 0; i < _operations.Length; i++)
+                if (Volatile.Read(ref _operations[i]) is null &&
+                    Interlocked.CompareExchange(ref _operations[i], operation, null) is null) return;
         }
-    }
-
-    private sealed class PoolSegment
-    {
-        internal readonly Operation?[] Items = new Operation?[Math.Max(1, Environment.ProcessorCount)];
-        internal PoolSegment? Next;
+        operation.Timeout.Dispose();
     }
 
     private sealed class Operation : SendContext, ISendOperation, IValueTaskSource
@@ -130,6 +108,9 @@ internal sealed class SendRoute<TMessage>
             _route = route;
             _continuation = Complete;
         }
+
+        internal bool CanRetain => _body.Capacity <= 64 * 1024 && _key.Capacity <= 4 * 1024 &&
+            _headers.CanRetain && Options.CanRetain;
 
         internal CancellationTokenSource Timeout { get; private set; } = new();
         public override object Message => _message!;
@@ -345,12 +326,14 @@ internal sealed class SendRoute<TMessage>
 }
 
 /// <summary>Reusable storage for the transport-neutral envelope. Values remain valid through send completion.</summary>
-/// <remarks>Header value buffers grow on demand and are retained per pooled operation for subsequent sends.</remarks>
+/// <remarks>Header value buffers grow on demand; operations with oversized storage are discarded after completion.</remarks>
 internal sealed class SendHeaders : IMessageHeaderWriter<SendHeaders>, IMessageHeaderReader<SendHeaders>
 {
     private KeyValuePair<string, WireString>[] _entries = new KeyValuePair<string, WireString>[8];
     private byte[]?[] _values = new byte[8][];
     private int _count;
+    private bool _oversizedValue;
+    internal bool CanRetain => _entries.Length <= 64 && !_oversizedValue;
 
     internal ReadOnlyMemory<KeyValuePair<string, WireString>> Written => _entries.AsMemory(0, _count);
 
@@ -384,6 +367,7 @@ internal sealed class SendHeaders : IMessageHeaderWriter<SendHeaders>, IMessageH
         {
             buffer = new byte[Math.Max(128, length)];
             message._values[index] = buffer;
+            if (buffer.Length > 4 * 1024) message._oversizedValue = true;
         }
         Encoding.UTF8.GetBytes(value, buffer);
         message._entries[index] = new(name, new WireString(buffer.AsMemory(0, length)));

@@ -71,7 +71,9 @@ Every send has a finite timeout, covering middleware, serialization, and transpo
 
 Outbox integrations register a scoped `IOutboxEnlistment`. When `IsActive` is true, `SendAsync` enlists the serialized message instead of sending it. Enlistment must copy borrowed body and headers into the active transaction before completing. Native callbacks cannot be persisted and fail before enlistment. `SendNowAsync` bypasses the outbox; `SendViaOutboxAsync` requires an active transaction. These explicit methods support the same configuration and cancellation arguments as `SendAsync`.
 
-The pipeline pools contexts, serialization buffers, envelope storage, and timeout sources. After warmup, the default direct path allocates no managed memory with no tracing listener. Caller code, middleware, serializer implementations and native clients can add their own allocations.
+The pipeline pools contexts, serialization buffers, envelope storage, and timeout sources. Each route retains at most 64 completed send operations; the scoped sender pool also retains at most 64 senders. Sends beyond those limits still proceed normally, allocating temporary state that is discarded on return. Operations with body buffers above 64 KiB, ordering-key buffers above 4 KiB, more than 64 envelope slots, envelope value buffers above 4 KiB, additional-header dictionary capacity above 128, or native callback capacity above 16 are also discarded on return. These are storage retention limits, not message size or concurrency limits.
+
+After warmup, the default direct path allocates no managed memory with no tracing listener while sends fit within these retention limits. Repeated oversized sends or bursts above the pool capacity allocate again rather than permanently retaining peak memory. Caller code, middleware, serializer implementations and native clients can add their own allocations.
 
 ## Send tracing
 

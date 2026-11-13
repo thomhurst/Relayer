@@ -11,22 +11,20 @@ internal sealed class SenderPool(SendPipeline pipeline)
     internal void Enable()
     {
         if (Volatile.Read(ref _senders) is null)
-            Interlocked.CompareExchange(ref _senders, new Segment(this, initialize: true), null);
+            Interlocked.CompareExchange(ref _senders, new Segment(this), null);
     }
 
     internal Sender Rent(IOutboxEnlistment? outbox, TenantContext? tenant = null)
     {
         var first = Volatile.Read(ref _senders);
         if (first is null) return new Sender(_pipeline, outbox) { Tenant = tenant };
-        for (var segment = first; segment is not null; segment = Volatile.Read(ref segment.Next))
+        for (var i = 0; i < first.Items.Length; i++)
         {
-            for (var i = 0; i < segment.Items.Length; i++)
-            {
-                if (Interlocked.Exchange(ref segment.Items[i], null) is not { } sender) continue;
-                sender.Outbox = outbox;
-                sender.Tenant = tenant;
-                return sender;
-            }
+            if (Volatile.Read(ref first.Items[i]) is null ||
+                Interlocked.Exchange(ref first.Items[i], null) is not { } sender) continue;
+            sender.Outbox = outbox;
+            sender.Tenant = tenant;
+            return sender;
         }
         return new PooledSender(this, _pipeline) { Outbox = outbox, Tenant = tenant };
     }
@@ -34,25 +32,18 @@ internal sealed class SenderPool(SendPipeline pipeline)
     private void Return(PooledSender sender)
     {
         var segment = _senders!;
-        while (true)
-        {
-            for (var i = 0; i < segment.Items.Length; i++)
-                if (Interlocked.CompareExchange(ref segment.Items[i], sender, null) is null) return;
-            var next = Volatile.Read(ref segment.Next);
-            if (next is null)
-                next = Interlocked.CompareExchange(ref segment.Next, new Segment(this), null) ?? segment.Next;
-            segment = next!;
-        }
+        for (var i = 0; i < segment.Items.Length; i++)
+            if (Volatile.Read(ref segment.Items[i]) is null &&
+                Interlocked.CompareExchange(ref segment.Items[i], sender, null) is null) return;
+        // Overflow senders become collectible after the attempt instead of retaining peak concurrency.
     }
 
     private sealed class Segment
     {
         internal readonly PooledSender?[] Items = new PooledSender[64];
-        internal Segment? Next;
-        internal Segment(SenderPool owner, bool initialize = false)
+        internal Segment(SenderPool owner)
         {
-            if (initialize)
-                for (var i = 0; i < Items.Length; i++) Items[i] = new(owner, owner._pipeline);
+            for (var i = 0; i < Items.Length; i++) Items[i] = new(owner, owner._pipeline);
         }
     }
 
