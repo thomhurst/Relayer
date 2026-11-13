@@ -96,10 +96,18 @@ services.AddRelayer(relayer =>
     {
         kafka.TopologyMode = TopologyMode.None; // Provision the topic externally.
         kafka.Options.Configure(options => options.BootstrapServers.Add("localhost:9092"));
-        kafka.Consume("order-starts", consumer => consumer.Handler<BeginOrderWait>()
-            .Saga<OrdersDbContext, OrderState>("orders.process"));
-        kafka.Consume("order-timeouts", consumer => consumer.Handler<ExpireOrderWait>()
-            .Saga<OrdersDbContext, OrderState>("orders.process"));
+        kafka.Consume("order-starts", consumer =>
+        {
+            consumer.Options.Group = "orders-process-starts";
+            consumer.Handler<BeginOrderWait>()
+                .Saga<OrdersDbContext, OrderState>("orders.process");
+        });
+        kafka.Consume("order-timeouts", consumer =>
+        {
+            consumer.Options.Group = "orders-process-timeouts";
+            consumer.Handler<ExpireOrderWait>()
+                .Saga<OrdersDbContext, OrderState>("orders.process");
+        });
         kafka.Send<WaitExpired>("order-timeouts", route => route.SendOptions = new()
         {
             RequiredDeliveryDelay = TimeSpan.FromDays(1),
