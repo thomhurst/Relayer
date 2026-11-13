@@ -1,6 +1,6 @@
 ---
 title: Diagnostics
-description: "Compile-time analyzers RLY001 to RLY004 and generator errors RLYH001, RLYM001 and RLYM002: what each reports and how to fix it."
+description: "Compile-time analyzers RLY001 to RLY004 and generator errors RLYH001, RLYM001, RLYM002 and RLYM004: what each reports and how to fix it."
 ---
 
 Relayer ships compile-time analyzers and an IDE code fix in its NuGet package. They inspect symbols, not naming conventions, and add no runtime work. Startup validation still checks the complete configuration, including declarations assembled through helpers or other assemblies.
@@ -14,6 +14,7 @@ Relayer ships compile-time analyzers and an IDE code fix in its NuGet package. T
 | [RLYH001](#rlyh001) | Error | A handler message type is inaccessible to generated dispatch. |
 | [RLYM001](#rlym001) | Error | A message declaration has type parameters on itself or a containing type. |
 | [RLYM002](#rlym002) | Error | A declared message type is inaccessible to generated registration and JSON metadata. |
+| [RLYM004](#rlym004) | Error | A declared message type is static. |
 
 ## RLY001
 
@@ -70,6 +71,10 @@ Generated dispatch must be able to access each handler's message type. Make the 
 ## RLYM002
 
 A `[Message]` declaration must be accessible from the generated assembly-wide registration and JSON context. Make the message and all containing types `internal` or `public` (or otherwise accessible within the assembly), and remove any `file` modifier. Unsupported declarations are excluded from both generated outputs; other accessible messages still generate normally. See [message registration](../guides/messages.md).
+
+## RLYM004
+
+A static class cannot be a wire message because generated registration and JSON metadata require an instance type. Declare a non-static class, struct or record instead. The unsupported declaration is excluded from both generated outputs; ordinary messages nested inside accessible static containers remain supported. See [message registration](../guides/messages.md).
 
 ## Suppression and generated code
 

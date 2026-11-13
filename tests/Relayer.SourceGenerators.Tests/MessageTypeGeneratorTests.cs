@@ -55,6 +55,47 @@ public class MessageTypeGeneratorTests
     }
 
     [Test]
+    public async Task Static_messages_are_diagnosed_without_generated_source_errors()
+    {
+        var references = ((string)AppContext.GetData("TRUSTED_PLATFORM_ASSEMBLIES")!)
+            .Split(Path.PathSeparator).Select(static p => MetadataReference.CreateFromFile(p)).ToList();
+        references.Add(MetadataReference.CreateFromFile(typeof(MessageAttribute).Assembly.Location));
+        var tree = CSharpSyntaxTree.ParseText("""
+            [Relayer.Message("static")]
+            public static class InvalidMessage { }
+            [Relayer.Message("ordinary")]
+            public sealed record OrdinaryMessage(int Value);
+            public static class Container
+            {
+                [Relayer.Message("nested")]
+                public sealed record NestedMessage(int Value);
+            }
+            """);
+        var compilation = CSharpCompilation.Create("StaticMessages", [tree], references,
+            new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
+        GeneratorDriver driver = CSharpGeneratorDriver.Create(new MessageTypeGenerator());
+        driver = driver.RunGeneratorsAndUpdateCompilation(compilation, out var output, out var diagnostics);
+        await Assert.That(diagnostics.Length).IsEqualTo(1);
+        var diagnostic = diagnostics[0];
+        await Assert.That(diagnostic.Id).IsEqualTo("RLYM004");
+        await Assert.That(diagnostic.Severity).IsEqualTo(DiagnosticSeverity.Error);
+        await Assert.That(diagnostic.Location.GetLineSpan().Path).IsEqualTo(tree.FilePath);
+        await Assert.That(tree.GetText().ToString(diagnostic.Location.SourceSpan))
+            .IsEqualTo("[Relayer.Message(\"static\")]\npublic static class InvalidMessage { }");
+        await Assert.That(diagnostic.Descriptor.HelpLinkUri)
+            .IsEqualTo("https://relayer.tomlonghurst.dev/docs/reference/diagnostics#rlym004");
+        await Assert.That(diagnostic.GetMessage()).Contains("non-static");
+        await Assert.That(string.Join("\n", output.GetDiagnostics()
+            .Where(d => d.Severity == DiagnosticSeverity.Error))).IsEqualTo("");
+        var sources = string.Join("\n", driver.GetRunResult().GeneratedTrees.Select(t => t.ToString()));
+        await Assert.That(sources).DoesNotContain("global::InvalidMessage");
+        await Assert.That(sources).Contains("Add<global::OrdinaryMessage>");
+        await Assert.That(sources).Contains("Add<global::Container.NestedMessage>");
+        await Assert.That(sources).Contains("typeof(global::OrdinaryMessage)");
+        await Assert.That(sources).Contains("typeof(global::Container.NestedMessage)");
+    }
+
+    [Test]
     public async Task Pinned_json_generator_is_embedded_and_generates_compilable_metadata_after_reload()
     {
         // The pinned implementation must travel with each generator binary, rather
