@@ -28,11 +28,12 @@ internal sealed class RabbitMqPublisher(IChannel channel)
 
     private readonly RabbitMqHeaders _headers = new();
     internal const int CacheCapacity = 256;
-    private readonly Dictionary<(int Index, int Length), byte[]> _buffers = new(CacheCapacity);
-    private readonly (int Index, int Length)[] _bufferOrder = new (int, int)[CacheCapacity];
+    // Grow boundary caches only for shapes actually used; most batch slots need very few entries.
+    private readonly Dictionary<(int Index, int Length), byte[]> _buffers = new();
+    private readonly List<(int Index, int Length)> _bufferOrder = [];
     private int _nextBuffer;
     private int _nextContentType;
-    private readonly List<(byte[] Utf8, string Text)> _contentTypes = new(CacheCapacity);
+    private readonly List<(byte[] Utf8, string Text)> _contentTypes = new();
     // The native field-table API requires a boxed integer. This publisher exclusively owns and reuses its box.
     private readonly object _delay = 0L;
 
@@ -74,7 +75,8 @@ internal sealed class RabbitMqPublisher(IChannel channel)
             buffer = new byte[value.Utf8.Length];
             if (_buffers.Count == CacheCapacity) _buffers.Remove(_bufferOrder[_nextBuffer]);
             _buffers.Add(key, buffer);
-            _bufferOrder[_nextBuffer] = key;
+            if (_bufferOrder.Count < CacheCapacity) _bufferOrder.Add(key);
+            else _bufferOrder[_nextBuffer] = key;
             _nextBuffer = (_nextBuffer + 1) % CacheCapacity;
         }
         value.Utf8.Span.CopyTo(buffer);

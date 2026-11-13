@@ -7,6 +7,19 @@ namespace Relayer.Tests;
 public class RabbitMqPublisherTests
 {
     [Test]
+    public async Task Batch_slots_do_not_reserve_full_boundary_caches()
+    {
+        var publisher = new RabbitMqPublisher(null!);
+        publisher.BatchSlot(0);
+        var before = GC.GetAllocatedBytesForCurrentThread();
+        for (var i = 1; i <= 1000; i++) publisher.BatchSlot(i);
+        var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+        // Allows small slot state and list growth, but rejects 256-entry caches per slot.
+        await Assert.That(allocated < 2_000_000L).IsTrue();
+        GC.KeepAlive(publisher);
+    }
+
+    [Test]
     public async Task Metrics_endpoint_is_created_without_message_tracing()
     {
         using var instrumentation = new RelayerInstrumentation();
