@@ -9,6 +9,7 @@ on:
       - '.github/scripts/frozen_concurrent_control.py'
       - '.github/scripts/frozen_scope_control.py'
       - '.github/workflows/frozen-bdn-control.yml'
+      - 'tools/FrozenNativeHost/**'
   workflow_dispatch:
     inputs:
       performance_run:
@@ -28,6 +29,12 @@ on:
           - queue-composed
           - queue-native
 
+      parent:
+        description: Native BDN pipe parent or existing console-only replay (bundled protocol comparison)
+        required: true
+        default: console
+        type: choice
+        options: [console, native]
       same_image:
         description: Hold one original image constant (abba preserves the image comparison)
         required: true
@@ -71,17 +78,26 @@ jobs:
           uname -a > results/host.txt
           lscpu > results/cpu.txt
           python3 -m unittest discover -s .github/scripts -p test_frozen_bdn_control.py > results/launcher-tests.log 2>&1
+      - name: Build native BenchmarkDotNet parent
+        if: inputs.parent == 'native' || github.event_name == 'pull_request'
+        run: dotnet build tools/FrozenNativeHost -c Release
       - name: Download original images and execute native BenchmarkDotNet ABBA
         env:
           GH_TOKEN: ${{ github.token }}
           PERFORMANCE_RUN: ${{ inputs.performance_run || '42310409459' }}
           BENCHMARK_CASE: ${{ inputs.benchmark_case || 'concurrent' }}
           SAME_IMAGE: ${{ inputs.same_image || 'abba' }}
+          CONTROL_PARENT: ${{ inputs.parent || 'native' }}
           CONTROL_RUNTIME: ${{ inputs.runtime_version || 'auto' }}
         run: |
           [[ "$PERFORMANCE_RUN" =~ ^[0-9]+$ ]] || { echo "Invalid Performance run ID: $PERFORMANCE_RUN" >&2; exit 1; }
           gh run download "$PERFORMANCE_RUN" --name "performance-$PERFORMANCE_RUN-1" --dir inputs
           control_args=(--case "$BENCHMARK_CASE")
+          case "$CONTROL_PARENT" in
+            console) ;;
+            native) control_args+=(--native-executor tools/FrozenNativeHost/bin/Release/net10.0/FrozenNativeHost.dll) ;;
+            *) echo "Invalid parent control: $CONTROL_PARENT" >&2; exit 1 ;;
+          esac
           case "$SAME_IMAGE" in
             abba) ;;
             baseline|candidate) control_args+=(--same-image "$SAME_IMAGE") ;;
@@ -106,4 +122,7 @@ jobs:
             .github/scripts/frozen_concurrent_control.py
             .github/scripts/frozen_scope_control.py
             .github/workflows/frozen-bdn-control.yml
+            tools/FrozenNativeHost/Program.cs
+            tools/FrozenNativeHost/FrozenNativeHost.csproj
+            tools/FrozenNativeHost/bin/Release/net10.0/
           retention-days: 90
