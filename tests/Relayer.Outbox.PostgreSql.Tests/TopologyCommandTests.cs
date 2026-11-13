@@ -135,6 +135,9 @@ public static class AwsDeclarations
         var services = new ServiceCollection();
         services.AddRelayer(r => r.AmazonSns("events", t => t.Options.Configure(o =>
         {
+            // Match the declared topology independently of the host's AWS region.
+            o.Sns.RegionEndpoint = Amazon.RegionEndpoint.EUWest1;
+            o.QueueTopology.Sqs.RegionEndpoint = Amazon.RegionEndpoint.EUWest1;
             o.QueueTopology.Queues.Add(new() { QueueName = "orders" });
             o.Topics.Add(new() { Name = "order-events" });
             o.Subscriptions.Add(new()
