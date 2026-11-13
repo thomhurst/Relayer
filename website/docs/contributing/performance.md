@@ -453,35 +453,73 @@ the CI gate with their adapter and retain raw results for both paths. Never use
 an in-memory result as a substitute for any of Kafka, Azure Service Bus, Amazon
 SQS/SNS or RabbitMQ.
 
-### Kafka header allocation attribution
+### Kafka delivery header snapshots
 
-`KafkaHeaderAllocationBenchmarks` isolates header access from fetching, JSON,
-DI scopes, handlers and offset commits. Setup produces the same two-header
-CloudEvents record as `KafkaReceiveBenchmarks` and holds its real native fetch
-batch until cleanup. The controls compare no header access, one native lookup,
-four independent native lookups, four lookups sharing one native snapshot, and
-four lookups through `KafkaMessageBinding`:
+Kafka deliveries retain one native Dekaf header view for all envelope lookups and
+failure copies. The readonly delivery value and its copies share that view;
+replacing `Result` through an initializer or `with` expression obtains a view for
+the replacement record. Equality and deconstruction still use only `Result` and
+`PartitionId`. Native access through `context.Kafka().ConsumeResult` returns the
+original record. Reading its `Headers` property separately still uses Dekaf's
+native snapshot behavior.
+
+Dekaf 1.27.0's `ConsumeResult.Headers` creates a lazy view for each property read.
+Reading an element materializes safe owned header/value arrays. Retaining that
+view removes three redundant snapshots from the normal four-lookups envelope
+path (`ce_type`, `ce_id`, attempts and redeliveries). It reuses Dekaf's storage
+lifetime checks and copying rather than introducing a second header cache or
+borrowing pooled values past their lifetime. The receive pipeline clears the
+delivery reference on completion, including failure and cancellation. Deliveries
+remain borrowed values valid only during the receive callback.
+
+`KafkaDeliveryHeaderBenchmarks` holds a real Kafka fetch batch and compares no
+header access, one native lookup, four independent native lookups, one shared
+native view and the Relayer binding. The Relayer case constructs a fresh delivery
+inside every measured invocation, so construction and materialization are counted;
+it does not reuse a snapshot warmed during setup. All four-lookup cases read the
+same envelope and return the same result. Run alongside the production failure
+composition in `KafkaReceiveBenchmarks`:
 
 ```sh
-RELAYER_KAFKA_BOOTSTRAP_SERVERS=localhost:19092 dotnet run -c Release --project benchmarks/Relayer.Benchmarks -- --filter '*KafkaHeaderAllocationBenchmarks*' --job short --exporters fulljson --keepFiles
+RELAYER_KAFKA_BOOTSTRAP_SERVERS=localhost:19092 dotnet run -c Release --project benchmarks/Relayer.Benchmarks -- --filter '*KafkaDeliveryHeaderBenchmarks*' '*KafkaReceiveBenchmarks*' --job short --exporters fulljson
 ```
 
-Dekaf 1.27.0 creates a new lazy list each time `ConsumeResult.Headers` is read.
-Indexing the list materializes a safe header array and a copy of its value bytes.
-The normal executable receive success path looks up the event type, event ID,
-failure-attempt count and redelivery count separately. Even an absent counter
-causes materialization while scanning the two existing headers. The payload-only
-raw receive benchmark does not read headers, so its allocation difference includes
-these native snapshots as well as any other differences in work.
+A local ShortRun on macOS ARM64 (Apple M5 Pro, .NET 10.0.14, SDK 11.0.100,
+Kafka 4.0.2, Dekaf 1.27.0) measured the following diagnostic controls:
 
-The independent native and binding controls reproduce the repeated snapshots;
-the shared-list control demonstrates that only one snapshot is needed for these
-four reads. Repeated avoidable copies remain Relayer's responsibility under D52,
-even though the allocating methods belong to the native client.
-[#671](https://github.com/thomhurst/Relayer/issues/671) tracks sharing the native
-view for one delivery. A borrowed native lookup API is requested in
-[Dekaf #4120](https://github.com/thomhurst/Dekaf/issues/4120); existing snapshots
-must continue owning their bytes after the fetch is released.
+| Header control | Allocated per invocation | Mean |
+| --- | ---: | ---: |
+| No header access | 0 B | Below timing resolution |
+| One native lookup | 216 B | 22.28 ns |
+| Four independent native lookups | 864 B | 91.63 ns |
+| Four lookups sharing one native view | 216 B | 29.28 ns |
+| Four Relayer lookups, including fresh delivery construction | 216 B | 28.71 ns |
+
+The full production-failure receive comparison against base `c3140a1` measured
+1.88/1.90 KB per Relayer message before this change and 1.27/1.27 KB after it
+(health disabled/enabled). Raw Dekaf measured 1.04 KB per message in both runs.
+Relayer means were 48.98/48.65 microseconds before and 51.54/48.76 microseconds
+after. These three-iteration runs are noisy: the baseline raw/health-disabled
+mean was 119.63 microseconds with 50.60 microseconds standard deviation, versus
+49.44 microseconds in the candidate run. They demonstrate reduced allocations
+without establishing a throughput improvement, regression or the 5% budget.
+No unfavorable timing is discarded. The allocation controls attribute the
+removed repeated snapshots independently of these end-to-end totals.
+
+The remaining required snapshot is native-client cost under D52; redundant
+snapshots caused by repeated Relayer property reads are avoidable. These controls
+exclude fetching, JSON, scopes and settlement, so their timings cannot establish
+the 5% end-to-end receive budget. The raw receive comparison reads no headers;
+its difference also includes unequal native header work. ShortRun timings are
+diagnostic and do not establish budget compliance.
+
+### Kafka header allocation attribution
+
+`KafkaHeaderAllocationBenchmarks` retains the attribution controls introduced in
+[#673](https://github.com/thomhurst/Relayer/pull/673). Its binding case now uses
+the shared delivery view described above. Use `KafkaDeliveryHeaderBenchmarks`
+for fresh-delivery construction cost; a delivery retained during setup can reuse
+an already materialized snapshot.
 
 To collect separate allocation profiles of the complete receive comparison, set
 `RELAYER_KAFKA_ALLOCATION_PROFILE=1` and filter `*KafkaReceiveBenchmarks*`.
@@ -489,10 +527,9 @@ This enables BenchmarkDotNet's GC-verbose EventPipe diagnostic execution in
 addition to its ordinary MemoryDiagnoser execution. Whole-process profiles include
 setup, warmup and cleanup, so use their stacks to locate owners, not their sample
 weights as exact measured bytes. Keep the raw/native and composed reports and
-profiled timings separate. The held-batch controls deliberately exclude fetching
-and settlement; their timings cannot establish receive throughput or the 5% budget.
-The attribution identifies repeated header snapshots without establishing that
-Kafka receive meets the zero-allocation budget.
+profiled timings separate. A borrowed native lookup API is requested in
+[Dekaf #4120](https://github.com/thomhurst/Dekaf/issues/4120); existing snapshots
+must continue owning their bytes after the fetch is released.
 
 ### Frozen concurrent investigation
 

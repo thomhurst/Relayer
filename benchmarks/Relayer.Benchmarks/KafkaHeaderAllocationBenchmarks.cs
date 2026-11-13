@@ -57,7 +57,7 @@ public class KafkaHeaderAllocationBenchmarks
     public int NativeSingleLookup() => Find(_record.Headers, "ce_type") ? 1 : 0;
 
     // The executable success path validates type/id and reads both failure counters.
-    // Each lookup deliberately obtains the native property again, as the binding does.
+    // Each lookup deliberately obtains the native property again to model the former binding.
     [Benchmark]
     public int NativeEnvelopeLookups()
         => (Find(_record.Headers, "ce_type") ? 1 : 0)

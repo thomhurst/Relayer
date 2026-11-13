@@ -65,13 +65,15 @@ internal sealed class KafkaHostedService(IServiceProvider provider, string name)
 
     internal static OutgoingMessage Copy(MessageContext context)
     {
-        var record = context.Kafka().ConsumeResult;
-        var headers = new KeyValuePair<string, WireString>[record.Headers.Count];
+        var delivery = context.Features.GetRequired<NativeMessage<KafkaDelivery>>().Message;
+        var record = delivery.Result;
+        var nativeHeaders = delivery.Headers;
+        var headers = new KeyValuePair<string, WireString>[nativeHeaders.Count];
         var nativeCopy = record.Value is null;
         for (var i = 0; i < headers.Length; i++)
         {
-            headers[i] = new(record.Headers[i].Key, new(record.Headers[i].Value));
-            nativeCopy |= record.Headers[i].IsValueNull || record.Headers[i].Key == KafkaSendState.TombstoneHeader;
+            headers[i] = new(nativeHeaders[i].Key, new(nativeHeaders[i].Value));
+            nativeCopy |= nativeHeaders[i].IsValueNull || nativeHeaders[i].Key == KafkaSendState.TombstoneHeader;
         }
         if (!nativeCopy) return new(record.Topic, record.Value, headers, record.IsKeyNull ? null : new WireString(record.Key!));
         var options = new SendOptions().ConfigureNative<Headers>(native =>
@@ -79,13 +81,13 @@ internal sealed class KafkaHostedService(IServiceProvider provider, string name)
             native.Remove(KafkaSendState.TombstoneHeader);
             // WireString represents bytes but not Kafka's null header value. Restore native
             // nulls on this error-only copy path, retaining duplicates in their native order.
-            for (var i = 0; i < record.Headers.Count; i++)
+            for (var i = 0; i < nativeHeaders.Count; i++)
             {
-                var header = record.Headers[i];
+                var header = nativeHeaders[i];
                 if (!header.IsValueNull || header.Key is KafkaSendState.TombstoneHeader or FailureHeaders.History or FailureHeaders.Attempts or FailureHeaders.Redeliveries or FailureHeaders.DeadLetterReason) continue;
                 native.Remove(header.Key);
-                for (var j = 0; j < record.Headers.Count; j++)
-                    if (record.Headers[j].Key == header.Key) native.Add(record.Headers[j]);
+                for (var j = 0; j < nativeHeaders.Count; j++)
+                    if (nativeHeaders[j].Key == header.Key) native.Add(nativeHeaders[j]);
             }
         });
         return new(record.Topic, record.Value ?? [], headers, record.IsKeyNull ? null : new WireString(record.Key!), options: options, isTombstone: record.Value is null);

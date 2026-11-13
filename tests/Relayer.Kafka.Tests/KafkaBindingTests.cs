@@ -36,6 +36,25 @@ public class KafkaBindingTests
         await Assert.That(KafkaMessageBinding.GetBody(incoming).First.Equals(incoming.Result.Value.AsMemory())).IsTrue();
     }
 
+    [Test]
+    public async Task Copies_share_headers_but_replacing_the_record_refreshes_the_view()
+    {
+        var incoming = Record(false, false);
+        var copy = incoming with { PartitionId = "1" };
+        await Assert.That(ReferenceEquals(copy.Headers, incoming.Headers)).IsTrue();
+        var replacement = new KafkaDelivery(incoming.Result, incoming.PartitionId);
+        await Assert.That(replacement).IsEqualTo(incoming);
+        await Assert.That(replacement.GetHashCode()).IsEqualTo(incoming.GetHashCode());
+        var different = Record(true, true);
+        copy = incoming with { Result = different.Result };
+        await Assert.That(ReferenceEquals(copy.Headers, different.Headers)).IsTrue();
+        await Assert.That(KafkaMessageBinding.IsTombstone(copy)).IsTrue();
+        var (record, partition) = incoming;
+        await Assert.That(record).IsEqualTo(incoming.Result);
+        await Assert.That(partition).IsEqualTo("0");
+        await Assert.That(default(KafkaDelivery).Headers.Count).IsEqualTo(0);
+    }
+
     private static void Read(KafkaDelivery incoming)
     {
         _ = KafkaMessageBinding.GetBody(incoming);
