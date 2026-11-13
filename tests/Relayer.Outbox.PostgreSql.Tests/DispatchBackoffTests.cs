@@ -202,6 +202,36 @@ public class DispatchBackoffTests
         await Assert.That(reader.GetGuid(1)).IsEqualTo(rejected);
     }
 
+    [Test]
+    public async Task Batch_outage_stops_isolation_after_first_retry_and_backs_off_every_row()
+    {
+        await using var fixture = new PostgreSqlFixture();
+        await fixture.StartAsync();
+        await using var source = NpgsqlDataSource.Create(fixture.ConnectionString);
+        await PostgreSqlOutboxStoreTests.CreateSchema(source);
+        for (var i = 0; i < 4; i++)
+            await PostgreSqlOutboxStoreTests.Insert(source, new(), Guid.CreateVersion7(), DateTimeOffset.UtcNow);
+        await using (var setup = source.CreateCommand("UPDATE relayer_outbox SET ordering_key = NULL"))
+            await setup.ExecuteNonQueryAsync();
+        var transport = new OutageTransport();
+        var store = new PostgreSqlOutboxStore(source);
+        var rows = new OutboxRecord[4];
+        var count = await store.ReadPendingAsync(new(null, DateTimeOffset.UtcNow), rows, default);
+        await Assert.That(count).IsEqualTo(4);
+        using var worker = new PostgreSqlDirectDispatcher(source, new(), new() { BatchSize = 4 }, [transport],
+            NullLogger<PostgreSqlDirectDispatcher>.Instance);
+        var before = DateTimeOffset.UtcNow;
+        await worker.DispatchRecoveredAsync(rows.AsMemory(0, count), default);
+        await Assert.That(transport.Attempts).IsEqualTo(2); // One batch and one single native send.
+        await using var state = source.CreateCommand("SELECT count(*), bool_and(attempts = 1 AND status = 'pending' AND deliver_at >= @before + interval '1 second' AND claim_token IS NULL), (SELECT count(*) FROM relayer_outbox_dead) FROM relayer_outbox");
+        state.Parameters.AddWithValue("before", before);
+        await using var reader = await state.ExecuteReaderAsync();
+        await reader.ReadAsync();
+        await Assert.That(reader.GetInt64(0)).IsEqualTo(4L);
+        await Assert.That(reader.GetBoolean(1)).IsTrue();
+        await Assert.That(reader.GetInt64(2)).IsEqualTo(0L);
+    }
+
     private sealed class ClassificationObservation
     {
         internal string? Id;
@@ -258,7 +288,7 @@ public class DispatchBackoffTests
         public bool Failing { get; set; } = true;
         public int Attempts { get; private set; }
         public string Name => "events";
-        public TransportCapabilities GetCapabilities(string endpoint) => new() { OrderedByKey = true };
+        public TransportCapabilities GetCapabilities(string endpoint) => new() { OrderedByKey = true, MaxBatchSize = 4 };
         public ValueTask SendAsync(OutgoingMessage message, CancellationToken cancellationToken)
         {
             Attempts++;

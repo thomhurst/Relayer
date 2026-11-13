@@ -152,7 +152,7 @@ After a native batch fails, dispatch tries each row once through native `SendAsy
 remains live, then completes or classifies that row independently. This prevents one rejected row
 from repeatedly backing off healthy neighbours. A partially successful batch can produce duplicate
 sends during isolation, consistent with at-least-once delivery. Cancellation stops isolation; expired
-claims remain for recovery. Successful batches retain the existing batch send and completion path.
+claims remain for recovery. Successful batches retain the existing batch send and completion path. The first single-send `Retry` stops isolation and applies fenced durable backoff to the remaining claims with the same error. An outage therefore costs at most one failed batch send and one failed single send per pass; `DeadLetter` and `Discard` allow isolation to continue. Expired or replaced claims cannot be updated and remain eligible for recovery under the existing fencing rules.
 
 Ordered preparation errors (missing transport, key or ordering capability) and explicit low-level
 `RecordFailureAsync` calls retain the positive `MaxDispatchAttempts` budget (default **10**).

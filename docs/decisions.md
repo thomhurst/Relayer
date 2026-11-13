@@ -83,7 +83,7 @@ To change a decision, add a new entry that supersedes it rather than editing his
 | [D70](#d70-mysql-send-failures-retain-durable-retry-eligibility) | MySQL send failures retain durable retry eligibility | Accepted |
 | [D71](#d71-sql-server-outbox-send-failures-retain-durable-eligibility) | SQL Server outbox send failures retain durable eligibility | Accepted |
 | [D72](#d72-handler-registration-belongs-to-the-consumer) | Handler registration belongs to the consumer | Accepted |
-| [D71](#d71-postgresql-retryable-outbox-sends-retain-durable-eligibility) | PostgreSQL retryable outbox sends retain durable eligibility | Accepted |
+| [D72](#d72-postgresql-retryable-outbox-sends-retain-durable-eligibility) | PostgreSQL retryable outbox sends retain durable eligibility | Accepted |
 
 ---
 
@@ -1703,7 +1703,7 @@ classification. See [SQL Server recovery](https://relayer.tomlonghurst.dev/docs/
 **Decision.** Generate `Handler<THandler>()` only for `IConsumerBuilder`. Remove the root builder overload and `AddHandlersFromThisAssembly()`. Applications explicitly select each handler inside its consumer callback. RLY003 points to that call. Source generation continues to discover contracts at compile time; it does not register discovered handlers automatically. Manual pipeline composers use descriptors registered by their consumer declaration.
 
 **Consequences.** One application call selects dispatch and registers DI, preserving explicit topology, typed native options, AOT safety and existing handler lifetimes. Existing applications move builder-level registrations into consumer callbacks. Dispatch and native broker behavior are unchanged, with no additional steady-state work or allocation.
-## D71. PostgreSQL retryable outbox sends retain durable eligibility
+## D72. PostgreSQL retryable outbox sends retain durable eligibility
 
 **Context.** Native sends already retry within their operation: Azure.Messaging.ServiceBus 7.21.0
 [`ServiceBusRetryPolicy.RunOperation`](https://github.com/Azure/azure-sdk-for-net/blob/Azure.Messaging.ServiceBus_7.21.0/sdk/servicebus/Azure.Messaging.ServiceBus/src/Primitives/ServiceBusRetryPolicy.cs)
@@ -1736,7 +1736,10 @@ Existing native batch behavior was checked in ServiceBusSendTransport, KafkaProd
 SqsSendTransport and RabbitMqNativeTransport.Send. SQS exposes partial failures in its native response;
 other native batches can reject before sending or partially send. `ITransport.SendBatchAsync` exposes
 one exception rather than a portable per-row receipt. After failure, use each existing native `SendAsync`
-once under its original live claim to isolate rows, and apply the same classifier per failed row. This
+once under its original live claim to isolate rows, and apply the same classifier per failed row. The
+first single-send `Retry` ends isolation: remaining claims receive fenced durable backoff using that
+error, without further native sends or classification. This bounds a full outage to one batch and one
+single send, while `DeadLetter`/`Discard` decisions allow isolation to continue. This
 is a bounded isolation pass, not a retry scheduler or replacement for native client retries. It may
 duplicate a row that the batch already sent, as allowed by at-least-once delivery. Successful batches
 are unchanged, and cancellation or known claim expiry stops isolation. No broker outcome is inferred
