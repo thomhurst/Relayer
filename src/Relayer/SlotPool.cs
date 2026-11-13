@@ -1,3 +1,5 @@
+using System.Runtime.CompilerServices;
+
 namespace Relayer;
 
 /// <summary>Owns idle references; callers own creation, reset and disposal of overflow items.</summary>
@@ -20,7 +22,7 @@ internal sealed class SlotPool<T> where T : class
     {
         for (Page? page = _first; page is not null; page = Volatile.Read(ref page.Next))
             for (var i = 0; i < page.Slots.Length; i++)
-                if (Interlocked.Exchange(ref page.Slots[i], null) is { } item) return item;
+                if (Interlocked.Exchange(ref page.Slots[i], null) is { } item) return Unsafe.As<T>(item);
         return null;
     }
 
@@ -46,7 +48,9 @@ internal sealed class SlotPool<T> where T : class
 
     private sealed class Page(int size)
     {
-        internal readonly T?[] Slots = new T?[size];
+        // Only TryReturn(T) writes these slots. Object storage keeps Interlocked intrinsic
+        // in shared generic code; Unsafe.As on rent is safe by that ownership invariant.
+        internal readonly object?[] Slots = new object?[size];
         internal Page? Next;
     }
 }
