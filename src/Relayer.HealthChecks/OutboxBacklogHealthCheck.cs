@@ -27,14 +27,21 @@ internal sealed class OutboxBacklogHealthCheck(IServiceProvider services, IOptio
             {
                 var provider = services.GetKeyedService<IOutboxHealthProvider>(name);
                 if (provider is null) return HealthCheckResult.Unhealthy("No keyed IOutboxHealthProvider is registered.");
-                var count = await provider.GetPendingCountAsync(token).ConfigureAwait(false);
+                var countLimit = settings.OutboxUnhealthyThreshold == long.MaxValue
+                    ? long.MaxValue : settings.OutboxUnhealthyThreshold + 1;
+                var count = await provider.GetPendingCountAsync(countLimit, token).ConfigureAwait(false);
                 if (count is null) return HealthCheckResult.Unhealthy("Outbox backlog is unavailable.");
                 if (count < 0) return HealthCheckResult.Unhealthy("Outbox backlog must not be negative.");
                 var status = HealthStatus.Healthy;
                 if (count >= settings.OutboxUnhealthyThreshold) status = HealthStatus.Unhealthy;
                 else if (count >= settings.OutboxDegradedThreshold) status = HealthStatus.Degraded;
-                return new HealthCheckResult(status, $"{count} pending rows eligible for dispatch.",
-                    data: new Dictionary<string, object> { ["pending_count"] = count.Value });
+                var lowerBound = count >= countLimit;
+                return new HealthCheckResult(status, $"{(lowerBound ? "At least " : "")}{count} pending rows eligible for dispatch.",
+                    data: new Dictionary<string, object>
+                    {
+                        ["pending_count"] = count.Value,
+                        ["pending_count_is_lower_bound"] = lowerBound
+                    });
             }, cancellationToken).ConfigureAwait(false);
             report.Add(name, result);
         }

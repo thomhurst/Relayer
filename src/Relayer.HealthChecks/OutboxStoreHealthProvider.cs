@@ -8,4 +8,11 @@ internal sealed class OutboxStoreHealthProvider(IOutboxStore store, TimeProvider
         cancellationToken.ThrowIfCancellationRequested();
         return store.GetPendingCountAsync(timeProvider.GetUtcNow(), cancellationToken);
     }
+
+    public ValueTask<long?> GetPendingCountAsync(long countLimit, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(countLimit);
+        return store.GetPendingCountAsync(timeProvider.GetUtcNow(), countLimit, cancellationToken);
+    }
 }

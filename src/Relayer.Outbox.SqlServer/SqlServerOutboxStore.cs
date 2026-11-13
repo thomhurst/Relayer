@@ -30,6 +30,7 @@ public sealed class SqlServerOutboxStore : IOutboxStore
     private readonly string _fail;
     private readonly string _retry;
     private readonly string _count;
+    private readonly string _boundedCount;
     private readonly string _batchClaim;
     private readonly string _batchComplete;
     private readonly byte[] _id = new byte[16];
@@ -90,6 +91,7 @@ public sealed class SqlServerOutboxStore : IOutboxStore
             """;
         _retry = SqlServerDispatchSql.Retry(table, fenced, "@now");
         _count = $"SELECT COUNT_BIG(*) FROM {table} WHERE {eligible}";
+        _boundedCount = $"SELECT COUNT_BIG(*) FROM (SELECT TOP (@countLimit) 1 AS value FROM {table} WHERE {eligible}) AS pending";
         _batchClaim = _claim.Replace(" OUTPUT CAST(1 AS bit)", "", StringComparison.Ordinal) + "; SELECT CAST(@@ROWCOUNT AS bit)";
         _batchComplete = _complete.Replace(" OUTPUT CAST(1 AS bit)", "", StringComparison.Ordinal) + "; SELECT CAST(@@ROWCOUNT AS bigint)";
     }
@@ -346,6 +348,20 @@ public sealed class SqlServerOutboxStore : IOutboxStore
         using var command = new SqlCommand(_count, connection, _dispatchTransaction);
         Unsafe.Unbox<DateTimeOffset>(_now) = now.ToUniversalTime();
         Add(command, "@now", SqlDbType.DateTimeOffset, _now);
+        if (ownedConnection is not null) await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+        return (long)(await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false))!;
+    }
+
+    /// <inheritdoc />
+    public async ValueTask<long?> GetPendingCountAsync(DateTimeOffset now, long countLimit, CancellationToken cancellationToken)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(countLimit);
+        CheckOperation(cancellationToken);
+        using var ownedConnection = _dispatchConnection is null ? new SqlConnection(_connectionString) : null;
+        var connection = _dispatchConnection ?? ownedConnection!;
+        using var command = new SqlCommand(_boundedCount, connection, _dispatchTransaction);
+        Add(command, "@now", SqlDbType.DateTimeOffset, now.ToUniversalTime());
+        Add(command, "@countLimit", SqlDbType.BigInt, countLimit);
         if (ownedConnection is not null) await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
         return (long)(await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false))!;
     }
