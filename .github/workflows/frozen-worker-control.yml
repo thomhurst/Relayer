@@ -21,7 +21,7 @@ permissions:
 
 jobs:
   workers:
-    runs-on: ubuntu-26.04
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     env:
       PERFORMANCE_RUN: ${{ inputs.performance_run || '42760437053' }}

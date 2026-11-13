@@ -18,6 +18,17 @@
       "automerge": false,
       "platformAutomerge": false,
       "draftPR": true
+    },
+    {
+      "description": "Frozen allocation controls keep the runner image used by their historical baselines; change it only with deliberate re-baselining.",
+      "matchDatasources": [
+        "github-runners"
+      ],
+      "matchFileNames": [
+        ".github/workflows/frozen-*-control.yml",
+        ".github/workflows/sequence-allocation-control.yml"
+      ],
+      "enabled": false
     }
   ]
 }
