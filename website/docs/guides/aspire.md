@@ -51,7 +51,7 @@ builder.Services.AddRelayer(relayer =>
     relayer.Kafka("events", kafka =>
     {
         kafka.UseAspireConnection(builder.Configuration, "kafka");
-        kafka.TopologyMode = TopologyMode.None; // Kafka topology validation remains planned.
+        kafka.TopologyMode = TopologyMode.None; // Skip validation for this local broker with automatic topic creation.
         kafka.Send<OrderPlaced>("orders");
         // kafka.Options.Configure(o => o.ConfigureProducer = native => ...);
     });
@@ -164,8 +164,9 @@ The Service Bus emulator is for local development and requires acceptance of its
 license; Aspire's emulator integration handles its local configuration. The sample
 provisions its Service Bus queue through Aspire and otherwise keeps Relayer's
 normal Service Bus topology validation. Kafka explicitly uses `TopologyMode.None`
-because Kafka topology validation remains planned; provision production topics using
-your normal tooling. The local broker permits automatic topic creation. It demonstrates sending; add consumers through the
+because the local broker permits automatic topic creation. For production, provision
+topics using your normal tooling and keep the default `TopologyMode.Validate` to
+check declared topics without creating them. It demonstrates sending; add consumers through the
 existing transport builders when needed. Outbox resource wiring is documented above
 and is intentionally opt-in.
 

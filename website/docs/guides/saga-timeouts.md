@@ -94,7 +94,7 @@ services.AddRelayer(relayer =>
     relayer.UseJsonSerializer(OrderJsonContext.Default); // Source-generated metadata for both contracts.
     relayer.Kafka("events", kafka =>
     {
-        kafka.TopologyMode = TopologyMode.None; // Provision the topic externally.
+        // Provision topics externally; default Validate checks that they exist.
         kafka.Options.Configure(options => options.BootstrapServers.Add("localhost:9092"));
         kafka.Consume("order-starts", consumer =>
         {

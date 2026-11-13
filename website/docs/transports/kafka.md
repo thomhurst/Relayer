@@ -109,7 +109,7 @@ services.AddRelayer(relayer =>
     relayer.AddMessageTypesFromThisAssembly();
     relayer.Kafka("west", kafka =>
     {
-        kafka.TopologyMode = TopologyMode.None;
+        // Provision topics externally; default Validate checks that they exist.
         kafka.Options.Configure(options => options.BootstrapServers.Add(westBootstrap));
         kafka.UseSerializer(provider => new KafkaJsonSchemaSerializer(
                 provider.GetRequiredKeyedService<ISchemaRegistryClient>("west"))
@@ -123,7 +123,7 @@ services.AddRelayer(relayer =>
     });
     relayer.Kafka("east", kafka =>
     {
-        kafka.TopologyMode = TopologyMode.None;
+        // Provision topics externally; default Validate checks that they exist.
         kafka.Options.Configure(options => options.BootstrapServers.Add(eastBootstrap));
         kafka.UseSerializer(provider => new KafkaJsonSchemaSerializer(
                 provider.GetRequiredKeyedService<ISchemaRegistryClient>("east"))

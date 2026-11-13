@@ -58,6 +58,7 @@ public class KafkaTopologyTests(KafkaHeaderSnapshotBroker broker)
         try
         {
             await Assert.That((await transport.ApplyTopologyAsync(TopologyMode.Validate, token)).Differences.Count).IsEqualTo(0);
+            // Each of the two Validate calls builds one native admin client.
             await Assert.That(configured).IsEqualTo(2);
         }
         finally { await admin.DeleteTopicsAsync([send, receive, deadLetter], cancellationToken: token); }
