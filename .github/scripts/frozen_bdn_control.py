@@ -18,6 +18,8 @@ CASES = {
     "concurrent": ("EndToEndBenchmarks", "ConcurrentRoundTrip", None, 8),
     "scope-only-unscoped": ("ConsumePipelineBenchmarks", "ScopeOnly", "instance.ScopedHandler = false;", 1),
     "scope-only": ("ConsumePipelineBenchmarks", "ScopeOnly", "instance.ScopedHandler = true;", 1),
+    "scope-resolution": ("ConsumePipelineBenchmarks", "ScopeAndHandlerResolution", "instance.ScopedHandler = true;", 1),
+    "failure-dispatch-sync": ("FailureConsumePipelineBenchmarks", "DirectScopedDispatch", "instance.SuspendHandler = false;", 1),
     "scoped-dispatch": ("ConsumePipelineBenchmarks", "DirectScopedDispatch", "instance.ScopedHandler = true;", 1),
     "log-composed": ("InMemoryTransportBenchmarks", "ComposedRoundTrip", "instance.Mode = (Relayer.Transports.ConsumptionModel)(1);", 1),
     "queue-composed": ("InMemoryTransportBenchmarks", "ComposedRoundTrip", "instance.Mode = (Relayer.Transports.ConsumptionModel)(0);", 1),
@@ -37,7 +39,8 @@ def executable(root, case="concurrent"):
     text = source.read_text()
     runners = re.findall(rf"public unsafe class Runnable_(\d+) : global::Relayer\.Benchmarks\.{owner}\s*\{{(.*?)(?=public unsafe class Runnable_|\Z)", text, re.S)
     matches = [(identity, body) for identity, body in runners
-               if f"AwaitHelper.GetResult({method}())" in body
+               if (f"AwaitHelper.GetResult({method}())" in body
+                   or (case == "failure-dispatch-sync" and f"workloadDelegate = {method};" in body))
                and (parameter is None or parameter in body)]
     if len(matches) != 1:
         raise ValueError(f"Expected one original {case} runner for selected parameter")
@@ -90,7 +93,7 @@ def main():
     parser.add_argument("--case", choices=tuple(CASES), default="concurrent",
                         help="Select an original generated runner and parameter, preserving its native job.")
     parser.add_argument("--native-executor", type=Path,
-                        help="Opt-in concurrent, scoped-dispatch or scoped ScopeOnly replay with BenchmarkDotNet native anonymous-pipe parent (FrozenNativeHost.dll).")
+                        help="Opt-in supported retained-runner replay with BenchmarkDotNet native anonymous-pipe parent (FrozenNativeHost.dll).")
     parser.add_argument("--trace-tool", type=Path,
                         help="Separate instrumented replay; retain whole-process raw allocation profiles.")
     parser.add_argument("--runtime-version", choices=("10.0.14", "10.0.15"),
@@ -110,8 +113,8 @@ def main():
             parser.error("--jit-method requires a nonempty native method filter without NUL")
         if not args.native_executor or args.trace_tool or args.allocation_profiler:
             parser.error("--jit-method requires the native parent without other instrumentation")
-    if args.native_executor and (args.case not in ("concurrent", "scoped-dispatch", "scope-only", "scope-only-unscoped") or args.trace_tool):
-        parser.error("Native parent supports concurrent, scoped-dispatch or either ScopeOnly parameter replay without an external trace launcher")
+    if args.native_executor and (args.case not in ("concurrent", "scoped-dispatch", "scope-only", "scope-only-unscoped", "scope-resolution", "failure-dispatch-sync") or args.trace_tool):
+        parser.error("Native parent requires a supported retained runner without an external trace launcher")
     if args.allocation_profiler and args.case != "concurrent":
         parser.error("Exact allocation callbacks support only the concurrent benchmark")
     owner, method, parameter, operations = CASES[args.case]
@@ -266,7 +269,9 @@ def main():
                     # runner, including the parameterized ScopeOnly benchmark name.
                     scope_parameter = "False" if args.case == "scope-only-unscoped" else "True"
                     name_argument = (f'"{benchmark}(ScopedHandler: {scope_parameter})"'
-                                     if args.case in ("scope-only", "scope-only-unscoped") else benchmark)
+                                     if args.case in ("scope-only", "scope-only-unscoped", "scope-resolution")
+                                     else f'"{benchmark}(SuspendHandler: False)"' if args.case == "failure-dispatch-sync"
+                                     else benchmark)
                     expected = f"--benchmarkName {name_argument} --job Default --benchmarkId {runners[side][1]}"
                     if (receipt.get("benchmarkArguments") != expected
                             or receipt.get("selectedCase") != args.case
