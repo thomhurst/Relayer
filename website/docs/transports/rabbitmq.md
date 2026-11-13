@@ -183,8 +183,9 @@ after success to prevent a second settlement. Prefer the common settlement API w
 Relayer acknowledges after handling, scoped disposal and durable failure handling finish. Default poison
 handling sends to `source + ".dead-letter"`, waits for its publisher confirm, then acknowledges the original.
 Set `consumer.Options.Failure.DeadLetterEndpoint` to use another declared destination. Copies retain CloudEvents,
-creation context, native headers and native correlation/reply destinations, and add common error metadata. A failed or unroutable copy leaves the
-source unacknowledged and faults the hosted receiver; closing the channel permits native redelivery. Provision
+creation context, native headers and native correlation/reply destinations, and add common error metadata. A failed or unroutable copy is logged and leaves the
+source unacknowledged for a one-second backoff, then uses native `basic.nack` with `requeue: true`. The host
+continues running. Optional consumer health reports the failure until processing succeeds. Provision
 a durable failure queue or exchange/binding before starting consumers.
 
 Use `Failure.RetryDelays` for in-process backoff. Native nack can requeue immediately or use the configured DLX
@@ -197,7 +198,7 @@ Graceful stop waits for native cancel-ok and active callbacks before closing the
 stop deadline cancels processing. Unexpected callback failure reaches the hosted service and leaves uncertain
 work unacknowledged. A connection outage that prevents acknowledgement leaves the delivery for native
 redelivery without terminating the host when automatic recovery is enabled. Channel protocol errors and
-unroutable poison copies still fault the receiver. When native automatic recovery is disabled, an unexpected
+other unrecoverable native callback errors still fault the receiver. Failed poison copies on an open consumer channel use the backoff and requeue policy above. When native automatic recovery is disabled, an unexpected
 connection shutdown faults the receiver and reaches the hosted service even when no handler is active.
 Normal host shutdown does not fault completion. Automatic recovery remains owned by RabbitMQ.Client.
 

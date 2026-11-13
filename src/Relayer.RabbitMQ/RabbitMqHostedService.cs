@@ -1,5 +1,6 @@
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 using Relayer.Transports;
 
 namespace Relayer.RabbitMQ;
@@ -19,7 +20,7 @@ internal sealed class RabbitMqHostedService(IServiceProvider provider, string na
                 var consumer = (ConsumerDefinition<RabbitMqConsumerOptions>)declaration;
                 var composer = new RabbitMqReceiveComposer(provider, name, consumer, _transport.Options);
                 _transport.Consumers.Add(new(consumer, consumer.Options, composer.ProcessAsync,
-                    provider.GetRequiredService<MessageTracing>(), provider.GetService<TimeProvider>(), _transport.Options.ConnectionFactory));
+                    provider.GetRequiredService<MessageTracing>(), provider.GetService<TimeProvider>(), _transport.Options.ConnectionFactory, provider.GetService<ILogger<RabbitMqConsumer>>()));
             }
             _composed = true;
         }

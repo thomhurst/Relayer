@@ -123,6 +123,8 @@ public sealed class TransportConformanceSuite<TIncoming, TBinding>
             Require(TBinding.TryGetHeader(incoming, "conformance", out var header) && header.ToString() == "owned", "Application header changed.");
             var delivery = new Delivery(body, Read(incoming, "traceparent"), Read(incoming, "tracestate"), TBinding.GetDeliveryCount(incoming), DateTimeOffset.UtcNow);
             received.Writer.TryWrite(delivery);
+            if (scenario == TransportConformanceCase.FailureHandlingFailure && Interlocked.Increment(ref attempts) == 1)
+                throw new InvalidOperationException("Conformance failure handler also fails.");
             if (scenario is TransportConformanceCase.Retry or TransportConformanceCase.RedeliveryDelay && Interlocked.Increment(ref attempts) == 1)
             {
                 var delay = scenario == TransportConformanceCase.Retry ? TimeSpan.Zero : NativeDelay(capabilities.MaxRedeliveryDelay!.Value);
@@ -244,6 +246,15 @@ public sealed class TransportConformanceSuite<TIncoming, TBinding>
                 await Start().ConfigureAwait(false);
                 await Send(2).ConfigureAwait(false);
                 CheckBody(await Next().ConfigureAwait(false), 2);
+                break;
+            case TransportConformanceCase.FailureHandlingFailure:
+                await Send(1, creation: true).ConfigureAwait(false);
+                CheckBody(await Next().ConfigureAwait(false), 1);
+                var recovered = await Next("redelivery after failure handling failed").ConfigureAwait(false);
+                CheckBody(recovered, 1);
+                CheckCreation(recovered);
+                await Send(2).ConfigureAwait(false);
+                CheckBody(await Next("healthy message after failed failure handling").ConfigureAwait(false), 2);
                 break;
             case TransportConformanceCase.Retry:
             case TransportConformanceCase.RedeliveryDelay:

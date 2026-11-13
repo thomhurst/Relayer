@@ -69,6 +69,8 @@ public enum TransportConformanceCase
     CleanShutdown,
     /// <summary>Outage sends and shutdown finish within deadlines, then acknowledged delivery resumes.</summary>
     SendDuringOutage,
+    /// <summary>A failed failure handler leaves work available for native redelivery and the receiver continues.</summary>
+    FailureHandlingFailure,
 }
 
 /// <summary>A successful scenario, or an explicit capability-based skip. Contract failures throw.</summary>

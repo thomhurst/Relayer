@@ -55,13 +55,24 @@ public class RabbitMqReceiveTests
         await host.StartAsync(token);
         var transport = (RabbitMqNativeTransport)host.Services.GetRequiredService<ITransport>();
         await transport.SendAsync(new("orders", "bad-json"u8.ToArray(), Headers()), token);
-        await Assert.That(async () => await transport.Consumers.Single().Completion.WaitAsync(token)).Throws<Exception>();
-        await transport.StopAsync(token);
+        var consumer = transport.Consumers.Single();
+        var health = host.Services.GetRequiredService<HealthCheckService>();
+        await WaitAsync(async () => (await health.CheckHealthAsync(registration => registration.Name == "relayer.consumer", token)).Status == HealthStatus.Unhealthy, token);
+        await Assert.That(consumer.Completion.IsCompleted).IsFalse();
+        await Assert.That(host.Services.GetRequiredService<IHostApplicationLifetime>().ApplicationStopping.IsCancellationRequested).IsFalse();
         await using var native = await broker.Factory().CreateConnectionAsync(token);
         await using var channel = await native.CreateChannelAsync(cancellationToken: token);
-        var original = (await channel.BasicGetAsync("orders", true, token))!;
-        await Assert.That(original.Redelivered).IsTrue();
-        await Assert.That(System.Text.Encoding.UTF8.GetString(original.Body.Span)).IsEqualTo("bad-json");
+        // Repair the destination while the original remains owned by the live consumer.
+        await channel.QueueDeclareAsync("orders.dead-letter", true, false, false, cancellationToken: token);
+        BasicGetResult? poison;
+        while ((poison = await channel.BasicGetAsync("orders.dead-letter", true, token)) is null) await Task.Delay(10, token);
+        await Assert.That(System.Text.Encoding.UTF8.GetString(poison.Body.Span)).IsEqualTo("bad-json");
+        await transport.SendAsync(new("orders", "{\"Value\":42}"u8.ToArray(), Headers()), token);
+        await Assert.That(await control.Values.Reader.ReadAsync(token)).IsEqualTo(42);
+        await WaitAsync(async () => (await health.CheckHealthAsync(registration => registration.Name == "relayer.consumer", token)).Status == HealthStatus.Healthy, token);
+        await Assert.That(consumer.Completion.IsCompleted).IsFalse();
+        await host.StopAsync(token);
+        await Assert.That((await channel.QueueDeclarePassiveAsync("orders", token)).MessageCount).IsEqualTo(0u);
     }
 
     [Test]
