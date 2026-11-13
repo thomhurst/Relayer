@@ -203,7 +203,7 @@ public class DispatchBackoffTests
     }
 
     [Test]
-    public async Task Batch_outage_stops_isolation_after_first_retry_and_backs_off_every_row()
+    public async Task Batch_outage_bounds_isolation_to_one_single_send_per_row_and_backs_off_every_row()
     {
         await using var fixture = new PostgreSqlFixture();
         await fixture.StartAsync();
@@ -222,7 +222,7 @@ public class DispatchBackoffTests
             NullLogger<PostgreSqlDirectDispatcher>.Instance);
         var before = DateTimeOffset.UtcNow;
         await worker.DispatchRecoveredAsync(rows.AsMemory(0, count), default);
-        await Assert.That(transport.Attempts).IsEqualTo(2); // One batch and one single native send.
+        await Assert.That(transport.Attempts).IsEqualTo(5); // One batch and at most one single native send per row.
         await using var state = source.CreateCommand("SELECT count(*), bool_and(attempts = 1 AND status = 'pending' AND deliver_at >= @before + interval '1 second' AND claim_token IS NULL), (SELECT count(*) FROM relayer_outbox_dead) FROM relayer_outbox");
         state.Parameters.AddWithValue("before", before);
         await using var reader = await state.ExecuteReaderAsync();

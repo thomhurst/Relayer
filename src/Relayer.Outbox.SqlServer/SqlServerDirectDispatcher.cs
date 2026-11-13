@@ -202,15 +202,37 @@ internal sealed class SqlServerDirectDispatcher : BackgroundService
                 catch (Exception error)
                 {
                     DirectDispatchLog.Failed(_logger, error);
-                    var retryable = SqlServerSendFailure.IsRetryable(_retrySendFailure, error, _logger);
                     for (var i = 0; i < live; i++)
                     {
                         try
                         {
-                            if (retryable)
-                                await _store.RecordRetryAsync(_claims[i], error.Message, DateTimeOffset.UtcNow, cancellationToken).ConfigureAwait(false);
+                            var sendError = error;
+                            if (live > 1)
+                            {
+                                var confirmed = error is IBatchSendFailure result && result.IsConfirmed(i);
+                                if (!confirmed)
+                                {
+                                    // Never admit another native send after cancellation or known claim expiry.
+                                    cancellationToken.ThrowIfCancellationRequested();
+                                    if (expires <= DateTimeOffset.UtcNow) continue;
+                                    sendError = null;
+                                    try { await transport.SendAsync(_messages[i], cancellationToken).ConfigureAwait(false); }
+                                    catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
+                                    catch (Exception failure) { sendError = failure; }
+                                }
+                                if (confirmed || sendError is null)
+                                {
+                                    // Completion failures must not be recorded as send failures.
+                                    var completed = await _store.CompleteBatchAsync(_claims.AsMemory(i, 1), DateTimeOffset.UtcNow, cancellationToken).ConfigureAwait(false);
+                                    if (recordInvalid) _recoveredCompletions += completed;
+                                    else _instrumentation?.AddOutboxPending(-completed);
+                                    continue;
+                                }
+                            }
+                            if (SqlServerSendFailure.IsRetryable(_retrySendFailure, sendError, _logger))
+                                await _store.RecordRetryAsync(_claims[i], sendError.Message, DateTimeOffset.UtcNow, cancellationToken).ConfigureAwait(false);
                             else
-                                await _store.RecordFailureAsync(_claims[i], error.Message, DateTimeOffset.UtcNow, cancellationToken).ConfigureAwait(false);
+                                await _store.RecordFailureAsync(_claims[i], sendError.Message, DateTimeOffset.UtcNow, cancellationToken).ConfigureAwait(false);
                         }
                         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
                         catch (Exception failure) { DirectDispatchLog.Failed(_logger, failure); }

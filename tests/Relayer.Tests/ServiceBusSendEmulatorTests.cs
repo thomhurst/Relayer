@@ -13,6 +13,43 @@ namespace Relayer.Tests;
 public class ServiceBusSendEmulatorTests
 {
     [Test]
+    public async Task Rejected_native_batch_can_isolate_oversized_row_from_valid_neighbour()
+    {
+        var stack = await SharedBrokers.ServiceBus.Value;
+        using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(2));
+        var token = timeout.Token;
+        await using var client = new ServiceBusClient(stack.Emulator.GetConnectionString(), new ServiceBusClientOptions
+        {
+            RetryOptions = new ServiceBusRetryOptions { MaxRetries = 0 }
+        });
+        var admin = new ServiceBusAdministrationClient(stack.Emulator.GetHttpConnectionString());
+        var queue = "batch-isolation-" + Guid.NewGuid().ToString("N");
+        var options = new AzureServiceBusTransportOptions { Client = client, AdministrationClient = admin };
+        options.Queues.Add(new(queue) { DefaultMessageTimeToLive = TimeSpan.FromHours(1), MaxSizeInMegabytes = 100,
+            DuplicateDetectionHistoryTimeWindow = TimeSpan.FromMinutes(10) });
+        await using var transport = new ServiceBusSendTransport("isolation", client, false, options,
+            [queue], TopologyMode.Provision, admin);
+        try
+        {
+            var report = await transport.ApplyTopologyAsync(TopologyMode.Provision, token);
+            await Assert.That(report.Differences.Count).IsEqualTo(0);
+            // The rejected row leads the batch, so the healthy neighbour was never admitted.
+            var rejected = new OutgoingMessage(queue, new byte[2 * 1024 * 1024]);
+            var healthy = new OutgoingMessage(queue, new byte[] { 42 });
+            await Assert.That(async () => await transport.SendBatchAsync(new[] { rejected, healthy }, token))
+                .Throws<ServiceBusException>();
+            await Assert.That(async () => await transport.SendAsync(rejected, token)).Throws<ServiceBusException>();
+            await transport.SendAsync(healthy, token);
+            await using var receiver = client.CreateReceiver(queue);
+            var delivered = await receiver.ReceiveMessageAsync(TimeSpan.FromSeconds(30), token);
+            await Assert.That(delivered).IsNotNull();
+            await Assert.That(delivered!.Body.ToArray()).IsEquivalentTo(new byte[] { 42 });
+            await receiver.CompleteMessageAsync(delivered, token);
+        }
+        finally { await admin.DeleteQueueAsync(queue, token); }
+    }
+
+    [Test]
     public async Task Native_sends_batches_sessions_scheduling_and_topology_round_trip()
     {
         using var instrumentation = new RelayerInstrumentation();
