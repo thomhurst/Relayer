@@ -199,8 +199,12 @@ internal sealed class PubSubFixture : ITransportConformanceFixture<GooglePubSubD
         && (rpc.StatusCode is StatusCode.Unavailable or StatusCode.DeadlineExceeded
             || (rpc.StatusCode == StatusCode.Internal && rpc.Status.DebugException is { } cause
                 && (ContainsDisconnectedConnection(cause)
-                    // ReturnHttp2Connection uses a bare HttpRequestException for this
-                    // native failure. Restrict the fallback to our deliberate outage.
+                    // Observed on net11.0 with SDK 11.0.100 in CI run 43368433359
+                    // (job 131698298994); the log does not record the runtime patch.
+                    // dotnet/runtime v11.0.0 HttpConnectionPool.Http2.cs ReturnHttp2Connection
+                    // constructs HttpRequestException(message) with no inner exception and
+                    // HttpRequestError.Unknown; neither gives a specific discriminator.
+                    // Keep the exact wording fail-closed and only in our deliberate outage.
                     || (disconnected && cause is System.Net.Http.HttpRequestException
                         && cause.Message == "An HTTP/2 connection could not be established because the server did not complete the HTTP/2 handshake."))));
 

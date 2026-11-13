@@ -2,6 +2,9 @@ namespace Relayer.Diagnostics;
 
 // BDN v0.15.8 Engine.Run calls GetExtraStats after the final timed iteration,
 // before BenchmarkStop. This envelope also contains cleanup, logging and stats setup.
+// v0.15.8 Engines/EngineEventSource.cs: IDs 3-14 are jitting/pilot/warmup/overhead;
+// 15-16 are actual workload. Engine.GetExtraStats calls the workload directly,
+// without IterationStart/Stop, so it cannot emit additional stage events.
 internal sealed class NativeEngineTail
 {
     public const string Provider = "BenchmarkDotNet.EngineEventSource";

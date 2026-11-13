@@ -2,9 +2,6 @@ name: Frozen adaptive native GC-stat tail profiles
 
 # #537: new instrumented retained-image experiment, never a Performance gate rerun.
 on:
-  pull_request:
-    paths:
-      - '.github/workflows/frozen-native-tail-control.yml'
   workflow_dispatch:
     inputs:
       performance_run:
@@ -74,6 +71,7 @@ jobs:
           outcomes = json.loads(Path('results/adaptive/outcomes.json').read_text())
           assert len(outcomes) == 4
           for outcome in outcomes:
+              assert outcome.get('operations', 0) > 0, (outcome['launch'], outcome['side'], outcome.get('error', 'missing native operations'))
               path = Path(f"results/{outcome['launch']}-{outcome['side']}-tail.jsonl")
               records = [json.loads(line) for line in path.read_text().splitlines()]
               scopes = [r for r in records if r['kind'] == 'native-engine-tail']
