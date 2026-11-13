@@ -463,6 +463,7 @@ public class MessageTypeGeneratorTests
             using System.Text.Json;
             using Microsoft.Extensions.DependencyInjection;
             using Relayer;
+            using Relayer.Pipeline;
             using Relayer.Serialization;
             [Message("host.local")] public sealed record Local(int LocalId);
             public static class Probe
