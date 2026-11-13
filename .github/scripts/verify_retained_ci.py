@@ -14,12 +14,12 @@ def verify(source, commit, git_commit):
         raise ValueError("Git commit response does not match retained commit")
     if source["event"] == "pull_request":
         parents = [parent["sha"] for parent in git_commit["parents"]]
-        if not any(
-            source["head_sha"] == pr["head"]["sha"]
-            and parents == [pr["base"]["sha"], pr["head"]["sha"]]
-            for pr in source["pull_requests"]
-        ):
-            raise ValueError("Retained merge parents do not match the CI run's PR base/head")
+        # The run's head_sha is fixed, but pull_requests contains the PR's
+        # current base/head after subsequent pushes. It cannot authenticate
+        # the historical merge's base. Bind the downloaded merge to the
+        # selected run's original head instead, preserving parent order.
+        if len(parents) != 2 or parents[1] != source["head_sha"]:
+            raise ValueError("Retained merge second parent does not match the CI run's head")
     elif source["head_sha"] != commit:
         raise ValueError("Retained commit does not match the selected CI run")
 

@@ -111,7 +111,9 @@ and inspect every type family and failed outcome before choosing an intervention
 builds and retains the test image. Manual dispatch can instead set `ci_run_id` and
 `ci_run_attempt` to download that failed CI run's original core-test artifact. The
 workflow verifies its binary manifest and commit against the selected CI run
-(PR merge parents must match the run's recorded base/head; other events require
+(PR checkouts must be two-parent merges whose second parent matches the run's
+immutable `head_sha`; current PR base/head metadata can change after later pushes
+and cannot verify the historical base. Other events require
 the run's exact head commit),
 selects the matching recorded runtime (failing if unavailable), and executes those
 binaries without rebuilding or modifying them. It retains the downloaded inputs,

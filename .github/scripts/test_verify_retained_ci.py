@@ -19,13 +19,19 @@ class RetainedCiTests(unittest.TestCase):
     def test_accepts_pr_merge_and_workflow_ref_suffix(self):
         verify(self.source, self.commit, self.git_commit)
 
-    def test_rejects_unrelated_merge_and_changed_run_association(self):
+    def test_accepts_changed_pr_metadata_after_subsequent_pushes(self):
         for key in ("base", "head"):
             with self.subTest(key=key):
                 source = copy.deepcopy(self.source)
                 source["pull_requests"][0][key]["sha"] = "d" * 40
-                with self.assertRaises(ValueError):
-                    verify(source, self.commit, self.git_commit)
+                verify(source, self.commit, self.git_commit)
+
+    def test_rejects_unrelated_or_reversed_merge_parents(self):
+        for parents in ([self.base, "d" * 40], [self.head, self.base],
+                        [self.head], [self.base, self.base, self.head]):
+            with self.subTest(parents=parents), self.assertRaises(ValueError):
+                verify(self.source, self.commit,
+                       {"sha": self.commit, "parents": [{"sha": sha} for sha in parents]})
 
     def test_rejects_head_checkout_instead_of_tested_merge(self):
         with self.assertRaises(ValueError):
