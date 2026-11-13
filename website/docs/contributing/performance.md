@@ -404,21 +404,20 @@ or prove the raw-client 5% or zero-allocation budgets. Use allocation stacks and
 appropriate controls before assigning bytes to a particular component. Document
 remaining uncertainty rather than changing thresholds to make a signal pass.
 
-The **Frozen unscoped consume native parent control** workflow tests the retained
-unscoped `ComposedConsumer` images from run 43456694323 in one predeclared
-baseline/candidate/candidate/baseline sequence. It reuses the original generated
-runner, default job, BenchmarkDotNet native pipe parent and exact .NET 10.0.15
-runtime selection. All three original build inventories are checked before and
-after execution; the final A slot repeats the first baseline image. All launch
-logs, native receipts, operation counts, timings, allocations and failures are
-retained with the original inputs. This asks whether the image difference
-persists in these new executions. It cannot identify the historical cause or
-establish throughput equivalence; host drift and adaptive operation counts
-remain limitations. It does not rerun or relax the strict regression gate.
+The **Frozen original BenchmarkDotNet engine control** workflow accepts
+`benchmark_case=composed-consumer-unscoped` with `parent=native`,
+`performance_run=43456694323` and `runtime_version=10.0.15` through
+`workflow_dispatch`. Use `same_image=abba` for a separately predeclared
+baseline/candidate/candidate/baseline sequence. This reuses the original generated
+runner, default job, native pipe parent and exact runtime selection. All three
+original build inventories are checked before and after execution; the final A
+slot repeats the first baseline image. Retain every launch log, native receipt,
+operation count, timing, allocation observation and failure with the executable
+inputs. These new executions cannot identify the historical cause or establish
+throughput equivalence; host drift and adaptive operation counts remain
+limitations. This does not rerun or relax the strict regression gate.
 
-For a separately declared code-generation question, **Frozen original BenchmarkDotNet
-engine control** also accepts `benchmark_case=composed-consumer-unscoped` with
-`parent=native`, `performance_run=43456694323` and `runtime_version=10.0.15`.
+For a separately declared code-generation question, use the same workflow.
 Its optional `jit_method` captures native JIT listings in the child only; `*`
 retains all emitted methods, including async state machines. Retain all four
 outcomes and listings. Exclude instrumented timings and allocations from
