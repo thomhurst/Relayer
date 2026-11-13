@@ -91,6 +91,61 @@ class OriginalRunnerTests(unittest.TestCase):
                     if profiled:
                         self.assertEqual(len(list(output.glob("*.nettrace"))), 4)
 
+    def test_selects_throughput_cases_from_original_parameterized_runners(self):
+        cases = (
+            ("scoped-dispatch", "ConsumePipelineBenchmarks", "DirectScopedDispatch",
+             "instance.ScopedHandler = true;", "instance.ScopedHandler = false;"),
+            ("log-composed", "InMemoryTransportBenchmarks", "ComposedRoundTrip",
+             "instance.Mode = (Relayer.Transports.ConsumptionModel)(1);", "instance.Mode = (Relayer.Transports.ConsumptionModel)(0);"),
+            ("queue-native", "InMemoryTransportBenchmarks", "NativeRoundTrip",
+             "instance.Mode = (Relayer.Transports.ConsumptionModel)(0);", "instance.Mode = (Relayer.Transports.ConsumptionModel)(1);"),
+        )
+        for case, owner, method, parameter, opposite in cases:
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                source, image = self.fixture(root)
+                # Include the same method with the opposite parameter. Selecting only
+                # by method would execute a different benchmark than the failing case.
+                runner = lambda identity, assignment: f"""public unsafe class Runnable_{identity} : global::Relayer.Benchmarks.{owner}
+                {{ OperationsPerInvoke = 1, MeasureExtraStats = true,
+                {assignment} workloadDelegate = () => BenchmarkDotNet.Helpers.AwaitHelper.GetResult({method}()); }}"""
+                source.write_text(runner("31", opposite) + runner("32", parameter))
+                self.assertEqual(executable(root, case), (image.resolve(), "32"))
+                source.write_text(runner("31", opposite))
+                with self.assertRaisesRegex(ValueError, "selected parameter"):
+                    executable(root, case)
+                source.write_text(runner("31", parameter) + runner("32", parameter))
+                with self.assertRaisesRegex(ValueError, "selected parameter"):
+                    executable(root, case)
+
+    def test_one_operation_case_retains_native_timings_without_message_denominator(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            output = root / "results"
+            image = root / "original.dll"
+            log = "WorkloadResult   1: 3 op, 9 ns, 3 ns/op\nWorkloadResult   2: 3 op, 15 ns, 5 ns/op\n// GC:  0 0 0 72 3\n// AfterAll\n"
+            calls = []
+
+            def execute(command, **kwargs):
+                calls.append(command)
+                kwargs["stdout"].write(log)
+
+            with patch("sys.argv", ["control", str(root), str(output), "--case", "scoped-dispatch"]), \
+                 patch("frozen_bdn_control.verify", return_value="frozen"), \
+                 patch("frozen_bdn_control.executable", return_value=(image, "6")), \
+                 patch("frozen_bdn_control.subprocess.run", side_effect=execute):
+                main()
+            self.assertEqual(len(calls), 4)
+            self.assertTrue(all(command[command.index("--benchmarkName") + 1] ==
+                                "Relayer.Benchmarks.ConsumePipelineBenchmarks.DirectScopedDispatch" for command in calls))
+            outcomes = json.loads((output / "outcomes.json").read_text())
+            self.assertTrue(all(item["bytesPerOperation"] == 24 and item["meanNs"] == 4 for item in outcomes))
+            self.assertTrue(all(item["workloadResultNs"] == [3, 5] for item in outcomes))
+            self.assertTrue(all("bytesPerMessage" not in item for item in outcomes))
+            protocol = json.loads((output / "protocol.json").read_text())
+            self.assertEqual(protocol["operationsPerInvoke"], 1)
+            self.assertEqual(protocol["parameter"], "instance.ScopedHandler = true;")
+
     def test_rejects_uninventoried_or_wrong_job_input(self):
         for invalid in ("inventory", "operations", "stats", "runner"):
             with self.subTest(invalid=invalid), tempfile.TemporaryDirectory() as directory:

@@ -21,6 +21,15 @@ class ScopeControlTests(unittest.TestCase):
             with self.subTest(invalid=invalid), self.assertRaises(ValueError):
                 result(invalid)
 
+    def test_native_timing_units_are_normalized_to_nanoseconds(self):
+        for unit, scale in (("ns", 1), ("us", 1_000), ("µs", 1_000),
+                            ("μs", 1_000), ("ms", 1_000_000), ("s", 1_000_000_000)):
+            with self.subTest(unit=unit):
+                actual = result(COMPLETE.replace("27 ns/op", f"4.7363 {unit}/op"))
+                self.assertEqual(actual["workloadResultNs"], [4.7363 * scale])
+                self.assertEqual(actual["meanNs"], 4.7363 * scale)
+                self.assertEqual(actual["bytesPerOperation"], 128)
+
     def test_selects_parameter_and_rejects_wrong_job_and_missing_inventory(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

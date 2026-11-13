@@ -131,6 +131,7 @@ jobs:
             .github/scripts/frozen_concurrent_control.py
             .github/scripts/frozen_core_crossover.py
             .github/scripts/frozen_bdn_control.py
+            .github/scripts/frozen_scope_control.py
             .github/scripts/frozen_exact_crossover.py
             .github/scripts/test_frozen_exact_crossover.py
             .github/scripts/read_native_allocations.py

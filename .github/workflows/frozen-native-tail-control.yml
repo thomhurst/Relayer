@@ -141,6 +141,7 @@ jobs:
             tools/FrozenAllocationReader/
             .diagnostic-tools/
             .github/scripts/frozen_bdn_control.py
+            .github/scripts/frozen_scope_control.py
             .github/scripts/frozen_concurrent_control.py
             .github/scripts/test_frozen_bdn_control.py
             .github/workflows/frozen-native-tail-control.yml

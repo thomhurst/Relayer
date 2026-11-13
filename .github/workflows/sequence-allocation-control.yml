@@ -71,6 +71,7 @@ jobs:
             inputs/
             .github/scripts/benchmark_gate.py
             .github/scripts/frozen_bdn_control.py
+            .github/scripts/frozen_scope_control.py
             .github/scripts/frozen_concurrent_control.py
             .github/workflows/sequence-allocation-control.yml
           retention-days: 90
