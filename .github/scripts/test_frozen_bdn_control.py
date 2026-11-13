@@ -48,6 +48,49 @@ class OriginalRunnerTests(unittest.TestCase):
             _, image = self.fixture(root, "17")
             self.assertEqual(executable(root), (image.resolve(), "17"))
 
+    def test_same_image_holds_original_runner_constant_and_preserves_all_outcomes(self):
+        for side in ("baseline", "candidate"):
+            for profiled in (False, True):
+                with self.subTest(side=side, profiled=profiled), tempfile.TemporaryDirectory() as directory:
+                    root = Path(directory)
+                    for image, identity in (("baseline", "10"), ("candidate", "17")):
+                        self.fixture(root / "performance-builds" / image, identity)
+                    output = root / "results"
+                    calls = []
+
+                    def execute(command, **kwargs):
+                        calls.append(command)
+                        original = command[command.index("--") + 1:] if profiled else command
+                        self.assertIn(f"/performance-builds/{side}/", original[1])
+                        self.assertEqual(original[-1], "10" if side == "baseline" else "17")
+                        if profiled:
+                            Path(command[command.index("--output") + 1]).write_bytes(b"raw trace")
+                        if len(calls) == 2:
+                            raise subprocess.CalledProcessError(1, command)
+                        kwargs["stdout"].write(COMPLETE)
+
+                    arguments = ["control", str(root), str(output), "--same-image", side]
+                    if profiled:
+                        arguments.extend(["--trace-tool", str(root / "dotnet-trace")])
+                    with patch("sys.argv", arguments), \
+                         patch("frozen_bdn_control.verify", return_value="frozen") as verified, \
+                         patch("frozen_bdn_control.subprocess.run", side_effect=execute):
+                        with self.assertRaisesRegex(SystemExit, "launches failed"):
+                            main()
+                    self.assertEqual(len(calls), 4)
+                    self.assertEqual(verified.call_count, 6)
+                    protocol = json.loads((output / "protocol.json").read_text())
+                    self.assertEqual(protocol["sameImage"], side)
+                    self.assertEqual(protocol["launches"], [side] * 4)
+                    self.assertIn("no candidate-versus-baseline comparison", protocol["limits"])
+                    outcomes = json.loads((output / "outcomes.json").read_text())
+                    self.assertEqual([o["side"] for o in outcomes], [side] * 4)
+                    self.assertIn("error", outcomes[1])
+                    self.assertNotIn("bytesPerMessage", outcomes[1])
+                    self.assertEqual(outcomes[3]["operations"], 65536)
+                    if profiled:
+                        self.assertEqual(len(list(output.glob("*.nettrace"))), 4)
+
     def test_rejects_uninventoried_or_wrong_job_input(self):
         for invalid in ("inventory", "operations", "stats", "runner"):
             with self.subTest(invalid=invalid), tempfile.TemporaryDirectory() as directory:
@@ -131,6 +174,8 @@ class OriginalRunnerTests(unittest.TestCase):
                 self.assertTrue((output / "4-baseline.nettrace").exists())
                 protocol = json.loads((output / "protocol.json").read_text())
                 self.assertTrue(protocol["instrumented"])
+                self.assertIsNone(protocol["sameImage"])
+                self.assertEqual(protocol["launches"], ["baseline", "candidate", "candidate", "baseline"])
                 self.assertIn("Whole-process", protocol["profile_limits"])
                 self.assertIn("no Relayer measurement markers", protocol["profile_limits"])
 
@@ -156,7 +201,7 @@ class OriginalRunnerTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 runtime_command(image, "10.0.14")
 
-    def test_loaded_runtime_mismatch_fails_closed_and_attempts_every_profile(self):
+    def test_same_image_runtime_mismatch_fails_closed_and_attempts_every_profile(self):
         for mismatch in (False, True):
             with self.subTest(mismatch=mismatch), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
@@ -171,12 +216,13 @@ class OriginalRunnerTests(unittest.TestCase):
                     calls.append(command)
                     original = command[command.index("--") + 1:]
                     self.assertEqual(original[:5], ["dotnet", "--fx-version", "10.0.14", "--roll-forward", "Disable"])
+                    self.assertIn("/performance-builds/candidate/", original[5])
                     version = "10.0.15" if mismatch and len(calls) == 2 else "10.0.14"
                     kwargs["stdout"].write("// Runtime=.NET " + version + " (test), X64\n" + COMPLETE)
                     Path(command[command.index("--output") + 1]).write_bytes(b"trace")
 
                 with patch("sys.argv", ["control", str(root), str(output), "--runtime-version", "10.0.14",
-                                        "--trace-tool", str(root / "dotnet-trace")]), \
+                                        "--trace-tool", str(root / "dotnet-trace"), "--same-image", "candidate"]), \
                      patch("frozen_bdn_control.verify", return_value="frozen"), \
                      patch("frozen_bdn_control.subprocess.run", side_effect=execute):
                     if mismatch:
@@ -188,6 +234,7 @@ class OriginalRunnerTests(unittest.TestCase):
                 outcomes = json.loads((output / "outcomes.json").read_text())
                 self.assertEqual("error" in outcomes[1], mismatch)
                 self.assertEqual(outcomes[3]["runtime"], "10.0.14")
+                self.assertEqual([o["side"] for o in outcomes], ["candidate"] * 4)
                 self.assertEqual(json.loads((output / "protocol.json").read_text())["requestedRuntime"], "10.0.14")
 
     def test_invalid_input_prevents_every_process_launch(self):

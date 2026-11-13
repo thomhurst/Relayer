@@ -77,26 +77,29 @@ def main():
                         help="Separate instrumented replay; retain whole-process raw allocation profiles.")
     parser.add_argument("--runtime-version", choices=("10.0.14", "10.0.15"),
                         help="Bind the original executable to an installed exact patch without editing retained inputs.")
+    parser.add_argument("--same-image", choices=("baseline", "candidate"),
+                        help="Negative control: launch the selected original image four times, without an image comparison.")
     args = parser.parse_args()
     builds = args.artifact.resolve() / "performance-builds"
     # Verify all three original inventories before starting any process. A2 deliberately
     # repeats the first baseline executable, as in the external-probe ABBA.
     commits = {side: verify(builds / side) for side in (*dict.fromkeys(LAUNCHES), "baseline-after")}
     runners = {side: executable(builds / side) for side in dict.fromkeys(LAUNCHES)}
+    launches = (args.same_image,) * 4 if args.same_image else LAUNCHES
     args.output.mkdir(parents=True, exist_ok=False)
-    protocol = {"commits": commits, "launches": LAUNCHES, "benchmark": BENCHMARK,
+    protocol = {"commits": commits, "launches": launches, "sameImage": args.same_image, "benchmark": BENCHMARK,
                 "engine": "Original retained BenchmarkDotNet generated executable and Default job",
                 "host": "Native NoAcknowledgementConsoleHost; original anonymous-pipe parent absent",
                 "operationsPerInvoke": 8, "instrumented": args.trace_tool is not None,
                 "limits": "New original-engine executions, not historical reconstruction, allocation-type attribution, throughput equivalence or native-client budget evidence. No external fixed-count driver, sampled profile, job override or threshold change.",
                 "requestedRuntime": args.runtime_version, "commands": []}
-    for side in LAUNCHES:
+    for side in launches:
         image, identity = runners[side]
         protocol["commands"].append([*runtime_command(image, args.runtime_version), "--benchmarkName", BENCHMARK,
                                      "--job", "Default", "--benchmarkId", identity])
     if args.trace_tool:
         protocol["profile_limits"] = (
-            "Separate instrumented native-engine ABBA with gc-verbose allocation sampling. "
+            "Separate instrumented native-engine four-launch bracket with gc-verbose allocation sampling. "
             "Whole-process traces include startup, pilot, warmup, overhead and GC-stat work; "
             "there are no Relayer measurement markers. Native engine events permit a separate final-iteration-stop to benchmark-stop envelope, which includes cleanup/logging and GC-stat setup/work/cleanup, not exact allocation-measurement boundaries. Retain all raw captures and native logs. "
             "Weighted samples are not exact object counts or attribution of a historical delta. "
@@ -108,11 +111,13 @@ def main():
              "--providers", "BenchmarkDotNet.EngineEventSource:0xffffffffffffffff:4",
              "--output", str((args.output / f"{index}-{side}.nettrace").resolve()),
              "--show-child-io", "--", *command]
-            for index, (side, command) in enumerate(zip(LAUNCHES, protocol["commands"]), 1)]
+            for index, (side, command) in enumerate(zip(launches, protocol["commands"]), 1)]
+    if args.same_image:
+        protocol["limits"] += " Same-image negative control: no candidate-versus-baseline comparison; process order, adaptive operation counts and host drift remain uncontrolled."
     (args.output / "protocol.json").write_text(json.dumps(protocol, indent=2) + "\n")
     outcomes = []
     failed = False
-    for index, (side, command) in enumerate(zip(LAUNCHES, protocol["commands"]), 1):
+    for index, (side, command) in enumerate(zip(launches, protocol["commands"]), 1):
         log_path = args.output / f"{index}-{side}.log"
         outcome = {"launch": index, "side": side}
         with log_path.open("w") as log:
