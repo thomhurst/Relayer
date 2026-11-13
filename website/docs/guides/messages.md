@@ -57,7 +57,8 @@ Each method registers its library's generated JSON context and accepts optional 
 For contracts without `[Message]`, including generated or referenced contracts, supply the stable identity explicitly:
 
 ```csharp
-services.AddRelayer(relayer => relayer.MessageTypes.Add<OrderPlaced>("orders.placed"));
+using Relayer.Transports;
+services.AddRelayer(relayer => relayer.Infrastructure().MessageTypes.Add<OrderPlaced>("orders.placed"));
 ```
 
 Analyzer [RLY001](../reference/diagnostics.md#rly001) accepts a statically visible `MessageTypeRegistry.Add<T>` call anywhere in the same compilation. It covers that exact type and its tombstone wrapper, including closed generic contracts. Registrations inside referenced assemblies or generic helpers are not inferred; see the diagnostic guidance for suppression when registration happens elsewhere. Explicit identity registration does not generate JSON metadata: provide a source-generated JSON context or a custom serializer as described below.
@@ -103,6 +104,7 @@ Custom serializers can implement `IMessageSerializerInitializer`. The host await
 Reference `Relayer.Serialization.Protobuf` to use generated Google.Protobuf contracts. Generate C# from your `.proto` files with a matching `protoc` toolchain (3.13 or newer), then register each generated parser and its stable Relayer message identity explicitly:
 
 ```csharp
+using Relayer.Transports;
 using Relayer.Serialization;
 using Relayer.Serialization.Protobuf;
 
@@ -110,7 +112,7 @@ using Relayer.Serialization.Protobuf;
 services.AddSingleton<IMessageSerializer>(new ProtobufMessageSerializer(types =>
     types.Add(OrderPlaced.Parser)));
 services.AddRelayer(relayer =>
-    relayer.MessageTypes.Add<OrderPlaced>("orders.placed"));
+    relayer.Infrastructure().MessageTypes.Add<OrderPlaced>("orders.placed"));
 ```
 
 For a named transport, return a `ProtobufMessageSerializer` from `transport.UseSerializer(_ => ...)` instead. Register every contract that transport sends or receives. Missing parsers throw an actionable `InvalidOperationException` when used; duplicate parsers fail during construction. Parser registration does not register a Relayer wire identity.
@@ -126,6 +128,7 @@ Only generated contracts implementing `IMessage<T>` and `IBufferMessage` are sup
 Reference `Relayer.Serialization.Avro` for Dekaf's source-generated Avro codecs and Schema Registry client. Opt each contract into generation with `[AvroRecord]`, then register its generated `AvroCodec` explicitly:
 
 ```csharp
+using Relayer.Transports;
 using Dekaf.SchemaRegistry;
 using Dekaf.SchemaRegistry.Avro.Poco;
 using Relayer.Serialization;
@@ -136,7 +139,7 @@ services.AddSingleton<ISchemaRegistryClient>(_ => new SchemaRegistryClient(
 services.AddSingleton<IMessageSerializer>(sp => new AvroMessageSerializer(
     sp.GetRequiredService<ISchemaRegistryClient>())
     .Add<OrderPlaced, OrderPlaced.AvroCodec>("orders"));
-services.AddRelayer(relayer => relayer.MessageTypes.Add<OrderPlaced>("orders.placed"));
+services.AddRelayer(relayer => relayer.Infrastructure().MessageTypes.Add<OrderPlaced>("orders.placed"));
 
 [AvroRecord(Name = "OrderPlaced", Namespace = "orders")]
 public sealed partial class OrderPlaced
@@ -161,6 +164,7 @@ Writes go directly to `IBufferWriter<byte>`. Contiguous input reads directly fro
 Reference `Relayer.Serialization.MessagePack` to use uncompressed MessagePack-CSharp 3.x bodies. Its transitive analyzer generates formatters for `[MessagePackObject]` contracts. Supply native options explicitly, including the generated resolver and each primitive formatter your contracts use:
 
 ```csharp
+using Relayer.Transports;
 using MessagePack;
 using MessagePack.Formatters;
 using MessagePack.Resolvers;
@@ -171,7 +175,7 @@ var options = new MessagePackSerializerOptions(CompositeResolver.Create(
     [NullableStringFormatter.Instance], [ContractResolver.Instance]))
     .WithSecurity(MessagePackSecurity.UntrustedData);
 services.AddSingleton<IMessageSerializer>(new MessagePackMessageSerializer(options));
-services.AddRelayer(relayer => relayer.MessageTypes.Add<OrderPlaced>("orders.placed"));
+services.AddRelayer(relayer => relayer.Infrastructure().MessageTypes.Add<OrderPlaced>("orders.placed"));
 
 [MessagePackObject]
 public sealed class OrderPlaced
@@ -206,6 +210,7 @@ This keeps native collision resistance and depth checks, but unsupported object 
 The version is part of the type name. Register `IUpcaster<TFrom, TTo>` instances explicitly to convert older payloads before the selected handler runs:
 
 ```csharp
+using Relayer.Transports;
 [Message("orders.placed", Version = 1)]
 public sealed record OrderPlacedV1(Guid OrderId);
 
@@ -220,7 +225,7 @@ public sealed class OrderUpgrade : IUpcaster<OrderPlacedV1, OrderPlacedV2>
 services.AddRelayer(relayer =>
 {
     relayer.AddMessageTypesFromThisAssembly();
-    relayer.Upcasters.Add(new OrderUpgrade());
+    relayer.Infrastructure().Upcasters.Add(new OrderUpgrade());
     // Select an IHandler<OrderPlacedV2> or IBatchHandler<OrderPlacedV2>
     // on the consumer using the normal transport configuration.
 });

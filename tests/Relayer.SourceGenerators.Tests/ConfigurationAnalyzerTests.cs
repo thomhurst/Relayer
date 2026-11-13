@@ -1,3 +1,4 @@
+using Relayer.Transports;
 using System.Collections.Immutable;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CodeActions;
@@ -13,6 +14,7 @@ public class ConfigurationAnalyzerTests
 {
     private const string Imports = """
         using Relayer;
+        using Relayer.Transports;
         using System.Threading;
         using System.Threading.Tasks;
         using Broker = Relayer.TransportBuilder<object, object, object>;
@@ -79,7 +81,7 @@ public class ConfigurationAnalyzerTests
                 {
                     broker.Send<{{messageType}}>("orders");
                     consumer.Handler<H>();
-                    builder.MessageTypes.Add<Order>("orders.placed");
+                    builder.Infrastructure().MessageTypes.Add<Order>("orders.placed");
                 }
             }
             """, "");
@@ -113,7 +115,7 @@ public class ConfigurationAnalyzerTests
             {
                 public static void Add(Broker broker, IRelayerBuilder builder, IConsumerBuilder consumer)
                 {
-                    builder.MessageTypes.Add<Order<int>>("orders.integer");
+                    builder.Infrastructure().MessageTypes.Add<Order<int>>("orders.integer");
                     broker.Send<{{registeredRoute}}>("integers");
                     broker.Send<Order<string>>("strings");
                 }
@@ -135,7 +137,7 @@ public class ConfigurationAnalyzerTests
                     Register<Order>(builder);
                     broker.Send<Order>("orders");
                 }
-                static void Register<T>(IRelayerBuilder builder) => builder.MessageTypes.Add<T>("orders.placed");
+                static void Register<T>(IRelayerBuilder builder) => builder.Infrastructure().MessageTypes.Add<T>("orders.placed");
             }
             """, "RLY001");
     }
@@ -147,7 +149,7 @@ public class ConfigurationAnalyzerTests
             public record Order;
             public static class Identities
             {
-                public static void Add(IRelayerBuilder builder) => builder.MessageTypes.Add<Order>("orders.placed");
+                public static void Add(IRelayerBuilder builder) => builder.Infrastructure().MessageTypes.Add<Order>("orders.placed");
             }
             """).WithAssemblyName("External");
         using var stream = new MemoryStream();
@@ -172,7 +174,7 @@ public class ConfigurationAnalyzerTests
         var compilation = Compile(Imports + """
             static class Setup { public static void Add(Broker broker) => broker.Send<int>("orders"); }
             """).AddSyntaxTrees(CSharpSyntaxTree.ParseText(Imports + """
-            static class Identities { public static void Add(IRelayerBuilder builder) => builder.MessageTypes.Add<int>("integer"); }
+            static class Identities { public static void Add(IRelayerBuilder builder) => builder.Infrastructure().MessageTypes.Add<int>("integer"); }
             """));
         var diagnostics = await compilation.WithAnalyzers([new ConfigurationAnalyzer()]).GetAnalyzerDiagnosticsAsync();
         await Assert.That(diagnostics.Length).IsEqualTo(0);

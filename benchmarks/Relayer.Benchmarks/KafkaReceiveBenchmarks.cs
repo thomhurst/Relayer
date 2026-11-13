@@ -1,3 +1,5 @@
+using Relayer.Transports;
+using Relayer.Pipeline;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using BenchmarkDotNet.Attributes;
@@ -50,7 +52,7 @@ public class KafkaReceiveBenchmarks
         services.AddScoped<KafkaBenchmarkHandler>();
         services.AddRelayer(relayer =>
         {
-            relayer.MessageTypes.Add<KafkaBenchmarkPayload>("benchmarks.kafka-receive");
+            relayer.Infrastructure().MessageTypes.Add<KafkaBenchmarkPayload>("benchmarks.kafka-receive");
             relayer.UseJsonSerializer(KafkaReceiveBenchmarkJson.Default);
 
             relayer.Kafka("benchmark", kafka =>

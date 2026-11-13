@@ -1,3 +1,4 @@
+using Relayer.Transports;
 using Relayer;
 
 internal static class PartitionCompletionSmoke

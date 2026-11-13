@@ -1,4 +1,4 @@
-namespace Relayer;
+namespace Relayer.Transports;
 
 /// <summary>A serialized send shared by direct sends, outbox dispatch, scheduled copies, and dead-letter copies.</summary>
 /// <remarks>
@@ -60,7 +60,7 @@ public readonly struct OutgoingMessage
     public void ApplyNative<TNative>(TNative nativeMessage) where TNative : class
     {
         ArgumentNullException.ThrowIfNull(nativeMessage);
-        _options?.ApplyNative(nativeMessage);
+        _options?.ApplyNativeCore(nativeMessage);
     }
 
     internal OutgoingMessage Forward(string destination, ReadOnlyMemory<KeyValuePair<string, WireString>> headers,

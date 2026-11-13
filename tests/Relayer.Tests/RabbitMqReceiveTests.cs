@@ -487,7 +487,7 @@ public class RabbitMqReceiveTests
             services.AddRelayerHealthChecks(new RelayerHealthCheckOptions { ConsumerStallTimeout = TimeSpan.FromSeconds(30) });
             services.AddRelayer(builder =>
             {
-                builder.MessageTypes.Add<RabbitMqReceivePayload>("rabbit.receive");
+                builder.Infrastructure().MessageTypes.Add<RabbitMqReceivePayload>("rabbit.receive");
                 builder.UseJsonSerializer(RabbitMqReceiveJson.Default);
                 builder.RabbitMQ("rabbit", rabbit =>
                 {

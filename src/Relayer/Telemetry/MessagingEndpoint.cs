@@ -1,4 +1,4 @@
-namespace Relayer;
+namespace Relayer.Transports;
 
 /// <summary>Constant endpoint attributes supplied by a native adapter at startup.</summary>
 public sealed class MessagingEndpoint

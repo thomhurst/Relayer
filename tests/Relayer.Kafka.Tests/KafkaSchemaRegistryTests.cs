@@ -1,3 +1,4 @@
+using Relayer.Transports;
 using System.Buffers;
 using System.Buffers.Binary;
 using System.Net;
@@ -156,8 +157,8 @@ public class KafkaSchemaRegistryTests
         hostBuilder.Services.AddSingleton(received);
         hostBuilder.Services.AddRelayer(relayer =>
         {
-            relayer.MessageTypes.Add<SchemaOrder>("tests.schema.west");
-            relayer.MessageTypes.Add<EastSchemaOrder>("tests.schema.east");
+            relayer.Infrastructure().MessageTypes.Add<SchemaOrder>("tests.schema.west");
+            relayer.Infrastructure().MessageTypes.Add<EastSchemaOrder>("tests.schema.east");
             relayer.Kafka("west", kafka =>
             {
                 Configure(kafka, west.GetBootstrapAddress());

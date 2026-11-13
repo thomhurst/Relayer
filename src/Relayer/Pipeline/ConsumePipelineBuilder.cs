@@ -1,8 +1,9 @@
+using Relayer.Transports;
 using System.Collections.Frozen;
 using Microsoft.Extensions.DependencyInjection;
 using Relayer.Serialization;
 
-namespace Relayer;
+namespace Relayer.Pipeline;
 
 /// <summary>Composes one consumer at startup. Middleware instances must support concurrent calls.</summary>
 public sealed class ConsumePipelineBuilder

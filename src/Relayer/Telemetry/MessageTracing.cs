@@ -1,3 +1,4 @@
+using Relayer.Pipeline;
 using System.Diagnostics;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
@@ -5,7 +6,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 
-namespace Relayer;
+namespace Relayer.Transports;
 
 /// <summary>Owns the application's Relayer activity source. Compose operations once per endpoint at startup.</summary>
 public sealed class MessageTracing : IDisposable
@@ -52,18 +53,4 @@ public sealed class MessageTracing : IDisposable
 
     /// <summary>Disposes this owner's activity source.</summary>
     public void Dispose() => Source.Dispose();
-}
-
-/// <summary>Registers the shared tracing source and options without process-wide mutable state.</summary>
-public static class TracingBuilderExtensions
-{
-    /// <summary>Registers tracing primitives. Bind TracingOptions or register IActivityEnricher services before building the provider.</summary>
-    /// <remarks>Keep one service provider in production. One source owner is shared per provider; separate providers own separate sources named Relayer.</remarks>
-    public static IRelayerBuilder Telemetry(this IRelayerBuilder builder)
-    {
-        ArgumentNullException.ThrowIfNull(builder);
-        builder.Services.AddOptions<TracingOptions>();
-        builder.Services.TryAddSingleton<MessageTracing>();
-        return builder;
-    }
 }

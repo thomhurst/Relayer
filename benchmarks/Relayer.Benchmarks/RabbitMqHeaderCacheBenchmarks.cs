@@ -1,3 +1,4 @@
+using Relayer.Transports;
 using BenchmarkDotNet.Attributes;
 using Relayer.RabbitMQ;
 

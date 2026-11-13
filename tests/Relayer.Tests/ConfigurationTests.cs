@@ -1,3 +1,5 @@
+using Relayer.Transports;
+using Relayer.Pipeline;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace Relayer.Tests;

@@ -1,3 +1,4 @@
+using Relayer.Transports;
 using Relayer.TestFixtures;
 
 namespace Relayer.Outbox.SqlServer.Tests;

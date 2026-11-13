@@ -1,8 +1,9 @@
+using Relayer.Pipeline;
 using System.Diagnostics.Metrics;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
-namespace Relayer;
+namespace Relayer.Transports;
 
 /// <summary>Owns the application's Relayer meter. DI disposes it with the service provider.</summary>
 /// <remarks>Use the registered singleton across endpoints. Standalone callers must dispose their instance.</remarks>

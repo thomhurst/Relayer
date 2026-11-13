@@ -2,6 +2,7 @@
 
   <PropertyGroup>
     <OutputType>Exe</OutputType>
+    <DefineConstants>$(DefineConstants);RELAYER_FOCUSED_SPI</DefineConstants>
     <!-- BenchmarkDotNet generates code that trips some analyzers. -->
     <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
   </PropertyGroup>

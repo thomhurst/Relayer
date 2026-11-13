@@ -1,4 +1,5 @@
-namespace Relayer;
+using Relayer.Transports;
+namespace Relayer.Pipeline;
 
 // One instance per pooled context. Requests describe an outcome; they never settle native deliveries inline.
 internal sealed class PendingSettlement(DefaultMessageContext context, ConsumePipeline owner) : ISettlementFeature

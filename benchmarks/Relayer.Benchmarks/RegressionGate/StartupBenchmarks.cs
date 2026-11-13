@@ -1,3 +1,7 @@
+using Relayer.Transports;
+#if RELAYER_FOCUSED_SPI
+using Relayer.Pipeline;
+#endif
 using BenchmarkDotNet.Attributes;
 using Microsoft.Extensions.DependencyInjection;
 using Relayer.Serialization;

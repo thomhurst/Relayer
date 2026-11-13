@@ -1,3 +1,5 @@
+using Relayer.Transports;
+using Relayer.Pipeline;
 #pragma warning disable RLY001 // This dispatch-only benchmark uses int and does not send wire messages.
 using BenchmarkDotNet.Attributes;
 using Microsoft.Extensions.DependencyInjection;
@@ -20,7 +22,7 @@ public class HandlerDispatchBenchmarks
     public void Setup()
     {
         var services = new ServiceCollection();
-        services.AddRelayer(r => new ConsumerBuilder<object>(r.Services, r.Handlers, "manual").Handler<Handler>());
+        services.AddRelayer(r => new ConsumerBuilder<object>(r.Services, r.Infrastructure().Handlers, "manual").Handler<Handler>());
         _provider = services.BuildServiceProvider();
         _scope = _provider.CreateScope();
         _descriptor = _provider.GetRequiredService<HandlerRegistry>().GetHandler<int, Handler>();

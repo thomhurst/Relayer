@@ -1,3 +1,4 @@
+using Relayer.Pipeline;
 using BenchmarkDotNet.Attributes;
 using System.Buffers;
 using Microsoft.Extensions.DependencyInjection;

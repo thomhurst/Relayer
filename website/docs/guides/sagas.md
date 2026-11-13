@@ -83,14 +83,15 @@ when saving updates. Use application-owned migrations for the state table and th
 [PostgreSQL schema](../reference/postgres-schema.md) for inbox and outbox tables.
 
 ```csharp
+using Relayer.Transports;
 services.AddRelayerEntityFrameworkCoreOutbox();
 services.AddDbContext<OrdersDbContext>((services, options) => options
     .UseNpgsql(connectionString)
     .AddRelayerOutbox(services));
 services.AddRelayer(relayer =>
 {
-    relayer.MessageTypes.Add<ItemReceived>("orders.item-received");
-    relayer.MessageTypes.Add<OrderReady>("orders.ready");
+    relayer.Infrastructure().MessageTypes.Add<ItemReceived>("orders.item-received");
+    relayer.Infrastructure().MessageTypes.Add<OrderReady>("orders.ready");
     relayer.Kafka("events", kafka =>
     {
         kafka.Options.Configure(o => o.BootstrapServers.Add("localhost:9092"));

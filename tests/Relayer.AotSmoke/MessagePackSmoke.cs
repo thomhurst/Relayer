@@ -1,3 +1,4 @@
+using Relayer.Transports;
 using System.Buffers;
 using MessagePack;
 using MessagePack.Resolvers;
@@ -16,7 +17,7 @@ internal static class MessagePackSmoke
             .WithSecurity(MessagePackSecurity.UntrustedData);
         var services = new ServiceCollection();
         services.AddSingleton<IMessageSerializer>(new MessagePackMessageSerializer(options));
-        services.AddRelayer(relayer => relayer.MessageTypes.Add<MessagePackSmokeMessage>("aot.messagepack"));
+        services.AddRelayer(relayer => relayer.Infrastructure().MessageTypes.Add<MessagePackSmokeMessage>("aot.messagepack"));
         using var provider = services.BuildServiceProvider();
         var serializer = provider.GetRequiredService<IMessageSerializer>();
         var message = new MessagePackSmokeMessage { Text = "Zoë", Number = 42 };

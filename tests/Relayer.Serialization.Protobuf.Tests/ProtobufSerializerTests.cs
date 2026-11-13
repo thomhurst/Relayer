@@ -1,3 +1,4 @@
+using Relayer.Transports;
 using System.Buffers;
 using Google.Protobuf;
 using Google.Protobuf.WellKnownTypes;
@@ -100,7 +101,7 @@ public class ProtobufSerializerTests
     {
         var builder = Host.CreateApplicationBuilder();
         builder.Services.AddSingleton<IMessageSerializer>(CreateSerializer());
-        builder.Services.AddRelayer(relayer => relayer.MessageTypes.Add<StringValue>("tests.protobuf-string"));
+        builder.Services.AddRelayer(relayer => relayer.Infrastructure().MessageTypes.Add<StringValue>("tests.protobuf-string"));
         using var host = builder.Build();
         await host.StartAsync();
         var serializer = host.Services.GetRequiredService<IMessageSerializer>();

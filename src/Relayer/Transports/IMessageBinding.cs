@@ -1,6 +1,6 @@
 using System.Buffers;
 
-namespace Relayer;
+namespace Relayer.Transports;
 
 /// <summary>Reads an untouched native delivery without copying its body or decoding its headers.</summary>
 public interface IMessageBinding<TIncoming> : IMessageHeaderReader<TIncoming>

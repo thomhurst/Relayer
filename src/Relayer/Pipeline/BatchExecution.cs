@@ -1,9 +1,10 @@
+using Relayer.Transports;
 using System.Collections.Frozen;
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using Microsoft.Extensions.DependencyInjection;
 
-namespace Relayer;
+namespace Relayer.Pipeline;
 
 internal sealed class BatchExecution
 {

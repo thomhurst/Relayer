@@ -1,6 +1,6 @@
 using System.Diagnostics;
 
-namespace Relayer;
+namespace Relayer.Transports;
 
 /// <summary>Values supplied for one operation. Borrowed links need remain valid only until Start returns.</summary>
 public readonly record struct MessageTraceData

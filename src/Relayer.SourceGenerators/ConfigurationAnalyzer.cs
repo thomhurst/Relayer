@@ -42,7 +42,7 @@ public sealed class ConfigurationAnalyzer : DiagnosticAnalyzer
             var consumer = compilation.GetTypeByMetadataName("Relayer.ConsumerBuilder`1");
             var consumerInterface = compilation.GetTypeByMetadataName("Relayer.IConsumerBuilder");
             var registration = compilation.GetTypeByMetadataName("Relayer.RelayerGeneratedHandlers");
-            var messageRegistry = compilation.GetTypeByMetadataName("Relayer.MessageTypeRegistry");
+            var messageRegistry = compilation.GetTypeByMetadataName("Relayer.Pipeline.MessageTypeRegistry");
             var explicitIdentities = new ConcurrentDictionary<ITypeSymbol, byte>(SymbolEqualityComparer.Default);
             var handlers = new ConcurrentDictionary<INamedTypeSymbol, byte>(SymbolEqualityComparer.Default);
             var registered = new ConcurrentDictionary<ITypeSymbol, byte>(SymbolEqualityComparer.Default);

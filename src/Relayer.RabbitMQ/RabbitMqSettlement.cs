@@ -1,3 +1,4 @@
+using Relayer.Transports;
 using System.Runtime.CompilerServices;
 
 namespace Relayer.RabbitMQ;

@@ -1,4 +1,4 @@
-namespace Relayer;
+namespace Relayer.Transports;
 
 /// <summary>A lazy view over native message headers. Creating the view reads no headers and allocates nothing.</summary>
 public readonly struct MessageHeaders<TIncoming, TReader>(TIncoming message, HeaderNames names)

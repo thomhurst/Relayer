@@ -1,3 +1,4 @@
+using Relayer.Pipeline;
 using System.Buffers;
 using System.Collections.Concurrent;
 using System.Data;
@@ -207,8 +208,8 @@ public class SerializableIsolationTests
         });
         services.AddRelayer(builder =>
         {
-            builder.MessageTypes.Add<Probe>("serializable.probe");
-            new ConsumerBuilder<object>(builder.Services, builder.Handlers, "manual").Handler<Handler>();
+            builder.Infrastructure().MessageTypes.Add<Probe>("serializable.probe");
+            new ConsumerBuilder<object>(builder.Services, builder.Infrastructure().Handlers, "manual").Handler<Handler>();
 
         });
         return services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });

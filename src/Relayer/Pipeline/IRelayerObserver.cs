@@ -1,4 +1,5 @@
-namespace Relayer;
+using Relayer.Transports;
+namespace Relayer.Pipeline;
 
 // Optional test-only observation. Production pipelines retain their existing execution path.
 internal interface IRelayerObserver

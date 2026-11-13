@@ -1,3 +1,4 @@
+using Relayer.Pipeline;
 namespace Relayer;
 
 /// <summary>Composes typed exception rules once, in registration order, for a consumer's failure classifier.</summary>

@@ -1,3 +1,7 @@
+using Relayer.Transports;
+#if RELAYER_FOCUSED_SPI
+using Relayer.Pipeline;
+#endif
 #pragma warning disable RLY001 // This pipeline-only benchmark registers its serializer and message identity explicitly.
 using System.Buffers;
 using BenchmarkDotNet.Attributes;
@@ -33,7 +37,7 @@ public class ConsumePipelineBenchmarks
         var services = new ServiceCollection();
         if (ScopedHandler) services.AddScoped<Handler>();
         else services.AddSingleton<Handler>();
-        services.AddRelayer(r => { r.MessageTypes.Add<Payload>("benchmark.payload"); r.AddTransport<object, object, object>("manual-1", transport => transport.Consume("source", consumer => consumer.Handler<Handler>())); });
+        services.AddRelayer(r => { r.Infrastructure().MessageTypes.Add<Payload>("benchmark.payload"); r.AddTransport<object, object, object>("manual-1", transport => transport.Consume("source", consumer => consumer.Handler<Handler>())); });
         _provider = services.BuildServiceProvider();
         _scopes = _provider.GetRequiredService<IServiceScopeFactory>();
         var handlers = _provider.GetRequiredService<HandlerRegistry>();

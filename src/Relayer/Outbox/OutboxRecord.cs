@@ -1,4 +1,4 @@
-namespace Relayer;
+namespace Relayer.Transports;
 
 /// <summary>A durable outbox row projected into a serialized send without generating another envelope.</summary>
 /// <remarks>

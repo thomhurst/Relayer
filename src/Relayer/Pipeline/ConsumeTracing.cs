@@ -1,7 +1,8 @@
+using Relayer.Transports;
 using System.Diagnostics;
 using Microsoft.Extensions.Logging;
 
-namespace Relayer;
+namespace Relayer.Pipeline;
 
 internal sealed class ConsumeTracing(MessageTracing tracing, MessagingEndpoint endpoint)
 {

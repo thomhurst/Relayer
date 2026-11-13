@@ -1,4 +1,4 @@
-namespace Relayer;
+namespace Relayer.Transports;
 
 /// <summary>Fixed scheduler limits. Each assignment allocates reusable storage within these limits.</summary>
 public sealed class PartitionSchedulerOptions

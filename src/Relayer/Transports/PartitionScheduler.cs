@@ -1,4 +1,5 @@
-namespace Relayer;
+using Relayer.Pipeline;
+namespace Relayer.Transports;
 
 /// <summary>Schedules native partition deliveries through an existing receive/failure pipeline.</summary>
 /// <remarks>

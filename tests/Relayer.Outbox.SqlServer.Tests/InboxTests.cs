@@ -1,3 +1,4 @@
+using Relayer.Pipeline;
 using System.Buffers;
 using Microsoft.Extensions.Options;
 using Microsoft.Extensions.Configuration;
@@ -280,7 +281,7 @@ public class InboxTests(SqlServerFixture server) : InboxContractTests
             });
             services.AddRelayer(r =>
             {
-                r.MessageTypes.Add<Probe>("inbox.probe");
+                r.Infrastructure().MessageTypes.Add<Probe>("inbox.probe");
                 r.AddTransport<object, object, object>("manual-1", transport => transport.Consume("source", consumer => consumer.Handler<Handler>()));
                 r.AddTransport<Empty, Empty, Empty>("events", t => t.Send<Probe>("destination"));
             });

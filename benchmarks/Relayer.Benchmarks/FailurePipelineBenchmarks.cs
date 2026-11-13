@@ -1,3 +1,4 @@
+using Relayer.Pipeline;
 using System.Buffers;
 using BenchmarkDotNet.Attributes;
 using Microsoft.Extensions.DependencyInjection;
@@ -34,8 +35,8 @@ public class FailurePipelineBenchmarks
         services.AddSingleton(this);
         services.AddRelayer(r =>
         {
-            r.MessageTypes.Add<Payload>("benchmark.failure");
-            new ConsumerBuilder<object>(r.Services, r.Handlers, "manual").Handler<Handler>();
+            r.Infrastructure().MessageTypes.Add<Payload>("benchmark.failure");
+            new ConsumerBuilder<object>(r.Services, r.Infrastructure().Handlers, "manual").Handler<Handler>();
             r.AddTransport<Options, Options, Options>("benchmark", t => t.Send<Payload>("destination"));
         });
         _provider = services.BuildServiceProvider();

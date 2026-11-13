@@ -1,3 +1,4 @@
+using Relayer.Transports;
 using System.Diagnostics.CodeAnalysis;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -11,7 +12,7 @@ public static class SendBuilderExtensions
         where TMiddleware : class, ISendMiddleware
     {
         ArgumentNullException.ThrowIfNull(builder);
-        if (builder.MessageTypes.IsFrozen)
+        if (builder.Infrastructure().MessageTypes.IsFrozen)
         {
             throw new InvalidOperationException("Middleware cannot be registered after AddRelayer configuration completes.");
         }

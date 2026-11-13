@@ -1,3 +1,4 @@
+using Relayer.Pipeline;
 #pragma warning disable RLY001 // Fixtures explicitly register their cached payload and wire identity.
 using System.Buffers;
 using System.Diagnostics;
@@ -449,7 +450,7 @@ public class ConsumeTracingTests
         services.AddSingleton<ITransport>(new InMemoryTransport("test", new Dictionary<string, InMemoryEndpointOptions> { ["orders"] = new() }));
         services.AddRelayer(r =>
         {
-            r.MessageTypes.Add<int>("number");
+            r.Infrastructure().MessageTypes.Add<int>("number");
             r.AddTransport<BatchOptions, BatchOptions, BatchOptions>("test", transport =>
                 transport.Consume("orders", consumer => consumer.Handler<BatchHandler>().Batch(4, TimeSpan.FromMilliseconds(100))));
         });
@@ -571,7 +572,7 @@ public class ConsumeTracingTests
         if (loggerFactory is not null) services.AddSingleton(loggerFactory);
         services.AddRelayer(r =>
         {
-            r.MessageTypes.Add<int>("number");
+            r.Infrastructure().MessageTypes.Add<int>("number");
             r.InMemory("local", transport =>
             {
                 transport.Options.Configure(options => options.Endpoints["orders"] = new()
@@ -652,7 +653,7 @@ public class ConsumeTracingTests
         var services = new ServiceCollection();
         services.AddSingleton<Control>();
         services.AddSingleton<Handler>();
-        services.AddRelayer(r => { r.MessageTypes.Add<int>("number"); r.AddTransport<BatchOptions, BatchOptions, BatchOptions>("manual", t => t.Consume("source", c => c.Handler<Handler>())); });
+        services.AddRelayer(r => { r.Infrastructure().MessageTypes.Add<int>("number"); r.AddTransport<BatchOptions, BatchOptions, BatchOptions>("manual", t => t.Consume("source", c => c.Handler<Handler>())); });
         configure?.Invoke(services);
         return services.BuildServiceProvider();
     }

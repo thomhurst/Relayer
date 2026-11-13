@@ -1,10 +1,11 @@
+using Relayer.Transports;
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using System.Runtime.ExceptionServices;
 using System.Threading.Tasks.Sources;
 using Microsoft.Extensions.DependencyInjection;
 
-namespace Relayer;
+namespace Relayer.Pipeline;
 
 public sealed partial class ConsumePipeline
 {

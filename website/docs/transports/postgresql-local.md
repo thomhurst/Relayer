@@ -52,6 +52,7 @@ Sending outside an active outbox transaction persists a row in its own PostgreSQ
 ## Complete work atomically
 
 ```csharp
+using Relayer.Transports;
 public sealed class CleanupHandler : IHandler<Cleanup>
 {
     public async ValueTask HandleAsync(Cleanup message, MessageContext context,

@@ -26,6 +26,7 @@ Starting the host composes generated handlers into the core receive pipeline and
 Configure declared endpoints through named Options. An endpoint with no override uses queue defaults. An override for an undeclared endpoint fails startup.
 
 ```csharp
+using Relayer.Transports;
 local.Options.Configure(options => options.Endpoints.Add("orders", new()
 {
     Capacity = 128,

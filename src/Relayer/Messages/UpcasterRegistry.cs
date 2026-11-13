@@ -1,6 +1,6 @@
 using Relayer.Serialization;
 
-namespace Relayer;
+namespace Relayer.Pipeline;
 
 /// <summary>Explicit message upgrades, validated and composed at startup without reflection.</summary>
 public sealed class UpcasterRegistry

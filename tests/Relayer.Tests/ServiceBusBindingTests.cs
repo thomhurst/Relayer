@@ -1,3 +1,4 @@
+using Relayer.Pipeline;
 using System.Buffers;
 using Azure.Core.Amqp;
 using Azure.Messaging.ServiceBus;
@@ -223,7 +224,7 @@ public partial class ServiceBusBindingTests
     {
         var services = new ServiceCollection();
         services.AddSingleton<Control>();
-        services.AddRelayer(builder => { builder.MessageTypes.Add<Payload>("servicebus.payload"); new ConsumerBuilder<object>(builder.Services, builder.Handlers, "manual").Handler<Handler>(); });
+        services.AddRelayer(builder => { builder.Infrastructure().MessageTypes.Add<Payload>("servicebus.payload"); new ConsumerBuilder<object>(builder.Services, builder.Infrastructure().Handlers, "manual").Handler<Handler>(); });
         return services.BuildServiceProvider();
     }
 

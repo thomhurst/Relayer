@@ -1,3 +1,5 @@
+using Relayer.Transports;
+using Relayer.Pipeline;
 #pragma warning disable RLY001 // The benchmark explicitly registers its cached payload and serializer.
 using System.Buffers;
 using System.Diagnostics.Metrics;
@@ -35,7 +37,7 @@ public class TelemetryBenchmarks
         services.AddLogging(logging => logging
             .SetMinimumLevel(ErrorLoggingEnabled ? LogLevel.Error : LogLevel.None)
             .AddProvider(new ScopeProvider()));
-        services.AddRelayer(r => { r.MessageTypes.Add<Payload>("benchmark.payload"); new ConsumerBuilder<object>(r.Services, r.Handlers, "manual").Handler<Handler>(); });
+        services.AddRelayer(r => { r.Infrastructure().MessageTypes.Add<Payload>("benchmark.payload"); new ConsumerBuilder<object>(r.Services, r.Infrastructure().Handlers, "manual").Handler<Handler>(); });
         _provider = services.BuildServiceProvider();
         var instrumentation = _provider.GetRequiredService<RelayerInstrumentation>();
         _endpoint = instrumentation.CreateEndpoint(new()

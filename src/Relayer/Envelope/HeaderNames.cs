@@ -1,4 +1,4 @@
-namespace Relayer;
+namespace Relayer.Transports;
 
 /// <summary>CloudEvents header names compiled once for a transport's binary-mode binding.</summary>
 public sealed class HeaderNames

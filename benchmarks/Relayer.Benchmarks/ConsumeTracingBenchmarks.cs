@@ -1,3 +1,5 @@
+using Relayer.Transports;
+using Relayer.Pipeline;
 #pragma warning disable RLY001 // Explicit benchmark wire identity and cached serializer.
 using System.Buffers;
 using System.Diagnostics;
@@ -37,8 +39,8 @@ public class ConsumeTracingBenchmarks
         services.AddSingleton<IMessageSerializer, Serializer>();
         services.AddRelayer(r =>
         {
-            r.MessageTypes.Add<Payload>("benchmark.payload");
-            new ConsumerBuilder<object>(r.Services, r.Handlers, "manual").Handler<Handler>();
+            r.Infrastructure().MessageTypes.Add<Payload>("benchmark.payload");
+            new ConsumerBuilder<object>(r.Services, r.Infrastructure().Handlers, "manual").Handler<Handler>();
             r.AddTransport<BatchOptions, BatchOptions, BatchOptions>("benchmark", transport =>
                 transport.Consume("orders", consumer => consumer.Handler<BatchHandler>().Batch(10, TimeSpan.FromMilliseconds(100))));
         });

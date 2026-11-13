@@ -1,3 +1,5 @@
+using Relayer.Transports;
+using Relayer.Pipeline;
 #pragma warning disable RLY001 // Low-level pipeline fixtures use primitive messages with explicit serializer metadata.
 using System.Buffers;
 using Microsoft.Extensions.DependencyInjection;
@@ -50,7 +52,7 @@ public class ConsumePipelineTests
         services.AddScoped<Dependency>();
         services.AddSingleton<Control>();
         services.AddSingleton(events);
-        services.AddRelayer(r => { r.MessageTypes.Add<int>("number"); new ConsumerBuilder<object>(r.Services, r.Handlers, "manual").Handler<Handler>().Handler<TextHandler>(); });
+        services.AddRelayer(r => { r.Infrastructure().MessageTypes.Add<int>("number"); new ConsumerBuilder<object>(r.Services, r.Infrastructure().Handlers, "manual").Handler<Handler>().Handler<TextHandler>(); });
         await using var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
         var dependencies = new List<Dependency>();
         var pipeline = Builder(provider).Handler(Descriptor(provider))
@@ -240,8 +242,8 @@ public class ConsumePipelineTests
         services.AddSingleton(events);
         services.AddRelayer(r =>
         {
-            r.MessageTypes.Add<int>("number").Add<string>("text", 2);
-            new ConsumerBuilder<object>(r.Services, r.Handlers, "manual").Handler<Handler>().Handler<TextHandler>();
+            r.Infrastructure().MessageTypes.Add<int>("number").Add<string>("text", 2);
+            new ConsumerBuilder<object>(r.Services, r.Infrastructure().Handlers, "manual").Handler<Handler>().Handler<TextHandler>();
         });
         await using var provider = services.BuildServiceProvider();
         var failures = new List<Exception>();
@@ -264,7 +266,7 @@ public class ConsumePipelineTests
     {
         var services = new ServiceCollection();
         services.AddScoped<Handler>(_ => throw new InvalidOperationException("resolution failed"));
-        services.AddRelayer(r => { r.MessageTypes.Add<int>("number"); new ConsumerBuilder<object>(r.Services, r.Handlers, "manual").Handler<Handler>().Handler<TextHandler>(); });
+        services.AddRelayer(r => { r.Infrastructure().MessageTypes.Add<int>("number"); new ConsumerBuilder<object>(r.Services, r.Infrastructure().Handlers, "manual").Handler<Handler>().Handler<TextHandler>(); });
         await using var provider = services.BuildServiceProvider();
         Exception? failure = null;
         FailureAction? result = null;
@@ -327,7 +329,7 @@ public class ConsumePipelineTests
         services.AddScoped<Dependency>();
         services.AddSingleton<Control>();
         services.AddSingleton(new List<string>());
-        services.AddRelayer(r => { r.MessageTypes.Add<int>("number"); new ConsumerBuilder<object>(r.Services, r.Handlers, "manual").Handler<Handler>().Handler<TextHandler>(); });
+        services.AddRelayer(r => { r.Infrastructure().MessageTypes.Add<int>("number"); new ConsumerBuilder<object>(r.Services, r.Infrastructure().Handlers, "manual").Handler<Handler>().Handler<TextHandler>(); });
         return services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
     }
 

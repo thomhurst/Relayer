@@ -1,3 +1,7 @@
+using Relayer.Transports;
+#if RELAYER_FOCUSED_SPI
+using Relayer.Pipeline;
+#endif
 #pragma warning disable RLY001 // Cached serialization isolates composition costs from JSON.
 using System.Buffers;
 using System.Threading.Tasks.Sources;
@@ -43,7 +47,7 @@ public class FailureConsumePipelineBenchmarks
         services.AddScoped<Handler>();
         services.AddRelayer(r =>
         {
-            r.MessageTypes.Add<Payload>("benchmark.failure-consume");
+            r.Infrastructure().MessageTypes.Add<Payload>("benchmark.failure-consume");
 
             r.InMemory("benchmark", transport => transport.Consume("source", consumer => consumer.Handler<Handler>()));
         });

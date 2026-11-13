@@ -1,7 +1,7 @@
 using System.Diagnostics;
 using System.Globalization;
 
-namespace Relayer;
+namespace Relayer.Transports;
 
 /// <summary>A route's envelope writer, configured once at startup and reusable across messages.</summary>
 public sealed class MessageEnvelope

@@ -1,8 +1,9 @@
+using Relayer.Transports;
 using System.Buffers;
 using System.Runtime.CompilerServices;
 using System.Threading.Tasks.Sources;
 
-namespace Relayer;
+namespace Relayer.Pipeline;
 
 /// <summary>Feeds untouched native deliveries into a composed consumer and returns native settlement decisions.</summary>
 /// <remarks>

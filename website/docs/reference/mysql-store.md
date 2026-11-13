@@ -140,6 +140,7 @@ Register `AddRelayerMySqlOutbox` and configure the consumer boundary before any 
 middleware. Deduplication is opt-in with `inbox: true`:
 
 ```csharp
+using Relayer.Pipeline;
 services.AddRelayerMySqlOutbox(options);
 
 // On your single-message ConsumePipelineBuilder, after selecting its generated handler:

@@ -1,3 +1,4 @@
+using Relayer.Transports;
 using System.Buffers;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -41,7 +42,7 @@ public class TransportSerializerTests
         builder.Services.AddHostedService(_ => new StartupProbe(custom));
         builder.Services.AddRelayer(relayer =>
         {
-            relayer.MessageTypes.Add<NoJsonMetadata>("manual");
+            relayer.Infrastructure().MessageTypes.Add<NoJsonMetadata>("manual");
             relayer.InMemory("first", transport => transport.UseSerializer(_ => custom));
             relayer.InMemory("second", transport => transport.UseSerializer(_ => custom));
         });

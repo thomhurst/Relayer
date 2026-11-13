@@ -1,3 +1,5 @@
+using Relayer.Transports;
+using Relayer.Pipeline;
 using System.Buffers;
 using Microsoft.Extensions.DependencyInjection;
 using Relayer.Serialization;
@@ -386,7 +388,7 @@ public class ReceivePipelineTests
         services.AddSingleton<Control>();
         services.AddScoped<Lifetime>();
         services.AddSingleton<Handler>();
-        services.AddRelayer(r => { r.MessageTypes.Add<Payload>("payload"); new ConsumerBuilder<object>(r.Services, r.Handlers, "manual").Handler<Handler>(); });
+        services.AddRelayer(r => { r.Infrastructure().MessageTypes.Add<Payload>("payload"); new ConsumerBuilder<object>(r.Services, r.Infrastructure().Handlers, "manual").Handler<Handler>(); });
         return services.BuildServiceProvider();
     }
 

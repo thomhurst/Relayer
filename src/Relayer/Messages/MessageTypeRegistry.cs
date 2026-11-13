@@ -4,7 +4,7 @@ using System.Text.Json.Serialization;
 using System.Text.Json.Serialization.Metadata;
 using Relayer.Serialization;
 
-namespace Relayer;
+namespace Relayer.Pipeline;
 
 /// <summary>
 /// Maps CLR types to their stable wire identity and back. Populated explicitly or by the

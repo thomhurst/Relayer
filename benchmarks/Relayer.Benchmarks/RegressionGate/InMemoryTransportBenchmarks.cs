@@ -1,3 +1,6 @@
+#if RELAYER_FOCUSED_SPI
+using Relayer.Pipeline;
+#endif
 using System.Buffers;
 using System.Runtime.CompilerServices;
 using System.Threading.Channels;

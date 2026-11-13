@@ -1,4 +1,4 @@
-namespace Relayer;
+namespace Relayer.Transports;
 
 /// <summary>Reads one header directly from a native incoming message.</summary>
 /// <remarks>Implementations must not eagerly materialize or decode the native header collection.</remarks>

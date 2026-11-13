@@ -1,4 +1,4 @@
-namespace Relayer;
+namespace Relayer.Transports;
 
 /// <summary>Identifies one delivery in a partition's completion window.</summary>
 /// <remarks>

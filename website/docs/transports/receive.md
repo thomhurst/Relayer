@@ -6,6 +6,8 @@ description: "Adapt a composed consume pipeline to a native receive callback wit
 Compose a `ConsumePipeline` once with generated handler descriptors, the serializer, middleware, and an explicit durable failure delegate. Adapt it to the native callback with a struct binding:
 
 ```csharp
+using Relayer.Transports;
+using Relayer.Pipeline;
 public readonly struct BrokerBinding : IMessageBinding<BrokerDelivery>
 {
     public static ReadOnlySequence<byte> GetBody(BrokerDelivery message) => message.Body;

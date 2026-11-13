@@ -1,4 +1,4 @@
-namespace Relayer;
+namespace Relayer.Transports;
 
 /// <summary>The durable read and claim operations used by an outbox dispatcher.</summary>
 /// <remarks>

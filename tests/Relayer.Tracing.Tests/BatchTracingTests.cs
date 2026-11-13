@@ -1,3 +1,5 @@
+using Relayer.Transports;
+using Relayer.Pipeline;
 using System.Buffers;
 using System.Diagnostics;
 using System.Text;
@@ -26,7 +28,7 @@ public class BatchTracingTests
         services.AddScoped(static _ => ScopedBaseline.Shared);
         services.AddRelayer(builder =>
         {
-            builder.MessageTypes.Add<Payload>("batch.tracing");
+            builder.Infrastructure().MessageTypes.Add<Payload>("batch.tracing");
             builder.AddTransport<Options, Options, Options>("test", transport =>
                 transport.Consume("source", consumer => consumer.Handler<Handler>().Batch(size, TimeSpan.FromSeconds(1))));
         });

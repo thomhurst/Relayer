@@ -8,6 +8,8 @@ description: Send, outbox, delivery and settlement spans, messaging metrics, and
 Transport authors compose endpoint telemetry at startup, alongside generated dispatch. For example, after registering and freezing handlers:
 
 ```csharp
+using Relayer.Transports;
+using Relayer.Pipeline;
 var instrumentation = provider.GetRequiredService<RelayerInstrumentation>();
 var process = instrumentation.CreateEndpoint(new EndpointTelemetryOptions
 {
@@ -40,7 +42,7 @@ Each recorder retains precomputed `TagList` values, including its failure tags. 
 
 The consumer reads the transport binding's CloudEvents time header only when `relayer.critical_time` has a listener. Invalid or missing timestamps produce no critical-time measurement. With logging, metrics and tracing disabled, optional headers remain unread and telemetry adds no per-delivery allocations.
 
-Generated error logs use category `Relayer.ConsumePipeline` and event ID 1. When Error logging is enabled for that category, each generated failure log opens a scope carrying `MessageId`, the stable wire `MessageType`, and `CorrelationId` from the optional CloudEvents `correlationid` extension (`ce_correlationid` or `cloudEvents:correlationid`, resolved through `HeaderNames.CorrelationId`). Failures in handling, failure handling, disposal and settlement receive this scope. It surrounds only the generated log call; application and failure-handler logs retain the application's ambient scopes. Successful deliveries open no Relayer logging scope, because `LoggerFactory` allocates when pushing an external scope. Cancellation with the delivery token canceled propagates without an Error log, while unrelated cancellation failures are logged normally. Failures log the exception and the ambient activity's `TraceId` and `SpanId`; no activity is created by this metrics/logging integration. Raw malformed envelope fields remain loggable without bypassing the failure classifier. Producers opt into correlation by writing the extension through their native header writer using `names.CorrelationId`; the envelope writer does not invent a correlation ID. Native adapters expose that header through their lazy binding, including messages from non-Relayer producers. For example, after writing the envelope:
+Generated error logs use category `Relayer.Pipeline.ConsumePipeline` and event ID 1. When Error logging is enabled for that category, each generated failure log opens a scope carrying `MessageId`, the stable wire `MessageType`, and `CorrelationId` from the optional CloudEvents `correlationid` extension (`ce_correlationid` or `cloudEvents:correlationid`, resolved through `HeaderNames.CorrelationId`). Failures in handling, failure handling, disposal and settlement receive this scope. It surrounds only the generated log call; application and failure-handler logs retain the application's ambient scopes. Successful deliveries open no Relayer logging scope, because `LoggerFactory` allocates when pushing an external scope. Cancellation with the delivery token canceled propagates without an Error log, while unrelated cancellation failures are logged normally. Failures log the exception and the ambient activity's `TraceId` and `SpanId`; no activity is created by this metrics/logging integration. Raw malformed envelope fields remain loggable without bypassing the failure classifier. Producers opt into correlation by writing the extension through their native header writer using `names.CorrelationId`; the envelope writer does not invent a correlation ID. Native adapters expose that header through their lazy binding, including messages from non-Relayer producers. For example, after writing the envelope:
 
 ```csharp
 NativeHeaderWriter.SetHeader(nativeMessage, names.CorrelationId, correlationId);
@@ -67,6 +69,7 @@ For the built-in integrations, see [send tracing](sending.md#send-tracing), [del
 Adapters compose operations once at startup, using native metadata rather than the configured transport instance name:
 
 ```csharp
+using Relayer.Transports;
 var tracing = provider.GetRequiredService<MessageTracing>();
 var endpoint = new MessagingEndpoint
 {
@@ -97,6 +100,8 @@ The [provider-owned tracing source](#tracing-registration-and-primitives) suppli
 Compose tracing once per consumer, alongside the metrics recorder:
 
 ```csharp
+using Relayer.Transports;
+using Relayer.Pipeline;
 var tracing = provider.GetRequiredService<MessageTracing>();
 var endpoint = new MessagingEndpoint
 {

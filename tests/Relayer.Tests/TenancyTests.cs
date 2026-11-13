@@ -1,3 +1,4 @@
+using Relayer.Pipeline;
 using System.Buffers;
 using Microsoft.Extensions.DependencyInjection;
 using Relayer.Serialization;
@@ -221,7 +222,7 @@ public class TenancyTests
         services.AddRelayer(r =>
         {
             r.AddMessageTypesFromThisAssembly();
-            new ConsumerBuilder<object>(r.Services, r.Handlers, "manual").Handler<Handler>().Handler<BatchHandler>();
+            new ConsumerBuilder<object>(r.Services, r.Infrastructure().Handlers, "manual").Handler<Handler>().Handler<BatchHandler>();
             r.AddTransport<object, object, object>("sink", t => t.Send<Payload>("messages"));
         });
         services.AddScoped(static p => new Handler(p.GetRequiredService<Control>(), p.GetService<TenantContext>()));

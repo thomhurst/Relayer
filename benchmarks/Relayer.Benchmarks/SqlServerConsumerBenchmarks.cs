@@ -1,3 +1,5 @@
+using Relayer.Transports;
+using Relayer.Pipeline;
 #pragma warning disable RLY001 // This benchmark uses an explicitly registered cached serializer.
 using System.Buffers;
 using BenchmarkDotNet.Attributes;
@@ -33,7 +35,7 @@ public class SqlServerConsumerBenchmarks
         _id = Guid.CreateVersion7().ToString("D");
         var services = new ServiceCollection();
         services.AddRelayerSqlServerOutbox(_options);
-        services.AddRelayer(r => { r.MessageTypes.Add<Probe>("benchmark.sql-consumer"); new ConsumerBuilder<object>(r.Services, r.Handlers, "manual").Handler<Handler>(); });
+        services.AddRelayer(r => { r.Infrastructure().MessageTypes.Add<Probe>("benchmark.sql-consumer"); new ConsumerBuilder<object>(r.Services, r.Infrastructure().Handlers, "manual").Handler<Handler>(); });
         _provider = services.BuildServiceProvider();
         _pipeline = new ConsumePipelineBuilder(_provider.GetRequiredService<IServiceScopeFactory>(),
                 _provider.GetRequiredService<MessageTypeRegistry>(), new Serializer(), static (_, error, _) => ValueTask.FromException(error))

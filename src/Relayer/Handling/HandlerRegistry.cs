@@ -1,6 +1,6 @@
 using System.Collections.ObjectModel;
 
-namespace Relayer;
+namespace Relayer.Pipeline;
 
 /// <summary>Explicit generated descriptors. Lookups belong to pipeline composition, not message dispatch.</summary>
 public sealed class HandlerRegistry

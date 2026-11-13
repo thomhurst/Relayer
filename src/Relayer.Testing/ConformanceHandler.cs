@@ -1,3 +1,4 @@
+using Relayer.Transports;
 namespace Relayer.Testing;
 
 // The generator composes the same dispatch path used by application handlers.

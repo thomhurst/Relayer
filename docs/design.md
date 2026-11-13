@@ -104,6 +104,8 @@ The native mechanisms and core fallbacks are:
 
 ### 2.4 Transport SPI
 
+The application API remains in `Relayer`; receive composition and generated registration live in `Relayer.Pipeline`, and native bindings, adapter telemetry and persistence integration live in `Relayer.Transports`. The [authoring inventory](../website/docs/transports/authoring.md#application-api-and-authoring-namespaces) lists the public types and access seams.
+
 The transport SPI is the seam between the core and a transport (decision D23). The core owns everything that is the same on every broker: serialization, the CloudEvents envelope, routing, the failure pipeline and its fallbacks, the inbox, the outbox, and telemetry. A transport owns only what is native: the client, the receive loop, the mapping to native messages, and settlement. Generics carry the native types through the core, so the core is written once and still runs specialized, allocation-free code for each transport.
 
 A transport author writes five small pieces.

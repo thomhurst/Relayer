@@ -15,7 +15,7 @@ public sealed class SendOptions
     public string? OrderingKey { get; set; }
 
     /// <summary>Whether this send contains native callbacks, which cannot be persisted in an outbox.</summary>
-    public bool HasNativeConfigurators => _nativeConfigurators is { Count: > 0 };
+    internal bool HasNativeConfigurators => _nativeConfigurators is { Count: > 0 };
 
     internal void CopyNativeTo(SendOptions target)
     {
@@ -49,7 +49,7 @@ public sealed class SendOptions
 
     /// <summary>Applies native callbacks in registration order. Called by transports with their native outgoing type.</summary>
     /// <remarks>No wrapping closure, reflection, or dynamic invocation is used.</remarks>
-    public void ApplyNative<TNative>(TNative nativeMessage) where TNative : class
+    internal void ApplyNativeCore<TNative>(TNative nativeMessage) where TNative : class
     {
         ArgumentNullException.ThrowIfNull(nativeMessage);
 

@@ -1,3 +1,4 @@
+using Relayer.Pipeline;
 using Dekaf.Consumer;
 using Dekaf.Serialization;
 using Microsoft.Extensions.DependencyInjection;

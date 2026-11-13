@@ -1,4 +1,4 @@
-namespace Relayer;
+namespace Relayer.Transports;
 
 /// <summary>Relayer metadata carried by durable outbox dispatch.</summary>
 public static class OutboxHeaders

@@ -1,4 +1,5 @@
-namespace Relayer;
+using Relayer.Pipeline;
+namespace Relayer.Transports;
 
 /// <summary>The declared destinations and consumers, built once during registration.</summary>
 public sealed class RelayerConfiguration

@@ -1,3 +1,4 @@
+using Relayer.Transports;
 namespace Relayer.HealthChecks;
 
 internal sealed class OutboxStoreHealthProvider(IOutboxStore store, TimeProvider timeProvider) : IOutboxHealthProvider

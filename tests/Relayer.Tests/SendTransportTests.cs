@@ -1,3 +1,4 @@
+using Relayer.Transports;
 namespace Relayer.Tests;
 
 public class SendTransportTests
@@ -12,7 +13,7 @@ public class SendTransportTests
 
         options.ApplyNative(native);
 
-        await Assert.That(options.HasNativeConfigurators).IsTrue();
+        await Assert.That(options.HasNativeConfigurators()).IsTrue();
         await Assert.That(native.Value).IsEqualTo(6);
     }
 
@@ -93,7 +94,7 @@ public class SendTransportTests
         outgoing.ValidateForOutbox();
         outgoing.ApplyNative(new NativeMessage());
 
-        await Assert.That(options.HasNativeConfigurators).IsFalse();
+        await Assert.That(options.HasNativeConfigurators()).IsFalse();
         await Assert.That(outgoing.Headers.IsEmpty).IsTrue();
     }
 

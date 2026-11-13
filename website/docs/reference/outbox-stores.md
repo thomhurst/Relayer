@@ -24,6 +24,7 @@ Use normal keyed DI with an explicit, case-sensitive name. This example assumes 
 `OrdersOutboxStore` that implements `IOutboxStore`; Relayer does not ship that type:
 
 ```csharp
+using Relayer.Transports;
 using Relayer;
 using Relayer.HealthChecks;
 

@@ -1,3 +1,4 @@
+using Relayer.Transports;
 using Azure.Messaging.ServiceBus.Administration;
 using System.Collections.Concurrent;
 using System.Diagnostics;
@@ -40,7 +41,7 @@ public sealed class ServiceBusReceiveEmulatorTests
         services.AddRelayerServiceBusHealthProviders("bus");
         services.AddRelayer(builder =>
         {
-            builder.MessageTypes.Add<EmulatorPayload>("servicebus.emulator-receive");
+            builder.Infrastructure().MessageTypes.Add<EmulatorPayload>("servicebus.emulator-receive");
             builder.UseJsonSerializer(ServiceBusReceiveEmulatorJson.Default);
             builder.ServiceBus("bus", bus =>
             {

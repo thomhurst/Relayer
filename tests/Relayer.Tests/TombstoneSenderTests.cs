@@ -15,7 +15,7 @@ public class TombstoneSenderTests
         services.AddSingleton<IOutboxEnlistment>(outbox);
         services.AddRelayer(r =>
         {
-            r.MessageTypes.Add<Payload>("tests.tombstone-send", 7);
+            r.Infrastructure().MessageTypes.Add<Payload>("tests.tombstone-send", 7);
             r.AddTransport<Options, Options, Options>("sink", t => t.Send<Payload>("orders"));
             r.AddMessageTypesFromThisAssembly();
         });
