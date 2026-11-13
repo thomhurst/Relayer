@@ -1,4 +1,5 @@
 using BenchmarkDotNet.Attributes;
+using BenchmarkDotNet.Configs;
 using Microsoft.Extensions.DependencyInjection;
 using RabbitMQ.Client;
 using RabbitMQ.Client.Events;
@@ -7,8 +8,10 @@ using Relayer.Transports;
 
 namespace Relayer.Benchmarks;
 
-/// <summary>Compares native confirmed publishing with the serialized Relayer send boundary on the same broker.</summary>
+/// <summary>Compares native confirmed publishing with the serialized boundary and full JSON sender on the same broker.</summary>
 [MemoryDiagnoser]
+[CategoriesColumn]
+[GroupBenchmarksBy(BenchmarkLogicalGroupRule.ByCategory)]
 public class RabbitMqSendBenchmarks
 {
     private IConnection _connection = null!;
@@ -20,6 +23,9 @@ public class RabbitMqSendBenchmarks
     private BasicProperties _properties = null!;
     private OutgoingMessage _message;
     private string _queue = null!;
+    private RelayerInstrumentation _instrumentation = null!;
+    private DirectJsonSend _json = null!;
+    private readonly BasicProperties _jsonProperties = new() { Persistent = true, Headers = new Dictionary<string, object?>() };
 
     [GlobalSetup]
     public async Task Setup()
@@ -53,19 +59,50 @@ public class RabbitMqSendBenchmarks
         _properties = new() { Persistent = true, ContentType = "application/json", Headers = new Dictionary<string, object?>() };
         foreach (var header in headers)
             if (header.Key != "content-type") _properties.Headers[header.Key] = header.Value.Text ?? (object)header.Value.Utf8.ToArray();
+        _instrumentation = new();
+        _json = new(_instrumentation, builder => builder.RabbitMQ("benchmark-json", rabbit =>
+        {
+            rabbit.TopologyMode = TopologyMode.None;
+            rabbit.Options.Configure(options => { options.ConnectionFactory = factory; options.PublisherCount = 1; });
+            rabbit.Send<DirectJsonOrder>(_queue);
+        }), "cloudEvents:");
+        await _json.StartAsync();
+        await RawJsonSingle();
+        await RelayerJsonSingle();
         await Raw();
         await Relayer();
     }
 
-    [Benchmark(Baseline = true)]
+    [Benchmark(Baseline = true), BenchmarkCategory("Single")]
     public async Task Raw() => await _channel.BasicPublishAsync("", _queue, true, _properties, _message.Body);
 
-    [Benchmark]
+    [Benchmark, BenchmarkCategory("Single")]
     public async Task Relayer() => await _transport.SendAsync(_message, default);
+
+    [Benchmark(Baseline = true), BenchmarkCategory("DefaultJson")]
+    public ValueTask RawJsonSingle()
+    {
+        var body = _json.Serialize();
+        _jsonProperties.ContentType = _json.ContentType;
+        _json.WriteEnvelope<BasicProperties, NativeHeaders>(_jsonProperties);
+        return _channel.BasicPublishAsync("", _queue, true, _jsonProperties, body);
+    }
+
+    [Benchmark, BenchmarkCategory("DefaultJson")]
+    public ValueTask RelayerJsonSingle() => _json.Sender.SendAsync(_json.Order);
+
+    private sealed class NativeHeaders : IMessageHeaderWriter<BasicProperties>
+    {
+        public static void SetHeader(BasicProperties properties, string name, ReadOnlySpan<char> value) =>
+            properties.Headers![name] = value.ToString();
+        public static void RemoveHeader(BasicProperties properties, string name) => properties.Headers!.Remove(name);
+    }
 
     [GlobalCleanup]
     public async Task Cleanup()
     {
+        if (_json is not null) await _json.DisposeAsync();
+        _instrumentation?.Dispose();
         if (_provider is not null) await _provider.DisposeAsync();
         if (_channel is not null) await _channel.DisposeAsync();
         if (_consumerChannel is not null) await _consumerChannel.DisposeAsync();

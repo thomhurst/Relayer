@@ -228,3 +228,16 @@ unavailable before startup, during native recovery and after shutdown; idle rece
 Active receivers report the oldest callback's activation time across concurrent workers, so newer completions
 cannot hide a stalled older callback. `ConsumerStallTimeout` determines when that snapshot becomes unhealthy.
 Health tracking is enabled only by this optional registration.
+
+
+## Performance validation
+
+`RabbitMqSendBenchmarks` compares native confirmed publishing with Relayer on the same broker. `Single` measures the pre-serialized transport boundary. `DefaultJson` compares `ISender.SendAsync` with raw publishing: both serialize the same model using the registered default JSON serializer and generate fresh CloudEvents metadata. Both use persistent messages, mandatory publishing and tracked publisher confirmations. A shared consumer drains both paths during measurement.
+
+Set `RELAYER_RABBITMQ_URI` to a test broker, then run:
+
+```shell
+dotnet run -c Release --project benchmarks/Relayer.Benchmarks -- --filter '*RabbitMqSendBenchmarks*' --anyCategories DefaultJson
+```
+
+`MemoryDiagnoser` includes native-client and serializer allocations. Local results are diagnostic; adding this comparison does not establish the 5% throughput budget.

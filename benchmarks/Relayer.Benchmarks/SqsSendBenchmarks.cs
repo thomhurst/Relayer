@@ -33,6 +33,9 @@ public class SqsSendBenchmarks
     private SendMessageRequest _rawSingle = null!;
     private SendMessageBatchRequest _rawBatch = null!;
 
+    private DirectJsonSend _json = null!;
+    private SendMessageRequest _jsonRequest = null!;
+
     [GlobalSetup]
     public async Task Setup()
     {
@@ -67,6 +70,18 @@ public class SqsSendBenchmarks
         _rawSingle = new() { QueueUrl = _url, MessageAttributes = Attributes() };
         _rawBatch = new() { QueueUrl = _url, Entries = new(10) };
         for (var i = 0; i < 10; i++) _rawBatch.Entries.Add(new() { Id = i.ToString(), MessageAttributes = Attributes() });
+        _json = new(_instrumentation, builder => builder.AmazonSqs("benchmark-json", transport =>
+        {
+            transport.TopologyMode = TopologyMode.None;
+            transport.Options.Configure(options => { options.SqsClient = _client; options.Queues.Add(new(_queue)); });
+            transport.Send<DirectJsonOrder>(_queue);
+        }));
+        await _json.StartAsync();
+        _jsonRequest = new() { QueueUrl = _url, MessageAttributes = new() };
+        foreach (var key in new[] { "ce_id", "ce_type", "ce_source", "ce_time", "ce_specversion", "traceparent", "tracestate", "content-type" })
+            _jsonRequest.MessageAttributes[key] = new() { DataType = "String" };
+        await RawJsonSingle();
+        await RelayerJsonSingle();
         await RawSingle();
         await RelayerSingle();
         await RawBatch();
@@ -110,9 +125,32 @@ public class SqsSendBenchmarks
     [Benchmark(OperationsPerInvoke = 10), BenchmarkCategory("Batch")]
     public ValueTask RelayerBatch() => _transport.SendBatchAsync(_batch, default);
 
+    [Benchmark(Baseline = true), BenchmarkCategory("DefaultJson")]
+    public Task<SendMessageResponse> RawJsonSingle()
+    {
+        _jsonRequest.MessageBody = Encoding.UTF8.GetString(_json.Serialize().Span);
+        _json.WriteEnvelope<Dictionary<string, MessageAttributeValue>, NativeHeaders>(_jsonRequest.MessageAttributes);
+        _jsonRequest.MessageAttributes["content-type"].StringValue = _json.ContentType;
+        return _client.SendMessageAsync(_jsonRequest);
+    }
+
+    [Benchmark, BenchmarkCategory("DefaultJson")]
+    public ValueTask RelayerJsonSingle() => _json.Sender.SendAsync(_json.Order);
+
+    private sealed class NativeHeaders : IMessageHeaderWriter<Dictionary<string, MessageAttributeValue>>
+    {
+        public static void SetHeader(Dictionary<string, MessageAttributeValue> headers, string name, ReadOnlySpan<char> value)
+        {
+            if (!headers.TryGetValue(name, out var attribute)) headers[name] = attribute = new() { DataType = "String" };
+            attribute.StringValue = value.ToString();
+        }
+        public static void RemoveHeader(Dictionary<string, MessageAttributeValue> headers, string name) => headers.Remove(name);
+    }
+
     [GlobalCleanup]
     public async Task Cleanup()
     {
+        if (_json is not null) await _json.DisposeAsync();
         if (_transport is not null) await _transport.DisposeAsync();
         try { if (_client is not null && _url is not null) await _client.DeleteQueueAsync(_url); }
         finally { _client?.Dispose(); _tracing?.Dispose(); _listener?.Dispose(); _instrumentation?.Dispose(); }
