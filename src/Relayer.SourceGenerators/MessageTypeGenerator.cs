@@ -1,6 +1,5 @@
 using System.Collections.Immutable;
 using System.Text;
-using System.Text.Json.SourceGeneration;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.Text;
@@ -121,7 +120,7 @@ public sealed class MessageTypeGenerator : IIncrementalGenerator
 
         // Roslyn generators cannot see one another's output. Run STJ on the augmented
         // compilation and forward only our context, leaving user contexts to the SDK.
-        var result = CSharpGeneratorDriver.Create([new JsonSourceGenerator().AsSourceGenerator()], parseOptions: parseOptions)
+        var result = CSharpGeneratorDriver.Create([JsonGeneratorLoader.Create().AsSourceGenerator()], parseOptions: parseOptions)
             .RunGenerators(compilation.AddSyntaxTrees(declaration), context.CancellationToken)
             .GetRunResult();
         foreach (var generated in result.Results.SelectMany(r => r.GeneratedSources))

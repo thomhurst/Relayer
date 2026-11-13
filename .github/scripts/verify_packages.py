@@ -6,6 +6,16 @@ import xml.etree.ElementTree as ET
 from zipfile import ZipFile
 
 
+def verify_analyzers(archive):
+    for assembly in ("Relayer.SourceGenerators.dll", "Relayer.CodeFixes.dll"):
+        assert f"analyzers/dotnet/cs/{assembly}" in archive.namelist(), f"Missing bundled {assembly}"
+    assert not any(Path(name).name == "System.Text.Json.SourceGeneration.dll"
+                   for name in archive.namelist()), "JSON generator must be embedded, not packed loose"
+    for notice in ("LICENSE", "NOTICES"):
+        path = f"analyzers/dotnet/cs/System.Text.Json.SourceGeneration.{notice}.txt"
+        assert archive.read(path), f"Missing bundled JSON generator {notice}"
+
+
 def verify_packages(directory, commit, version=None):
     root = Path(__file__).resolve().parents[2]
     expected = {project.stem for project in (root / "src").glob("*/*.csproj")
@@ -37,8 +47,7 @@ def verify_packages(directory, commit, version=None):
                 if dependency.get("id") in expected:
                     assert dependency.get("version") == package_version, f"{package_id}: inconsistent internal dependency"
             if package_id == "Relayer":
-                for assembly in ("Relayer.SourceGenerators.dll", "Relayer.CodeFixes.dll", "System.Text.Json.SourceGeneration.dll"):
-                    assert f"analyzers/dotnet/cs/{assembly}" in archive.namelist(), f"Missing bundled {assembly}"
+                verify_analyzers(archive)
         with ZipFile(package.with_suffix(".snupkg")) as symbols:
             pdb = next(name for name in symbols.namelist() if name.endswith(f"/{package_id}.pdb"))
             content = symbols.read(pdb)
