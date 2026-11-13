@@ -14,12 +14,19 @@ internal static class JsonGeneratorLoader
     private static Type LoadGeneratorType()
     {
         using var resource = typeof(JsonGeneratorLoader).Assembly.GetManifestResourceStream(
-            "Relayer.System.Text.Json.SourceGeneration.dll")!;
+            "Relayer.System.Text.Json.SourceGeneration.dll")
+            ?? throw new InvalidOperationException("The embedded System.Text.Json generator is missing. Rebuild or reinstall the Relayer analyzer package.");
         var bytes = new byte[resource.Length];
         var offset = 0;
         while (offset < bytes.Length)
         {
-            offset += resource.Read(bytes, offset, bytes.Length - offset);
+            var read = resource.Read(bytes, offset, bytes.Length - offset);
+            if (read == 0)
+            {
+                throw new InvalidOperationException("The embedded System.Text.Json generator is truncated. Rebuild or reinstall the Relayer analyzer package.");
+            }
+
+            offset += read;
         }
 
         // Loading bytes gives this assembly its own load context. Loading by name or
