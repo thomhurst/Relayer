@@ -8,7 +8,23 @@ official dotnet/samples SDK and no-op callback scaffolding at commit
 Unlike EventPipe allocation ticks, these are individual CLR heap allocation notifications,
 not weighted samples. Counts distinguish the pooled handler state-machine boxes suggested
 by #488's sampled traces. Nested type definitions and generic arguments are resolved inside
-the allocation callback, once per ClassID. Resolution/callback failures make the report invalid.
+the allocation callback, once per ClassID. Unexpected resolution/callback failures make the report invalid.
+
+.NET 11 runtime async also allocates internal types with no backing metadata.
+`GetClassIDInfo2` deliberately returns `CORPROF_E_DATAINCOMPLETE` for these types
+([runtime source](https://github.com/dotnet/runtime/blob/v11.0.0/src/coreclr/vm/proftoeeinterfaceimpl.cpp#L3774),
+[upstream tracking](https://github.com/dotnet/runtime/issues/120800)). The profiler
+retains their exact ClassID, object count and bytes with the literal
+`<metadata-unavailable:0x80131351>` marker and `metadataUnavailable: true`.
+`coverage.metadataUnavailableTypes` counts these aggregate ClassID records; it
+is separate from callback failures. A report with this status has complete
+callback counts but incomplete type names and cannot establish full named-type
+attribution. No CLR type name or allocation owner is inferred from this HRESULT.
+Generic arguments can carry the same explicit marker. Other HRESULTs, missing
+counts, inconsistent flags and unresolved names still fail validation. Reader regression tests check this status and reject inconsistent coverage;
+the full parallel capture exercises metadata-less types when the runtime creates them.
+Earlier reports that failed metadata resolution remain failed evidence; this
+support applies to new executions.
 The fixture checks known object counts/sizes from four simultaneous allocating threads,
 including nested generic types, while excluding warmup allocations.
 
@@ -17,7 +33,8 @@ paths; native locking and metadata resolution also change scheduling. Counts do 
 the historical Performance run, establish production throughput, prove a candidate regression,
 or permit subtraction from other controls. Object sizes are the runtime's `GetObjectSize2`
 values, not a claim to account for every byte of allocation-context/alignment overhead.
-No allocation stacks are collected. Retained workload assemblies are never rebuilt or wrapped.
+Default captures collect no allocation stacks; the parallel workflow's opt-in managed
+stack mode is described below. Retained workload assemblies are never rebuilt or wrapped.
 
 The dedicated workflow builds the native profiler and .NET 10 external probe, runs known-type
 fixture checks, verifies all original input inventories, and runs the existing original-BDN-waiter
@@ -160,3 +177,99 @@ collected and a passing run does not explain a historical failure. Preserve all
 windows and types, including baseline excesses, failed equality and failed coverage.
 Use an unfavorable same-execution window to narrow candidate objects before choosing
 further stack diagnostics or a demonstrated fix.
+
+## Actual parallel core-test capture (#687)
+
+`parallel-receive-allocation-owners.yml` runs the complete `Relayer.Tests` process
+on Linux x64, independently on net10/net11, with its normal TUnit parallelism.
+Unlike `FrozenReceiveProbe`, it retains the other tests in that process. The test
+links the existing `NativeAllocationRegion` helper and enables checkpoints only
+when `RELAYER_ALLOCATION_PROFILER` is set. Loading occurs before the unchanged
+1000 warmup triples; markers surround the unchanged 1000 measured triples, outside
+the fixture's thread counters. With no profiler configured, the test keeps its
+original exact scope comparisons. It introduces no concurrency throttle or GC
+change. Counters are printed even when final diagnostic validation fails.
+
+The workflow reuses the exact callback profiler, known-count fixture and readers;
+it retains the full test log, every checkpoint/type report, selected runtime
+binaries, test executables, before/after input hashes and SHA256SUMS, including
+unfavorable outcomes. The TUnit-output adapter verifies every one of the 3000
+checkpoint counters against that same execution's 1000 test triples. Identical
+captured-output echoes are accepted; conflicting echoes fail validation. Exact
+equality remains the test's assertion, not a parser prerequisite, so an excess is
+retained and correlated rather than discarded.
+
+These are all-thread process envelopes: allocations from unrelated parallel tests,
+checkpoint bookkeeping and work outside the fixture's counters are included.
+Callback overhead and marker calls alter scheduling. Type presence in a window
+therefore identifies candidates, not the allocating owner of a counter excess;
+default captures have no stacks, and the capture does not reproduce historical scheduling or
+permit subtraction across separate executions. Preserve any unfavorable window
+and obtain stacks for a reproduced candidate before proposing a production or
+runtime correction. A passing parallel capture still cannot close #687.
+
+The parallel workflow also accepts `ci_run_id`, `ci_run_attempt` and `framework`
+(`both`, `net10.0` or `net11.0`). Select the framework whose failure artifact
+exists. This reuses the retained-input manifest and Git/run provenance checks
+from the isolated receive workflow, then runs the original test image and its
+recorded installed runtime without rebuilding or editing that image. The image
+must include the opt-in checkpoint integration introduced by #705; older images
+cannot supply the required 3000 checkpoints and fail report validation.
+The before/after hashes and original artifact remain in every outcome's archive.
+This is a new parallel execution of the same inputs, not historical scheduling
+replay or a rerun of the failed CI check. A passing result still does not assign
+an owner to an earlier counter excess.
+
+
+### Optional managed allocation stacks
+
+After a candidate reproduces, dispatch the parallel workflow with `stacks=true`
+(and optionally the existing `ci_run_id`, `ci_run_attempt` and `framework`).
+`RELAYER_ALLOCATION_STACKS` names a separate JSONL report. The profiler uses the
+CLR's synchronous `DoStackSnapshot` on the allocating thread, reusing the exact
+allocation callbacks and checkpoint boundaries. It records managed function IDs,
+resolved method names, allocation thread IDs and per-window/class/stack counts.
+The reader checks every stack count against that execution's original callback
+report; snapshot failures, missing frames and mismatched totals fail validation
+while the workflow retains all raw reports and executable inputs. A known-count
+fixture verifies allocating call sites on four worker threads and the caller.
+
+This opt-in mode changes scheduling and callback overhead further. Inlined frames
+and native call sites are absent, and unresolved method names remain explicit in
+the validated report. All-thread checkpoint envelopes include unrelated parallel
+work; even matching object sizes cannot be subtracted from fixture thread counters.
+A new stack-enabled run is neither historical replay nor proof of ownership for a
+previous failure. Default captures still collect no stacks. No assertions, warmup,
+measurement counts, GC settings or test parallelism change.
+
+Failed full-parallel captures remain evidence, not validated attribution. In run
+43460895321, one class allocated through `AsyncHelpers.AllocContinuation` had
+unavailable class metadata, and two snapshots returned `E_FAIL` with no frames.
+The pinned .NET 11 `GetClassIDInfo2` implementation returns
+`CORPROF_E_DATAINCOMPLETE` for continuations without metadata; the allocation
+stack alone does not prove that was this call’s HRESULT. Class-lookup failures
+therefore log the exact HRESULT, ClassID and returned argument count for the
+next diagnostic execution. The readers still reject incomplete reports.
+
+Run 43462634362 confirmed three `GetClassIDInfo2` failures with HRESULT
+`0x80131351` (`CORPROF_E_DATAINCOMPLETE`), and retained ten failed snapshots.
+Its five excess counter windows still have incomplete global coverage; they do
+not establish a production or runtime defect. Checkpoint records now include
+`callerThread`, obtained through the CLR's `GetCurrentThreadID` outside the
+fixture's thread-counter windows. It uses the same CLR ID as allocation-stack
+rows, so subsequent captures can distinguish callbacks on the checkpoint caller
+from unrelated parallel threads without guessing from stack names. The parallel
+test now also records both dedicated completion workers at startup,
+before warmup, using the same CLR identity API. Its retained output contains
+`allocation-worker=0/1; thread=<CLR ID>`; warmup uses both workers, and zero or
+duplicate IDs fail before capture. The fixture alternates workers, starting with
+worker 0 for checkpoint 0 after its even 3000 warmup invocations. Match the
+window index modulo two to the worker ID as well as checking `callerThread`.
+The startup callback never runs inside a measured invocation. Retained older
+test images lack these lines and cannot acquire worker identities retroactively;
+use a fresh-input capture to obtain them. This does not narrow capture intervals
+or equate
+object sizes with thread-counter bytes. Old retained reports without this field
+remain readable; a present invalid ID fails validation. The native known-count
+fixture checks that worker allocations differ from this ID and caller allocations
+match it. Metadata and snapshot failures continue to reject the whole report.

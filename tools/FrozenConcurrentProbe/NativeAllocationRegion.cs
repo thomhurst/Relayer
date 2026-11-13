@@ -6,14 +6,18 @@ internal sealed class NativeAllocationRegion
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     private delegate int Transition();
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate ulong ThreadIdentity();
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     private delegate int CheckpointTransition(int index, long measured, int final);
     private readonly CheckpointTransition? checkpoint;
+    private readonly ThreadIdentity threadIdentity;
     private readonly Transition begin;
     private readonly Transition end;
 
     private NativeAllocationRegion(string path, bool checkpoints)
     {
         var library = NativeLibrary.Load(Path.GetFullPath(path));
+        threadIdentity = Marshal.GetDelegateForFunctionPointer<ThreadIdentity>(NativeLibrary.GetExport(library, "CurrentAllocationThread"));
         begin = Marshal.GetDelegateForFunctionPointer<Transition>(NativeLibrary.GetExport(library, "BeginAllocationRegion"));
         if (checkpoints)
             checkpoint = Marshal.GetDelegateForFunctionPointer<CheckpointTransition>(NativeLibrary.GetExport(library, "CheckpointAllocationRegion"));
@@ -22,6 +26,9 @@ internal sealed class NativeAllocationRegion
 
     internal static NativeAllocationRegion? Load(bool checkpoints = false) =>
         Environment.GetEnvironmentVariable("RELAYER_ALLOCATION_PROFILER") is { Length: > 0 } path ? new(path, checkpoints) : null;
+
+    // Called only during worker startup, before warmup and all measured counters.
+    internal ulong CurrentThread() => threadIdentity();
 
     internal void Begin()
     {

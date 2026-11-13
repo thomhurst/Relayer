@@ -10,19 +10,27 @@
 #include <mutex>
 #include <sstream>
 #include <string>
+#include <tuple>
 
 namespace {
 constexpr GUID ProfilerId = {0x32b7ef07,0x25e8,0x4ac7,{0xb0,0x11,0x9a,0x43,0x21,0xd7,0x02,0xc8}};
-struct Count { unsigned long long objects = 0, bytes = 0; std::string name; };
+struct Count { unsigned long long objects = 0, bytes = 0; std::string name; bool metadataUnavailable = false; };
 std::mutex gate;
 bool initialized = false, active = false, begun = false;
 unsigned long long failures = 0;
 std::map<ClassID, Count> counts;
-struct Window { long long measured; std::map<ClassID, Count> counts; };
+struct Window { long long measured; ThreadID caller; std::map<ClassID, Count> counts; };
 std::vector<Window> windows;
 bool windowsCompleted = false;
 std::map<ClassID, Count> previousCounts;
 ICorProfilerInfo12* info = nullptr;
+// Optional synchronous CLR snapshots, taken on the allocating thread. Native
+// memory only; no managed instrumentation or cross-thread suspension is used.
+std::string stackPath;
+using StackKey = std::tuple<size_t, ThreadID, ClassID, HRESULT, std::vector<FunctionID>>;
+std::map<StackKey, Count> stackCounts;
+std::map<FunctionID, std::string> frameNames;
+unsigned long long stackFailures = 0;
 // Native BDN events are delivered synchronously on the emitting thread by the
 // profiler EventPipe API (pinned dotnet/samples EventPipeProfiler.cpp).
 bool nativeTail = false, benchmarkStarted = false, benchmarkStopped = false, iterationOpen = false;
@@ -40,6 +48,31 @@ FunctionID selectedFunction = 0;
 int writeReport();
 std::string narrow(const WCHAR* value);
 std::string definitionName(IMetaDataImport*, mdTypeDef, unsigned depth = 0);
+
+HRESULT STDMETHODCALLTYPE snapshotFrame(FunctionID function, UINT_PTR, COR_PRF_FRAME_INFO,
+    ULONG32, BYTE[], void* state)
+{
+    static_cast<std::vector<FunctionID>*>(state)->push_back(function);
+    return S_OK;
+}
+
+std::string functionName(FunctionID function)
+{
+    if (!function) return "<native-transition>";
+    ClassID type; ModuleID module; mdToken token;
+    if (FAILED(info->GetFunctionInfo(function, &type, &module, &token))) return "<unresolved-function>";
+    IMetaDataImport* metadata = nullptr;
+    if (FAILED(info->GetModuleMetaData(module, ofRead, IID_IMetaDataImport,
+        reinterpret_cast<IUnknown**>(&metadata)))) return "<unresolved-function>";
+    mdTypeDef owner; WCHAR name[2048]; ULONG length; DWORD flags, implFlags;
+    PCCOR_SIGNATURE signature; ULONG signatureLength, rva;
+    auto hr = metadata->GetMethodProps(token, &owner, name, 2048, &length, &flags,
+        &signature, &signatureLength, &rva, &implFlags);
+    auto result = SUCCEEDED(hr) && length <= 2048
+        ? definitionName(metadata, owner) + "." + narrow(name) : "<unresolved-function>";
+    metadata->Release();
+    return result;
+}
 
 // Slowpath hooks use the runtime's ABI-preserving stubs, as in dotnet/runtime's
 // native SlowPathELTProfiler. Do not substitute the fastpath hooks with C++ bodies.
@@ -116,15 +149,26 @@ std::string definitionName(IMetaDataImport* metadata, mdTypeDef token, unsigned 
     return narrow(name);
 }
 
-std::string typeName(ClassID id, unsigned depth = 0)
+std::string typeName(ClassID id, bool& metadataUnavailable, unsigned depth = 0)
 {
     if (depth > 12) { ++failures; return "<type-depth-exceeded>"; }
     CorElementType element; ClassID elementId; ULONG rank;
     if (info->IsArrayClass(id, &element, &elementId, &rank) == S_OK)
-        return (elementId ? typeName(elementId, depth + 1) : "<primitive:" + std::to_string(element) + ">") + "[rank=" + std::to_string(rank) + "]";
+        return (elementId ? typeName(elementId, metadataUnavailable, depth + 1) : "<primitive:" + std::to_string(element) + ">") + "[rank=" + std::to_string(rank) + "]";
     ModuleID module; mdTypeDef token; ClassID parent; ULONG actual;
     ClassID arguments[32];
-    if (FAILED(info->GetClassIDInfo2(id, &module, &token, &parent, 32, &actual, arguments)) || actual > 32) {
+    auto classResult = info->GetClassIDInfo2(id, &module, &token, &parent, 32, &actual, arguments);
+    // .NET 11 runtime-async continuation MethodTables have no backing metadata.
+    // Preserve the HRESULT and ClassID instead of inventing a CLR type name.
+    // Other metadata/callback errors still invalidate the entire report.
+    if (classResult == CORPROF_E_DATAINCOMPLETE) {
+        metadataUnavailable = true;
+        return "<metadata-unavailable:0x80131351>";
+    }
+    if (FAILED(classResult) || actual > 32) {
+        std::fprintf(stderr, "GetClassIDInfo2 failed: 0x%x, class %llu, type arguments %u\n",
+            static_cast<unsigned>(classResult), static_cast<unsigned long long>(id),
+            SUCCEEDED(classResult) ? actual : 0);
         ++failures; return "<unresolved-class>";
     }
     IMetaDataImport* metadata = nullptr;
@@ -137,7 +181,7 @@ std::string typeName(ClassID id, unsigned depth = 0)
     metadata->Release();
     if (actual) {
         result += "[";
-        for (ULONG i = 0; i < actual; ++i) { if (i) result += ","; result += typeName(arguments[i], depth + 1); }
+        for (ULONG i = 0; i < actual; ++i) { if (i) result += ","; result += typeName(arguments[i], metadataUnavailable, depth + 1); }
         result += "]";
     }
     return result;
@@ -151,6 +195,11 @@ public:
         if (FAILED(hr)) return hr;
         nativeTail = std::getenv("RELAYER_ALLOCATION_BDN_TAIL") != nullptr;
         DWORD mask = COR_PRF_MONITOR_OBJECT_ALLOCATED | COR_PRF_ENABLE_OBJECT_ALLOCATED;
+        if (const char* path = std::getenv("RELAYER_ALLOCATION_STACKS")) {
+            if (!*path) return E_INVALIDARG;
+            stackPath = path;
+            mask |= COR_PRF_ENABLE_STACK_SNAPSHOT;
+        }
         const char* type = std::getenv("RELAYER_ALLOCATION_TYPE");
         const char* method = std::getenv("RELAYER_ALLOCATION_METHOD");
         if ((type != nullptr) != (method != nullptr)) return E_INVALIDARG;
@@ -200,8 +249,20 @@ public:
         auto& count = counts[type];
         // GetModuleMetaData requires a profiler callback context. Resolve once here,
         // never asynchronously from the P/Invoke boundary that writes the report.
-        if (count.name.empty()) count.name = typeName(type);
+        if (count.name.empty()) count.name = typeName(type, count.metadataUnavailable);
         ++count.objects; count.bytes += size;
+        if (!stackPath.empty()) {
+            ThreadID thread = 0;
+            std::vector<FunctionID> frames;
+            auto hr = info->GetCurrentThreadID(&thread);
+            if (SUCCEEDED(hr)) hr = info->DoStackSnapshot(0, snapshotFrame, COR_PRF_SNAPSHOT_DEFAULT,
+                &frames, nullptr, 0);
+            if (FAILED(hr) || frames.empty() || !thread) ++stackFailures;
+            for (const auto function : frames)
+                if (frameNames.find(function) == frameNames.end()) frameNames.emplace(function, functionName(function));
+            auto& stack = stackCounts[StackKey{windows.size(), thread, type, hr, std::move(frames)}];
+            ++stack.objects; stack.bytes += size;
+        }
         return S_OK;
     }
     HRESULT STDMETHODCALLTYPE ExceptionUnwindFunctionEnter(FunctionID function) override {
@@ -304,6 +365,27 @@ int writeReport()
     if (!path) return 0;
     std::ofstream output(path, std::ios::out | std::ios::trunc);
     if (!output) return 0;
+    bool stacksWritten = true;
+    if (!stackPath.empty()) {
+        std::ofstream stacks(stackPath, std::ios::out | std::ios::trunc);
+        for (const auto& frame : frameNames)
+            stacks << "{\"kind\":\"frame\",\"functionId\":" << frame.first << ",\"name\":\"" << frame.second << "\"}\n";
+        unsigned long long objects = 0, bytes = 0;
+        for (const auto& entry : stackCounts) {
+            const auto& [index, thread, type, hr, frames] = entry.first;
+            stacks << "{\"kind\":\"allocation-stack\",\"index\":" << index << ",\"thread\":" << thread
+                   << ",\"classId\":" << type << ",\"snapshotResult\":" << static_cast<long long>(hr)
+                   << ",\"objects\":" << entry.second.objects << ",\"bytes\":" << entry.second.bytes << ",\"frames\":[";
+            for (size_t i = 0; i < frames.size(); ++i) { if (i) stacks << ','; stacks << frames[i]; }
+            stacks << "]}\n";
+            objects += entry.second.objects; bytes += entry.second.bytes;
+        }
+        stacks << "{\"kind\":\"stack-coverage\",\"objects\":" << objects << ",\"bytes\":" << bytes
+               << ",\"failures\":" << stackFailures
+               << ",\"limits\":\"Managed frames on the allocating thread in this new instrumented execution. Inlining, native frames and unresolved names limit attribution. Window envelopes include unrelated parallel work; object bytes are not thread-counter bytes.\"}\n";
+        stacks.flush();
+        stacksWritten = stacks.good() && !stackFailures;
+    }
     if (nativeTail) {
         for (const auto& event : engineEvents)
             output << "{\"kind\":\"engine-event\",\"id\":" << event.id << ",\"thread\":" << event.thread
@@ -318,25 +400,31 @@ int writeReport()
             objects += entry.second.objects; bytes += entry.second.bytes;
             output << "{\"kind\":\"window-type\",\"index\":" << index
                    << ",\"classId\":" << entry.first << ",\"type\":\"" << entry.second.name
-                   << "\",\"objects\":" << entry.second.objects << ",\"bytes\":" << entry.second.bytes << "}\n";
+                   << "\",\"metadataUnavailable\":" << (entry.second.metadataUnavailable ? "true" : "false")
+                   << ",\"objects\":" << entry.second.objects << ",\"bytes\":" << entry.second.bytes << "}\n";
         }
         output << "{\"kind\":\"window\",\"index\":" << index << ",\"mode\":" << index % 3
-               << ",\"measured\":" << window.measured << ",\"objects\":" << objects << ",\"bytes\":" << bytes << "}\n";
+               << ",\"callerThread\":" << window.caller << ",\"measured\":" << window.measured << ",\"objects\":" << objects << ",\"bytes\":" << bytes << "}\n";
     }
-    unsigned long long objects = 0, bytes = 0;
+    unsigned long long objects = 0, bytes = 0, metadataUnavailableTypes = 0;
     for (const auto& entry : counts) {
         objects += entry.second.objects; bytes += entry.second.bytes;
+        if (entry.second.metadataUnavailable) ++metadataUnavailableTypes;
         output << "{\"kind\":\"type\",\"classId\":" << entry.first << ",\"type\":\"" << entry.second.name
-               << "\",\"objects\":" << entry.second.objects << ",\"bytes\":" << entry.second.bytes << "}\n";
+               << "\",\"metadataUnavailable\":" << (entry.second.metadataUnavailable ? "true" : "false")
+               << ",\"objects\":" << entry.second.objects << ",\"bytes\":" << entry.second.bytes << "}\n";
     }
     output << "{\"kind\":\"coverage\",\"objects\":" << objects << ",\"bytes\":" << bytes
+           << ",\"metadataUnavailableTypes\":" << metadataUnavailableTypes
            << ",\"failures\":" << failures
            << ",\"windows\":" << windows.size()
            << ",\"methodEntries\":" << methodEntries << ",\"methodLeaves\":" << methodLeaves
            << ",\"boundary\":\"" << (selectedMethod.empty() ? "external-marker" : "method-enter-leave") << "\""
-           << ",\"limits\":\"Exact CLR ObjectAllocated callbacks in this separate instrumented region; callbacks change fast paths and scheduling. Native-tail mode includes final timed cleanup/logging and extra-stat setup/work/cleanup, not exact MeasureWithGc. No stacks, historical replay or cross-control subtraction.\"}\n";
+           << ",\"limits\":\"Exact CLR ObjectAllocated callbacks in this separate instrumented region; callbacks change fast paths and scheduling. Native-tail mode includes final timed cleanup/logging and extra-stat setup/work/cleanup, not exact MeasureWithGc. "
+           << (stackPath.empty() ? "No stacks. " : "Managed stacks are in the separate opt-in report. ")
+           << "No historical replay or cross-control subtraction.\"}\n";
     output.flush();
-    return output.good() && !failures && objects ? 1 : 0;
+    return output.good() && stacksWritten && !failures && objects ? 1 : 0;
 }
 }
 
@@ -371,15 +459,28 @@ extern "C" __attribute__((visibility("default"))) int CheckpointAllocationRegion
         ++failures;
         return 0;
     }
-    Window window{measured, {}};
+    ThreadID caller = 0;
+    if (FAILED(info->GetCurrentThreadID(&caller)) || !caller) {
+        ++failures;
+        return 0;
+    }
+    Window window{measured, caller, {}};
     for (const auto& entry : counts) {
         auto previous = previousCounts.find(entry.first);
         const auto objects = entry.second.objects - (previous == previousCounts.end() ? 0 : previous->second.objects);
         const auto bytes = entry.second.bytes - (previous == previousCounts.end() ? 0 : previous->second.bytes);
-        if (objects) window.counts.emplace(entry.first, Count{objects, bytes, entry.second.name});
+        if (objects) window.counts.emplace(entry.first, Count{objects, bytes, entry.second.name, entry.second.metadataUnavailable});
     }
     previousCounts = counts;
     windows.push_back(std::move(window));
     if (final) { active = false; windowsCompleted = true; }
     return 1;
+}
+
+// Diagnostic identity lookup, outside the allocation capture and fixture counters.
+extern "C" __attribute__((visibility("default"))) unsigned long long CurrentAllocationThread()
+{
+    std::lock_guard<std::mutex> lock(gate);
+    ThreadID thread = 0;
+    return initialized && SUCCEEDED(info->GetCurrentThreadID(&thread)) ? thread : 0;
 }

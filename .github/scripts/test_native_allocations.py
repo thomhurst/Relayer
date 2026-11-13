@@ -31,6 +31,24 @@ class NativeAllocationReportTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "failures"):
             self.check(lambda rows: rows[-1].update(failures=1))
 
+    def test_explicit_metadata_unavailable_keeps_exact_counts(self):
+        def mark(rows):
+            rows[0].update(type="<metadata-unavailable:0x80131351>", metadataUnavailable=True)
+            rows[-1].update(metadataUnavailableTypes=1)
+        result = self.check(mark)
+        self.assertEqual(result["coverage"]["objects"], 10)
+        self.assertTrue(result["types"][0]["metadataUnavailable"])
+
+    def test_metadata_unavailable_requires_explicit_matching_status(self):
+        for name, marked, total in (("<metadata-unavailable:0xdeadbeef>", True, 1),
+                                    ("<metadata-unavailable:0x80131351>", False, 0),
+                                    ("Message", True, 1),
+                                    ("<metadata-unavailable:0x80131351>", True, 0),
+                                    ("<unresolved-class>", False, 0)):
+            with self.subTest(name=name, marked=marked, total=total), self.assertRaises(ValueError):
+                self.check(lambda rows: (rows[0].update(type=name, metadataUnavailable=marked),
+                                        rows[-1].update(metadataUnavailableTypes=total)))
+
     def test_inconsistent_sum(self):
         with self.assertRaisesRegex(ValueError, "total"):
             self.check(lambda rows: rows[-1].update(bytes=241))
@@ -60,6 +78,16 @@ class WindowAllocationReportTests(unittest.TestCase):
         self.assertEqual([row["measured"] for row in result["windows"]], [111, 222, 333])
         self.assertEqual(result["windows"][1]["types"], [])
 
+    def test_metadata_unavailable_window_status_matches_aggregate(self):
+        rows = self.rows()
+        for row in (rows[0], rows[-2]):
+            row.update(type="<metadata-unavailable:0x80131351>", metadataUnavailable=True)
+        rows[-1]["metadataUnavailableTypes"] = 1
+        self.assertTrue(read_rows(rows)["windows"][0]["types"][0]["metadataUnavailable"])
+        rows[0]["metadataUnavailable"] = False
+        with self.assertRaisesRegex(ValueError, "metadata-unavailable"):
+            read_rows(rows)
+
     def test_incomplete_triplet(self):
         rows = self.rows()
         rows[-1]["windows"] = 2
@@ -71,6 +99,16 @@ class WindowAllocationReportTests(unittest.TestCase):
         rows[2]["index"] = 2
         with self.assertRaisesRegex(ValueError, "window boundaries"):
             read_rows(rows)
+
+    def test_checkpoint_caller_thread_is_positive_and_preserved(self):
+        for caller in (0, -1, True, "7"):
+            rows = self.rows()
+            rows[1]["callerThread"] = caller
+            with self.assertRaisesRegex(ValueError, "checkpoint caller"):
+                read_rows(rows)
+        rows = self.rows()
+        rows[1]["callerThread"] = 7
+        self.assertEqual(read_rows(rows)["windows"][0]["callerThread"], 7)
 
     def test_wrong_type_window(self):
         rows = self.rows()
@@ -122,6 +160,43 @@ class ReceiveWindowCorrelationTests(unittest.TestCase):
 
 @unittest.skipUnless(os.environ.get("TEST_NATIVE_PROFILER"), "Native profiler fixture paths not supplied")
 class NativeAllocationFixtureTests(unittest.TestCase):
+    def test_opt_in_stacks_preserve_multithreaded_known_counts_and_call_sites(self):
+        from read_allocation_stacks import validate
+        profiler = str(Path(os.environ["TEST_NATIVE_PROFILER"]).resolve())
+        fixture = str(Path(os.environ["TEST_NATIVE_FIXTURE"]).resolve())
+        evidence = Path(os.environ["TEST_NATIVE_OUTPUT"])
+        evidence.mkdir(parents=True, exist_ok=True)
+        report = (evidence / "stack-windows.jsonl").resolve()
+        stacks = (evidence / "stack-windows-stacks.jsonl").resolve()
+        environment = dict(os.environ, CORECLR_ENABLE_PROFILING="1",
+                           CORECLR_PROFILER="{32B7EF07-25E8-4AC7-B011-9A4321D702C8}",
+                           CORECLR_PROFILER_PATH=profiler, RELAYER_ALLOCATION_PROFILER=profiler,
+                           RELAYER_ALLOCATION_OUTPUT=str(report), RELAYER_ALLOCATION_STACKS=str(stacks))
+        result = subprocess.run(["dotnet", fixture, "1024", "--windows"], env=environment,
+                                capture_output=True, text=True, timeout=60)
+        (evidence / "stack-windows.log").write_text(result.stdout + result.stderr)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        worker_threads = {int(line.split("thread=")[1]) for line in result.stdout.splitlines()
+                          if line.startswith("allocation-worker=")}
+        self.assertEqual(len(worker_threads), 4)
+        self.assertNotIn(0, worker_threads)
+        actual = read(report)
+        snapshot = validate([json.loads(line) for line in stacks.read_text().splitlines()], actual)
+        for name in ("FixtureMessage", "FixtureTypes+Box`1[FixtureMessage]"):
+            class_id = next(row["classId"] for row in actual["types"] if row["type"] == name)
+            for index in (0, 1):
+                rows = [row for row in snapshot["allocations"] if row["classId"] == class_id and row["index"] == index]
+                self.assertEqual(sum(row["objects"] for row in rows), 1024)
+                self.assertEqual(sum(row["bytes"] for row in rows), 1024 * 24)
+                self.assertEqual(len({row["thread"] for row in rows}), 4 if index == 0 else 1)
+                if index == 0:
+                    self.assertEqual({row["thread"] for row in rows}, worker_threads)
+                caller = actual["windows"][index]["callerThread"]
+                self.assertGreater(caller, 0)
+                self.assertEqual({row["thread"] == caller for row in rows}, {False} if index == 0 else {True})
+                for row in rows:
+                    self.assertTrue(any("g__FillRange|" in snapshot["frames"][frame] for frame in row["frames"]), row)
+
     def test_exact_counts_exclude_warmup_and_resolve_generic_arguments(self):
         profiler = str(Path(os.environ["TEST_NATIVE_PROFILER"]).resolve())
         fixture = str(Path(os.environ["TEST_NATIVE_FIXTURE"]).resolve())

@@ -51,6 +51,7 @@
   </ItemGroup>
 
   <ItemGroup>
+    <Compile Include="../../tools/FrozenConcurrentProbe/NativeAllocationRegion.cs" Link="Fixtures/NativeAllocationRegion.cs" />
     <Compile Include="../../tools/FrozenAllocationReader/RuntimeIdentityScope.cs" Link="Fixtures/RuntimeIdentityScope.cs" />
     <Compile Include="../../tools/FrozenAllocationReader/NativeEngineTail.cs" Link="Fixtures/NativeEngineTail.cs" />
     <Compile Include="../../tools/FrozenAllocationReader/AllocationScope.cs" Link="Fixtures/AllocationScope.cs" />
