@@ -13,6 +13,11 @@ on:
         description: Retained Performance inputs
         type: string
         default: '42823238841'
+      parent:
+        description: Existing console replay or child-only profiling through native BDN parent
+        type: choice
+        options: ['console', 'native']
+        default: 'console'
       same_image:
         description: Negative control using one unchanged retained image (comparison preserves ABBA)
         type: choice
@@ -35,6 +40,7 @@ jobs:
     env:
       PERFORMANCE_RUN: ${{ inputs.performance_run || '42823238841' }}
       CONTROL_RUNTIME: ${{ inputs.runtime_version || '10.0.14' }}
+      CONTROL_PARENT: ${{ inputs.parent || (github.event_name == 'pull_request' && 'native') || 'console' }}
       SAME_IMAGE: ${{ inputs.same_image || 'comparison' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -60,6 +66,9 @@ jobs:
           CXX=clang++ cmake -S tools/FrozenAllocationProfiler -B .artifacts/exact-profiler -DPROFILER_SAMPLES="$PWD/profiler-sdk" -DCMAKE_BUILD_TYPE=Release > results/native-configure.log 2>&1
           cmake --build .artifacts/exact-profiler > results/native-build.log 2>&1
           dotnet build tools/FrozenAllocationProfiler/Fixture -c Release > results/fixture-build.log 2>&1
+      - name: Build native parent when selected
+        if: env.CONTROL_PARENT == 'native'
+        run: dotnet build tools/FrozenNativeHost -c Release > results/native-parent-build.log 2>&1
       - name: Bind only external tools to the selected patch and retain runtime inventory
         run: |
           python3 - <<'PYTHON'
@@ -104,6 +113,11 @@ jobs:
           # Reuse the launcher's existing same-image mode; never relabel its four
           # identical-image launches as a baseline/candidate comparison.
           control_args=()
+          case "$CONTROL_PARENT" in
+            console) ;;
+            native) control_args+=(--native-executor tools/FrozenNativeHost/bin/Release/net10.0/FrozenNativeHost.dll) ;;
+            *) echo "Invalid parent: $CONTROL_PARENT" >&2; exit 1 ;;
+          esac
           case "$SAME_IMAGE" in
             comparison) ;;
             baseline|candidate) control_args+=(--same-image "$SAME_IMAGE") ;;
@@ -127,6 +141,7 @@ jobs:
             profiler-sdk/LICENSE
             .artifacts/exact-profiler/
             tools/FrozenAllocationProfiler/
+            tools/FrozenNativeHost/
             tools/FrozenConcurrentProbe/NativeAllocationRegion.cs
             .github/scripts/frozen_concurrent_control.py
             .github/scripts/frozen_bdn_control.py

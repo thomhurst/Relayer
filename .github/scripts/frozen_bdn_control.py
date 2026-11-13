@@ -101,8 +101,8 @@ def main():
                         help="Separate exact CLR callback counts in the selected native boundary.")
     args = parser.parse_args()
     from frozen_scope_control import result as timing_result
-    if args.native_executor and (args.case != "concurrent" or args.trace_tool or args.allocation_profiler):
-        parser.error("Native parent currently supports only uninstrumented concurrent replay")
+    if args.native_executor and (args.case != "concurrent" or args.trace_tool):
+        parser.error("Native parent supports concurrent replay without an external trace launcher")
     if args.allocation_profiler and args.case != "concurrent":
         parser.error("Exact allocation callbacks support only the concurrent benchmark")
     owner, method, parameter, operations = CASES[args.case]
@@ -178,6 +178,8 @@ def main():
             "ELT changes JIT code and native locking/metadata change scheduling. Object sizes exclude some "
             "allocation-context/alignment overhead; they need not sum to the native GC counter. "
             "No stacks, historical reconstruction, cross-control subtraction, gate rerun or throughput claim.")
+    if args.native_executor and args.allocation_profiler:
+        protocol["limits"] += " Native-parent child-only profiling; managed parent is unprofiled. Bundled protocol/instrumentation intervention, not isolated pipe effects or historical attribution."
     if args.same_image:
         protocol["limits"] += " Same-image negative control: no candidate-versus-baseline comparison; process order, adaptive operation counts and host drift remain uncontrolled."
     (args.output / "protocol.json").write_text(json.dumps(protocol, indent=2) + "\n")
@@ -199,6 +201,22 @@ def main():
                     environment.pop("RELAYER_ALLOCATION_BDN_TAIL", None)
                     environment.update(RELAYER_ALLOCATION_TYPE="BenchmarkDotNet.Engines.Engine",
                                        RELAYER_ALLOCATION_METHOD="MeasureWithGc")
+                if args.native_executor and environment is not None:
+                    # Profile only the benchmark child. Profiling the managed parent
+                    # too would share/truncate its report and contaminate callbacks.
+                    child_variables = {key: value for key, value in environment.items()
+                                       if key in ("CORECLR_ENABLE_PROFILING", "CORECLR_PROFILER", "CORECLR_PROFILER_PATH")
+                                       or key.startswith("RELAYER_ALLOCATION_")}
+                    child_wrapper = args.output.resolve() / f"{index}-{side}-native-dotnet.sh"
+                    child_wrapper.write_text(wrapper.read_text().replace(
+                        "exec dotnet ", "exec env " + shlex.join(
+                            [f"{key}={value}" for key, value in child_variables.items()]) + " dotnet "))
+                    child_wrapper.chmod(0o700)
+                    command[4] = str(child_wrapper)
+                    protocol["commands"][index - 1] = command
+                    (args.output / "protocol.json").write_text(json.dumps(protocol, indent=2) + "\n")
+                    environment = {key: value for key, value in environment.items()
+                                   if key not in child_variables}
                 subprocess.run(command, cwd=runners[side][0].parent, stdout=log,
                                stderr=subprocess.STDOUT, check=True, timeout=900, env=environment)
             except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as error:

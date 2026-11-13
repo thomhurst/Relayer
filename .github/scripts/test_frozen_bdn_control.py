@@ -1,5 +1,6 @@
 import json
 import shutil
+import os
 import sys
 from pathlib import Path
 import subprocess
@@ -150,8 +151,63 @@ class OriginalRunnerTests(unittest.TestCase):
                 self.assertIn("anonymous pipes/Broker", protocol["host"])
                 self.assertIn("bundled protocol intervention", protocol["limits"])
 
+    def test_native_parent_profiles_child_only_and_retains_invalid_report(self):
+        real_run = subprocess.run
+        for missing in (False, True):
+            with self.subTest(missing=missing), tempfile.TemporaryDirectory(prefix="native 'child ") as directory:
+                root = Path(directory)
+                output = root / "results"
+                calls = []
+                fake_dotnet = root / "dotnet"
+                fake_dotnet.write_text("#!/bin/sh\nprintf '%s\\n' \"$CORECLR_ENABLE_PROFILING\" \"$CORECLR_PROFILER_PATH\" \"$RELAYER_ALLOCATION_OUTPUT\" \"$RELAYER_ALLOCATION_METHOD\" \"$@\"\n")
+                fake_dotnet.chmod(0o700)
+                config = {"runtimeOptions": {"framework": {"name": "Microsoft.NETCore.App", "version": "10.0.0"}}}
+                (root / "image.runtimeconfig.json").write_text(json.dumps(config))
+
+                def execute(command, **kwargs):
+                    calls.append(command)
+                    # The parent must not attach a second profiler to the same report.
+                    self.assertFalse(any(key in ("CORECLR_ENABLE_PROFILING", "CORECLR_PROFILER", "CORECLR_PROFILER_PATH")
+                                         or key.startswith("RELAYER_ALLOCATION_") for key in kwargs["env"]))
+                    wrapper = Path(command[4])
+                    child = real_run([str(wrapper), "image with spaces.dll", "--anonymousPipes", "pipe handles"],
+                                     env=dict(kwargs["env"], PATH=str(root) + os.pathsep + os.environ["PATH"]),
+                                     capture_output=True, text=True, check=True).stdout.splitlines()
+                    report = output / f"{len(calls)}-{('baseline', 'candidate', 'candidate', 'baseline')[len(calls)-1]}-objects.jsonl"
+                    self.assertEqual(child, ["1", str((root / "profiler 'quoted.so").resolve()), str(report.resolve()), "MeasureWithGc",
+                                             "--fx-version", "10.0.15", "--roll-forward", "Disable",
+                                             "image with spaces.dll", "--anonymousPipes", "pipe handles"])
+                    Path(command[-1]).write_text(json.dumps({"FoundExecutable": True, "ExitCode": 0, "IsSuccess": True, "Errors": []}))
+                    Path(command[-2]).write_text("// Runtime=.NET 10.0.15 (test), X64\n" + COMPLETE)
+                    if missing and len(calls) == 2:
+                        return
+                    rows = [{"kind": "type", "classId": 42, "type": "Message", "objects": 1, "bytes": 24},
+                            {"kind": "coverage", "objects": 1, "bytes": 24, "failures": 0,
+                             "boundary": "method-enter-leave", "methodEntries": 1, "methodLeaves": 1}]
+                    report.write_text("\n".join(map(json.dumps, rows)))
+
+                with patch("sys.argv", ["control", str(root), str(output), "--native-executor", str(root / "host.dll"),
+                                        "--runtime-version", "10.0.15", "--allocation-profiler", str(root / "profiler 'quoted.so"),
+                                        "--allocation-boundary", "method"]), \
+                     patch("frozen_bdn_control.verify", return_value="frozen"), \
+                     patch("frozen_bdn_control.executable", return_value=(root / "image.dll", "10")), \
+                     patch("frozen_bdn_control.subprocess.run", side_effect=execute):
+                    if missing:
+                        with self.assertRaisesRegex(SystemExit, "launches failed"):
+                            main()
+                    else:
+                        main()
+                self.assertEqual(len(calls), 4)
+                outcomes = json.loads((output / "outcomes.json").read_text())
+                self.assertEqual("allocationError" in outcomes[1], missing)
+                self.assertEqual(outcomes[3]["callbackBytes"], 24)
+                protocol = json.loads((output / "protocol.json").read_text())
+                self.assertTrue(protocol["instrumented"])
+                self.assertIn("managed parent is unprofiled", protocol["limits"])
+                self.assertEqual([call[4] for call in protocol["commands"]], [call[4] for call in calls])
+
     def test_native_parent_rejects_unsupported_combinations(self):
-        for extra in (["--case", "scoped-dispatch"], ["--trace-tool", "trace"], ["--allocation-profiler", "profiler"]):
+        for extra in (["--case", "scoped-dispatch"], ["--trace-tool", "trace"]):
             with self.subTest(extra=extra), patch("sys.argv", ["control", "inputs", "output", "--native-executor", "host", *extra]):
                 with self.assertRaises(SystemExit):
                     main()
