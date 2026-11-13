@@ -11,8 +11,7 @@ internal sealed class PostgreSqlOutboxTransaction : DbTransaction
     private readonly NpgsqlConnection? _ownedConnection;
     private readonly PostgreSqlOutboxConnection _connection;
     private readonly IsolationLevel _isolationLevel;
-    private bool _finished;
-    private bool _completing;
+    private OutboxTransactionLifecycle _lifecycle;
 
     internal PostgreSqlOutboxTransaction(PostgreSqlOutbox owner, NpgsqlTransaction native, NpgsqlConnection? ownedConnection)
     {
@@ -27,14 +26,14 @@ internal sealed class PostgreSqlOutboxTransaction : DbTransaction
     {
         get
         {
-            if (_finished || _completing) return false;
+            if (!_lifecycle.CanUse) return false;
             if (_native.Connection is null)
                 throw new InvalidOperationException("The native PostgreSQL transaction ended outside Relayer. Dispose the outbox transaction and retry the complete unit of work.");
             return true;
         }
     }
     public override IsolationLevel IsolationLevel => _isolationLevel;
-    protected override DbConnection? DbConnection => _finished ? null : _connection;
+    protected override DbConnection? DbConnection => _lifecycle.Finished ? null : _connection;
 
     internal NpgsqlTransaction Unwrap(DbConnection? connection)
     {
@@ -52,7 +51,7 @@ internal sealed class PostgreSqlOutboxTransaction : DbTransaction
     public override void Commit()
     {
         EnsureActive();
-        _completing = true;
+        _lifecycle.BeginCompletion();
         try
         {
             _owner.Prepare(_native)?.Execute();
@@ -65,7 +64,7 @@ internal sealed class PostgreSqlOutboxTransaction : DbTransaction
     public override async Task CommitAsync(CancellationToken cancellationToken = default)
     {
         EnsureActive();
-        _completing = true;
+        _lifecycle.BeginCompletion();
         try
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -80,7 +79,7 @@ internal sealed class PostgreSqlOutboxTransaction : DbTransaction
     public override void Rollback()
     {
         EnsureActive();
-        _completing = true;
+        _lifecycle.BeginCompletion();
         try { _native.Rollback(); }
         finally { Finish(); }
     }
@@ -88,7 +87,7 @@ internal sealed class PostgreSqlOutboxTransaction : DbTransaction
     public override async Task RollbackAsync(CancellationToken cancellationToken = default)
     {
         EnsureActive();
-        _completing = true;
+        _lifecycle.BeginCompletion();
         try { await _native.RollbackAsync(cancellationToken).ConfigureAwait(false); }
         finally { await FinishAsync().ConfigureAwait(false); }
     }
@@ -105,23 +104,16 @@ internal sealed class PostgreSqlOutboxTransaction : DbTransaction
 
     private void Finish()
     {
-        if (_finished) return;
-        _finished = true;
+        if (!_lifecycle.TryFinish()) return;
         _owner.Ended(this);
-        try { _native.Dispose(); }
-        finally { _ownedConnection?.Dispose(); }
+        OutboxTransactionLifecycle.DisposeNative(_native, _ownedConnection);
     }
 
-    private async ValueTask FinishAsync()
+    private ValueTask FinishAsync()
     {
-        if (_finished) return;
-        _finished = true;
+        if (!_lifecycle.TryFinish()) return ValueTask.CompletedTask;
         _owner.Ended(this);
-        try { await _native.DisposeAsync().ConfigureAwait(false); }
-        finally
-        {
-            if (_ownedConnection is not null) await _ownedConnection.DisposeAsync().ConfigureAwait(false);
-        }
+        return OutboxTransactionLifecycle.DisposeNativeAsync(_native, _ownedConnection);
     }
 
     protected override void Dispose(bool disposing)

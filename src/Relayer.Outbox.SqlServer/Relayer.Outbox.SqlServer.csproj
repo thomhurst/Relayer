@@ -3,6 +3,7 @@
     <Description>SQL Server transactional outbox enlistment, durable reads and fenced claims for Relayer.</Description>
   </PropertyGroup>
   <ItemGroup>
+    <Compile Include="../Shared/OutboxTransactionLifecycle.cs" Link="OutboxTransactionLifecycle.cs" />
     <InternalsVisibleTo Include="Relayer.Benchmarks" />
     <InternalsVisibleTo Include="Relayer.Outbox.SqlServer.Tests" />
     <PackageReference Include="Microsoft.Data.SqlClient" />

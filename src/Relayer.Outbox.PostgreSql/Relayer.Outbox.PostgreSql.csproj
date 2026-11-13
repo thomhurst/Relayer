@@ -5,6 +5,7 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <Compile Include="../Shared/OutboxTransactionLifecycle.cs" Link="OutboxTransactionLifecycle.cs" />
     <PackageReference Include="Npgsql" />
     <EmbeddedResource Include="Schema.sql" />
     <EmbeddedResource Include="InsertSequenceMigration.sql" />
