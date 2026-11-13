@@ -1,4 +1,4 @@
-name: Frozen scope address randomization control
+name: Frozen scope native code placement capture
 
 # New historical-input experiment, never a rerun of the performance gate.
 on:
@@ -37,16 +37,17 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh run download 42772012652 --name performance-42772012652-1 --dir inputs
-      # Separate layout hypothesis: default ABBA, no-ASLR BAAB/ABBA, default BAAB.
-      # Native setarch changes only the child personality; rejected changes remain
-      # failed outcomes. No runtime override, rebuild, gate retry or adaptive stop.
-      - name: Bracket native address-randomization control with defaults
-        run: python3 .github/scripts/frozen_scope_control.py inputs results/aslr --aslr-control
+      # Earlier timing controls recorded successful setarch requests but no actual
+      # code addresses. Capture native JIT maps under the same fixed image plan.
+      # Diagnostic timing is excluded: compare addresses/tiers, not performance.
+      # Missing maps or denied personality requests fail without fallback.
+      - name: Capture native code placement with default and disabled randomization
+        run: python3 .github/scripts/frozen_scope_control.py inputs results/code-placement --aslr-control --perf-map
       - name: Retain all outcomes and executable inputs
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: frozen-scope-aslr-${{ github.run_id }}-${{ github.run_attempt }}
+          name: frozen-scope-code-placement-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             .github/workflows/frozen-scope-control.yml
             results/

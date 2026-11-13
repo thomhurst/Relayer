@@ -58,12 +58,39 @@ def result(text):
             "workloadResultNs": values, "meanNs": statistics.mean(values)}
 
 
+def perf_map(directory):
+    """Keep native addresses and every selected compilation; never normalize layout."""
+    maps = list(directory.glob("perf-*.map"))
+    if len(maps) != 1:
+        raise ValueError("Expected one native perf map in the launch-specific directory")
+    raw = maps[0].read_text()
+    if not raw or not raw.endswith("\n"):
+        raise ValueError("Empty or truncated native perf map")
+    selected = []
+    count = 0
+    workload = False
+    for line in raw.splitlines():
+        match = re.fullmatch(r"((?:0x)?[0-9a-fA-F]+) ([0-9a-fA-F]+) (.+)", line)
+        if match is None:
+            raise ValueError("Malformed native perf map entry")
+        address, size, symbol = match.groups()
+        count += 1
+        workload |= "WorkloadAction" in symbol
+        if any(name in symbol for name in ("WorkloadAction", "ScopeOnly", "CreateScope", "Dispose")):
+            selected.append({"address": address, "sizeHex": size, "symbol": symbol})
+    if not workload:
+        raise ValueError("Native perf map is missing the generated workload action")
+    return {"file": maps[0].name, "entryCount": count, "selectedEntries": selected}
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("artifact", type=Path)
     parser.add_argument("output", type=Path)
     parser.add_argument("--jit-disassembly", action="store_true",
                         help="Separate code-capture experiment; its timings are not performance evidence")
+    parser.add_argument("--perf-map", action="store_true",
+                        help="Separate Linux code-placement capture; diagnostic timings are excluded")
     parser.add_argument("--tiered-compilation", choices=("default", "off"), default="default",
                         help="Diagnostic runtime control; off uses native DOTNET_TieredCompilation=0")
     parser.add_argument("--method", choices=("ScopeOnly", "ScopeAndHandlerResolution"),
@@ -86,10 +113,15 @@ def main():
         parser.error("--jit-method requires --jit-disassembly")
     if not args.jit_method.strip():
         parser.error("--jit-method must not be empty")
+    if args.perf_map:
+        if not hasattr(os, "uname") or os.uname().sysname != "Linux":
+            parser.error("--perf-map requires Linux native runtime perf maps")
+        if args.jit_disassembly:
+            parser.error("--perf-map cannot be mixed with JIT disassembly")
     setarch = None
     if args.aslr_control:
         if args.jit_disassembly or args.tiered_compilation != "default" or args.ready_to_run != "default":
-            parser.error("--aslr-control requires uninstrumented default runtime settings")
+            parser.error("--aslr-control requires default runtime policies and no JIT disassembly")
         setarch = shutil.which("setarch")
         if setarch is None or not hasattr(os, "uname") or os.uname().sysname != "Linux":
             parser.error("--aslr-control requires Linux and native setarch")
@@ -115,9 +147,11 @@ def main():
                          if args.affinity_control else "Scoped default ABBA / no-ASLR BAAB / no-ASLR ABBA / default BAAB; no adaptive stopping"
                          if args.aslr_control else "Scoped-only ABBA/BAAB/BAAB/ABBA; 4 fixed blocks, no adaptive stopping"
                          if args.counterbalanced else "Scoped ABBA, then unscoped ABBA; A2 reuses first baseline image"),
-                "analysisPlan": "Compare process means within each block by actual image; retain every block difference and process. Counterbalancing addresses fixed launch-position effects, not arbitrary host drift or historical causality. No gate decision or equivalence claim.",
+                "analysisPlan": ("Code-placement capture only: compare every raw map within and across blocks by actual image; timings and allocations excluded. See perfMapAnalysis for interpretation." if args.perf_map else "Compare process means within each block by actual image; retain every block difference and process. Counterbalancing addresses fixed launch-position effects, not arbitrary host drift or historical causality. No gate decision or equivalence claim."),
                 "engine": "Original Default job, native NoAcknowledgementConsoleHost without anonymous-pipe parent",
                 "limits": "New host/process executions, not historical reconstruction. Image-associated differences do not identify a production defect; absent differences do not prove equivalence. No threshold changes or gate pass claim.",
+                "perfMap": args.perf_map,
+                "perfMapAnalysis": "Test whether disabling process ASLR also stabilizes JIT placement: compare absolute addresses, page/cache-line offsets, code sizes, optimization tiers, repeated compilations and relative placement of workload/scope methods within and across each address-randomization condition. Retain absent methods and differing layouts; never infer identical execution from matching symbols/sizes. Perf maps omit precompiled code and contain no samples or proof which version executed during measurement. Instrumented timings/allocations are excluded; layout differences cannot attribute historical timing or establish causality.",
                 "aslrControl": args.aslr_control,
                 "aslrLimits": "Native setarch --addr-no-randomize changes address randomization for each selected child only. Compare image differences within all four blocks; retain failures and unfavorable results. This tests sensitivity to address randomization, not fixed image layout, historical causality or equivalence. Host drift and runtime code placement remain confounds. A rejected personality change is a failed condition, never a default-runtime fallback.",
                 "affinityControl": args.affinity_control,
@@ -132,7 +166,7 @@ def main():
                 "slotMeaning": "side is the planned A/B slot label; imageSide identifies the executed original image; all A slots reuse the first baseline image",
                 "readyToRun": args.ready_to_run,
                 "runtimeControlLimits": "Changing tiering or ReadyToRun changes execution, not production configuration. Cross-condition timing is diagnostic only; host/process order remains a confound.",
-                "timingUse": "Excluded: JIT diagnostics perturb execution" if args.jit_disassembly else "New fixed-plan experiment only",
+                "timingUse": "Excluded: code diagnostics perturb execution" if args.jit_disassembly or args.perf_map else "New fixed-plan experiment only",
                 "launches": []}
     # ABBA is a palindrome: swap A/B, rather than reversing it, for BAAB.
     if args.counterbalanced or args.affinity_control or args.aslr_control:
@@ -178,6 +212,16 @@ def main():
                                DOTNET_JitStdOutFile=str(disassembly))
             outcome["diagnosticEnvironment"] = {key: environment[key] for key in
                 ("DOTNET_JitDisasm", "DOTNET_JitDisasmDiffable", "DOTNET_JitStdOutFile")}
+        if args.perf_map:
+            map_directory = (args.output / f"{index}-perf-map").resolve()
+            map_directory.mkdir()
+            # Native runtime writer: unique output directory avoids PID guessing,
+            # shared /tmp globbing and touching another process's diagnostic files.
+            environment.update(DOTNET_PerfMapEnabled="3",
+                               DOTNET_PerfMapJitDumpPath=str(map_directory),
+                               DOTNET_PerfMapShowOptimizationTiers="1")
+            outcome["diagnosticEnvironment"] = {key: environment[key] for key in
+                ("DOTNET_PerfMapEnabled", "DOTNET_PerfMapJitDumpPath", "DOTNET_PerfMapShowOptimizationTiers")}
         with log_path.open("w") as log:
             try:
                 subprocess.run(launch["command"], cwd=Path(launch["cwd"]),
@@ -189,7 +233,12 @@ def main():
         if "error" not in outcome:
             try:
                 native = result(log_path.read_text())
-                if args.jit_disassembly:
+                if args.perf_map:
+                    metadata = perf_map(map_directory)
+                    metadata["file"] = f"{map_directory.name}/{metadata['file']}"
+                    outcome["perfMap"] = metadata
+                    outcome["timingUse"] = "Excluded: code diagnostics perturb execution"
+                elif args.jit_disassembly:
                     # Retain raw timing in process logs but never mix diagnostic timings
                     # into outcomes consumed as throughput evidence.
                     if not disassembly.exists() or "; Assembly listing for method " not in disassembly.read_text():
