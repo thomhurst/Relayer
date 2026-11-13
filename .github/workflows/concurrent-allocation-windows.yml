@@ -1,0 +1,61 @@
+name: Concurrent allocation window diagnosis
+
+# Independent instrumented execution, not a retry or replacement of failing CI.
+on:
+  pull_request:
+    paths:
+      - 'tests/Relayer.Tests/ConcurrentReceiveAllocationTests.cs'
+      - '.github/workflows/concurrent-allocation-windows.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        framework: [net10.0, net11.0]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
+        with:
+          global-json-file: global.json
+          dotnet-version: '10.0.x'
+      - name: Record host and build
+        run: |
+          mkdir -p results
+          dotnet --info > results/runtime.txt
+          uname -a > results/host.txt
+          git rev-parse HEAD > results/commit.txt
+          dotnet build tests/Relayer.Tests -c Release > results/build.log 2>&1
+      - name: Capture every measurement window
+        # Preserve exact assertions, normal GC and parallel TUnit execution. No retries.
+        run: >-
+          dotnet test --no-build -c Release -f ${{ matrix.framework }}
+          --project tests/Relayer.Tests
+          --treenode-filter '/*/*/ConcurrentReceiveAllocationTests/*'
+          --output Detailed
+          > results/windows.log 2>&1
+      - name: Retain all outcomes and executable inputs
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: concurrent-allocation-windows-${{ matrix.framework }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            results/
+            tests/Relayer.Tests/bin/Release/
+            TestResults/
+            tests/Relayer.Tests/ConcurrentReceiveAllocationTests.cs
+            tests/Relayer.Tests/Relayer.Tests.csproj
+            tests/Shared/ConcurrentReceiveFixture.cs
+            src/
+            Directory.Build.props
+            Directory.Build.targets
+            Directory.Packages.props
+            global.json
+            .github/workflows/concurrent-allocation-windows.yml
+          retention-days: 90
