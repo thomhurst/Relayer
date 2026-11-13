@@ -10,6 +10,48 @@ namespace Relayer.Tests;
 public class FailurePipelineTests
 {
     [Test]
+    [Arguments(false, false)]
+    [Arguments(false, true)]
+    [Arguments(true, false)]
+    [Arguments(true, true)]
+    public async Task Default_policy_retries_three_times_then_completes_or_dead_letters(bool explicitOptions, bool recover)
+    {
+        var time = new ControlledTime(autoFire: true);
+        using var provider = Provider(new Transport());
+        var control = provider.GetRequiredService<Control>();
+        control.Invoke = context => recover && context.Attempt == 4 ? default : Throw(context);
+        var result = await Pipeline(provider, explicitOptions ? new FailureOptions() : null, time: time).ProcessAsync(new());
+        await Assert.That(control.Calls).IsEqualTo(4);
+        await Assert.That(result.Kind).IsEqualTo(recover ? DispositionKind.Complete : DispositionKind.DeadLetter);
+        await Assert.That(time.Delays.Count).IsEqualTo(3);
+        var expected = new[] { TimeSpan.FromMilliseconds(100), TimeSpan.FromMilliseconds(500), TimeSpan.FromSeconds(1) };
+        for (var i = 0; i < expected.Length; i++)
+            await Assert.That(time.Delays[i] >= expected[i] * .8 && time.Delays[i] <= expected[i]).IsTrue();
+        if (!recover)
+        {
+            var attempts = result.DeadLetter.Headers.ToArray().Single(pair => pair.Key == FailureHeaders.Attempts);
+            await Assert.That(attempts.Value.ToString()).IsEqualTo("4");
+        }
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Explicit_empty_policy_dead_letters_first_retryable_failure(bool namedPolicy)
+    {
+        var time = new ControlledTime();
+        using var provider = Provider(new Transport());
+        var control = provider.GetRequiredService<Control>();
+        control.Invoke = Throw;
+        var options = namedPolicy ? FailureOptions.None : new FailureOptions { RetryDelays = ReadOnlyMemory<TimeSpan>.Empty };
+        var result = await Pipeline(provider, options, time: time).ProcessAsync(new());
+        await Assert.That(result.Kind).IsEqualTo(DispositionKind.DeadLetter);
+        await Assert.That(control.Calls).IsEqualTo(1);
+        await Assert.That(time.Delays.Count).IsEqualTo(0);
+        await Assert.That(options.RedeliveryDelays.IsEmpty).IsTrue();
+    }
+
+    [Test]
     public async Task Retries_discard_failed_sends_and_flush_only_success_with_fresh_scopes()
     {
         var transport = new Transport();
@@ -73,7 +115,7 @@ public class FailurePipelineTests
         using var provider = Provider(transport);
         provider.GetRequiredService<Control>().Invoke = Throw;
         var scheduler = new Scheduler();
-        var pipeline = Pipeline(provider, new() { RedeliveryDelays = new[] { delay + TimeSpan.FromTicks(ticks) }, Jitter = 0 }, Copy, scheduler);
+        var pipeline = Pipeline(provider, new() { RetryDelays = ReadOnlyMemory<TimeSpan>.Empty, RedeliveryDelays = new[] { delay + TimeSpan.FromTicks(ticks) }, Jitter = 0 }, Copy, scheduler);
         var result = await pipeline.ProcessAsync(new());
         await Assert.That(result.Kind).IsEqualTo(DispositionKind.Complete);
         await Assert.That(scheduler.Copies.Count).IsEqualTo(outbox ? 1 : 0);
@@ -534,7 +576,7 @@ public class FailurePipelineTests
         }));
         var control = provider.GetRequiredService<Control>();
         var scopes = new CountingScopes(provider.GetRequiredService<IServiceScopeFactory>());
-        var pipeline = SingletonPipeline(provider, scopes);
+        var pipeline = SingletonPipeline(provider, scopes, FailureOptions.None);
         var composed = scopes.Created;
         control.Invoke = static context =>
         {
@@ -1068,8 +1110,9 @@ public class FailurePipelineTests
             Copies.Add(Snapshot.From(message));
         }
     }
-    private sealed class ControlledTime : TimeProvider
+    private sealed class ControlledTime(bool autoFire = false) : TimeProvider
     {
+        internal List<TimeSpan> Delays { get; } = [];
         internal TimeSpan Delay { get; private set; }
         private TimerCallback? _callback;
         private object? _state;
@@ -1077,8 +1120,10 @@ public class FailurePipelineTests
         public override ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period)
         {
             Delay = dueTime;
+            Delays.Add(dueTime);
             _callback = callback;
             _state = state;
+            if (autoFire) callback(state);
             return new Timer();
         }
         private sealed class Timer : ITimer

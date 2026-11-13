@@ -35,6 +35,10 @@ Rules match the declared exception type and its derived types, in registration o
 
 ## Retries, redelivery and dead-letters
 
+Consumers retry retryable handler failures three times by default, with backoffs of 100 ms, 500 ms and 1 s before jitter (four total attempts). Jitter shortens each backoff by up to 20%. A brief dependency failure can recover without a dead-letter or another broker delivery. Permanent failures still dead-letter immediately, and durable redelivery is disabled until configured. Retries keep the current native delivery open, so account for this delay in broker lock or acknowledgement deadlines.
+
+To opt out and dead-letter on the first failure, assign `consumer.Options.Failure = FailureOptions.None`. To disable only in-process retries while retaining other settings, set `RetryDelays = ReadOnlyMemory<TimeSpan>.Empty` on your `FailureOptions`. Custom retry lists replace the default sequence; setting only `RedeliveryDelays` retains the default in-process retries before each redelivery.
+
 ```csharp
 var failures = new FailurePipeline(services, "broker", "orders", "billing",
     new FailureOptions
@@ -45,7 +49,7 @@ var failures = new FailurePipeline(services, "broker", "orders", "billing",
     }, copy: CopyOriginalDelivery, scheduler: durableScheduler);
 ```
 
-Each delay entry permits one more attempt. Empty retry and redelivery lists mean immediate dead-lettering. Jitter shortens each delay by up to 20%, which keeps configured delays within capability limits.
+Each delay entry permits one more attempt. Explicitly empty retry and redelivery lists mean immediate dead-lettering. Jitter shortens each delay by up to 20%, which keeps configured delays within capability limits.
 
 At composition the pipeline checks every configured delay and the dead-letter destination against the endpoint's [capabilities](../concepts/capabilities.md), and picks the mechanism:
 
