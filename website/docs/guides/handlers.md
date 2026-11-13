@@ -61,13 +61,25 @@ public sealed class AuditHandler(AuditStore store) : IBatchHandler<AuditEvent>
 {
     public async ValueTask<BatchResult> HandleAsync(Batch<AuditEvent> batch, CancellationToken ct)
     {
-        IReadOnlyDictionary<int, Exception> failures = await store.WriteAsync(batch.Items, ct);
-        return BatchResult.PartialFailure(failures); // keyed by index within the batch
+        foreach (var item in batch.Items)
+        {
+            try { await store.WriteAsync(item.Message, ct); }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+            catch (Exception error) { item.Fail(error); }
+        }
+        return BatchResult.Success; // items marked with Fail enter the failure pipeline
     }
 }
 ```
 
-Return `BatchResult.Success` when every message succeeded.
+Call `item.Fail(error)` on the delivered item, even when iterating a reordered or
+filtered collection. Return `BatchResult.Success` to succeed every unmarked item,
+or `BatchResult.Failure(error)` to fail every delivered item. A repeated `Fail`
+call on the same item replaces its exception. Null exceptions are rejected.
+The index-keyed `BatchResult.PartialFailure` API has been replaced by item marking.
+Default or manually constructed items cannot report failures. Retained item
+copies reject `Fail` after the handler returns, including during pooled reuse;
+complete all item work before returning from the handler.
 
 Configure the existing consumer declaration with `.Batch(maxSize, maxWait)`.
 The core composes generated batch dispatch in one fresh scope per batch attempt.
