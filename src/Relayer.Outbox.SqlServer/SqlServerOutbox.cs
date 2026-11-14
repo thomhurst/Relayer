@@ -24,13 +24,13 @@ public sealed class SqlServerOutbox : IOutboxEnlistment, IDisposable, IAsyncDisp
     private bool _disposed;
 
     /// <summary>Creates a scoped SQL Server enlistment using validated options.</summary>
-    [RequiresUnreferencedCode("SqlClient 7.1.1 runtime trimming is unsupported; see https://github.com/dotnet/SqlClient/issues/1947.")]
-    [RequiresDynamicCode("SqlClient 7.1.1 runtime Native AOT is unsupported; see https://github.com/dotnet/SqlClient/issues/1947.")]
+    [RequiresUnreferencedCode("SqlClient runtime trimming is unsupported; see https://github.com/dotnet/SqlClient/issues/1947.")]
+    [RequiresDynamicCode("SqlClient runtime Native AOT is unsupported; see https://github.com/dotnet/SqlClient/issues/1947.")]
     public SqlServerOutbox(IOptionsSnapshot<SqlServerOutboxOptions> options, RelayerInstrumentation? instrumentation = null)
         : this(options, instrumentation, null) { }
 
-    [RequiresUnreferencedCode("SqlClient 7.1.1 runtime trimming is unsupported; see https://github.com/dotnet/SqlClient/issues/1947.")]
-    [RequiresDynamicCode("SqlClient 7.1.1 runtime Native AOT is unsupported; see https://github.com/dotnet/SqlClient/issues/1947.")]
+    [RequiresUnreferencedCode("SqlClient runtime trimming is unsupported; see https://github.com/dotnet/SqlClient/issues/1947.")]
+    [RequiresDynamicCode("SqlClient runtime Native AOT is unsupported; see https://github.com/dotnet/SqlClient/issues/1947.")]
     internal SqlServerOutbox(IOptionsSnapshot<SqlServerOutboxOptions> options, RelayerInstrumentation? instrumentation,
         SqlServerDirectDispatcher? dispatcher)
     {

@@ -13,9 +13,12 @@ retention and ordered dispatch with fenced lane leases. **EF Core integration re
 PostgreSQL's worker registrations do not accept this provider.
 Registering a durable store alone does not make `ISender` transactional.
 
-**Native AOT and trimming are currently unsupported for SQL Server runtime operations.** SqlClient 7.1.1
-retains reflection in authentication, configuration and diagnostics. Outbox/store construction and registration
-carry `RequiresUnreferencedCode` and `RequiresDynamicCode` diagnostics; see
+**Native AOT and trimming are currently unsupported for SQL Server runtime operations.** The current
+dependency pin is Microsoft.Data.SqlClient 7.1.2. Historical strict .NET 10 Native AOT publish checks
+against SqlClient 7.1.1 failed with IL2026, IL2057, IL2067 and IL2070 in authentication, configuration
+and diagnostics code. Those results were measured on 7.1.1, not 7.1.2; they do not establish a
+warning-clean publish result for the current pin. The support boundary remains unchanged.
+Outbox/store construction and registration carry `RequiresUnreferencedCode` and `RequiresDynamicCode` diagnostics; see
 [the upstream Native AOT issue](https://github.com/dotnet/SqlClient/issues/1947).
 Schema SQL/options remain AOT safe. This restriction is specific to this optional native provider.
 

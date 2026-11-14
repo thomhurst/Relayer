@@ -21,8 +21,8 @@ internal sealed partial class SqlServerOrderedDispatcher : BackgroundService, IO
     private readonly TimeProvider _timeProvider;
     private readonly RelayerInstrumentation? _instrumentation;
 
-    [RequiresUnreferencedCode("SqlClient 7.1.1 runtime trimming is unsupported; see https://github.com/dotnet/SqlClient/issues/1947.")]
-    [RequiresDynamicCode("SqlClient 7.1.1 runtime Native AOT is unsupported; see https://github.com/dotnet/SqlClient/issues/1947.")]
+    [RequiresUnreferencedCode("SqlClient runtime trimming is unsupported; see https://github.com/dotnet/SqlClient/issues/1947.")]
+    [RequiresDynamicCode("SqlClient runtime Native AOT is unsupported; see https://github.com/dotnet/SqlClient/issues/1947.")]
     internal SqlServerOrderedDispatcher(string source, SqlServerOrderedDispatchOptions options,
         IEnumerable<ITransport> transports, ILogger<SqlServerOrderedDispatcher> logger, TimeProvider? timeProvider = null, RelayerInstrumentation? instrumentation = null)
     {

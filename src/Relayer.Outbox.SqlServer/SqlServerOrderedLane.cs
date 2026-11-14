@@ -19,8 +19,8 @@ internal sealed class SqlServerOrderedLane : IDisposable
     private readonly byte[] _id = new byte[16];
     private readonly byte[] _token = new byte[16];
 
-    [RequiresUnreferencedCode("SqlClient 7.1.1 runtime trimming is unsupported; see https://github.com/dotnet/SqlClient/issues/1947.")]
-    [RequiresDynamicCode("SqlClient 7.1.1 runtime Native AOT is unsupported; see https://github.com/dotnet/SqlClient/issues/1947.")]
+    [RequiresUnreferencedCode("SqlClient runtime trimming is unsupported; see https://github.com/dotnet/SqlClient/issues/1947.")]
+    [RequiresDynamicCode("SqlClient runtime Native AOT is unsupported; see https://github.com/dotnet/SqlClient/issues/1947.")]
     internal SqlServerOrderedLane(string connectionString, SqlServerOutboxOptions options, TimeSpan duration, int maxAttempts)
     {
         _connectionString = connectionString;

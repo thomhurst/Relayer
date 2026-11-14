@@ -14,8 +14,8 @@ public static partial class SqlServerOutboxServiceCollectionExtensions
 {
     /// <summary>Starts one named worker for ordered rows. Deploy schema and register native transports first.</summary>
     /// <remarks>Native connection settings pass through unchanged. Writer and all workers must use identical database, schema, prefix and lane count.</remarks>
-    [System.Diagnostics.CodeAnalysis.RequiresUnreferencedCode("SqlClient 7.1.1 runtime trimming is unsupported; see https://github.com/dotnet/SqlClient/issues/1947.")]
-    [System.Diagnostics.CodeAnalysis.RequiresDynamicCode("SqlClient 7.1.1 runtime Native AOT is unsupported; see https://github.com/dotnet/SqlClient/issues/1947.")]
+    [System.Diagnostics.CodeAnalysis.RequiresUnreferencedCode("SqlClient runtime trimming is unsupported; see https://github.com/dotnet/SqlClient/issues/1947.")]
+    [System.Diagnostics.CodeAnalysis.RequiresDynamicCode("SqlClient runtime Native AOT is unsupported; see https://github.com/dotnet/SqlClient/issues/1947.")]
     public static IServiceCollection AddRelayerSqlServerOrderedDispatch(this IServiceCollection services,
         string name, string connectionString, SqlServerOrderedDispatchOptions? options = null)
     {
@@ -44,8 +44,8 @@ public static partial class SqlServerOutboxServiceCollectionExtensions
     }
 
     /// <summary>Binds immutable ordered-dispatch settings without reflection. SqlClient runtime trimming/AOT restrictions still apply.</summary>
-    [System.Diagnostics.CodeAnalysis.RequiresUnreferencedCode("SqlClient 7.1.1 runtime trimming is unsupported; see https://github.com/dotnet/SqlClient/issues/1947.")]
-    [System.Diagnostics.CodeAnalysis.RequiresDynamicCode("SqlClient 7.1.1 runtime Native AOT is unsupported; see https://github.com/dotnet/SqlClient/issues/1947.")]
+    [System.Diagnostics.CodeAnalysis.RequiresUnreferencedCode("SqlClient runtime trimming is unsupported; see https://github.com/dotnet/SqlClient/issues/1947.")]
+    [System.Diagnostics.CodeAnalysis.RequiresDynamicCode("SqlClient runtime Native AOT is unsupported; see https://github.com/dotnet/SqlClient/issues/1947.")]
     public static IServiceCollection AddRelayerSqlServerOrderedDispatch(this IServiceCollection services,
         string name, string connectionString, IConfiguration configuration)
     {
