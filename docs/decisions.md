@@ -1243,6 +1243,11 @@ client's signature contradicts that. Per-message DI scopes for scoped handlers r
   conversion when it ships. Do not build a replacement for the client call (D42).
 - Retained memory is bounded. A cache that removes a recurring boundary allocation has a fixed capacity and
   allocates on a miss; unbounded retention is never an acceptable way to reach zero.
+- Kafka, Service Bus, RabbitMQ, SQS and SNS send-state pools retain at most 256 idle objects per pool,
+  matching Google Pub/Sub. Overflow allocates temporary state, dropped after native completion
+  (and final asynchronous consumption where applicable). The maintainer approved this
+  repeated-overflow allocation trade-off in [#727](https://github.com/thomhurst/Relayer/issues/727#issuecomment-6876252806);
+  no per-pool configuration is exposed. This bounds object count, not the size of retained batch arrays.
 - A scoped handler's DI scope, its service cache and the handler instance are application lifetime cost, not
   pipeline cost. Singleton handlers keep the zero-allocation path.
 - Everything else Relayer adds per message stays at zero, and still needs maintainer approval to change.

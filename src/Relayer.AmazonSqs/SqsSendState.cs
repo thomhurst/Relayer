@@ -125,10 +125,10 @@ internal sealed class SqsOperationState
     }
 }
 
-// Same lock-free high-water-mark strategy as the Service Bus adapter; no shared mutable static state.
+// Retain at most 256 idle operations; clear native request references even on overflow.
 internal sealed class SqsOperationPool
 {
-    private readonly SlotPool<SqsOperationState> _states = new(pageSize: 32);
+    private readonly SlotPool<SqsOperationState> _states = new(pageSize: 32, capacity: 256);
     internal SqsOperationState Rent() => _states.TryRent() ?? new();
 
     internal void Return(SqsOperationState state)

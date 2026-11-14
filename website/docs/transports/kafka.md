@@ -358,3 +358,15 @@ Only this opt-in path creates immutable native records (including copies made by
 Ordinary sends retain the allocation-free component overloads. `KafkaSendBenchmarks.NativeRecord`
 compares the opt-in path alongside ordinary sends and tombstones; its raw baseline reuses
 preconfigured native records, so record construction cost appears on the Relayer side.
+
+### Send pool retention
+
+Kafka send-state pools retain at most 256 idle operation objects per pool. Concurrent sends above
+the bound remain supported and allocate temporary overflow state on each burst. Native completion
+still controls the lifetime of borrowed message memory; state is cleared before retention or collection.
+The bound limits object count, not bytes: retained state can keep storage sized for its largest batch.
+There is no retention option.
+
+`TransportPoolRetentionBenchmarks` measures warmed pool reuse at concurrency 1 and 256 and repeated
+512-operation bursts with `MemoryDiagnoser`. Measurements isolate pooling from broker I/O and do not
+establish whole-path throughput parity.
