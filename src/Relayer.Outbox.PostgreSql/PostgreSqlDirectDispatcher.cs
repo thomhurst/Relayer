@@ -76,6 +76,7 @@ internal sealed class PostgreSqlDirectDispatcher : OutboxDirectDispatchWorker<Ou
 
     protected override OutboxDispatchBatch CreateBatch() => new();
     protected override int Count(OutboxDispatchBatch batch) => batch.Count;
+    protected override void Append(OutboxDispatchBatch batch, OutboxDispatchBatch source) => batch.Append(source);
     protected override void Sort(OutboxDispatchBatch batch) => batch.Sort();
     protected override void Clear(OutboxDispatchBatch batch) => batch.Clear();
     protected override (string Transport, string Destination) Endpoint(OutboxDispatchBatch batch, int offset) =>

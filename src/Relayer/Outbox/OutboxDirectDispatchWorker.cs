@@ -52,6 +52,7 @@ internal abstract class OutboxDirectDispatchWorker<TBatch> : BackgroundService w
 
     protected abstract TBatch CreateBatch();
     protected abstract int Count(TBatch batch);
+    protected abstract void Append(TBatch batch, TBatch source);
     protected abstract void Sort(TBatch batch);
     protected abstract void Clear(TBatch batch);
     protected abstract (string Transport, string Destination) Endpoint(TBatch batch, int offset);
@@ -107,7 +108,11 @@ internal abstract class OutboxDirectDispatchWorker<TBatch> : BackgroundService w
             while (await _queue.Reader.WaitToReadAsync(stoppingToken).ConfigureAwait(false))
                 while (_queue.Reader.TryRead(out var batch))
                 {
-                    try { await DispatchAsync(batch, stoppingToken).ConfigureAwait(false); }
+                    try
+                    {
+                        Coalesce(batch, _queueCapacity - 1);
+                        await DispatchAsync(batch, stoppingToken).ConfigureAwait(false);
+                    }
                     catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { return; }
                     catch (Exception error) { LogFailure(error); }
                     finally { Return(batch); }
@@ -124,9 +129,29 @@ internal abstract class OutboxDirectDispatchWorker<TBatch> : BackgroundService w
     {
         for (var i = 0; i < _queueCapacity && _queue.Reader.TryRead(out var batch); i++)
         {
-            try { await DispatchAsync(batch, cancellationToken).ConfigureAwait(false); }
+            try
+            {
+                i += Coalesce(batch, _queueCapacity - i - 1);
+                await DispatchAsync(batch, cancellationToken).ConfigureAwait(false);
+            }
             finally { Return(batch); }
         }
+    }
+
+    // Never wait for another commit. Bound both retained rows and notifications drained;
+    // a large transaction keeps its existing within-commit dispatch behavior.
+    internal int Coalesce(TBatch batch, int notificationLimit)
+    {
+        var drained = 0;
+        while (drained < notificationLimit && Count(batch) < _batchSize &&
+            _queue.Reader.TryPeek(out var next) && Count(next) <= _batchSize - Count(batch) &&
+            _queue.Reader.TryRead(out next))
+        {
+            try { Append(batch, next); }
+            finally { Return(next); }
+            drained++;
+        }
+        return drained;
     }
 
     internal void Retire()

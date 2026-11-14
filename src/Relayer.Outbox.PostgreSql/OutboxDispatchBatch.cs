@@ -21,6 +21,20 @@ internal sealed class OutboxDispatchBatch
         }
     }
 
+    // Both batches already own only eligible unordered rows. Swap their reusable buffers;
+    // returning the emptied notification must not clear payloads now owned by this batch.
+    internal void Append(OutboxDispatchBatch source)
+    {
+        for (var i = 0; i < source.Count; i++)
+        {
+            if (Count == Rows.Count) Rows.Add(new());
+            var empty = Rows[Count];
+            Rows[Count++] = source.Rows[i];
+            source.Rows[i] = empty;
+        }
+        source.Count = 0;
+    }
+
     // Take excludes ordered lanes, so unstable sorting cannot change an ordering guarantee.
     internal void Sort() => CollectionsMarshal.AsSpan(Rows)[..Count].Sort(Comparison);
 

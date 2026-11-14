@@ -338,6 +338,8 @@ public class DirectDispatchTests
         {
             await database.Commit(provider, Record(1));
             await transport.Entered.Task.WaitAsync(TimeSpan.FromSeconds(30));
+            await database.Commit(provider, Record(3));
+            await database.Commit(provider, Record(4));
             using var cancellation = new CancellationTokenSource();
             cancellation.Cancel();
             await Assert.ThrowsAsync<OperationCanceledException>(async () => await worker.StopAsync(cancellation.Token));
@@ -345,7 +347,7 @@ public class DirectDispatchTests
             await database.Commit(provider, Record(2));
             await Assert.That(log.Messages.Any(message => message.Contains("queue is full or stopped", StringComparison.Ordinal))).IsTrue();
             await Assert.That(transport.Received.Count).IsEqualTo(0);
-            await Assert.That(await database.Count()).IsEqualTo(2L);
+            await Assert.That(await database.Count()).IsEqualTo(4L);
         }
         finally { transport.Release.TrySetResult(); await Stop(worker); }
     }
@@ -407,12 +409,15 @@ public class DirectDispatchTests
         secondRows[0].Copy(reverse ? available : held, 32);
         secondRows[1].Copy(reverse ? held : available, 32);
         await first.StartAsync(default);
-        await second.StartAsync(default);
         try
         {
             first.Committed(firstRows, firstRows.Count);
             await blockedTransport.Entered.Task.WaitAsync(TimeSpan.FromSeconds(30));
-            second.Committed(secondRows, secondRows.Count);
+            var queued = new List<BufferedOutboxMessage> { secondRows[0] };
+            second.Committed(queued, 1);
+            queued[0] = secondRows[1];
+            second.Committed(queued, 1);
+            await second.StartAsync(default);
             await Stop(second);
             await Assert.That(competingTransport.Received.Single().Body).IsEquivalentTo(new byte[] { 2 });
             await Assert.That(await database.Count()).IsEqualTo(1L);
