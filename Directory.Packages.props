@@ -68,7 +68,7 @@
     <PackageVersion Include="System.Security.Cryptography.Pkcs" Version="11.0.0" Condition="'$(TargetFramework)' == 'net11.0'" />
     <!-- EF Core stays on 10.x for net11.0 until Npgsql.EntityFrameworkCore.PostgreSQL 11 is stable: its
          11.0 prereleases pin EF Core to the matching prerelease, which conflicts with EF Core 11.0.0. -->
-    <PackageVersion Include="Microsoft.EntityFrameworkCore.Relational" Version="10.0.15" />
+    <PackageVersion Include="Microsoft.EntityFrameworkCore.Relational" Version="11.0.0" />
     <PackageVersion Include="Npgsql" Version="10.0.3" />
     <PackageVersion Include="MySqlConnector" Version="3.0.0" />
     <PackageVersion Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="10.0.3" />
