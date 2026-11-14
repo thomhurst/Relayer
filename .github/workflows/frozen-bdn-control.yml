@@ -25,6 +25,7 @@ on:
         options:
           - concurrent
           - failure-production-sync
+          - failure-production-suspended
           - scope-only
           - scope-resolution-unscoped
           - scope-only-unscoped

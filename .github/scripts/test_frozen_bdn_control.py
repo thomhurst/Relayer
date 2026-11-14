@@ -91,12 +91,14 @@ class OriginalRunnerTests(unittest.TestCase):
             self.assertEqual(protocol["operationsPerInvoke"], 1)
             self.assertEqual(protocol["parameter"], "instance.ScopedHandler = true;")
 
-    def test_resolution_and_sync_failure_native_identity(self):
+    def test_resolution_and_failure_native_identity(self):
         cases = (
             ("scope-resolution-unscoped", "ConsumePipelineBenchmarks", "ScopeAndHandlerResolution",
              "ScopedHandler", "false", "AwaitHelper.GetResult(ScopeAndHandlerResolution())"),
             ("scope-resolution", "ConsumePipelineBenchmarks", "ScopeAndHandlerResolution",
              "ScopedHandler", "true", "AwaitHelper.GetResult(ScopeAndHandlerResolution())"),
+            ("failure-production-suspended", "FailureConsumePipelineBenchmarks", "ProductionFailurePipeline",
+             "SuspendHandler", "true", "ProductionFailurePipeline"),
             ("failure-production-sync", "FailureConsumePipelineBenchmarks", "ProductionFailurePipeline",
              "SuspendHandler", "false", "ProductionFailurePipeline"),
             ("failure-dispatch-sync", "FailureConsumePipelineBenchmarks", "DirectScopedDispatch",
