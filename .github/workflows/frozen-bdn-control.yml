@@ -24,6 +24,7 @@ on:
         type: choice
         options:
           - concurrent
+          - failure-production-sync
           - scope-only
           - scope-only-unscoped
           - scoped-dispatch
