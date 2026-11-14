@@ -1,52 +1,25 @@
-using System.Collections.Frozen;
 using System.Runtime.CompilerServices;
-using System.Threading.Channels;
-using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Relayer.Transports;
 
 namespace Relayer.Outbox.MySql;
 
-internal sealed class MySqlDirectDispatcher : BackgroundService
+internal sealed class MySqlDirectDispatcher : OutboxDirectDispatchWorker<OutboxDispatchBatch>
 {
     private readonly MySqlOutboxStore _store;
     private readonly MySqlDirectDispatchOptions _options;
-    private readonly ILogger<MySqlDirectDispatcher> _logger;
-    private readonly Channel<OutboxDispatchBatch> _queue;
-    private readonly OutboxDispatchBatch?[] _pool;
-    private readonly FrozenDictionary<string, ITransport> _transports;
-    private readonly DirectDispatchCapabilityCache _capabilities = new();
-    private readonly OutgoingMessage[] _messages;
-    private readonly OutboxClaim[] _claims;
-    private readonly bool[] _claimed;
-    private readonly DateTimeOffset[] _created;
-    private readonly RelayerInstrumentation? _instrumentation;
     private readonly MySqlConnector.MySqlConnectionStringBuilder _target;
     private readonly string _prefix;
 
     internal MySqlDirectDispatcher(MySqlConnector.MySqlDataSource dataSource, MySqlOutboxOptions storeOptions,
         MySqlDirectDispatchOptions options, IEnumerable<ITransport> transports, ILogger<MySqlDirectDispatcher> logger,
         MySqlOutboxStore? store = null, RelayerInstrumentation? instrumentation = null)
+        : base(options.QueueCapacity, options.BatchSize, options.ClaimDuration, transports, logger, instrumentation)
     {
         _store = store ?? new(dataSource, storeOptions);
         _target = ValidateDataSource(dataSource);
         _prefix = storeOptions.TablePrefix;
         _options = options;
-        _instrumentation = instrumentation;
-        _logger = logger;
-        _transports = transports.ToFrozenDictionary(static transport => transport.Name, StringComparer.Ordinal);
-        _queue = Channel.CreateBounded<OutboxDispatchBatch>(new BoundedChannelOptions(options.QueueCapacity)
-        {
-            SingleReader = true,
-            SingleWriter = false,
-            AllowSynchronousContinuations = false,
-            FullMode = BoundedChannelFullMode.Wait
-        });
-        _pool = new OutboxDispatchBatch?[options.QueueCapacity + 1];
-        _messages = new OutgoingMessage[options.BatchSize];
-        _claims = new OutboxClaim[options.BatchSize];
-        _claimed = new bool[options.BatchSize];
-        _created = new DateTimeOffset[options.BatchSize];
     }
 
     internal static MySqlConnector.MySqlConnectionStringBuilder ValidateDataSource(MySqlConnector.MySqlDataSource source)
@@ -75,221 +48,77 @@ internal sealed class MySqlDirectDispatcher : BackgroundService
     // Called only after durable commit. Queue pressure and shutdown cannot make a committed transaction fail.
     internal void Committed(List<BufferedOutboxMessage> rows, int count)
     {
-        OutboxDispatchBatch? batch = null;
-        for (var i = 0; i < _pool.Length; i++)
-            if ((batch = Interlocked.Exchange(ref _pool[i], null)) is not null) break;
-        batch ??= new();
+        var batch = RentBatch();
         batch.Take(rows, count, DateTimeOffset.UtcNow);
-        if (batch.Count == 0) { Return(batch); return; }
-        if (_queue.Writer.TryWrite(batch)) return;
-        DirectDispatchLog.NotQueued(_logger, batch.Count);
-        Return(batch);
+        Enqueue(batch);
     }
 
-    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
-    {
-        // The queue carries payloads alone: no committing Activity or scoped service travels with a batch.
-        try
-        {
-            while (await _queue.Reader.WaitToReadAsync(stoppingToken).ConfigureAwait(false))
-                while (_queue.Reader.TryRead(out var batch))
-                {
-                    try { await DispatchAsync(batch, stoppingToken).ConfigureAwait(false); }
-                    catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { return; }
-                    catch (Exception error) { DirectDispatchLog.Failed(_logger, error); }
-                    finally { Return(batch); }
-                }
-        }
-        catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { }
-        finally
-        {
-            _queue.Writer.TryComplete();
-            while (_queue.Reader.TryRead(out var batch)) Return(batch);
-        }
-    }
+    protected override void LogFailure(Exception error) => DirectDispatchLog.Failed(_logger, error);
 
-    public override async Task StopAsync(CancellationToken cancellationToken)
+    protected override OutboxDispatchBatch CreateBatch() => new();
+    protected override int Count(OutboxDispatchBatch batch) => batch.Count;
+    protected override void Sort(OutboxDispatchBatch batch) => batch.Sort();
+    protected override void Clear(OutboxDispatchBatch batch) => batch.Clear();
+    protected override (string Transport, string Destination) Endpoint(OutboxDispatchBatch batch, int offset) =>
+        (batch.Rows[offset].Transport, batch.Rows[offset].Destination);
+
+    protected override void PrepareGroup(OutboxDispatchBatch batch, ref int offset, int limit, ref int count)
     {
-        _queue.Writer.TryComplete();
-        try
+        var first = batch.Rows[offset];
+        while (offset < batch.Count && count < limit)
         {
-            if (ExecuteTask is { } task) await task.WaitAsync(cancellationToken).ConfigureAwait(false);
+            var row = batch.Rows[offset];
+            if (row.Transport != first.Transport || row.Destination != first.Destination) break;
+            offset++;
+            _claims[count] = new(row.Id, Guid.NewGuid());
+            _created[count] = row.CreatedAt;
+            _messages[count++] = row.ToMessage();
         }
-        finally { await base.StopAsync(cancellationToken).ConfigureAwait(false); }
     }
 
     [RuntimeAsyncMethodGeneration(false)]
-    [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
-    private async ValueTask DispatchAsync(OutboxDispatchBatch batch, CancellationToken cancellationToken, bool recordInvalid = false)
+    [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder<>))]
+    protected override async ValueTask<int> SkipInvalidGroupAsync(OutboxDispatchBatch batch, int offset,
+        Exception error, bool recovery, CancellationToken cancellationToken)
     {
-        batch.Sort();
-        var offset = 0;
-        while (offset < batch.Count)
+        var first = batch.Rows[offset];
+        // Recovery records invalid destinations; notifications leave them for inspection.
+        do
         {
-            var first = batch.Rows[offset];
-            ITransport transport;
-            int limit;
-            try
-            {
-                if (!_transports.TryGetValue(first.Transport, out transport!))
-                    throw new InvalidOperationException($"Outbox row references unregistered transport '{first.Transport}'. Register its named ITransport.");
-                var capabilities = _capabilities.Get(transport, first.Destination);
-                limit = Math.Min(_options.BatchSize, capabilities.MaxBatchSize);
-            }
-            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
-            catch (Exception error)
-            {
-                DirectDispatchLog.Failed(_logger, error);
-                // Recovery records invalid destinations; notifications leave them for inspection.
-                do
-                {
-                    var id = batch.Rows[offset++].Id;
-                    if (!recordInvalid) continue;
-                    var claim = new OutboxClaim(id, Guid.NewGuid());
-                    var now = DateTimeOffset.UtcNow;
-                    if (await _store.TryClaimAsync(claim, now, now + _options.ClaimDuration, cancellationToken).ConfigureAwait(false))
-                        (await _store.RecordDispatchFailureAsync(claim, error.Message, now, cancellationToken).ConfigureAwait(false)).RecordTelemetry(_instrumentation);
-                }
-                while (offset < batch.Count && batch.Rows[offset].Transport == first.Transport &&
-                    batch.Rows[offset].Destination == first.Destination);
-                continue;
-            }
-            var count = 0;
-            try
-            {
-                while (offset < batch.Count && count < limit)
-                {
-                    var row = batch.Rows[offset];
-                    if (row.Transport != first.Transport || row.Destination != first.Destination) break;
-                    offset++;
-                    _claims[count] = new(row.Id, Guid.NewGuid());
-                    _created[count] = row.CreatedAt;
-                    _messages[count++] = row.ToMessage();
-                }
-                var now = DateTimeOffset.UtcNow;
-                var expires = now + _options.ClaimDuration;
-                await _store.ClaimBatchAsync(_claims.AsMemory(0, count), _claimed.AsMemory(0, count), now, expires, cancellationToken).ConfigureAwait(false);
-                var live = CompactClaims(_messages.AsSpan(0, count), _claims.AsSpan(0, count), _claimed.AsSpan(0, count),
-                    _created.AsSpan(0, count));
-                if (live == 0) continue;
-                // A slow database response can consume the lease. Never start a send with known expired ownership.
-                if (expires <= DateTimeOffset.UtcNow)
-                {
-                    DirectDispatchLog.ClaimExpired(_logger, live);
-                    continue;
-                }
-                try
-                {
-                    if (_instrumentation is not null)
-                    {
-                        var dispatchTime = DateTimeOffset.UtcNow;
-                        for (var i = 0; i < live; i++) _instrumentation.RecordOutboxDispatchLag(dispatchTime - _created[i]);
-                    }
-                    if (live == 1) await transport.SendAsync(_messages[0], cancellationToken).ConfigureAwait(false);
-                    else await transport.SendBatchAsync(_messages.AsMemory(0, live), cancellationToken).ConfigureAwait(false);
-                }
-                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
-                catch (Exception error)
-                {
-                    DirectDispatchLog.Failed(_logger, error);
-                    for (var i = 0; i < live; i++)
-                    {
-                        try
-                        {
-                            var sendError = error;
-                            if (live > 1)
-                            {
-                                var confirmed = error is IBatchSendFailure result && result.IsConfirmed(i);
-                                if (!confirmed)
-                                {
-                                    // Never admit another native send after cancellation or known claim expiry.
-                                    cancellationToken.ThrowIfCancellationRequested();
-                                    if (expires <= DateTimeOffset.UtcNow) continue;
-                                    sendError = null;
-                                    try { await transport.SendAsync(_messages[i], cancellationToken).ConfigureAwait(false); }
-                                    catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
-                                    catch (Exception failure) { sendError = failure; }
-                                }
-                                if (confirmed || sendError is null)
-                                {
-                                    // Completion failures must not be recorded as send failures.
-                                    var completed = await _store.CompleteBatchAsync(_claims.AsMemory(i, 1), DateTimeOffset.UtcNow, cancellationToken).ConfigureAwait(false);
-                                    _instrumentation?.AddOutboxPending(-completed);
-                                    continue;
-                                }
-                            }
-                            await _store.RecordRetryAsync(_claims[i], sendError.Message, DateTimeOffset.UtcNow, cancellationToken).ConfigureAwait(false);
-                        }
-                        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
-                        catch (Exception failure) { DirectDispatchLog.Failed(_logger, failure); }
-                    }
-                    continue;
-                }
-                // Once the broker succeeds, database errors must not consume send attempts or release claims.
-                try
-                {
-                    var completed = await _store.CompleteBatchAsync(_claims.AsMemory(0, live), DateTimeOffset.UtcNow, cancellationToken).ConfigureAwait(false);
-                    _instrumentation?.AddOutboxPending(-completed);
-                    if (completed != live) DirectDispatchLog.Incomplete(_logger, completed, live);
-                }
-                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
-                catch (Exception error) { DirectDispatchLog.CompletionFailed(_logger, error); }
-            }
-            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
-            catch (Exception error) { DirectDispatchLog.Failed(_logger, error); }
-            finally
-            {
-                Array.Clear(_messages, 0, count);
-                Array.Clear(_claims, 0, count);
-            }
+            var id = batch.Rows[offset++].Id;
+            if (!recovery) continue;
+            var claim = new OutboxClaim(id, Guid.NewGuid());
+            var now = DateTimeOffset.UtcNow;
+            if (await _store.TryClaimAsync(claim, now, now + _options.ClaimDuration, cancellationToken).ConfigureAwait(false))
+                (await _store.RecordDispatchFailureAsync(claim, error.Message, now, cancellationToken).ConfigureAwait(false)).RecordTelemetry(_instrumentation);
         }
+        while (offset < batch.Count && batch.Rows[offset].Transport == first.Transport &&
+            batch.Rows[offset].Destination == first.Destination);
+        return offset;
     }
+
+    protected override ValueTask ClaimAsync(int count, DateTimeOffset now, DateTimeOffset expires, CancellationToken cancellationToken) =>
+        _store.ClaimBatchAsync(_claims.AsMemory(0, count), _claimed.AsMemory(0, count), now, expires, cancellationToken);
+
+    protected override ValueTask<long> CompleteAsync(int offset, int count, CancellationToken cancellationToken) =>
+        _store.CompleteBatchAsync(_claims.AsMemory(offset, count), DateTimeOffset.UtcNow, cancellationToken);
+
+    protected override ValueTask<bool> RecordSendFailureAsync(OutboxDispatchBatch batch, int index, Exception error,
+        CancellationToken cancellationToken, bool propagateDatabaseFailures, bool retryable = true) =>
+        _store.RecordRetryAsync(_claims[index], error.Message, DateTimeOffset.UtcNow, cancellationToken);
 
     internal ValueTask DispatchRecoveredAsync(OutboxDispatchBatch batch, CancellationToken cancellationToken) =>
-        DispatchAsync(batch, cancellationToken, recordInvalid: true);
-
-    internal static int CompactClaims(Span<OutgoingMessage> messages, Span<OutboxClaim> claims, ReadOnlySpan<bool> claimed,
-        Span<DateTimeOffset> created = default)
-    {
-        var live = 0;
-        for (var i = 0; i < claimed.Length; i++)
-        {
-            if (!claimed[i]) continue;
-            if (!created.IsEmpty) created[live] = created[i];
-            claims[live] = claims[i];
-            messages[live++] = messages[i];
-        }
-        return live;
-    }
+        DispatchAsync(batch, cancellationToken, recovery: true);
 
     public override void Dispose()
     {
         base.Dispose();
         _store.Dispose();
     }
-
-    private void Return(OutboxDispatchBatch batch)
-    {
-        batch.Clear();
-        for (var i = 0; i < _pool.Length; i++)
-            if (Interlocked.CompareExchange(ref _pool[i], batch, null) is null) return;
-    }
 }
 
 internal static partial class DirectDispatchLog
 {
-    [LoggerMessage(1, LogLevel.Error, "Direct outbox dispatch queue is full or stopped. {Count} committed rows remain pending; recovery dispatch is required.")]
-    internal static partial void NotQueued(ILogger logger, int count);
-
     [LoggerMessage(2, LogLevel.Error, "Direct outbox dispatch failed. Durable rows remain available for recovery after claim expiry or failure recording.")]
     internal static partial void Failed(ILogger logger, Exception exception);
-
-    [LoggerMessage(3, LogLevel.Error, "Direct outbox completion failed after a successful send. Claims remain held until expiry; recovery may duplicate delivery. Send attempts are unchanged.")]
-    internal static partial void CompletionFailed(ILogger logger, Exception exception);
-
-    [LoggerMessage(4, LogLevel.Warning, "Direct outbox completion deleted {Completed} of {Sent} sent rows. Claims expired or changed; recovery may duplicate delivery. Increase ClaimDuration if native send latency exceeds the lease.")]
-    internal static partial void Incomplete(ILogger logger, long completed, int sent);
-
-    [LoggerMessage(5, LogLevel.Warning, "Direct outbox claims expired before sending {Count} rows. Rows remain pending for recovery. Increase ClaimDuration if database latency exceeds the lease.")]
-    internal static partial void ClaimExpired(ILogger logger, int count);
 }
