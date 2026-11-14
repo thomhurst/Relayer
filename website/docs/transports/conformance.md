@@ -102,6 +102,7 @@ Successful send acknowledgements must result in delivery after recovery. Failed 
 
 Native span destinations can differ from route addresses. Fixtures can override `SendDestinationName` and
 `ProcessDestinationName`; both default to `Destination`. RabbitMQ uses exchange/routing-key for sends and
-additionally includes the queue for process and settlement spans. `IMessageBinding.GetProcessTracing` can
+the consumed queue for process and settlement spans. Routing keys and delivery tags are added only to
+recorded spans, after sampling; receive samplers see the queue destination. `IMessageBinding.GetProcessTracing` can
 return a cached process operation when the actual native destination is only known at delivery time;
 null uses the consumer's startup operation. Keep operation caches bounded.
