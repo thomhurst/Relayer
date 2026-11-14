@@ -3,6 +3,11 @@ title: PostgreSQL change data capture
 description: "Wake unordered outbox dispatch from native logical replication commits, with persistent slot recovery."
 ---
 
+:::warning Preview
+PostgreSQL change capture is preview and outside the first stable release compatibility promise. Using its API requires explicit compile-time opt-in by suppressing [RLYEXP003](../reference/diagnostics.md#rlyexp003) (for example, add `<NoWarn>$(NoWarn);RLYEXP003</NoWarn>` to your project).
+:::
+
+
 `Relayer.Outbox.PostgreSql` can dispatch committed unordered messages from PostgreSQL logical replication,
 without waiting for the [maintenance poll](postgres-maintenance.md). It uses Npgsql's native `pgoutput`
 reader and the existing fenced recovery/send pipeline. The outbox table layout does not change.

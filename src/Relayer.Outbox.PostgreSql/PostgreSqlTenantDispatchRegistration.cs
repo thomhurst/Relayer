@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -10,6 +11,7 @@ public static partial class PostgreSqlOutboxServiceCollectionExtensions
 {
     /// <summary>Runs one bounded scheduler over an application-owned ITenantSource catalog, without per-tenant hosted workers.</summary>
     /// <remarks>Register ITenantSource and native transports first. Do not also register fixed dispatch workers for catalog stores.</remarks>
+    [Experimental("RLYEXP004", UrlFormat = "https://relayer.tomlonghurst.dev/docs/reference/diagnostics#rlyexp004")]
     public static IServiceCollection AddRelayerPostgreSqlTenantDispatch(this IServiceCollection services,
         PostgreSqlTenantDispatchOptions? options = null)
     {
@@ -26,6 +28,7 @@ public static partial class PostgreSqlOutboxServiceCollectionExtensions
         return services;
     }
     /// <summary>Snapshots immutable tenant scheduler limits from configuration without runtime reflection.</summary>
+    [Experimental("RLYEXP004", UrlFormat = "https://relayer.tomlonghurst.dev/docs/reference/diagnostics#rlyexp004")]
     public static IServiceCollection AddRelayerPostgreSqlTenantDispatch(this IServiceCollection services, IConfiguration configuration)
     {
         ArgumentNullException.ThrowIfNull(configuration);

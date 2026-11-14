@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -20,6 +21,7 @@ public static partial class PostgreSqlOutboxServiceCollectionExtensions
     /// Provision the slot and INSERT-only publication first. Register maintenance for retries, expired claims,
     /// future schedules and cleanup, and the ordered dispatcher for ordered rows. The data source stays application-owned.
     /// </remarks>
+    [Experimental("RLYEXP003", UrlFormat = "https://relayer.tomlonghurst.dev/docs/reference/diagnostics#rlyexp003")]
     public static IServiceCollection AddRelayerPostgreSqlChangeCapture(this IServiceCollection services,
         string name, NpgsqlDataSource dataSource, Func<LogicalReplicationConnection> connectionFactory,
         PostgreSqlChangeCaptureOptions options)
@@ -48,6 +50,7 @@ public static partial class PostgreSqlOutboxServiceCollectionExtensions
     }
 
     /// <summary>Snapshots store and retry settings from configuration while preserving native replication settings.</summary>
+    [Experimental("RLYEXP003", UrlFormat = "https://relayer.tomlonghurst.dev/docs/reference/diagnostics#rlyexp003")]
     public static IServiceCollection AddRelayerPostgreSqlChangeCapture(this IServiceCollection services,
         string name, NpgsqlDataSource dataSource, Func<LogicalReplicationConnection> connectionFactory,
         PgOutputReplicationSlot slot, PgOutputReplicationOptions replication, IConfiguration configuration)

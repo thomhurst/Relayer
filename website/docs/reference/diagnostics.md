@@ -1,12 +1,16 @@
 ---
 title: Diagnostics
-description: "Compile-time analyzers RLY001 to RLY004 and generator errors RLYH001 and RLYM001 to RLYM007: what each reports and how to fix it."
+description: "Compile-time analyzers RLY001 to RLY004 and generator errors RLYH001 and RLYM001 to RLYM007, and preview opt-ins RLYEXP001 to RLYEXP004: what each reports and how to fix it."
 ---
 
 Relayer ships compile-time analyzers and an IDE code fix in its NuGet package. They inspect symbols, not naming conventions, and add no runtime work. Startup validation still checks the complete configuration, including declarations assembled through helpers or other assemblies.
 
 | ID | Default severity | Problem |
 | --- | --- | --- |
+| [RLYEXP001](#rlyexp001) | Error | Explicit opt-in for sagas. |
+| [RLYEXP002](#rlyexp002) | Error | Explicit opt-in for PostgreSQL local transport. |
+| [RLYEXP003](#rlyexp003) | Error | Explicit opt-in for PostgreSQL change capture. |
+| [RLYEXP004](#rlyexp004) | Error | Explicit opt-in for PostgreSQL tenant catalog dispatch. |
 | [RLY001](#rly001) | Warning | A message used by a route or handler has neither `[Message]` nor an explicit identity registration. |
 | [RLY002](#rly002) | Error | Two types declare the same message name and version. |
 | [RLY003](#rly003) | Warning | A concrete handler is never registered in this compilation. |
@@ -107,3 +111,23 @@ Use `dotnet_diagnostic.<ID>.severity` in `.editorconfig`, or a targeted `#pragma
 ## RLYM008 — Invalid exported message registration name {#rlym008}
 
 `[assembly: GenerateMessageTypes("AddOrderMessages")]` exports an explicit public registration extension for a contracts library. Supply a non-empty C# identifier that is not a keyword or `AddMessageTypesFromThisAssembly`. Choose distinct names for libraries used together, for example `AddOrderMessages` and `AddBillingMessages`. Invalid names stop generation of the exported method; local registration remains available.
+
+## Preview feature opt-in
+
+These compiler diagnostics come from `ExperimentalAttribute`. Preview APIs may change outside the first stable release compatibility promise. Suppress only the ID for the feature you accept, using `#pragma warning disable RLYEXP001` around the use or `<NoWarn>$(NoWarn);RLYEXP001</NoWarn>` in your project. This does not change runtime behavior.
+
+## RLYEXP001
+
+Sagas, diagram tooling and EF Core saga persistence requires explicit preview opt-in. Suppress `RLYEXP001` only after accepting the preview compatibility boundary.
+
+## RLYEXP002
+
+PostgreSQL local transport requires explicit preview opt-in. Suppress `RLYEXP002` only after accepting the preview compatibility boundary.
+
+## RLYEXP003
+
+PostgreSQL change capture requires explicit preview opt-in. Suppress `RLYEXP003` only after accepting the preview compatibility boundary.
+
+## RLYEXP004
+
+PostgreSQL tenant catalog dispatch requires explicit preview opt-in. Suppress `RLYEXP004` only after accepting the preview compatibility boundary.

@@ -1,8 +1,10 @@
+using System.Diagnostics.CodeAnalysis;
 using Npgsql.Replication.PgOutput;
 
 namespace Relayer.Outbox.PostgreSql;
 
 /// <summary>Settings for an explicitly provisioned PostgreSQL logical replication slot.</summary>
+[Experimental("RLYEXP003", UrlFormat = "https://relayer.tomlonghurst.dev/docs/reference/diagnostics#rlyexp003")]
 public sealed class PostgreSqlChangeCaptureOptions
 {
     /// <summary>Existing persistent pgoutput slot. Only one active reader may use a slot.</summary>

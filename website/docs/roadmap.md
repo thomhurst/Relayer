@@ -3,6 +3,9 @@ title: Roadmap
 description: "What is implemented in Relayer today and the phases that follow."
 ---
 
+Sagas (including diagram tooling and timeouts), PostgreSQL durable local transport, PostgreSQL change capture and PostgreSQL tenant catalog dispatch are **preview**, outside the first stable compatibility promise. Their APIs require [explicit compile-time opt-in](reference/diagnostics.md#preview-feature-opt-in). Terraform and Bicep export remain stable in their transport packages. RabbitMQ Streams is not published until send and receive are implemented (#316).
+
+
 Relayer is in early development. Track progress in [GitHub issues](https://github.com/thomhurst/Relayer/issues).
 
 ## Implemented

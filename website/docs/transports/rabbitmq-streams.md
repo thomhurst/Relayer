@@ -3,6 +3,9 @@ title: RabbitMQ Streams
 description: "Native RabbitMQ Stream systems and stream topology, with message execution still planned."
 ---
 
+This package is not published until it supports both send and receive ([#316](https://github.com/thomhurst/Relayer/issues/316)). Source integration and tests remain available in the repository.
+
+
 `Relayer.RabbitMQ.Streams` manages named native `StreamSystem` instances and stream topology using `RabbitMQ.Stream.Client` 1.12.2. **Relayer sending and receiving are not implemented.** Declaring `Send` or `Consume` fails before connecting. Direct `ITransport.SendAsync` and `SendBatchAsync` calls also fail explicitly.
 
 ## Register a connection and topology

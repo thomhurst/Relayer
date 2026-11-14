@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using Relayer.Pipeline;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -7,11 +8,14 @@ using Relayer.Transports;
 namespace Relayer.Outbox.PostgreSql;
 
 /// <summary>Options for an outbox-backed local endpoint.</summary>
+[Experimental("RLYEXP002", UrlFormat = "https://relayer.tomlonghurst.dev/docs/reference/diagnostics#rlyexp002")]
 public sealed class PostgreSqlLocalOptions;
 /// <summary>Local consumers use the shared outbox retry, recovery and dead-letter policy.</summary>
+[Experimental("RLYEXP002", UrlFormat = "https://relayer.tomlonghurst.dev/docs/reference/diagnostics#rlyexp002")]
 public sealed class PostgreSqlLocalConsumerOptions;
 
 /// <summary>Declares named local consumption over existing PostgreSQL outbox dispatch.</summary>
+[Experimental("RLYEXP002", UrlFormat = "https://relayer.tomlonghurst.dev/docs/reference/diagnostics#rlyexp002")]
 public static class PostgreSqlLocalBuilderExtensions
 {
     /// <summary>Registers local routes and consumers. Register shared direct, maintenance and ordered dispatch separately.</summary>

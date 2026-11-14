@@ -3,6 +3,11 @@ title: Durable saga timeouts
 description: "Schedule typed process timeout messages atomically with state through the existing outbox."
 ---
 
+:::warning Preview
+Saga timeouts is preview and outside the first stable release compatibility promise. Using its API requires explicit compile-time opt-in by suppressing [RLYEXP001](../reference/diagnostics.md#rlyexp001) (for example, add `<NoWarn>$(NoWarn);RLYEXP001</NoWarn>` to your project).
+:::
+
+
 A process timeout is an ordinary typed message sent with `SendOptions.DeliverAt` inside a
 [saga state transition](sagas.md). The existing EF Core consumer transaction commits the state,
 inbox identity and scheduled outbox row together. The existing durable dispatcher sends the
