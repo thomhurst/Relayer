@@ -191,7 +191,11 @@ jobs:
         if: always() && steps.baseline_after.outcome != 'skipped'
         run: python3 candidate/.github/scripts/retain_benchmark_evidence.py baseline performance-builds/baseline-after
 
+      # Shared runners vary between processes by more than the 5% threshold. A failure
+      # records its cases, which run once more below; only failures that repeat fail the job.
       - name: Compare bracketed throughput, allocations and startup
+        id: compare
+        continue-on-error: true
         run: >-
           python3 candidate/.github/scripts/benchmark_gate.py compare
           performance-results/baseline performance-results/candidate
@@ -200,12 +204,35 @@ jobs:
           --input-manifest performance-inputs.json
           --verify-test-sources
           --summary performance-summary.md
+          --failed-cases performance-failed-cases.json
+
+      - name: Fail an unusable comparison
+        if: steps.compare.outcome == 'failure' && hashFiles('performance-failed-cases.json') == ''
+        run: exit 1
+
+      # The repeated main run above, this candidate run and a final main run form a fresh
+      # bracket for the failed cases only. This is the fixed confirmation plan, not a retry.
+      - name: Confirm failed cases with a fresh candidate and main run
+        if: steps.compare.outcome == 'failure' && hashFiles('performance-failed-cases.json') != ''
+        run: |
+          mapfile -t filters < <(python3 -c 'import json, sys; print("\n".join(json.load(open(sys.argv[1]))["filters"]))' performance-failed-cases.json)
+          for side in candidate baseline; do
+            (cd "$side" && dotnet run -c Release --project benchmarks/Relayer.Benchmarks -- \
+              --filter "${filters[@]}" --exporters fulljson --keepFiles \
+              --artifacts "$GITHUB_WORKSPACE/performance-results/confirm-$side" \
+              > "$GITHUB_WORKSPACE/performance-confirm-$side.log" 2>&1) \
+              || { tail -n 80 "performance-confirm-$side.log"; exit 1; }
+          done
+          python3 candidate/.github/scripts/benchmark_gate.py confirm performance-failed-cases.json \
+            performance-results/baseline-after performance-results/confirm-candidate performance-results/confirm-baseline \
+            --summary performance-confirmation.md
 
       - name: Publish comparison summary
         if: always()
         run: |
           cat performance-commits.txt >> "$GITHUB_STEP_SUMMARY"
           if [ -f performance-summary.md ]; then cat performance-summary.md >> "$GITHUB_STEP_SUMMARY"; fi
+          if [ -f performance-confirmation.md ]; then cat performance-confirmation.md >> "$GITHUB_STEP_SUMMARY"; fi
 
       - name: Retain benchmark measurements and logs
         if: always()
@@ -221,6 +248,8 @@ jobs:
             performance-harness.sha256
             performance-inputs.json
             performance-summary.md
+            performance-failed-cases.json
+            performance-confirmation.md
 
   nats-native:
     name: NATS native-client comparisons

@@ -23,8 +23,10 @@ blocks a merge. It runs:
 - on ready pull requests that change the gate itself: `RegressionGate/`,
   `Program.cs`, the benchmark project file, the gate scripts or the workflow.
 
-A red `Performance` run on `main` is a regression to investigate, not a reason
-to rerun.
+When a comparison fails, the job reruns only the failed cases once, as part of
+the same run (see [CI thresholds and evidence](#ci-thresholds-and-evidence)). A
+red `Performance` run therefore means the failure repeated; treat it as a
+regression to fix, not a reason to rerun by hand.
 
 The merge and auto-merge scripts also treat this workflow as advisory, including
 failed, cancelled and pending runs. They still enforce required CI, reviews and
@@ -213,13 +215,27 @@ The gate fails when any case:
   Separate process runs can still vary; bracketing does not prove unchanged
   performance or eliminate all runner noise;
 - increases **per-message** allocations by more than **0.5 B/op**, a sub-byte allowance for
-  amortization and rounding, not an extra allocation budget. The candidate must
+  amortization and rounding, not an extra allocation budget.
+  `ConcurrentRoundTrip` uses **8 B/op**: launches of one unchanged build differ
+  by about 5 B/op there, from the varying number of pooled async boxes,
+  delegates and blocked channel reads. A real new per-message allocation is at
+  least 24 B, so it still fails. The candidate must
   exceed **both** baselines by more than this limit before the gate declares an
   allocation regression. An increase against only the lower baseline is reported
   as **inconclusive**, not proof of unchanged allocations. Concurrent asynchronous
   work includes driver and scheduler allocations that can vary between unchanged
   process runs. Both baseline totals and the candidate total remain visible;
 - takes **50 ms or more** to compose 100 handlers.
+
+Shared hosted runners vary between processes by more than these thresholds,
+even with confidence bounds that do not overlap. So when the comparison fails,
+the job records the failed cases in `performance-failed-cases.json` and runs only
+those cases again: candidate, then `main`. The repeated `main` run before them
+and the new `main` run after them bracket the new candidate run, and the gate
+fails only for cases that fail this confirmation too. Both summaries appear in
+the job summary, and `performance-confirmation.md` and the confirmation results
+are uploaded with the other reports. This is the gate's fixed sampling plan, not
+a retry: no failure is rerun more than once.
 
 CI also hashes the actual comparison inputs after overlaying the common harness
 and SDK. When the inventories are byte-identical, throughput losses and allocation increases are
@@ -280,150 +296,21 @@ Use the separate checkouts that produced the reports, with their harness and SDK
 overlay still in place. CI retains `performance-inputs.json` with the raw reports.
 Comparisons without source verification keep the strict throughput and allocation rules.
 
-### Investigating changed comparison inputs
-
-The separate `Frozen full-delivery driver allocation control` workflow retains
-an exact-driver summary for each historical input set. To validate downloaded
-records and regenerate a summary without launching another experiment, run:
-
-```powershell
-python .github/scripts/summarize_frozen_driver.py C:/retained/results/42306276036-exact-driver
-```
-
-The summary requires all four declared ABBA launches, matching runtime and
-architecture, fixed operation counts, and exact histogram count/byte sums.
-It reports inclusive bytes and calling-thread workload-invocation and BDN-waiter
-bytes separately. These regions exclude work on other threads; they do not
-identify object types or attribute a historical allocation increase. Keep
-unfavorable launches visible and never subtract separate experiments to assign
-an owner. Missing or inconsistent records fail validation rather than producing
-a partial comparison. This is diagnostic validation, not the regression gate.
+### Investigating a confirmed failure
 
 When verified inventories differ, the summary lists added, removed and changed
-input paths. This is an investigation aid, not a causal assignment or an exemption
-from the thresholds. An unchanged benchmark and unchanged call-path source can
-still run in a changed containing assembly. Other methods, metadata, generated
-code and build inputs can affect the executable; matching source or method IL
-alone does not establish matching JIT output or performance.
+input paths. Start from those changes: they point at the suspect code, but they
+are not a causal assignment or an exemption from the thresholds.
 
-Preserve the original reports, logs, commit identities and input inventories
-before their artifact retention expires. Record file lengths and SHA-256 hashes,
-and verify the retained copies. Replay the original detector decision before
-changing the harness. Keep a failed changed-input comparison visible even if a
-later diagnostic experiment does not reproduce it.
+CI runs BenchmarkDotNet with `--keepFiles` and uploads every generated build
+directory under `performance-builds/`, with an `inventory-sha256.json` per
+checkout. Generated binaries are evidence of those executions, not a portable
+benchmark baseline. Artifacts are kept for **90 days**.
 
-For a retained changed-input run, replay the strict report comparison without
-rebuilding the source checkouts:
-
-```powershell
-python .github/scripts/benchmark_gate.py compare C:/retained/performance-results/baseline C:/retained/performance-results/candidate --baseline-after C:/retained/performance-results/baseline-after --summary C:/investigation/strict-replay.md
-```
-
-Check the retained input inventories separately to confirm that the original run
-had differing inputs. `--input-manifest` writes a new inventory from source
-checkouts; it does not read an archived inventory. Do not point it at the original
-evidence. Without source verification, the comparison applies the strict rules
-even to an originally identical-input run, so this command does not reproduce
-that run's verified-identical classification.
-
-For a controlled investigation, pin the original commits, common harness, SDK,
-runtime and dependencies. Declare the case filters, launch count and measurement
-settings before running. Run baseline, candidate, candidate, baseline in sequence
-on one otherwise idle host to check for ordering effects as well as code differences.
-Inspect each process launch, including allocation totals and operation counts in
-the raw logs; an aggregate report can hide variation between launches. Automatic
-pilot calibration can choose different invocation counts, so use a further
-fixed-count experiment when that difference could explain the signal.
-
-CI runs BenchmarkDotNet with `--keepFiles` and retains every generated build
-directory from both checkouts, including both baseline executions. The
-`performance-builds/` artifact directory contains generated drivers, projects,
-executables and dependencies, original source ZIPs, and the effective common
-harness/SDK overlays. Each checkout has an `inventory-sha256.json` with its
-commit, original file locations, lengths and verified SHA-256 hashes. To recreate
-the source overlay, extract `source.zip`, remove benchmark C# files outside
-`Program.cs` and `RegressionGate/`, replace `RegressionGate/`, then apply
-`overlay/`. Generated binaries are evidence of those executions, not a portable
-benchmark baseline. A failed build can leave an incomplete directory; verify
-the corresponding execution log before claiming a successful measurement.
-
-For a frozen-image control, locate the generated driver's DLL and benchmark ID
-in the original log's `Execute:` line. Verify the retained inventory, then run
-the DLL from its retained output directory with the recorded runtime. For example,
-if that log identifies benchmark ID `1` as the case being investigated:
-
-```powershell
-dotnet ./Relayer.Benchmarks-DefaultJob-1.dll --benchmarkId 1
-```
-
-Check the generated `.notcs` source to confirm the ID's method and parameters.
-Check this mapping in both images. With multiple failing cases, run the declared
-sequence separately for each case and retain its own launch results. Do not pool
-different methods or parameter combinations into one comparison.
-The generated driver supports this direct execution without the original parent
-process's anonymous pipes. Its job settings are compiled into the driver;
-benchmark CLI options such as `--filter` or `--invocationCount` do not configure
-this executable. Keep the complete dependency directory unchanged and verify
-its hashes after the experiment. Capture stdout, stderr, exit status and runtime
-identity for every launch. The raw `WorkloadResult` and `// GC:` lines retain
-timings, operation counts and allocation counters; this direct execution does
-not produce the parent runner's full JSON report.
-
-Run the predeclared sequence with separate logs for every launch. An adaptive
-pilot can still choose different operation counts for frozen images. A further
-fixed-count control requires a separately configured driver or rebuilt benchmark;
-retain that control's inputs and binaries separately and identify it as a new
-experiment, not a replay of the original executable. Replaying on another host
-tests variation there; it does not reproduce the historical host's conditions.
-
-The frozen concurrent workflow also runs a separate fixed-count ABBA with
-`frozen_concurrent_control.py --bdn-await`. It binds the retained
-BenchmarkDotNet `AwaitHelper.GetResult<int>(ValueTask<int>)` once and completes
-each original `ConcurrentRoundTrip` synchronously, as the generated BDN driver
-does. The default external probe instead awaits that method asynchronously;
-these completion boundaries can change scheduling and continuation-cache reuse.
-Both modes keep 4096 warmup and 32768 measured batches, original binaries and
-inclusive allocation counters. Their results are separate experiments: the BDN
-waiter mode does not replay adaptive pilot calibration, identify historical
-allocation owners, or permit subtracting one mode's totals from the other.
-The protocol and each launch record name the completion boundary. Fixture,
-synchronous round-trip and exact-driver counters cannot be combined with the
-full-delivery BDN waiter mode.
-
-The artifact retention is **90 days**. Copy evidence to an independent archive
-before that deadline when an investigation must outlive it. Local PR evidence
-can be deleted when the PR closes, so it is not a permanent archive. Historical
-runs that uploaded only reports cannot recover their exact loaded binaries.
-
-Retain the effective compile inputs, binaries, probe sources and commands with
-the reports outside disposable worktrees. Compare the relevant assembly hashes
-and method IL as well as source inputs. Variation between launches of one frozen
-build demonstrates execution variation in that experiment. It does not identify
-the cause of a historical run, rule out a change-dependent effect on another host,
-or prove the raw-client 5% or zero-allocation budgets. Use allocation stacks and
-appropriate controls before assigning bytes to a particular component. Document
-remaining uncertainty rather than changing thresholds to make a signal pass.
-
-The **Frozen original BenchmarkDotNet engine control** workflow accepts
-`benchmark_case=composed-consumer-unscoped` with `parent=native`,
-`performance_run=43456694323` and `runtime_version=10.0.15` through
-`workflow_dispatch`. Use `same_image=abba` for a separately predeclared
-baseline/candidate/candidate/baseline sequence. This reuses the original generated
-runner, default job, native pipe parent and exact runtime selection. All three
-original build inventories are checked before and after execution; the final A
-slot repeats the first baseline image. Retain every launch log, native receipt,
-operation count, timing, allocation observation and failure with the executable
-inputs. These new executions cannot identify the historical cause or establish
-throughput equivalence; host drift and adaptive operation counts remain
-limitations. This does not rerun or relax the strict regression gate.
-
-For a separately declared code-generation question, use the same workflow.
-Its optional `jit_method` captures native JIT listings in the child only; `*`
-retains all emitted methods, including async state machines. Retain all four
-outcomes and listings. Exclude instrumented timings and allocations from
-performance comparisons. Listings cannot reconstruct historical code, prove
-which tier executed during measurements, or establish completeness for inlined,
-precompiled or interleaved methods.
+Investigate a confirmed failure by reproducing it on current `main` and the
+suspect change, then fixing or reverting that change. Do not try to explain a
+past run that no longer reproduces: its host state cannot be recovered, and
+replaying its binaries on another host measures that host instead.
 
 Startup allocation totals remain visible but are informational. D18 sets an
 allocation budget per message and a time budget for startup. Building frozen
@@ -438,10 +325,8 @@ without `--baseline-after` retain the single-baseline rule.
 The CI detector self-test shows that unchanged measurements pass and injected
 regressions fail. The comparison prints mean timings as throughput changes and
 allocation totals in the job summary. When a benchmark run fails, the job
-prints the end of its log. The job uploads raw reports, logs, comparison
-commits, input inventories and harness hashes for investigation. Inspect
-BenchmarkDotNet error and variation columns when timings are noisy; do not rerun until a noisy
-failure happens to pass. Local numbers are diagnostic only. Do not commit
+prints the end of its log. Inspect BenchmarkDotNet error and variation columns
+when timings are noisy. Local numbers are diagnostic only. Do not commit
 benchmark reports, logs or evidence Markdown.
 
 ## Raw native-client comparisons
@@ -587,200 +472,3 @@ weights as exact measured bytes. Keep the raw/native and composed reports and
 profiled timings separate. A borrowed native lookup API is requested in
 [Dekaf #4120](https://github.com/thomhurst/Dekaf/issues/4120); existing snapshots
 must continue owning their bytes after the fetch is released.
-
-### Frozen concurrent investigation
-
-`Frozen concurrent allocation investigation` runs a separate diagnostic on native Ubuntu x64 against the retained executables from runs 42306276036, 42312305889 and 42310409459. It verifies every retained build inventory before executing an external cached-delegate probe. Each run uses separate baseline/candidate/candidate/baseline processes, 4096 warmup batches and exactly 32768 measured batches of eight messages. All outcomes, runtime identity, probe and original inputs are uploaded for 90 days, including failed launches. The workflow runs when its tooling changes in a pull request and can also be dispatched deliberately. It requires the original artifacts to remain available.
-
-The process-wide allocation counter includes fixture, serializer, dependency-injection and transport work. These controls can reveal repeatable image-dependent behavior or variation within one frozen image; they do not identify an allocation owner, replay the original BenchmarkDotNet driver, establish throughput equivalence, or demonstrate the native-client performance budget. An unfavorable result remains evidence to investigate. This workflow does not change the strict regression gate or rerun it for green.
-
-The investigation also records a **separate instrumented ABBA** with `dotnet-trace` GC allocation stacks. The external probe emits `Relayer-FrozenMeasurement` start/stop events outside its inclusive counter. `FrozenAllocationReader` requires one ordered pair in one process and retains only that process's allocation ticks between the markers, with complete stacks, per-process thread IDs, sample weights, excluded-sample counts and missing-stack counts. Identical stacks on different threads remain separate. The measurement record includes the start and stop marker thread IDs; these identify marker emitters, not stable workload roles. Async continuations can move threads, and thread IDs cannot be compared between launches. Setup, warmup and cleanup samples are excluded. Successful extraction removes the raw trace containers; failed extraction preserves them for diagnosis. The original executables remain unchanged.
-
-These are weighted allocation samples, not exact object counts. A tick can include bytes from before a measurement boundary, and instrumentation changes scheduling. The separate profiled results must not be mixed into the untraced ABBA, subtracted as exact per-component bytes, or used alone to assign the historical excess. Use the stacks to choose a component-specific controlled experiment before proposing a production fix. Missing markers or an empty measured sample set fail visibly.
-
-### Exact full-delivery driver control
-
-`Frozen full-delivery driver allocation control` runs a separate instrumented
-ABBA against each retained input set using `tools/FrozenDriverProbe`. It keeps
-DI, JSON, native in-memory transport and the core receive pipeline in the original
-full-delivery workload. Two preallocated recorders count calling-thread bytes
-around the synchronous `ConcurrentRoundTrip()` invocation and the original
-BenchmarkDotNet `AwaitHelper.GetResult` consumption separately. The helper is
-bound once from each retained dependency directory; historical images are never
-rebuilt. Each process uses 4096 warmup and 32768 measured eight-message batches,
-validates the delivery sum and both record counts, and reports exact histograms.
-
-Neither counter spans an await. A blocked waiter includes any inline continuation
-work on its calling thread, but excludes allocation on other threads. These
-regional byte counts do not identify object types or the historical excess.
-Recording changes scheduling: compare within this separate ABBA and never
-subtract it from an uninstrumented or isolated-fixture experiment. The workflow
-verifies every image inventory before launching, fails visibly on missing inputs,
-and retains all outcomes, original inputs and probe binaries for 90 days.
-
-### Frozen handler fixture control
-
-`tools/FrozenFixtureProbe` loads the retained executable's original `ConcurrentHandler`
-and signal channels, binds a typed delegate once, and measures 4096 warmup plus
-32768 eight-handler batches. It deliberately excludes DI, JSON, transport and the
-Relayer pipeline. Every batch waits for all original handler ValueTasks after the
-completion signals, so pooled handler state cannot spill into the next batch.
-
-The `Frozen handler fixture allocation control` workflow verifies all retained
-build inventories before a separate-process ABBA for each historical input set.
-It preserves all outcomes and executable inputs for 90 days. This is a new
-owner-isolating experiment, not a rerun of the regression gate. It measures the
-original fixture, native scheduler and diagnostic driver together; its scheduling
-differs from full delivery. Variation here cannot identify the historical excess,
-and its totals must never be subtracted from end-to-end totals. The strict gate
-and production performance requirements remain unchanged.
-
-The fixture workflow also collects a **separate instrumented ABBA** using the same
-`Relayer-FrozenMeasurement` phase events and `FrozenAllocationReader` as the full
-delivery control. Markers remain outside the inclusive allocation counter; the
-reader excludes setup and warmup. Retained measured-region stacks can distinguish
-original handler, signal-channel and diagnostic-driver allocations within this
-isolated workload. Weighted samples and missing-stack counts retain their existing
-limits: these profiles cannot attribute the historical end-to-end excess, and
-neither sample weights nor isolated totals may be subtracted from full delivery.
-Untraced and instrumented results remain separate. Failed extraction preserves
-raw captures, and every ABBA launch is attempted even after another launch fails.
-
-The fixture workflow additionally runs a **separate exact invocation ABBA** using
-`--exact-invocations`. Two `GC.GetAllocatedBytesForCurrentThread` reads enclose only
-the synchronous call to the original cached handler delegate. There is no await
-between the reads. A preallocated buffer records one exact byte count per measured
-invocation; warmup calls are excluded. After measurement the result includes the
-number of calls, their total bytes and the complete frequency histogram of bytes
-per call. Counts include the original handler's synchronous channel/runtime calls,
-including suspension setup, but exclude later continuations, other threads and
-the driver's own work. They distinguish this synchronous region from the earlier
-inclusive totals without relying on allocation-tick samples.
-
-This mode changes scheduling and runs separately from both uninstrumented and
-sampled controls. Its inclusive process total is an instrumented result too.
-Equal byte counts do not prove equal allocated types; use sampled call sites to
-choose further controls, rather than assigning a histogram bin to a type by size.
-These measurements neither reconstruct the original BenchmarkDotNet execution
-nor identify its historical excess by themselves. Do not subtract them from
-full-delivery totals or mix them into the uninstrumented comparison.
-
-Run 42310409459 is a separate changed-input comparison tracked in #357: its
-original concurrent round trip reports 699/700 baseline and 701 candidate
-B/message. Both full-delivery and isolated-fixture workflows include those exact
-retained images. Results from the other historical input sets cannot establish
-attribution for this run. Local ARM64 controls validate the tools; hosted Ubuntu
-x64 controls retain the original platform family. Neither reproduces the original
-BenchmarkDotNet execution or retrospectively identifies its allocation delta.
-
-The first native x64 controls for #357 completed in full-delivery run
-[42745408162](https://github.com/thomhurst/Relayer/actions/runs/42745408162)
-and fixture run
-[42745408270](https://github.com/thomhurst/Relayer/actions/runs/42745408270),
-using .NET 10.0.14 and 262144 measured messages per launch:
-
-| Untraced B/message | Baseline A1 | Candidate B1 | Candidate B2 | Baseline A2 |
-|---|---:|---:|---:|---:|
-| Full delivery | 700.303986 | 701.582031 | 700.116425 | 700.905823 |
-| Isolated fixture | 193.379059 | 193.562042 | 193.432770 | 193.423615 |
-
-One full-delivery candidate exceeds both baselines while the other falls below
-both. Both isolated-fixture candidates exceed their baseline bracket. These
-unfavorable observations remain unresolved; neither comparison establishes the
-historical allocation owner. Separate measured-region profiles have no missing
-stacks and show original handler channel reads and pooled handler state-machine
-rents in the isolated fixture. Full delivery also samples DI scope dictionaries
-and in-memory receiver channel reads. Sample weights do not assign exact bytes
-to any of these owners. The exact synchronous-invocation ABBA now includes this
-input set to measure the original handler call region separately; its results
-must remain distinct from these untraced totals and sampled profiles.
-
-The fixture workflow also runs a separate `--exact-releases` ABBA. Each record
-counts calling-thread bytes around the entire synchronous batch of eight
-`Release.Writer.TryWrite` calls. The native channel completes waiting readers
-and schedules their continuations during these calls, so this tests a region
-excluded by the handler-invocation counter. There are exactly 32768 measured
-records, each representing eight writes; warmup is excluded. The JSON
-`invocationAllocations` histogram counts release-batch delegate calls in this
-mode, **not messages**. No await occurs inside the counter boundary. Other
-threads and later continuations remain excluded, and byte counts do not identify
-object types. This instrumented comparison neither attributes the historical
-excess nor permits subtraction from the other controls' totals.
-
-The separate native exact-invocation ABBA for #357 completed in
-[run 42748223325](https://github.com/thomhurst/Relayer/actions/runs/42748223325).
-All four histograms contain exactly 262144 measured calls, with verified weighted
-byte sums. Synchronous handler-call bytes per invocation were
-192.003052 / 192.000122 / 192.000122 / 192.004517 (A/B/B/A). Both
-candidates fall below both baselines in this instrumented region. This does not
-explain the earlier unfavorable untraced fixture comparison or identify historical
-end-to-end allocation owners. Histogram sizes do not identify allocated types.
-The separate exact release-batch ABBA also includes this input set, testing
-calling-thread channel completion scheduling outside the handler-call boundary.
-Its measurements must remain separate from handler-call and inclusive totals.
-
-
-For #357, the full-delivery workflow also runs a **separate exact round-trip-call
-ABBA** (`--exact-roundtrips`). It reuses the exact recorder around one synchronous
-call to the frozen original `ConcurrentRoundTrip` delegate, before awaiting the
-returned `ValueTask<int>`. Each of 32768 records represents an eight-message call;
-4096 warmup calls are excluded. This covers synchronous full-delivery work that
-the isolated handler and release controls do not execute, including any send and
-pipeline work reached before the first suspension. Two calling-thread allocation
-counter reads enclose only that delegate call; the probe awaits its result after
-the second read. Histograms are processed after measurement.
-
-This boundary excludes other threads and subsequent continuations, even if they
-complete before the delegate returns. Scheduling depends on instrumentation; its
-inclusive process totals and exact counts belong to this separate experiment.
-Neither subtraction from isolated or inclusive controls nor histogram-based type
-inference identifies the historical owner. Earlier unfavorable measurements
-remain unresolved. Native exact release-batch run
-[42751736039](https://github.com/thomhurst/Relayer/actions/runs/42751736039) reported
-0/0/0/0 calling-thread bytes per eight-write record for the original #357 inputs;
-this excludes excess only in that instrumented release region. PR #409 has merged
-and its required CI run 42752233964 passed. Historical attribution remains open.
-
-Native exact synchronous round-trip run
-[42754519395](https://github.com/thomhurst/Relayer/actions/runs/42754519395)
-reported 96 / 96.05078125 / 96.0029296875 / 96.02490234375 calling-thread
-bytes per eight-message call (A/B/B/A). Each histogram has 32768 records with
-verified weighted sums. One candidate exceeds both baselines; the other lies
-between them. This does not identify an allocation type or settle the original
-end-to-end comparison. #418 merged and its required CI run 42754917916 passed.
-
-### Original BenchmarkDotNet engine control for #357
-
-The **Frozen original BenchmarkDotNet engine control** workflow uses
-`.github/scripts/frozen_bdn_control.py` to run a separate A/B/B/A against the
-retained generated BenchmarkDotNet executable from run 42310409459. Unlike the
-external fixed-count probes, this executes the original generated runner,
-`AwaitHelper`, Default job, pilot, warmup, workload and extra GC-statistics pass.
-No workload or generated executable is rebuilt; no iteration counts, allocation
-thresholds or historical reports change. All three input inventories verify
-before launch and again afterwards. A2 deliberately repeats the first baseline
-image, as in the earlier controls.
-
-The launcher discovers the `ConcurrentRoundTrip` runner from the inventoried
-generated source and requires eight operations per invocation and enabled GC
-statistics. It uses BenchmarkDotNet's existing `NoAcknowledgementConsoleHost`
-entry point instead of the original parent's anonymous pipes. The workflow runs
-on Ubuntu x64 with SDK 10.0.403; the generated x64 executable cannot run under an
-ARM64 .NET process. Every process log and unsuccessful outcome is retained;
-failed launches are not retried or presented as measurements.
-
-`outcomes.json` records the native `// GC:` bytes and operation count, their
-unrounded ratio and BenchmarkDotNet's nearest-even rounded B/message value.
-The operation count already includes the eight messages per invocation; it is
-not divided by eight again. The parser rejects missing, ambiguous or incomplete
-GC results. The native format and rounding come from
-[BenchmarkDotNet 0.15.8 GcStats](https://github.com/dotnet/BenchmarkDotNet/blob/v0.15.8/src/BenchmarkDotNet/Engines/GcStats.cs).
-
-These are new original-engine executions on another host, with the console host
-replacing the parent pipe protocol. They do not reconstruct the historical
-execution, identify object types or prove the raw-native 5% budget. Native job
-calibration can choose different operation counts for each launch; the raw logs
-preserve those choices. Keep these results separate from external-driver totals,
-regional exact counters and sampled profiles. Unfavorable historical and control
-measurements remain open until an allocation owner or execution-dependent cause
-is demonstrated.

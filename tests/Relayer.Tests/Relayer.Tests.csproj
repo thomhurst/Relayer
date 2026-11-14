@@ -51,14 +51,6 @@
   </ItemGroup>
 
   <ItemGroup>
-    <Compile Include="../../tools/FrozenConcurrentProbe/NativeAllocationRegion.cs" Link="Fixtures/NativeAllocationRegion.cs" />
-    <Compile Include="../../tools/FrozenAllocationReader/RuntimeIdentityScope.cs" Link="Fixtures/RuntimeIdentityScope.cs" />
-    <Compile Include="../../tools/FrozenAllocationReader/NativeEngineTail.cs" Link="Fixtures/NativeEngineTail.cs" />
-    <Compile Include="../../tools/FrozenAllocationReader/AllocationScope.cs" Link="Fixtures/AllocationScope.cs" />
-    <Compile Include="../../tools/FrozenAllocationReader/AllocationGroups.cs" Link="Fixtures/AllocationGroups.cs" />
-    <Compile Include="../../tools/FrozenDriverProbe/WorkerReadChannel.cs" Link="Fixtures/WorkerReadChannel.cs" />
-    <Compile Include="../../tools/FrozenFixtureProbe/SourceAllocations.cs" Link="Fixtures/SourceAllocations.cs" />
-    <Compile Include="../../tools/FrozenFixtureProbe/InvocationAllocations.cs" Link="Fixtures/InvocationAllocations.cs" />
     <Compile Include="../../tests/Shared/SendDurationCapture.cs" Link="Fixtures/SendDurationCapture.cs" />
   </ItemGroup>
   <ItemGroup>
