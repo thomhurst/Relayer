@@ -13,7 +13,7 @@ internal sealed partial class RabbitMqConsumer
 {
     private readonly Func<RabbitMqDelivery, CancellationToken, ValueTask<Disposition>> _receive;
     private readonly RabbitMqConsumerOptions _options;
-    private readonly RabbitMqEndpointCache _endpoints;
+    private readonly RabbitMqReceiveEndpoint _endpoint;
     private readonly TimeProvider _clock;
     private readonly bool _automaticRecovery;
     private readonly long[] _active;
@@ -45,7 +45,7 @@ internal sealed partial class RabbitMqConsumer
         _logger = logger;
         _options = options;
         _receive = receive;
-        _endpoints = new(tracing, declaration.Source, factory?.HostName, factory?.Port);
+        _endpoint = new(tracing, declaration.Source, factory?.HostName, factory?.Port);
         _clock = clock ?? TimeProvider.System;
         _automaticRecovery = factory?.AutomaticRecoveryEnabled ?? true;
         _active = new long[declaration.Concurrency];
@@ -169,7 +169,7 @@ internal sealed partial class RabbitMqConsumer
         try
         {
             var delivery = new RabbitMqDelivery(_channel!, message)
-            { Endpoint = _endpoints.Get(message.Exchange, message.RoutingKey) };
+            { Endpoint = _endpoint };
             var previousFailure = Volatile.Read(ref _processingFailure);
             Disposition disposition;
             try

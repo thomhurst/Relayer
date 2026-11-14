@@ -52,7 +52,7 @@ internal sealed class RabbitMqFixture : ITransportConformanceFixture<RabbitMqDel
     public ConformanceLogCapture Logs { get; } = new();
     public string Destination => "conformance";
     public string SendDestinationName => ":conformance";
-    public string ProcessDestinationName => ":conformance:conformance";
+    public string ProcessDestinationName => "conformance";
     public string MessagingSystem => "rabbitmq";
     public string SettlementOperation => "ack";
     public HeaderNames HeaderNames { get; } = new("cloudEvents:");

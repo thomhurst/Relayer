@@ -90,6 +90,7 @@ To change a decision, add a new entry that supersedes it rather than editing his
 | [D77](#d77-batch-items-report-their-own-failures) | Batch items report their own failures | Accepted |
 | [D78](#d78-isolate-failed-outbox-batches-using-native-single-sends-and-confirmed-receipts) | Isolate failed outbox batches using native single sends and confirmed receipts | Accepted |
 | [D79](#d79-route-builders-carry-only-the-message-type) | Route builders carry only the message type | Accepted |
+| [D80](#d80-rabbitmq-receive-tracing-is-scoped-to-the-consumed-queue) | RabbitMQ receive tracing is scoped to the consumed queue | Accepted |
 
 ---
 
@@ -1907,3 +1908,19 @@ and completions and allocate no additional memory. Isolation changes only failur
 **Context.** All ten transport route option classes were empty. Their generic parameter added no native configuration or routing behavior, but propagated through every transport registration, route declaration and serializer extension.
 
 **Decision.** Use `TransportBuilder<TTransportOptions, TConsumerOptions>`, `RouteBuilder<TMessage>` and `RouteDefinition<TMessage>`. Remove route `Options` and the empty route option classes. Retain portable `SendRouteOptions`, native transport/consumer configuration and typed ordering selectors unchanged. Add transport-specific route extensions when a concrete native setting needs them rather than reserving an empty options type. This refines D23 and D27; it changes declaration signatures only, with no steady-state pipeline changes.
+
+## D80. RabbitMQ receive tracing is scoped to the consumed queue
+
+**Context.** A topic binding can deliver arbitrary routing keys to one queue. Caching process and
+settlement operations by exchange/routing key bounded retention to 256 entries but still allocated
+and evicted on each distinct delivery, even without tracing. RabbitMQ.Client 7.2.2 owns dispatch,
+subscriber transport instrumentation and native acknowledgement; Relayer's existing message binding
+already enriches process and settlement spans with delivery metadata after sampling.
+
+**Decision.** Compose one process/ack/nack operation set per declared consumer using its queue as the
+destination. Keep routing keys as recorded-span attributes through the existing binding, rather than
+span names or sampler inputs. Preserve native client instrumentation and settlement unchanged.
+
+**Consequences.** Receive samplers see the queue, operation, system and configured server at creation,
+not the delivery routing key. Send sampler inputs are unchanged. Wildcard traffic needs no tracing
+lookup, lock, eviction or route-dependent allocation; state is fixed per consumer.

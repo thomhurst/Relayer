@@ -136,24 +136,6 @@ public class RabbitMqConfigurationTests
         await Assert.That(() => provider.GetRequiredService<ITransport>()).Throws<Exception>();
     }
 
-    [Test]
-    public async Task Native_endpoint_tracing_cache_is_bounded_and_warm_hits_allocate_nothing()
-    {
-        using var tracing = new MessageTracing(Options.Create(new TracingOptions()), []);
-        var cache = new RabbitMqEndpointCache(tracing, "queue");
-        var original = cache.Get("exchange", "key");
-        // Warm the native tuple/string equality paths as well as the first cache miss.
-        for (var i = 0; i < 1000; i++) cache.Get("exchange", "key");
-        var before = GC.GetAllocatedBytesForCurrentThread();
-        for (var i = 0; i < 1000; i++) cache.Get("exchange", "key");
-        var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
-        await Assert.That(allocated).IsEqualTo(0L);
-        for (var i = 0; i < RabbitMqEndpointCache.Capacity; i++) cache.Get("exchange", i.ToString());
-        await Assert.That(cache.Get("exchange", "key")).IsNotSameReferenceAs(original);
-        var recent = cache.Get("exchange", "key");
-        await Assert.That(cache.Get("exchange", "key")).IsSameReferenceAs(recent);
-    }
-
     internal static ServiceProvider Provider(Action<RabbitMqTransportOptions> configure)
     {
         var services = new ServiceCollection();

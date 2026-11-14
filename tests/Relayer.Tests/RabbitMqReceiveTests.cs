@@ -264,7 +264,7 @@ public class RabbitMqReceiveTests
     }
 
     [Test]
-    public async Task Process_samplers_see_actual_native_destination_and_ack_spans_have_delivery_attributes()
+    public async Task Process_samplers_see_queue_destination_and_ack_spans_have_delivery_attributes()
     {
         using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(2));
         var token = timeout.Token;
@@ -288,12 +288,84 @@ public class RabbitMqReceiveTests
         ActivitySource.AddActivityListener(listener);
         await host.StartAsync(token);
         await host.Services.GetRequiredService<ITransport>().SendAsync(new("orders", "{\"Value\":42}"u8.ToArray(), Headers()), token);
-        await Assert.That(await sampler.Task.WaitAsync(token)).IsEqualTo(":orders:orders");
+        await Assert.That(await sampler.Task.WaitAsync(token)).IsEqualTo("orders");
         var settled = await ack.Task.WaitAsync(token);
-        await Assert.That(settled.OperationName).IsEqualTo("ack :orders:orders");
+        await Assert.That(settled.OperationName).IsEqualTo("ack orders");
         await Assert.That(settled.GetTagItem("messaging.rabbitmq.destination.routing_key")).IsEqualTo("orders");
         await Assert.That(settled.GetTagItem("messaging.rabbitmq.message.delivery_tag")).IsNotNull();
         await host.StopAsync(token);
+    }
+
+    [Test]
+    [Arguments(true)]
+    [Arguments(false)]
+    public async Task Wildcard_deliveries_share_queue_tracing_with_recording_enabled_or_disabled(bool recorded)
+    {
+        using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(2));
+        var token = timeout.Token;
+        await using var broker = await RabbitMqTopologyTests.Broker.StartAsync(token);
+        using var host = Host(broker.Factory(), new());
+        var tracing = host.Services.GetRequiredService<MessageTracing>();
+        var spans = Channel.CreateUnbounded<Activity>();
+        var samples = 0;
+        var invalidSamplerInput = false;
+        using var listener = new ActivityListener
+        {
+            ShouldListenTo = source => ReferenceEquals(source, tracing.Source),
+            Sample = (ref ActivityCreationOptions<ActivityContext> options) =>
+            {
+                if (options.Name is "process orders" or "ack orders")
+                {
+                    Interlocked.Increment(ref samples);
+                    foreach (var tag in options.Tags!)
+                    {
+                        if (tag.Key == "messaging.destination.name" && !Equals(tag.Value, "orders")) invalidSamplerInput = true;
+                        if (tag.Key == "messaging.rabbitmq.destination.routing_key") invalidSamplerInput = true;
+                    }
+                }
+                else invalidSamplerInput = true;
+                return recorded ? ActivitySamplingResult.AllDataAndRecorded : ActivitySamplingResult.None;
+            },
+            ActivityStopped = activity => spans.Writer.TryWrite(activity),
+        };
+        ActivitySource.AddActivityListener(listener);
+        // TUnit also listens globally. Dispose only this provider's source to exercise the
+        // no-listener path without changing any process-wide listener configuration.
+        if (!recorded) tracing.Source.Dispose();
+        await host.StartAsync(token);
+        await using var connection = await broker.Factory().CreateConnectionAsync(token);
+        await using var channel = await connection.CreateChannelAsync(new(true, true), token);
+        await channel.ExchangeDeclareAsync("events", "topic", cancellationToken: token);
+        await channel.QueueBindAsync("orders", "events", "order.#", cancellationToken: token);
+        var properties = new BasicProperties { ContentType = "application/json", Headers = new Dictionary<string, object?>
+        { ["cloudEvents:id"] = "wildcard", ["cloudEvents:type"] = "rabbit.receive;v=1" } };
+        const int count = 512;
+        for (var i = 0; i < count; i++)
+            await channel.BasicPublishAsync("events", "order." + i, true, properties, "{\"Value\":42}"u8.ToArray(), token);
+        // A passive declare on the publisher channel does not order consumer acknowledgements.
+        // Wait for all handler callbacks, then stop drains the native settlements.
+        var control = host.Services.GetRequiredService<RabbitMqReceiveControl>();
+        for (var i = 0; i < count; i++) await control.Values.Reader.ReadAsync(token);
+        await host.StopAsync(token);
+        await Assert.That(samples).IsEqualTo(recorded ? count * 2 : 0);
+        await Assert.That(invalidSamplerInput).IsFalse();
+        if (!recorded)
+        {
+            await Assert.That(spans.Reader.TryRead(out _)).IsFalse();
+            return;
+        }
+        var processKeys = new HashSet<string>();
+        var ackKeys = new HashSet<string>();
+        while (spans.Reader.TryRead(out var span))
+        {
+            await Assert.That(span.GetTagItem("messaging.destination.name")).IsEqualTo("orders");
+            await Assert.That(span.GetTagItem("messaging.rabbitmq.message.delivery_tag")).IsNotNull();
+            var keys = span.OperationName == "process orders" ? processKeys : ackKeys;
+            await Assert.That(span.GetTagItem("messaging.operation.type")).IsEqualTo(span.OperationName == "process orders" ? "process" : "settle");
+            keys.Add((string)span.GetTagItem("messaging.rabbitmq.destination.routing_key")!);
+        }
+        await Assert.That(processKeys.Count).IsEqualTo(count);
+        await Assert.That(ackKeys.SetEquals(processKeys)).IsTrue();
     }
 
     [Test]
@@ -330,7 +402,7 @@ public class RabbitMqReceiveTests
         await transport.SendAsync(new("native.source", "unchanged"u8.ToArray(), Headers()), token);
         await nacks.Reader.ReadAsync(token);
         var dead = await nacks.Reader.ReadAsync(token);
-        await Assert.That(dead.OperationName).IsEqualTo("nack :native.source:native.source");
+        await Assert.That(dead.OperationName).IsEqualTo("nack native.source");
         await Assert.That(dead.GetTagItem("messaging.rabbitmq.message.delivery_tag")).IsNotNull();
         await transport.StopAsync(token);
         BasicGetResult? result;
