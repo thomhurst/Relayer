@@ -19,8 +19,8 @@ public static partial class SqlServerOutboxServiceCollectionExtensions
     /// The native connection string passes through unchanged and must specify Initial Catalog (Database).
     /// Writers must use the same database spelling. This does not dispatch ordered or future-due rows or run recovery polling.
     /// </remarks>
-    [RequiresUnreferencedCode("SqlClient 7.1.1 runtime trimming is unsupported; see https://github.com/dotnet/SqlClient/issues/1947.")]
-    [RequiresDynamicCode("SqlClient 7.1.1 runtime Native AOT is unsupported; see https://github.com/dotnet/SqlClient/issues/1947.")]
+    [RequiresUnreferencedCode("SqlClient runtime trimming is unsupported; see https://github.com/dotnet/SqlClient/issues/1947.")]
+    [RequiresDynamicCode("SqlClient runtime Native AOT is unsupported; see https://github.com/dotnet/SqlClient/issues/1947.")]
     public static IServiceCollection AddRelayerSqlServerDirectDispatch(this IServiceCollection services,
         string storeName, string connectionString, SqlServerOutboxOptions? storeOptions = null,
         SqlServerDirectDispatchOptions? dispatchOptions = null)
@@ -51,8 +51,8 @@ public static partial class SqlServerOutboxServiceCollectionExtensions
     }
 
     /// <summary>Binds immutable direct-dispatch limits from configuration at registration.</summary>
-    [RequiresUnreferencedCode("SqlClient 7.1.1 runtime trimming is unsupported; see https://github.com/dotnet/SqlClient/issues/1947.")]
-    [RequiresDynamicCode("SqlClient 7.1.1 runtime Native AOT is unsupported; see https://github.com/dotnet/SqlClient/issues/1947.")]
+    [RequiresUnreferencedCode("SqlClient runtime trimming is unsupported; see https://github.com/dotnet/SqlClient/issues/1947.")]
+    [RequiresDynamicCode("SqlClient runtime Native AOT is unsupported; see https://github.com/dotnet/SqlClient/issues/1947.")]
     public static IServiceCollection AddRelayerSqlServerDirectDispatch(this IServiceCollection services,
         string storeName, string connectionString, IConfiguration configuration,
         SqlServerOutboxOptions? storeOptions = null)

@@ -12,8 +12,8 @@ namespace Relayer.Outbox.SqlServer;
 public static class SqlServerOutboxRegistration
 {
     /// <summary>Adds the SQL Server outbox and the scoped IOutboxEnlistment used by ISender.</summary>
-    [RequiresUnreferencedCode("SqlClient 7.1.1 runtime trimming is unsupported; see https://github.com/dotnet/SqlClient/issues/1947.")]
-    [RequiresDynamicCode("SqlClient 7.1.1 runtime Native AOT is unsupported; see https://github.com/dotnet/SqlClient/issues/1947.")]
+    [RequiresUnreferencedCode("SqlClient runtime trimming is unsupported; see https://github.com/dotnet/SqlClient/issues/1947.")]
+    [RequiresDynamicCode("SqlClient runtime Native AOT is unsupported; see https://github.com/dotnet/SqlClient/issues/1947.")]
     public static IServiceCollection AddRelayerSqlServerOutbox(this IServiceCollection services, SqlServerOutboxOptions? options = null)
     {
         ArgumentNullException.ThrowIfNull(services);
@@ -36,8 +36,8 @@ public static class SqlServerOutboxRegistration
     }
 
     /// <summary>Binds immutable options explicitly through the Options pattern, including startup validation and reload for new scopes.</summary>
-    [RequiresUnreferencedCode("SqlClient 7.1.1 runtime trimming is unsupported; see https://github.com/dotnet/SqlClient/issues/1947.")]
-    [RequiresDynamicCode("SqlClient 7.1.1 runtime Native AOT is unsupported; see https://github.com/dotnet/SqlClient/issues/1947.")]
+    [RequiresUnreferencedCode("SqlClient runtime trimming is unsupported; see https://github.com/dotnet/SqlClient/issues/1947.")]
+    [RequiresDynamicCode("SqlClient runtime Native AOT is unsupported; see https://github.com/dotnet/SqlClient/issues/1947.")]
     public static IServiceCollection AddRelayerSqlServerOutbox(this IServiceCollection services, IConfiguration configuration)
     {
         ArgumentNullException.ThrowIfNull(configuration);

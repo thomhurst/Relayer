@@ -19,8 +19,8 @@ public static class SqlServerConsumerExtensions
     /// automatic retry strategy, ambient transactions or batch consumers are supported.
     /// The native connection string passes through unchanged. Keep consumer identities stable across replicas.
     /// </remarks>
-    [RequiresUnreferencedCode("SqlClient 7.1.1 runtime trimming is unsupported; see https://github.com/dotnet/SqlClient/issues/1947.")]
-    [RequiresDynamicCode("SqlClient 7.1.1 runtime Native AOT is unsupported; see https://github.com/dotnet/SqlClient/issues/1947.")]
+    [RequiresUnreferencedCode("SqlClient runtime trimming is unsupported; see https://github.com/dotnet/SqlClient/issues/1947.")]
+    [RequiresDynamicCode("SqlClient runtime Native AOT is unsupported; see https://github.com/dotnet/SqlClient/issues/1947.")]
     public static ConsumePipelineBuilder SqlServer(this ConsumePipelineBuilder builder, string consumer,
         string connectionString, bool inbox = false)
     {

@@ -30,8 +30,8 @@ internal sealed class SqlServerDirectDispatcher : BackgroundService
     private readonly string _dataSource;
     private readonly string _database;
 
-    [RequiresUnreferencedCode("SqlClient 7.1.1 runtime trimming is unsupported; see https://github.com/dotnet/SqlClient/issues/1947.")]
-    [RequiresDynamicCode("SqlClient 7.1.1 runtime Native AOT is unsupported; see https://github.com/dotnet/SqlClient/issues/1947.")]
+    [RequiresUnreferencedCode("SqlClient runtime trimming is unsupported; see https://github.com/dotnet/SqlClient/issues/1947.")]
+    [RequiresDynamicCode("SqlClient runtime Native AOT is unsupported; see https://github.com/dotnet/SqlClient/issues/1947.")]
     internal SqlServerDirectDispatcher(string connectionString, SqlServerOutboxOptions storeOptions,
         SqlServerDirectDispatchOptions options, IEnumerable<ITransport> transports, ILogger<SqlServerDirectDispatcher> logger,
         SqlServerOutboxStore? store = null, RelayerInstrumentation? instrumentation = null)

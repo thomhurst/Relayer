@@ -45,8 +45,8 @@ public sealed class SqlServerOutboxStore : IOutboxStore
     private readonly List<ClaimBuffer> _batchClaims = [];
 
     /// <summary>Uses the native connection string unchanged and snapshots explicit schema identifiers.</summary>
-    [RequiresUnreferencedCode("Microsoft.Data.SqlClient 7.1.1 retains reflection-based authentication, configuration and diagnostics. Trimming is unsupported; see https://github.com/dotnet/SqlClient/issues/1947.")]
-    [RequiresDynamicCode("Microsoft.Data.SqlClient 7.1.1 is not warning-clean under Native AOT; see https://github.com/dotnet/SqlClient/issues/1947.")]
+    [RequiresUnreferencedCode("SqlClient runtime trimming is unsupported; see https://github.com/dotnet/SqlClient/issues/1947.")]
+    [RequiresDynamicCode("SqlClient runtime Native AOT is unsupported; see https://github.com/dotnet/SqlClient/issues/1947.")]
     public SqlServerOutboxStore(string connectionString, SqlServerOutboxOptions? options = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(connectionString);

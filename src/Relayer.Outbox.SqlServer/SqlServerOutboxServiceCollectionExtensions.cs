@@ -9,8 +9,8 @@ public static partial class SqlServerOutboxServiceCollectionExtensions
 {
     /// <summary>Registers a keyed scoped store, without schema deployment, enqueue or workers.</summary>
     /// <remarks>The native connection string, including pooling and authentication settings, passes through unchanged.</remarks>
-    [RequiresUnreferencedCode("Microsoft.Data.SqlClient 7.1.1 retains reflection-based authentication, configuration and diagnostics. Trimming is unsupported; see https://github.com/dotnet/SqlClient/issues/1947.")]
-    [RequiresDynamicCode("Microsoft.Data.SqlClient 7.1.1 is not warning-clean under Native AOT; see https://github.com/dotnet/SqlClient/issues/1947.")]
+    [RequiresUnreferencedCode("SqlClient runtime trimming is unsupported; see https://github.com/dotnet/SqlClient/issues/1947.")]
+    [RequiresDynamicCode("SqlClient runtime Native AOT is unsupported; see https://github.com/dotnet/SqlClient/issues/1947.")]
     public static IServiceCollection AddRelayerSqlServerOutboxStore(this IServiceCollection services,
         string storeName, string connectionString, SqlServerOutboxOptions? options = null)
     {
