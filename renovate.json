@@ -5,6 +5,14 @@
   "draftPR": true,
   "packageRules": [
     {
+      "description": "Keep the .NET 10 Microsoft.Extensions entries on v10; the separate .NET 11 entries already use v11.",
+      "matchManagers": ["nuget"],
+      "matchFileNames": ["Directory.Packages.props"],
+      "matchPackageNames": ["Microsoft.Extensions.*"],
+      "matchCurrentVersion": "/^10\\./",
+      "allowedVersions": "<11.0.0"
+    },
+    {
       "description": "Workflow dotnet-version inputs install supported target runtimes; global.json owns SDK upgrades.",
       "matchManagers": ["github-actions"],
       "matchDepTypes": ["uses-with"],
