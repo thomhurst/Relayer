@@ -99,13 +99,17 @@ internal sealed class KafkaValueSerializer : ISerializer<(ReadOnlyMemory<byte> B
     {
         var value = record.GetValueOrDefault();
         var headers = context.Headers ?? throw new InvalidOperationException("Dekaf did not provide record header storage.");
-        if (value.Headers.GetFirst("traceparent") is not null)
+        // Fresh native storage has nothing to replace, including native trace context.
+        if (headers.Count != 0)
         {
-            headers.Remove("traceparent");
-            headers.Remove("tracestate");
+            if (value.Headers.GetFirst("traceparent") is not null)
+            {
+                headers.Remove("traceparent");
+                headers.Remove("tracestate");
+            }
+            // Remove conflicts first so duplicate application headers retain their native order.
+            for (var i = 0; i < value.Headers.Count; i++) headers.Remove(value.Headers[i].Key);
         }
-        // Remove conflicts first so duplicate application headers retain their native order.
-        for (var i = 0; i < value.Headers.Count; i++) headers.Remove(value.Headers[i].Key);
         for (var i = 0; i < value.Headers.Count; i++) headers.Add(value.Headers[i]);
         value.Body.Span.CopyTo(destination.GetSpan(value.Body.Length));
         destination.Advance(value.Body.Length);

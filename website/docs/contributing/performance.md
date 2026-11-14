@@ -488,6 +488,28 @@ the CI gate with their adapter and retain raw results for both paths. Never use
 an in-memory result as a substitute for any of Kafka, Azure Service Bus, Amazon
 SQS/SNS or RabbitMQ.
 
+### Kafka send header conflicts
+
+The Kafka record serializer skips conflict removal when Dekaf provides empty
+native header storage. Application headers are appended in order, including
+duplicates and null values. When native headers are present, the serializer
+continues using Dekaf's `Headers.Remove(string)` before appending application
+headers; creation trace context takes precedence and unrelated native additions
+remain intact. A native bulk removal API is tracked in
+[Dekaf #4121](https://github.com/thomhurst/Dekaf/issues/4121); populated-storage
+bulk filtering remains pending in [#645](https://github.com/thomhurst/Relayer/issues/645).
+
+`KafkaSendHeaderBenchmarks` isolates this work with 8/32 application headers and
+empty/populated native storage. It compares direct native `Headers.Add`, the
+previous conflict-removal algorithm and the current serializer, all with
+`MemoryDiagnoser`. The populated case retains a native-only header. This is a
+header-work microbenchmark, not a broker-backed send or proof of the raw-client
+5% budget. Use `KafkaSendBenchmarks` for acknowledged send comparisons.
+
+```sh
+dotnet run -c Release --framework net10.0 --project benchmarks/Relayer.Benchmarks -- --filter '*KafkaSendHeaderBenchmarks*' --job short --exporters fulljson
+```
+
 ### Kafka delivery header snapshots
 
 Kafka deliveries retain one native Dekaf header view for all envelope lookups and
