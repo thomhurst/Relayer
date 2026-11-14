@@ -450,9 +450,10 @@ The regression threshold against `main` is distinct from D18's **at most 5%
 throughput overhead against the raw native client**. In-memory and callback
 microbenchmarks do not establish that real-broker budget. `KafkaSendBenchmarks`
 already pairs raw Dekaf and Relayer adapter sends against a real broker for
-pre-serialized single messages and native batches. These cases are outside the
-`RegressionGate` category and do not cover the public default-JSON send pipeline
-or receive path.
+pre-serialized single messages and native batches. Its `DefaultJson` cases also
+compare public `ISender.SendAsync` with raw Dekaf using the same default generated
+JSON serializer and fresh CloudEvents metadata. These send cases are outside the
+`RegressionGate` category; receive is measured separately below.
 
 `KafkaReceiveBenchmarks` already compares raw Dekaf with the production serial
 Kafka receive adapter, including the core receive pipeline and generated handler
@@ -462,9 +463,8 @@ for its maintained scope, broker configuration and invocation. These results are
 local diagnostics, not a claim that the 5% receive budget has passed; the planned
 parallel scheduler is outside this comparison.
 
-For Kafka, complete default-JSON send-pipeline comparisons and parallel receive
-coverage remain planned. Other transports already have paired cases, including
-RabbitMQ and Service Bus send and receive benchmarks and SQS send benchmarks.
+For Kafka, parallel receive coverage remains planned. Other transports already
+have paired cases, including RabbitMQ and Service Bus send and receive benchmarks and SQS send benchmarks.
 `SqsReceiveBindingBenchmarks` isolates body preparation without a broker; it is
 not a real-broker receive comparison. Existing cases do not establish complete
 default-JSON pipeline coverage or prove the 5% budget for those transports.
