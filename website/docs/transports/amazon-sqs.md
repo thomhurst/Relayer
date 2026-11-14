@@ -228,3 +228,16 @@ SNS send spans and native metrics use `messaging.system = aws.sns`, with `aws.sn
 `SnsSendBenchmarks` compares acknowledged single and batch publishing against raw AWS requests with `MemoryDiagnoser`, including optional metrics. Set `RELAYER_SNS_SERVICE_URL` for LocalStack or use the native AWS credential chain in a test account. `SnsBindingBenchmarks` isolates default envelope/body conversion for standard and FIFO sends. Required native `PublishRequest.Message`, `MessageAttributeValue.StringValue` and UTF-8 `MessageGroupId` strings are native-client cost under D52; request, entry and attribute containers are reused. Its `DefaultJson` category compares `ISender.SendAsync` with raw SDK publishing of the same default-JSON model and fresh CloudEvents metadata. `Single` and `Batch` isolate pre-serialized sends. Local measurements are diagnostic; benchmark coverage alone does not establish the 5% throughput budget.
 
 `SqsReceiveBatchBenchmarks` compares equivalent native receive/delete batches (2 and 10 messages) with retained adapter delivery storage and per-entry settlement. Cached native responses exclude SDK HTTP/serialization costs so the benchmark isolates adapter scheduling and binding; it does not establish end-to-end throughput against a live queue.
+
+### Send pool retention
+
+SQS and SNS each retain at most 256 idle send-state objects per transport. Concurrent sends above
+the bound remain supported and allocate temporary overflow state on each burst. Native completion
+still controls the lifetime of borrowed message memory; native request references are cleared before
+retention or collection.
+The bound limits object count, not bytes: retained state can keep storage sized for its largest batch.
+There is no retention option.
+
+`TransportPoolRetentionBenchmarks` measures warmed pool reuse at concurrency 1 and 256 and repeated
+512-operation bursts with `MemoryDiagnoser`. Measurements isolate pooling from broker I/O and do not
+establish whole-path throughput parity.

@@ -22,4 +22,7 @@
   <ItemGroup>
     <Compile Include="../../tests/Shared/SendDurationCapture.cs" Link="Fixtures/SendDurationCapture.cs" />
   </ItemGroup>
+  <ItemGroup>
+    <Compile Include="../Shared/BoundedTransportPoolAssertions.cs" Link="Fixtures/BoundedTransportPoolAssertions.cs" />
+  </ItemGroup>
 </Project>

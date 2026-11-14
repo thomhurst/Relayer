@@ -281,3 +281,16 @@ The transport's client options are `ServiceBusTransportOptions`, matching
 `relayer.ServiceBus(...)` and `ServiceBusConsumerOptions`. The receive binding is
 `ServiceBusMessageBinding` (or `ServiceBusSessionMessageBinding` for sessions). These replace the former `AzureServiceBusTransportOptions`
 `ServiceBusBinding` and `ServiceBusSessionBinding` names; update explicit type references when upgrading.
+
+### Send pool retention
+
+Each Service Bus endpoint retains at most 256 idle message containers and 256 batch lease lists.
+Concurrent sends above either bound remain supported and allocate temporary overflow state on each
+burst. Borrowed body memory is cleared after native completion, including batch disposal, before
+retention or collection.
+The bound limits object count, not bytes: retained state can keep storage sized for its largest batch.
+There is no retention option.
+
+`TransportPoolRetentionBenchmarks` measures warmed pool reuse at concurrency 1 and 256 and repeated
+512-operation bursts with `MemoryDiagnoser`. Measurements isolate pooling from broker I/O and do not
+establish whole-path throughput parity.

@@ -7,10 +7,10 @@ using RabbitMQ.Client;
 
 namespace Relayer.RabbitMQ;
 
-// Unlike the runtime's capped async-builder cache, retain operations at the observed concurrency high-water mark.
+// Retain at most 256 idle operations, returned only after the caller consumes completion.
 internal sealed class RabbitMqSendPool
 {
-    private readonly SlotPool<RabbitMqSendOperation> _operations = new();
+    private readonly SlotPool<RabbitMqSendOperation> _operations = new(capacity: 256);
     internal RabbitMqSendOperation Rent() => _operations.TryRent() ?? new(this);
     internal void Return(RabbitMqSendOperation operation) => _operations.TryReturn(operation);
 }

@@ -2,11 +2,10 @@ using Dekaf.Serialization;
 
 namespace Relayer.Kafka;
 
-// Retain every operation at the observed concurrency high-water mark. A fixed retention
-// cap would allocate on every send once steady-state concurrency exceeds that cap.
+// Retain at most 256 idle operations; overflow becomes collectible after native completion.
 internal sealed class KafkaSendPool
 {
-    private readonly SlotPool<KafkaSendOperation> _operations = new();
+    private readonly SlotPool<KafkaSendOperation> _operations = new(capacity: 256);
 
     internal KafkaSendOperation Rent(int count)
     {

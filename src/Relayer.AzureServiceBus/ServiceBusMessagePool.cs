@@ -4,10 +4,10 @@ using Azure.Messaging.ServiceBus;
 
 namespace Relayer.AzureServiceBus;
 
-// Retain native message containers at the concurrency high-water mark, without a lock or per-send wrapper.
+// Retain at most 256 idle containers; callers clear borrowed state before returning it.
 internal sealed class ServiceBusPool<T>(Func<T> create) where T : class
 {
-    private readonly SlotPool<T> _items = new();
+    private readonly SlotPool<T> _items = new(capacity: 256);
 
     internal T Rent() => _items.TryRent() ?? create();
     internal void Return(T state) => _items.TryReturn(state);
