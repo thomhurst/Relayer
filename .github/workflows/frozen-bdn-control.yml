@@ -28,6 +28,7 @@ on:
           - failure-production-suspended
           - scope-only
           - scope-resolution-unscoped
+          - scope-resolution
           - scope-only-unscoped
           - scoped-dispatch
           - composed-consumer-unscoped
