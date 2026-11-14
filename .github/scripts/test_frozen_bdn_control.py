@@ -95,6 +95,8 @@ class OriginalRunnerTests(unittest.TestCase):
         cases = (
             ("scope-resolution", "ConsumePipelineBenchmarks", "ScopeAndHandlerResolution",
              "ScopedHandler", "true", "AwaitHelper.GetResult(ScopeAndHandlerResolution())"),
+            ("failure-production-sync", "FailureConsumePipelineBenchmarks", "ProductionFailurePipeline",
+             "SuspendHandler", "false", "ProductionFailurePipeline"),
             ("failure-dispatch-sync", "FailureConsumePipelineBenchmarks", "DirectScopedDispatch",
              "SuspendHandler", "false", "DirectScopedDispatch"),
         )
