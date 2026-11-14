@@ -33,6 +33,13 @@
       "enabled": false
     },
     {
+      "description": "net10.0 pins of packages released with .NET stay on 10.x; the net11.0 pins in Directory.Packages.props take the next major.",
+      "matchFileNames": ["Directory.Packages.props"],
+      "matchPackageNames": ["Microsoft.Extensions.*", "System.Security.Cryptography.Pkcs"],
+      "matchCurrentValue": "/^10\\./",
+      "allowedVersions": "<11.0.0"
+    },
+    {
       "description": "Dependency updates use the repository's draft review lifecycle, overriding inherited automerge rules.",
       "matchPackageNames": [
         "*"
