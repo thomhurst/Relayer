@@ -3,6 +3,11 @@ title: Saga state transitions
 description: "Explicit PostgreSQL process state using the EF Core consumer inbox and outbox."
 ---
 
+:::warning Preview
+Sagas is preview and outside the first stable release compatibility promise. Using its API requires explicit compile-time opt-in by suppressing [RLYEXP001](../reference/diagnostics.md#rlyexp001) (for example, add `<NoWarn>$(NoWarn);RLYEXP001</NoWarn>` to your project).
+:::
+
+
 `Relayer.Sagas` supplies typed process execution. Install `Relayer.Sagas.EntityFrameworkCore`
 to persist explicit PostgreSQL process managers inside the existing
 [EF Core consumer transaction](../reference/ef-core-inbox.md). A process is an ordinary state

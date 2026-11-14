@@ -91,6 +91,7 @@ To change a decision, add a new entry that supersedes it rather than editing his
 | [D78](#d78-isolate-failed-outbox-batches-using-native-single-sends-and-confirmed-receipts) | Isolate failed outbox batches using native single sends and confirmed receipts | Accepted |
 | [D79](#d79-route-builders-carry-only-the-message-type) | Route builders carry only the message type | Accepted |
 | [D80](#d80-rabbitmq-receive-tracing-is-scoped-to-the-consumed-queue) | RabbitMQ receive tracing is scoped to the consumed queue | Accepted |
+| [D81](#d81-post-v1-features-require-explicit-preview-opt-in) | Post-v1 features require explicit preview opt-in | Accepted |
 
 ---
 
@@ -315,6 +316,8 @@ Superseded by [D24](#d24-capabilities-are-valued-and-declared-per-endpoint).
 - Versions are managed centrally in `Directory.Packages.props`.
 
 ## D20. Sagas are out of scope for v1
+
+**Release status:** See [D81](#d81-post-v1-features-require-explicit-preview-opt-in) for the preview compatibility boundary.
 
 **Decision.** Sagas and process managers ship later as `Relayer.Sagas`, built on the inbox and outbox. v1 focuses on a sound core.
 
@@ -1001,6 +1004,8 @@ execution-context changes. No production algorithm or public behavior changes in
 
 ## D45. Tenant store selection reuses native scoped factories
 
+**Release status:** See [D81](#d81-post-v1-features-require-explicit-preview-opt-in) for the preview compatibility boundary.
+
 Replaces the proposed library-owned `IOutboxStoreResolver` facade in design §6.6. The remaining tenant
 propagation, durable metadata and bounded dispatcher requirements are unchanged.
 
@@ -1347,6 +1352,8 @@ delivery guarantee is inferred from commit notification alone. See the
 
 ## D56. PostgreSQL CDC wakes existing unordered recovery
 
+**Release status:** See [D81](#d81-post-v1-features-require-explicit-preview-opt-in) for the preview compatibility boundary.
+
 **Status:** Accepted.
 
 **Context.** Npgsql 10.0.3 already provides `LogicalReplicationConnection`, `pgoutput` decoding, persistent
@@ -1478,6 +1485,8 @@ scope fails before opening a transaction; restart the pipeline to select a new s
 continues to apply. See the [SQL Server guide](../website/docs/reference/sqlserver-store.md#atomic-consumer-inbox).
 
 ## D60. Bound catalog dispatch by native connection lifetimes
+
+**Release status:** See [D81](#d81-post-v1-features-require-explicit-preview-opt-in) for the preview compatibility boundary.
 
 **Context.** Npgsql 10.0.3 `PoolingDataSource` sets `MaxConnections` from that data source's
 `MaxPoolSize`; returning a connection retains its connector in that pool. `NpgsqlDataSource`
@@ -1643,6 +1652,8 @@ still own broker retry, ordering and settlement. Deployment adds dead/lease tabl
 existing definitions. Registration alone does not advertise new writer scheduling capabilities.
 
 ## D66. Durable local work reuses outbox rows and native PostgreSQL transactions
+
+**Release status:** See [D81](#d81-post-v1-features-require-explicit-preview-opt-in) for the preview compatibility boundary.
 
 **Context.** #361 proposes process-local consumption of durable work without a broker round trip.
 The existing PostgreSQL outbox already owns transactional enqueue, fenced row claims, ordered lane leases,
@@ -1929,3 +1940,11 @@ span names or sampler inputs. Preserve native client instrumentation and settlem
 **Consequences.** Receive samplers see the queue, operation, system and configured server at creation,
 not the delivery routing key. Send sampler inputs are unchanged. Wildcard traffic needs no tracing
 lookup, lock, eviction or route-dependent allocation; state is fixed per consumer.
+
+## D81. Post-v1 features require explicit preview opt-in
+
+**Decision:** Keep all existing implementations in place. Sagas (including diagram tooling and EF Core persistence), PostgreSQL local transport, PostgreSQL change capture, and PostgreSQL tenant catalog dispatch are preview and outside the first stable release's compatibility promise. Their public API uses `ExperimentalAttribute` with IDs RLYEXP001 through RLYEXP004 respectively; callers explicitly suppress the relevant diagnostic to opt in. Stable PostgreSQL outbox and native scoped tenant selection remain stable.
+
+Terraform and Bicep exporters stay in their transport packages and ship as stable. `Relayer.RabbitMQ.Streams` is not packable until #316 delivers send and receive; its source and tests remain in the repository.
+
+This resolves the release scope of D20, D45, D56, D60 and D66 without removals, relocation or runtime behavior changes. Repository builds explicitly opt in to exercise preview implementations and samples. Consumer projects must make their own opt-in.

@@ -1,6 +1,8 @@
+using System.Diagnostics.CodeAnalysis;
 namespace Relayer.Outbox.PostgreSql;
 
 /// <summary>Limits shared by every store in the PostgreSQL tenant catalog.</summary>
+[Experimental("RLYEXP004", UrlFormat = "https://relayer.tomlonghurst.dev/docs/reference/diagnostics#rlyexp004")]
 public sealed class PostgreSqlTenantDispatchOptions
 {
     /// <summary>Maximum simultaneous native connections for direct dispatch, recovery, leases and cleanup combined.</summary>

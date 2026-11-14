@@ -3,6 +3,11 @@ title: Durable local work (PostgreSQL)
 description: "Run durable work in the same deployment using PostgreSQL outbox rows and native transactions."
 ---
 
+:::warning Preview
+PostgreSQL local transport is preview and outside the first stable release compatibility promise. Using its API requires explicit compile-time opt-in by suppressing [RLYEXP002](../reference/diagnostics.md#rlyexp002) (for example, add `<NoWarn>$(NoWarn);RLYEXP002</NoWarn>` to your project).
+:::
+
+
 Use `PostgreSqlLocal` for follow-up steps, cleanup and other work that must survive crashes but belongs to the same deployment. Use a broker for independently deployed consumers, subscriptions, replay or native delivery controls. Use in-memory queues when losing queued work on shutdown is acceptable.
 
 The transport lives in `Relayer.Outbox.PostgreSql` and reuses the existing outbox tables, fenced claims, direct dispatch, leased recovery, ordered lanes and dead-letter manager. Deploy the [schema](../reference/postgres-schema.md) before starting the host.

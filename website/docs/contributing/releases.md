@@ -32,7 +32,7 @@ a matching `.snupkg` containing portable PDBs. Debuggers can retrieve the source
 
 The packages are `Relayer`, `Relayer.Testing`, `Relayer.HealthChecks`, `Relayer.Kafka`,
 `Relayer.Kafka.HealthChecks`, `Relayer.AzureServiceBus`, `Relayer.AmazonSqs`, `Relayer.RabbitMQ`,
-`Relayer.RabbitMQ.Streams`, `Relayer.Nats`,
+`Relayer.Nats`,
 `Relayer.Outbox.PostgreSql`, `Relayer.Outbox.EntityFrameworkCore`, `Relayer.Outbox.PostgreSql.EntityFrameworkCore`, `Relayer.Sagas`,
 `Relayer.Sagas.EntityFrameworkCore` and the `dotnet-relayer` tool.
 `Relayer.Kafka.SchemaRegistry`, `Relayer.Serialization.Protobuf` and `Relayer.Kafka.Serialization.Avro` are optional integration packages.
@@ -40,6 +40,8 @@ The packages are `Relayer`, `Relayer.Testing`, `Relayer.HealthChecks`, `Relayer.
 typed execution. [Transactional state transitions](../guides/sagas.md) use the optional EF Core
 integration; [durable process timeouts](../guides/saga-timeouts.md) reuse transactional scheduled sends.
 The source generator and code fixes ship inside `Relayer`; they are not separate packages.
+`Relayer.RabbitMQ.Streams` is not packaged or published until native send and receive are supported;
+its source and tests remain in the repository.
 
 ## Versions and local verification
 

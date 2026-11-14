@@ -3,6 +3,11 @@ title: Native tenant store selection
 description: "Select application-owned PostgreSQL stores through native scoped factories."
 ---
 
+:::warning Preview
+PostgreSQL tenant catalog dispatch is preview and outside the first stable release compatibility promise. Using its API requires explicit compile-time opt-in by suppressing [RLYEXP004](../reference/diagnostics.md#rlyexp004) (for example, add `<NoWarn>$(NoWarn);RLYEXP004</NoWarn>` to your project). Native scoped tenant store selection remains stable.
+:::
+
+
 An application can select a different native PostgreSQL store for each application or single-message consumer scope.
 Use the scoped factory already provided by EF Core; Relayer's interceptors use that DbContext's native
 connection and transaction. There is no separate Relayer `IOutboxStoreResolver` API.

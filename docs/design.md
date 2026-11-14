@@ -890,5 +890,5 @@ A **transport conformance test suite** (send, receive, settle, retry, DLQ, delay
 
 1. **Handler signature:** should Relayer also accept method-based handlers (`Handle(OrderPlaced m)` on any class) via the source generator, or keep `IHandler<T>` only? Recommendation: `IHandler<T>` only in v1, because it is more explicit.
 2. **Settlement override:** should handlers be able to settle manually (`context.DeadLetter(reason)`, `context.Defer()`)? Recommendation: yes, through a transport-neutral `ISettlementFeature`, with native extras exposed through the transport features.
-3. **Sagas in v1?** The current recommendation is no; ship a sound core first.
+3. **Post-v1 release scope:** [D81](decisions.md#d81-post-v1-features-require-explicit-preview-opt-in) keeps sagas, PostgreSQL local transport, change capture and tenant catalog dispatch as explicit compile-time preview opt-ins, outside the first stable compatibility promise. Terraform/Bicep export stays stable in transport packages. RabbitMQ Streams is not published until it supports send and receive (#316).
 4. **Minimum native client versions:** latest major only, or latest and previous? Recommendation: latest only.

@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using Relayer.Transports;
 using System.Buffers;
 using Npgsql;
@@ -5,6 +6,7 @@ using Npgsql;
 namespace Relayer.Outbox.PostgreSql;
 
 /// <summary>A borrowed durable local attempt. Use Transaction for business commands; never complete or retain it.</summary>
+[Experimental("RLYEXP002", UrlFormat = "https://relayer.tomlonghurst.dev/docs/reference/diagnostics#rlyexp002")]
 public readonly record struct PostgreSqlLocalDelivery(OutgoingMessage Message, OutboxClaim Claim,
     NpgsqlTransaction Transaction, int Attempt)
 {
@@ -13,6 +15,7 @@ public readonly record struct PostgreSqlLocalDelivery(OutgoingMessage Message, O
 }
 
 /// <summary>Reads original outbox payloads and CloudEvents headers without copying.</summary>
+[Experimental("RLYEXP002", UrlFormat = "https://relayer.tomlonghurst.dev/docs/reference/diagnostics#rlyexp002")]
 public readonly struct PostgreSqlLocalMessageBinding : IMessageBinding<PostgreSqlLocalDelivery>
 {
     /// <inheritdoc />

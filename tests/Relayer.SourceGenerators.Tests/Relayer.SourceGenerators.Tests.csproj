@@ -12,6 +12,7 @@
     <ProjectReference Include="../../src/Relayer.SourceGenerators/Relayer.SourceGenerators.csproj" />
     <ProjectReference Include="../../src/Relayer.CodeFixes/Relayer.CodeFixes.csproj" />
     <ProjectReference Include="../../src/Relayer/Relayer.csproj" />
+    <ProjectReference Include="../../src/Relayer.Sagas.EntityFrameworkCore/Relayer.Sagas.EntityFrameworkCore.csproj" />
   </ItemGroup>
   <ItemGroup>
     <None Include="Snapshots/*.verified.txt" CopyToOutputDirectory="PreserveNewest" />
