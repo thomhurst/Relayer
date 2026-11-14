@@ -174,6 +174,52 @@ class BenchmarkGateTests(unittest.TestCase):
             self.assertEqual(1, gate.main(["compare", str(before), str(current), "--baseline-after", str(before)]))
             self.assertEqual(1, gate.main(["compare", str(before), str(before), "--baseline-after", str(self.root / "missing")]))
 
+    def test_concurrent_round_trip_tolerates_launch_variation_but_not_a_new_allocation(self):
+        for excess, should_fail in ((5, False), (8, False), (8.5, True), (24, True)):
+            after = report()
+            case = next(c for c in after["Benchmarks"] if c["Method"] == "ConcurrentRoundTrip")
+            case["Memory"]["BytesAllocatedPerOperation"] += excess
+            with self.subTest(excess=excess):
+                failures = self.compare(report(), after)
+                self.assertEqual(should_fail, any("allocations increased by more than 8 B/op" in f for f in failures))
+
+    def regressed(self, method, mean):
+        data = report()
+        for case in data["Benchmarks"]:
+            if case["Method"] == method:
+                measurement(case, mean)
+        return data
+
+    def test_cli_records_failed_cases_and_confirm_keeps_only_repeated_failures(self):
+        before = self.write("before", report())
+        slow = self.write("slow", self.regressed("ScopeOnly", 2000))
+        failed = self.root / "failed.json"
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(1, gate.main(["compare", str(before), str(slow), "--baseline-after", str(before),
+                                           "--failed-cases", str(failed)]))
+        recorded = json.loads(failed.read_text())
+        self.assertEqual(["Relayer.Benchmarks.ConsumePipelineBenchmarks.ScopeOnly"], recorded["cases"])
+        self.assertEqual(recorded["cases"], recorded["filters"])
+        # A confirmation run holds only the rerun cases.
+        def subset(name, data):
+            data["Benchmarks"] = [c for c in data["Benchmarks"] if c["Method"] == "ScopeOnly"]
+            return str(self.write(name, data))
+        main = subset("confirm-main", report())
+        summary = self.root / "confirmation.md"
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(0, gate.main(["confirm", str(failed), main, subset("noise", report()), main,
+                                           "--summary", str(summary)]))
+            self.assertEqual(1, gate.main(["confirm", str(failed), main,
+                                           subset("repeat", self.regressed("ScopeOnly", 2000)), main]))
+            # Only the originally failed cases decide the confirmation.
+            self.assertEqual(0, gate.main(["confirm", str(failed), main, str(self.write("other", self.regressed("DirectSend", 2000))), main]))
+        self.assertIn("Confirmation run", summary.read_text())
+
+    def test_confirm_requires_every_failed_case(self):
+        cases = gate.load_reports(self.write("before", report()))
+        with self.assertRaisesRegex(gate.GateError, "missing failed cases"):
+            gate.confirm(["Relayer.Benchmarks.Missing.Case"], cases, cases, cases)
+
     def test_finite_negative_lower_bound_is_accepted(self):
         data = report()
         measurement(data["Benchmarks"][0], 1000, -500, 2500)
@@ -637,7 +683,7 @@ class ComparisonInputTests(unittest.TestCase):
             if case["Method"] == "ScopeAndHandlerResolution":
                 measurement(case, 1200)
             if case["Method"] == "ConcurrentRoundTrip":
-                case["Memory"]["BytesAllocatedPerOperation"] += 2
+                case["Memory"]["BytesAllocatedPerOperation"] += 9
         first = self.write(self.root, "first/benchmarks-report-full.json", json.dumps(before)).parent
         current = self.write(self.root, "current/benchmarks-report-full.json", json.dumps(candidate)).parent
         for checkout in (self.baseline, self.candidate):
@@ -661,7 +707,7 @@ class ComparisonInputTests(unittest.TestCase):
         self.assertNotIn("ConsumePipelineBenchmarks.cs", text)
         self.assertIn("containing assembly", text)
         self.assertIn("ScopeAndHandlerResolution: throughput loss exceeds 5%", errors.getvalue())
-        self.assertIn("ConcurrentRoundTrip: allocations increased by more than 0.5 B/op", errors.getvalue())
+        self.assertIn("ConcurrentRoundTrip: allocations increased by more than 8 B/op", errors.getvalue())
 
 
 class BenchmarkVersionTests(unittest.TestCase):

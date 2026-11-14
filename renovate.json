@@ -21,18 +21,6 @@
       "enabled": false
     },
     {
-      "description": "Allocation diagnostics and frozen controls keep the runner image used by their historical baselines; change it only with deliberate re-baselining.",
-      "matchDatasources": [
-        "github-runners"
-      ],
-      "matchFileNames": [
-        ".github/workflows/frozen-*.yml",
-        ".github/workflows/sequence-allocation-control.yml",
-        ".github/workflows/concurrent-allocation-owners.yml"
-      ],
-      "enabled": false
-    },
-    {
       "description": "net10.0 pins of packages released with .NET stay on 10.x; the net11.0 pins in Directory.Packages.props take the next major.",
       "matchFileNames": ["Directory.Packages.props"],
       "matchPackageNames": ["Microsoft.Extensions.*", "System.Security.Cryptography.Pkcs"],

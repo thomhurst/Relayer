@@ -14,6 +14,10 @@ import sys
 MAX_THROUGHPUT_LOSS = 0.05
 # BDN amortizes allocations across operations; tolerate rounding below one byte.
 ALLOCATION_TOLERANCE_BYTES = 0.5
+# Concurrent delivery allocates a varying number of pooled async boxes, delegates and blocked
+# channel reads: launches of one unchanged build differ by about 5 B/op. A real per-message
+# allocation is at least 24 B, so this tolerance still catches one.
+CASE_ALLOCATION_TOLERANCE_BYTES = {("EndToEndBenchmarks", "ConcurrentRoundTrip"): 8.0}
 STARTUP_LIMIT_NS = 50_000_000
 REQUIRED_METHODS = {
     ("StartupBenchmarks", "Build100Handlers"),
@@ -204,7 +208,11 @@ def number(value, field, case, *, positive=False, allow_negative=False):
     return float(value)
 
 
-def load_reports(directory):
+def allocation_tolerance(case):
+    return CASE_ALLOCATION_TOLERANCE_BYTES.get((case.type_name, case.method), ALLOCATION_TOLERANCE_BYTES)
+
+
+def load_reports(directory, required=REQUIRED_METHODS):
     directory = Path(directory)
     files = sorted(directory.rglob("*-report-full.json"))
     if not files:
@@ -245,7 +253,7 @@ def load_reports(directory):
                 number(memory.get("BytesAllocatedPerOperation"), "BytesAllocatedPerOperation", identity),
                 type_name.rsplit(".", 1)[-1], method,
             )
-    missing = REQUIRED_METHODS - {(case.type_name, case.method) for case in cases.values()}
+    missing = set(required) - {(case.type_name, case.method) for case in cases.values()}
     if missing:
         raise GateError("Required benchmark methods missing: " + ", ".join(f"{t}.{m}" for t, m in sorted(missing)))
     return cases
@@ -280,9 +288,10 @@ def compare(baseline, candidate, *, baseline_after=None, enforce_startup_budget=
         reasons = []
         if throughput_failure and not identical_inputs:
             reasons.append("throughput loss exceeds 5%")
-        allocation_increase = not startup and after.allocated_bytes > allocated + ALLOCATION_TOLERANCE_BYTES
+        tolerance = allocation_tolerance(after)
+        allocation_increase = not startup and after.allocated_bytes > allocated + tolerance
         if allocation_increase and not identical_inputs:
-            reasons.append("allocations increased by more than 0.5 B/op")
+            reasons.append(f"allocations increased by more than {tolerance:g} B/op")
         if enforce_startup_budget and startup and after.mean_ns >= STARTUP_LIMIT_NS:
             reasons.append("100-handler startup is not under 50 ms")
         inconclusive = after.mean_ns > min(before.mean_ns, repeated.mean_ns) / (1 - MAX_THROUGHPUT_LOSS) and not throughput_failure
@@ -292,12 +301,12 @@ def compare(baseline, candidate, *, baseline_after=None, enforce_startup_budget=
         elif inconclusive:
             statuses.append("INCONCLUSIVE: observed throughput loss exceeds 5%; confidence bounds or baseline drift prevent confirmation")
         allocation_inconclusive = (not startup
-                                  and after.allocated_bytes > min(before.allocated_bytes, repeated.allocated_bytes) + ALLOCATION_TOLERANCE_BYTES
-                                  and after.allocated_bytes <= allocated + ALLOCATION_TOLERANCE_BYTES)
+                                  and after.allocated_bytes > min(before.allocated_bytes, repeated.allocated_bytes) + tolerance
+                                  and after.allocated_bytes <= allocated + tolerance)
         if identical_inputs and (allocation_increase or allocation_inconclusive):
             statuses.append("INCONCLUSIVE: allocation variation with byte-identical comparison inputs")
         elif allocation_inconclusive:
-            statuses.append("INCONCLUSIVE: observed allocation increase exceeds 0.5 B/op; baseline drift prevents confirmation")
+            statuses.append(f"INCONCLUSIVE: observed allocation increase exceeds {tolerance:g} B/op; baseline drift prevents confirmation")
         if startup:
             statuses.append("startup allocations are informational")
         status = "; ".join(statuses) if statuses else "PASS"
@@ -309,13 +318,41 @@ def compare(baseline, candidate, *, baseline_after=None, enforce_startup_budget=
         "",
         "This gate measures regressions against main, not proof of the raw-client 5% budget.",
         "Throughput fails only when the candidate lower confidence bound exceeds each baseline upper bound / 0.95, unless comparison inputs are verified byte-identical. Overlapping bounds or drift with an observed loss are inconclusive, not proof of unchanged performance.",
-        "Per-message allocations fail only when the candidate exceeds both baselines by more than 0.5 B/op, unless comparison inputs are verified byte-identical. An increase against only the lower baseline is inconclusive, not proof of unchanged allocations. Startup allocations are informational and the candidate startup budget remains under 50 ms.",
+        "Per-message allocations fail only when the candidate exceeds both baselines by more than 0.5 B/op (8 B/op for ConcurrentRoundTrip, whose allocations vary between launches of one build), unless comparison inputs are verified byte-identical. An increase against only the lower baseline is inconclusive, not proof of unchanged allocations. Startup allocations are informational and the candidate startup budget remains under 50 ms.",
         "Total receive allocations include fresh DI scopes. Equal scoped baselines establish only zero incremental composition allocations.",
         "D18 still requires zero pipeline allocations, excluding serializer/native-client allocations; existing positive totals remain visible above.",
     ])
     if identical_inputs:
         lines.append("Verified byte-identical comparison inputs: throughput and allocation differences are inconclusive execution variation, not evidence of a source-change regression. Timings, bounds and totals remain visible; startup and input validation still apply. This does not prove unchanged performance or compliance with D18.")
     return failures, "\n".join(lines)
+
+
+def failed_identities(cases, failures):
+    return sorted(identity for identity in cases if any(f.startswith(identity + ": ") for f in failures))
+
+
+def write_failed_cases(path, identities):
+    """Record failing cases and the BenchmarkDotNet filters that rerun them."""
+    filters = sorted({identity.split("(", 1)[0] for identity in identities})
+    path.write_text(json.dumps({"cases": identities, "filters": filters}, indent=2) + "\n", encoding="utf-8")
+
+
+def confirm(failed, baseline, candidate, baseline_after):
+    """Compare a fresh bracketed run of the failed cases; only failures it repeats remain."""
+    selected = []
+    for cases in (baseline, candidate, baseline_after):
+        missing = sorted(set(failed) - cases.keys())
+        if missing:
+            raise GateError(f"Confirmation run is missing failed cases: {missing}")
+        selected.append({identity: cases[identity] for identity in failed})
+    failures, summary = compare(*selected[:2], baseline_after=selected[2])
+    return failures, "\n".join([
+        "## Confirmation run",
+        "",
+        "The comparison above failed, so the failed cases ran again: candidate, then main, bracketed by the repeated main run before them. Only failures that repeat here fail the gate.",
+        "",
+        summary,
+    ])
 
 
 def self_test(cases):
@@ -355,10 +392,27 @@ def main(argv=None):
     compare_parser.add_argument("--input-manifest", type=Path, help="Retain SHA-256 inventories of both source checkouts")
     compare_parser.add_argument("--verify-test-sources", action="store_true",
                                 help="Build and inspect the Release project graph before excluding unbuilt test C# files")
+    compare_parser.add_argument("--failed-cases", type=Path, help="Write failing cases and their rerun filters here")
+    confirm_parser = commands.add_parser("confirm", help="Repeat only the failures that a fresh run of the failed cases reproduces")
+    confirm_parser.add_argument("failed_cases", type=Path)
+    confirm_parser.add_argument("baseline", help="Main run measured just before the confirmation candidate")
+    confirm_parser.add_argument("candidate")
+    confirm_parser.add_argument("baseline_after", help="Main run measured after the confirmation candidate")
+    confirm_parser.add_argument("--summary", type=Path)
     test_parser = commands.add_parser("self-test")
     test_parser.add_argument("baseline")
     args = parser.parse_args(argv)
     try:
+        if args.command == "confirm":
+            failed = json.loads(args.failed_cases.read_text(encoding="utf-8"))["cases"]
+            failures, summary = confirm(failed, *(load_reports(path, required=()) for path in
+                                                  (args.baseline, args.candidate, args.baseline_after)))
+            print(summary)
+            if args.summary:
+                args.summary.write_text(summary + "\n", encoding="utf-8")
+            for failure in failures:
+                print(f"FAIL: {failure}", file=sys.stderr)
+            return 1 if failures else 0
         baseline = load_reports(args.baseline)
         if args.command == "self-test":
             self_test(baseline)
@@ -396,6 +450,8 @@ def main(argv=None):
             args.summary.write_text(summary + "\n", encoding="utf-8")
         for failure in failures:
             print(f"FAIL: {failure}", file=sys.stderr)
+        if failures and args.failed_cases:
+            write_failed_cases(args.failed_cases, failed_identities(baseline, failures))
         return 1 if failures else 0
     except (GateError, OSError) as error:
         print(f"Benchmark gate failed: {error}", file=sys.stderr)
