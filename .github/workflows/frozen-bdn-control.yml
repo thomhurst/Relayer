@@ -26,6 +26,7 @@ on:
           - concurrent
           - failure-production-sync
           - scope-only
+          - scope-resolution-unscoped
           - scope-only-unscoped
           - scoped-dispatch
           - composed-consumer-unscoped

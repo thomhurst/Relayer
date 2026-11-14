@@ -13,7 +13,7 @@ using BenchmarkDotNet.Toolchains.Results;
 
 if (args.Length is not (5 or 6))
 {
-    Console.Error.WriteLine("Usage: FrozenNativeHost <original-image> <benchmark-id> <dotnet-wrapper> <native-log> <receipt> [concurrent|scoped-dispatch|scope-only|scope-only-unscoped|scope-resolution|failure-dispatch-sync|failure-production-sync|composed-consumer-unscoped]");
+    Console.Error.WriteLine("Usage: FrozenNativeHost <original-image> <benchmark-id> <dotnet-wrapper> <native-log> <receipt> [concurrent|scoped-dispatch|scope-only|scope-only-unscoped|scope-resolution|scope-resolution-unscoped|failure-dispatch-sync|failure-production-sync|composed-consumer-unscoped]");
     return 2;
 }
 
@@ -30,7 +30,7 @@ var (owner, methodName, operations) = selectedCase switch
     "composed-consumer-unscoped" => ("ConsumePipelineBenchmarks", "ComposedConsumer", 1),
     "concurrent" => ("EndToEndBenchmarks", "ConcurrentRoundTrip", 8),
     "scope-only" or "scope-only-unscoped" => ("ConsumePipelineBenchmarks", "ScopeOnly", 1),
-    "scope-resolution" => ("ConsumePipelineBenchmarks", "ScopeAndHandlerResolution", 1),
+    "scope-resolution" or "scope-resolution-unscoped" => ("ConsumePipelineBenchmarks", "ScopeAndHandlerResolution", 1),
     "failure-production-sync" => ("FailureConsumePipelineBenchmarks", "ProductionFailurePipeline", 1),
     "failure-dispatch-sync" => ("FailureConsumePipelineBenchmarks", "DirectScopedDispatch", 1),
     "scoped-dispatch" => ("ConsumePipelineBenchmarks", "DirectScopedDispatch", 1),
@@ -41,8 +41,8 @@ var method = type.GetMethod(methodName) ?? throw new MissingMethodException(type
 // The inventoried generated runner ID selects the parameter and original job.
 // The descriptor supplies only the method name required by the native executor.
 var descriptor = new Descriptor(type, method, operationsPerInvoke: operations);
-var scopeOnly = selectedCase is "scope-only" or "scope-only-unscoped" or "scope-resolution" or "composed-consumer-unscoped";
-var scopedHandler = selectedCase is not ("scope-only-unscoped" or "composed-consumer-unscoped");
+var scopeOnly = selectedCase is "scope-only" or "scope-only-unscoped" or "scope-resolution" or "scope-resolution-unscoped" or "composed-consumer-unscoped";
+var scopedHandler = selectedCase is not ("scope-only-unscoped" or "scope-resolution-unscoped" or "composed-consumer-unscoped");
 ParameterInstance[] parameters = scopeOnly
     ? [new(new ParameterDefinition("ScopedHandler", false, [scopedHandler], false, typeof(bool), 0), scopedHandler, BenchmarkDotNet.Reports.SummaryStyle.Default)]
     : selectedCase is "failure-dispatch-sync" or "failure-production-sync"

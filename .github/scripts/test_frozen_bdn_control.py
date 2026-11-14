@@ -93,6 +93,8 @@ class OriginalRunnerTests(unittest.TestCase):
 
     def test_resolution_and_sync_failure_native_identity(self):
         cases = (
+            ("scope-resolution-unscoped", "ConsumePipelineBenchmarks", "ScopeAndHandlerResolution",
+             "ScopedHandler", "false", "AwaitHelper.GetResult(ScopeAndHandlerResolution())"),
             ("scope-resolution", "ConsumePipelineBenchmarks", "ScopeAndHandlerResolution",
              "ScopedHandler", "true", "AwaitHelper.GetResult(ScopeAndHandlerResolution())"),
             ("failure-production-sync", "FailureConsumePipelineBenchmarks", "ProductionFailurePipeline",
