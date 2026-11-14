@@ -1,6 +1,6 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
-    <!-- Publish only once native send and receive are implemented (#316, D80). -->
+    <!-- Publish only once native send and receive are implemented (#316, D81). -->
     <IsPackable>false</IsPackable>
     <Description>Native RabbitMQ Streams connection and topology integration for Relayer. Message execution remains planned.</Description>
   </PropertyGroup>

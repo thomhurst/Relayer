@@ -59,6 +59,27 @@ public class PreviewApiTests
         }
     }
 
+    [Test]
+    public async Task Saga_source_pragma_opt_in_also_compiles_generated_registration()
+    {
+        var compilation = Compile("""
+            #pragma warning disable RLYEXP001
+            public sealed class State : Relayer.Sagas.SagaData { }
+            public sealed class Process : Relayer.Sagas.Saga<State, int>
+            {
+                protected override void ValidateTransaction() { }
+                protected override System.Threading.Tasks.ValueTask<State?> LoadAsync(int message, System.Threading.CancellationToken ct) => default;
+                protected override System.Threading.Tasks.ValueTask TransitionAsync(State state, int message, Relayer.MessageContext context, System.Threading.CancellationToken ct) => default;
+                protected override System.Threading.Tasks.ValueTask SaveAsync(State state, bool isNew, System.Threading.CancellationToken ct) => default;
+            }
+            #pragma warning restore RLYEXP001
+            """);
+        GeneratorDriver driver = CSharpGeneratorDriver.Create(new HandlerGenerator());
+        driver.RunGeneratorsAndUpdateCompilation(compilation, out var output, out var diagnostics);
+        var errors = diagnostics.Concat(output.GetDiagnostics()).Where(d => d.Severity == DiagnosticSeverity.Error).ToArray();
+        await Assert.That(string.Join(Environment.NewLine, errors.Select(static d => d.ToString()))).IsEqualTo("");
+    }
+
     private static CSharpCompilation Compile(string source)
     {
         var paths = ((string)AppContext.GetData("TRUSTED_PLATFORM_ASSEMBLIES")!).Split(Path.PathSeparator);

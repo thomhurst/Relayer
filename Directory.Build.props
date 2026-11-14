@@ -4,7 +4,7 @@
     <LangVersion>latest</LangVersion>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
-    <!-- Repository implementations, tests and samples explicitly opt into the preview features (D80).
+    <!-- Repository implementations, tests and samples explicitly opt into the preview features (D81).
          This is not included in NuGet packages; consumers opt in themselves. -->
     <NoWarn>$(NoWarn);RLYEXP001;RLYEXP002;RLYEXP003;RLYEXP004</NoWarn>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>

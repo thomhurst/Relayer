@@ -161,8 +161,13 @@ public sealed class HandlerGenerator : IIncrementalGenerator
                     builder.Append("            global::Relayer.Pipeline.ConsumerInfrastructureExtensions.AddHandler(builder, new Dispatcher")
                         .Append(i).AppendLine("());");
                     if (contracts[i].SagaState is { } state)
+                    {
+                        // The user's saga declaration supplies the opt-in; its pragma does not cover generated files.
+                        builder.AppendLine("#pragma warning disable RLYEXP001");
                         builder.Append("            global::Microsoft.Extensions.DependencyInjection.Extensions.ServiceCollectionDescriptorExtensions.TryAddSingleton<global::Relayer.Sagas.SagaExecution<")
                             .Append(state).Append(", ").Append(contracts[i].Message).AppendLine(">>(builder.Services);");
+                        builder.AppendLine("#pragma warning restore RLYEXP001");
+                    }
                 }
             }
             builder.Append("            global::Microsoft.Extensions.DependencyInjection.Extensions.ServiceCollectionDescriptorExtensions.TryAddScoped<")
