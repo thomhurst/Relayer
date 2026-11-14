@@ -101,6 +101,8 @@ class OriginalRunnerTests(unittest.TestCase):
              "SuspendHandler", "true", "ProductionFailurePipeline"),
             ("failure-production-sync", "FailureConsumePipelineBenchmarks", "ProductionFailurePipeline",
              "SuspendHandler", "false", "ProductionFailurePipeline"),
+            ("failure-explicit-sync", "FailureConsumePipelineBenchmarks", "ExplicitFailureDelegate",
+             "SuspendHandler", "false", "ExplicitFailureDelegate"),
             ("failure-dispatch-sync", "FailureConsumePipelineBenchmarks", "DirectScopedDispatch",
              "SuspendHandler", "false", "DirectScopedDispatch"),
         )
