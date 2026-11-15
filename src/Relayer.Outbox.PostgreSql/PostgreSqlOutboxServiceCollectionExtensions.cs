@@ -105,7 +105,7 @@ public static partial class PostgreSqlOutboxServiceCollectionExtensions
     }
 
     /// <summary>Registers a keyed scoped store with an application-owned data source and snapshotted names.</summary>
-    /// <remarks>This does not create tables, enlist sends, register health checks or run dispatch workers.</remarks>
+    /// <remarks>Resolve the keyed <see cref="PostgreSqlOutboxStoreDescriptor"/> to inspect the registration. This does not create tables, enlist sends, register health checks or run dispatch workers.</remarks>
     public static IServiceCollection AddRelayerPostgreSqlOutboxStore(this IServiceCollection services,
         string storeName, Npgsql.NpgsqlDataSource dataSource, PostgreSqlOutboxOptions? options = null)
     {
@@ -118,6 +118,7 @@ public static partial class PostgreSqlOutboxServiceCollectionExtensions
         // Validate identifiers immediately, rather than waiting for the first database operation.
         _ = new PostgreSqlOutboxStore(dataSource, snapshot);
         services.AddKeyedScoped<IOutboxStore>(storeName, (_, _) => new PostgreSqlOutboxStore(dataSource, snapshot));
+        services.AddKeyedSingleton(storeName, new PostgreSqlOutboxStoreDescriptor(storeName, dataSource, snapshot.Schema, snapshot.TablePrefix));
         return services;
     }
 

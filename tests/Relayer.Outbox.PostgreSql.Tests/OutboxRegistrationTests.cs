@@ -106,6 +106,27 @@ public class OutboxRegistrationTests
     }
 
     [Test]
+    public async Task Composed_registration_exposes_store_descriptor_and_interceptor_check()
+    {
+        await using var source = NpgsqlDataSource.Create("Host=unused");
+        var services = new ServiceCollection().AddLogging();
+        services.AddSingleton<ITransport>(new FailingTransport());
+        services.AddDbContext<OrdersContext>(options => options.UseNpgsql(source));
+        services.AddRelayer(relayer => relayer.UsePostgreSqlOutbox<OrdersContext>(source,
+            new() { DispatchStoreName = "orders", Schema = "messaging", TablePrefix = "orders_" }));
+        await using var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
+        var store = provider.GetRequiredKeyedService<PostgreSqlOutboxStoreDescriptor>("orders");
+        await Assert.That(store.Name).IsEqualTo("orders");
+        await Assert.That(store.DataSource).IsSameReferenceAs(source);
+        await Assert.That(store.Schema).IsEqualTo("messaging");
+        await Assert.That(store.TablePrefix).IsEqualTo("orders_");
+        using var scope = provider.CreateScope();
+        var options = scope.ServiceProvider.GetRequiredService<DbContextOptions<OrdersContext>>();
+        await Assert.That(options.HasRelayerOutbox()).IsTrue();
+        await Assert.That(new DbContextOptionsBuilder().UseNpgsql(source).Options.HasRelayerOutbox()).IsFalse();
+    }
+
+    [Test]
     public async Task Composed_registrations_with_matching_options_share_one_store_and_its_workers()
     {
         await using var source = NpgsqlDataSource.Create("Host=unused");
