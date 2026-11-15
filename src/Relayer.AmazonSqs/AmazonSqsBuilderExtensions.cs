@@ -31,7 +31,9 @@ public static class AmazonSqsBuilderExtensions
                 provider.GetRequiredService<MessageTracing>(), provider.GetService<ILoggerFactory>(), identityHeaders);
         });
         builder.Services.AddSingleton<ITransport>(provider => provider.GetRequiredKeyedService<SqsSendTransport>(name));
-        builder.Services.AddSingleton<IHostedService>(provider => new SqsHostedService(provider, name));
+        builder.Services.AddKeyedSingleton<SqsHostedService>(name, (provider, _) => new SqsHostedService(provider, name));
+        builder.Services.AddKeyedSingleton<IConsumerControl>(name, (provider, key) => provider.GetRequiredKeyedService<SqsHostedService>(key));
+        builder.Services.AddSingleton<IHostedService>(provider => provider.GetRequiredKeyedService<SqsHostedService>(name));
         return builder;
     }
 

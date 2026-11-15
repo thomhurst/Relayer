@@ -3,18 +3,26 @@ using Relayer.Pipeline;
 using System.Buffers;
 using Amazon.SQS.Model;
 using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using Relayer.Serialization;
 
 namespace Relayer.AmazonSqs;
 
-internal sealed class SqsHostedService(IServiceProvider provider, string name) : IHostedService
+internal sealed class SqsHostedService(IServiceProvider provider, string name) : ConsumerHostedService($"SQS transport '{name}'")
 {
     private SqsSendTransport? _transport;
     private bool _composed;
 
-    public async Task StartAsync(CancellationToken cancellationToken)
+    protected override bool AutoStartConsumers =>
+        provider.GetRequiredService<IOptionsMonitor<AmazonSqsTransportOptions>>().Get(name).AutoStartConsumers;
+
+    protected override Task StartConsumersAsync(CancellationToken cancellationToken) => _transport!.StartAsync(cancellationToken);
+
+    protected override Task StopConsumersAsync(CancellationToken cancellationToken) =>
+        _transport?.StopAsync(cancellationToken) ?? Task.CompletedTask;
+
+    protected override async Task ComposeAsync(CancellationToken cancellationToken)
     {
         _transport ??= provider.GetRequiredKeyedService<SqsSendTransport>(name);
         await _transport.ResolveUrlsAsync(cancellationToken).ConfigureAwait(false);
@@ -51,7 +59,6 @@ internal sealed class SqsHostedService(IServiceProvider provider, string name) :
             _transport.Consumers.AddRange(receivers);
             _composed = true;
         }
-        await _transport.StartAsync(cancellationToken).ConfigureAwait(false);
     }
 
     internal static OutgoingMessage Copy(MessageContext context, string sourceIdentityHeader = "ce_id", string deadIdentityHeader = "ce_id")
@@ -104,6 +111,4 @@ internal sealed class SqsHostedService(IServiceProvider provider, string name) :
             if (character is < '!' or > '~') return false;
         return true;
     }
-
-    public Task StopAsync(CancellationToken cancellationToken) => _transport?.StopAsync(cancellationToken) ?? Task.CompletedTask;
 }

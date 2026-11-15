@@ -14,4 +14,11 @@ public sealed class AmazonSqsTransportOptions
 
     /// <summary>Native SQS client configuration.</summary>
     public AmazonSQSConfig Sqs { get; set; } = new();
+
+    /// <summary>
+    /// Starts the long-poll consumers with the host. Defaults to true. When false, the host composes and validates the
+    /// consumers but leaves them stopped until the keyed <see cref="Relayer.Transports.IConsumerControl"/> for this
+    /// transport starts them. Sending works meanwhile.
+    /// </summary>
+    public bool AutoStartConsumers { get; set; } = true;
 }
