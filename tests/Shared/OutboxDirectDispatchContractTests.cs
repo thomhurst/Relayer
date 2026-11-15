@@ -288,7 +288,7 @@ public abstract class OutboxDirectDispatchContractTests
         await fixture.CommitAsync(failed);
         await fixture.StopAsync();
         await Assert.That(await fixture.ReadRowsAsync()).IsEquivalentTo(new[]
-            { new Row(failed.Id, 1, "native send failed", false, false) });
+            { new Row(failed.Id, 1, "System.InvalidOperationException: native send failed", false, false) });
         await Assert.That(harness.WaitForIdleAsync().IsCompleted).IsFalse();
     }
 
