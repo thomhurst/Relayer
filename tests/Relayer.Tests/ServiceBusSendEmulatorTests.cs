@@ -100,6 +100,44 @@ public class ServiceBusSendEmulatorTests
     }
 
     [Test]
+    public async Task Broker_duplicate_detection_drops_a_resend_with_the_same_envelope_id()
+    {
+        var stack = await SharedBrokers.ServiceBus.Value;
+        using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(2));
+        var token = timeout.Token;
+        await using var client = new ServiceBusClient(stack.Emulator.GetConnectionString());
+        var admin = new ServiceBusAdministrationClient(stack.Emulator.GetHttpConnectionString());
+        var queue = TestContext.Current!.Isolation.GetIsolatedName("duplicate-detection");
+        var options = new ServiceBusTransportOptions { Client = client, AdministrationClient = admin };
+        options.Queues.Add(new(queue) { DefaultMessageTimeToLive = TimeSpan.FromHours(1), MaxSizeInMegabytes = 100,
+            RequiresDuplicateDetection = true, DuplicateDetectionHistoryTimeWindow = TimeSpan.FromSeconds(20) });
+        await using var transport = new ServiceBusSendTransport("duplicates", client, false, options,
+            [queue], TopologyMode.Provision, admin);
+        try
+        {
+            var report = await transport.ApplyTopologyAsync(TopologyMode.Provision, token);
+            await Assert.That(report.Differences.Count).IsEqualTo(0);
+            var id = Guid.NewGuid().ToString("D");
+            KeyValuePair<string, WireString>[] headers = [new("cloudEvents:id", new(id))];
+            // An outbox redispatch after a crash resends the stored row with its original envelope id.
+            await transport.SendAsync(new(queue, new byte[] { 1 }, headers), token);
+            await transport.SendAsync(new(queue, new byte[] { 2 }, headers), token);
+            KeyValuePair<string, WireString>[] other = [new("cloudEvents:id", new(Guid.NewGuid().ToString("D")))];
+            await transport.SendAsync(new(queue, new byte[] { 3 }, other), token);
+            await using var receiver = client.CreateReceiver(queue);
+            var received = new List<ServiceBusReceivedMessage>();
+            while (received.Count < 3 && await receiver.ReceiveMessageAsync(TimeSpan.FromSeconds(5), token) is { } message)
+            {
+                received.Add(message);
+                await receiver.CompleteMessageAsync(message, token);
+            }
+            await Assert.That(received.Select(message => message.Body.ToArray()[0])).IsEquivalentTo(new byte[] { 1, 3 });
+            await Assert.That(received[0].MessageId).IsEqualTo(id);
+        }
+        finally { await admin.DeleteQueueAsync(queue, token); }
+    }
+
+    [Test]
     public async Task Native_sends_batches_sessions_scheduling_and_topology_round_trip()
     {
         using var instrumentation = new RelayerInstrumentation();

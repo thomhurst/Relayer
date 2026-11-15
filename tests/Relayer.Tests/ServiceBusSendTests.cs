@@ -96,14 +96,29 @@ public class ServiceBusSendTests
         await Assert.That(sent[0].SessionId).IsEqualTo("customer");
         await Assert.That(sent[0].ScheduledEnqueueTime).IsEqualTo(scheduled);
         await Assert.That(sent[0].ApplicationProperties["cloudEvents:id"]).IsEqualTo("id-1");
+        await Assert.That(sent[0].MessageId).IsEqualTo("id-1");
         await Assert.That(sent[0].ApplicationProperties["traceparent"]).IsEqualTo("creation");
         await Assert.That(sent[0].Subject).IsEqualTo("subject");
         await Assert.That(calls).IsEqualTo(1);
         await Assert.That(sent[1].ApplicationProperties.Count).IsEqualTo(0);
         await Assert.That(sent[1].SessionId).IsNull();
         await Assert.That(sent[1].Subject).IsNull();
+        await Assert.That(sent[1].MessageId).IsNull();
         await Assert.That(sent[1].ScheduledEnqueueTime).IsEqualTo(default(DateTimeOffset));
         await Assert.That(sent[1].GetRawAmqpMessage().Footer.Count).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task Native_callback_message_id_takes_precedence_over_envelope_id()
+    {
+        var client = new NativeClient();
+        await using var transport = Transport(client, sessions: true);
+        KeyValuePair<string, WireString>[] headers = [new("cloudEvents:id", new("envelope-id"))];
+        var options = new SendOptions().ServiceBus(message => message.MessageId = "native-id");
+        await transport.SendAsync(new("orders", new byte[] { 1 }, headers, options: options), default);
+        var sent = client.Senders[0].Sent;
+        await Assert.That(sent[0].MessageId).IsEqualTo("native-id");
+        await Assert.That(sent[0].ApplicationProperties["cloudEvents:id"]).IsEqualTo("envelope-id");
     }
 
     [Test]

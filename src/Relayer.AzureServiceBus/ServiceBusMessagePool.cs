@@ -15,6 +15,7 @@ internal sealed class ServiceBusPool<T>(Func<T> create) where T : class
 
 internal sealed class ServiceBusSendState
 {
+    private const string IdHeader = "cloudEvents:id";
     private readonly ReadOnlyMemory<byte>[] _data = new ReadOnlyMemory<byte>[1];
     private readonly AmqpMessageBody _body;
     internal ServiceBusMessage Message { get; }
@@ -31,7 +32,9 @@ internal sealed class ServiceBusSendState
         if (outgoing.OrderingKey is { } key) Message.SessionId = key.ToString();
         if (outgoing.DeliverAt is { } scheduled) Message.ScheduledEnqueueTime = scheduled;
         outgoing.ApplyNative(Message);
-        // The original envelope and creation context take precedence over a native callback.
+        // The original envelope and creation context take precedence over a native callback, except Subject and MessageId:
+        // a callback that sets either keeps it. Otherwise the envelope id becomes the native MessageId so broker duplicate
+        // detection drops a redispatched copy.
         foreach (var header in outgoing.Headers.Span)
         {
             if (header.Key == "content-type") Message.ContentType = header.Value.ToString();
@@ -42,6 +45,7 @@ internal sealed class ServiceBusSendState
                 // A native callback's Subject wins; otherwise the message type drives subscription filters.
                 if (Message.Subject is null && subjectHeaders is not null && Array.IndexOf(subjectHeaders, header.Key) >= 0)
                     Message.Subject = value;
+                if (header.Key == IdHeader) Message.MessageId ??= value;
             }
         }
     }
