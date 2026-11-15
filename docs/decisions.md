@@ -2012,4 +2012,4 @@ This resolves the release scope of D20, D45, D56, D60 and D66 without removals, 
 
 **Decision.** With `TopologyMode.None`, the transport implies each entity the routes and consumers name that the options do not declare: a consumer implies its queue, or its topic and subscription; `SessionProcessorOptions` implies `RequiresSession`; a send destination is a queue, or a topic when `TrustedSessionEntities` names it. Explicit declarations win and are still validated against consumers. Validate and Provision keep requiring declarations, because they need the native settings to check or create.
 
-**Consequences.** Implied entities live in a copy of the options built at startup, so the caller's options and the infrastructure exporter see only explicit declarations. Ordering by key still needs explicit trust (D16).
+**Consequences.** Implied entities live in a copy of the options built at startup, so the caller's options and the infrastructure exporter see only explicit declarations. The exporter still fails on a route or consumer entity that is not declared, so it never emits incomplete infrastructure. Ordering by key still needs explicit trust (D16).
