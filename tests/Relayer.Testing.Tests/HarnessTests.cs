@@ -624,6 +624,23 @@ public class HarnessTests
     }
 
     [Test]
+    public async Task Wait_for_consumed_completes_after_an_in_process_retry_requests_completion()
+    {
+        var calls = 0;
+        await using var fixture = await Fixture.Start(new() { Handle = (_, context) =>
+        {
+            if (Interlocked.Increment(ref calls) == 1) return ValueTask.FromException(new InvalidOperationException("transient"));
+            context.Features.Get<ISettlementFeature>()!.Complete();
+            return default;
+        } }, failures: new() { RetryDelays = [TimeSpan.Zero] });
+        var consumed = fixture.Harness.WaitForConsumedAsync<Probe>();
+        await fixture.Send(new Probe(1));
+        await Assert.That((await consumed.WaitAsync(Limit)).Value).IsEqualTo(1);
+        await Assert.That(calls).IsEqualTo(2);
+        await Assert.That(fixture.Harness.Failed.Count).IsEqualTo(1);
+    }
+
+    [Test]
     public async Task Wait_for_consumed_skips_a_failed_attempt_until_native_redelivery_succeeds()
     {
         await using var fixture = await Fixture.Start(new() { Handle = (_, context) =>

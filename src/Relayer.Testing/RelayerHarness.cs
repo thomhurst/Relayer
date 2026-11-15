@@ -242,15 +242,17 @@ public sealed class RelayerHarness : ISendMiddleware, IRelayerObserver
         RecordFailure(Snapshot(context), error, HarnessOperation.Consume);
     }
 
-    // Handled: processing returned without a failure decision. A retry that succeeds leaves no decision;
-    // a discarded failure completes with one, and a batch item's requested completion does without a failure.
+    // Handled: processing returned without a failure decision. A retry that succeeds leaves no decision, or
+    // completes with the handler's own request; a discarded failure completes with neither, because a failed
+    // attempt clears its request. A batch item's requested completion completes without a failure.
     private void Processed(DefaultMessageContext context, HarnessMessage observation, bool returned)
     {
         IConsumedWaiter[] waiters;
         lock (_gate)
         {
             var failed = _failing.Remove(context);
-            if (!returned || context.FailureDisposition is { } decision && (failed || decision.Kind != DispositionKind.Complete)) return;
+            if (!returned || context.FailureDisposition is { } decision && (decision.Kind != DispositionKind.Complete ||
+                failed && context.Settlement.Request is not { Kind: DispositionKind.Complete })) return;
             _handled.Add(observation);
             if (_waiters.Count == 0) return;
             waiters = _waiters.ToArray();
