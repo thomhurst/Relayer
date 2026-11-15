@@ -171,7 +171,7 @@ public class KafkaReceiveTests
             ActivityStopped = spans.Enqueue,
         };
         ActivitySource.AddActivityListener(listener);
-        using var host = BuildHost(fixture, control);
+        using var host = BuildHost(fixture.Bootstrap, fixture.Destination, control);
         await host.StartAsync(token);
         var transport = host.Services.GetRequiredKeyedService<KafkaProducerTransport>("events");
         await fixture.Transport.StartAsync(token);
@@ -256,7 +256,7 @@ public class KafkaReceiveTests
         using var tracing = new MessageTracing(Options.Create(new TracingOptions()), []);
         await using var fixture = (KafkaFixture)await KafkaFixture.CreateAsync(tracing, token);
         var control = new KafkaReceiveControl();
-        using var host = BuildHost(fixture, control, missingDeadLetter: true);
+        using var host = BuildHost(fixture.Bootstrap, fixture.Destination, control, missingDeadLetter: true);
         await host.StartAsync(token);
         await fixture.Transport.StartAsync(token);
         var transport = host.Services.GetRequiredKeyedService<KafkaProducerTransport>("events");
@@ -280,7 +280,7 @@ public class KafkaReceiveTests
         using var tracing = new MessageTracing(Options.Create(new TracingOptions()), []);
         await using var fixture = (KafkaFixture)await KafkaFixture.CreateAsync(tracing, token);
         var control = new KafkaReceiveControl();
-        using var host = BuildHost(fixture, control, missingDeadLetter: true, healthySibling: true);
+        using var host = BuildHost(fixture.Bootstrap, fixture.Destination, control, missingDeadLetter: true, healthySibling: true);
         await host.StartAsync(token);
         var transport = host.Services.GetRequiredKeyedService<KafkaProducerTransport>("events");
         await fixture.Transport.StartAsync(token);
@@ -385,7 +385,7 @@ public class KafkaReceiveTests
                 if (tag.Key == "messaging.destination.name" && Equals(tag.Value, fixture.Destination)) states.Writer.TryWrite(state);
         });
         meter.Start();
-        using var host = BuildHost(fixture, control, circuitClock: clock, circuitRetry: retry);
+        using var host = BuildHost(fixture.Bootstrap, fixture.Destination, control, circuitClock: clock, circuitRetry: retry);
         await host.StartAsync(token);
         var receiver = host.Services.GetRequiredKeyedService<KafkaProducerTransport>("events").Consumers[0];
         await fixture.Transport.StartAsync(token);
@@ -440,31 +440,33 @@ public class KafkaReceiveTests
     }
 
     [Test]
-    public async Task Revoke_moves_a_circuit_held_record_to_the_new_owner_without_stopping_the_consumer()
+    [ClassDataSource<KafkaHeaderSnapshotBroker>(Shared = SharedType.PerTestSession)]
+    public async Task Revoke_moves_a_circuit_held_record_to_the_new_owner_without_stopping_the_consumer(KafkaHeaderSnapshotBroker broker)
     {
         using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(2));
         var token = timeout.Token;
-        using var tracing = new MessageTracing(Options.Create(new TracingOptions()), []);
-        await using var fixture = (KafkaFixture)await KafkaFixture.CreateAsync(tracing, token);
-        await using (var admin = new AdminClientBuilder().WithBootstrapServers(fixture.Bootstrap).Build())
-            await admin.CreatePartitionsAsync(new Dictionary<string, int> { [fixture.Destination] = 2 }, token);
+        await broker.Started.WaitAsync(token);
+        var topic = TestContext.Current!.Isolation.GetIsolatedName("held").ToLowerInvariant();
+        await using (var admin = new AdminClientBuilder().WithBootstrapServers(broker.Bootstrap).Build())
+            await admin.CreateTopicsAsync([new() { Name = topic, NumPartitions = 2, ReplicationFactor = 1 },
+                new() { Name = topic + ".dead-letter", NumPartitions = 1, ReplicationFactor = 1 }], cancellationToken: token);
         var heldControl = new KafkaReceiveControl { CircuitFailure = true };
-        using var held = BuildHost(fixture, heldControl, circuitClock: new CircuitClock(), concurrency: 2);
+        using var held = BuildHost(broker.Bootstrap, topic, heldControl, circuitClock: new CircuitClock(), concurrency: 2);
         await held.StartAsync(token);
         var receiver = held.Services.GetRequiredKeyedService<KafkaProducerTransport>("events").Consumers[0];
         // The first record opens the circuit; both partitions then hold a record, so whichever moves is held.
-        await using (var producer = await new ProducerBuilder<byte[], byte[]>().WithBootstrapServers(fixture.Bootstrap).BuildAsync(token))
+        await using (var producer = await new ProducerBuilder<byte[], byte[]>().WithBootstrapServers(broker.Bootstrap).BuildAsync(token))
             for (var partition = 0; partition < 2; partition++)
                 await producer.ProduceAsync(new()
                 {
-                    Topic = fixture.Destination, Partition = partition, Key = [(byte)partition], Value = "{\"Number\":5}"u8.ToArray(),
+                    Topic = topic, Partition = partition, Key = [(byte)partition], Value = "{\"Number\":5}"u8.ToArray(),
                     Headers = new Dekaf.Serialization.Headers().Add("ce_id", "held-" + partition).Add("ce_type", "tests.kafka.receive;v=1"),
                 }, token);
         while (Volatile.Read(ref heldControl.CircuitAttempts) == 0) await Task.Delay(20, token);
 
         // A second member takes one partition, revoking it from the held lane.
         var ownerControl = new KafkaReceiveControl();
-        using var owner = BuildHost(fixture, ownerControl);
+        using var owner = BuildHost(broker.Bootstrap, topic, ownerControl);
         await owner.StartAsync(token);
         var ownerReceiver = owner.Services.GetRequiredKeyedService<KafkaProducerTransport>("events").Consumers[0];
         await Assert.That(await ownerControl.ReadHandledAsync(ownerReceiver.Completion, token)).IsEqualTo(5);
@@ -502,7 +504,7 @@ public class KafkaReceiveTests
         new KeyValuePair<string, WireString>[] { new("ce_id", new("record-" + number)), new("ce_type", new("tests.kafka.receive;v=1")),
             new("traceparent", new(Creation)), new("tracestate", new("tenant=original")) }, new WireString("customer-1"));
 
-    private static IHost BuildHost(KafkaFixture fixture, KafkaReceiveControl control, bool missingDeadLetter = false,
+    private static IHost BuildHost(string bootstrap, string destination, KafkaReceiveControl control, bool missingDeadLetter = false,
         bool healthySibling = false, CircuitClock? circuitClock = null, bool circuitRetry = false, int concurrency = 1)
     {
         var builder = Host.CreateApplicationBuilder();
@@ -524,14 +526,14 @@ public class KafkaReceiveTests
                 kafka.TopologyMode = TopologyMode.None;
                 kafka.Options.Configure(options =>
                 {
-                    options.BootstrapServers.Add(fixture.Bootstrap);
+                    options.BootstrapServers.Add(bootstrap);
                     options.ConfigureConsumer = native => native.WithAutoOffsetReset(AutoOffsetReset.Earliest)
                         .WithOffsetCommitMode(OffsetCommitMode.Auto).WithAutoOffsetStore(); // Relayer must override both.
                     options.ConfigureProducer = native => native.WithAllowAutoCreateTopics(false);
                 });
-                kafka.Consume(fixture.Destination, consumer =>
+                kafka.Consume(destination, consumer =>
                 {
-                    consumer.Options.Group = fixture.Destination;
+                    consumer.Options.Group = destination;
                     consumer.Concurrency(concurrency);
                     if (circuitClock is not null)
                     {
@@ -546,16 +548,16 @@ public class KafkaReceiveTests
                     consumer.Failures(new()
                     {
                         RetryDelays = circuitClock is null || circuitRetry ? new[] { TimeSpan.Zero } : [], Jitter = 0,
-                        DeadLetterEndpoint = missingDeadLetter ? fixture.Destination + ".missing" : null,
+                        DeadLetterEndpoint = missingDeadLetter ? destination + ".missing" : null,
                         // Only missing-topic scenarios need a short failure-injection deadline.
                         CopyTimeout = missingDeadLetter ? TimeSpan.FromSeconds(1) : new FailureOptions().CopyTimeout,
                     });
                     consumer.Handler<KafkaReceiveHandler>();
                 });
                 if (healthySibling)
-                    kafka.Consume(fixture.Destination, consumer =>
+                    kafka.Consume(destination, consumer =>
                     {
-                        consumer.Options.Group = fixture.Destination + ".sibling";
+                        consumer.Options.Group = destination + ".sibling";
                         consumer.Handler<KafkaReceiveHandler>();
                     });
             });
