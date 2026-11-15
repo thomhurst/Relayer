@@ -24,14 +24,17 @@ internal sealed class PostgreSqlDirectDispatcher : OutboxDirectDispatchWorker<Ou
     internal bool HasLocalTransport => _transports.Values.Any(static transport => PostgreSqlLocalTransport.Find(transport) is not null);
     internal void Quiesce() => Interlocked.Exchange(ref _quiescing, 1);
 
-    // A recovery transaction reports settled rows only after it commits; a rollback leaves them pending.
-    internal void RecoveryCommitted()
+    // The maintenance worker calls this once per recovery transaction. Settled rows are reported only
+    // after a commit; a rollback discards the totals so a later pass cannot report them.
+    internal void FinishRecovery(bool committed)
     {
-        var settled = _recoveredSettled + _recoveredPoison;
-        if (settled != 0) _instrumentation?.AddOutboxPending(-settled);
-        for (var i = 0; i < _recoveredPoison; i++) _instrumentation?.RecordOutboxPoison();
+        var poisoned = _recoveredPoison;
+        var settled = _recoveredSettled + poisoned;
         _recoveredPoison = 0;
         _recoveredSettled = 0;
+        if (!committed) return;
+        if (settled != 0) _instrumentation?.AddOutboxPending(-settled);
+        for (var i = 0; i < poisoned; i++) _instrumentation?.RecordOutboxPoison();
     }
 
     internal PostgreSqlDirectDispatcher(Npgsql.NpgsqlDataSource dataSource, PostgreSqlOutboxOptions storeOptions,

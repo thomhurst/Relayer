@@ -131,7 +131,7 @@ public class PoisonTests
             // Recovery reports poison only after its transaction commits.
             await Assert.That(Interlocked.Read(ref pending)).IsEqualTo(1L);
             await Assert.That(idle.IsCompleted).IsFalse();
-            dispatcher.RecoveryCommitted();
+            dispatcher.FinishRecovery(committed: true);
         }
         await Assert.That(Interlocked.Read(ref pending)).IsEqualTo(0L);
         await Assert.That(Interlocked.Read(ref poisoned)).IsEqualTo(1L);
@@ -173,10 +173,14 @@ public class PoisonTests
             {
                 // The deletion rolls back, so the row is still outstanding.
                 await transaction.RollbackAsync();
+                dispatcher.FinishRecovery(committed: false);
+                // A later pass that commits without dispatching must not report the rolled-back rows.
+                dispatcher.FinishRecovery(committed: true);
+                await Assert.That(idle.IsCompleted).IsFalse();
                 continue;
             }
             await transaction.CommitAsync();
-            dispatcher.RecoveryCommitted();
+            dispatcher.FinishRecovery(committed: true);
         }
         await idle.WaitAsync(TimeSpan.FromSeconds(30));
         await Assert.That(await store.ReadPendingAsync(new(null, DateTimeOffset.UtcNow), rows, default)).IsEqualTo(0);

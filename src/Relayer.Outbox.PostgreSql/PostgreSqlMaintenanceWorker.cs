@@ -110,37 +110,50 @@ internal sealed partial class PostgreSqlMaintenanceWorker : OutboxMaintenanceWor
         _through = null;
         do
         {
-            await using var connection = await _source.OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
-            await using var transaction = await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
-            await DispatchAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
-            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
-            _dispatcher.RecoveryCommitted();
+            var committed = false;
+            try
+            {
+                await using var connection = await _source.OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+                await using var transaction = await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
+                await DispatchAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
+                await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+                committed = true;
+            }
+            finally { _dispatcher.FinishRecovery(committed); }
         } while (_through is not null);
     }
 
     private async ValueTask<int> RunAsync(string name, bool cleanup, CancellationToken cancellationToken, TimeSpan? turnBudget = null, int cleanupTable = -1)
     {
         var started = turnBudget.HasValue ? Stopwatch.GetTimestamp() : 0;
-        await using var connection = await _source.OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
-        await using var transaction = await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
-        // Keep this row locked until the native sends or retention deletes finish. Connected owners never overlap.
-        await using var lease = new NpgsqlCommand(_acquire, connection, transaction);
-        lease.Parameters.AddWithValue("name", name);
-        lease.Parameters.AddWithValue("owner", _owner);
-        lease.Parameters.AddWithValue("duration", _options.LeaseDuration);
-        if (await lease.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) is not true) return cleanup ? -1 : 0;
-        var count = cleanup
-            ? await DeleteExpiredAsync(connection, transaction, cleanupTable, cancellationToken).ConfigureAwait(false)
-            : await DispatchAsync(connection, transaction, cancellationToken, turnBudget - (turnBudget.HasValue ? Stopwatch.GetElapsedTime(started) : TimeSpan.Zero)).ConfigureAwait(false);
-        // Start the idle lease at completion, not at the start of a potentially slow broker call.
-        await using var renew = new NpgsqlCommand(_renew, connection, transaction);
-        renew.Parameters.AddWithValue("name", name);
-        renew.Parameters.AddWithValue("owner", _owner);
-        renew.Parameters.AddWithValue("duration", _options.LeaseDuration);
-        await renew.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
-        if (!cleanup) _dispatcher.RecoveryCommitted();
-        return count;
+        var committed = false;
+        try
+        {
+            await using var connection = await _source.OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+            await using var transaction = await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
+            // Keep this row locked until the native sends or retention deletes finish. Connected owners never overlap.
+            await using var lease = new NpgsqlCommand(_acquire, connection, transaction);
+            lease.Parameters.AddWithValue("name", name);
+            lease.Parameters.AddWithValue("owner", _owner);
+            lease.Parameters.AddWithValue("duration", _options.LeaseDuration);
+            if (await lease.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) is not true) return cleanup ? -1 : 0;
+            var count = cleanup
+                ? await DeleteExpiredAsync(connection, transaction, cleanupTable, cancellationToken).ConfigureAwait(false)
+                : await DispatchAsync(connection, transaction, cancellationToken, turnBudget - (turnBudget.HasValue ? Stopwatch.GetElapsedTime(started) : TimeSpan.Zero)).ConfigureAwait(false);
+            // Start the idle lease at completion, not at the start of a potentially slow broker call.
+            await using var renew = new NpgsqlCommand(_renew, connection, transaction);
+            renew.Parameters.AddWithValue("name", name);
+            renew.Parameters.AddWithValue("owner", _owner);
+            renew.Parameters.AddWithValue("duration", _options.LeaseDuration);
+            await renew.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+            committed = true;
+            return count;
+        }
+        finally
+        {
+            if (!cleanup) _dispatcher.FinishRecovery(committed);
+        }
     }
 
     private async ValueTask<int> DispatchAsync(NpgsqlConnection connection, NpgsqlTransaction transaction, CancellationToken cancellationToken, TimeSpan? turnBudget = null)
