@@ -79,7 +79,7 @@ internal sealed class ServiceBusSendTransport : ITransport, ITransportSendTracin
                   options.Subscriptions.Any(item => item.TopicName == destination) &&
                   options.Subscriptions.Where(item => item.TopicName == destination).All(item => item.RequiresSession &&
                       (mode == TopologyMode.Provision || options.TrustedSessionEntities.Contains(item.TopicName + "/Subscriptions/" + item.SubscriptionName)));
-            var endpoint = new Endpoint(client.CreateSender(destination), SubjectHeaders(options, destination, routes), new()
+            var endpoint = new Endpoint(client.CreateSender(destination), SubjectHeaders(options, destination, routes), IdHeaders(destination, routes), new()
             {
                 OrderedByKey = ordered,
                 MaxBatchSize = int.MaxValue,
@@ -101,6 +101,16 @@ internal sealed class ServiceBusSendTransport : ITransport, ITransportSendTracin
         if (routes is null) return [new HeaderNames("cloudEvents:").Type];
         return routes.Where(route => route.Destination == destination && route.SendOptions.EnvelopeMode == MessageEnvelopeMode.CloudEvents)
             .Select(route => route.SendOptions.HeaderNames.Type).Distinct(StringComparer.Ordinal).ToArray();
+    }
+
+    // The CloudEvents id header names of the routes to a destination; their value becomes the native MessageId. The default
+    // binding stays included for copies sent without a route, such as dead-letter and scheduled copies.
+    private static string[] IdHeaders(string destination, IReadOnlyList<IRouteDefinition>? routes)
+    {
+        var standard = new HeaderNames("cloudEvents:").Id;
+        if (routes is null) return [standard];
+        return routes.Where(route => route.Destination == destination && route.SendOptions.EnvelopeMode == MessageEnvelopeMode.CloudEvents)
+            .Select(route => route.SendOptions.HeaderNames.Id).Append(standard).Distinct(StringComparer.Ordinal).ToArray();
     }
 
     public string Name { get; }
@@ -137,7 +147,7 @@ internal sealed class ServiceBusSendTransport : ITransport, ITransportSendTracin
         var state = endpoint.Messages.Rent();
         try
         {
-            state.Prepare(outgoing, endpoint.SubjectHeaders);
+            state.Prepare(outgoing, endpoint.SubjectHeaders, endpoint.IdHeaders);
             endpoint.Tracing?.RecordNativeSend();
             var duration = endpoint.Tracing?.StartNativeSend() ?? default;
             var failed = true;
@@ -205,7 +215,7 @@ internal sealed class ServiceBusSendTransport : ITransport, ITransportSendTracin
                         {
                             pendingEndpoint = endpoint;
                             pending = endpoint.Messages.Rent();
-                            pending.Prepare(messages.Span[index], endpoint.SubjectHeaders);
+                            pending.Prepare(messages.Span[index], endpoint.SubjectHeaders, endpoint.IdHeaders);
                         }
                         // Service Bus requires each native batch to share session and partition IDs.
                         if (admitted.Count != 0 && (pending.Message.SessionId != session || pending.Message.PartitionKey != partition ||
@@ -335,10 +345,11 @@ internal sealed class ServiceBusSendTransport : ITransport, ITransportSendTracin
         if (failures is { Count: > 1 }) throw new AggregateException(failures);
     }
 
-    private sealed class Endpoint(ServiceBusSender sender, string[] subjectHeaders, TransportCapabilities capabilities)
+    private sealed class Endpoint(ServiceBusSender sender, string[] subjectHeaders, string[] idHeaders, TransportCapabilities capabilities)
     {
         internal ServiceBusSender Sender { get; } = sender;
         internal string[] SubjectHeaders { get; } = subjectHeaders;
+        internal string[] IdHeaders { get; } = idHeaders;
         internal TransportCapabilities Capabilities { get; } = capabilities;
         internal ServiceBusPool<ServiceBusSendState> Messages { get; } = new(static () => new());
         internal ServiceBusPool<List<ServiceBusSendState>> Batches { get; } = new(static () => []);

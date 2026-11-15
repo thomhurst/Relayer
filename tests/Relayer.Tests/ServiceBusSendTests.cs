@@ -122,6 +122,24 @@ public class ServiceBusSendTests
     }
 
     [Test]
+    public async Task Message_id_uses_the_route_id_header_binding()
+    {
+        var client = new NativeClient();
+        var services = new ServiceCollection();
+        services.AddRelayer(builder => builder.ServiceBus("bus", bus =>
+        {
+            bus.Options.Configure(options => { options.Client = client; options.Topics.Add(new("events")); });
+            bus.Send<First>("events", route => route.SendOptions = new() { HeaderNames = new("x-") });
+        }));
+        await using var provider = services.BuildServiceProvider();
+        var transport = provider.GetServices<ITransport>().Single();
+        foreach (var name in new[] { "x-id", "cloudEvents:id", "other-id" })
+            await transport.SendAsync(new("events", default, new KeyValuePair<string, WireString>[] { new(name, new WireString(name + "-value")) }), default);
+        var sent = client.Senders.Single().Sent;
+        await Assert.That(sent.Select(message => message.MessageId).SequenceEqual(new string?[] { "x-id-value", "cloudEvents:id-value", null })).IsTrue();
+    }
+
+    [Test]
     [Arguments(false)]
     [Arguments(true)]
     public async Task Serializer_content_type_uses_native_property_and_does_not_leak_between_sends(bool batch)

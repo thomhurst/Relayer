@@ -15,7 +15,6 @@ internal sealed class ServiceBusPool<T>(Func<T> create) where T : class
 
 internal sealed class ServiceBusSendState
 {
-    private const string IdHeader = "cloudEvents:id";
     private readonly ReadOnlyMemory<byte>[] _data = new ReadOnlyMemory<byte>[1];
     private readonly AmqpMessageBody _body;
     internal ServiceBusMessage Message { get; }
@@ -26,7 +25,7 @@ internal sealed class ServiceBusSendState
         Message = new(new AmqpAnnotatedMessage(_body));
     }
 
-    internal void Prepare(OutgoingMessage outgoing, string[]? subjectHeaders = null)
+    internal void Prepare(OutgoingMessage outgoing, string[]? subjectHeaders = null, string[]? idHeaders = null)
     {
         _data[0] = outgoing.Body;
         if (outgoing.OrderingKey is { } key) Message.SessionId = key.ToString();
@@ -45,7 +44,8 @@ internal sealed class ServiceBusSendState
                 // A native callback's Subject wins; otherwise the message type drives subscription filters.
                 if (Message.Subject is null && subjectHeaders is not null && Array.IndexOf(subjectHeaders, header.Key) >= 0)
                     Message.Subject = value;
-                if (header.Key == IdHeader) Message.MessageId ??= value;
+                if (Message.MessageId is null && idHeaders is not null && Array.IndexOf(idHeaders, header.Key) >= 0)
+                    Message.MessageId = value;
             }
         }
     }
