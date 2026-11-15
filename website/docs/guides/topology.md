@@ -268,7 +268,7 @@ Unsupported native attributes (including queue `RedriveAllowPolicy`, SNS feedbac
 Install the existing managed .NET tool (requires the .NET 10 SDK/runtime or later):
 
 ```bash
-dotnet tool install --global dotnet-relayer --prerelease
+dotnet tool install --global Relayer.Cli --prerelease
 dotnet relayer --help
 ```
 

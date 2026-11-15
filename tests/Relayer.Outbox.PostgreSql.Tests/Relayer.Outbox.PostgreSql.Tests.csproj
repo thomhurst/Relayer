@@ -25,6 +25,6 @@
     <ProjectReference Include="../../src/Relayer.Testing/Relayer.Testing.csproj" />
     <ProjectReference Include="../../src/Relayer.SourceGenerators/Relayer.SourceGenerators.csproj"
                       ReferenceOutputAssembly="false" OutputItemType="Analyzer" />
-    <ProjectReference Include="../../src/dotnet-relayer/dotnet-relayer.csproj" />
+    <ProjectReference Include="../../src/Relayer.Cli/Relayer.Cli.csproj" />
   </ItemGroup>
 </Project>
