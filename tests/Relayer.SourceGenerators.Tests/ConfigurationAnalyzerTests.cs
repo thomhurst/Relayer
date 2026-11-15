@@ -354,38 +354,43 @@ public class ConfigurationAnalyzerTests
     }
 
     [Test]
-    [Arguments("builder.Infrastructure().MessageTypes.Add<Envelope<Order>>(\"orders\");", "")]
-    [Arguments("", "RLY001,RLY001")]
-    public async Task Referenced_generic_helper_checks_the_constructed_message_contract(string registration, string expected)
+    [Arguments("Envelope<{0}>", true)]
+    [Arguments("Envelope<{0}>", false)]
+    [Arguments("{0}[]", true)]
+    [Arguments("{0}[]", false)]
+    [Arguments("Envelope<{0}[]>", true)]
+    [Arguments("Envelope<{0}[]>", false)]
+    public async Task Referenced_generic_helper_checks_the_constructed_message_contract(string contract, bool registered)
     {
-        var external = Compile(Imports + """
+        var external = Compile(Imports + $$"""
             public record Envelope<T>;
             public static class Messaging
             {
                 public static void LocalQueue<TMessage, THandler>(this IConsumerBuilder consumer)
-                    where THandler : class, IHandler<Envelope<TMessage>> => consumer.Handler<THandler, Envelope<TMessage>>();
+                    where THandler : class, IHandler<{{string.Format(contract, "TMessage")}}> => consumer.Handler<THandler, {{string.Format(contract, "TMessage")}}>();
             }
             """).WithAssemblyName("External");
         using var stream = new MemoryStream();
         await Assert.That(external.Emit(stream).Success).IsTrue();
+        var message = string.Format(contract, "Order");
         var compilation = Compile(Imports + $$"""
             public record Order;
             static class Setup
             {
                 public static void Add(IRelayerBuilder builder, IConsumerBuilder consumer)
                 {
-                    {{registration}}
+                    {{(registered ? $"builder.Infrastructure().MessageTypes.Add<{message}>(\"orders\");" : "")}}
                     consumer.LocalQueue<Order, H>();
                 }
             }
-            public class H : IHandler<Envelope<Order>>
+            public class H : IHandler<{{message}}>
             {
-                public ValueTask HandleAsync(Envelope<Order> message, MessageContext context, CancellationToken ct) => default;
+                public ValueTask HandleAsync({{message}} message, MessageContext context, CancellationToken ct) => default;
             }
             """).AddReferences(MetadataReference.CreateFromImage(stream.ToArray()));
         var diagnostics = await compilation.WithAnalyzers([new ConfigurationAnalyzer()]).GetAnalyzerDiagnosticsAsync();
-        await Assert.That(Ids(diagnostics)).IsEqualTo(expected);
-        if (expected != "") await Assert.That(diagnostics.All(d => d.GetMessage().Contains("Envelope<Order>"))).IsTrue();
+        await Assert.That(Ids(diagnostics)).IsEqualTo(registered ? "" : "RLY001,RLY001");
+        if (!registered) await Assert.That(diagnostics.All(d => d.GetMessage().Contains(message))).IsTrue();
     }
 
     [Test]

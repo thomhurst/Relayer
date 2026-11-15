@@ -108,7 +108,7 @@ public sealed class ConfigurationAnalyzer : DiagnosticAnalyzer
                 }
 
                 if (method.TypeArguments.Length > 0)
-                    foreach (var message in AddHandlerArguments(method, marker, single, batch, registered))
+                    foreach (var message in AddHandlerArguments(method, marker, single, batch, registered, operationContext.Compilation))
                         CheckMessage(message, invocation.Syntax.GetLocation());
 
                 // Only our generated registration methods count. Unrelated APIs with the same
@@ -170,7 +170,7 @@ public sealed class ConfigurationAnalyzer : DiagnosticAnalyzer
     // application helper that forwards to it) registers its type argument. Returns the message
     // types its IHandler<T>/IBatchHandler<T> constraints select, so their identities are checked.
     private static List<ITypeSymbol> AddHandlerArguments(IMethodSymbol method, INamedTypeSymbol? marker, INamedTypeSymbol? single,
-        INamedTypeSymbol? batch, ConcurrentDictionary<ITypeSymbol, byte> registered)
+        INamedTypeSymbol? batch, ConcurrentDictionary<ITypeSymbol, byte> registered, Compilation compilation)
     {
         var messages = new List<ITypeSymbol>();
         var parameters = method.OriginalDefinition.TypeParameters;
@@ -182,23 +182,30 @@ public sealed class ConfigurationAnalyzer : DiagnosticAnalyzer
                 if (!contract && !SymbolEqualityComparer.Default.Equals(constraint.OriginalDefinition, marker)) continue;
                 registered.TryAdd(method.TypeArguments[i], 0);
                 if (contract && constraint is INamedTypeSymbol { TypeArguments.Length: 1 } named)
-                    messages.Add(Substitute(named.TypeArguments[0], method));
+                    messages.Add(Substitute(named.TypeArguments[0], method, compilation));
             }
         return messages;
     }
 
     // Replaces the method's type parameters in a constraint type, including inside constructed
-    // types (IHandler<Envelope<TMessage>> called with TMessage = Order checks Envelope<Order>).
-    private static ITypeSymbol Substitute(ITypeSymbol type, IMethodSymbol method)
+    // and array types (IHandler<Envelope<TMessage>> called with TMessage = Order checks
+    // Envelope<Order>, and IHandler<TMessage[]> checks Order[]).
+    private static ITypeSymbol Substitute(ITypeSymbol type, IMethodSymbol method, Compilation compilation)
     {
         if (type is ITypeParameterSymbol { TypeParameterKind: TypeParameterKind.Method } parameter)
             return method.TypeArguments[parameter.Ordinal];
+        if (type is IArrayTypeSymbol array)
+        {
+            var element = Substitute(array.ElementType, method, compilation);
+            return SymbolEqualityComparer.Default.Equals(element, array.ElementType) ? array
+                : compilation.CreateArrayTypeSymbol(element, array.Rank, array.ElementNullableAnnotation);
+        }
         if (type is not INamedTypeSymbol { IsGenericType: true } named) return type;
         var arguments = new ITypeSymbol[named.TypeArguments.Length];
         var changed = false;
         for (var i = 0; i < arguments.Length; i++)
         {
-            arguments[i] = Substitute(named.TypeArguments[i], method);
+            arguments[i] = Substitute(named.TypeArguments[i], method, compilation);
             changed |= !SymbolEqualityComparer.Default.Equals(arguments[i], named.TypeArguments[i]);
         }
         return changed ? named.ConstructedFrom.Construct(arguments) : named;
