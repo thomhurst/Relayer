@@ -193,9 +193,11 @@ A and C. Clear or repair EF's tracked changes before continuing; Relayer only re
 Each context sharing a transaction has its own send/save boundary. Sends after the final successful
 save still join commit normally.
 
-Recovery requires a confirmed native automatic savepoint rollback during the failed or canceled save.
-With `AutoSavepointsEnabled = false`, a failed rollback, or cancellation that prevents rollback,
-Relayer invalidates the unit. Manual savepoint rollback remains unsupported.
+Recovery requires a confirmed native automatic savepoint rollback during the failed or canceled save,
+or a save that fails while EF creates its automatic savepoint. EF creates that savepoint before any save
+command, so a save called with an already-canceled token sends nothing and the unit continues from the
+last successful save. With `AutoSavepointsEnabled = false`, a failed rollback, or cancellation that
+prevents rollback, Relayer invalidates the unit. Manual savepoint rollback remains unsupported.
 After an unrecovered failed save, failed commit, or manual savepoint rollback, roll back the complete explicit transaction
 and dispose its EF wrapper before retrying the whole unit. If PostgreSQL has already aborted the transaction
 (for example after a serialization failure), dispose the wrapper. Relayer rejects commit of an invalidated unit.

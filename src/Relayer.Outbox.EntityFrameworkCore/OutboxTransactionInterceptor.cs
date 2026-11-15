@@ -72,12 +72,30 @@ internal sealed class OutboxTransactionInterceptor(EntityFrameworkCoreOutbox out
         return Task.CompletedTask;
     }
 
-    public override void TransactionFailed(DbTransaction transaction, TransactionErrorEventData eventData) => outbox.Invalidate(transaction);
+    public override void TransactionFailed(DbTransaction transaction, TransactionErrorEventData eventData)
+    {
+        // EF creates its automatic savepoint before any save command. When that fails, for example on a
+        // canceled token, nothing from this save reached the database and the unit can continue.
+        if (eventData.Context is { } context && outbox.Get(context, configuration).SavepointFailed()) return;
+        outbox.Invalidate(transaction);
+    }
+
     public override Task TransactionFailedAsync(DbTransaction transaction, TransactionErrorEventData eventData, CancellationToken cancellationToken = default)
     {
-        outbox.Invalidate(transaction);
+        TransactionFailed(transaction, eventData);
         return Task.CompletedTask;
     }
+
+    public override InterceptionResult CreatingSavepoint(DbTransaction transaction, TransactionEventData eventData, InterceptionResult result)
+    {
+        var state = outbox.Get(eventData.Context!, configuration);
+        if (state.Saving) state.CreatingSavepoint = true;
+        return result;
+    }
+
+    public override ValueTask<InterceptionResult> CreatingSavepointAsync(DbTransaction transaction, TransactionEventData eventData,
+        InterceptionResult result, CancellationToken cancellationToken = default) =>
+        new(CreatingSavepoint(transaction, eventData, result));
 
     public override void CreatedSavepoint(DbTransaction transaction, TransactionEventData eventData)
     {
@@ -91,8 +109,12 @@ internal sealed class OutboxTransactionInterceptor(EntityFrameworkCoreOutbox out
         return Task.CompletedTask;
     }
 
-    public override void ReleasedSavepoint(DbTransaction transaction, TransactionEventData eventData) =>
-        outbox.Get(eventData.Context!, configuration).SavepointCreated = false;
+    public override void ReleasedSavepoint(DbTransaction transaction, TransactionEventData eventData)
+    {
+        var state = outbox.Get(eventData.Context!, configuration);
+        state.CreatingSavepoint = false;
+        state.SavepointCreated = false;
+    }
 
     public override Task ReleasedSavepointAsync(DbTransaction transaction, TransactionEventData eventData, CancellationToken cancellationToken = default)
     {

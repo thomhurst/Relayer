@@ -168,6 +168,8 @@ public class EnlistmentTests
         await scope.ServiceProvider.GetRequiredService<ISender>().SendAsync(new Probe(1));
         if (cancellation)
         {
+            // Without an automatic savepoint EF starts the business command before the cancellation is observed.
+            db.Database.AutoSavepointsEnabled = false;
             db.Add(new Order { Id = 1 });
             using var canceled = new CancellationTokenSource();
             canceled.Cancel();
@@ -181,6 +183,37 @@ public class EnlistmentTests
         await Assert.That(async () => await transaction.CommitAsync()).Throws<InvalidOperationException>();
         await transaction.RollbackAsync();
         await Assert.That(await database.Count()).IsEqualTo(0L);
+    }
+
+    [Test]
+    public async Task Pre_canceled_save_keeps_sends_covered_by_the_last_successful_save()
+    {
+        await using var database = new Database();
+        await database.Start();
+        await using var provider = database.Services();
+        await using var scope = provider.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<OrdersContext>();
+        var sender = scope.ServiceProvider.GetRequiredService<ISender>();
+        await using var transaction = await db.Database.BeginTransactionAsync();
+        await sender.SendAsync(new Probe(1));
+        db.Add(new Order { Id = 1 });
+        await db.SaveChangesAsync();
+        await sender.SendAsync(new Probe(2));
+        db.Add(new Order { Id = 2 });
+        using (var canceled = new CancellationTokenSource())
+        {
+            canceled.Cancel();
+            // EF fails to create its automatic savepoint, so no command from this save runs.
+            await Assert.That(async () => await db.SaveChangesAsync(canceled.Token)).Throws<OperationCanceledException>();
+        }
+        db.ChangeTracker.Clear();
+        await sender.SendAsync(new Probe(3));
+        db.Add(new Order { Id = 3 });
+        await db.SaveChangesAsync();
+        await transaction.CommitAsync();
+        await Assert.That(await database.Scalar($"SELECT count(*) FROM {Database.Table} WHERE get_byte(body, 0) IN (1, 3)")).IsEqualTo(2L);
+        await Assert.That(await database.Count()).IsEqualTo(2L);
+        await Assert.That(await database.Scalar("SELECT count(*) FROM orders")).IsEqualTo(2L);
     }
 
     [Test]
