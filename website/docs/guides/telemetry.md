@@ -218,7 +218,7 @@ The PostgreSQL transaction integrations and dispatch workers also record:
   subtracts its rows, and so does an unordered poison transition that moves a row to dead
   storage. Rollback, retried sends, competing claims and failed completion do not subtract
   rows. A row parked on an ordered lane stays in the table and is not subtracted. Ordered
-  deletions count only after their transaction commits.
+  deletions and PostgreSQL recovery deletions count only after their transaction commits.
 - `relayer.outbox.dispatch_lag`: seconds from the row's enqueue timestamp to the start
   of each native dispatch attempt. Recovery uses the original durable timestamp. Failed
   native attempts also record lag.

@@ -140,6 +140,49 @@ public class PoisonTests
     }
 
     [Test]
+    public async Task Recovery_transaction_settles_sent_rows_only_after_it_commits()
+    {
+        await using var fixture = new PostgreSqlFixture();
+        await fixture.StartAsync();
+        await using var source = NpgsqlDataSource.Create(fixture.ConnectionString);
+        await PostgreSqlOutboxStoreTests.CreateSchema(source);
+        var options = new PostgreSqlOutboxOptions();
+        await PostgreSqlOutboxStoreTests.Insert(source, options, Guid.CreateVersion7(), DateTimeOffset.UtcNow);
+        await using (var unordered = source.CreateCommand("UPDATE relayer_outbox SET ordering_key = NULL"))
+            await unordered.ExecuteNonQueryAsync();
+        using var instrumentation = new RelayerInstrumentation();
+        var harness = new RelayerHarness();
+        instrumentation.Observer = harness;
+        // Stands for the commit that wrote the row in this provider.
+        instrumentation.AddOutboxPending(1);
+        var idle = harness.WaitForIdleAsync();
+        var store = new PostgreSqlOutboxStore(source, options);
+        using var dispatcher = new PostgreSqlDirectDispatcher(source, options, new(), [new SucceedingTransport()],
+            NullLogger<PostgreSqlDirectDispatcher>.Instance, store, instrumentation);
+        var rows = new OutboxRecord[1];
+        foreach (var commit in new[] { false, true })
+        {
+            await store.ReadPendingAsync(new(null, DateTimeOffset.UtcNow), rows, default);
+            await using var connection = await source.OpenConnectionAsync();
+            await using var transaction = await connection.BeginTransactionAsync();
+            store.UseDispatchTransaction(connection, transaction);
+            await dispatcher.DispatchRecoveredAsync(rows, default, propagateDatabaseFailures: true);
+            store.UseDispatchTransaction(null, null);
+            await Assert.That(idle.IsCompleted).IsFalse();
+            if (!commit)
+            {
+                // The deletion rolls back, so the row is still outstanding.
+                await transaction.RollbackAsync();
+                continue;
+            }
+            await transaction.CommitAsync();
+            dispatcher.RecoveryCommitted();
+        }
+        await idle.WaitAsync(TimeSpan.FromSeconds(30));
+        await Assert.That(await store.ReadPendingAsync(new(null, DateTimeOffset.UtcNow), rows, default)).IsEqualTo(0);
+    }
+
+    [Test]
     public async Task Filtered_redrive_bounds_scanned_rows_and_requires_a_larger_prefix_for_later_matches()
     {
         await using var fixture = new PostgreSqlFixture();
@@ -207,6 +250,18 @@ public class PoisonTests
         var claim = new OutboxClaim(id, Guid.NewGuid());
         await Assert.That(await store.TryClaimAsync(claim, now, now.AddMinutes(1), default)).IsTrue();
         await store.RecordDispatchFailureAsync(claim, "broker failed", now, default);
+    }
+
+    private sealed class SucceedingTransport : ITransport
+    {
+        public string Name => "events";
+        public TransportCapabilities GetCapabilities(string endpoint) => new();
+        public ValueTask SendAsync(OutgoingMessage message, CancellationToken cancellationToken) => ValueTask.CompletedTask;
+        public ValueTask SendBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken) => ValueTask.CompletedTask;
+        public ValueTask<TopologyReport> ApplyTopologyAsync(TopologyMode mode, CancellationToken cancellationToken) => new(new TopologyReport([]));
+        public Task StartAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+        public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }
 
     private sealed class FailingTransport : ITransport

@@ -309,16 +309,15 @@ public sealed class RelayerHarness : ISendMiddleware, IRelayerObserver
         lock (_gate) _deadLettered.Add(new(message, new(error.Reason, error.Description, headers)));
     }
 
-    // Rows settled by recovery may have been committed by another instance; they never make the count negative.
+    // A dispatcher can settle a row before its producer reports the commit, so the count may briefly go negative.
     void IRelayerObserver.OutboxPending(long delta)
     {
         lock (_gate)
         {
-            var rows = Math.Max(0, _outboxRows + delta);
-            if (rows == _outboxRows) return;
-            if (_outboxRows == 0) WorkStarted();
-            _outboxRows = rows;
-            if (rows == 0) WorkCompleted();
+            var before = _outboxRows;
+            _outboxRows += delta;
+            if (before <= 0 && _outboxRows > 0) WorkStarted();
+            else if (before > 0 && _outboxRows <= 0) WorkCompleted();
         }
     }
 

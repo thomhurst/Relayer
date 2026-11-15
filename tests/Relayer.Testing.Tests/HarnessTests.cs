@@ -431,8 +431,10 @@ public class HarnessTests
     {
         await using var fixture = await Fixture.Start();
         var instrumentation = fixture.Provider.GetRequiredService<RelayerInstrumentation>();
-        // Recovery can settle a row another instance committed; that never makes the count negative.
+        // A dispatcher can settle a row before its commit is reported; the later commit then balances it.
         instrumentation.AddOutboxPending(-1);
+        await fixture.Harness.WaitForIdleAsync().WaitAsync(Limit);
+        instrumentation.AddOutboxPending(1);
         await fixture.Harness.WaitForIdleAsync().WaitAsync(Limit);
         instrumentation.AddOutboxPending(2);
         var idle = fixture.Harness.WaitForIdleAsync();
