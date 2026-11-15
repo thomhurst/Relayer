@@ -41,6 +41,7 @@ public sealed class PostgreSqlOutboxStore : IOutboxStore
     private readonly List<Guid> _batchIds = [];
     private readonly List<Guid> _batchTokens = [];
     private readonly List<HeaderSlot> _headers = [];
+    private readonly OutboxClaim[] _single = new OutboxClaim[1];
 
     /// <summary>Uses an application-owned data source and snapshots the schema/table prefix.</summary>
     public PostgreSqlOutboxStore(NpgsqlDataSource dataSource, PostgreSqlOutboxOptions? options = null)
@@ -231,6 +232,13 @@ public sealed class PostgreSqlOutboxStore : IOutboxStore
         if (claims.IsEmpty) return new(0L);
         foreach (var claim in claims.Span) Validate(claim);
         return _completedCount.Start(CreateBatchMutation(_completeDirectBatch, claims, null), cancellationToken);
+    }
+
+    // The command copies the claim, so this store's single slot is free again once the call returns.
+    internal ValueTask<long> CompleteDirectAsync(OutboxClaim claim, CancellationToken cancellationToken)
+    {
+        _single[0] = claim;
+        return CompleteDirectBatchAsync(_single, cancellationToken);
     }
 
     private NpgsqlCommand CreateBatchMutation(string sql, ReadOnlyMemory<OutboxClaim> claims, DateTimeOffset? now)

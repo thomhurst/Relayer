@@ -10,6 +10,19 @@ namespace Relayer.Outbox.PostgreSql;
 public readonly record struct PostgreSqlLocalDelivery(OutgoingMessage Message, OutboxClaim Claim,
     NpgsqlTransaction Transaction, int Attempt)
 {
+    private readonly NpgsqlTransaction? _transaction = Transaction;
+
+    /// <summary>The row's fenced transaction for business commands. Not available to consumers that use <see cref="PostgreSqlLocalCompletion.AtLeastOnce"/>.</summary>
+    /// <exception cref="InvalidOperationException">The consumer uses at-least-once completion, so its handler runs without a delivery transaction.</exception>
+    public NpgsqlTransaction Transaction
+    {
+        get => _transaction ?? throw new InvalidOperationException(
+            "This PostgreSQL local consumer uses PostgreSqlLocalCompletion.AtLeastOnce, so its handler runs without a delivery transaction. " +
+            "Open your own connection for business writes, or use PostgreSqlLocalCompletion.Atomic to write through the delivery transaction.");
+        init => _transaction = value;
+    }
+
+    internal NpgsqlTransaction? OpenTransaction => _transaction;
     internal PostgreSqlLocalTransport Owner { get; init; } = null!;
     internal PostgreSqlOutboxStore CompletionStore { get; init; } = null!;
 }

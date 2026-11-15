@@ -10,6 +10,7 @@ public class PreviewApiTests
     [Arguments("Relayer.Sagas.EntityFrameworkCore.EntityFrameworkCoreSagaData", "RLYEXP001")]
     [Arguments("Relayer.Outbox.PostgreSql.PostgreSqlLocalOptions", "RLYEXP002")]
     [Arguments("Relayer.Outbox.PostgreSql.PostgreSqlLocalConsumerOptions", "RLYEXP002")]
+    [Arguments("Relayer.Outbox.PostgreSql.PostgreSqlLocalCompletion", "RLYEXP002")]
     [Arguments("Relayer.Outbox.PostgreSql.PostgreSqlLocalDelivery", "RLYEXP002")]
     [Arguments("Relayer.Outbox.PostgreSql.PostgreSqlLocalMessageBinding", "RLYEXP002")]
     [Arguments("Relayer.Outbox.PostgreSql.PostgreSqlChangeCaptureOptions", "RLYEXP003")]

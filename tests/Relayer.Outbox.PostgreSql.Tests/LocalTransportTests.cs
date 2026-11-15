@@ -613,6 +613,7 @@ public class LocalTransportTests(PostgreSqlLocalSessionFixture server)
         });
         services.AddSingleton(source);
         services.AddScoped<FailingCleanup>();
+        services.AddSingleton<LocalAtLeastOnceTests.Probe>();
         if (failureAction is { } action) services.AddSingleton<IFailureClassifier>(new FixedClassifier(action));
         services.AddRelayer(builder =>
         {
@@ -673,7 +674,11 @@ public class LocalTransportTests(PostgreSqlLocalSessionFixture server)
         public async ValueTask HandleAsync(LocalWork message, MessageContext context, CancellationToken cancellationToken)
         {
             var delivery = context.Features.GetRequired<NativeMessage<PostgreSqlLocalDelivery>>().Message;
-            await using var command = new NpgsqlCommand("INSERT INTO local_business VALUES (@value)", delivery.Transaction.Connection, delivery.Transaction);
+            // At-least-once consumers have no delivery transaction and write through their own connection.
+            if (delivery.OpenTransaction is null)
+                await context.Services.GetRequiredService<LocalAtLeastOnceTests.Probe>().ObserveAsync(source, message.Value, delivery, cancellationToken);
+            await using var own = delivery.OpenTransaction is null ? await source.OpenConnectionAsync(cancellationToken) : null;
+            await using var command = new NpgsqlCommand("INSERT INTO local_business VALUES (@value)", own ?? delivery.Transaction.Connection, delivery.OpenTransaction);
             command.Parameters.AddWithValue("value", message.Value);
             await command.ExecuteNonQueryAsync(context.CancellationToken);
             if (message.Value is 10 or -10 or -11)

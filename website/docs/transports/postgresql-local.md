@@ -78,6 +78,22 @@ public sealed class CleanupHandler : IHandler<Cleanup>
 
 Atomic completion covers only writes in that transaction and database. HTTP calls, files and independent connections remain at-least-once effects.
 
+## Complete work at least once
+
+Atomic completion keeps a pooled connection and an open transaction for the whole handler run, so local concurrency is bounded by the connection pool, and long transactions hold back vacuum. Handlers that do not write through the delivery transaction, such as notifications, webhooks or realtime fan-out, can opt out per consumer:
+
+```csharp
+transport.Consume("notifications", consumer =>
+{
+    consumer.Options.Completion = PostgreSqlLocalCompletion.AtLeastOnce;
+    consumer.Handler<SendNotificationHandler>();
+});
+```
+
+With `AtLeastOnce`, the dispatcher claims the row with a lease in a short transaction and commits it. The handler then runs with no open delivery transaction or held connection, and a second short statement fenced by the claim token deletes the row, or records its retry or poison transition. This works for direct dispatch, recovery passes and ordered lanes. A recovery pass commits and returns its connection before it runs such rows, so a slow handler lengthens that maintenance turn. An ordered lane commits its lease before each such row and renews it afterwards, so rows with the same key still run one at a time in order while the lease and claim are unexpired.
+
+The handler's own writes are not rolled back when it fails, and a crash or a lost claim after the handler finishes delivers the row again, so make the handler idempotent. When the claim expires before completion, for example because the handler ran longer than the direct dispatch `ClaimDuration` or the ordered `LeaseDuration`, the completion fails, the error is logged, and the row stays for redelivery. A database error during completion is handled the same way. Neither counts as a failed attempt, because the handler already succeeded. An ordered lane stops its turn instead of moving past the row, and a recovery pass reports the database error, so change capture does not checkpoint past it. Reading `delivery.Transaction` in this mode throws an `InvalidOperationException`; open your own connection for business writes. `Atomic` stays the default.
+
 ## Failures and capabilities
 
 The shared consume pipeline runs generated handlers, deserialization, tracing and the registered `IFailureClassifier`. A `Retry` failure rolls back the handler's business changes, counts one attempt in the row and makes it due again; maintenance or ordered dispatch picks it up on its next pass. At the attempt limit the row is dead-lettered, or its ordering key parked. Permanent failures use the same fenced poison transition immediately. Discard rolls back failed business changes before deletion. Configure `MaxDispatchAttempts` consistently on the store and workers. Inspect, redrive and purge with the existing [dead-letter manager](../reference/postgres-store.md#poison-rows-and-key-release). Each failed attempt logs one Error from the consume pipeline (category `Relayer.Pipeline.ConsumePipeline`, event ID 1, described in [logging](../guides/telemetry.md)); the direct and ordered dispatchers do not log the handler failure again when they record the retry or poison transition.

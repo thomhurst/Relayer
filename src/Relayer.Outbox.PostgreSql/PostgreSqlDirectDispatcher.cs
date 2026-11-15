@@ -1,4 +1,5 @@
 using System.Runtime.CompilerServices;
+using System.Runtime.ExceptionServices;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Relayer.Transports;
@@ -163,9 +164,21 @@ internal sealed class PostgreSqlDirectDispatcher : OutboxDirectDispatchWorker<Ou
 
     protected override void ExitGroup(object? admission) => ((PostgreSqlLocalTransport.Receiver?)admission)?.Exit();
 
+    // Recovery dispatches these rows only after its pass commits: their claim must commit before the handler runs.
+    internal bool IsAtLeastOnce(in OutboxRecord row) =>
+        _transports.TryGetValue(row.TransportName, out var transport)
+        && PostgreSqlLocalTransport.Find(transport)?.GetReceiver(row.Message.Destination)?.AtLeastOnce == true;
+
     protected override async ValueTask<bool> RecordSendFailureAsync(OutboxDispatchBatch batch, int index, Exception error,
         CancellationToken cancellationToken, bool propagateDatabaseFailures, bool retryable = true)
     {
+        // A failed at-least-once completion is not a failed attempt: the claim expires and the row is delivered again.
+        // Recovery still surfaces its database error, so change capture never checkpoints past it.
+        if (error is PostgreSqlLocalCompletionFailure completion)
+        {
+            if (propagateDatabaseFailures && completion.InnerException is { } database) ExceptionDispatchInfo.Throw(database);
+            return false;
+        }
         BufferedOutboxMessage? row = null;
         for (var i = 0; i < batch.Count; i++)
             if (batch.Rows[i].Id == _claims[index].MessageId) { row = batch.Rows[i]; break; }
