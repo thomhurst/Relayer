@@ -35,11 +35,11 @@ public class KafkaSeekTests
         var pending = consumer.SeekAsync(new(fixture.Destination, 0, 0), null, token).AsTask();
         release.SetResult();
         await Assert.That(async () => await consumer.Completion.WaitAsync(token)).Throws<OperationCanceledException>();
-        await Assert.That(async () => await pending).Throws<InvalidOperationException>().WithMessageContaining("stopped before applying");
+        await Assert.That(async () => await pending).Throws<InvalidOperationException>().WithMessageContaining("stopped before the seek");
     }
 
     [Test]
-    public async Task Offset_replay_drains_inflight_work_and_canceled_requests_do_not_seek()
+    public async Task Offset_replay_waits_for_inflight_work_and_canceled_requests_do_not_seek()
     {
         using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(2));
         var token = timeout.Token;
@@ -58,18 +58,15 @@ public class KafkaSeekTests
         await host.StartAsync(token);
         await state.Entered.Task.WaitAsync(token);
 
-        using (var canceled = CancellationTokenSource.CreateLinkedTokenSource(token))
-        {
-            var abandoned = control.SeekAsync(fixture.Destination, new TopicPartitionOffset(fixture.Destination, 0, 0), canceled.Token).AsTask();
-            await Assert.That(abandoned.IsCompleted).IsFalse();
-            canceled.Cancel();
-            await Assert.That(async () => await abandoned).Throws<OperationCanceledException>();
-        }
+        // A request canceled before the runtime starts it never seeks.
+        await Assert.That(async () => await control.SeekAsync(fixture.Destination, new TopicPartitionOffset(fixture.Destination, 0, 0),
+            new CancellationToken(canceled: true))).Throws<OperationCanceledException>();
         var replay = control.SeekAsync(fixture.Destination, new TopicPartitionOffset(fixture.Destination, 0, 1), token).AsTask();
         await Assert.That(replay.IsCompleted).IsFalse();
         state.Release.SetResult();
         await replay;
-        foreach (var expected in new long[] { 0, 1, 2, 1, 2 })
+        // The native seek discards records queued behind the held one, then restarts at offset 1.
+        foreach (var expected in new long[] { 0, 1, 2 })
             await Assert.That(await state.Handled.Reader.ReadAsync(token)).IsEqualTo(expected);
         await host.StopAsync(token);
         await Assert.That(async () => await control.SeekAsync(fixture.Destination, new TopicPartitionOffset(fixture.Destination, 0, 0), token))
@@ -126,7 +123,7 @@ public class KafkaSeekTests
     }
 
     [Test]
-    public async Task Duplicate_declarations_are_rejected_and_shutdown_cancels_queued_seek()
+    public async Task Duplicate_declarations_are_rejected_and_shutdown_fails_a_pending_seek()
     {
         using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(2));
         var token = timeout.Token;
@@ -148,8 +145,8 @@ public class KafkaSeekTests
         transport.Consumers.RemoveAt(1);
         var replay = control.SeekAsync(fixture.Destination, new TopicPartitionOffset(fixture.Destination, 0, 0), token).AsTask();
         var stopping = host.StopAsync(token);
-        await Assert.That(async () => await replay).Throws<OperationCanceledException>();
         state.Release.SetResult();
+        await Assert.That(async () => await replay).Throws<InvalidOperationException>().WithMessageContaining("stopped before the seek");
         await stopping;
     }
 

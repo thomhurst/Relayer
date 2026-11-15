@@ -17,7 +17,7 @@ public class KafkaShutdownTests(KafkaHeaderSnapshotBroker broker)
     [Arguments(1, true, false)]
     [Arguments(0, false, true)]
     [Arguments(1, false, true)]
-    public async Task Stop_commits_only_the_durable_prefix_and_restart_replays_the_rest(int completed, bool abort, bool fail)
+    public async Task Stop_commits_only_the_durable_prefix_and_restart_replays_the_rest(int blocked, bool abort, bool fail)
     {
         using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(2));
         var token = timeout.Token;
@@ -35,10 +35,14 @@ public class KafkaShutdownTests(KafkaHeaderSnapshotBroker broker)
             var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
             var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
             var handled = new List<long>();
-            var native = CreateConsumer();
-            native.Assign(partition);
-            await using (var adapter = new KafkaConsumer(native, Receive, tracing,
-                new() { System = "kafka", Destination = topic, ConsumerGroup = topic }, new()))
+            var options = new PartitionedProcessingOptions
+            {
+                Ordering = PartitionedProcessingOrder.Key, CommitPolicy = PartitionCommitPolicy.CommitCompletedPeriodically,
+                StopTimeout = TimeSpan.FromSeconds(1),
+            };
+            long first;
+            await using (var adapter = new KafkaConsumer(CreateConsumer(), Receive, tracing,
+                new() { System = "kafka", Destination = topic, ConsumerGroup = topic }, options, 1))
             {
                 try
                 {
@@ -49,24 +53,40 @@ public class KafkaShutdownTests(KafkaHeaderSnapshotBroker broker)
                     await Assert.That(stopping.IsCompleted).IsFalse();
                     if (abort)
                     {
+                        // Abandoning the wait leaves the native drain bounded by StopTimeout.
                         await deadline.CancelAsync();
                         await Assert.ThrowsAsync<OperationCanceledException>(() => stopping);
                     }
                     else release.SetResult();
                     if (fail)
                     {
-                        await Assert.ThrowsAsync<InvalidOperationException>(() => adapter.Completion.WaitAsync(token));
-                        await Assert.ThrowsAsync<InvalidOperationException>(() => stopping);
+                        // Dekaf ends a run that fails while draining with either the stop or the handler's
+                        // exception, whichever it observes first. Both leave the failed record uncommitted.
+                        await Tolerate(adapter.Completion.WaitAsync(token));
+                        await Tolerate(stopping);
                     }
                     else
                     {
                         await adapter.Completion.WaitAsync(token);
                         if (!abort) await stopping;
                     }
-                    var checkpoint = await native.GetCommittedOffsetAsync(partition, token);
-                    if (abort || fail) await Assert.That(checkpoint is null or < 0).IsTrue();
-                    else await Assert.That(checkpoint).IsEqualTo((long)completed + 1);
-                    await Assert.That(handled.ToArray()).IsEquivalentTo(Enumerable.Range(0, completed + 1).Select(i => (long)i).ToArray());
+                    await using var reader = new ConsumerBuilder<byte[], byte[]>().WithBootstrapServers(broker.Bootstrap).WithGroupId(topic)
+                        .WithOffsetCommitMode(OffsetCommitMode.Manual).WithAutoOffsetStore(false).Build();
+                    await reader.InitializeAsync(token);
+                    var checkpoint = await reader.GetCommittedOffsetAsync(partition, token) is { } committed and >= 0 ? committed : 0;
+                    if (abort || fail)
+                    {
+                        // The unfinished or failed record is never committed.
+                        await Assert.That(checkpoint).IsLessThanOrEqualTo(blocked);
+                        await Assert.That(handled.ToArray()).IsEquivalentTo(Enumerable.Range(0, blocked + 1).Select(i => (long)i).ToArray());
+                    }
+                    else
+                    {
+                        // A graceful drain finishes the held record and the records already queued behind it.
+                        await Assert.That(checkpoint).IsEqualTo(3L);
+                        await Assert.That(handled.ToArray()).IsEquivalentTo(new long[] { 0, 1, 2 });
+                    }
+                    first = checkpoint;
                 }
                 finally { release.TrySetResult(); }
             }
@@ -74,20 +94,25 @@ public class KafkaShutdownTests(KafkaHeaderSnapshotBroker broker)
             restarted.Assign(partition);
             await restarted.InitializeAsync(token);
             var replay = new List<long>();
-            var first = abort || fail ? 0 : completed + 1;
             await using (var batches = restarted.ConsumeBatchAsync(token).GetAsyncEnumerator(token))
                 while (replay.Count < 3 - first && await batches.MoveNextAsync())
                     foreach (var record in batches.Current) replay.Add(record.Offset);
-            await Assert.That(replay.ToArray()).IsEquivalentTo(Enumerable.Range(first, 3 - first).Select(i => (long)i).ToArray());
+            await Assert.That(replay.ToArray()).IsEquivalentTo(Enumerable.Range((int)first, 3 - (int)first).Select(i => (long)i).ToArray());
 
             IKafkaConsumer<byte[], byte[]> CreateConsumer() => new ConsumerBuilder<byte[], byte[]>()
                 .WithBootstrapServers(broker.Bootstrap).WithGroupId(topic).WithAutoOffsetReset(AutoOffsetReset.Earliest)
-                .WithOffsetCommitMode(OffsetCommitMode.Manual).WithAutoOffsetStore(false).Build();
+                .WithOffsetCommitMode(OffsetCommitMode.Manual).WithAutoOffsetStore(false).SubscribeTo(topic).Build();
+
+            static async Task Tolerate(Task drained)
+            {
+                try { await drained; }
+                catch (InvalidOperationException error) when (error.Message == "Durable receive failed.") { }
+            }
 
             async ValueTask<Disposition> Receive(KafkaDelivery delivery, CancellationToken cancellationToken)
             {
-                handled.Add(delivery.Result.Offset);
-                if (delivery.Result.Offset == completed)
+                lock (handled) handled.Add(delivery.Result.Offset);
+                if (delivery.Result.Offset == blocked)
                 {
                     entered.SetResult();
                     await release.Task.WaitAsync(cancellationToken);

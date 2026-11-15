@@ -13,8 +13,9 @@ using Relayer.Serialization;
 
 namespace Relayer.Benchmarks;
 
-/// <summary>Broker-backed native fetch batches, default JSON and completed-offset commits, versus raw Dekaf.</summary>
-/// <remarks>Each invocation replays one fixed 4096-record workload. Iteration setup seeks outside the measurement.</remarks>
+/// <summary>Broker-backed Dekaf partitioned runtime, default JSON and runtime-managed commits, versus the same runtime with a raw handler.</summary>
+/// <remarks>Each invocation replays one fixed 4096-record workload and stops the run once every record completes,
+/// including the stop commit. Iteration setup seeks outside the measurement.</remarks>
 [MemoryDiagnoser]
 public class KafkaReceiveBenchmarks
 {
@@ -23,17 +24,17 @@ public class KafkaReceiveBenchmarks
     private IKafkaConsumer<byte[], byte[]> _raw = null!;
     private IKafkaConsumer<byte[], byte[]> _native = null!;
     private KafkaConsumer _adapter = null!;
-    private KafkaWorkerHealth? _health;
     private ServiceProvider _provider = null!;
-    private readonly TopicPartitionOffset[] _offset = new TopicPartitionOffset[1];
-    private MessageTracing _tracing = null!;
+    private ReceivePipeline<KafkaDelivery, KafkaMessageBinding> _receive = null!;
+    private PartitionedProcessingOptions _rawOptions = null!;
+    private PartitionRecordProcessor<byte[], byte[]> _rawProcessor = null!;
+    private CancellationTokenSource _run = null!;
+    private int _count;
     private string _topic = null!;
 
     [Params(false, true)]
     public bool HealthEnabled { get; set; }
 
-    // Exercise native checkpoint ownership with both small and large poll windows;
-    // the adapter must not add a second assignment lookup for every record.
     [Params(32, 500)]
     public int MaxPollRecords { get; set; }
 
@@ -71,7 +72,7 @@ public class KafkaReceiveBenchmarks
             });
         });
         _provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
-        _tracing = _provider.GetRequiredService<MessageTracing>();
+        var tracing = _provider.GetRequiredService<MessageTracing>();
         var endpoint = new MessagingEndpoint { System = "kafka", Destination = _topic, ConsumerGroup = _topic + "relayer" };
         var telemetry = _provider.GetRequiredService<RelayerInstrumentation>().CreateEndpoint(new()
         {
@@ -82,11 +83,19 @@ public class KafkaReceiveBenchmarks
         var pipeline = new ConsumePipelineBuilder(_provider.GetRequiredService<IServiceScopeFactory>(),
             _provider.GetRequiredService<MessageTypeRegistry>(), _provider.GetRequiredService<IMessageSerializer>(),
             failures, _provider.GetService<IFailureClassifier>())
-            .Tracing(_tracing, endpoint).Telemetry(telemetry)
+            .Tracing(tracing, endpoint).Telemetry(telemetry)
             .Handler(_provider.GetRequiredService<HandlerRegistry>().GetHandler<KafkaBenchmarkPayload, KafkaBenchmarkHandler>()).Build(1);
-        var receive = new ReceivePipeline<KafkaDelivery, KafkaMessageBinding>(pipeline, new(), 1);
-        _health = HealthEnabled ? new KafkaWorkerHealth(TimeProvider.System) : null;
-        _adapter = new(_native, receive.ProcessAsync, _tracing, endpoint, new(), _health);
+        _receive = new ReceivePipeline<KafkaDelivery, KafkaMessageBinding>(pipeline, new(), 1);
+        var health = HealthEnabled ? new KafkaWorkerHealth(TimeProvider.System) : null;
+        _adapter = new(_native, ReceiveAsync, tracing, endpoint, KafkaProcessing.Defaults(1), 1, health);
+        // The raw run uses the same native ordering, limits and commit policy without Relayer's observer.
+        _rawOptions = new()
+        {
+            Ordering = PartitionedProcessingOrder.Key, MaxConcurrentHandlers = 1,
+            CommitPolicy = PartitionCommitPolicy.CommitCompletedPeriodically,
+            Monitor = HealthEnabled ? new PartitionedProcessingMonitor() : null,
+        };
+        _rawProcessor = RawAsync;
     }
 
     private async Task<IKafkaConsumer<byte[], byte[]>> BuildConsumer(string bootstrap, string suffix)
@@ -106,42 +115,41 @@ public class KafkaReceiveBenchmarks
     }
 
     [Benchmark(Baseline = true, OperationsPerInvoke = Records)]
-    public async Task<int> RawDekaf()
-    {
-        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-        var count = 0;
-        await foreach (var batch in _raw.ConsumeBatchAsync(timeout.Token))
-        {
-            foreach (var record in batch)
-            {
-                await using var scope = _provider.CreateAsyncScope();
-                var payload = JsonSerializer.Deserialize(record.Value, KafkaReceiveBenchmarkJson.Default.KafkaBenchmarkPayload);
-                await scope.ServiceProvider.GetRequiredService<KafkaBenchmarkHandler>().HandleAsync(payload, null!, timeout.Token);
-                count++;
-            }
-            if (batch.TryGetNextOffset(out var checkpoint))
-            {
-                _offset[0] = checkpoint;
-                await _raw.CommitAsync(_offset, timeout.Token);
-            }
-            if (count >= Records) return count;
-        }
-        throw new InvalidOperationException("Native stream ended before all benchmark records.");
-    }
+    public Task<int> RawDekaf() => RunAsync(_raw, _rawProcessor, _rawOptions);
 
     [Benchmark(OperationsPerInvoke = Records)]
-    public async Task<int> Relayer()
+    public Task<int> Relayer() => RunAsync(_native, _adapter.Processor, _adapter.Options);
+
+    private async Task<int> RunAsync(IKafkaConsumer<byte[], byte[]> consumer, PartitionRecordProcessor<byte[], byte[]> processor,
+        PartitionedProcessingOptions options)
     {
-        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-        var count = 0;
-        await foreach (var batch in _native.ConsumeBatchAsync(timeout.Token))
-        {
-            _health?.Progress();
-            count += await _adapter.ProcessBatchAsync(batch, timeout.Token);
-            _health?.Idle();
-            if (count >= Records) return count;
-        }
-        throw new InvalidOperationException("Native stream ended before all benchmark records.");
+        _count = 0;
+        using var run = _run = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        try { await consumer.RunPartitionedAsync(processor, options, run.Token); }
+        catch (OperationCanceledException) when (_count >= Records) { }
+        if (_count < Records) throw new InvalidOperationException("Native run ended before all benchmark records.");
+        return _count;
+    }
+
+    private void Completed()
+    {
+        if (++_count == Records) _run.Cancel();
+    }
+
+    private async ValueTask RawAsync(PartitionRecordProcessorContext<byte[], byte[]> context, ConsumeResult<byte[], byte[]> record,
+        CancellationToken cancellationToken)
+    {
+        await using var scope = _provider.CreateAsyncScope();
+        var payload = JsonSerializer.Deserialize(record.Value, KafkaReceiveBenchmarkJson.Default.KafkaBenchmarkPayload);
+        await scope.ServiceProvider.GetRequiredService<KafkaBenchmarkHandler>().HandleAsync(payload, null!, cancellationToken);
+        Completed();
+    }
+
+    private async ValueTask<Disposition> ReceiveAsync(KafkaDelivery delivery, CancellationToken cancellationToken)
+    {
+        var disposition = await _receive.ProcessAsync(delivery, cancellationToken);
+        Completed();
+        return disposition;
     }
 
     [GlobalCleanup]

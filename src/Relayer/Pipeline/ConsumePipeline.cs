@@ -56,6 +56,8 @@ public sealed partial class ConsumePipeline
     private int _batchCursor;
     internal ConsumerCircuit? Circuit { get; set; }
     internal Action<bool>? CircuitChanged { get; set; }
+    // Without native delivery limits (Kafka), permanent failures must dead-letter rather than be held by the circuit.
+    internal bool CircuitCountsRetryFailuresOnly { get; set; }
 
     internal ConsumePipeline(IServiceScopeFactory scopes, FrozenDictionary<MessageType, ConsumeDelegate> dispatch,
         IReadOnlyList<IConsumeMiddleware> middleware, ConsumeFailureDelegate failure, IFailureClassifier classifier,

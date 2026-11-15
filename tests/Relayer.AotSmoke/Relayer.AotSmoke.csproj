@@ -26,6 +26,7 @@
     <ProjectReference Include="../../src/Relayer.Nats/Relayer.Nats.csproj" />
     <ProjectReference Include="../../src/Relayer.RabbitMQ.Streams/Relayer.RabbitMQ.Streams.csproj" />
     <ProjectReference Include="../../src/Relayer.Kafka.SchemaRegistry/Relayer.Kafka.SchemaRegistry.csproj" />
+    <ProjectReference Include="../../src/Relayer.Kafka.Serialization.Avro/Relayer.Kafka.Serialization.Avro.csproj" />
     <ProjectReference Include="../../src/Relayer.AzureServiceBus.HealthChecks/Relayer.AzureServiceBus.HealthChecks.csproj" />
     <ProjectReference Include="../../src/Relayer.Testing/Relayer.Testing.csproj" />
     <ProjectReference Include="../../src/Relayer.HealthChecks/Relayer.HealthChecks.csproj" />
@@ -37,6 +38,7 @@
   </ItemGroup>
   <ItemGroup>
     <Compile Include="../Shared/ConcurrentReceiveFixture.cs" Link="ConcurrentReceiveFixture.cs" />
+    <Compile Include="../Shared/AvroFixture.cs" Link="AvroFixture.cs" />
     <Compile Include="../Shared/SendTracingCompletionFixture.cs" Link="SendTracingCompletionFixture.cs" />
   </ItemGroup>
 </Project>

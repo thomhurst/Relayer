@@ -26,7 +26,7 @@ internal sealed class KafkaConsumerHealth(TimeProvider clock)
             var idleAt = 0L;
             foreach (var worker in workers)
             {
-                // One atomic value: zero unavailable, negative idle, positive active progress.
+                // Zero unavailable, negative idle, positive oldest outstanding record.
                 var progress = worker.Read();
                 if (progress == 0) return null;
                 if (progress > 0) oldest = Math.Min(oldest, progress);
@@ -39,11 +39,16 @@ internal sealed class KafkaConsumerHealth(TimeProvider clock)
     }
 }
 
+// Reads Dekaf's PartitionedProcessingMonitor: the oldest buffered or in-flight record, which does not
+// advance while one partition is stuck and others progress.
 internal sealed class KafkaWorkerHealth(TimeProvider clock)
 {
-    private long _progress;
-    internal long Read() => Volatile.Read(ref _progress);
-    internal void Progress() => Volatile.Write(ref _progress, clock.GetUtcNow().UtcTicks);
-    internal void Idle() => Volatile.Write(ref _progress, -clock.GetUtcNow().UtcTicks);
-    internal void Unavailable() => Volatile.Write(ref _progress, 0);
+    private Func<DateTimeOffset?>? _oldestOutstanding;
+    internal void Start(Func<DateTimeOffset?> oldestOutstanding) => Volatile.Write(ref _oldestOutstanding, oldestOutstanding);
+    internal void Unavailable() => Volatile.Write(ref _oldestOutstanding, null);
+    internal long Read()
+    {
+        if (Volatile.Read(ref _oldestOutstanding) is not { } oldest) return 0;
+        return oldest() is { } at ? Math.Max(1, at.UtcTicks) : -clock.GetUtcNow().UtcTicks;
+    }
 }
