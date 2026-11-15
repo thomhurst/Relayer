@@ -35,10 +35,19 @@ internal sealed class KafkaHostedService(IServiceProvider provider, string name)
         catch (Exception) { _failure.TrySetResult(completion); }
     }
 
-    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+    // Report a failure immediately; a healthy sibling can run indefinitely.
+    protected override Task ExecuteAsync(CancellationToken stoppingToken) => ReportFailureAsync(_failure.Task, stoppingToken);
+
+    internal static async Task ReportFailureAsync(Task<Task> failure, CancellationToken stoppingToken)
     {
-        // Report a failure immediately; a healthy sibling can run indefinitely.
-        var failed = await _failure.Task.WaitAsync(stoppingToken).ConfigureAwait(false);
+        Task failed;
+        try { failed = await failure.WaitAsync(stoppingToken).ConfigureAwait(false); }
+        catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested && failure.IsCompleted)
+        {
+            // The failure resumes its waiters asynchronously, so a stop can cancel the wait after a consumer
+            // already failed; report that failure instead of a clean stop.
+            failed = await failure.ConfigureAwait(false);
+        }
         await failed.ConfigureAwait(false);
     }
 
