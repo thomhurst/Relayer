@@ -2,7 +2,7 @@
 
 **Messaging for .NET without the boilerplate.** Relayer wraps the native client for your broker and takes care of everything you would otherwise write around it: retries, dead-lettering, the outbox, tracing, serialization, topology and testing.
 
-> **Status:** early development. Packages are not on NuGet yet. The [roadmap](https://relayer.tomlonghurst.dev/docs/roadmap) lists what works today.
+> **Status:** early development. Pre-1.0 packages are on [NuGet](https://www.nuget.org/packages/Relayer), and APIs may still change. The [roadmap](https://relayer.tomlonghurst.dev/docs/roadmap) lists what works today.
 
 ## The name
 
@@ -113,7 +113,14 @@ Outbox stores: PostgreSQL, SQL Server and MySQL. RabbitMQ Streams and Apache Pul
 
 ## Try it
 
-Relayer needs the .NET 11 SDK and the .NET 10 runtime. This sample runs without a broker:
+Relayer targets .NET 10 and later. Add the core package and the transport for your broker:
+
+```shell
+dotnet add package Relayer
+dotnet add package Relayer.Kafka
+```
+
+Or run a sample from the repository, which needs the .NET 11 SDK and the .NET 10 runtime. This one runs without a broker:
 
 ```shell
 git clone https://github.com/thomhurst/Relayer.git
