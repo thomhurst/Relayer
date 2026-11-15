@@ -261,6 +261,28 @@ public class ServiceBusSendTests
     }
 
     [Test]
+    public async Task Route_callback_on_a_selector_route_applies_to_every_declared_destination()
+    {
+        var client = new NativeClient();
+        var services = new ServiceCollection();
+        services.AddRelayer(builder => builder.AddMessageTypesFromThisAssembly().ServiceBus("bus", bus =>
+        {
+            bus.Options.Configure(options => { options.Client = client; options.Topics.Add(new("events-a")); options.Topics.Add(new("events-b")); });
+            bus.Send<First>(["events-a", "events-b"], static _ => "events-a",
+                route => route.ServiceBus(static (_, native) => native.Subject = "route"));
+        }));
+        await using var provider = services.BuildServiceProvider();
+        var transport = provider.GetServices<ITransport>().Single();
+        KeyValuePair<string, WireString>[] headers = [new("cloudEvents:type", new WireString("servicebus.first;v=1"))];
+
+        await transport.SendAsync(new OutgoingMessage("events-a", new byte[] { 1 }, headers), default);
+        await transport.SendAsync(new OutgoingMessage("events-b", new byte[] { 2 }, headers), default);
+
+        await Assert.That(client.Senders.Single(sender => sender.Entity == "events-a").Sent.Single().Subject).IsEqualTo("route");
+        await Assert.That(client.Senders.Single(sender => sender.Entity == "events-b").Sent.Single().Subject).IsEqualTo("route");
+    }
+
+    [Test]
     public async Task Route_callback_on_a_raw_envelope_route_fails_at_construction()
     {
         var client = new NativeClient();

@@ -61,6 +61,16 @@ Each send enlists one outbox row per route in the same transaction, in declarati
 
 Sending to several routes needs an active outbox transaction. A direct send cannot be atomic across destinations, so `SendNowAsync`, and `SendAsync` without an active transaction, fail before anything is sent. Request and response types need exactly one route. A repeated route to the same destination fails at startup.
 
+## Choosing the destination per message
+
+A route can declare several native destinations and pick one from each message at send time. This suits one envelope type that carries many logical events, or destinations partitioned by a field such as region:
+
+```csharp
+kafka.Send<IntegrationEnvelope>(["orders-eu", "orders-us"], static message => message.Topic);
+```
+
+Every declared destination is validated and provisioned at startup like a single-destination route, and the route's `SendOptions` and ordering key apply to each. The selector runs once per send, before middleware and outbox enlistment, so the outbox row stores the selected destination and dispatch is unchanged. A selector that returns a destination the route does not declare fails the send with an `InvalidOperationException`. A selector route counts as one route when the message type also has other routes, so a send through the outbox enlists one row for the selected destination plus one for each other route ([sending to several routes](#sending-to-several-routes)); declaring the same destination in both fails at startup. Selector routes cannot carry request replies or typed tombstones, which need a single-destination route.
+
 String ordering selectors remain strings. Scalar selectors constrained to `IUtf8SpanFormattable` format into pooled UTF-8 storage without boxing or allocating a string. `OutgoingMessage.OrderingKey` carries either representation as a nullable `WireString`. A native adapter uses the original text or bytes directly, or converts at its required native boundary.
 
 Use per-send options to add native headers, override the route's ordering key, schedule delivery, or configure the native outgoing message:

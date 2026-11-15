@@ -61,6 +61,29 @@ public sealed class TransportBuilder<TTransportOptions, TConsumerOptions>
         return this;
     }
 
+    /// <summary>Declares a message type sent to one of several native destinations, chosen from each message at send time.</summary>
+    /// <remarks>
+    /// Each declared destination is validated and provisioned at startup like a single route. A send whose selector returns
+    /// a destination that is not declared here fails. Replies and tombstones require a single-destination route.
+    /// </remarks>
+    public TransportBuilder<TTransportOptions, TConsumerOptions> Send<TMessage>(IEnumerable<string> destinations,
+        Func<TMessage, string> destination, Action<RouteBuilder<TMessage>>? configure = null)
+    {
+        EnsureMutable();
+        ArgumentNullException.ThrowIfNull(destinations);
+        ArgumentNullException.ThrowIfNull(destination);
+        var declared = destinations.ToArray();
+        if (declared.Length == 0) throw new ArgumentException("Declare at least one destination.", nameof(destinations));
+        if (Array.IndexOf(declared, null) >= 0) throw new ArgumentNullException(nameof(destinations), "A destination must not be null.");
+        if (declared.Distinct(StringComparer.Ordinal).Count() != declared.Length)
+            throw new ArgumentException("Declare each destination once.", nameof(destinations));
+        var route = new RouteBuilder<TMessage>(declared[0]);
+        route.SendOptions = _sendDefaults;
+        configure?.Invoke(route);
+        _routes.AddRange(route.Build(declared, destination));
+        return this;
+    }
+
     /// <summary>Declares a request send route and a dedicated, process-local reply consumer.</summary>
     /// <remarks>Give each requesting process its own reply endpoint. The responder declares an ordinary Send route to that endpoint.</remarks>
     public TransportBuilder<TTransportOptions, TConsumerOptions> Request<TRequest, TResponse>(

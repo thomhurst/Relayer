@@ -20,6 +20,7 @@ public class SendPipelineBenchmarks
     private readonly SinkTransport _transport = new();
     private readonly ArrayBufferWriter<byte> _buffer = new();
     private readonly SendOrder _message = new(42);
+    private readonly RegionalSendOrder _regionalMessage = new(42, "orders-us");
 
     [Params(false, true)]
     public bool Middleware { get; set; }
@@ -37,7 +38,10 @@ public class SendPipelineBenchmarks
         {
             builder.AddMessageTypesFromThisAssembly();
             builder.AddTransport<SendBenchmarkOptions, SendBenchmarkOptions>("sink",
-                transport => transport.Send<SendOrder>("orders", route => route.OrderingKey(static message => message.Id)));
+                transport => transport
+                    .Send<SendOrder>("orders", route => route.OrderingKey(static message => message.Id))
+                    .Send<RegionalSendOrder>(["orders-eu", "orders-us"], static message => message.Region,
+                        route => route.OrderingKey(static message => message.Id)));
             if (Middleware) builder.UseSendMiddleware<PassThroughMiddleware>();
         });
         _provider = services.BuildServiceProvider();
@@ -60,6 +64,9 @@ public class SendPipelineBenchmarks
 
     [Benchmark]
     public ValueTask DirectSend() => _sender.SendAsync(_message);
+
+    [Benchmark]
+    public ValueTask SelectedDestinationSend() => _sender.SendAsync(_regionalMessage);
 
     [GlobalCleanup]
     public void Cleanup()
@@ -94,4 +101,6 @@ public class SendPipelineBenchmarks
 
 [Message("bench.send-order")]
 public sealed record SendOrder(int Id);
+[Message("bench.regional-send-order")]
+public sealed record RegionalSendOrder(int Id, string Region);
 public sealed class SendBenchmarkOptions;

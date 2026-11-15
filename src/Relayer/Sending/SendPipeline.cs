@@ -30,11 +30,13 @@ internal interface ISendRouteDefinition
     Delegate? NativeConfigurator { get; }
     /// <summary>The transport options type whose transport understands <see cref="NativeConfigurator"/>.</summary>
     Type? NativeTransportOptionsType { get; }
-    SendRouteRegistration CreateSendRegistration(string transportName);
+    /// <summary>Whether this declaration is a further destination of a route that another declaration registers.</summary>
+    bool IsAdditionalDestination { get; }
+    SendRouteRegistration? CreateSendRegistration(string transportName);
 }
 
-internal sealed class SendRouteRegistration<TMessage>(string transportName, string destination, SendRouteOptions options,
-    IOrderingKeySelector<TMessage>? orderingKey)
+internal sealed class SendRouteRegistration<TMessage>(string transportName, string[] destinations, Func<TMessage, string>? selector,
+    SendRouteOptions options, IOrderingKeySelector<TMessage>? orderingKey)
     : SendRouteRegistration
 {
     internal override object Key => SendRouteKey<TMessage>.Value;
@@ -66,15 +68,24 @@ internal sealed class SendRouteRegistration<TMessage>(string transportName, stri
         }
         var failures = new List<string>();
         options.Validate($"Send route '{messageType}'", failures);
-        var capabilities = capabilitiesCache.GetCapabilities(transport, destination);
-        SendCapabilityValidator.Validate(options, capabilities, orderingKey is not null, outbox,
-            $"Send route '{messageType}' on transport '{transportName}' to endpoint '{destination}'", failures);
-        if (orderingKey is not null && !capabilities.OrderedByKey)
+        var capabilities = new TransportCapabilities[destinations.Length];
+        for (var i = 0; i < destinations.Length; i++)
         {
-            failures.Add($"Send route '{messageType}' on transport '{transportName}' to endpoint '{destination}' declares an OrderingKey, but the endpoint does not support OrderedByKey. Configure an endpoint with native ordering or remove the OrderingKey declaration.");
+            var destination = destinations[i];
+            capabilities[i] = capabilitiesCache.GetCapabilities(transport, destination);
+            SendCapabilityValidator.Validate(options, capabilities[i], orderingKey is not null, outbox,
+                $"Send route '{messageType}' on transport '{transportName}' to endpoint '{destination}'", failures);
+            if (orderingKey is not null && !capabilities[i].OrderedByKey)
+            {
+                failures.Add($"Send route '{messageType}' on transport '{transportName}' to endpoint '{destination}' declares an OrderingKey, but the endpoint does not support OrderedByKey. Configure an endpoint with native ordering or remove the OrderingKey declaration.");
+            }
         }
         if (failures.Count != 0) throw new OptionsValidationException(Options.DefaultName, typeof(SendRouteOptions), failures);
-        return new SendRoute<TMessage>(transport, destination, messageType, options, orderingKey, serializer, pipeline, capabilities);
+        var routes = new SendRoute<TMessage>[destinations.Length];
+        for (var i = 0; i < routes.Length; i++)
+            routes[i] = new SendRoute<TMessage>(transport, destinations[i], messageType, options, orderingKey, serializer, pipeline, capabilities[i]);
+        if (selector is not null) routes[0].RouteBy(selector, routes);
+        return routes[0];
     }
 }
 
@@ -117,7 +128,7 @@ internal sealed class SendPipeline
                 {
                     throw new InvalidOperationException($"Route for '{definition.MessageType}' on transport '{transport.Name}': a message type can have only one route to each destination; '{definition.Destination}' is declared more than once.");
                 }
-                var registration = ((ISendRouteDefinition)definition).CreateSendRegistration(transport.Name);
+                if (((ISendRouteDefinition)definition).CreateSendRegistration(transport.Name) is not { } registration) continue;
                 var route = registration.Build(types, namedTransports, serializer, pipeline, capabilitiesCache, outbox);
                 Add(declared, registration, registration.Key, route, tombstone: false);
                 if (registration.BuildTombstone(route) is { } tombstone)

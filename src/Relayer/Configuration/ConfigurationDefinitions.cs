@@ -62,14 +62,16 @@ public sealed class RouteDefinition<TMessage> : IRouteDefinition, ISendRouteDefi
 {
     private readonly Delegate? _orderingKey;
     private readonly IOrderingKeySelector<TMessage>? _sendOrderingKey;
+    private readonly DestinationGroup<TMessage>? _group;
 
     internal RouteDefinition(string destination, Delegate? orderingKey,
-        IOrderingKeySelector<TMessage>? sendOrderingKey, SendRouteOptions sendOptions)
+        IOrderingKeySelector<TMessage>? sendOrderingKey, SendRouteOptions sendOptions, DestinationGroup<TMessage>? group = null)
     {
         Destination = destination;
         _orderingKey = orderingKey;
         _sendOrderingKey = sendOrderingKey;
         SendOptions = sendOptions;
+        _group = group;
     }
 
     /// <inheritdoc />
@@ -85,8 +87,12 @@ public sealed class RouteDefinition<TMessage> : IRouteDefinition, ISendRouteDefi
     Delegate? ISendRouteDefinition.NativeConfigurator => NativeConfigurator;
     Type? ISendRouteDefinition.NativeTransportOptionsType => NativeTransportOptionsType;
 
-    SendRouteRegistration ISendRouteDefinition.CreateSendRegistration(string transportName) =>
-        new SendRouteRegistration<TMessage>(transportName, Destination, SendOptions, _sendOrderingKey);
+    bool ISendRouteDefinition.IsAdditionalDestination => _group is not null && _group.Destinations[0] != Destination;
+
+    SendRouteRegistration? ISendRouteDefinition.CreateSendRegistration(string transportName) =>
+        ((ISendRouteDefinition)this).IsAdditionalDestination ? null
+            : new SendRouteRegistration<TMessage>(transportName, _group?.Destinations ?? [Destination], _group?.Selector, SendOptions, _sendOrderingKey);
+
     /// <summary>Whether a native ordering key selector was declared.</summary>
     public bool HasOrderingKey => _orderingKey is not null;
 
@@ -97,6 +103,13 @@ public sealed class RouteDefinition<TMessage> : IRouteDefinition, ISendRouteDefi
         return _orderingKey as Func<TMessage, TKey>
             ?? throw new InvalidOperationException($"The ordering key for {typeof(TMessage)} is not {typeof(TKey)}.");
     }
+}
+
+/// <summary>The destinations of one route and the selector that chooses among them per message.</summary>
+internal sealed class DestinationGroup<TMessage>(string[] destinations, Func<TMessage, string> selector)
+{
+    internal string[] Destinations { get; } = destinations;
+    internal Func<TMessage, string> Selector { get; } = selector;
 }
 
 /// <summary>A consumer's portable configuration. Native consumer options remain typed on the concrete declaration.</summary>
