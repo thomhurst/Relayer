@@ -401,13 +401,58 @@ public class ServiceBusSendTests
     [Test]
     [Arguments("missing")]
     [Arguments("orders")]
-    [Arguments("events")]
+    [Arguments("events/Subscriptions/audit")]
     public async Task Trust_requires_a_session_enabled_native_entity_declaration(string entity)
     {
         var options = Options(new NativeClient());
         options.TrustedSessionEntities.Add(entity);
         await Assert.That(() => ServiceBusSendTransport.ValidateDeclarations("bus", options, ["orders"]))
             .Throws<InvalidOperationException>().WithMessageContaining("RequiresSession=true");
+    }
+
+    [Test]
+    [Arguments(TopologyMode.Validate)]
+    [Arguments(TopologyMode.None)]
+    public async Task Trusted_topic_orders_sends_without_declaring_subscriptions(TopologyMode mode)
+    {
+        var client = new NativeClient();
+        var options = Options(client);
+        options.TrustedSessionEntities.Add("events");
+        ServiceBusSendTransport.ValidateDeclarations("bus", options, ["events"]);
+        await using var transport = new ServiceBusSendTransport("bus", client, false, options, ["events"], mode);
+        await Assert.That(transport.GetCapabilities("events").OrderedByKey).IsTrue();
+        var report = await transport.ApplyTopologyAsync(mode, default);
+        await Assert.That(report.Differences.Count).IsEqualTo(0);
+        await transport.SendAsync(new("events", default, orderingKey: new WireString("customer")), default);
+        await Assert.That(client.Senders[0].Sent.Single().SessionId).IsEqualTo("customer");
+    }
+
+    [Test]
+    public async Task Trusted_topic_covers_declared_session_subscriptions_and_rejects_plain_ones()
+    {
+        var client = new NativeClient();
+        var options = Options(client);
+        options.Subscriptions.Add(new("events", "audit") { RequiresSession = true });
+        options.TrustedSessionEntities.Add("events");
+        var report = await new ServiceBusTopology("bus", client, options, null).ApplyAsync(TopologyMode.Validate, default);
+        await Assert.That(report.Differences.Count).IsEqualTo(0);
+        await Assert.That(client.Receiver.Peeks).IsEqualTo(0);
+        options.Subscriptions.Add(new("events", "billing"));
+        await Assert.That(() => ServiceBusSendTransport.ValidateDeclarations("bus", options, ["events"]))
+            .Throws<InvalidOperationException>().WithMessageContaining("events/Subscriptions/billing");
+    }
+
+    [Test]
+    public async Task Provision_reports_undeclared_non_session_subscriptions_on_a_trusted_topic()
+    {
+        var client = new NativeClient();
+        var admin = new NativeAdministration();
+        var options = Options(client);
+        options.TrustedSessionEntities.Add("events");
+        admin.Subscriptions.Add(NativeAdministration.Properties(new("events", "audit") { RequiresSession = true }));
+        admin.Subscriptions.Add(NativeAdministration.Properties(new("events", "billing")));
+        var report = await new ServiceBusTopology("bus", client, options, admin).ApplyAsync(TopologyMode.Provision, default);
+        await Assert.That(report.Differences.Single()).Contains("'events/Subscriptions/billing': RequiresSession expected 'True', actual 'False'");
     }
 
     private sealed class LaneEnlistment : IOutboxEnlistment
@@ -585,7 +630,10 @@ public class ServiceBusSendTests
         internal QueueProperties? Queue;
         internal TopicProperties? Topic;
         internal SubscriptionProperties? Subscription;
+        internal List<SubscriptionProperties> Subscriptions { get; } = [];
         internal Exception? Failure;
+        public override AsyncPageable<SubscriptionProperties> GetSubscriptionsAsync(string topicName, CancellationToken cancellationToken = default)
+        { Calls++; return AsyncPageable<SubscriptionProperties>.FromPages([Page<SubscriptionProperties>.FromValues(Subscriptions, null, null!)]); }
         public override Task<Response<QueueProperties>> GetQueueAsync(string name, CancellationToken cancellationToken = default)
         { Calls++; return Read(Queue); }
         public override Task<Response<TopicProperties>> GetTopicAsync(string name, CancellationToken cancellationToken = default)
@@ -613,11 +661,12 @@ public class ServiceBusSendTests
         public override Task<Response<SubscriptionProperties>> CreateSubscriptionAsync(CreateSubscriptionOptions o, CancellationToken cancellationToken = default)
         {
             Calls++; Created.Add(o.TopicName + "/Subscriptions/" + o.SubscriptionName);
-            Subscription = ServiceBusModelFactory.SubscriptionProperties(o.TopicName, o.SubscriptionName, o.LockDuration, o.RequiresSession,
-                o.DefaultMessageTimeToLive, o.AutoDeleteOnIdle, o.DeadLetteringOnMessageExpiration, o.MaxDeliveryCount,
-                o.EnableBatchedOperations, o.Status, o.ForwardTo, o.ForwardDeadLetteredMessagesTo, o.UserMetadata ?? "");
+            Subscription = Properties(o);
             return Task.FromResult(Response.FromValue(Subscription, null!));
         }
+        internal static SubscriptionProperties Properties(CreateSubscriptionOptions o) => ServiceBusModelFactory.SubscriptionProperties(o.TopicName, o.SubscriptionName, o.LockDuration, o.RequiresSession,
+                o.DefaultMessageTimeToLive, o.AutoDeleteOnIdle, o.DeadLetteringOnMessageExpiration, o.MaxDeliveryCount,
+                o.EnableBatchedOperations, o.Status, o.ForwardTo, o.ForwardDeadLetteredMessagesTo, o.UserMetadata ?? "");
     }
 
     [Message("servicebus.first")]

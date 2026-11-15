@@ -44,7 +44,8 @@ internal sealed class ServiceBusTopology(string name, ServiceBusClient client,
             if (mode == TopologyMode.Validate)
             {
                 var entity = subscription.TopicName + "/Subscriptions/" + subscription.SubscriptionName;
-                var trusted = subscription.RequiresSession && options.TrustedSessionEntities.Contains(entity);
+                var trusted = subscription.RequiresSession &&
+                    (options.TrustedSessionEntities.Contains(entity) || options.TrustedSessionEntities.Contains(subscription.TopicName));
                 // A send-only identity cannot inspect subscriptions. Trusted send declarations belong to external topology.
                 if (!trusted || consumers?.Any(consumer => consumer.Source == subscription.TopicName &&
                     consumer is ConsumerDefinition<ServiceBusConsumerOptions> receive && receive.Options.Subscription == subscription.SubscriptionName) == true)
@@ -53,7 +54,23 @@ internal sealed class ServiceBusTopology(string name, ServiceBusClient client,
             }
             else await ProvisionSubscriptionAsync(subscription, differences, cancellationToken).ConfigureAwait(false);
         }
+        if (mode == TopologyMode.Provision)
+            foreach (var topic in options.Topics)
+                if (options.TrustedSessionEntities.Contains(topic.Name))
+                    await VerifyTopicSessionsAsync(topic.Name, differences, cancellationToken).ConfigureAwait(false);
         return new(differences);
+    }
+
+    // A trusted topic asserts sessions on subscriptions other applications own; Provision has the rights to list them.
+    private async Task VerifyTopicSessionsAsync(string topic, List<string> differences, CancellationToken cancellationToken)
+    {
+        await foreach (var subscription in Administration.GetSubscriptionsAsync(topic, cancellationToken).ConfigureAwait(false))
+        {
+            // Declared subscriptions are already compared against their own declaration.
+            if (subscription.RequiresSession || options.Subscriptions.Any(item => item.TopicName == topic && item.SubscriptionName == subscription.SubscriptionName))
+                continue;
+            differences.Add($"Entity '{topic}/Subscriptions/{subscription.SubscriptionName}': RequiresSession expected 'True', actual 'False'. TrustedSessionEntities entry '{topic}' asserts that every subscription on the topic requires sessions. Reconcile it through infrastructure configuration; Relayer never deletes or modifies existing entities.");
+        }
     }
 
     private async Task ValidateReceiveAsync(string source, string? subscription, List<string> differences, CancellationToken cancellationToken)

@@ -50,6 +50,56 @@ public class ServiceBusSendEmulatorTests
     }
 
     [Test]
+    public async Task Trusted_topic_orders_sends_to_external_session_subscriptions_and_provision_reports_plain_ones()
+    {
+        var stack = await SharedBrokers.ServiceBus.Value;
+        using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(2));
+        var token = timeout.Token;
+        await using var client = new ServiceBusClient(stack.Emulator.GetConnectionString());
+        var admin = new ServiceBusAdministrationClient(stack.Emulator.GetHttpConnectionString());
+        var topic = TestContext.Current!.Isolation.GetIsolatedName("trusted-topic");
+        var provisionOptions = new ServiceBusTransportOptions { Client = client, AdministrationClient = admin };
+        provisionOptions.Topics.Add(new(topic) { DefaultMessageTimeToLive = TimeSpan.FromHours(1), MaxSizeInMegabytes = 100,
+            DuplicateDetectionHistoryTimeWindow = TimeSpan.FromMinutes(10), SupportOrdering = true });
+        provisionOptions.TrustedSessionEntities.Add(topic);
+        await using var provision = new ServiceBusSendTransport("provision", client, false, provisionOptions,
+            [topic], TopologyMode.Provision, admin);
+        try
+        {
+            await Assert.That((await provision.ApplyTopologyAsync(TopologyMode.Provision, token)).Differences.Count).IsEqualTo(0);
+            // Another application owns the subscriptions; this producer declares only the topic.
+            await admin.CreateSubscriptionAsync(new CreateSubscriptionOptions(topic, "owned")
+            {
+                RequiresSession = true, DefaultMessageTimeToLive = TimeSpan.FromHours(1), AutoDeleteOnIdle = TimeSpan.FromHours(1)
+            }, token);
+            foreach (var mode in new[] { TopologyMode.Validate, TopologyMode.None })
+            {
+                var options = new ServiceBusTransportOptions { Client = client };
+                options.Topics.Add(new(topic));
+                options.TrustedSessionEntities.Add(topic);
+                await using var trusted = new ServiceBusSendTransport("trusted", client, false, options, [topic], mode);
+                await Assert.That((await trusted.ApplyTopologyAsync(mode, token)).Differences.Count).IsEqualTo(0);
+                await Assert.That(trusted.GetCapabilities(topic).OrderedByKey).IsTrue();
+                var key = "trusted-" + mode;
+                await trusted.SendAsync(new(topic, new byte[] { 8 }, orderingKey: new WireString(key)), token);
+                await using var session = await client.AcceptSessionAsync(topic, "owned", key, cancellationToken: token);
+                var received = await session.ReceiveMessageAsync(TimeSpan.FromSeconds(30), token)
+                    ?? throw new InvalidOperationException("Trusted topic send was not delivered.");
+                await Assert.That(received.SessionId).IsEqualTo(key);
+                await session.CompleteMessageAsync(received, token);
+            }
+            await admin.CreateSubscriptionAsync(new CreateSubscriptionOptions(topic, "plain")
+            {
+                DefaultMessageTimeToLive = TimeSpan.FromHours(1), AutoDeleteOnIdle = TimeSpan.FromHours(1)
+            }, token);
+            var report = await provision.ApplyTopologyAsync(TopologyMode.Provision, token);
+            await Assert.That(report.Differences.Single())
+                .Contains($"'{topic}/Subscriptions/plain': RequiresSession expected 'True', actual 'False'");
+        }
+        finally { await admin.DeleteTopicAsync(topic, CancellationToken.None); }
+    }
+
+    [Test]
     public async Task Native_sends_batches_sessions_scheduling_and_topology_round_trip()
     {
         using var instrumentation = new RelayerInstrumentation();

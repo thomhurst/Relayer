@@ -131,7 +131,7 @@ Emulator entities created through the administration endpoint do not survive an 
 
 ## Sessions, scheduling and native callbacks
 
-For native ordered queue sends, declare `CreateQueueOptions("orders") { RequiresSession = true }`, choose Provision (or explicitly trust the entity below) and configure `route.OrderingKey(order => order.CustomerId)`. For a topic, declare its session-enabled subscriptions; every declared subscription must require sessions before the topic advertises ordering. Relayer maps the resolved ordering key to native `SessionId`. Broker sessions and the receiver determine ordering; Relayer adds no ordering layer.
+For native ordered queue sends, declare `CreateQueueOptions("orders") { RequiresSession = true }`, choose Provision (or explicitly trust the entity below) and configure `route.OrderingKey(order => order.CustomerId)`. For a topic, either declare its session-enabled subscriptions (every declared subscription must require sessions before the topic advertises ordering), or trust the topic itself as shown below. Relayer maps the resolved ordering key to native `SessionId`. Broker sessions and the receiver determine ordering; Relayer adds no ordering layer.
 
 For externally provisioned topology and a runtime identity without Manage rights, explicitly trust each native session declaration:
 
@@ -146,7 +146,20 @@ bus.Send<Order>("orders", route => route.OrderingKey(order => order.CustomerId))
 
 This works with the default `TopologyMode.Validate` and with `None`. The queue advertises ordering by key, so ordered outbox sends retain their key and receive lanes through the existing outbox integration. Validate still opens its Send link without an administration call. For a topic, set `RequiresSession = true` on **every declared subscription** and trust each full path, for example `options.TrustedSessionEntities.Add("events/Subscriptions/audit")`. A send-only application does not peek trusted subscriptions; a declared consumer still needs Listen rights and validates its receive link. Undeclared subscriptions cannot be discovered with Send rights, so the application owns the completeness of these declarations.
 
-Trust is an assertion, not broker configuration or verification. Names must match session-enabled native queue or subscription declarations. Provision always compares the actual `RequiresSession` setting and reports drift, even for trusted entities. Without trust, Validate/None retain the unresolved-ordering error. A broker rejects a message without `SessionId` sent to a session-enabled queue or subscription; a message **with** `SessionId` is accepted by a non-session entity, so a false assertion can silently lose ordering. Topic fan-out follows each subscription's native behavior. Keep infrastructure definitions and declarations aligned; send-only startup cannot detect this mismatch.
+A producer usually does not own its topic's subscriptions: consumers add their own, often from other deployments. Trust the topic name instead of listing each subscription:
+
+```csharp
+bus.Options.Configure(options =>
+{
+    options.Topics.Add(new CreateTopicOptions("orders"));
+    options.TrustedSessionEntities.Add("orders");
+});
+bus.Send<Order>("orders", route => route.OrderingKey(order => order.CustomerId));
+```
+
+This asserts that every subscription on the topic, declared or not, requires sessions, so the topic advertises ordering by key and new consumers need no producer change. A declared subscription on a trusted topic must also set `RequiresSession = true`; startup rejects one that does not. Provision lists the topic's subscriptions with its administration client and reports each one that does not require sessions.
+
+Trust is an assertion, not broker configuration or verification. Names must match session-enabled native queue or subscription declarations, or a declared topic. Provision always compares the actual `RequiresSession` setting and reports drift, even for trusted entities. Without trust, Validate/None retain the unresolved-ordering error. A broker rejects a message without `SessionId` sent to a session-enabled queue or subscription; a message **with** `SessionId` is accepted by a non-session entity, so a false assertion can silently lose ordering. Topic fan-out follows each subscription's native behavior. Keep infrastructure definitions and declarations aligned; send-only startup cannot detect this mismatch.
 
 
 `SendOptions.DeliverAt` becomes native `ScheduledEnqueueTime`. Native callbacks run once for each message before native admission:
