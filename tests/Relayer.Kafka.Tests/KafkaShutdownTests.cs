@@ -41,7 +41,7 @@ public class KafkaShutdownTests(KafkaHeaderSnapshotBroker broker)
                 StopTimeout = TimeSpan.FromSeconds(1),
             };
             long first;
-            await using (var adapter = new KafkaConsumer(CreateConsumer(), Receive, tracing,
+            await using (var adapter = new KafkaConsumer(CreateConsumer, Receive, tracing,
                 new() { System = "kafka", Destination = topic, ConsumerGroup = topic }, options, 1))
             {
                 try

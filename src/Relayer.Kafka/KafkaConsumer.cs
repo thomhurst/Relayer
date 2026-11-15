@@ -14,7 +14,9 @@ namespace Relayer.Kafka;
 internal sealed class KafkaConsumer : IAsyncDisposable
 {
     private static readonly Func<int, string> PartitionText = static partition => partition.ToString(CultureInfo.InvariantCulture);
-    private readonly IKafkaConsumer<byte[], byte[]> _native;
+    private readonly Func<IKafkaConsumer<byte[], byte[]>> _create;
+    private IKafkaConsumer<byte[], byte[]> _native;
+    private bool _ran;
     private readonly Func<KafkaDelivery, CancellationToken, ValueTask<Disposition>> _receive;
     private readonly PartitionRecordProcessor<byte[], byte[]> _process;
     private readonly PartitionedProcessingOptions _options;
@@ -35,11 +37,14 @@ internal sealed class KafkaConsumer : IAsyncDisposable
     internal string? Group { get; }
     internal Task Completion { get; private set; } = Task.CompletedTask;
 
-    internal KafkaConsumer(IKafkaConsumer<byte[], byte[]> native,
+    // Each start runs a new native consumer: a stopped run discards records it fetched but did not process, so
+    // only a fresh member resumes at the committed offset without skipping them.
+    internal KafkaConsumer(Func<IKafkaConsumer<byte[], byte[]>> create,
         Func<KafkaDelivery, CancellationToken, ValueTask<Disposition>> receive, MessageTracing tracing, MessagingEndpoint endpoint,
         PartitionedProcessingOptions options, int concurrency, KafkaWorkerHealth? health = null)
     {
-        _native = native;
+        _create = create;
+        _native = create();
         _receive = receive;
         _health = health;
         _process = ProcessAsync;
@@ -72,7 +77,10 @@ internal sealed class KafkaConsumer : IAsyncDisposable
 
     internal async Task StartAsync(CancellationToken cancellationToken)
     {
-        if (!Completion.IsCompleted) throw new InvalidOperationException("The Kafka consumer is already running.");
+        if (!Completion.IsCompleted)
+            throw new InvalidOperationException(_stop.IsCancellationRequested
+                ? "The Kafka consumer is still draining after a stop. Wait for the stop to finish before starting it again."
+                : "The Kafka consumer is already running.");
         if (Completion.IsFaulted || Completion.IsCanceled)
             throw new InvalidOperationException("Recreate the application host after a failed Kafka receive. A new native consumer resumes at the broker's committed offset.");
         if (_stop.IsCancellationRequested)
@@ -80,7 +88,14 @@ internal sealed class KafkaConsumer : IAsyncDisposable
             _stop.Dispose();
             _stop = new();
         }
-        await _native.InitializeAsync(cancellationToken).ConfigureAwait(false);
+        if (_ran) _native = _create();
+        _ran = true;
+        try { await _native.InitializeAsync(cancellationToken).ConfigureAwait(false); }
+        catch
+        {
+            await _native.DisposeAsync().ConfigureAwait(false);
+            throw;
+        }
         if (_health is not null)
         {
             var monitor = _monitor!;
@@ -93,9 +108,15 @@ internal sealed class KafkaConsumer : IAsyncDisposable
 
     private async Task RunAsync()
     {
-        try { await _native.RunPartitionedAsync(_process, _options, _stop.Token).ConfigureAwait(false); }
+        var native = _native;
+        try { await native.RunPartitionedAsync(_process, _options, _stop.Token).ConfigureAwait(false); }
         catch (OperationCanceledException) when (_stop.IsCancellationRequested) { }
-        finally { _health?.Unavailable(); }
+        finally
+        {
+            _health?.Unavailable();
+            // Leave the group once the drain has committed, so the stopped member's partitions move to the others.
+            await native.DisposeAsync().ConfigureAwait(false);
+        }
     }
 
     // Returning marks the record processed for native contiguous commits, so return only after durable handling.

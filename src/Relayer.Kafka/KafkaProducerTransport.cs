@@ -234,10 +234,44 @@ internal sealed class KafkaProducerTransport : ITransport, ITransportSendTracing
     }
     public async Task StopAsync(CancellationToken cancellationToken)
     {
-        // Signal every receiver before awaiting any failure or a slow batch drain.
-        try { await Task.WhenAll(Consumers.Select(consumer => consumer.StopAsync(cancellationToken))).ConfigureAwait(false); }
-        finally { await _producer.FlushAsync(cancellationToken).ConfigureAwait(false); }
+        try { await StopConsumersAsync(cancellationToken).ConfigureAwait(false); }
+        finally { await FlushAsync(cancellationToken).ConfigureAwait(false); }
     }
+
+    internal ValueTask InitializeProducerAsync(CancellationToken cancellationToken)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        return _producer.InitializeAsync(cancellationToken);
+    }
+
+    // Starts the consumers after the host started the producer. A partial start stops the consumers it started,
+    // leaving sending available.
+    internal async Task StartConsumersAsync(CancellationToken cancellationToken)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        try
+        {
+            foreach (var consumer in Consumers)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                await consumer.StartAsync(cancellationToken).ConfigureAwait(false);
+            }
+            // A cancellation that raced the last start (host shutdown) must not leave it running.
+            cancellationToken.ThrowIfCancellationRequested();
+        }
+        catch
+        {
+            try { await StopConsumersAsync(CancellationToken.None).ConfigureAwait(false); }
+            catch (Exception) { /* The start failure is the one to report. */ }
+            throw;
+        }
+    }
+
+    // Signal every receiver before awaiting any failure or a slow batch drain.
+    internal Task StopConsumersAsync(CancellationToken cancellationToken) =>
+        Task.WhenAll(Consumers.Select(consumer => consumer.StopAsync(cancellationToken)));
+
+    internal Task FlushAsync(CancellationToken cancellationToken) => _producer.FlushAsync(cancellationToken).AsTask();
     public async ValueTask DisposeAsync()
     {
         if (_disposed) return;

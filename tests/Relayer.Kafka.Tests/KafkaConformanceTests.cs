@@ -33,8 +33,8 @@ internal sealed class KafkaFixture : ITransportConformanceFixture<KafkaDelivery>
     private readonly MessageTracing _tracing;
     public ConformanceLogCapture Logs { get; } = new();
     private readonly NativeLifecycleProbe _producerLifetime = new();
-    private readonly NativeLifecycleProbe _consumerLifetime = new();
-    private IKafkaConsumer<byte[], byte[]>? _consumer;
+    // Each consumer start builds a new native consumer; this probes the latest one.
+    private NativeLifecycleProbe _consumerLifetime = new();
     private bool _verifyShutdown;
     private readonly ILoggerFactory _logs;
     private static ILoggerFactory CreateLogs(ConformanceLogCapture capture) => LoggerFactory.Create(builder => builder.AddProvider(capture)
@@ -87,12 +87,11 @@ internal sealed class KafkaFixture : ITransportConformanceFixture<KafkaDelivery>
 
     public void RegisterConsumer(Func<KafkaDelivery, CancellationToken, ValueTask<Disposition>> receive)
     {
-        var consumer = new ConsumerBuilder<byte[], byte[]>().WithBootstrapServers(Bootstrap).WithGroupId(Destination)
+        var native = new ConsumerBuilder<byte[], byte[]>().WithBootstrapServers(Bootstrap).WithGroupId(Destination)
             .WithLoggerFactory(_logs)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest).WithOffsetCommitMode(OffsetCommitMode.Manual)
-            .WithAutoOffsetStore(false).SubscribeTo(Destination).Build();
-        _consumer = consumer;
-        _transport.Consumers.Add(new(NativeLifecycleProxy.Wrap<IKafkaConsumer<byte[], byte[]>>(consumer, _consumerLifetime), receive, _tracing,
+            .WithAutoOffsetStore(false).SubscribeTo(Destination);
+        _transport.Consumers.Add(new(() => NativeLifecycleProxy.Wrap(native.Build(), _consumerLifetime = new()), receive, _tracing,
             new() { System = "kafka", Destination = Destination, ConsumerGroup = Destination }, KafkaProcessing.Defaults(1), 1));
     }
 
@@ -117,7 +116,10 @@ internal sealed class KafkaFixture : ITransportConformanceFixture<KafkaDelivery>
         _verifyShutdown = true;
         if (_transport.Consumers.Any(worker => !worker.Completion.IsCompletedSuccessfully))
             throw new InvalidOperationException("Kafka receive loop did not drain.");
-        var committed = await _consumer!.GetCommittedOffsetAsync(new(Destination, 0), cancellationToken);
+        await using var reader = new ConsumerBuilder<byte[], byte[]>().WithBootstrapServers(Bootstrap).WithGroupId(Destination)
+            .WithLoggerFactory(_logs).WithOffsetCommitMode(OffsetCommitMode.Manual).WithAutoOffsetStore(false).Build();
+        await reader.InitializeAsync(cancellationToken);
+        var committed = await reader.GetCommittedOffsetAsync(new(Destination, 0), cancellationToken);
         if (committed != 1 || _consumerLifetime.Commits != 1)
             throw new InvalidOperationException($"Kafka shutdown did not durably commit the in-flight record: {committed}.");
         _consumerLifetime.AssertClean();

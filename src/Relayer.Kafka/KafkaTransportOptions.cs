@@ -21,4 +21,11 @@ public sealed class KafkaTransportOptions
 
     /// <summary>Customises each Dekaf consumer builder. Keep raw byte deserializers; Relayer disables automatic commits and offset storage afterward.</summary>
     public Action<ConsumerBuilder<byte[], byte[]>>? ConfigureConsumer { get; set; }
+
+    /// <summary>
+    /// Starts the consumers with the host. Defaults to true. When false, the host composes and validates the consumers
+    /// and starts the producer, but leaves the consumers stopped until the keyed
+    /// <see cref="Relayer.Transports.IConsumerControl"/> for this transport starts them.
+    /// </summary>
+    public bool AutoStartConsumers { get; set; } = true;
 }

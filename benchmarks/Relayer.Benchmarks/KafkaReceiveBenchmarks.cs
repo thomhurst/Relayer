@@ -87,7 +87,7 @@ public class KafkaReceiveBenchmarks
             .Handler(_provider.GetRequiredService<HandlerRegistry>().GetHandler<KafkaBenchmarkPayload, KafkaBenchmarkHandler>()).Build(1);
         _receive = new ReceivePipeline<KafkaDelivery, KafkaMessageBinding>(pipeline, new(), 1);
         var health = HealthEnabled ? new KafkaWorkerHealth(TimeProvider.System) : null;
-        _adapter = new(_native, ReceiveAsync, tracing, endpoint, KafkaProcessing.Defaults(1), 1, health);
+        _adapter = new(() => _native, ReceiveAsync, tracing, endpoint, KafkaProcessing.Defaults(1), 1, health);
         // The raw run uses the same native ordering, limits and commit policy without Relayer's observer.
         _rawOptions = new()
         {

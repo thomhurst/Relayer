@@ -3,9 +3,13 @@ using Microsoft.Extensions.Hosting;
 namespace Relayer.Transports;
 
 // Owns a transport's consumer lifetime for the host and for its keyed IConsumerControl. One gate serialises both callers.
-internal abstract class ConsumerHostedService(string transport) : IHostedService, IConsumerControl
+// A transport whose consumers can fail outside the native client reports that failure through ExecuteAsync.
+internal abstract class ConsumerHostedService(string transport) : BackgroundService, IConsumerControl
 {
     private readonly SemaphoreSlim _gate = new(1, 1);
+    // Cancels a control start still running when host shutdown bypasses the gate, so it cannot start consumers
+    // after the shutdown stop pass.
+    private CancellationTokenSource _shutdown = new();
     private bool _hostRunning;
     private bool _consuming;
 
@@ -16,23 +20,32 @@ internal abstract class ConsumerHostedService(string transport) : IHostedService
     /// <summary>Stops and drains the consumers. Called on host shutdown even when nothing was composed.</summary>
     protected abstract Task StopConsumersAsync(CancellationToken cancellationToken);
 
-    public async Task StartAsync(CancellationToken cancellationToken)
+    protected override Task ExecuteAsync(CancellationToken stoppingToken) => Task.CompletedTask;
+
+    public override async Task StartAsync(CancellationToken cancellationToken)
     {
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
+            if (_shutdown.IsCancellationRequested)
+            {
+                _shutdown.Dispose();
+                _shutdown = new();
+            }
             await ComposeAsync(cancellationToken).ConfigureAwait(false);
             if (AutoStartConsumers) await StartAsyncCore(cancellationToken).ConfigureAwait(false);
             _hostRunning = true;
         }
         finally { _gate.Release(); }
+        await base.StartAsync(cancellationToken).ConfigureAwait(false);
     }
 
-    public async Task StopAsync(CancellationToken cancellationToken)
+    public override async Task StopAsync(CancellationToken cancellationToken)
     {
         // Shutdown must reach the consumers even when its deadline has passed or a control call holds the gate:
         // the consumer's stop aborts in-flight work on an expired token and still stops the native receive.
         Volatile.Write(ref _hostRunning, false);
+        _shutdown.Cancel();
         var entered = false;
         try
         {
@@ -49,7 +62,11 @@ internal abstract class ConsumerHostedService(string transport) : IHostedService
                 await StopConsumersAsync(cancellationToken).ConfigureAwait(false);
             }
         }
-        finally { if (entered) _gate.Release(); }
+        finally
+        {
+            if (entered) _gate.Release();
+            await base.StopAsync(cancellationToken).ConfigureAwait(false);
+        }
     }
 
     async Task IConsumerControl.StartAsync(CancellationToken cancellationToken)
@@ -59,7 +76,8 @@ internal abstract class ConsumerHostedService(string transport) : IHostedService
         {
             if (!Volatile.Read(ref _hostRunning))
                 throw new InvalidOperationException($"{transport}: start the host before starting its consumers.");
-            await StartAsyncCore(cancellationToken).ConfigureAwait(false);
+            using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _shutdown.Token);
+            await StartAsyncCore(linked.Token).ConfigureAwait(false);
         }
         finally { _gate.Release(); }
     }
