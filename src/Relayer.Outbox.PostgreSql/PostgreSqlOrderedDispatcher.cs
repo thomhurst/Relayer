@@ -195,9 +195,14 @@ internal sealed partial class PostgreSqlOrderedDispatcher : BackgroundService, I
                         if (action is not (FailureAction.Retry or FailureAction.DeadLetter))
                             throw new InvalidOperationException("The dispatch failure classifier returned an unknown action.");
                         var permanent = action == FailureAction.DeadLetter;
-                        if (!await _lane.FailAsync(connection, transaction, claim, error.Message, cancellationToken, permanent, retryable: nativeSend).ConfigureAwait(false))
+                        // A consumed local row follows its consumer's retry schedule; preparation failures keep the store budget.
+                        var consumer = preparedForSend && !nativeSend ? localAdmission : null;
+                        if (!(consumer is not null && !permanent
+                                ? await _lane.FailLocalAsync(connection, transaction, claim, error.Message, consumer.MaxAttempts,
+                                    consumer.RedeliveryDelay(row.Attempts + 1), cancellationToken).ConfigureAwait(false)
+                                : await _lane.FailAsync(connection, transaction, claim, error.Message, cancellationToken, permanent, retryable: nativeSend).ConfigureAwait(false)))
                             throw new InvalidOperationException("Ordered outbox claim expired while recording a dispatch failure.", error);
-                        poisoned = permanent || (!nativeSend && row.Attempts + 1 >= _options.MaxDispatchAttempts);
+                        poisoned = permanent || (!nativeSend && row.Attempts + 1 >= (consumer?.MaxAttempts ?? _options.MaxDispatchAttempts));
                         DispatchFailed(_logger, error);
                         break;
                     }

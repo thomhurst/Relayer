@@ -10,9 +10,16 @@ namespace Relayer.Outbox.PostgreSql;
 /// <summary>Options for an outbox-backed local endpoint.</summary>
 [Experimental("RLYEXP002", UrlFormat = "https://relayer.tomlonghurst.dev/docs/reference/diagnostics#rlyexp002")]
 public sealed class PostgreSqlLocalOptions;
-/// <summary>Local consumers use the shared outbox retry, recovery and dead-letter policy.</summary>
+/// <summary>Per-consumer retry schedule for handler failures, persisted in the fenced outbox row.</summary>
 [Experimental("RLYEXP002", UrlFormat = "https://relayer.tomlonghurst.dev/docs/reference/diagnostics#rlyexp002")]
-public sealed class PostgreSqlLocalConsumerOptions;
+public sealed class PostgreSqlLocalConsumerOptions
+{
+    /// <summary>Durable delay before the next attempt after each retryable handler failure. The last delay repeats. Empty (the default) makes the row due again at once.</summary>
+    public TimeSpan[] RedeliveryDelays { get; set; } = [];
+
+    /// <summary>Handler attempts before a retrying row is dead-lettered, or its ordering key parked. Null uses <see cref="PostgreSqlOutboxOptions.MaxDispatchAttempts"/>; <see cref="int.MaxValue"/> retries until the handler succeeds.</summary>
+    public int? MaxAttempts { get; set; }
+}
 
 /// <summary>Declares named local consumption over existing PostgreSQL outbox dispatch.</summary>
 [Experimental("RLYEXP002", UrlFormat = "https://relayer.tomlonghurst.dev/docs/reference/diagnostics#rlyexp002")]
@@ -55,7 +62,13 @@ public static class PostgreSqlLocalBuilderExtensions
             foreach (var consumer in declaration.Consumers)
             {
                 if (((ConsumerDefinition<PostgreSqlLocalConsumerOptions>)consumer).HasFailurePolicy)
-                    throw new NotSupportedException($"PostgreSQL local consumer '{consumer.Source}': configure retry and dead-letter behavior through PostgreSqlOutboxOptions. A separate consumer failure policy cannot participate in fenced row recovery.");
+                    throw new NotSupportedException($"PostgreSQL local consumer '{consumer.Source}': configure retries with consumer.Options.RedeliveryDelays and MaxAttempts. A separate consumer failure policy cannot participate in fenced row recovery.");
+                var options = ((ConsumerDefinition<PostgreSqlLocalConsumerOptions>)consumer).Options;
+                if (options.MaxAttempts <= 0)
+                    throw new ArgumentOutOfRangeException(nameof(options), $"PostgreSQL local consumer '{consumer.Source}': MaxAttempts must be positive.");
+                foreach (var delay in options.RedeliveryDelays ?? throw new ArgumentNullException(nameof(options), $"PostgreSQL local consumer '{consumer.Source}': RedeliveryDelays must not be null."))
+                    if (delay < TimeSpan.Zero)
+                        throw new ArgumentOutOfRangeException(nameof(options), $"PostgreSQL local consumer '{consumer.Source}': RedeliveryDelays must be non-negative.");
                 if (consumer.BatchSize != 1)
                     throw new NotSupportedException($"PostgreSQL local consumer '{consumer.Source}': batch handlers are unsupported. Use single-message handlers.");
                 var pipeline = new ConsumePipelineBuilder(provider.GetRequiredService<IServiceScopeFactory>(),
@@ -72,7 +85,7 @@ public static class PostgreSqlLocalBuilderExtensions
                 var composed = pipeline.Build(consumer.Concurrency);
                 composed.BufferAttemptSends = true;
                 var receive = new ReceivePipeline<PostgreSqlLocalDelivery, PostgreSqlLocalMessageBinding>(composed, new(), consumer.Concurrency);
-                transport.Register(consumer.Source, receive.ProcessAsync, consumer.Concurrency);
+                transport.Register(consumer.Source, receive.ProcessAsync, consumer.Concurrency, options.MaxAttempts, options.RedeliveryDelays);
             }
             transport.ValidateConsumers();
             return Task.CompletedTask;

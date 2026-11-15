@@ -163,8 +163,15 @@ internal sealed class PostgreSqlDirectDispatcher : OutboxDirectDispatchWorker<Ou
         }
         if (action is not (FailureAction.Retry or FailureAction.DeadLetter))
             throw new InvalidOperationException("The dispatch failure classifier returned an unknown action.");
-        if (await _store.RecordDispatchFailureAsync(_claims[index], error.Message, null,
-            cancellationToken, permanent: action == FailureAction.DeadLetter, retryable: retryable).ConfigureAwait(false) == 2)
+        // Only a local attempt is non-retryable here; its Retry follows the consumer's schedule.
+        var consumer = !retryable && action == FailureAction.Retry && _transports.TryGetValue(row.Transport, out var transport)
+            ? PostgreSqlLocalTransport.Find(transport)?.GetReceiver(row.Destination) : null;
+        var result = consumer is not null
+            ? await _store.RecordLocalFailureAsync(_claims[index], error.Message, consumer.MaxAttempts,
+                consumer.RedeliveryDelay(row.Attempts + 1), cancellationToken).ConfigureAwait(false)
+            : await _store.RecordDispatchFailureAsync(_claims[index], error.Message, null,
+                cancellationToken, permanent: action == FailureAction.DeadLetter, retryable: retryable).ConfigureAwait(false);
+        if (result == 2)
         {
             if (propagateDatabaseFailures) _recoveredPoison++;
             else _instrumentation?.RecordOutboxPoison();

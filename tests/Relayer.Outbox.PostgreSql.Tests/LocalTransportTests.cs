@@ -224,6 +224,101 @@ public class LocalTransportTests(PostgreSqlLocalSessionFixture server)
     }
 
     [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Consumer_retry_schedule_delays_attempts_and_overrides_the_store_attempt_limit(bool ordered)
+    {
+        await using var database = server.CreateDatabase();
+        await database.StartAsync();
+        await using var source = NpgsqlDataSource.Create(database.ConnectionString);
+        await PostgreSqlOutboxStoreTests.CreateSchema(source);
+        await using (var command = source.CreateCommand("CREATE TABLE local_business (value integer PRIMARY KEY)")) await command.ExecuteNonQueryAsync();
+        // The store budget is one attempt; the consumer's schedule allows three.
+        await using var provider = Provider(source, ordered, failureAction: FailureAction.Retry, consumerOptions: options =>
+        {
+            options.RedeliveryDelays = [TimeSpan.FromMinutes(1), TimeSpan.FromHours(1)];
+            options.MaxAttempts = 3;
+        });
+        foreach (var starter in provider.GetServices<IHostedService>()) if (starter is not PostgreSqlDirectDispatcher) await starter.StartAsync(default);
+        var transport = provider.GetServices<ITransport>().Single();
+        await Enqueue(provider, source, new(-1), true);
+        using var worker = OrderedWorker(ordered, source, transport, provider);
+
+        await Attempt(worker, source, transport, provider);
+        await Assert.That(await Pending(source)).IsEqualTo((1, true, 60));
+        await Attempt(worker, source, transport, provider);
+        await Assert.That(await Pending(source)).IsEqualTo((2, true, 3600));
+        await Attempt(worker, source, transport, provider);
+        // The last attempt poisons: unordered rows move to the dead table, ordered keys park.
+        await Assert.That(await Count(source, "relayer_outbox_dead")).IsEqualTo(1L);
+        await Assert.That(await Count(source, "relayer_outbox WHERE status = 'pending'")).IsEqualTo(0L);
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Consumer_without_attempt_limit_never_poisons_retryable_failures(bool ordered)
+    {
+        await using var database = server.CreateDatabase();
+        await database.StartAsync();
+        await using var source = NpgsqlDataSource.Create(database.ConnectionString);
+        await PostgreSqlOutboxStoreTests.CreateSchema(source);
+        await using (var command = source.CreateCommand("CREATE TABLE local_business (value integer PRIMARY KEY)")) await command.ExecuteNonQueryAsync();
+        await using var provider = Provider(source, ordered, failureAction: FailureAction.Retry, consumerOptions: options => options.MaxAttempts = int.MaxValue);
+        foreach (var starter in provider.GetServices<IHostedService>()) if (starter is not PostgreSqlDirectDispatcher) await starter.StartAsync(default);
+        var transport = provider.GetServices<ITransport>().Single();
+        await Enqueue(provider, source, new(-1), true);
+        using var worker = OrderedWorker(ordered, source, transport, provider);
+        for (var attempt = 1; attempt <= 3; attempt++)
+        {
+            await Attempt(worker, source, transport, provider);
+            // Without delays the row is due again at once.
+            await Assert.That(await Pending(source)).IsEqualTo((attempt, true, 0));
+        }
+        await Assert.That(await Count(source, "relayer_outbox_dead")).IsEqualTo(0L);
+    }
+
+    [Test]
+    public async Task Negative_consumer_redelivery_delay_fails_startup()
+    {
+        await using var database = server.CreateDatabase();
+        await database.StartAsync();
+        await using var source = NpgsqlDataSource.Create(database.ConnectionString);
+        await using var provider = Provider(source, consumerOptions: options => options.RedeliveryDelays = [TimeSpan.FromSeconds(-1)]);
+        await Assert.That(async () =>
+        {
+            foreach (var starter in provider.GetServices<IHostedService>()) if (starter is not PostgreSqlDirectDispatcher) await starter.StartAsync(default);
+        }).Throws<ArgumentOutOfRangeException>();
+    }
+
+    private static PostgreSqlOrderedDispatcher? OrderedWorker(bool ordered, NpgsqlDataSource source, ITransport transport, ServiceProvider provider) =>
+        ordered ? new(source, new() { Lanes = 1, MaxDispatchAttempts = 1 }, [transport], provider.GetRequiredService<ILogger<PostgreSqlOrderedDispatcher>>()) : null;
+
+    private static async Task Attempt(PostgreSqlOrderedDispatcher? ordered, NpgsqlDataSource source, ITransport transport, ServiceProvider provider)
+    {
+        // Make a delayed row due; the delay itself is asserted from the row before this runs.
+        await using (var due = source.CreateCommand("UPDATE relayer_outbox SET deliver_at = NULL")) await due.ExecuteNonQueryAsync();
+        // One ordered worker keeps its lane lease across attempts.
+        if (ordered is not null) await ordered.DispatchLaneAsync(0, default);
+        else
+        {
+            var rows = new OutboxRecord[1];
+            var count = await new PostgreSqlOutboxStore(source, new() { MaxDispatchAttempts = 1 }).ReadPendingAsync(new(null, DateTimeOffset.UtcNow), rows, default);
+            using var worker = new PostgreSqlDirectDispatcher(source, new() { MaxDispatchAttempts = 1 }, new(), [transport], provider.GetRequiredService<ILogger<PostgreSqlDirectDispatcher>>());
+            await worker.DispatchRecoveredAsync(rows.AsMemory(0, count), default);
+        }
+    }
+
+    // Attempts, whether the row is still pending, and its remaining delay rounded to whole seconds.
+    private static async Task<(int Attempts, bool Pending, int DelaySeconds)> Pending(NpgsqlDataSource source)
+    {
+        await using var command = source.CreateCommand("SELECT attempts, status = 'pending', round(extract(epoch FROM deliver_at - clock_timestamp()))::int FROM relayer_outbox");
+        await using var reader = await command.ExecuteReaderAsync();
+        if (!await reader.ReadAsync()) throw new InvalidOperationException("The row is no longer in the outbox.");
+        return (reader.GetInt32(0), reader.GetBoolean(1), reader.GetInt32(2));
+    }
+
+    [Test]
     public async Task Killed_consumer_rolls_back_business_work_and_another_process_completes_once()
     {
         await using var database = server.CreateDatabase();
@@ -474,7 +569,8 @@ public class LocalTransportTests(PostgreSqlLocalSessionFixture server)
         }
     }
 
-    internal static ServiceProvider Provider(NpgsqlDataSource source, bool ordered = false, bool directHandoff = false, int maxAttempts = 1, FailureAction? failureAction = null)
+    internal static ServiceProvider Provider(NpgsqlDataSource source, bool ordered = false, bool directHandoff = false, int maxAttempts = 1, FailureAction? failureAction = null,
+        Action<PostgreSqlLocalConsumerOptions>? consumerOptions = null)
     {
         var services = new ServiceCollection().AddLogging(logging => logging.AddConsole());
         services.AddSingleton(source);
@@ -486,7 +582,11 @@ public class LocalTransportTests(PostgreSqlLocalSessionFixture server)
             builder.PostgreSqlLocal("local", source, transport =>
             {
                 transport.Send<LocalWork>("work", route => { if (ordered) route.OrderingKey(message => message.Value.ToString()); });
-                transport.Consume("work", consumer => consumer.Handler<LocalHandler>());
+                transport.Consume("work", consumer =>
+                {
+                    consumerOptions?.Invoke(consumer.Options);
+                    consumer.Handler<LocalHandler>();
+                });
             }, new() { Lanes = 1, MaxDispatchAttempts = maxAttempts });
         });
         if (directHandoff) services.AddRelayerPostgreSqlOutbox("local", new() { Lanes = 1, MaxDispatchAttempts = maxAttempts });

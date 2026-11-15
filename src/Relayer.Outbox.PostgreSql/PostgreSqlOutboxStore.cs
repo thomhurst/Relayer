@@ -24,6 +24,7 @@ public sealed class PostgreSqlOutboxStore : IOutboxStore
     private readonly string _failDirect;
     private readonly string _retryDirect;
     private readonly string _failDirectImmediately;
+    private readonly string _failLocal;
     private readonly string _renew;
     private readonly string _complete;
     private readonly string _completeInTransaction;
@@ -86,6 +87,7 @@ public sealed class PostgreSqlOutboxStore : IOutboxStore
         _failDirect = PostgreSqlPoisonSql.Failure(table, dead, directFence, options.MaxDispatchAttempts);
         _retryDirect = PostgreSqlPoisonSql.Retry(table, directFence, "clock_timestamp()");
         _failDirectImmediately = PostgreSqlPoisonSql.Failure(table, dead, directFence, 1);
+        _failLocal = PostgreSqlPoisonSql.LocalFailure(table, dead, directFence);
         _count = $"SELECT count(*) FROM {table} WHERE {eligible}";
         _boundedCount = $"SELECT count(*) FROM (SELECT 1 FROM {table} WHERE {eligible} LIMIT @countLimit) AS pending";
     }
@@ -264,6 +266,19 @@ public sealed class PostgreSqlOutboxStore : IOutboxStore
             : permanent ? _failDirectImmediately : retryable ? _retryDirect : _failDirect;
         var command = CreateMutation(sql, claim, now);
         Add(command, "error", NpgsqlDbType.Text, error);
+        return _failure.Start(command, cancellationToken);
+    }
+
+    // A local handler's Retry uses its consumer's attempt limit and delays the row's next attempt.
+    internal ValueTask<int> RecordLocalFailureAsync(OutboxClaim claim, string error, int limit, TimeSpan delay,
+        CancellationToken cancellationToken)
+    {
+        Validate(claim);
+        ArgumentNullException.ThrowIfNull(error);
+        var command = CreateMutation(_failLocal, claim, null);
+        Add(command, "error", NpgsqlDbType.Text, error);
+        Add(command, "limit", NpgsqlDbType.Integer, limit);
+        Add(command, "delay", NpgsqlDbType.Interval, delay);
         return _failure.Start(command, cancellationToken);
     }
 

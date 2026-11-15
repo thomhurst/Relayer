@@ -14,12 +14,20 @@ internal static class PostgreSqlPoisonSql
         ) SELECT CASE WHEN EXISTS (SELECT 1 FROM retried) THEN 1 ELSE 0 END
         """;
 
-    internal static string Failure(string table, string dead, string fenced, int limit) => $"""
+    internal static string Failure(string table, string dead, string fenced, int limit) =>
+        Failure(table, dead, fenced, limit.ToString(System.Globalization.CultureInfo.InvariantCulture), null);
+
+    // Local handler failures carry their consumer's attempt limit and the delay before the next attempt.
+    internal static string LocalFailure(string table, string dead, string fenced) =>
+        Failure(table, dead, fenced, "@limit", "clock_timestamp() + @delay");
+
+    private static string Failure(string table, string dead, string fenced, string limit, string? deliverAt) => $"""
         WITH exhausted AS (
             DELETE FROM {table} WHERE {fenced} AND lane IS NULL AND attempts + 1 >= {limit}
             RETURNING *
         ), failed AS (
             UPDATE {table} SET attempts = attempts + 1, last_error = @error,
+                {(deliverAt is null ? "" : $"deliver_at = CASE WHEN attempts + 1 < {limit} THEN {deliverAt} ELSE deliver_at END,")}
                 status = CASE WHEN lane IS NOT NULL AND attempts + 1 >= {limit} THEN 'parked' ELSE status END,
                 claim_token = NULL, claim_expires_at = NULL
             WHERE {fenced} AND (lane IS NOT NULL OR attempts + 1 < {limit}) RETURNING *
