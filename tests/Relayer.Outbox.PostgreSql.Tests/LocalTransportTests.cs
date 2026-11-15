@@ -310,9 +310,10 @@ public class LocalTransportTests(PostgreSqlLocalSessionFixture server)
     }
 
     // Attempts, whether the row is still pending, and its remaining delay rounded to whole seconds.
+    // A row that is already due has no remaining delay, however long ago it became due.
     private static async Task<(int Attempts, bool Pending, int DelaySeconds)> Pending(NpgsqlDataSource source)
     {
-        await using var command = source.CreateCommand("SELECT attempts, status = 'pending', round(extract(epoch FROM deliver_at - clock_timestamp()))::int FROM relayer_outbox");
+        await using var command = source.CreateCommand("SELECT attempts, status = 'pending', greatest(0, round(extract(epoch FROM deliver_at - clock_timestamp())))::int FROM relayer_outbox");
         await using var reader = await command.ExecuteReaderAsync();
         if (!await reader.ReadAsync()) throw new InvalidOperationException("The row is no longer in the outbox.");
         return (reader.GetInt32(0), reader.GetBoolean(1), reader.GetInt32(2));

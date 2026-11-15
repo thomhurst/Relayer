@@ -95,6 +95,7 @@ To change a decision, add a new entry that supersedes it rather than editing his
 | [D82](#d82-several-send-routes-fan-out-through-the-outbox) | Several send routes fan out through the outbox | Accepted |
 | [D83](#d83-route-level-native-callbacks-apply-on-outbox-dispatch) | Route-level native callbacks apply on outbox dispatch | Accepted |
 | [D84](#d84-a-route-can-choose-its-destination-per-message) | A route can choose its destination per message | Accepted |
+| [D85](#d85-applications-start-service-bus-consumers-through-a-keyed-control) | Applications start Service Bus consumers through a keyed control | Accepted |
 
 ---
 
@@ -1988,3 +1989,18 @@ This resolves the release scope of D20, D45, D56, D60 and D66 without removals, 
 **Decision.** `Send<TMessage>(destinations, selector)` declares a route with several destinations on one transport and a selector that returns one of them per message. Each destination becomes an ordinary route declaration, so capability validation, topology provisioning and exporters see every destination unchanged; together they count as one route, which can still take part in a fan-out ([D82](#d82-several-send-routes-fan-out-through-the-outbox)) alongside the message type's other routes. A destination declared both in a selector route and in another route fails startup validation like any repeated destination. At composition, the first declaration builds one send route per destination and a frozen ordinal lookup from the selected name. Routes without a selector pay one null check per send. A selected name outside the declared set fails the send. Selector routes do not carry replies (D27's reply-address match needs a fixed destination) or tombstones (a tombstone has no message to select from).
 
 **Consequences.** The selected destination flows into `OutgoingMessage.Destination`, so outbox rows store it and dispatch is unchanged. Send tracing and capabilities stay per destination.
+
+## D85. Applications start Service Bus consumers through a keyed control
+
+**Context.** Service Bus processors started with the host, so a host that came up before its subscriptions existed logged `MessagingEntityNotFound` on every native retry. The only workaround removed Relayer's internal hosted-service registration (#820).
+
+**Decision.**
+- `ServiceBusTransportOptions.AutoStartConsumers` (default true) controls whether the host starts the native processors. The host composes and validates consumers either way.
+- The core `IConsumerControl`, resolved as a keyed service with the transport name, starts and stops a transport's consumers while the host runs. Service Bus implements it with the native `StartProcessingAsync` and `StopProcessingAsync`, through the same drain as host shutdown. Both calls are idempotent; start fails outside the host's lifetime.
+- The interface lives in the core so other transports can implement it without a second API; until they do, no keyed control is registered for them.
+
+**Consequences.** No per-message cost. A deferred processor reports unavailable consumer health until it starts, the same as a stopped one.
+
+**Alternatives rejected.**
+- A per-consumer start gate delegate: it covers deferred start but not pause and resume, and it needs a background task the host does not observe.
+- Downgrading `MessagingEntityNotFound` at startup: it hides a real misconfiguration and still burns native retries.

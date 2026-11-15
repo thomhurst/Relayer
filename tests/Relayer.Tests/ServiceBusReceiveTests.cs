@@ -290,7 +290,8 @@ public sealed class ServiceBusReceiveTests
     }
 
     internal static ServiceProvider Provider(NativeClient client, Action<ConsumerBuilder<ServiceBusConsumerOptions>>? configure = null,
-        string? subscription = null, bool declare = true, bool health = false, bool sessions = false, TimeProvider? time = null)
+        string? subscription = null, bool declare = true, bool health = false, bool sessions = false, TimeProvider? time = null,
+        bool autoStart = true)
     {
         var services = new ServiceCollection();
         services.AddLogging();
@@ -307,6 +308,7 @@ public sealed class ServiceBusReceiveTests
                 bus.Options.Configure(options =>
                 {
                     options.Client = client;
+                    options.AutoStartConsumers = autoStart;
                     if (!declare) return;
                     if (subscription is null) options.Queues.Add(new("orders") { RequiresSession = sessions });
                     else

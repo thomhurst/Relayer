@@ -57,7 +57,9 @@ public static class ServiceBusBuilderExtensions
             var definition = provider.GetRequiredService<RelayerConfiguration>().Transports.Single(item => item.Name == name);
             return new ServiceBusDeadLetterManager(transport.Client, definition.Consumers);
         });
-        builder.Services.AddSingleton<IHostedService>(provider => new ServiceBusHostedService(provider, name));
+        builder.Services.AddKeyedSingleton<ServiceBusHostedService>(name, (provider, _) => new ServiceBusHostedService(provider, name));
+        builder.Services.AddKeyedSingleton<IConsumerControl>(name, (provider, key) => provider.GetRequiredKeyedService<ServiceBusHostedService>(key));
+        builder.Services.AddSingleton<IHostedService>(provider => provider.GetRequiredKeyedService<ServiceBusHostedService>(name));
         return builder;
     }
 

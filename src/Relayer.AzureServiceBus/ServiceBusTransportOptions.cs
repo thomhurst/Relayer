@@ -39,6 +39,13 @@ public sealed class ServiceBusTransportOptions
     /// </summary>
     public bool SubjectFromMessageType { get; set; } = true;
 
+    /// <summary>
+    /// Starts the native processors with the host. Defaults to true. When false, the host composes and validates the
+    /// consumers but leaves their processors stopped until the keyed <see cref="Relayer.Transports.IConsumerControl"/>
+    /// for this transport starts them, for example once provisioned entities exist. Sending works meanwhile.
+    /// </summary>
+    public bool AutoStartConsumers { get; set; } = true;
+
     /// <summary>Native subscriptions to provision independently of receive composition.</summary>
     public IList<CreateSubscriptionOptions> Subscriptions { get; } = [];
 }
