@@ -24,6 +24,7 @@ internal sealed class PostgreSqlDirectDispatcher : OutboxDirectDispatchWorker<Ou
 
     internal void RecoveryCommitted()
     {
+        if (_recoveredPoison != 0) _instrumentation?.AddOutboxPending(-_recoveredPoison);
         for (var i = 0; i < _recoveredPoison; i++) _instrumentation?.RecordOutboxPoison();
         _recoveredPoison = 0;
     }
@@ -171,10 +172,15 @@ internal sealed class PostgreSqlDirectDispatcher : OutboxDirectDispatchWorker<Ou
                 consumer.RedeliveryDelay(row.Attempts + 1), cancellationToken).ConfigureAwait(false)
             : await _store.RecordDispatchFailureAsync(_claims[index], error.Message, null,
                 cancellationToken, permanent: action == FailureAction.DeadLetter, retryable: retryable).ConfigureAwait(false);
+        // Unordered exhaustion moves the row to dead storage. Recovery records it once its transaction commits.
         if (result == 2)
         {
             if (propagateDatabaseFailures) _recoveredPoison++;
-            else _instrumentation?.RecordOutboxPoison();
+            else if (_instrumentation is not null)
+            {
+                _instrumentation.AddOutboxPending(-1);
+                _instrumentation.RecordOutboxPoison();
+            }
         }
         return true;
     }

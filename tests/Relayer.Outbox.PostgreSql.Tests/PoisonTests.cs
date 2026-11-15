@@ -1,6 +1,8 @@
+using System.Diagnostics.Metrics;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using Npgsql;
+using Relayer.Testing;
 using Relayer.Transports;
 
 namespace Relayer.Outbox.PostgreSql.Tests;
@@ -87,6 +89,54 @@ public class PoisonTests
         var manager = new PostgreSqlDeadLetterManager("store", source, options);
         await Assert.That((await manager.PeekAsync("store")).Messages[0].Features.GetRequired<PostgreSqlDeadLetterDetails>().Record.Attempts).IsEqualTo(1);
         await Assert.That(await manager.PurgeAsync("store")).IsEqualTo(1);
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Direct_dispatch_poison_settles_pending_and_harness_work_once_committed(bool recoveryTransaction)
+    {
+        await using var fixture = new PostgreSqlFixture();
+        await fixture.StartAsync();
+        await using var source = NpgsqlDataSource.Create(fixture.ConnectionString);
+        await PostgreSqlOutboxStoreTests.CreateSchema(source);
+        var options = new PostgreSqlOutboxOptions { MaxDispatchAttempts = 1 };
+        await PostgreSqlOutboxStoreTests.Insert(source, options, Guid.CreateVersion7(), DateTimeOffset.UtcNow);
+        await using (var unordered = source.CreateCommand("UPDATE relayer_outbox SET ordering_key = NULL"))
+            await unordered.ExecuteNonQueryAsync();
+        using var instrumentation = new RelayerInstrumentation();
+        long pending = 0, poisoned = 0;
+        using var listener = new MeterListener();
+        listener.InstrumentPublished = (instrument, meterListener) =>
+        {
+            if (instrument == instrumentation.OutboxPending || instrument == instrumentation.OutboxPoison)
+                meterListener.EnableMeasurementEvents(instrument);
+        };
+        listener.SetMeasurementEventCallback<long>((instrument, value, _, _) =>
+            Interlocked.Add(ref instrument == instrumentation.OutboxPending ? ref pending : ref poisoned, value));
+        listener.Start();
+        var harness = new RelayerHarness();
+        instrumentation.Observer = harness;
+        // Stands for the commit that wrote the row in this provider.
+        instrumentation.AddOutboxPending(1);
+        var idle = harness.WaitForIdleAsync();
+        var store = new PostgreSqlOutboxStore(source, options);
+        using var dispatcher = new PostgreSqlDirectDispatcher(source, options, new(), [new FailingTransport()],
+            NullLogger<PostgreSqlDirectDispatcher>.Instance, store, instrumentation);
+        var rows = new OutboxRecord[1];
+        await store.ReadPendingAsync(new(null, DateTimeOffset.UtcNow), rows, default);
+        await dispatcher.DispatchRecoveredAsync(rows, default, propagateDatabaseFailures: recoveryTransaction);
+        if (recoveryTransaction)
+        {
+            // Recovery reports poison only after its transaction commits.
+            await Assert.That(Interlocked.Read(ref pending)).IsEqualTo(1L);
+            await Assert.That(idle.IsCompleted).IsFalse();
+            dispatcher.RecoveryCommitted();
+        }
+        await Assert.That(Interlocked.Read(ref pending)).IsEqualTo(0L);
+        await Assert.That(Interlocked.Read(ref poisoned)).IsEqualTo(1L);
+        await idle.WaitAsync(TimeSpan.FromSeconds(30));
+        await Assert.That(await store.ReadPendingAsync(new(null, DateTimeOffset.UtcNow), rows, default)).IsEqualTo(0);
     }
 
     [Test]

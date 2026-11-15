@@ -11,6 +11,8 @@ internal interface IRelayerObserver
     void WorkStarted();
     void WorkCompleted();
     void DeadLettered(InMemory.InMemoryDelivery delivery, DeadLetterInfo error);
+    // Committed (positive) or settled (negative) durable outbox rows of this instance.
+    void OutboxPending(long delta);
 }
 
 internal interface ITransportWrapper

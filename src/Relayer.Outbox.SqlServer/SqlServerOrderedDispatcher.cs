@@ -124,7 +124,7 @@ internal sealed partial class SqlServerOrderedDispatcher : BackgroundService, IO
             }
             await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
             _instrumentation?.AddOutboxPending(-sent);
-            if (poisoned) _instrumentation?.RecordOutboxPoison();
+            if (poisoned) _instrumentation?.RecordOutboxParked();
             return sent;
         }
         finally { Array.Clear(_rows); }

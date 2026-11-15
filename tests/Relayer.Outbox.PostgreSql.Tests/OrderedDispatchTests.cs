@@ -41,11 +41,19 @@ public class OrderedDispatchTests
         };
         listener.SetMeasurementEventCallback<long>((_, count, _, _) => Interlocked.Add(ref poisonCount, count));
         listener.Start();
+        var harness = new Relayer.Testing.RelayerHarness();
+        instrumentation.Observer = harness;
+        // Stands for the commit of the row that is about to be parked.
+        instrumentation.AddOutboxPending(1);
+        var idle = harness.WaitForIdleAsync();
         var failing = new RecordingTransport((_, _) => throw new PostgreSqlLocalFailure(new InvalidOperationException("poison"), FailureAction.DeadLetter));
         using (var worker = new PostgreSqlOrderedDispatcher(source, new() { Lanes = 1, MaxDispatchAttempts = 1 },
             [failing], NullLogger<PostgreSqlOrderedDispatcher>.Instance, instrumentation: instrumentation))
             await Assert.That(await worker.DispatchLaneAsync(0, default)).IsEqualTo(0);
         await Assert.That(poisonCount).IsEqualTo(1L);
+        // A parked row stays in the lane but is settled for the harness.
+        await idle.WaitAsync(TimeSpan.FromSeconds(30));
+        instrumentation.Observer = null;
         await using (var expire = source.CreateCommand("UPDATE relayer_leases SET expires_at = clock_timestamp() - interval '1 second'"))
             await expire.ExecuteNonQueryAsync();
         // A new owner after the poison transaction committed must observe the same durable key barrier.

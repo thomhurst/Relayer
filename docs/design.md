@@ -696,7 +696,7 @@ Relayer-specific instruments, for which the conventions define nothing:
 - `relayer.critical_time` (histogram, `s`): processing end minus `ce_time`.
 - `relayer.retries` (counter, `{retry}`)
 - `relayer.dead_lettered` (counter, `{message}`)
-- `relayer.outbox.pending` (up-down counter, `{message}`): instance-observed durable row-count deltas, aggregated across stores and transports without endpoint dimensions. Commit adds rows; successful fenced deletion subtracts rows. This is not a database snapshot and can be negative when recovering another instance's rows.
+- `relayer.outbox.pending` (up-down counter, `{message}`): instance-observed durable row-count deltas, aggregated across stores and transports without endpoint dimensions. Commit adds rows; successful fenced deletion subtracts rows, including an unordered poison move to dead storage. A row parked on an ordered lane is not subtracted. `RelayerHarness` observes the same deltas, plus parked rows, to count committed rows as outstanding work. This is not a database snapshot and can be negative when recovering another instance's rows.
 - `relayer.outbox.dispatch_lag` (histogram, `s`): native dispatch attempt start minus original enqueue time, aggregated without endpoint dimensions. Includes failed native attempts.
 - `relayer.outbox.dead.depth` and `relayer.outbox.parked.depth` (observable gauges, `{message}`): store-wide dead rows and parked ordered rows, tagged `db.system.name` and `relayer.outbox.store`. SQL maintenance counts them once per cleanup interval while a listener observes either gauge; collection reads the cached counts and never queries the store.
 - `relayer.inbox.duplicates` (counter, `{message}`)

@@ -35,6 +35,7 @@ public sealed class RelayerHarness : ISendMiddleware, IRelayerObserver
     private readonly List<IConsumedWaiter> _waiters = [];
     private TaskCompletionSource _idle = CompletedSignal();
     private int _work;
+    private long _outboxRows;
 
     /// <summary>Successful logical sends, including outbox enlistments and publish/subscribe routes.</summary>
     public IReadOnlyList<HarnessMessage> Sent { get { lock (_gate) return _sent.ToArray(); } }
@@ -98,8 +99,9 @@ public sealed class RelayerHarness : ISendMiddleware, IRelayerObserver
         return observation.Read<TMessage>(serializer);
     }
 
-    /// <summary>Waits for observed operations and queued in-memory messages to finish, without polling.</summary>
-    /// <remarks>Start producers first. Future external arrivals are not observable. Use TrackWork across external producer or outbox scheduling gaps.</remarks>
+    /// <summary>Waits for observed operations, queued in-memory messages and committed outbox rows to finish, without polling.</summary>
+    /// <remarks>Start producers first. Future external arrivals are not observable. A committed outbox row counts until this
+    /// provider's dispatcher sends, discards or poisons it; a retried row stays outstanding. Use TrackWork across external producer gaps.</remarks>
     public Task WaitForIdleAsync(CancellationToken cancellationToken = default)
     {
         lock (_gate) return _idle.Task.WaitAsync(cancellationToken);
@@ -129,7 +131,7 @@ public sealed class RelayerHarness : ISendMiddleware, IRelayerObserver
         }
     }
 
-    /// <summary>Includes application-owned asynchronous work, such as an outbox dispatch cycle, in idle detection.</summary>
+    /// <summary>Includes application-owned asynchronous work, such as an external producer, in idle detection.</summary>
     public IDisposable TrackWork()
     {
         WorkStarted();
@@ -305,6 +307,19 @@ public sealed class RelayerHarness : ISendMiddleware, IRelayerObserver
         var headers = new KeyValuePair<string, WireString>[error.Headers.Length];
         for (var i = 0; i < headers.Length; i++) headers[i] = new(error.Headers.Span[i].Key, new WireString(error.Headers.Span[i].Value.ToString()));
         lock (_gate) _deadLettered.Add(new(message, new(error.Reason, error.Description, headers)));
+    }
+
+    // Rows settled by recovery may have been committed by another instance; they never make the count negative.
+    void IRelayerObserver.OutboxPending(long delta)
+    {
+        lock (_gate)
+        {
+            var rows = Math.Max(0, _outboxRows + delta);
+            if (rows == _outboxRows) return;
+            if (_outboxRows == 0) WorkStarted();
+            _outboxRows = rows;
+            if (rows == 0) WorkCompleted();
+        }
     }
 
     void IRelayerObserver.WorkStarted() => WorkStarted();

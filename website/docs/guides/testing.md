@@ -69,22 +69,34 @@ Receive and dispatch bodies are copied before native storage can be reused. Type
 
 `WaitForIdleAsync` tracks active sends, dispatches and consumption. With the registered in-memory transport, it also tracks queued, scheduled and redelivered messages until every consumer group releases them. It uses completion signals, not sleeps or polling. An endpoint with no consumer retains its queued messages and therefore does not become idle.
 
-Start producers before awaiting idle. Future external broker arrivals ([wait for those instead](#wait-for-a-broker-round-trip)) and durable outbox rows not yet being dispatched cannot be inferred from an idle pipeline. Include an application-owned producer or dispatch cycle explicitly. In this example, `CommitAndDispatchAsync` is your application's method:
+Committed outbox rows also count as outstanding work. A row committed through this provider's outbox stays outstanding until its dispatcher settles it: sent, discarded by failure classification, moved to dead storage, or parked on an ordered lane. A row whose send failed and will be retried stays outstanding until a later attempt settles it, so a test that expects a retry should wait with a deadline. This applies to every store's direct dispatch, ordered dispatch and recovery ([EF Core enlistment](../reference/ef-core-outbox.md), [direct dispatch](../reference/direct-dispatch.md), [ordered dispatch](../reference/ordered-dispatch.md), [leased recovery](../reference/postgres-maintenance.md)). Rows recovered from another instance never make the count negative, but when several hosts share one outbox table, one host's recovery can settle a row that another host committed. Give each test its own table or schema. The native dispatch must use the registered `ITransport` services for observation.
 
 ```csharp
-var cycle = harness.TrackWork();
-try
+await using (var scope = provider.CreateAsyncScope())
 {
-    await application.CommitAndDispatchAsync();
+    var db = scope.ServiceProvider.GetRequiredService<OrdersDbContext>();
+    using var enlistment = db.EnlistRelayerOutbox();
+    await scope.ServiceProvider.GetRequiredService<ISender>().SendAsync(new OrderPlaced(id));
+    await db.SaveChangesAsync();
 }
-finally
-{
-    cycle.Dispose();
-}
+// Completes after the direct dispatcher has sent the row and its in-memory consumers have run.
 await harness.WaitForIdleAsync(deadline.Token);
 ```
 
-Keep the lease from before the producer or outbox commit until dispatch finishes or the transaction rolls back. The native dispatch must use the registered `ITransport` services for observation. [EF Core enlistment](../reference/ef-core-outbox.md) and [unordered PostgreSQL direct dispatch](../reference/direct-dispatch.md) are available separately; [ordered dispatch](../reference/ordered-dispatch.md) and [leased recovery](../reference/postgres-maintenance.md) are also available. The harness does not provide an outbox implementation or automatically track a direct dispatch queue as outstanding work.
+Start producers before awaiting idle. Future external broker arrivals cannot be inferred from an idle pipeline ([wait for those instead](#wait-for-a-broker-round-trip)). Include an application-owned producer that the harness cannot observe explicitly. In this example, `ProduceAsync` is your application's method:
+
+```csharp
+var work = harness.TrackWork();
+try
+{
+    await application.ProduceAsync();
+}
+finally
+{
+    work.Dispose();
+}
+await harness.WaitForIdleAsync(deadline.Token);
+```
 
 Cancelling an idle wait cancels only that caller's wait. It does not stop processing or other waiters. Use a test deadline so poison messages configured for indefinite redelivery cannot hang a test.
 

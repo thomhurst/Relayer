@@ -427,6 +427,25 @@ public class HarnessTests
     }
 
     [Test]
+    public async Task Committed_outbox_rows_are_outstanding_until_this_provider_settles_them()
+    {
+        await using var fixture = await Fixture.Start();
+        var instrumentation = fixture.Provider.GetRequiredService<RelayerInstrumentation>();
+        // Recovery can settle a row another instance committed; that never makes the count negative.
+        instrumentation.AddOutboxPending(-1);
+        await fixture.Harness.WaitForIdleAsync().WaitAsync(Limit);
+        instrumentation.AddOutboxPending(2);
+        var idle = fixture.Harness.WaitForIdleAsync();
+        await Assert.That(idle.IsCompleted).IsFalse();
+        await Assert.That(() => fixture.Harness.Reset()).Throws<InvalidOperationException>();
+        instrumentation.AddOutboxPending(-1);
+        await Assert.That(idle.IsCompleted).IsFalse();
+        instrumentation.AddOutboxPending(-1);
+        await idle.WaitAsync(Limit);
+        fixture.Harness.Reset();
+    }
+
+    [Test]
     public async Task Delayed_native_message_keeps_harness_busy()
     {
         var clock = new Relayer.Tests.InMemoryTestClock();
