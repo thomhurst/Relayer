@@ -120,9 +120,9 @@ services.AddRelayer(relayer => relayer.Kafka("events", kafka =>
     })));
 ```
 
-`consumer.Handler<THandler>()` both selects the handler for that consumer and registers its generated descriptors and scoped DI service. No separate builder registration or assembly-wide handler registration is needed. The generator supports inherited contracts, explicit interface implementations, and handlers with several message or batch contracts. Explicit `Handler<ClosedHandler<OrderPlaced>>()` supports closed generic handlers and handlers in referenced assemblies. Repeated registration is idempotent, and an existing DI lifetime is preserved.
+`consumer.Handler<THandler>()` both selects the handler for that consumer and registers its generated descriptors and scoped DI service. No separate builder registration or assembly-wide handler registration is needed. The generator supports inherited contracts, explicit interface implementations, and handlers with several message or batch contracts. Explicit `Handler<ClosedHandler<OrderPlaced>>()` supports closed generic handlers and handlers in referenced assemblies. Repeated registration is idempotent, and an existing DI lifetime is preserved. Each assembly gets its own generated `Handler<THandler>()` and `AddMessageTypesFromThisAssembly()`, hidden from other assemblies even through `InternalsVisibleTo`, so a library and its test project can both register handlers.
 
-Message types must be accessible to the generated code; [RLYH001](../reference/diagnostics.md#suppression-and-generated-code) reports ones that are not. Analyzer [RLY003](../reference/diagnostics.md#rly003) warns about a handler that is never registered, and [RLY004](../reference/diagnostics.md#rly004) about a consumer with no handler.
+Message types must be accessible to the generated code; [RLYH001](../reference/diagnostics.md#rlyh001) reports ones that are not. Analyzer [RLY003](../reference/diagnostics.md#rly003) warns about a handler that is never registered, and [RLY004](../reference/diagnostics.md#rly004) about a consumer with no handler.
 
 ## Dispatch
 
