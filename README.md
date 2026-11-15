@@ -137,4 +137,8 @@ dotnet build -c Release
 dotnet test -c Release --project tests/Relayer.Tests --treenode-filter "/*/*/ClassName/*"
 ```
 
-See [AGENTS.md](https://github.com/thomhurst/Relayer/blob/main/AGENTS.md) for the development guide. Relayer is MIT licensed.
+See the contributing guides for [testing](https://relayer.tomlonghurst.dev/docs/contributing/testing), [performance](https://relayer.tomlonghurst.dev/docs/contributing/performance) and [documentation](https://relayer.tomlonghurst.dev/docs/contributing/documentation).
+
+## License
+
+MIT
