@@ -103,7 +103,18 @@ public class KafkaExactlyOnceTests(KafkaHeaderSnapshotBroker broker)
         }
     }
 
-    private IHost BuildHost(Topics topics, ExactlyOnceControl control, TimeSpan commitInterval, bool missingDeadLetter = false)
+    [Test]
+    public async Task A_database_inbox_is_rejected_at_startup()
+    {
+        using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(1));
+        var token = timeout.Token;
+        await using var topics = await TopicsAsync("eos-inbox", 1, token);
+        using var host = BuildHost(topics, new(), TimeSpan.FromMilliseconds(200), inbox: true);
+        await Assert.That(() => host.StartAsync(token)).Throws<NotSupportedException>().WithMessageContaining("inbox");
+    }
+
+    private IHost BuildHost(Topics topics, ExactlyOnceControl control, TimeSpan commitInterval, bool missingDeadLetter = false,
+        bool inbox = false)
     {
         var builder = Host.CreateApplicationBuilder();
         builder.Logging.ClearProviders();
@@ -138,6 +149,7 @@ public class KafkaExactlyOnceTests(KafkaHeaderSnapshotBroker broker)
                         DeadLetterEndpoint = missingDeadLetter ? topics.Input + ".missing" : topics.DeadLetter,
                         CopyTimeout = missingDeadLetter ? TimeSpan.FromSeconds(2) : new FailureOptions().CopyTimeout,
                     });
+                    if (inbox) consumer.ConfigurePipeline(pipeline => pipeline.Use(new InboxBoundary()));
                     consumer.Handler<ExactlyOnceHandler>();
                 });
             });
@@ -237,3 +249,11 @@ public sealed class ExactlyOnceHandler(ExactlyOnceControl control, ISender sende
 [JsonSerializable(typeof(ExactlyOnceInput))]
 [JsonSerializable(typeof(ExactlyOnceOutput))]
 internal partial class ExactlyOnceJson : JsonSerializerContext;
+
+// Stands in for a database consumer boundary that deduplicates through an inbox.
+internal sealed class InboxBoundary : IConsumeTransactionMiddleware, IConsumeInbox
+{
+    public bool Inbox => true;
+
+    public ValueTask InvokeAsync(MessageContext context, ConsumeDelegate next) => next(context);
+}

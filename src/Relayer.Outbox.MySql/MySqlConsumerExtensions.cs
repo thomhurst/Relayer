@@ -37,8 +37,10 @@ public static class MySqlConsumerExtensions
 }
 
 internal sealed class MySqlConsumer(MySqlDataSource dataSource, string consumer, byte[] identity, bool inbox,
-    IsolationLevel isolationLevel, RelayerInstrumentation instrumentation) : IConsumeTransactionMiddleware
+    IsolationLevel isolationLevel, RelayerInstrumentation instrumentation) : IConsumeTransactionMiddleware, IConsumeInbox
 {
+    public bool Inbox => inbox;
+
     [RuntimeAsyncMethodGeneration(false)]
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
     public async ValueTask InvokeAsync(MessageContext context, ConsumeDelegate next)

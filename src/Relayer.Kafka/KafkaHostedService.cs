@@ -88,12 +88,16 @@ internal sealed class KafkaHostedService(IServiceProvider provider, string name)
             { System = "kafka", Destination = consumer.Source, ConsumerGroup = consumer.Options.Group });
             pipeline.Tracing(tracing, endpoint).Telemetry(telemetry);
             pipeline.ConfigureConsumer(provider, consumer);
+            var exactlyOnce = KafkaProcessing.IsExactlyOnce(consumer.Options);
+            // The inbox row commits before the Kafka transaction, so after an abort the replay would skip the
+            // handler and its aborted output would never be produced.
+            if (exactlyOnce && pipeline.HasInbox)
+                throw new NotSupportedException($"Kafka consumer '{consumer.Source}': remove the database inbox or use a non-transactional CommitPolicy. The inbox commits before the Kafka transaction, so a replay after an abort would skip the handler and lose its output.");
             foreach (var handler in handlers.Descriptors)
                 if (consumer.Selects(handler)) pipeline.Handler(handler);
             var composed = pipeline.Build(consumer.Concurrency);
             var receive = new ReceivePipeline<KafkaDelivery, KafkaMessageBinding>(composed, new(), consumer.Concurrency);
             var loggerFactory = provider.GetService<ILoggerFactory>() ?? NullLoggerFactory.Instance;
-            var exactlyOnce = KafkaProcessing.IsExactlyOnce(consumer.Options);
             var native = new Dekaf.ConsumerBuilder<byte[], byte[]>().WithBootstrapServers(options.BootstrapServers.ToArray())
                 .WithLoggerFactory(loggerFactory);
             // Exactly-once input skips aborted upstream transactions unless the application configures otherwise.

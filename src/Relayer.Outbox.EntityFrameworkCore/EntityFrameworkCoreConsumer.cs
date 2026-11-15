@@ -9,11 +9,13 @@ namespace Relayer.Outbox.EntityFrameworkCore;
 
 internal sealed class EntityFrameworkCoreConsumer<TContext>(string consumer, bool inbox, bool outbox,
     OutboxConfiguration configuration, RelayerInstrumentation instrumentation, IsolationLevel? isolationLevel = null,
-    bool scopedValidation = false, bool explicitOptions = false, bool requireOutbox = false) : IConsumeTransactionMiddleware where TContext : DbContext
+    bool scopedValidation = false, bool explicitOptions = false, bool requireOutbox = false) : IConsumeTransactionMiddleware, IConsumeInbox where TContext : DbContext
 {
     private readonly IsolationLevel _isolationLevel = isolationLevel ?? IsolationLevel.Unspecified;
 
     internal bool ScopedValidation => scopedValidation;
+
+    public bool Inbox => inbox;
 
     internal EntityFrameworkCoreConsumerSettings Resolve(DbContext db) => scopedValidation
         ? OutboxConfiguration.ValidateConsumer(db, inbox, configuration, explicitOptions, requireOutbox)
