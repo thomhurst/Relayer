@@ -205,9 +205,6 @@ public class KafkaReceiveTests
         await fixture.Transport.SendAsync(Message(source, 3), token);
         await Assert.That(await control.ReadHandledAsync(transport.Consumers[0].Completion, token)).IsEqualTo(3);
         await host.StopAsync(token);
-        var service = host.Services.GetServices<IHostedService>().OfType<KafkaHostedService>().Single();
-        await Assert.That(async () => await service.StartAsync(token)).Throws<InvalidOperationException>()
-            .WithMessageContaining("only start once");
         await Assert.That(transport.Consumers.Count).IsEqualTo(1);
         await Assert.That(control.FirstAttempts).IsEqualTo(2);
         await Assert.That(control.LastFeature.ConsumeResult.Topic).IsNull();

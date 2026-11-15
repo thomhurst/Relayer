@@ -101,7 +101,7 @@ kafka.Consume("orders", consumer =>
 
 Relayer passes these settings to Dekaf unchanged and supplies `Monitor`, `Control` and `CommitObserver` itself. Startup rejects options that would break durable completion: `MaxConcurrentHandlers` other than `Concurrency`, `PartitionCommitPolicy.UserManaged`, an `ErrorPolicy` other than `StopConsumer`, a `MaxHandlerBatchSize` other than 1, or a supplied monitor, control or commit observer.
 
-Each hosted service starts once; recreate the host to restart Kafka consumers, including after a failed receive. A fresh native consumer resumes at the broker's committed offsets. Cancelling the host's stop token stops waiting for the drain but does not cancel handlers early; Dekaf still bounds the drain by `StopTimeout`. Partial startup failure disposes the transport and all consumers already created.
+Every start of a consumer, including a restart through [`IConsumerControl`](#start-consumers-later), runs a new native Dekaf consumer that joins the group and resumes at the broker's committed offsets; a stopped consumer leaves the group after its drain. Recreate the host to restart consumers after a failed receive. Cancelling the host's stop token stops waiting for the drain but does not cancel handlers early; Dekaf still bounds the drain by `StopTimeout`. When one consumer fails to start, the consumers already started are stopped again.
 
 Inside a handler, `context.Kafka().ConsumeResult` exposes Dekaf's original record. Durable dead-letter copies retain native null values and nullable application headers. The struct view wraps a pooled `NativeMessage<KafkaDelivery>` feature and is valid only during processing. It provides native headers, key, partition, offset and timestamp without allocating a feature for each record. Null-value records receive the tombstone telemetry attribute and dispatch to `IHandler<Tombstone<T>>`. Non-null records, including empty values, dispatch to `IHandler<T>`. Missing handlers or malformed non-null bodies follow the core failure policy.
 
@@ -110,6 +110,22 @@ Dekaf 1.26.0 handles transient empty broker metadata during broker restarts thro
 Consumer failures that escape native recovery reach the application's background-service supervision immediately, even when another consumer is still running. The host's default policy stops the application. Shutdown signals every consumer before waiting for their drains, so a failed consumer cannot prevent its siblings from stopping. Override `HostOptions.BackgroundServiceExceptionBehavior` only when the application provides its own recovery policy.
 
 Relayer discards the legacy `relayer.internal.kafka.tombstone` header, including values added by native callbacks. Null-value state comes only from the native record or the explicit serialized send flag; a header cannot turn an empty value into a tombstone.
+
+### Start consumers later
+
+Consumers start with the host by default. Set `AutoStartConsumers = false` to bring the host up first and start the consumers yourself through the transport's keyed `IConsumerControl`:
+
+```csharp
+using Relayer.Transports;
+
+kafka.Options.Configure(options => options.AutoStartConsumers = false);
+
+// Later, when the application is ready to receive:
+var consumers = app.Services.GetRequiredKeyedService<IConsumerControl>("events");
+await consumers.StartAsync(cancellationToken);
+```
+
+The host still composes and validates every consumer and starts the producer, so sending works while the consumers are stopped. `StartAsync` fails before the host has started or after it stops. `StopAsync` drains in-flight records and commits completed offsets like host shutdown, then leaves the consumer group so other members take over its partitions; a later `StartAsync` rejoins the group at the committed offsets. Both calls do nothing when the consumers are already in that state. A start while an abandoned stop is still draining fails until the drain finishes. Host shutdown stops consumers that the control started. While stopped, consumer [health](#health-checks) reports them as unavailable.
 
 ### Kafka to a database
 

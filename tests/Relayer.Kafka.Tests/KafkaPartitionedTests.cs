@@ -231,7 +231,7 @@ public class KafkaPartitionedTests(KafkaHeaderSnapshotBroker broker)
         using var tracing = new MessageTracing(Options.Create(new TracingOptions()), []);
         var handled = 0;
         var parents = new ConcurrentQueue<Activity?>();
-        await using var adapter = new KafkaConsumer(Native(topic.Name), (_, _) =>
+        await using var adapter = new KafkaConsumer(() => Native(topic.Name), (_, _) =>
         {
             parents.Enqueue(Activity.Current);
             Interlocked.Increment(ref handled);
@@ -252,7 +252,7 @@ public class KafkaPartitionedTests(KafkaHeaderSnapshotBroker broker)
         PartitionedProcessingOptions? options = null)
     {
         var tracing = new MessageTracing(Options.Create(new TracingOptions()), []);
-        return new(native, receive, tracing, new() { System = "kafka", Destination = topic, ConsumerGroup = topic },
+        return new(() => native, receive, tracing, new() { System = "kafka", Destination = topic, ConsumerGroup = topic },
             options ?? KafkaProcessing.Defaults(concurrency), concurrency);
     }
 

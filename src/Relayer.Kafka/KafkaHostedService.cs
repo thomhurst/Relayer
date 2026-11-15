@@ -10,22 +10,56 @@ using Relayer.Transports;
 
 namespace Relayer.Kafka;
 
-internal sealed class KafkaHostedService(IServiceProvider provider, string name) : BackgroundService
+internal sealed class KafkaHostedService(IServiceProvider provider, string name) : ConsumerHostedService($"Kafka transport '{name}'")
 {
-    private ITransport? _transport;
-    private KafkaProducerTransport? _nativeTransport;
-    private bool _started;
-    public override async Task StartAsync(CancellationToken cancellationToken)
+    private KafkaProducerTransport? _transport;
+    private bool _composed;
+    // Completes with the first consumer receive that ends in failure, from any start.
+    private readonly TaskCompletionSource<Task> _failure = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+    protected override bool AutoStartConsumers =>
+        provider.GetRequiredService<IOptionsMonitor<KafkaTransportOptions>>().Get(name).AutoStartConsumers;
+
+    protected override async Task StartConsumersAsync(CancellationToken cancellationToken)
     {
-        if (_started) throw new InvalidOperationException("Recreate the application host to restart Kafka consumers. This hosted service can only start once.");
-        _started = true;
-        _transport = provider.GetServices<ITransport>().Single(transport => transport.Name == name);
-        _nativeTransport = provider.GetRequiredKeyedService<KafkaProducerTransport>(name);
+        await _transport!.StartConsumersAsync(cancellationToken).ConfigureAwait(false);
+        foreach (var consumer in _transport.Consumers) _ = WatchAsync(consumer.Completion);
+    }
+
+    protected override Task StopConsumersAsync(CancellationToken cancellationToken) =>
+        _transport?.StopConsumersAsync(cancellationToken) ?? Task.CompletedTask;
+
+    private async Task WatchAsync(Task completion)
+    {
+        try { await completion.ConfigureAwait(false); }
+        catch (Exception) { _failure.TrySetResult(completion); }
+    }
+
+    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+    {
+        // Report a failure immediately; a healthy sibling can run indefinitely.
+        var failed = await _failure.Task.WaitAsync(stoppingToken).ConfigureAwait(false);
+        await failed.ConfigureAwait(false);
+    }
+
+    public override async Task StopAsync(CancellationToken cancellationToken)
+    {
+        try { await base.StopAsync(cancellationToken).ConfigureAwait(false); }
+        finally { if (_transport is not null) await _transport.FlushAsync(cancellationToken).ConfigureAwait(false); }
+    }
+
+    protected override async Task ComposeAsync(CancellationToken cancellationToken)
+    {
+        _transport ??= provider.GetRequiredKeyedService<KafkaProducerTransport>(name);
+        await _transport.InitializeProducerAsync(cancellationToken).ConfigureAwait(false);
+        if (_composed) return;
         var definition = provider.GetRequiredService<RelayerConfiguration>().Transports.Single(item => item.Name == name);
         var options = provider.GetRequiredService<IOptionsMonitor<KafkaTransportOptions>>().Get(name);
         var tracing = provider.GetRequiredService<MessageTracing>();
         var handlers = provider.GetRequiredService<HandlerRegistry>();
         var health = provider.GetKeyedService<KafkaConsumerHealth>(name);
+        // Publish only a complete set, so a retried start cannot compose a consumer twice.
+        var receivers = new List<KafkaConsumer>(definition.Consumers.Count);
         foreach (var declaration in definition.Consumers)
         {
             var consumer = (ConsumerDefinition<KafkaConsumerOptions>)declaration;
@@ -55,15 +89,15 @@ internal sealed class KafkaHostedService(IServiceProvider provider, string name)
             // commit or store consumed positions on its own (D22).
             native.WithGroupId(consumer.Options.Group!).SubscribeTo(consumer.Source)
                 .WithOffsetCommitMode(OffsetCommitMode.Manual).WithAutoOffsetStore(false);
-            var receiver = new KafkaConsumer(native.Build(), receive.ProcessAsync, tracing, endpoint,
+            var receiver = new KafkaConsumer(native.Build, receive.ProcessAsync, tracing, endpoint,
                 consumer.Options.Processing ?? KafkaProcessing.Defaults(consumer.Concurrency), consumer.Concurrency,
                 health?.Register(declaration));
-            _nativeTransport.Consumers.Add(receiver);
+            receivers.Add(receiver);
             if (consumer.Options.CircuitBreaker is { } circuit)
                 receiver.ConfigureCircuit(circuit, composed, telemetry, provider.GetService<TimeProvider>() ?? TimeProvider.System);
         }
-        await _transport.StartAsync(cancellationToken).ConfigureAwait(false);
-        await base.StartAsync(cancellationToken).ConfigureAwait(false);
+        _transport.Consumers.AddRange(receivers);
+        _composed = true;
     }
 
     internal static OutgoingMessage Copy(MessageContext context)
@@ -94,21 +128,5 @@ internal sealed class KafkaHostedService(IServiceProvider provider, string name)
             }
         });
         return new(record.Topic, record.Value ?? [], headers, record.IsKeyNull ? null : new WireString(record.Key!), options: options, isTombstone: record.Value is null);
-    }
-
-    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
-    {
-        // Report each failure immediately; a healthy sibling can run indefinitely.
-        await foreach (var completion in Task.WhenEach(_nativeTransport!.Consumers.Select(consumer => consumer.Completion)).ConfigureAwait(false))
-            await completion.ConfigureAwait(false);
-    }
-
-    public override async Task StopAsync(CancellationToken cancellationToken)
-    {
-        try
-        {
-            if (_transport is not null) await _transport.StopAsync(cancellationToken).ConfigureAwait(false);
-        }
-        finally { await base.StopAsync(cancellationToken).ConfigureAwait(false); }
     }
 }
