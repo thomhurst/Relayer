@@ -1,9 +1,9 @@
 ---
 title: Kafka
-description: "Named Kafka producers and serial consumers backed by Dekaf, with durable failure handling."
+description: "Named Kafka producers and key-ordered parallel consumers backed by Dekaf, with durable failure handling."
 ---
 
-`Relayer.Kafka` implements producers and serial consumer groups on [Dekaf](https://github.com/thomhurst/Dekaf). Consumers use the core failure pipeline and acknowledge offsets after durable handling, including dead-letter copies. Optional [consumer circuit breaking](../guides/failure-handling.md#consumer-circuit-breaking) pauses native consumption and retains failed records during dependency outages. Optional health adapters are available in `Relayer.Kafka.HealthChecks`. Typed tombstones use native null values and the original message's wire identity. Parallel partition scheduling, drain-on-revoke, topic provisioning and transactions remain planned.
+`Relayer.Kafka` implements producers and consumer groups on [Dekaf](https://github.com/thomhurst/Dekaf). Consumers run on Dekaf's partitioned runtime with key-ordered parallelism, contiguous offset commits and bounded drain on revoke and shutdown. They use the core failure pipeline and mark records processed only after durable handling, including dead-letter copies. Optional [consumer circuit breaking](../guides/failure-handling.md#consumer-circuit-breaking) holds failed records during dependency outages. Optional health adapters are available in `Relayer.Kafka.HealthChecks`. Typed tombstones use native null values and the original message's wire identity. Batch handlers, topic provisioning and transactions remain planned.
 
 ## Register a producer
 
@@ -55,6 +55,7 @@ Add a consumer to the same `Kafka` declaration:
 kafka.Consume("orders", consumer =>
 {
     consumer.Options.Group = "billing";
+    consumer.Concurrency(8); // Up to 8 handlers; records with the same key stay in order.
     consumer.Failures(new FailureOptions
     {
         RetryDelays = new[] { TimeSpan.FromMilliseconds(100), TimeSpan.FromSeconds(1) },
@@ -64,21 +65,49 @@ kafka.Consume("orders", consumer =>
 });
 ```
 
-Register the handler and its message with source generation. Create both topics externally. Without an explicit `DeadLetterEndpoint`, the destination is the source topic plus `.dead-letter`. Immediate retries run inside processing; exhausted retries and invalid envelopes send the original serialized body, headers, key and creation context to that topic. A successful broker acknowledgment of the copy permits committing the original offset. Copy errors or cancellation stop the receiver and leave the incomplete batch uncommitted. Recovery can therefore repeat earlier durable work; handlers must tolerate at-least-once delivery.
+Register the handler and its message with source generation. Create both topics externally. Without an explicit `DeadLetterEndpoint`, the destination is the source topic plus `.dead-letter`. Immediate retries run inside processing; exhausted retries and invalid envelopes send the original serialized body, headers, key and creation context to that topic. A successful broker acknowledgment of the copy marks the original record processed. Copy errors stop the receiver without marking that record, so its offset and every later offset in the partition stay uncommitted. Recovery can therefore repeat earlier durable work; handlers must tolerate at-least-once delivery.
 
-`KafkaTransportOptions.ConfigureConsumer` receives Dekaf's `ConsumerBuilder<byte[], byte[]>`. Native security, offset-reset, fetch and group settings remain available. Keep the raw byte deserializers. After that callback, Relayer sets the declared group and source subscription, disables automatic offset storage and commits, and adds its rebalance listener. These ownership settings ensure polling never acknowledges unfinished work. Dekaf's native offset-reset default still applies; set `WithAutoOffsetReset(AutoOffsetReset.Earliest)` explicitly when a new group must read existing records.
+`KafkaTransportOptions.ConfigureConsumer` receives Dekaf's `ConsumerBuilder<byte[], byte[]>`. Native security, offset-reset, fetch and group settings remain available. Keep the raw byte deserializers. After that callback, Relayer sets the declared group and source subscription and disables the consumer's own automatic offset storage and commits, so polling never acknowledges unfinished work. Rebalance listeners added in the callback are preserved. Dekaf's native offset-reset default still applies; set `WithAutoOffsetReset(AutoOffsetReset.Earliest)` explicitly when a new group must read existing records.
 
-One declaration currently processes records serially, with `Concurrency(1)` and single-message handlers. Other values fail at startup with an actionable error. The adapter consumes native fetch batches and commits their native next-offset checkpoints only after every delivered record completes. Dekaf's native iterator and checkpoint guards fence each partition: an unrelated assignment change does not rewind a retained partition, while a revoked or invalidated batch cannot supply a checkpoint. A revoked partition resumes through native reassignment. Commit rejections with Dekaf membership-loss errors (`FencedMemberEpoch`, `UnknownMemberId`, or `StaleMemberEpoch`) rewind the batch only if its partition is still assigned, while Dekaf rejoins the group. Other commit failures and cancellation still stop the receiver. Successful records in that batch may therefore run again. Native batch checkpoints preserve offset gaps and leader epochs. Shutdown stops fetching, finishes the current durable receive operation, and commits the native checkpoint through that completed record without starting another record from the fetched batch. Remaining records are replayed after restart. Its cancellation deadline aborts unfinished handling without committing that batch, so already completed records in the same uncommitted batch may also replay. Each hosted service starts once; recreate the host to restart Kafka consumers, including after a failed or aborted receive. A fresh native consumer resumes at the broker's committed offsets. Partial startup failure disposes the transport and all consumers already created.
+### Parallelism, commits and rebalances
 
-Dekaf already supports generation-fenced `StoreOffset(record)` and batched automatic commits with automatic storage disabled. The serial adapter retains explicit batch commits because Dekaf's success-only `OnCommit` interceptor cannot preserve the existing commit duration, error and completed-record-count telemetry. [Dekaf #4100](https://github.com/thomhurst/Dekaf/issues/4100) tracks the missing native commit observation; Relayer does not implement a second commit timer or offset store. This is a narrow exception recorded in [D22](https://github.com/thomhurst/Relayer/blob/main/docs/decisions.md#d22-the-kafka-transport-wraps-dekaf).
+Each declaration wraps Dekaf's `RunPartitionedAsync` record handler. By default it uses `PartitionedProcessingOrder.Key`: records with equal keys (compared by content, with null keys sharing one lane) run in offset order, while different keys in the same partition run concurrently. `Concurrency(n)` sets Dekaf's consumer-wide `MaxConcurrentHandlers`, and by default also `MaxConcurrentHandlersPerPartition`, so `Concurrency(1)` processes one record at a time across the consumer. Batch handlers fail at startup with an actionable error.
 
-Parallel receive is planned in [#22](https://github.com/thomhurst/Relayer/issues/22). It will wrap Dekaf's `RunPartitionedAsync` for key ordering, contiguous completion tracking, backpressure and bounded drain; it will not use a separate Relayer scheduler. Relayer will retain its receive/failure pipeline, durable completion rule, commit spans and health reporting. Dekaf 1.26.0 now provides consumer-wide handler/buffer limits, oldest outstanding record health and safe offset/timestamp replay through `PartitionedProcessingOptions`, `PartitionedProcessingMonitor` and `PartitionedProcessingControl`. The Relayer integration remains planned; the dependency upgrade alone does not enable parallel receive.
+A record is marked processed only when its receive returns `Complete` or `SettledByHandler`, which means retries, dead-letter copies and handler settlement are durable. Dekaf tracks the highest contiguous completed offset per partition, so a slow or failed record holds back its partition's commit even when later keys finish first. With the default `PartitionCommitPolicy.CommitCompletedPeriodically`, Dekaf commits those offsets every `CommitInterval` (5 seconds by default) and again when a partition is revoked or stopped. Commits preserve offset gaps from compaction and transaction markers, and leader epochs. Commits are amortized, so a crash can replay records completed since the last commit.
+
+Dekaf owns assignment, pause and resume, backpressure (`PartitionBackpressureMode.PauseResume`) and drain. When a partition is revoked or the host stops, its lane stops dispatching, in-flight handlers finish (`PartitionStopPolicy.Drain`), and completed offsets are committed. After `StopTimeout` (30 seconds by default) Dekaf cancels the handler's token; the cancelled record is not marked processed and is replayed by the next owner. Retained partitions keep processing during a cooperative rebalance. A handler failure that escapes the failure pipeline stops the consumer (`PartitionWorkerErrorPolicy.StopConsumer`) without committing the failed record.
+
+Pass Dekaf's own options through `consumer.Options.Processing` to change ordering, buffers, commit interval or stop behavior:
+
+```csharp
+using Dekaf.Consumer;
+
+kafka.Consume("orders", consumer =>
+{
+    consumer.Options.Group = "billing";
+    consumer.Concurrency(16);
+    consumer.Options.Processing = new PartitionedProcessingOptions
+    {
+        Ordering = PartitionedProcessingOrder.Key,
+        MaxConcurrentHandlersPerPartition = 4,
+        MaxBufferedRecords = 2048,
+        CommitPolicy = PartitionCommitPolicy.CommitCompletedPeriodically,
+        CommitInterval = TimeSpan.FromSeconds(1),
+        StopTimeout = TimeSpan.FromSeconds(10),
+    };
+    consumer.Handler<OrderPlacedHandler>();
+});
+```
+
+Relayer passes these settings to Dekaf unchanged and supplies `Monitor`, `Control` and `CommitObserver` itself. Startup rejects options that would break durable completion: `MaxConcurrentHandlers` other than `Concurrency`, `PartitionCommitPolicy.UserManaged`, an `ErrorPolicy` other than `StopConsumer`, a `MaxHandlerBatchSize` other than 1, or a supplied monitor, control or commit observer.
+
+Each hosted service starts once; recreate the host to restart Kafka consumers, including after a failed receive. A fresh native consumer resumes at the broker's committed offsets. Cancelling the host's stop token stops waiting for the drain but does not cancel handlers early; Dekaf still bounds the drain by `StopTimeout`. Partial startup failure disposes the transport and all consumers already created.
 
 Inside a handler, `context.Kafka().ConsumeResult` exposes Dekaf's original record. Durable dead-letter copies retain native null values and nullable application headers. The struct view wraps a pooled `NativeMessage<KafkaDelivery>` feature and is valid only during processing. It provides native headers, key, partition, offset and timestamp without allocating a feature for each record. Null-value records receive the tombstone telemetry attribute and dispatch to `IHandler<Tombstone<T>>`. Non-null records, including empty values, dispatch to `IHandler<T>`. Missing handlers or malformed non-null bodies follow the core failure policy.
 
 Dekaf 1.26.0 handles transient empty broker metadata during broker restarts through its native coordinator recovery. It refreshes metadata from the bootstrap servers before coordinator discovery; if no brokers are available yet, the failure follows Dekaf's existing coordinator retry and deadline policy. Relayer keeps the same native consumer and receive stream during this recovery. Native configuration still governs retries and timeouts; this does not guarantee recovery from every outage.
 
-Consumer failures that escape native recovery reach the application's background-service supervision immediately, even when another consumer is still running. The host's default policy stops the application. Shutdown signals every consumer before waiting for their current batches, so a failed consumer cannot prevent its siblings from stopping. Override `HostOptions.BackgroundServiceExceptionBehavior` only when the application provides its own recovery policy.
+Consumer failures that escape native recovery reach the application's background-service supervision immediately, even when another consumer is still running. The host's default policy stops the application. Shutdown signals every consumer before waiting for their drains, so a failed consumer cannot prevent its siblings from stopping. Override `HostOptions.BackgroundServiceExceptionBehavior` only when the application provides its own recovery policy.
 
 Relayer discards the legacy `relayer.internal.kafka.tombstone` header, including values added by native callbacks. Null-value state comes only from the native record or the explicit serialized send flag; a header cannot turn an empty value into a tombstone.
 
@@ -167,19 +196,19 @@ await control.SeekAsync("billing",
     cancellationToken);
 ```
 
-Call control from an operational endpoint or service outside the consumer's handlers. The receiver finishes its current batch and durable offset commit, releases the native poll stream, then applies the seek on that same receiver. Idle polling is interrupted immediately. No old batch can commit after the seek is applied. Seeking neither changes the group's committed offset immediately nor bypasses inbox deduplication. After replay, normal durable handling commits new checkpoints; restarting before then resumes from the last committed offset. Replayed work can run again, so handlers must tolerate at-least-once delivery.
+Call control from an operational endpoint or service outside the consumer's handlers. The seek uses Dekaf's `PartitionedProcessingControl`: the partition's lane stops dispatching and discards records buffered behind in-flight handlers, waits for those handlers under `StopPolicy` and `StopTimeout`, commits the lower of the partition's completed offset and the seek offset, and restarts the lane at the seek offset. Other partitions keep processing. Seeking does not bypass inbox deduplication. Replayed work can run again, so handlers must tolerate at-least-once delivery.
 
-Offset seeks accept nonnegative absolute offsets and retain Dekaf's leader epoch and native offset-reset behavior. Timestamp seeks use Dekaf's native lookup; when Kafka returns no matching offset, the call fails without seeking. `TopicPartitionTimestamp.Earliest` and `Latest` retain their native lookup semantics. There is no application-side timestamp filtering or broadcast to other group members.
+Offset seeks accept nonnegative absolute offsets and retain Dekaf's leader epoch and native offset-reset behavior. Timestamp seeks use Dekaf's native lookup; when Kafka returns no matching offset, the call fails without seeking rather than moving to the end of the partition. `TopicPartitionTimestamp.Earliest` and `Latest` retain their native lookup semantics. There is no application-side timestamp filtering or broadcast to other group members.
 
-The partition must be assigned to this local receiver when the command executes. An unknown group/topic, multiple matching local declarations, an unassigned partition, an assignment change during lookup, or a stopped receiver fails with an actionable error. Target the process that owns the partition; a consumer on another cluster is reached through its own keyed service. Pending commands cancel on shutdown. Caller cancellation before execution skips the command; cancellation racing an applied seek cannot undo the native position change.
+The partition must be assigned to this local receiver when the command executes. An unknown group/topic, multiple matching local declarations, an unassigned partition or a stopped receiver fails with an actionable error. Target the process that owns the partition; a consumer on another cluster is reached through its own keyed service. A seek still pending at shutdown fails. Caller cancellation before the runtime starts the seek skips it; later cancellation only stops the caller's wait.
 
 ## Tracing and native feature reuse
 
 Relayer emits `send {topic}` spans with `messaging.system = kafka`. Enable `Relayer` as an activity source; enabling Dekaf's source additionally produces native child spans. The record-header serializer installs the original CloudEvents and creation-context headers after native tracing starts, preserving `traceparent` and `tracestate` rather than propagating the native send span. Broker tests cover both sources together.
 
-Consumer process spans include the declared group, cached partition ID and offset. A non-null key is tagged only on recorded spans; the tombstone tag is present only for null values. One `commit {topic}` client span describes each native batch commit, outside process spans, with `messaging.batch.message_count`. Enabling Dekaf's source retains native child spans. Internal polling emits no Relayer receive span.
+Consumer process spans include the declared group, cached partition ID and offset. A non-null key is tagged only on recorded spans; the tombstone tag is present only for null values. One `commit {topic}` client span describes each runtime-managed commit (periodic, revoke, stop and seek), outside process spans, with `messaging.batch.message_count` set to the completed records it newly covers. Dekaf's `IOffsetCommitObserver` supplies the start, outcome and count, so failed commits are marked with `error.type`. Enabling Dekaf's source retains native child spans. Internal polling emits no Relayer receive span.
 
-Producer delivery and protocol retries use Dekaf's native retry machinery. Consumer handler retries and dead-letter copies use Relayer's core failure pipeline. Dekaf's hosted retry-topic and dead-letter helpers own dispatch, retry headers and offset settlement themselves, which would bypass the portable classifier and durable-copy policy. Relayer therefore reuses Dekaf's receive batches, checkpoints, producer acknowledgments and native commits, while leaving those hosted helpers disabled. The cross-transport outbox remains separate. Kafka durable redelivery is not implemented: nonempty `RedeliveryDelays` fails at startup even with a registered `IFailureScheduler`, because the copy representation cannot yet persist native tombstones and null-valued headers. Use `RetryDelays` for in-process retries followed by durable dead-letter copies. Manual `Retry` also rejects redelivery before changing the settlement request.
+Producer delivery and protocol retries use Dekaf's native retry machinery. Consumer handler retries and dead-letter copies use Relayer's core failure pipeline. Dekaf's hosted retry-topic and dead-letter helpers own dispatch, retry headers and offset settlement themselves, which would bypass the portable classifier and durable-copy policy. Relayer therefore reuses Dekaf's partitioned runtime, completion tracking, producer acknowledgments and native commits, while leaving those hosted helpers disabled. The cross-transport outbox remains separate. Kafka durable redelivery is not implemented: nonempty `RedeliveryDelays` fails at startup even with a registered `IFailureScheduler`, because the copy representation cannot yet persist native tombstones and null-valued headers. Use `RetryDelays` for in-process retries followed by durable dead-letter copies. Manual `Retry` also rejects redelivery before changing the settlement request.
 
 Testcontainers tests run the reusable send/settle/restart, key ordering, trace propagation, stored creation-context and broker reconnect contracts. Separate broker tests cover core retries, durable dead-letter copies, native feature cleanup, and non-commit after failed copies. Native scheduled-delivery, native redelivery and native dead-letter conformance cases do not apply to Kafka.
 
@@ -219,15 +248,16 @@ application's health-check timeout policy to bound probe latency, as in the exam
 timeout bounds one native connection attempt; it does not bound all retries of the admin operation.
 The health service reports a timed-out probe as unhealthy and passes cancellation to the native client.
 
-Liveness comes from each exact consumer declaration's receiver state. Workers waiting for native batches
-are idle and healthy regardless of elapsed time. Processing remains active through retries, durable failure
-copies and the batch commit; completed records refresh progress. The oldest active worker determines
-liveness, so idle workers and healthy declarations on the same source cannot mask a stall. Before receiver
-startup and after receiver shutdown or failure, state is unavailable and health is unhealthy. Connectivity
-and liveness are separate checks: an idle receiver does not prove broker connectivity. Parallel workers
-remain planned, but the health snapshot already aggregates every registered worker.
+Liveness comes from each exact consumer declaration's Dekaf `PartitionedProcessingMonitor`. A receiver
+with no buffered or in-flight record is idle and healthy regardless of elapsed time. Otherwise its age is the
+arrival time of the oldest record that is buffered or being processed and not yet marked processed, including
+retries and durable failure copies. Unlike a last-progress time, that value does not advance while one
+partition is stuck and others keep processing. The oldest receiver determines liveness, so idle receivers
+and healthy declarations on the same source cannot mask a stall. Before receiver startup and after receiver
+shutdown or failure, state is unavailable and health is unhealthy. Connectivity and liveness are separate
+checks: an idle receiver does not prove broker connectivity.
 
-Without this optional registration, Kafka consumers do not read the health clock or record health state.
+Without this optional registration, Kafka consumers attach no native monitor and record no health state.
 The Kafka transport itself has no dependency on the health-check packages. See [health integration](../guides/health-checks.md)
 for endpoint registration, thresholds and the adapter contracts.
 
@@ -241,7 +271,7 @@ dotnet run -c Release --project benchmarks/Relayer.Benchmarks -- --filter "*Kafk
 
 Each benchmark creates and deletes its own topic. `Single` and `Batch` measure the serialized adapter seam. `DefaultJson` compares `ISender.SendAsync` with raw Dekaf: both serialize the same model using the registered default JSON serializer and generate fresh CloudEvents metadata. Tombstone cases skip serialization on both paths. Both use the same ordering key and producer defaults; the raw JSON producer uses Dekaf's byte-memory serializer without an extra body copy. Benchmark coverage alone does not establish the 5% throughput budget; that requires measurements in the same broker environment.
 
-`KafkaReceiveBenchmarks` replays a fixed 4096-record topic through raw Dekaf and the production serial receive adapter. Both paths deserialize the same source-generated JSON contract, resolve the same scoped handler in a fresh DI scope, and commit native fetch-batch checkpoints. `HealthEnabled` compares receiver health tracking enabled and disabled against raw Dekaf. Relayer composes the executable `FailurePipeline`, native dead-letter copy factory, tracing and telemetry as the Kafka hosted service does. No tracing or metrics listener is attached (D25); `MemoryDiagnoser` reports total allocations, including application DI lifetime costs (D52). This comparison includes the core receive pipeline and generated handler dispatch; it does not measure the planned parallel scheduler. With the same broker environment variable set, run `--filter "*KafkaReceiveBenchmarks*"`. Results are local diagnostics, not a claim that the 5% receive budget has passed.
+`KafkaReceiveBenchmarks` replays a fixed 4096-record topic through Dekaf's `RunPartitionedAsync` twice: once with a raw record handler and once with the production Relayer processor. Both runs use the same key ordering, handler limit and periodic commit policy, deserialize the same source-generated JSON contract, resolve the same scoped handler in a fresh DI scope, and include the stop commit. `HealthEnabled` attaches a native monitor to both runs. Relayer composes the executable `FailurePipeline`, native dead-letter copy factory, tracing, telemetry and commit observer as the Kafka hosted service does. No tracing or metrics listener is attached (D25); `MemoryDiagnoser` reports total allocations, including application DI lifetime costs (D52). With the same broker environment variable set, run `--filter "*KafkaReceiveBenchmarks*"`. Results are local diagnostics, not a claim that the 5% receive budget has passed.
 
 ## Typed tombstones
 

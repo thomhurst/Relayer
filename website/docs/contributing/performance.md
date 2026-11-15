@@ -340,15 +340,15 @@ compare public `ISender.SendAsync` with raw Dekaf using the same default generat
 JSON serializer and fresh CloudEvents metadata. These send cases are outside the
 `RegressionGate` category; receive is measured separately below.
 
-`KafkaReceiveBenchmarks` already compares raw Dekaf with the production serial
-Kafka receive adapter, including the core receive pipeline and generated handler
-dispatch. Both paths use the same source-generated JSON contract and commit native
-fetch-batch checkpoints. See [Kafka performance validation](../transports/kafka.md#performance-validation)
+`KafkaReceiveBenchmarks` compares Dekaf's `RunPartitionedAsync` with a raw record
+handler against the same runtime driving the production Relayer processor, including
+the core receive pipeline, generated handler dispatch and commit observer. Both runs
+use the same source-generated JSON contract, ordering, handler limit and periodic
+commit policy. See [Kafka performance validation](../transports/kafka.md#performance-validation)
 for its maintained scope, broker configuration and invocation. These results are
-local diagnostics, not a claim that the 5% receive budget has passed; the planned
-parallel scheduler is outside this comparison.
+local diagnostics, not a claim that the 5% receive budget has passed.
 
-For Kafka, parallel receive coverage remains planned. Other transports already
+Other transports also
 have paired cases, including RabbitMQ and Service Bus send and receive benchmarks and SQS send benchmarks.
 `SqsReceiveBindingBenchmarks` isolates body preparation without a broker; it is
 not a real-broker receive comparison. Existing cases do not establish complete
@@ -378,16 +378,20 @@ SQS/SNS or RabbitMQ.
 The Kafka record serializer skips conflict removal when Dekaf provides empty
 native header storage. Application headers are appended in order, including
 duplicates and null values. When native headers are present, the serializer
-continues using Dekaf's `Headers.Remove(string)` before appending application
-headers; creation trace context takes precedence and unrelated native additions
-remain intact. A native bulk removal API is tracked in
-[Dekaf #4121](https://github.com/thomhurst/Dekaf/issues/4121); populated-storage
-bulk filtering remains pending in [#645](https://github.com/thomhurst/Relayer/issues/645).
+removes every conflicting native header in one pass with Dekaf's allocation-free
+`Headers.RemoveAll(predicate, state)` ([Dekaf #4121](https://github.com/thomhurst/Dekaf/issues/4121))
+before appending application headers. The static predicate takes the application
+headers as state, so no closure is allocated. Creation trace context takes
+precedence over both native trace headers and unrelated native additions remain intact.
 
 `KafkaSendHeaderBenchmarks` isolates this work with 8/32 application headers and
 empty/populated native storage. It compares direct native `Headers.Add`, the
 previous conflict-removal algorithm and the current serializer, all with
-`MemoryDiagnoser`. The populated case retains a native-only header. This is a
+`MemoryDiagnoser`. The populated case retains a native-only header. A local
+ShortRun (macOS ARM64, .NET 10, Dekaf 1.28.0) measured 0 B for every case. With
+populated storage, the one-pass removal took 75.8 ns versus 90.5 ns for the
+previous per-header scan at 8 headers, and 229 ns versus 318 ns at 32 headers;
+empty storage matched raw native appends. This is a
 header-work microbenchmark, not a broker-backed send or proof of the raw-client
 5% budget. Use `KafkaSendBenchmarks` for acknowledged send comparisons.
 
@@ -397,18 +401,20 @@ dotnet run -c Release --framework net10.0 --project benchmarks/Relayer.Benchmark
 
 ### Kafka delivery header snapshots
 
-Kafka deliveries retain one native Dekaf header view for all envelope lookups and
-failure copies. The readonly delivery value and its copies share that view;
+Kafka envelope lookups read pooled header storage through Dekaf's borrowed
+`TryGetHeader`. Deliveries also retain one native Dekaf header view for failure
+copies. The readonly delivery value and its copies share that view;
 replacing `Result` through an initializer or `with` expression obtains a view for
 the replacement record. Equality and deconstruction still use only `Result` and
 `PartitionId`. Native access through `context.Kafka().ConsumeResult` returns the
 original record. Reading its `Headers` property separately still uses Dekaf's
 native snapshot behavior.
 
-Dekaf 1.27.0's `ConsumeResult.Headers` creates a lazy view for each property read.
+Dekaf's `ConsumeResult.Headers` creates a lazy view for each property read.
 Reading an element materializes safe owned header/value arrays. Retaining that
-view removes three redundant snapshots from the normal four-lookups envelope
-path (`ce_type`, `ce_id`, attempts and redeliveries). It reuses Dekaf's storage
+view avoids redundant snapshots on the failure-copy path, and the borrowed lookup
+avoids materializing it on the normal four-lookups envelope path (`ce_type`,
+`ce_id`, attempts and redeliveries). It reuses Dekaf's storage
 lifetime checks and copying rather than introducing a second header cache or
 borrowing pooled values past their lifetime. The receive pipeline clears the
 delivery reference on completion, including failure and cancellation. Deliveries
@@ -469,6 +475,9 @@ This enables BenchmarkDotNet's GC-verbose EventPipe diagnostic execution in
 addition to its ordinary MemoryDiagnoser execution. Whole-process profiles include
 setup, warmup and cleanup, so use their stacks to locate owners, not their sample
 weights as exact measured bytes. Keep the raw/native and composed reports and
-profiled timings separate. A borrowed native lookup API is requested in
-[Dekaf #4120](https://github.com/thomhurst/Dekaf/issues/4120); existing snapshots
-must continue owning their bytes after the fetch is released.
+profiled timings separate. Envelope lookups use Dekaf's borrowed `ConsumeResult.TryGetHeader`
+([Dekaf #4120](https://github.com/thomhurst/Dekaf/issues/4120)), which reads pooled
+header storage without materializing the snapshot. The delivery is itself borrowed,
+so the lookup lifetime is unchanged. Dead-letter copies and user code that index
+`Headers` still materialize the safe snapshot, which keeps owning its bytes after
+the fetch is released.

@@ -54,7 +54,7 @@ public readonly record struct KafkaDelivery
             + EqualityComparer<string>.Default.GetHashCode(PartitionId!));
 }
 
-/// <summary>Reads the native Kafka binary CloudEvents binding using one safe native header snapshot and the borrowed body.</summary>
+/// <summary>Reads the native Kafka binary CloudEvents binding through borrowed native header lookups and the borrowed body.</summary>
 public readonly struct KafkaMessageBinding : IMessageBinding<KafkaDelivery>
 {
     /// <inheritdoc />
@@ -70,11 +70,10 @@ public readonly struct KafkaMessageBinding : IMessageBinding<KafkaDelivery>
     /// <inheritdoc />
     public static bool TryGetHeader(KafkaDelivery message, string name, out WireString value)
     {
-        var headers = message.Headers;
-        for (var i = 0; i < headers.Count; i++)
+        // Dekaf's borrowed lookup avoids copying every header; the delivery is itself borrowed.
+        if (message.Result.TryGetHeader(name, out var header))
         {
-            if (headers[i].Key != name) continue;
-            value = new(headers[i].Value);
+            value = new(header.Value);
             return true;
         }
         value = default;

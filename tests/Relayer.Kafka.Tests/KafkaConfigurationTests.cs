@@ -1,3 +1,4 @@
+using Dekaf.Consumer;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
 using Relayer.Transports;
@@ -94,17 +95,47 @@ public class KafkaConfigurationTests
     }
 
     [Test]
-    public async Task Parallel_consumers_fail_with_an_actionable_message()
+    [Arguments("handlers")]
+    [Arguments("user-commits")]
+    [Arguments("ignore-errors")]
+    [Arguments("monitor")]
+    [Arguments("batches")]
+    public async Task Native_processing_options_that_break_durable_completion_fail_at_startup(string scenario)
     {
         var services = new ServiceCollection();
         services.AddRelayer(builder => builder.Kafka("events", kafka => kafka.Consume("orders", consumer =>
         {
             consumer.Options.Group = "orders";
             consumer.Concurrency(2);
+            consumer.Options.Processing = scenario switch
+            {
+                "handlers" => new() { MaxConcurrentHandlers = 4 },
+                "user-commits" => new() { CommitPolicy = PartitionCommitPolicy.UserManaged },
+                "ignore-errors" => new() { ErrorPolicy = PartitionWorkerErrorPolicy.Ignore },
+                "monitor" => new() { Monitor = new() },
+                _ => new() { MaxHandlerBatchSize = 10 },
+            };
             consumer.Handler<KafkaReceiveHandler>();
         })));
         await using var provider = services.BuildServiceProvider();
         await Assert.That(() => provider.GetServices<ITransport>().ToArray())
-            .Throws<NotSupportedException>().WithMessageContaining("Parallel partition scheduling");
+            .Throws<InvalidOperationException>().WithMessageContaining("Processing.");
+    }
+
+    [Test]
+    public async Task Parallel_consumers_map_concurrency_onto_native_key_ordering()
+    {
+        var options = KafkaProcessing.Defaults(4);
+        await Assert.That(options.Ordering).IsEqualTo(PartitionedProcessingOrder.Key);
+        await Assert.That(options.MaxConcurrentHandlersPerPartition).IsEqualTo(4);
+        await Assert.That(options.CommitPolicy).IsEqualTo(PartitionCommitPolicy.CommitCompletedPeriodically);
+        var composed = KafkaProcessing.Compose(new() { StopTimeout = TimeSpan.FromSeconds(3), MaxBufferedRecords = 100 }, 4,
+            new(), null, new KafkaCommitObserver(new(new(Options.Create(new TracingOptions()), []),
+                new() { System = "kafka", Destination = "orders" }, MessagingOperation.Settle, "commit")));
+        await Assert.That(composed.MaxConcurrentHandlers).IsEqualTo(4);
+        await Assert.That(composed.StopTimeout).IsEqualTo(TimeSpan.FromSeconds(3));
+        await Assert.That(composed.MaxBufferedRecords).IsEqualTo(100);
+        await Assert.That(composed.Control).IsNotNull();
+        await Assert.That(composed.CommitObserver).IsNotNull();
     }
 }

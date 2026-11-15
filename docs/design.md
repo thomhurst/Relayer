@@ -16,7 +16,7 @@ It is **not** a new broker abstraction. It does not change how the underlying te
 2. **No lowest common denominator.** Portable features (retry, outbox, tracing) are uniform. Transport-specific features are exposed through typed, discoverable extensions rather than hidden behind a generic API.
 3. **Explicit over magic.** No assembly scanning. No runtime code generation. Every handler, route, and piece of topology is declared in code or produced by a source generator you can read.
 4. **Correct by default.** The safe behaviour is the default behaviour: at-least-once delivery, idempotent consumers via the inbox, poison messages go to a dead-letter queue (they never crash or stall a consumer), and settlement happens only after the work is durable.
-5. **Native AOT and trimming from day one.** No reflection on the hot path. Serialization uses System.Text.Json source generation by default. Optional native integrations declare upstream restrictions explicitly: Avro (D39) and SQL Server runtime operations (D46) currently report build diagnostics for unsupported trimming/AOT use.
+5. **Native AOT and trimming from day one.** No reflection on the hot path. Serialization uses System.Text.Json source generation by default. Optional native integrations declare upstream restrictions explicitly: SQL Server runtime operations (D46) currently report build diagnostics for unsupported trimming/AOT use.
 6. **Performance is a feature.** The pipeline is composed once at startup, the hot path allocates as little as possible, and CI gates on benchmarks measured against the raw client.
 7. **Observable by default.** OpenTelemetry tracing and metrics, plus structured logging, are built into the core rather than shipped as an add-on.
 8. **Few dependencies.** The core depends only on `Microsoft.Extensions.*` abstractions and the BCL. Each transport package adds only its native client.
@@ -175,7 +175,7 @@ public static ConsumerBuilder<KafkaConsumerOptions> Group(this ConsumerBuilder<K
 
 Handlers, inbox, failure policy and ordering keys are implemented once in the core and work the same on every transport. A Kafka-only setting such as `Group` exists only on Kafka's builder, so it cannot be applied to a queue by mistake. `OrderingKey` accepts a `string` or any `IUtf8SpanFormattable` value such as `Guid` or `long`; the latter is formatted into a pooled buffer, so a Kafka key costs no allocation.
 
-**Log-based transports.** Kafka, Event Hubs, Kinesis, Pulsar, RabbitMQ Streams and JetStream share ordering and durable-checkpoint requirements (§7), but their native clients may already implement scheduling, backpressure and ownership drain. Search the pinned client's source first and wrap those mechanisms (D1, D40, D42). Kafka's parallel receive target wraps Dekaf's `RunPartitionedAsync`; it does not use the core scheduler.
+**Log-based transports.** Kafka, Event Hubs, Kinesis, Pulsar, RabbitMQ Streams and JetStream share ordering and durable-checkpoint requirements (§7), but their native clients may already implement scheduling, backpressure and ownership drain. Search the pinned client's source first and wrap those mechanisms (D1, D40, D42). Kafka's receive path wraps Dekaf's `RunPartitionedAsync`; it does not use the core scheduler.
 
 Relayer does not expose a fallback scheduler or completion window: no supported transport needs one. Native clients own scheduling, completion tracking, backpressure and ownership drain. A missing native capability belongs upstream; record a concrete gap and decision before introducing a core fallback (D23, D42).
 
@@ -211,10 +211,9 @@ services.AddRelayer(relayer =>
 });
 ```
 
-This uses single-message handling with the default concurrency of one. Kafka rejects
-`Concurrency` values other than one and batch handlers at startup; native fetch batching is
-not application batch handling. The [roadmap](../website/docs/roadmap.md) tracks parallel receive;
-§7 records its target architecture. Other transports validate concurrency and batching against
+This uses single-message handling with the default concurrency of one. On Kafka, `Concurrency(n)`
+sets the native partitioned runtime's consumer-wide handler limit with key ordering (§7); batch
+handlers fail at startup, and native fetch batching is not application batch handling. Other transports validate concurrency and batching against
 their own native execution support. See [configuration](../website/docs/guides/configuration.md)
 for core declarations and [Kafka](../website/docs/transports/kafka.md) for adapter configuration.
 
@@ -319,7 +318,7 @@ The core header and envelope primitives, their native binding contracts, and raw
 ### 4.3 Serialization
 
 - The default is System.Text.Json with a source-generated `JsonSerializerContext`. The generator builds it from the declared message types, so serialization is AOT-safe.
-- Serialization is pluggable (`IMessageSerializer`): optional Protobuf and MessagePack packages use explicit generated contracts and native buffer APIs. The optional Avro package uses generated codecs and startup-prepared schema registry integration; its AOT/trimming support remains limited by upstream schema preparation. See [serialization](../website/docs/guides/messages.md#protobuf) for registration and wire format.
+- Serialization is pluggable (`IMessageSerializer`): optional Protobuf and MessagePack packages use explicit generated contracts and native buffer APIs. The optional Avro package uses generated codecs and startup-prepared schema registry integration, and is warning-clean under trimming and Native AOT. See [serialization](../website/docs/guides/messages.md#protobuf) for registration and wire format.
 - Serialization writes to `IBufferWriter<byte>` and reads from `ReadOnlySequence<byte>` where the native client allows it.
 
 `AddMessageTypesFromThisAssembly()` registers the declared messages and their generated JSON context together. Pass `JsonSerializerOptions` to that method to customize JSON, or add a context with `UseJsonSerializer(MyJsonContext.Default)`. When contexts overlap, the last registered context supplies the metadata for that type. A custom context can also cover explicitly registered message types from a contracts assembly. Missing metadata fails when the default serializer is first resolved, including at host startup through Relayer's hosted validator; there is no reflection fallback.
@@ -579,9 +578,9 @@ Kafka gets its own consumption model instead of being forced into a queue shape 
 
 The transport wraps **[Dekaf](https://github.com/thomhurst/Dekaf)**, a pure C# Kafka client (decision D22). Dekaf has no native dependencies, supports Native AOT, and is built for zero-allocation hot paths, which matches Relayer's own goals. Dekaf already ships features such as partitioned processing, retry and dead-letter topics, an outbox, and OpenTelemetry instrumentation. Following principle 1, search the pinned client's source and reuse its mechanisms. A feature that cannot be used needs a recorded reason and an upstream issue; a parallel implementation needs an explicit decision. Relayer's outbox remains the cross-transport outbox.
 
-- **Key-ordered parallelism (target design):** wrap Dekaf's `RunPartitionedAsync` with `Ordering = PartitionedProcessingOrder.Key` and `MaxConcurrentHandlersPerPartition`. Dekaf compares byte-array keys by content and owns the ordered lanes; Relayer invokes its receive/failure pipeline within the native processor. Kafka uses the native runtime (§2.4).
-- **Offset commits by watermark (parallel receive target):** Dekaf tracks the highest *contiguous* completed offset per partition and batches asynchronous commits through `PartitionCommitPolicy.CommitCompletedPeriodically`, including flush on revoke and shutdown (Brighter #2269). Relayer allows native processing completion only after `Complete` or `SettledByHandler` means the work is durable. Relayer supplies its commit span without a second checkpoint tracker.
-- **Rebalance safety (parallel receive target):** use Dekaf's native cooperative assignment, `PartitionStopPolicy.Drain`, `StopTimeout` and `PartitionBackpressureMode.PauseResume`. The native runtime owns revoked lanes, drain and pause tracking, including rebalances while paused (KafkaFlow #456, #681). Preserve the configured native rebalance listeners.
+- **Key-ordered parallelism:** wrap Dekaf's `RunPartitionedAsync` with `Ordering = PartitionedProcessingOrder.Key` and `MaxConcurrentHandlersPerPartition`. Dekaf compares byte-array keys by content and owns the ordered lanes; Relayer invokes its receive/failure pipeline within the native processor. Kafka uses the native runtime (§2.4).
+- **Offset commits by watermark:** Dekaf tracks the highest *contiguous* completed offset per partition and batches asynchronous commits through `PartitionCommitPolicy.CommitCompletedPeriodically`, including flush on revoke and shutdown (Brighter #2269). Relayer allows native processing completion only after `Complete` or `SettledByHandler` means the work is durable. Relayer supplies its commit span through Dekaf's `IOffsetCommitObserver`, without a second checkpoint tracker.
+- **Rebalance safety:** use Dekaf's native cooperative assignment, `PartitionStopPolicy.Drain`, `StopTimeout` and `PartitionBackpressureMode.PauseResume`. The native runtime owns revoked lanes, drain and pause tracking, including rebalances while paused (KafkaFlow #456, #681). Preserve the configured native rebalance listeners.
 - **Consume-transform-produce:**
   - *Kafka → database → anything:* the inbox, business data, and outbox are written in one database transaction. The offset is committed only after that transaction commits. Redelivery after a crash is deduplicated by the inbox.
   - *Kafka → Kafka:* optional native Kafka transactions (Dekaf's `SendOffsetsToTransactionAsync`) give exactly-once processing.
@@ -591,10 +590,9 @@ The transport wraps **[Dekaf](https://github.com/thomhurst/Dekaf)**, a pure C# K
 - **Schema registry:** works with multiple clusters, each with its own registry (KafkaFlow #558).
 - **Logging:** Dekaf logs through `ILoggerFactory` (`WithLoggerFactory`), so Kafka client logs land in the app's logging pipeline with no native log bridge.
 
-The [Kafka guide](../website/docs/transports/kafka.md) and [roadmap](../website/docs/roadmap.md)
-separate the serial adapter API from parallel receive work. Parallel adapters must reuse native
-consumer-wide handler/buffer limits, oldest-outstanding-record monitoring and runtime-aware replay,
-preserving their contracts rather than adding another scheduler.
+The [Kafka guide](../website/docs/transports/kafka.md) documents the adapter. It reuses native
+consumer-wide handler/buffer limits, oldest-outstanding-record monitoring and runtime-aware replay
+(`PartitionedProcessingMonitor`, `PartitionedProcessingControl`) rather than adding another scheduler.
 
 ---
 

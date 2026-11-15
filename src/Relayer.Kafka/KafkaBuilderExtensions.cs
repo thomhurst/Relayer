@@ -1,4 +1,5 @@
 using Dekaf;
+using Dekaf.Consumer;
 using Dekaf.Producer;
 using Dekaf.Serialization;
 using Microsoft.Extensions.DependencyInjection;
@@ -24,7 +25,7 @@ public static class KafkaBuilderExtensions
             ProducerMessage<WireString?, (ReadOnlyMemory<byte> Body, Headers Headers)?>> configure) =>
         options.TransformNative(configure);
 
-    /// <summary>Declares Kafka send routes and serial consumers with durable dead-letter copies.</summary>
+    /// <summary>Declares Kafka send routes and key-ordered parallel consumers with durable dead-letter copies.</summary>
     public static IRelayerBuilder Kafka(this IRelayerBuilder builder, string name,
         Action<TransportBuilder<KafkaTransportOptions, KafkaConsumerOptions>> configure)
     {
@@ -39,8 +40,9 @@ public static class KafkaBuilderExtensions
                 var consumer = (ConsumerDefinition<KafkaConsumerOptions>)declaration;
                 if (string.IsNullOrWhiteSpace(consumer.Options.Group))
                     throw new InvalidOperationException($"Kafka consumer '{consumer.Source}': set Options.Group to a consumer group name.");
-                if (consumer.Concurrency != 1 || consumer.BatchSize != 1)
-                    throw new NotSupportedException($"Kafka consumer '{consumer.Source}': use Concurrency(1) and single-message handlers. Parallel partition scheduling and batch handlers are not implemented yet (#22).");
+                if (consumer.BatchSize != 1)
+                    throw new NotSupportedException($"Kafka consumer '{consumer.Source}': use single-message handlers. Kafka batch handlers are not implemented yet.");
+                if (consumer.Options.Processing is { } processing) KafkaProcessing.Validate(consumer.Source, processing, consumer.Concurrency);
                 if (consumer.Failure.RedeliveryDelays.Length != 0)
                     throw new NotSupportedException($"Kafka consumer '{consumer.Source}': durable redelivery cannot yet persist native tombstones and null-valued headers, even with IFailureScheduler. Use RetryDelays for in-process retries and dead-letter copies instead.");
                 consumer.Options.CircuitBreaker?.Validate();
@@ -75,6 +77,17 @@ public sealed class KafkaConsumerOptions
 {
     /// <summary>The required native Kafka consumer group.</summary>
     public string? Group { get; set; }
-    /// <summary>Optional native pause/resume protection. Disabled when null.</summary>
+    /// <summary>Optional failure-rate protection. Disabled when null.</summary>
+    /// <remarks>While the circuit is open, rejected records wait in their key lane and are retried when it admits a probe.
+    /// Native backpressure pauses their partitions once buffers fill. They are never marked processed while waiting.</remarks>
     public ConsumerCircuitOptions? CircuitBreaker { get; set; }
+
+    /// <summary>Dekaf's partitioned runtime options, passed through unchanged.</summary>
+    /// <remarks>
+    /// When null, Relayer uses key ordering, <c>MaxConcurrentHandlersPerPartition</c> equal to <c>Concurrency</c>, periodic
+    /// completed-offset commits and Dekaf's other defaults. <c>Concurrency</c> always sets the native consumer-wide
+    /// <c>MaxConcurrentHandlers</c>. Relayer supplies <c>Monitor</c>, <c>Control</c> and <c>CommitObserver</c>, requires a
+    /// runtime-managed <c>CommitPolicy</c>, <c>ErrorPolicy</c> <c>StopConsumer</c> and single-record handlers.
+    /// </remarks>
+    public PartitionedProcessingOptions? Processing { get; set; }
 }

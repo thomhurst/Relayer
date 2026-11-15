@@ -87,17 +87,16 @@ internal sealed class KafkaFixture : ITransportConformanceFixture<KafkaDelivery>
 
     public void RegisterConsumer(Func<KafkaDelivery, CancellationToken, ValueTask<Disposition>> receive)
     {
-        var ownership = new KafkaOwnership();
         var consumer = new ConsumerBuilder<byte[], byte[]>().WithBootstrapServers(Bootstrap).WithGroupId(Destination)
             .WithLoggerFactory(_logs)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest).WithOffsetCommitMode(OffsetCommitMode.Manual)
-            .WithAutoOffsetStore(false).AddRebalanceListener(ownership).SubscribeTo(Destination).Build();
+            .WithAutoOffsetStore(false).SubscribeTo(Destination).Build();
         _consumer = consumer;
         _transport.Consumers.Add(new(NativeLifecycleProxy.Wrap<IKafkaConsumer<byte[], byte[]>>(consumer, _consumerLifetime), receive, _tracing,
-            new() { System = "kafka", Destination = Destination, ConsumerGroup = Destination }, ownership));
+            new() { System = "kafka", Destination = Destination, ConsumerGroup = Destination }, KafkaProcessing.Defaults(1), 1));
     }
 
-    // Completion is acknowledged once per native fetch batch by KafkaConsumer, outside processing spans.
+    // Dekaf's partitioned runtime commits completed offsets, outside processing spans.
     public ValueTask SettleAsync(KafkaDelivery incoming, Disposition disposition, CancellationToken cancellationToken)
     {
         if (disposition.Kind != DispositionKind.Complete) throw new NotSupportedException("Kafka has no native retry or dead-letter settlement.");

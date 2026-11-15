@@ -210,3 +210,16 @@ internal sealed class KafkaDeadLetterManager : IDeadLetterManager
         return snapshot;
     }
 }
+
+// Detects assignment changes around a redrive copy so the original is not committed by a former owner.
+internal sealed class KafkaOwnership : IRebalanceListener
+{
+    private int _version;
+    internal int Version => Volatile.Read(ref _version);
+    public ValueTask OnPartitionsAssignedAsync(IEnumerable<TopicPartition> partitions, CancellationToken cancellationToken)
+    { Interlocked.Increment(ref _version); return default; }
+    public ValueTask OnPartitionsRevokedAsync(IEnumerable<TopicPartition> partitions, CancellationToken cancellationToken)
+    { Interlocked.Increment(ref _version); return default; }
+    public ValueTask OnPartitionsLostAsync(IEnumerable<TopicPartition> partitions, CancellationToken cancellationToken)
+    { Interlocked.Increment(ref _version); return default; }
+}

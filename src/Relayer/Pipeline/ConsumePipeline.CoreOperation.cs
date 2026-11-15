@@ -187,14 +187,7 @@ public sealed partial class ConsumePipeline
                                 goto case Stage.PolicyRetry;
                             }
                             if (!Enum.IsDefined(_action)) throw new InvalidOperationException("IFailureClassifier returned an undefined FailureAction.");
-                            if (_owner._failures!.Circuit?.Complete(_action == FailureAction.Retry) == true)
-                            {
-                                // The serial adapter retains this native delivery and suppresses settlement.
-                                _context.FailureDisposition = Disposition.Redeliver(TimeSpan.Zero);
-                                _context.ApplyFailureDisposition();
-                                goto case Stage.PolicyComplete;
-                            }
-                            if (_owner.Circuit is { } failedCircuit)
+                            if (_owner.Circuit is { } failedCircuit && (_action == FailureAction.Retry || !_owner.CircuitCountsRetryFailuresOnly))
                             {
                                 OutcomeRecorded = true;
                                 if (failedCircuit.Complete(Probe, true)) _owner.CircuitChanged?.Invoke(true);
@@ -206,12 +199,12 @@ public sealed partial class ConsumePipeline
                                 }
                             }
                             _stage = Stage.PolicyCopy;
-                            _pending = _owner._failures.HandleAsync(_context, _attemptFailure, _action).ConfigureAwait(false).GetAwaiter();
+                            _pending = _owner._failures!.HandleAsync(_context, _attemptFailure, _action).ConfigureAwait(false).GetAwaiter();
                             goto case Stage.PolicyCopy;
                         case Stage.PolicyRequested:
                             if (!AwaitPending()) return;
                             _context.ApplyFailureDisposition();
-                            goto case Stage.PolicySuccess;
+                            goto case Stage.PolicyComplete;
                         case Stage.PolicyFlush:
                             if (!AwaitPending()) return;
                             if (_context.Settlement.Request is { } complete)
@@ -220,9 +213,6 @@ public sealed partial class ConsumePipeline
                                 _context.ApplyFailureDisposition();
                             }
                             Failure = null;
-                            goto case Stage.PolicySuccess;
-                        case Stage.PolicySuccess:
-                            _owner._failures!.Circuit?.Complete(false);
                             goto case Stage.PolicyComplete;
                         case Stage.PolicyCopy:
                             if (!AwaitPending()) return;
@@ -413,7 +403,7 @@ public sealed partial class ConsumePipeline
         {
             Start,
             PolicyAttempt, PolicyScope, PolicyHandler, PolicyDispose, PolicyAfterDispose,
-            PolicyRequested, PolicyFlush, PolicySuccess, PolicyCopy, PolicyRetry, PolicyComplete,
+            PolicyRequested, PolicyFlush, PolicyCopy, PolicyRetry, PolicyComplete,
             Scope, Handler, Failure, Dispose, AfterDispose, Flush, PrepareSettlement, Settlement
         }
         private struct Runner(CoreOperation operation) : IAsyncStateMachine

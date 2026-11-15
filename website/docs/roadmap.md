@@ -14,7 +14,7 @@ Relayer is in early development. Track progress in [GitHub issues](https://githu
 
 - [Aspire integration](guides/aspire.md): explicit Kafka and Service Bus connection wiring, existing health probes and OpenTelemetry dashboard export, with a runnable AppHost sample. Outbox resources use the existing store adapters.
 
-- [Kafka and Service Bus consumer failure circuits](guides/failure-handling.md#consumer-circuit-breaking): native Kafka pause/resume and Service Bus processor stop/drain/restart, retained failures, one half-open probe and endpoint state metrics. SQS and RabbitMQ integrations remain planned.
+- [Kafka and Service Bus consumer failure circuits](guides/failure-handling.md#consumer-circuit-breaking): Kafka held records with native backpressure and Service Bus processor stop/drain/restart, retained failures, one half-open probe and endpoint state metrics. SQS and RabbitMQ integrations remain planned.
 
 - [PostgreSQL CDC dispatch](reference/postgres-cdc.md): native logical replication wakes unordered recovery; persistent slots and startup catch-up retain at-least-once delivery. Maintenance handles retries and schedules. SQL Server CDC remains planned.
 
@@ -23,7 +23,7 @@ Relayer is in early development. Track progress in [GitHub issues](https://githu
 - [NuGet packaging and tag-triggered releases](contributing/releases.md), with shared metadata, git-derived versions, SourceLink, portable symbols and OIDC publishing. This infrastructure does not mean packages have been released.
 - Configuration, named transports, routes and consumers, with startup validation of declarations, options and endpoint capabilities, including [declared scheduling and transaction requirements](guides/sending.md).
 - Source-generated message registration, handler registration and dispatch, and System.Text.Json serialization.
-- Optional [Protobuf serialization](guides/messages.md#protobuf) and [MessagePack serialization](guides/messages.md#messagepack) with explicit generated contracts, native buffer APIs and Native AOT smoke coverage, and [Avro/schema registry serialization](guides/messages.md#avro) with explicit generated contracts and startup preparation. Avro AOT/trimming support is limited by upstream schema preparation.
+- Optional [Protobuf serialization](guides/messages.md#protobuf) and [MessagePack serialization](guides/messages.md#messagepack) with explicit generated contracts, native buffer APIs and Native AOT smoke coverage, and [Avro/schema registry serialization](guides/messages.md#avro) with explicit generated contracts, startup preparation and warning-clean trimming and Native AOT.
 - Required CI publishes and runs the Native AOT smoke app with reflection-disabled JSON, generated in-memory handler round trips, messaging spans and creation-context propagation assertions. Trimming and AOT warnings fail the build.
 - Compile-time analyzers and a code fix ([diagnostics](reference/diagnostics.md)).
 - The scoped send pipeline, send middleware and outbox enlistment hooks.
@@ -58,11 +58,11 @@ Relayer is in early development. Track progress in [GitHub issues](https://githu
 - Declared topology with validate and provision modes, JSON export and [AsyncAPI 3.0.0 export](guides/topology.md#asyncapi-export) using source-generated JSON contract schemas. Offline [SQS/SNS Terraform JSON export](guides/topology.md#aws-terraform-export) maps supported native declarations, policies and relationships. Protocol bindings and custom wire-format schemas remain unsupported.
 - [Service Bus infrastructure export](guides/topology.md#service-bus-infrastructure-export): offline Bicep and Terraform/AzAPI export of one selected named transport's native queue/topic/subscription declarations. The [managed CLI](guides/topology.md#command-line-export) exports JSON, Bicep and Terraform from explicit application declarations.
 - The [in-memory transport](transports/in-memory.md), with native queue and partitioned log semantics.
-- The [Kafka adapter](transports/kafka.md), with native topic existence validation, named producers, serial consumer groups, native batches and checkpoints, typed tombstones, durable dead-letter copies, native consumer circuit breaking, offset and timestamp replay, independent startup-prepared JSON schema registries, application logging, receive telemetry, optional native connectivity and receiver liveness health adapters, and Testcontainers conformance. Parallel partition scheduling and dynamic schema discovery remain planned.
+- The [Kafka adapter](transports/kafka.md), with native topic existence validation, named producers, key-ordered parallel consumer groups on Dekaf's partitioned runtime with contiguous commits and bounded rebalance drain, typed tombstones, durable dead-letter copies, consumer circuit breaking, offset and timestamp replay, independent startup-prepared JSON schema registries, application logging, receive telemetry, optional native connectivity and receiver liveness health adapters, and Testcontainers conformance. Batch handlers and dynamic schema discovery remain planned.
 - The packaged [transport conformance suite](transports/conformance.md), passing in-memory queue and log modes, Kafka's supported cases and Service Bus queue/session cases, with capability skips and native fixture hooks for third-party adapters.
 - The [test harness and standalone handler context](guides/testing.md), with logical send and native dispatch observations, deterministic in-memory idle detection, reset and provider isolation.
 - The [performance regression gate](contributing/performance.md), covering end-to-end in-memory send/receive, concurrent delivery, allocation attribution and 100-handler composition. Kafka and Service Bus include raw-client send/receive benchmarks; production budget validation remains separate from local diagnostic runs.
-- Core tracing primitives, single and batch delivery spans, native settlement wrappers, consume metrics and generated failure logs. Kafka send, serial receive and batch-commit instrumentation, plus Service Bus process and native settlement instrumentation and Google Pub/Sub send/process and callback acknowledgement tracing, are implemented; PostgreSQL outbox trace propagation, pending deltas and dispatch lag are implemented; RabbitMQ process and ack/nack telemetry are implemented; SQS receive/process and native delete settlement telemetry are implemented.
+- Core tracing primitives, single and batch delivery spans, native settlement wrappers, consume metrics and generated failure logs. Kafka send, receive and runtime commit instrumentation, plus Service Bus process and native settlement instrumentation and Google Pub/Sub send/process and callback acknowledgement tracing, are implemented; PostgreSQL outbox trace propagation, pending deltas and dispatch lag are implemented; RabbitMQ process and ack/nack telemetry are implemented; SQS receive/process and native delete settlement telemetry are implemented.
 - The optional [health integration](guides/health-checks.md), with connectivity, consumer liveness and backlog checks. Kafka, Service Bus, SQS and RabbitMQ companions supply native connectivity and receiver-owned liveness. The outbox adapter accepts application-provided durable stores.
 
 - [PostgreSQL durable local transport](transports/postgresql-local.md): named routes/consumers, transactional completion, shared recovery, ordered lanes and poison handling.
@@ -83,11 +83,10 @@ Relayer is in early development. Track progress in [GitHub issues](https://githu
 
 The [design document](https://github.com/thomhurst/Relayer/blob/main/docs/design.md) records architectural contracts and target designs; this page records implementation status.
 
-For application setup, see [the outbox and inbox guide](guides/outbox.md). Kafka parallel receive, application batch handlers and configurable concurrency remain planned; the serial adapter rejects those declarations at startup. The target parallel adapter must reuse Dekaf's native processing, consumer-wide limits, outstanding-record monitor and runtime-aware replay APIs (#22), rather than the fallback core scheduler. SQL Server CDC and the Azure Service Bus emulator profile remain planned.
+For application setup, see [the outbox and inbox guide](guides/outbox.md). Kafka application batch handlers remain planned and fail at startup. SQL Server CDC and the Azure Service Bus emulator profile remain planned.
 
 
-Dekaf 1.26.0 supplies the parallel adapter prerequisites: `PartitionedProcessingOptions.MaxConcurrentHandlers`
-and `MaxBufferedRecords`, `PartitionedProcessingMonitor.OldestOutstandingRecordAt`, and
-`PartitionedProcessingControl.SeekAsync`. These close Dekaf #4054, #4055 and #4056;
-Relayer #22 consolidates #182. Upgrading the native client alone does not enable parallel receive.
+Kafka parallel receive wraps Dekaf 1.28.0's partitioned runtime: consumer-wide handler and buffer
+limits, `PartitionedProcessingMonitor` health, `PartitionedProcessingControl` replay and commit
+observation for the `commit {topic}` span (Dekaf #4054, #4055, #4056 and #4100; Relayer #22).
 No production adapter currently uses the fallback core partition scheduler.

@@ -159,7 +159,7 @@ function Hero() {
 
 const split = {
   relayer: [
-    ['Serialization', 'System.Text.Json source generation by default; optional Protobuf and MessagePack with explicit generated contracts and Native AOT coverage, and startup-prepared Avro/schema registry (AOT/trimming currently unsupported).'],
+    ['Serialization', 'System.Text.Json source generation by default; optional Protobuf and MessagePack with explicit generated contracts and Native AOT coverage, and startup-prepared Avro/schema registry.'],
     ['Message identity', 'Stable names like orders.placed;v=1 on the wire, never CLR type names.'],
     ['Message versioning', 'Explicit upcaster chains upgrade older contracts before single-message and batch handlers.'],
     ['Failure handling', 'Classification, immediate retries, delayed redelivery, dead-letter copies with full history.'],
@@ -299,7 +299,7 @@ const status = [
   ['Packaged transport conformance suite', 'Implemented', true],
   ['Test harness and standalone handler context', 'Implemented', true],
   ['CI performance regression gate, in-memory and native-client benchmarks', <>Implemented, including Kafka and RabbitMQ broker-backed receive comparisons; remaining coverage planned. <Link to="/docs/transports/kafka#performance-validation">Kafka comparison scope</Link></>, true],
-  ['Kafka producers, serial consumers, topic existence validation, typed tombstones, dead-letter copies, circuit breaking and offset/timestamp replay', 'Implemented', true],
+  ['Kafka producers, key-ordered parallel consumers, topic existence validation, typed tombstones, dead-letter copies, circuit breaking and offset/timestamp replay', 'Implemented', true],
   ['Named transport serializers and independent Kafka JSON schema registries', 'Implemented; explicit startup contracts', true],
   ['Optional Protobuf and MessagePack serializers', 'Implemented; explicit generated contracts and Native AOT coverage', true],
   ['Avro with generated codecs and startup-prepared schema registry', 'Implemented; Native AOT/trimming unsupported', true],
@@ -310,7 +310,7 @@ const status = [
   ['NATS JetStream', 'Implemented; native comparison validated', true],
   ['Apache Pulsar transport', 'Planned; Native AOT prerequisite', false],
   ['AsyncAPI topology and JSON contract export', 'Implemented; protocol bindings unsupported', true],
-  ['Kafka parallel receive via Dekaf', 'In progress', false],
+  ['Kafka parallel receive via Dekaf', 'Implemented; key ordering and native commits', true],
   ['Health checks with application-provided adapters', 'Implemented', true],
   ['Aspire resource connections, health and telemetry', 'Implemented for Kafka and Service Bus', true],
   ['Scoped tenant header propagation', 'Implemented with durable binding and preview PostgreSQL catalog dispatch', true],

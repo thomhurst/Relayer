@@ -100,18 +100,21 @@ internal sealed class KafkaValueSerializer : ISerializer<(ReadOnlyMemory<byte> B
         var value = record.GetValueOrDefault();
         var headers = context.Headers ?? throw new InvalidOperationException("Dekaf did not provide record header storage.");
         // Fresh native storage has nothing to replace, including native trace context.
+        // Remove conflicts in one native pass first, so duplicate application headers retain their order.
         if (headers.Count != 0)
-        {
-            if (value.Headers.GetFirst("traceparent") is not null)
-            {
-                headers.Remove("traceparent");
-                headers.Remove("tracestate");
-            }
-            // Remove conflicts first so duplicate application headers retain their native order.
-            for (var i = 0; i < value.Headers.Count; i++) headers.Remove(value.Headers[i].Key);
-        }
+            headers.RemoveAll(IsReplaced, (Application: value.Headers, Trace: value.Headers.GetFirst("traceparent") is not null));
         for (var i = 0; i < value.Headers.Count; i++) headers.Add(value.Headers[i]);
         value.Body.Span.CopyTo(destination.GetSpan(value.Body.Length));
         destination.Advance(value.Body.Length);
     }
+
+    private static readonly Func<Header, (Headers Application, bool Trace), bool> IsReplaced = static (header, state) =>
+    {
+        // Creation trace context replaces both native trace headers, even when it has no tracestate.
+        if (state.Trace && header.Key is "traceparent" or "tracestate") return true;
+        var application = state.Application;
+        for (var i = 0; i < application.Count; i++)
+            if (application[i].Key == header.Key) return true;
+        return false;
+    };
 }

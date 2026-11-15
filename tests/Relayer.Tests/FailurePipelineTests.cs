@@ -224,6 +224,29 @@ public class FailurePipelineTests
     }
 
     [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Retry_only_circuit_dead_letters_permanent_failures_and_counts_them_as_successes(bool retryOnly)
+    {
+        var transport = new Transport { Capabilities = new() };
+        using var provider = Provider(transport);
+        provider.GetRequiredService<Control>().Invoke = _ => throw new ArgumentException("permanent");
+        var failure = new FailurePipeline(provider, "test", "source", "consumer", new() { DeadLetterEndpoint = "errors" }, Copy);
+        var pipeline = new ConsumePipelineBuilder(provider.GetRequiredService<IServiceScopeFactory>(),
+            provider.GetRequiredService<MessageTypeRegistry>(), provider.GetRequiredService<Relayer.Serialization.IMessageSerializer>(), failure,
+            new FailureClassifierBuilder().On<ArgumentException>(FailureAction.DeadLetter).Build())
+            .Handler(provider.GetRequiredService<HandlerRegistry>().GetHandler<Payload, Handler>()).Build(1);
+        using var circuit = new ConsumerCircuit(1, 1, TimeSpan.FromMinutes(1), TimeSpan.FromMinutes(1), new ConsumerCircuitTests.Clock());
+        pipeline.Circuit = circuit;
+        pipeline.CircuitCountsRetryFailuresOnly = retryOnly;
+        var result = await new ReceivePipeline<Incoming, Binding>(pipeline, new HeaderNames(), 1).ProcessAsync(new());
+        // Without native delivery limits a held permanent failure would block its key forever.
+        await Assert.That(result.Kind).IsEqualTo(retryOnly ? DispositionKind.Complete : DispositionKind.Redeliver);
+        await Assert.That(transport.Sends.Count).IsEqualTo(retryOnly ? 1 : 0);
+        await Assert.That(circuit.State).IsEqualTo(retryOnly ? 0 : 1);
+    }
+
+    [Test]
     public async Task Dead_letter_copy_is_explicit_and_preserves_original_headers_and_body()
     {
         var transport = new Transport { Capabilities = new() };

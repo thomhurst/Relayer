@@ -32,18 +32,21 @@ public class KafkaHealthTests
         var idle = health.Register(consumers[0]);
         var sibling = health.Register(consumers[1]);
         await Assert.That(health.GetState(consumers[0])).IsNull();
-        stalled.Progress();
+        // Each worker reads its native monitor's oldest buffered or in-flight record; null means idle.
         var activation = clock.GetUtcNow();
+        DateTimeOffset? stalledOldest = activation, busyOldest = null;
+        stalled.Start(() => stalledOldest);
         clock.Advance(TimeSpan.FromMinutes(10));
-        busy.Progress();
-        idle.Idle();
-        sibling.Idle();
+        busyOldest = clock.GetUtcNow();
+        busy.Start(() => busyOldest);
+        idle.Start(static () => null);
+        sibling.Start(static () => null);
         await Assert.That(health.GetState(consumers[0])!.Value.IsIdle).IsFalse();
         await Assert.That(health.GetState(consumers[0])!.Value.LastProgressAt).IsEqualTo(activation);
         await Assert.That(health.GetState(consumers[1])!.Value.IsIdle).IsTrue();
-        stalled.Idle();
+        stalledOldest = null;
         await Assert.That(health.GetState(consumers[0])!.Value.LastProgressAt).IsEqualTo(clock.GetUtcNow());
-        busy.Idle();
+        busyOldest = null;
         await Assert.That(health.GetState(consumers[0])!.Value.IsIdle).IsTrue();
         busy.Unavailable();
         await Assert.That(health.GetState(consumers[0])).IsNull();
@@ -85,7 +88,7 @@ public class KafkaHealthTests
         var token = timeout.Token;
         using var tracing = new MessageTracing(Options.Create(new TracingOptions()), []);
         await using var fixture = (KafkaFixture)await KafkaFixture.CreateAsync(tracing, token);
-        var clock = new KafkaHealthClock();
+        // Dekaf's monitor stamps record arrival with the system clock, so liveness uses it too.
         var control = new KafkaHealthControl();
         var builder = Host.CreateApplicationBuilder();
         builder.Logging.ClearProviders();
@@ -94,7 +97,6 @@ public class KafkaHealthTests
             options.SingleLine = true;
             options.TimestampFormat = "HH:mm:ss.fff ";
         });
-        builder.Services.AddSingleton<TimeProvider>(clock);
         builder.Services.AddSingleton(control);
         var adminConfigured = 0;
         builder.Services.AddRelayerKafkaHealthProviders("events", native =>
@@ -102,7 +104,7 @@ public class KafkaHealthTests
             Interlocked.Increment(ref adminConfigured);
             native.WithClientId("relayer-health-test").WithConnectionTimeout(TimeSpan.FromSeconds(1));
         });
-        builder.Services.AddRelayerHealthChecks(new RelayerHealthCheckOptions { ConsumerStallTimeout = TimeSpan.FromMinutes(1) });
+        builder.Services.AddRelayerHealthChecks(new RelayerHealthCheckOptions { ConsumerStallTimeout = TimeSpan.FromSeconds(15) });
         // Bound each native probe independently of the overall test deadline. ConnectionTimeout
         // bounds one connection attempt, not the admin operation's retries while disconnected.
         builder.Services.Configure<HealthCheckServiceOptions>(options =>
@@ -141,7 +143,8 @@ public class KafkaHealthTests
         {
             await Assert.That((await checks.CheckHealthAsync(check => check.Name == "relayer.transport", token)).Status).IsEqualTo(HealthStatus.Healthy);
             await Assert.That(adminConfigured).IsEqualTo(1);
-            clock.Advance(TimeSpan.FromHours(1));
+            // Idle receivers stay healthy regardless of elapsed time.
+            await Task.Delay(TimeSpan.FromSeconds(16), token);
             await Assert.That((await checks.CheckHealthAsync(check => check.Name == "relayer.consumer", token)).Status).IsEqualTo(HealthStatus.Healthy);
             await using (var admin = new AdminClientBuilder().WithBootstrapServers(fixture.Bootstrap).Build())
             {
@@ -157,8 +160,9 @@ public class KafkaHealthTests
             var adapter = host.Services.GetRequiredKeyedService<IConsumerHealthProvider>("events");
             await WaitForIdleAsync(adapter, consumers[1], token);
             await Assert.That((await checks.CheckHealthAsync(check => check.Name == "relayer.consumer", token)).Status).IsEqualTo(HealthStatus.Healthy);
-            clock.Advance(TimeSpan.FromMinutes(1));
-            var stalled = await checks.CheckHealthAsync(check => check.Name == "relayer.consumer", token);
+            HealthReport stalled;
+            while ((stalled = await checks.CheckHealthAsync(check => check.Name == "relayer.consumer", token)).Status != HealthStatus.Unhealthy)
+                await Task.Delay(100, token);
             await Assert.That(stalled.Status).IsEqualTo(HealthStatus.Unhealthy);
             var details = stalled.Entries["relayer.consumer"].Data;
             await Assert.That(((HealthCheckResult)details[$"events/0:{fixture.Destination}"]).Status).IsEqualTo(HealthStatus.Unhealthy);
