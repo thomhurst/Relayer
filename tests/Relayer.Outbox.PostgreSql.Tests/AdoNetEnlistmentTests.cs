@@ -35,6 +35,23 @@ public class AdoNetEnlistmentTests
     }
 
     [Test]
+    public async Task Fan_out_send_commits_one_row_per_route_in_the_same_transaction()
+    {
+        await using var database = new Database();
+        await database.Start();
+        await using var provider = database.Services(fanOut: true);
+        await using var scope = provider.CreateAsyncScope();
+        var outbox = scope.ServiceProvider.GetRequiredService<PostgreSqlOutbox>();
+        await using var transaction = await outbox.BeginTransactionAsync(database.Source);
+        await scope.ServiceProvider.GetRequiredService<ISender>().SendAsync(new Probe(1));
+        await transaction.CommitAsync();
+        await using var connection = await database.Source.OpenConnectionAsync();
+        var rows = (await connection.QueryAsync<(string Destination, Guid Id)>($"SELECT destination, id FROM {Database.Table} ORDER BY seq")).ToList();
+        await Assert.That(rows.Select(row => row.Destination).SequenceEqual(["destination", "audit"])).IsTrue();
+        await Assert.That(rows[1].Id).IsNotEqualTo(rows[0].Id);
+    }
+
+    [Test]
     [Arguments(false)]
     [Arguments(true)]
     public async Task Dapper_preserves_postgresql_array_parameters_in_business_commands(bool synchronous)
@@ -501,7 +518,7 @@ public class AdoNetEnlistmentTests
                 """);
             await command.ExecuteNonQueryAsync();
         }
-        internal ServiceProvider Services()
+        internal ServiceProvider Services(bool fanOut = false)
         {
             var services = new ServiceCollection();
             services.AddRelayerPostgreSqlOutbox(Options);
@@ -513,7 +530,11 @@ public class AdoNetEnlistmentTests
             services.AddRelayer(builder =>
             {
                 builder.Infrastructure().MessageTypes.Add<Probe>("ado.probe");
-                builder.AddTransport<Empty, Empty>("events", transport => transport.Send<Probe>("destination"));
+                builder.AddTransport<Empty, Empty>("events", transport =>
+                {
+                    transport.Send<Probe>("destination");
+                    if (fanOut) transport.Send<Probe>("audit");
+                });
             });
             return services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
         }

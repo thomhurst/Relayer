@@ -256,6 +256,22 @@ public class RequestResponseTests
     }
 
     [Test]
+    public async Task Startup_rejects_a_request_with_several_routes()
+    {
+        using var host = new HostBuilder().ConfigureServices(services => services.AddRelayer(builder =>
+        {
+            builder.AddMessageTypesFromThisAssembly();
+            builder.InMemory("local", transport =>
+            {
+                transport.Request<RpcRequest, RpcResponse>("requests", "replies");
+                transport.Send<RpcRequest>("audit");
+            });
+        })).Build();
+        await Assert.That(async () => await host.StartAsync()).Throws<Microsoft.Extensions.Options.OptionsValidationException>()
+            .WithMessageContaining("requests need exactly one send route");
+    }
+
+    [Test]
     [Arguments(false)]
     [Arguments(true)]
     public async Task Startup_rejects_raw_or_outbox_required_request_routes(bool outbox)

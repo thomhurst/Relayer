@@ -45,6 +45,6 @@ internal class Sender(SendPipeline pipeline, IOutboxEnlistment? outbox = null) :
         {
             throw new InvalidOperationException("SendViaOutboxAsync requires an outbox with an active transaction in this scope.");
         }
-        return pipeline.GetRoute<TMessage>().SendAsync(message, configure, enlistment, cancellationToken, AttemptBuffer, tenant: Tenant?.Id ?? default);
+        return pipeline.GetTarget<TMessage>().SendAsync(message, configure, enlistment, cancellationToken, AttemptBuffer, tenant: Tenant?.Id ?? default);
     }
 }

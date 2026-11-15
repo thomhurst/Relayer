@@ -13,6 +13,12 @@ internal sealed class RequestRegistration<TRequest, TResponse>(RequestReplies<TR
     {
         if (!messages.TryGetMessageType(typeof(TResponse), out _))
             failures.Add($"Request replies on '{replies.Address}': register the stable message identity for '{typeof(TResponse)}'.");
+        var requestRoutes = 0;
+        foreach (var transport in configuration.Transports)
+            foreach (var route in transport.Routes)
+                if (route.MessageType == typeof(TRequest)) requestRoutes++;
+        if (requestRoutes > 1)
+            failures.Add($"Request '{typeof(TRequest)}': requests need exactly one send route, but {requestRoutes} are declared. Remove the extra Send<TRequest> declarations.");
         foreach (var transport in configuration.Transports)
         {
             if (transport.Name != replies.Transport) continue;
