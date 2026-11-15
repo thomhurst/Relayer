@@ -23,7 +23,8 @@ public static partial class PostgreSqlOutboxServiceCollectionExtensions
         options ??= new();
         _ = new PostgreSqlOutboxStore(dataSource, options);
         var snapshot = options;
-        services.AddKeyedSingleton<IDeadLetterManager>(storeName, (_, _) => new PostgreSqlDeadLetterManager(storeName, dataSource, snapshot));
+        services.AddKeyedSingleton<IDeadLetterManager>(storeName, (provider, _) => new PostgreSqlDeadLetterManager(storeName, dataSource, snapshot,
+            provider.GetService<RelayerInstrumentation>()));
         return services;
     }
 

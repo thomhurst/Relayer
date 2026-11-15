@@ -207,6 +207,49 @@ public class PoisonTests
     }
 
     [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Redrive_makes_rows_outstanding_again_and_purge_removes_parked_rows_from_pending(bool ordered)
+    {
+        await using var fixture = new PostgreSqlFixture();
+        await fixture.StartAsync();
+        await using var source = NpgsqlDataSource.Create(fixture.ConnectionString);
+        await PostgreSqlOutboxStoreTests.CreateSchema(source);
+        var options = new PostgreSqlOutboxOptions { MaxDispatchAttempts = 1 };
+        var redriven = Guid.Parse("00000000-0000-0000-0000-000000000001");
+        var purged = Guid.Parse("00000000-0000-0000-0000-000000000002");
+        int? lane = ordered ? 0 : null;
+        await MakeDead(source, options, redriven, lane);
+        using var instrumentation = new RelayerInstrumentation();
+        long pending = 0;
+        using var listener = new MeterListener();
+        listener.InstrumentPublished = (instrument, meterListener) =>
+        {
+            if (instrument == instrumentation.OutboxPending) meterListener.EnableMeasurementEvents(instrument);
+        };
+        listener.SetMeasurementEventCallback<long>((_, value, _, _) => Interlocked.Add(ref pending, value));
+        listener.Start();
+        var harness = new RelayerHarness();
+        instrumentation.Observer = harness;
+        var manager = new PostgreSqlDeadLetterManager("store", source, options, instrumentation);
+        await Assert.That(await manager.RedriveAsync("store")).IsEqualTo(1);
+        // An unordered row re-enters the table; a parked row never left it.
+        await Assert.That(Interlocked.Read(ref pending)).IsEqualTo(ordered ? 0L : 1L);
+        var idle = harness.WaitForIdleAsync();
+        await Assert.That(idle.IsCompleted).IsFalse();
+        // Stands for the dispatcher settling the redriven row.
+        instrumentation.AddOutboxPending(-1);
+        await idle.WaitAsync(TimeSpan.FromSeconds(30));
+        await using (var sent = source.CreateCommand("DELETE FROM relayer_outbox"))
+            await sent.ExecuteNonQueryAsync();
+        Interlocked.Exchange(ref pending, 0);
+        await MakeDead(source, options, purged, lane);
+        await Assert.That(await manager.PurgeAsync("store")).IsEqualTo(1);
+        await Assert.That(Interlocked.Read(ref pending)).IsEqualTo(ordered ? -1L : 0L);
+        await Assert.That(harness.WaitForIdleAsync().IsCompleted).IsTrue();
+    }
+
+    [Test]
     public async Task Missing_ordered_barrier_reports_identity_and_rolls_back_earlier_redrives()
     {
         await using var fixture = new PostgreSqlFixture();

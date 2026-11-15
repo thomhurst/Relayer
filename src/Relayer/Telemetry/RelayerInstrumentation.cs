@@ -130,6 +130,12 @@ public sealed class RelayerInstrumentation : IDisposable
         Observer?.OutboxPending(-1);
     }
 
+    // Redrive makes parked rows outstanding again; they never left the pending row count.
+    internal void RecordOutboxUnparked(long count) => Observer?.OutboxPending(count);
+
+    // Purge deletes parked rows, which the harness already settled when they parked.
+    internal void RecordOutboxParkedPurged(long count) => OutboxPending.Add(-count);
+
     /// <summary>Stops publishing every instrument owned by this instance.</summary>
     public void Dispose() => _meter.Dispose();
 }

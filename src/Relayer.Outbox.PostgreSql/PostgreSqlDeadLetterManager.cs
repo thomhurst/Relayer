@@ -13,10 +13,13 @@ internal sealed class PostgreSqlDeadLetterManager : IDeadLetterManager
     private readonly string _table;
     private readonly string _dead;
     private readonly IReadOnlyList<DeadLetterSource> _listed;
+    private readonly RelayerInstrumentation? _instrumentation;
 
-    internal PostgreSqlDeadLetterManager(string name, NpgsqlDataSource source, PostgreSqlOutboxOptions options)
+    internal PostgreSqlDeadLetterManager(string name, NpgsqlDataSource source, PostgreSqlOutboxOptions options,
+        RelayerInstrumentation? instrumentation = null)
     {
         _source = source;
+        _instrumentation = instrumentation;
         _id = name;
         var schema = PostgreSqlOutboxSchema.QuoteIdentifier(options.Schema ?? "public") + ".";
         _table = schema + PostgreSqlOutboxSchema.QuoteIdentifier(options.TablePrefix + "outbox");
@@ -52,7 +55,7 @@ internal sealed class PostgreSqlDeadLetterManager : IDeadLetterManager
         await using var transaction = await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
         // Lock bounded dead rows, then restore their original durable rows. Never send from management.
         var messages = await ReadAsync(connection, transaction, maxMessages, null, cancellationToken).ConfigureAwait(false);
-        var changed = 0;
+        int changed = 0, restored = 0, parked = 0;
         foreach (var message in messages)
         {
             if (!purge && filter is not null && !filter(message)) continue;
@@ -66,6 +69,9 @@ internal sealed class PostgreSqlDeadLetterManager : IDeadLetterManager
             {
                 command.Parameters.AddWithValue("id", row.Id);
                 var affected = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+                if (purge) parked += affected;
+                else if (row.Lane is not null) parked++;
+                else restored++;
                 if (!purge && affected != 1) throw new InvalidOperationException($"Ordered dead row {row.Id:D} has no parked barrier. Restore its durable row at the original sequence before redrive, or explicitly purge the dead row to discard it. The redrive batch was rolled back.");
             }
             using (var command = new NpgsqlCommand($"DELETE FROM {_dead} WHERE id = @id", connection, transaction))
@@ -76,6 +82,17 @@ internal sealed class PostgreSqlDeadLetterManager : IDeadLetterManager
             changed++;
         }
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        if (_instrumentation is { } instrumentation)
+        {
+            // A redriven unordered row is back in the table; a redriven parked row is outstanding again;
+            // a purged parked row leaves the table it was still counted in.
+            if (restored != 0) instrumentation.AddOutboxPending(restored);
+            if (parked != 0)
+            {
+                if (purge) instrumentation.RecordOutboxParkedPurged(parked);
+                else instrumentation.RecordOutboxUnparked(parked);
+            }
+        }
         return changed;
     }
 
