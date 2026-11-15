@@ -576,6 +576,37 @@ public class OrderedDispatchTests
         await Assert.That(transport.Ids.SequenceEqual(Enumerable.Range(1, count + 2).Select(Id))).IsTrue();
     }
 
+    [Test]
+    public async Task In_process_commit_wakes_an_idle_ordered_worker_before_its_poll()
+    {
+        await using var fixture = new PostgreSqlFixture();
+        await fixture.StartAsync();
+        await using var source = NpgsqlDataSource.Create(fixture.ConnectionString);
+        await PostgreSqlOutboxStoreTests.CreateSchema(source);
+        var delivered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var clock = new PollClock();
+        var transport = new RecordingTransport((_, _) => { delivered.TrySetResult(); return ValueTask.CompletedTask; });
+        using var ordered = new PostgreSqlOrderedDispatcher(source, new() { Lanes = 1 },
+            [transport], NullLogger<PostgreSqlOrderedDispatcher>.Instance, clock);
+        using var direct = new PostgreSqlDirectDispatcher(source, new(), new(), [transport],
+            NullLogger<PostgreSqlDirectDispatcher>.Instance, ordered: ordered);
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+        await ordered.StartAsync(timeout.Token);
+        try
+        {
+            // The poll timer never fires, so only the commit handoff can start the next scan.
+            await clock.FirstPoll.Task.WaitAsync(timeout.Token);
+            await Insert(source, Id(1), 0);
+            var rows = new List<BufferedOutboxMessage> { new() };
+            rows[0].Copy(new OutboxRecord(Id(1), "events", "order.placed;v=1",
+                new("orders", new byte[] { 7 }, orderingKey: new WireString("customer-é")), DateTimeOffset.UtcNow), 1);
+            direct.Committed(rows, rows.Count);
+            await delivered.Task.WaitAsync(timeout.Token);
+        }
+        finally { await ordered.StopAsync(timeout.Token); }
+        await Assert.That(transport.Ids.SequenceEqual([Id(1)])).IsTrue();
+    }
+
     private sealed class ScanClock : TimeProvider
     {
         private long _ticks;

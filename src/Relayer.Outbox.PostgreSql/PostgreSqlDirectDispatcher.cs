@@ -21,6 +21,7 @@ internal sealed class PostgreSqlDirectDispatcher : OutboxDirectDispatchWorker<Ou
     private readonly int _maxDispatchAttempts;
     private bool _schemaValidated;
     private int _quiescing;
+    private readonly PostgreSqlOrderedDispatcher? _ordered;
     internal bool HasLocalTransport => _transports.Values.Any(static transport => PostgreSqlLocalTransport.Find(transport) is not null);
     internal void Quiesce() => Interlocked.Exchange(ref _quiescing, 1);
 
@@ -39,7 +40,8 @@ internal sealed class PostgreSqlDirectDispatcher : OutboxDirectDispatchWorker<Ou
 
     internal PostgreSqlDirectDispatcher(Npgsql.NpgsqlDataSource dataSource, PostgreSqlOutboxOptions storeOptions,
         PostgreSqlDirectDispatchOptions options, IEnumerable<ITransport> transports, ILogger<PostgreSqlDirectDispatcher> logger,
-        PostgreSqlOutboxStore? store = null, RelayerInstrumentation? instrumentation = null, IServiceScopeFactory? scopes = null, TimeProvider? timeProvider = null)
+        PostgreSqlOutboxStore? store = null, RelayerInstrumentation? instrumentation = null, IServiceScopeFactory? scopes = null, TimeProvider? timeProvider = null,
+        PostgreSqlOrderedDispatcher? ordered = null)
         : base(options.QueueCapacity, options.BatchSize, options.ClaimDuration, transports, logger, instrumentation, timeProvider ?? TimeProvider.System)
     {
         _failures = new(scopes);
@@ -49,6 +51,8 @@ internal sealed class PostgreSqlDirectDispatcher : OutboxDirectDispatchWorker<Ou
         _store = store ?? new(dataSource, storeOptions);
         _schema = storeOptions.Schema ?? "public";
         _prefix = storeOptions.TablePrefix;
+        // An in-process ordered worker for the same tables is woken after commit instead of waiting for its poll.
+        if (ordered is not null && ordered.Matches(_schema, _prefix)) _ordered = ordered;
     }
 
     internal void ValidateStore(string? schema, string prefix)
@@ -76,6 +80,8 @@ internal sealed class PostgreSqlDirectDispatcher : OutboxDirectDispatchWorker<Ou
     // Called only after durable commit. Queue pressure and shutdown cannot make a committed transaction fail.
     internal void Committed(List<BufferedOutboxMessage> rows, int count)
     {
+        // Take moves unordered rows out of the source, so read ordered lanes first.
+        _ordered?.Committed(rows, count);
         var batch = RentBatch();
         batch.Take(rows, count, DateTimeOffset.MaxValue);
         Enqueue(batch);

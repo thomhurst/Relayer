@@ -59,7 +59,8 @@ public static partial class PostgreSqlOutboxServiceCollectionExtensions
             new PostgreSqlDirectDispatcher(dataSource, snapshot,
                 provider.GetRequiredService<IOptionsMonitor<PostgreSqlDirectDispatchOptions>>().Get(storeName),
                 provider.GetServices<ITransport>(), provider.GetRequiredService<ILogger<PostgreSqlDirectDispatcher>>(),
-                instrumentation: provider.GetService<RelayerInstrumentation>(), scopes: provider.GetRequiredService<IServiceScopeFactory>()));
+                instrumentation: provider.GetService<RelayerInstrumentation>(), scopes: provider.GetRequiredService<IServiceScopeFactory>(),
+                ordered: provider.GetKeyedService<PostgreSqlOrderedDispatcher>(storeName)));
         services.AddSingleton<IHostedService>(provider => provider.GetRequiredKeyedService<PostgreSqlDirectDispatcher>(storeName));
         return services;
     }

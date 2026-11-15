@@ -21,7 +21,7 @@ internal interface IOrderedLaneWorker
 // Shared ownership cadence, sequential lane traversal, batch deadlines and drain-before-release.
 internal static class OrderedLaneWorker
 {
-    internal static async Task RunAsync(IOrderedLaneWorker worker, TimeSpan leaseDuration, TimeSpan pollInterval, TimeProvider timeProvider, CancellationToken stoppingToken, CancellationToken idleToken)
+    internal static async Task RunAsync(IOrderedLaneWorker worker, TimeSpan leaseDuration, TimeSpan pollInterval, TimeProvider timeProvider, CancellationToken stoppingToken, CancellationToken idleToken, OrderedLaneWake? wake = null)
     {
         // Reuse the deadline source across successful batches. Cancellation is an exceptional path.
         var deadline = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
@@ -63,7 +63,7 @@ internal static class OrderedLaneWorker
                 catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { break; }
                 catch (Exception error) { worker.DispatchFailed(error); }
                 if (!madeProgress)
-                    await Task.Delay(pollInterval, timeProvider, idleToken).ConfigureAwait(false);
+                    await (wake?.WaitAsync(pollInterval, timeProvider, idleToken) ?? Task.Delay(pollInterval, timeProvider, idleToken)).ConfigureAwait(false);
             }
         }
         catch (OperationCanceledException) when (idleToken.IsCancellationRequested) { }
