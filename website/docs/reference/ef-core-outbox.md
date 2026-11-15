@@ -29,7 +29,6 @@ together. It also registers the keyed [PostgreSQL durable store](postgres-store.
 [Outbox tracing and metrics](../guides/telemetry.md#outbox-tracing-and-metrics) cover enqueue and dispatch.
 The [EF Core consumer boundary](ef-core-inbox.md) supplies transactional inbox deduplication and
 enables it automatically for its selected outbox context.
-There are no published NuGet packages yet; use project references from a repository checkout.
 
 ## Registration
 
@@ -56,10 +55,23 @@ argument to set `DispatchStoreName`, schema, table prefix, lanes, ordered lease 
 These store settings flow to the workers automatically. Direct dispatch, recovery and retention otherwise use
 their existing worker defaults. Stop the host before disposing the data source.
 
-For several participating contexts, give each composed registration a distinct `DispatchStoreName` and
-separate store tables. The first composed registration supplies default capability settings before a context
-is selected, unless the application already registered configuration-bound defaults. A selected context
-always uses its own settings.
+Several contexts can share one store. Call `UsePostgreSqlOutbox` once per context with the same data source
+and options; the later calls only enlist their context, so the host runs one direct dispatcher, one ordered
+lane set and one maintenance worker for the store:
+
+```csharp
+services.AddRelayer(relayer =>
+{
+    relayer.UsePostgreSqlOutbox<OrdersDbContext>(dataSource);
+    relayer.UsePostgreSqlOutbox<BillingDbContext>(dataSource);
+});
+```
+
+A second registration for the same `DispatchStoreName` with a different data source, schema, table prefix,
+lane count, lease duration or attempt limit fails at registration. To keep contexts in separate stores, give
+each one a distinct `DispatchStoreName` and separate store tables; each store then runs its own workers.
+The first composed registration supplies default capability settings before a context is selected, unless
+the application already registered configuration-bound defaults. A selected context always uses its own settings.
 
 Context pooling, concurrent use of one service scope and ambient
 `TransactionScope` enlistment are not supported. Other EF database providers fail on first use;

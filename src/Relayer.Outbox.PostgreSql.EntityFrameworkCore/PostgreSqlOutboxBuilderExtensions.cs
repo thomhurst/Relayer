@@ -14,6 +14,7 @@ public static class PostgreSqlOutboxBuilderExtensions
     /// <summary>Enlists one scoped DbContext and registers direct dispatch, ordered dispatch and recovery.</summary>
     /// <remarks>
     /// Configure the native provider with AddDbContext separately, using the same application-owned data source.
+    /// Call again for another context with the same data source and options to enlist it in the same store and workers.
     /// Deploy the outbox schema before starting the host. For independent worker deployment, use the individual registrations instead.
     /// </remarks>
     public static IRelayerBuilder UsePostgreSqlOutbox<
@@ -47,6 +48,18 @@ public static class PostgreSqlOutboxBuilderExtensions
         _ = new PostgreSqlOutboxConfiguration(writer);
         _ = ordered.Validate();
         var services = builder.Services;
+        var composed = new ComposedStore(name, dataSource, writer.Schema, writer.TablePrefix, writer.Lanes,
+            writer.LeaseDuration, writer.MaxDispatchAttempts);
+        foreach (var descriptor in services)
+        {
+            if (descriptor.ImplementationInstance is not ComposedStore existing || existing.Name != name) continue;
+            if (existing != composed)
+                throw new InvalidOperationException($"PostgreSQL outbox store '{name}' is already composed with a different NpgsqlDataSource or options. " +
+                    "Pass the same data source and options to share the store, or set a distinct DispatchStoreName and separate store tables.");
+            services.AddDbContext<TContext>((provider, native) => native.AddRelayerOutbox(provider, writer));
+            return builder;
+        }
+        services.AddSingleton(composed);
         services.AddRelayerEntityFrameworkCoreOutbox();
         // A selected context always uses its own settings. The first composed registration supplies
         // defaults for capability validation before a context is selected, unless the app configured them.
@@ -64,6 +77,10 @@ public static class PostgreSqlOutboxBuilderExtensions
         services.AddDbContext<TContext>((provider, native) => native.AddRelayerOutbox(provider, writer));
         return builder;
     }
+
+    // Store identity for composed registrations; the data source compares by reference.
+    private sealed record ComposedStore(string Name, NpgsqlDataSource DataSource, string? Schema, string TablePrefix,
+        int Lanes, TimeSpan LeaseDuration, int MaxDispatchAttempts);
 
     private sealed class WriterOptionsFactory(EntityFrameworkCoreOutboxOptions options,
         IEnumerable<IConfigureOptions<EntityFrameworkCoreOutboxOptions>> setups,
