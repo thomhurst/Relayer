@@ -191,6 +191,8 @@ public class TelemetryTests
             ["relayer.inbox.duplicates"] = (typeof(Counter<long>), "{message}"),
             ["relayer.consumer.lag"] = (typeof(Gauge<long>), "{message}"),
             ["relayer.circuit.state"] = (typeof(Gauge<int>), null),
+            ["relayer.outbox.dead.depth"] = (typeof(ObservableGauge<long>), "{message}"),
+            ["relayer.outbox.parked.depth"] = (typeof(ObservableGauge<long>), "{message}"),
         };
         await Assert.That(capture.Instruments.Count).IsEqualTo(expected.Count);
         foreach (var (name, (type, unit)) in expected)

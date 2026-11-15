@@ -256,6 +256,9 @@ transaction. A crash or database error rolls back the whole pass, including comp
 already accepted by the broker; those messages can all replay with their original identities. Delivery
 is at least once. Recovery decrements `relayer.outbox.pending` only after the pass commits;
 a rolled-back pass publishes no pending-count decrement. Row locks remain held through native sends until the pass commits or rolls back.
+Maintenance also refreshes the
+[`relayer.outbox.dead.depth` and `relayer.outbox.parked.depth` gauges](../guides/telemetry.md#outbox-depth-gauges)
+for alerts that stay raised until dead or parked rows are handled.
 
 Separate durable `sweeper` and `cleanup` leases use the database clock. Native transaction application
 locks serialize connected passes without waiting behind another leader. Idle leadership expires after

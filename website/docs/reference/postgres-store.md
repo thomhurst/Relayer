@@ -200,6 +200,9 @@ Dead retention excludes rows with an active parked barrier, retaining their insp
 until explicit redrive or purge. Unordered dead rows remain subject to configured retention.
 `relayer.outbox.dead_lettered` increments after a poison transition commits. A crash around commit
 can lose a measurement; durable management queries remain the source of truth.
+For alerts that stay raised until rows are redriven or purged, use the
+[`relayer.outbox.dead.depth` and `relayer.outbox.parked.depth` gauges](../guides/telemetry.md#outbox-depth-gauges)
+that maintenance refreshes.
 
 ## Find a missing message
 

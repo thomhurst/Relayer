@@ -14,7 +14,8 @@ public abstract class OutboxMaintenanceContractTests
     protected abstract class MaintenanceFixture : IAsyncDisposable
     {
         public abstract MaintenanceWorker Worker(RecordingTransport transport, int batchSize = 1,
-            bool deadRetention = true, bool inboxRetention = true, int cleanupBatchLimit = 10, Action? failure = null, TimeProvider? idleTimeProvider = null);
+            bool deadRetention = true, bool inboxRetention = true, int cleanupBatchLimit = 10, Action? failure = null, TimeProvider? idleTimeProvider = null,
+            RelayerInstrumentation? instrumentation = null);
         public abstract Task Insert(Guid id, DateTimeOffset createdAt, int? lane = null,
             DateTimeOffset? deliverAt = null, string status = "pending", DateTimeOffset? claimExpiresAt = null);
         public abstract Task InsertDead(Guid id, DateTimeOffset failedAt);
@@ -34,6 +35,7 @@ public abstract class OutboxMaintenanceContractTests
         public abstract ValueTask ReleaseAsync(CancellationToken cancellationToken = default);
         public abstract Task StartAsync(CancellationToken cancellationToken = default);
         public abstract Task StopAsync(CancellationToken cancellationToken = default);
+        public abstract ValueTask RefreshDepthAsync(CancellationToken cancellationToken = default);
         public abstract void Dispose();
     }
 
@@ -302,6 +304,85 @@ public abstract class OutboxMaintenanceContractTests
         await Assert.That(await worker.CleanupAsync()).IsEqualTo((deadRetention ? 1 : 0) + (inboxRetention ? 1 : 0));
         await Assert.That(await fixture.Count(Table.Dead)).IsEqualTo(deadRetention ? 0L : 1L);
         await Assert.That(await fixture.Count(Table.Inbox)).IsEqualTo(inboxRetention ? 0L : 1L);
+    }
+
+    [Test]
+    public async Task Depth_gauges_report_cached_store_wide_dead_and_parked_rows()
+    {
+        await using var fixture = await CreateFixtureAsync();
+        var old = DateTimeOffset.UtcNow.AddDays(-1);
+        await fixture.Insert(Id(1), old, status: "parked");
+        await fixture.InsertDead(Id(1), old);
+        await fixture.InsertDead(Id(2), old);
+        await fixture.Insert(Id(3), old);
+        using var instrumentation = new RelayerInstrumentation();
+        using var depth = new DepthCapture(instrumentation);
+        var worker = fixture.Worker(new(), instrumentation: instrumentation);
+        try
+        {
+            await Assert.That(depth.Collect()).IsEmpty();
+            await worker.RefreshDepthAsync();
+            var measurements = depth.Collect();
+            await Assert.That(measurements["relayer.outbox.dead.depth"]).IsEqualTo(2L);
+            await Assert.That(measurements["relayer.outbox.parked.depth"]).IsEqualTo(1L);
+            await Assert.That(depth.Stores.All(store => store == "store")).IsTrue();
+            await fixture.InsertDead(Id(4), old);
+            // Collection reads the cached refresh, never the store.
+            await Assert.That(depth.Collect()["relayer.outbox.dead.depth"]).IsEqualTo(2L);
+        }
+        finally { worker.Dispose(); }
+        await Assert.That(depth.Collect()).IsEmpty();
+    }
+
+    [Test]
+    public async Task Hosted_maintenance_refreshes_depth_gauges_while_observed()
+    {
+        await using var fixture = await CreateFixtureAsync();
+        await fixture.InsertDead(Id(1), DateTimeOffset.UtcNow);
+        using var instrumentation = new RelayerInstrumentation();
+        using var depth = new DepthCapture(instrumentation);
+        using var worker = fixture.Worker(new(), instrumentation: instrumentation);
+        await worker.StartAsync();
+        try
+        {
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+            while (!depth.Collect().ContainsKey("relayer.outbox.dead.depth"))
+                await Task.Delay(10, timeout.Token);
+            await Assert.That(depth.Collect()["relayer.outbox.dead.depth"]).IsEqualTo(1L);
+        }
+        finally { await worker.StopAsync(); }
+    }
+
+    private sealed class DepthCapture : IDisposable
+    {
+        private readonly System.Diagnostics.Metrics.MeterListener _listener = new();
+        private readonly Dictionary<string, long> _values = [];
+        public List<string?> Stores { get; } = [];
+
+        public DepthCapture(RelayerInstrumentation instrumentation)
+        {
+            _listener.InstrumentPublished = (instrument, listener) =>
+            {
+                if (ReferenceEquals(instrument.Meter.Scope, instrumentation) && instrument.Name.EndsWith(".depth", StringComparison.Ordinal))
+                    listener.EnableMeasurementEvents(instrument);
+            };
+            _listener.SetMeasurementEventCallback<long>((instrument, value, tags, _) =>
+            {
+                _values[instrument.Name] = value;
+                foreach (var tag in tags)
+                    if (tag.Key == "relayer.outbox.store") Stores.Add(tag.Value as string);
+            });
+            _listener.Start();
+        }
+
+        public Dictionary<string, long> Collect()
+        {
+            _values.Clear();
+            _listener.RecordObservableInstruments();
+            return new(_values);
+        }
+
+        public void Dispose() => _listener.Dispose();
     }
 
     private static Guid Id(int i) => Guid.Parse($"01900000-0000-7000-8000-{i:D12}");

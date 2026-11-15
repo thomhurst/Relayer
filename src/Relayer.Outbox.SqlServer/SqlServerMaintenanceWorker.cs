@@ -16,7 +16,7 @@ internal sealed partial class SqlServerMaintenanceWorker : OutboxMaintenanceWork
     private readonly ILogger<SqlServerMaintenanceWorker> _logger;
     private readonly Guid _owner = Guid.NewGuid();
     private readonly string _leases, _table, _dead, _inbox;
-    private readonly string _acquire, _renew, _read, _highWater, _deleteDead, _deleteInbox;
+    private readonly string _acquire, _renew, _read, _highWater, _deleteDead, _deleteInbox, _depth;
     private readonly string _sweeperResource, _cleanupResource;
     private readonly OutboxRecord[] _rows;
     private readonly List<SqlServerBufferedMessage> _buffers = [];
@@ -28,10 +28,11 @@ internal sealed partial class SqlServerMaintenanceWorker : OutboxMaintenanceWork
     [RequiresDynamicCode("SqlClient runtime Native AOT is unsupported.")]
     internal SqlServerMaintenanceWorker(string connectionString, SqlServerMaintenanceOptions options,
         IEnumerable<ITransport> transports, ILogger<SqlServerMaintenanceWorker> logger,
-        ILogger<SqlServerDirectDispatcher>? dispatchLogger = null, RelayerInstrumentation? instrumentation = null, TimeProvider? idleTimeProvider = null)
+        ILogger<SqlServerDirectDispatcher>? dispatchLogger = null, RelayerInstrumentation? instrumentation = null, TimeProvider? idleTimeProvider = null, string? storeName = null)
         : base(2, options.BatchSize, options.CleanupBatchLimit,
             (options.DeadRetention is not null ? 1 : 0) | (options.InboxRetention is not null ? 2 : 0),
-            options.SweepInterval, options.CleanupInterval, options.LeaseDuration, idleTimeProvider)
+            options.SweepInterval, options.CleanupInterval, options.LeaseDuration, idleTimeProvider,
+            storeName is null ? null : instrumentation?.TrackOutboxDepth("microsoft.sql_server", storeName))
     {
         _connectionString = connectionString;
         _options = options;
@@ -52,6 +53,7 @@ internal sealed partial class SqlServerMaintenanceWorker : OutboxMaintenanceWork
         _renew = $"UPDATE {_leases} SET expires_at=DATEADD(millisecond, @duration, SYSUTCDATETIME()) WHERE name=@name AND owner=@owner";
         _deleteDead = DeleteSql(_dead, "failed_at");
         _deleteInbox = DeleteSql(_inbox, "processed_at");
+        _depth = $"SELECT (SELECT COUNT_BIG(*) FROM {_dead}), (SELECT COUNT_BIG(*) FROM {_table} WHERE status='parked')";
         _acquire = $"""
             DECLARE @result int;
             EXEC @result = sys.sp_getapplock @Resource=@resource, @LockMode='Exclusive',
@@ -210,6 +212,16 @@ internal sealed partial class SqlServerMaintenanceWorker : OutboxMaintenanceWork
         await using var command = new SqlCommand($"DELETE FROM {_leases} WHERE owner=@owner", connection);
         command.Parameters.AddWithValue("@owner", _owner);
         await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    protected override async ValueTask<(long Dead, long Parked)> CountDepthAsync(CancellationToken cancellationToken)
+    {
+        await using var connection = new SqlConnection(_connectionString);
+        await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+        await using var command = new SqlCommand(_depth, connection);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        await reader.ReadAsync(cancellationToken).ConfigureAwait(false);
+        return (reader.GetInt64(0), reader.GetInt64(1));
     }
 
     public override void Dispose() { _dispatcher.Dispose(); base.Dispose(); }

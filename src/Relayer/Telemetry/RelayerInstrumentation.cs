@@ -24,6 +24,10 @@ public sealed class RelayerInstrumentation : IDisposable
     internal Counter<long> Duplicates { get; }
     internal Gauge<long> ConsumerLag { get; }
     internal Gauge<int> CircuitState { get; }
+    private readonly ObservableGauge<long> _outboxDead;
+    private readonly ObservableGauge<long> _outboxParked;
+    private readonly Lock _depthLock = new();
+    private OutboxDepth[] _depths = [];
 
     /// <summary>Creates instrumentation with an optional application logger factory.</summary>
     public RelayerInstrumentation(ILoggerFactory? loggerFactory = null)
@@ -52,6 +56,10 @@ public sealed class RelayerInstrumentation : IDisposable
         Duplicates = _meter.CreateCounter<long>("relayer.inbox.duplicates", "{message}");
         ConsumerLag = _meter.CreateGauge<long>("relayer.consumer.lag", "{message}");
         CircuitState = _meter.CreateGauge<int>("relayer.circuit.state");
+        _outboxDead = _meter.CreateObservableGauge("relayer.outbox.dead.depth", ObserveDead, "{message}",
+            "Rows in the outbox dead table at the last maintenance refresh.");
+        _outboxParked = _meter.CreateObservableGauge("relayer.outbox.parked.depth", ObserveParked, "{message}",
+            "Parked ordered outbox rows at the last maintenance refresh.");
     }
 
     /// <summary>Precomputes one operation's tags. Reuse the returned recorder concurrently across deliveries.</summary>
@@ -77,6 +85,37 @@ public sealed class RelayerInstrumentation : IDisposable
 
     /// <summary>Alerts that an outbox row exhausted its dispatch attempts.</summary>
     public void RecordOutboxPoison() => OutboxPoison.Add(1);
+
+    internal bool OutboxDepthEnabled => _outboxDead.Enabled || _outboxParked.Enabled;
+
+    // Startup and shutdown only; collection reads a snapshot without locking.
+    internal OutboxDepth TrackOutboxDepth(string system, string store)
+    {
+        var depth = new OutboxDepth(this, system, store);
+        lock (_depthLock) _depths = [.. _depths, depth];
+        return depth;
+    }
+
+    internal void Untrack(OutboxDepth depth)
+    {
+        lock (_depthLock) _depths = Array.FindAll(_depths, other => other != depth);
+    }
+
+    private IEnumerable<Measurement<long>> ObserveDead() => Observe(dead: true);
+    private IEnumerable<Measurement<long>> ObserveParked() => Observe(dead: false);
+
+    // A store reports nothing until its first refresh succeeds.
+    private List<Measurement<long>> Observe(bool dead)
+    {
+        var depths = Volatile.Read(ref _depths);
+        var measurements = new List<Measurement<long>>(depths.Length);
+        foreach (var depth in depths)
+        {
+            var value = dead ? depth.Dead : depth.Parked;
+            if (value >= 0) measurements.Add(new(value, depth.Tags));
+        }
+        return measurements;
+    }
 
     /// <summary>Stops publishing every instrument owned by this instance.</summary>
     public void Dispose() => _meter.Dispose();
