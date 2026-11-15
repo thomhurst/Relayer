@@ -58,9 +58,18 @@ public class KafkaShutdownTests(KafkaHeaderSnapshotBroker broker)
                         await Assert.ThrowsAsync<OperationCanceledException>(() => stopping);
                     }
                     else release.SetResult();
-                    // A failure while draining for a requested stop ends the run with that stop; Dekaf logs it.
-                    await adapter.Completion.WaitAsync(token);
-                    if (!abort) await stopping;
+                    if (fail)
+                    {
+                        // Dekaf ends a run that fails while draining with either the stop or the handler's
+                        // exception, whichever it observes first. Both leave the failed record uncommitted.
+                        await Tolerate(adapter.Completion.WaitAsync(token));
+                        await Tolerate(stopping);
+                    }
+                    else
+                    {
+                        await adapter.Completion.WaitAsync(token);
+                        if (!abort) await stopping;
+                    }
                     await using var reader = new ConsumerBuilder<byte[], byte[]>().WithBootstrapServers(broker.Bootstrap).WithGroupId(topic)
                         .WithOffsetCommitMode(OffsetCommitMode.Manual).WithAutoOffsetStore(false).Build();
                     await reader.InitializeAsync(token);
@@ -93,6 +102,12 @@ public class KafkaShutdownTests(KafkaHeaderSnapshotBroker broker)
             IKafkaConsumer<byte[], byte[]> CreateConsumer() => new ConsumerBuilder<byte[], byte[]>()
                 .WithBootstrapServers(broker.Bootstrap).WithGroupId(topic).WithAutoOffsetReset(AutoOffsetReset.Earliest)
                 .WithOffsetCommitMode(OffsetCommitMode.Manual).WithAutoOffsetStore(false).SubscribeTo(topic).Build();
+
+            static async Task Tolerate(Task drained)
+            {
+                try { await drained; }
+                catch (InvalidOperationException error) when (error.Message == "Durable receive failed.") { }
+            }
 
             async ValueTask<Disposition> Receive(KafkaDelivery delivery, CancellationToken cancellationToken)
             {

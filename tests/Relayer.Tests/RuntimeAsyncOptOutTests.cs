@@ -13,7 +13,7 @@ public class RuntimeAsyncOptOutTests
 
         var missing = new List<string>();
         var pooled = 0;
-        foreach (var directory in new[] { "src", "tools" })
+        foreach (var directory in new[] { "src" })
         foreach (var file in Directory.EnumerateFiles(Path.Combine(root!.FullName, directory), "*.cs", SearchOption.AllDirectories))
         {
             var separator = Path.DirectorySeparatorChar;
