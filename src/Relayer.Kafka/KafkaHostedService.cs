@@ -1,5 +1,6 @@
 using Relayer.Pipeline;
 using Dekaf.Consumer;
+using Dekaf.Protocol.Messages;
 using Dekaf.Serialization;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -91,8 +92,12 @@ internal sealed class KafkaHostedService(IServiceProvider provider, string name)
                 if (consumer.Selects(handler)) pipeline.Handler(handler);
             var composed = pipeline.Build(consumer.Concurrency);
             var receive = new ReceivePipeline<KafkaDelivery, KafkaMessageBinding>(composed, new(), consumer.Concurrency);
+            var loggerFactory = provider.GetService<ILoggerFactory>() ?? NullLoggerFactory.Instance;
+            var exactlyOnce = KafkaProcessing.IsExactlyOnce(consumer.Options);
             var native = new Dekaf.ConsumerBuilder<byte[], byte[]>().WithBootstrapServers(options.BootstrapServers.ToArray())
-                .WithLoggerFactory(provider.GetService<ILoggerFactory>() ?? NullLoggerFactory.Instance);
+                .WithLoggerFactory(loggerFactory);
+            // Exactly-once input skips aborted upstream transactions unless the application configures otherwise.
+            if (exactlyOnce) native.WithIsolationLevel(IsolationLevel.ReadCommitted);
             options.ConfigureConsumer?.Invoke(native);
             // Dekaf's partitioned runtime commits completed offsets itself; the consumer must not
             // commit or store consumed positions on its own (D22).
@@ -102,6 +107,16 @@ internal sealed class KafkaHostedService(IServiceProvider provider, string name)
                 consumer.Options.Processing ?? KafkaProcessing.Defaults(consumer.Concurrency), consumer.Concurrency,
                 health?.Register(declaration));
             receivers.Add(receiver);
+            if (exactlyOnce)
+            {
+                var shared = _transport;
+                var sends = new KafkaTransactionalSends(shared);
+                composed.SendRedirect = (shared, sends);
+                var group = consumer.Options.Group!;
+                var transactionalId = consumer.Options.TransactionalId;
+                receiver.ConfigureTransactions(() => shared.WithProducer(KafkaProducerTransport.CreateProducerBuilder(options, loggerFactory)
+                    .WithTransactionalId(transactionalId ?? group + "-" + Guid.NewGuid().ToString("N")).Build()), sends);
+            }
             if (consumer.Options.CircuitBreaker is { } circuit)
                 receiver.ConfigureCircuit(circuit, composed, telemetry, provider.GetService<TimeProvider>() ?? TimeProvider.System);
         }

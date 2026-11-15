@@ -224,7 +224,7 @@ public sealed class FailurePipeline
         if (schedule)
             await _scheduler!.ScheduleAsync(_transport.Name, copy, timeout.Token).ConfigureAwait(false);
         else
-            await _transport.SendAsync(copy, timeout.Token).ConfigureAwait(false);
+            await context.RedirectSend(_transport).SendAsync(copy, timeout.Token).ConfigureAwait(false);
         timeout.Token.ThrowIfCancellationRequested();
     }
 

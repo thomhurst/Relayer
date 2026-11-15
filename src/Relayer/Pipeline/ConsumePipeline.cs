@@ -58,6 +58,11 @@ public sealed partial class ConsumePipeline
     internal Action<bool>? CircuitChanged { get; set; }
     // Without native delivery limits (Kafka), permanent failures must dead-letter rather than be held by the circuit.
     internal bool CircuitCountsRetryFailuresOnly { get; set; }
+    // Set once before receives start. Buffered handler sends and failure copies for Source go to Target instead,
+    // such as a transport's native transactional producer that commits them with the consumed offsets.
+    internal (ITransport Source, ITransport Target)? SendRedirect { get; set; }
+    internal ITransport Redirect(ITransport transport) =>
+        SendRedirect is { } redirect && ReferenceEquals(transport, redirect.Source) ? redirect.Target : transport;
 
     internal ConsumePipeline(IServiceScopeFactory scopes, FrozenDictionary<MessageType, ConsumeDelegate> dispatch,
         IReadOnlyList<IConsumeMiddleware> middleware, ConsumeFailureDelegate failure, IFailureClassifier classifier,

@@ -312,7 +312,7 @@ const status = [
   ['AsyncAPI topology and JSON contract export', 'Implemented; protocol bindings unsupported', true],
   ['Kafka parallel receive via Dekaf', 'Implemented; key ordering and native commits', true],
   ['Kafka to database through the EF Core inbox/outbox', 'Implemented; crash-tested replay', true],
-  ['Kafka-to-Kafka exactly-once via native transactions', 'Planned; awaits Dekaf transactional commits', false],
+  ['Kafka-to-Kafka exactly-once via native transactions', 'Implemented; handler sends and dead-letter copies commit with offsets', true],
   ['Health checks with application-provided adapters', 'Implemented', true],
   ['Aspire resource connections, health and telemetry', 'Implemented for Kafka and Service Bus', true],
   ['Scoped tenant header propagation', 'Implemented with durable binding and preview PostgreSQL catalog dispatch', true],

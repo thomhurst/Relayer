@@ -25,6 +25,10 @@ internal sealed class KafkaConsumer : IAsyncDisposable
     private readonly ConcurrentDictionary<int, string> _partitions = new();
     private readonly KafkaWorkerHealth? _health;
     private CancellationTokenSource _stop = new();
+    private readonly int _concurrency;
+    private PartitionedProcessingOptions _runOptions;
+    private Func<KafkaProducerTransport>? _createTransactional;
+    private KafkaTransactionalSends? _transactionalSends;
     private ConsumerCircuit? _circuit;
     private EndpointTelemetry? _circuitTelemetry;
     // Completed and replaced on every circuit transition. A held record captures it before each attempt.
@@ -51,8 +55,17 @@ internal sealed class KafkaConsumer : IAsyncDisposable
         Topic = endpoint.Destination;
         Group = endpoint.ConsumerGroup;
         _monitor = health is null ? null : new PartitionedProcessingMonitor();
-        _options = KafkaProcessing.Compose(options, concurrency, _control, _monitor,
+        _concurrency = concurrency;
+        _options = _runOptions = KafkaProcessing.Compose(options, concurrency, _control, _monitor,
             new KafkaCommitObserver(new(tracing, endpoint, MessagingOperation.Settle, "commit")));
+    }
+
+    // Exactly-once: each run gets its own transactional producer, which Dekaf's runtime uses to commit the consumed
+    // offsets together with the records the run's handlers send through it.
+    internal void ConfigureTransactions(Func<KafkaProducerTransport> create, KafkaTransactionalSends sends)
+    {
+        _createTransactional = create;
+        _transactionalSends = sends;
     }
 
     // Uses the concurrent core policy: rejected and circuit-opening deliveries return Redeliver and stay
@@ -90,10 +103,24 @@ internal sealed class KafkaConsumer : IAsyncDisposable
         }
         if (_ran) _native = _create();
         _ran = true;
-        try { await _native.InitializeAsync(cancellationToken).ConfigureAwait(false); }
+        KafkaProducerTransport? transactional = null;
+        try
+        {
+            await _native.InitializeAsync(cancellationToken).ConfigureAwait(false);
+            if (_createTransactional is not null)
+            {
+                transactional = _createTransactional();
+                await transactional.Producer.InitializeAsync(cancellationToken).ConfigureAwait(false);
+                await transactional.Producer.InitTransactionsAsync(cancellationToken).ConfigureAwait(false);
+                _runOptions = KafkaProcessing.Compose(_options, _concurrency, _control, _monitor, _options.CommitObserver!,
+                    PartitionedTransactionalProducer.Create(transactional.Producer));
+                _transactionalSends!.Run = transactional;
+            }
+        }
         catch
         {
-            await _native.DisposeAsync().ConfigureAwait(false);
+            try { await _native.DisposeAsync().ConfigureAwait(false); }
+            finally { if (transactional is not null) await transactional.DisposeAsync().ConfigureAwait(false); }
             throw;
         }
         if (_health is not null)
@@ -109,13 +136,23 @@ internal sealed class KafkaConsumer : IAsyncDisposable
     private async Task RunAsync()
     {
         var native = _native;
-        try { await native.RunPartitionedAsync(_process, _options, _stop.Token).ConfigureAwait(false); }
+        var transactional = _transactionalSends?.Run;
+        try { await native.RunPartitionedAsync(_process, _runOptions, _stop.Token).ConfigureAwait(false); }
         catch (OperationCanceledException) when (_stop.IsCancellationRequested) { }
         finally
         {
             _health?.Unavailable();
             // Leave the group once the drain has committed, so the stopped member's partitions move to the others.
-            await native.DisposeAsync().ConfigureAwait(false);
+            try { await native.DisposeAsync().ConfigureAwait(false); }
+            finally
+            {
+                // The run has committed or aborted its last transaction.
+                if (transactional is not null)
+                {
+                    _transactionalSends!.Run = null;
+                    await transactional.DisposeAsync().ConfigureAwait(false);
+                }
+            }
         }
     }
 
@@ -207,6 +244,9 @@ internal sealed class KafkaCommitObserver(MessageOperationTracing commit) : IOff
 
 internal static class KafkaProcessing
 {
+    internal static bool IsExactlyOnce(KafkaConsumerOptions options) =>
+        options.Processing?.CommitPolicy == PartitionCommitPolicy.CommitCompletedInTransaction;
+
     // Relayer's defaults when the declaration supplies no native options.
     internal static PartitionedProcessingOptions Defaults(int concurrency) => new()
     {
@@ -223,8 +263,8 @@ internal static class KafkaProcessing
             throw Invalid("Processing.CommitPolicy must be runtime-managed. Relayer commits only offsets the native runtime has seen complete.");
         if (options.ErrorPolicy != PartitionWorkerErrorPolicy.StopConsumer)
             throw Invalid("Processing.ErrorPolicy must be StopConsumer. Other policies skip or stall records after failure handling itself fails.");
-        if (options.Monitor is not null || options.Control is not null || options.CommitObserver is not null)
-            throw Invalid("leave Processing.Monitor, Control and CommitObserver unset. Relayer supplies them for health, replay and commit telemetry.");
+        if (options.Monitor is not null || options.Control is not null || options.CommitObserver is not null || options.TransactionalProducer is not null)
+            throw Invalid("leave Processing.Monitor, Control, CommitObserver and TransactionalProducer unset. Relayer supplies them for health, replay, commit telemetry and exactly-once sends.");
         if (options.MaxHandlerBatchSize != 1)
             throw Invalid("Processing.MaxHandlerBatchSize must be 1. Kafka batch handlers are not implemented yet.");
 
@@ -233,7 +273,8 @@ internal static class KafkaProcessing
 
     // PartitionedProcessingOptions is init-only, so pass every native setting through on a new instance.
     internal static PartitionedProcessingOptions Compose(PartitionedProcessingOptions options, int concurrency,
-        PartitionedProcessingControl control, PartitionedProcessingMonitor? monitor, IOffsetCommitObserver observer) => new()
+        PartitionedProcessingControl control, PartitionedProcessingMonitor? monitor, IOffsetCommitObserver observer,
+        PartitionedTransactionalProducer? transactionalProducer = null) => new()
     {
         MaxBufferedRecordsPerPartition = options.MaxBufferedRecordsPerPartition,
         Ordering = options.Ordering,
@@ -252,5 +293,6 @@ internal static class KafkaProcessing
         Monitor = monitor,
         Control = control,
         CommitObserver = observer,
+        TransactionalProducer = transactionalProducer,
     };
 }

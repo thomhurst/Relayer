@@ -46,18 +46,21 @@ public static class KafkaBuilderExtensions
                 if (consumer.Failure.RedeliveryDelays.Length != 0)
                     throw new NotSupportedException($"Kafka consumer '{consumer.Source}': durable redelivery cannot yet persist native tombstones and null-valued headers, even with IFailureScheduler. Use RetryDelays for in-process retries and dead-letter copies instead.");
                 consumer.Options.CircuitBreaker?.Validate();
+                if (KafkaProcessing.IsExactlyOnce(consumer.Options))
+                {
+                    if (consumer.Options.CircuitBreaker is not null)
+                        throw new NotSupportedException($"Kafka consumer '{consumer.Source}': remove CircuitBreaker or use a non-transactional CommitPolicy. Every transaction commit waits for in-flight records, so a record held by an open circuit would stall commits.");
+                    if (consumer.Options.TransactionalId is { } id && string.IsNullOrWhiteSpace(id))
+                        throw new InvalidOperationException($"Kafka consumer '{consumer.Source}': TransactionalId must not be empty. Leave it null for a random ID per run.");
+                }
+                else if (consumer.Options.TransactionalId is not null)
+                    throw new InvalidOperationException($"Kafka consumer '{consumer.Source}': TransactionalId applies only with Processing.CommitPolicy CommitCompletedInTransaction.");
                 endpoints.Add(consumer.Source);
                 endpoints.Add(consumer.Failure.DeadLetterEndpoint ?? consumer.Source + ".dead-letter");
             }
             var options = provider.GetRequiredService<IOptionsMonitor<KafkaTransportOptions>>().Get(name);
             var loggerFactory = provider.GetService<ILoggerFactory>() ?? NullLoggerFactory.Instance;
-            var native = new ProducerBuilder<WireString?, (ReadOnlyMemory<byte> Body, Headers Headers)?>()
-                .WithBootstrapServers(options.BootstrapServers.ToArray())
-                .WithKeySerializer(new KafkaKeySerializer())
-                .WithValueSerializer(new KafkaValueSerializer())
-                .WithLoggerFactory(loggerFactory);
-            options.ConfigureProducer?.Invoke(native);
-            return new KafkaProducerTransport(name, native.Build(), endpoints,
+            return new KafkaProducerTransport(name, KafkaProducerTransport.CreateProducerBuilder(options, loggerFactory).Build(), endpoints,
                 provider.GetRequiredService<MessageTracing>(), loggerFactory, options);
         });
         builder.Services.AddKeyedSingleton<IDeadLetterManager>(name, (provider, _) =>
@@ -90,6 +93,18 @@ public sealed class KafkaConsumerOptions
     /// completed-offset commits and Dekaf's other defaults. <c>Concurrency</c> always sets the native consumer-wide
     /// <c>MaxConcurrentHandlers</c>. Relayer supplies <c>Monitor</c>, <c>Control</c> and <c>CommitObserver</c>, requires a
     /// runtime-managed <c>CommitPolicy</c>, <c>ErrorPolicy</c> <c>StopConsumer</c> and single-record handlers.
+    /// <c>PartitionCommitPolicy.CommitCompletedInTransaction</c> enables exactly-once processing: Relayer supplies the
+    /// <c>TransactionalProducer</c>, and the handlers' buffered sends and dead-letter copies through this transport join
+    /// the transaction that commits the consumed offsets.
     /// </remarks>
     public PartitionedProcessingOptions? Processing { get; set; }
+
+    /// <summary>The native transactional ID of the exactly-once producer. Applies only with <c>CommitCompletedInTransaction</c>.</summary>
+    /// <remarks>
+    /// Defaults to the consumer group followed by a random suffix for each run. Set an ID that is stable for each
+    /// application instance, such as its pod name, so a restarted instance fences its predecessor and aborts that
+    /// predecessor's open transaction at once, instead of read-committed consumers waiting for the broker's transaction
+    /// timeout. Two running instances must never share an ID.
+    /// </remarks>
+    public string? TransactionalId { get; set; }
 }

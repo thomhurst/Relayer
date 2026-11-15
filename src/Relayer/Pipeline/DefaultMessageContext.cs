@@ -23,6 +23,7 @@ public sealed class DefaultMessageContext : MessageContext, IDisposable
     internal DefaultMessageContext(ConsumePipeline owner, int poolSlot = -1)
     {
         _owner = owner;
+        SendBuffer = new(owner);
         PoolSlot = poolSlot;
         Settlement = new(this, owner);
         CoreProcessing = new(owner, this);
@@ -61,7 +62,7 @@ public sealed class DefaultMessageContext : MessageContext, IDisposable
     {
         if (FailureDisposition is { } disposition) _receive?.SetDisposition(disposition);
     }
-    internal AttemptSendBuffer SendBuffer { get; } = new();
+    internal AttemptSendBuffer SendBuffer { get; }
     internal AttemptSendBuffer? ActiveAttemptBuffer => _sender?.AttemptBuffer;
     internal void InitializeAttempts()
     {
@@ -78,6 +79,7 @@ public sealed class DefaultMessageContext : MessageContext, IDisposable
     internal Exception? ScopeCleanupError { get; set; }
     internal Exception? LoggedSettlementError { get; set; }
     internal void LogSettlementFailure(Exception error) => _owner.LogSettlementFailure(this, error);
+    internal ITransport RedirectSend(ITransport transport) => _owner.Redirect(transport);
     internal bool TryConsumeNativeSettlementError(Exception error) => _receive?.TryConsumeLoggedSettlementError(error) == true;
 
     // Read raw native fields so malformed envelopes remain loggable without parsing required fields.

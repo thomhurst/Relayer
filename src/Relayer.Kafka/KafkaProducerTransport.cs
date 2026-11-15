@@ -1,5 +1,6 @@
 using System.Collections.Frozen;
 using System.Runtime.CompilerServices;
+using Dekaf;
 using Dekaf.Admin;
 using Dekaf.Producer;
 using Dekaf.Serialization;
@@ -15,6 +16,8 @@ internal sealed class KafkaProducerTransport : ITransport, ITransportSendTracing
     private readonly KafkaSendPool _operations = new();
     private readonly FrozenDictionary<string, ITopicProducer<WireString?, (ReadOnlyMemory<byte> Body, Headers Headers)?>> _topics;
     private readonly KafkaTransportOptions? _options;
+    private readonly MessageTracing? _tracing;
+    private readonly ILoggerFactory? _loggerFactory;
     private bool _disposed;
     internal List<KafkaConsumer> Consumers { get; } = [];
     private static readonly TransportCapabilities Capabilities = new()
@@ -30,6 +33,8 @@ internal sealed class KafkaProducerTransport : ITransport, ITransportSendTracing
     {
         Name = name;
         _options = options;
+        _tracing = tracing;
+        _loggerFactory = loggerFactory;
         _producer = producer;
         var endpoints = new Dictionary<string, SendTracing?>(StringComparer.Ordinal);
         foreach (var destination in destinations)
@@ -44,6 +49,24 @@ internal sealed class KafkaProducerTransport : ITransport, ITransportSendTracing
     }
 
     public string Name { get; }
+    internal IKafkaProducer<WireString?, (ReadOnlyMemory<byte> Body, Headers Headers)?> Producer => _producer;
+
+    // A transport with the same name, topics and send telemetry over another native producer.
+    internal KafkaProducerTransport WithProducer(IKafkaProducer<WireString?, (ReadOnlyMemory<byte> Body, Headers Headers)?> producer) =>
+        new(Name, producer, _endpoints.Keys, _tracing, _loggerFactory, _options);
+
+    // The transport's native producer configuration, shared by the transactional producers of exactly-once consumers.
+    internal static ProducerBuilder<WireString?, (ReadOnlyMemory<byte> Body, Headers Headers)?> CreateProducerBuilder(
+        KafkaTransportOptions options, ILoggerFactory loggerFactory)
+    {
+        var native = new ProducerBuilder<WireString?, (ReadOnlyMemory<byte> Body, Headers Headers)?>()
+            .WithBootstrapServers(options.BootstrapServers.ToArray())
+            .WithKeySerializer(new KafkaKeySerializer())
+            .WithValueSerializer(new KafkaValueSerializer())
+            .WithLoggerFactory(loggerFactory);
+        options.ConfigureProducer?.Invoke(native);
+        return native;
+    }
     public TransportCapabilities GetCapabilities(string endpoint) { Endpoint(endpoint); return Capabilities; }
     public SendTracing? GetSendTracing(string destination) => Endpoint(destination);
 
