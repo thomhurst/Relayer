@@ -66,6 +66,8 @@ public sealed class MessageTypeGenerator : IIncrementalGenerator
 
     public void Initialize(IncrementalGeneratorInitializationContext context)
     {
+        // [Embedded] keeps the internal generated types out of friend assemblies (InternalsVisibleTo).
+        context.RegisterPostInitializationOutput(static output => output.AddEmbeddedAttributeDefinition());
         var refLikeMessages = context.SyntaxProvider.ForAttributeWithMetadataName(
                 MessageAttributeName,
                 predicate: static (_, _) => true,
@@ -210,6 +212,10 @@ public sealed class MessageTypeGenerator : IIncrementalGenerator
         builder.AppendLine("{");
         builder.AppendLine("    /// <summary>Message types declared with [Message] in this assembly.</summary>");
         builder.AppendLine("    [global::System.CodeDom.Compiler.GeneratedCode(\"Relayer.SourceGenerators\", \"1.0.0\")]");
+        if (exportedName is null)
+        {
+            builder.AppendLine("    [global::Microsoft.CodeAnalysis.EmbeddedAttribute]");
+        }
         builder.Append("    ").Append(exportedName is null ? "internal" : "public")
             .Append(" static class ").AppendLine(exportedName is null ? "RelayerGeneratedMessageTypes" : exportedName + "Extensions");
         builder.AppendLine("    {");
@@ -252,6 +258,7 @@ public sealed class MessageTypeGenerator : IIncrementalGenerator
                 .Append(model.FullyQualifiedName).Append("), TypeInfoPropertyName = \"RelayerMessage")
                 .Append(index++).AppendLine("\")]");
         }
+        source.AppendLine("    [global::Microsoft.CodeAnalysis.EmbeddedAttribute]");
         source.AppendLine("    internal sealed partial class RelayerGeneratedJsonContext : global::System.Text.Json.Serialization.JsonSerializerContext { }");
         source.AppendLine("}");
 

@@ -1,6 +1,7 @@
 using Relayer.Pipeline;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
+using Microsoft.CodeAnalysis.Diagnostics;
 using Relayer.SourceGenerators;
 
 namespace Relayer.SourceGenerators.Tests;
@@ -250,6 +251,42 @@ public class HandlerGeneratorTests
     }
 
     [Test]
+    public async Task Friend_assembly_registration_does_not_collide_with_the_referenced_assembly()
+    {
+        var library = CreateCompilation(Handlers).WithAssemblyName("Library").AddSyntaxTrees(CSharpSyntaxTree.ParseText("""
+            using Relayer;
+            [assembly: System.Runtime.CompilerServices.InternalsVisibleTo("GeneratorConsumer")]
+            public static class LibraryRegistration
+            {
+                public static void Add(IConsumerBuilder builder) => builder.Handler<Example.Handler>();
+            }
+            """));
+        Run(library, out var libraryOutput);
+        using var stream = new MemoryStream();
+        var emitted = libraryOutput.Emit(stream);
+        await Assert.That(emitted.Success).IsTrue();
+        var compilation = CreateCompilation("""
+            using Relayer;
+            using System.Threading;
+            using System.Threading.Tasks;
+            public sealed class Other : IHandler<long>
+            {
+                public ValueTask HandleAsync(long m, MessageContext c, CancellationToken ct) => default;
+            }
+            public static class Registration
+            {
+                // Separate statements: Roslyn 4.14's nullable walker crashes on the chained form here; the SDK compiler does not.
+                public static void Add(IConsumerBuilder builder) { builder.Handler<Other>(); builder.Handler<Example.Handler>(); }
+            }
+            """).AddReferences(MetadataReference.CreateFromImage(stream.ToArray()));
+        var driver = Run(compilation, out var output);
+        await Assert.That(Generated(driver)).Contains("TryAddScoped<global::Other>");
+        await Assert.That(Generated(driver)).Contains("TryAddScoped<global::Example.Handler>");
+        var diagnostics = await output.WithAnalyzers([new ConfigurationAnalyzer()]).GetAnalyzerDiagnosticsAsync();
+        await Assert.That(diagnostics.Where(static d => d.Id == "RLY003")).IsEmpty();
+    }
+
+    [Test]
     public async Task Tombstone_handler_uses_a_closed_native_dispatcher()
     {
         var driver = Run(CreateCompilation("""
@@ -289,5 +326,6 @@ public class HandlerGeneratorTests
     }
 
     private static string Generated(GeneratorDriver driver)
-        => string.Join("\n", driver.GetRunResult().Results.Single().GeneratedSources.Select(s => s.SourceText.ToString()));
+        => string.Join("\n", driver.GetRunResult().Results.Single().GeneratedSources
+            .Where(static s => s.HintName != "Microsoft.CodeAnalysis.EmbeddedAttribute.cs").Select(s => s.SourceText.ToString()));
 }

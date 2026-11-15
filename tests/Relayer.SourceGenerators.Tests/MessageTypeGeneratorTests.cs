@@ -38,7 +38,7 @@ public class MessageTypeGeneratorTests
             .IsEqualTo("https://relayer.tomlonghurst.dev/docs/reference/diagnostics#rlym005");
         await Assert.That(string.Join("\n", output.GetDiagnostics().Where(d => d.Severity == DiagnosticSeverity.Error)))
             .IsEqualTo("");
-        var generated = string.Join("\n", driver.GetRunResult().GeneratedTrees.Select(t => t.ToString()));
+        var generated = UserFacingSource(driver);
         await Assert.That(generated).DoesNotContain("InvalidOrder");
         if (includeValid)
         {
@@ -81,7 +81,7 @@ public class MessageTypeGeneratorTests
                 .IsEqualTo($"Relayer.Message({arguments})");
             await Assert.That(diagnostic.Descriptor.HelpLinkUri)
                 .IsEqualTo($"https://relayer.tomlonghurst.dev/docs/reference/diagnostics#{diagnosticId.ToLowerInvariant()}");
-            var generated = string.Join("\n", driver.GetRunResult().GeneratedTrees.Select(t => t.ToString()));
+            var generated = UserFacingSource(driver);
             await Assert.That(generated).DoesNotContain("global::Invalid");
             if (includeValid)
             {
@@ -89,7 +89,7 @@ public class MessageTypeGeneratorTests
                 await Assert.That(generated).Contains("typeof(global::Valid)");
             }
             else
-                await Assert.That(driver.GetRunResult().GeneratedTrees.Length).IsEqualTo(0);
+                await Assert.That(generated).IsEqualTo("");
             await Assert.That(string.Join("\n", output.GetDiagnostics().Where(d => d.Severity == DiagnosticSeverity.Error)))
                 .IsEqualTo("");
         }
@@ -520,6 +520,33 @@ public class MessageTypeGeneratorTests
         }
         finally { loader.Unload(); }
     }
+
+    [Test]
+    public async Task Friend_assembly_registration_does_not_collide_with_the_referenced_assembly()
+    {
+        var library = Generate(CreateCompilation("Library", """
+            [assembly: System.Runtime.CompilerServices.InternalsVisibleTo("Friend")]
+            [Relayer.Message("orders.placed")] public sealed record OrderPlaced(int Id);
+            public static class LibraryRegistration
+            {
+                public static void Add(Relayer.IRelayerBuilder builder) => Relayer.RelayerGeneratedMessageTypes.AddMessageTypesFromThisAssembly(builder);
+            }
+            """));
+        using var stream = new MemoryStream();
+        await Assert.That(library.Emit(stream).Success).IsTrue();
+        var friend = Generate(CreateCompilation("Friend", """
+            using Relayer;
+            [Message("orders.shipped")] public sealed record OrderShipped(int Id);
+            public static class Registration
+            {
+                public static void Add(IRelayerBuilder builder) => builder.AddMessageTypesFromThisAssembly();
+            }
+            """).AddReferences(MetadataReference.CreateFromImage(stream.ToArray())));
+        await Assert.That(string.Join("\n", friend.GetDiagnostics().Where(static d => d.Severity == DiagnosticSeverity.Error))).IsEqualTo("");
+    }
+
+    private static string UserFacingSource(GeneratorDriver driver) => string.Join("\n", driver.GetRunResult().GeneratedTrees
+        .Where(static t => !t.FilePath.EndsWith("Microsoft.CodeAnalysis.EmbeddedAttribute.cs", StringComparison.Ordinal)).Select(static t => t.ToString()));
 
     private static CSharpCompilation CreateCompilation(string name, string source)
     {

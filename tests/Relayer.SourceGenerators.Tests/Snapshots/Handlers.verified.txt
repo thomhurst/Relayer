@@ -3,6 +3,7 @@
 
 namespace Relayer;
 
+[global::Microsoft.CodeAnalysis.EmbeddedAttribute]
 internal static class RelayerGeneratedHandlers
 {
     public static global::Relayer.IConsumerBuilder Handler<THandler>(this global::Relayer.IConsumerBuilder builder)
