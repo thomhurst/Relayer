@@ -43,6 +43,13 @@ internal sealed partial class RabbitMqNativeTransport : ITransport
 
     public async Task StartAsync(CancellationToken cancellationToken)
     {
+        await ConnectAsync(cancellationToken).ConfigureAwait(false);
+        await StartConsumersAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    // Opens the connection and publisher channels so sending works before the consumers start.
+    internal async Task ConnectAsync(CancellationToken cancellationToken)
+    {
         await _lifecycle.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
@@ -58,22 +65,57 @@ internal sealed partial class RabbitMqNativeTransport : ITransport
                     publishers.Writer.TryWrite(new(await _connection.CreateChannelAsync(
                         _publisherChannelOptions, cancellationToken).ConfigureAwait(false)));
                 Volatile.Write(ref _publishers, publishers);
-                foreach (var consumer in Consumers)
-                {
-                    consumer.TrackHealth = HealthTracking;
-                    await consumer.StartAsync(_connection, cancellationToken).ConfigureAwait(false);
-                }
             }
             catch
             {
-                Volatile.Write(ref _publishers, null);
-                foreach (var consumer in Consumers) await consumer.StopAsync(cancellationToken).ConfigureAwait(false);
                 while (publishers.Reader.TryRead(out var publisher))
                     await publisher.Channel.DisposeAsync().ConfigureAwait(false);
                 throw;
             }
         }
         finally { _lifecycle.Release(); }
+    }
+
+    internal async Task StartConsumersAsync(CancellationToken cancellationToken)
+    {
+        await _lifecycle.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            var connection = _connection ?? throw new InvalidOperationException($"RabbitMQ transport '{Name}' is not connected.");
+            try
+            {
+                foreach (var consumer in Consumers)
+                {
+                    consumer.TrackHealth = HealthTracking;
+                    await consumer.StartAsync(connection, cancellationToken).ConfigureAwait(false);
+                }
+            }
+            catch
+            {
+                foreach (var consumer in Consumers) await consumer.StopAsync(cancellationToken).ConfigureAwait(false);
+                throw;
+            }
+        }
+        finally { _lifecycle.Release(); }
+    }
+
+    // Stops and drains the consumers but keeps publishing. An expired token still stops them: each consumer aborts
+    // in-flight work on it and cancels its native subscription.
+    internal async Task StopConsumersAsync(CancellationToken cancellationToken)
+    {
+        var entered = false;
+        try
+        {
+            try
+            {
+                await _lifecycle.WaitAsync(cancellationToken).ConfigureAwait(false);
+                entered = true;
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { }
+            foreach (var consumer in Consumers) await consumer.StopAsync(cancellationToken).ConfigureAwait(false);
+        }
+        finally { if (entered) _lifecycle.Release(); }
     }
 
     public async Task StopAsync(CancellationToken cancellationToken)

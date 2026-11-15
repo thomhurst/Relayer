@@ -550,7 +550,7 @@ public class RabbitMqReceiveTests
         await host.StopAsync(token);
     }
 
-    internal static IHost Host(ConnectionFactory factory, RabbitMqReceiveControl control, bool declareDeadLetter = true, RabbitMqClock? clock = null, int concurrency = 1) =>
+    internal static IHost Host(ConnectionFactory factory, RabbitMqReceiveControl control, bool declareDeadLetter = true, RabbitMqClock? clock = null, int concurrency = 1, bool autoStart = true) =>
         new HostBuilder().ConfigureServices(services =>
         {
             services.AddSingleton(control);
@@ -567,6 +567,7 @@ public class RabbitMqReceiveTests
                     rabbit.Options.Configure(options =>
                     {
                         options.ConnectionFactory = factory;
+                        options.AutoStartConsumers = autoStart;
                         options.Queues.Add(new("orders"));
                         if (declareDeadLetter) options.Queues.Add(new("orders.dead-letter"));
                     });

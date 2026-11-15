@@ -2002,6 +2002,7 @@ This resolves the release scope of D20, D45, D56, D60 and D66 without removals, 
 - The core `IConsumerControl`, resolved as a keyed service with the transport name, starts and stops a transport's consumers while the host runs. Service Bus implements it with the native `StartProcessingAsync` and `StopProcessingAsync`, through the same drain as host shutdown. Both calls are idempotent; start fails outside the host's lifetime.
 - The interface lives in the core so other transports can implement it without a second API; until they do, no keyed control is registered for them.
 - Kafka implements it with `KafkaTransportOptions.AutoStartConsumers` (#864). Each start runs a new native consumer from the transport's Dekaf builder, and each stop closes it after the drain. A stopped `RunPartitionedAsync` discards records it fetched but did not process, so running the same native consumer again would skip them; a new group member resumes at the committed offset, and closing at stop hands the partitions to other members.
+- Amazon SQS and RabbitMQ implement it through the same `AutoStartConsumers` option and a shared core hosted-service gate. RabbitMQ opens its connection and publisher channels with the host, so sending works while its consumers wait, and uses native `BasicConsumeAsync` and `BasicCancelAsync` for start and stop.
 
 **Consequences.** No per-message cost. A deferred processor reports unavailable consumer health until it starts, the same as a stopped one.
 

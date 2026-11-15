@@ -2,15 +2,51 @@ using Relayer.Pipeline;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using Relayer.Transports;
 
 namespace Relayer.RabbitMQ;
 
-internal sealed class RabbitMqHostedService(IServiceProvider provider, string name) : BackgroundService
+// Keeps the BackgroundService fault contract: a terminal consumer failure faults ExecuteTask, which stops the host.
+internal sealed class RabbitMqHostedService(RabbitMqConsumerControl consumers) : BackgroundService
 {
+    public override async Task StartAsync(CancellationToken cancellationToken)
+    {
+        await consumers.StartAsync(cancellationToken).ConfigureAwait(false);
+        await base.StartAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+    {
+        try { await consumers.Faulted.WaitAsync(stoppingToken).ConfigureAwait(false); }
+        catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { }
+    }
+
+    public override async Task StopAsync(CancellationToken cancellationToken)
+    {
+        try { await consumers.StopAsync(cancellationToken).ConfigureAwait(false); }
+        finally
+        {
+            try { await consumers.CloseAsync(cancellationToken).ConfigureAwait(false); }
+            finally { await base.StopAsync(cancellationToken).ConfigureAwait(false); }
+        }
+    }
+}
+
+// Owns the consumers' lifetime for the host and for the transport's keyed IConsumerControl.
+internal sealed class RabbitMqConsumerControl(IServiceProvider provider, string name) : ConsumerHostedService($"RabbitMQ transport '{name}'")
+{
+    private readonly TaskCompletionSource _faulted = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private RabbitMqNativeTransport? _transport;
     private bool _composed;
-    public override async Task StartAsync(CancellationToken cancellationToken)
+
+    /// <summary>Faults with the first terminal failure of a started consumer; never completes otherwise.</summary>
+    internal Task Faulted => _faulted.Task;
+
+    protected override bool AutoStartConsumers =>
+        provider.GetRequiredService<IOptionsMonitor<RabbitMqTransportOptions>>().Get(name).AutoStartConsumers;
+
+    protected override async Task ComposeAsync(CancellationToken cancellationToken)
     {
         _transport ??= (RabbitMqNativeTransport)provider.GetServices<ITransport>().Single(item => item.Name == name);
         if (!_composed)
@@ -25,19 +61,26 @@ internal sealed class RabbitMqHostedService(IServiceProvider provider, string na
             }
             _composed = true;
         }
-        await _transport.StartAsync(cancellationToken).ConfigureAwait(false);
-        await base.StartAsync(cancellationToken).ConfigureAwait(false);
+        await _transport.ConnectAsync(cancellationToken).ConfigureAwait(false);
     }
-    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+
+    protected override async Task StartConsumersAsync(CancellationToken cancellationToken)
     {
-        await foreach (var completion in Task.WhenEach(_transport!.Consumers.Select(consumer => consumer.Completion)).ConfigureAwait(false))
-            await completion.ConfigureAwait(false);
+        await _transport!.StartConsumersAsync(cancellationToken).ConfigureAwait(false);
+        // Each start replaces the consumers' completions; a stop completes them successfully.
+        foreach (var consumer in _transport.Consumers)
+            _ = consumer.Completion.ContinueWith(static (completion, state) =>
+            {
+                if (completion.Exception is { } error) ((TaskCompletionSource)state!).TrySetException(error.InnerExceptions);
+            }, _faulted, CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
     }
-    public override async Task StopAsync(CancellationToken cancellationToken)
-    {
-        try { if (_transport is not null) await _transport.StopAsync(cancellationToken).ConfigureAwait(false); }
-        finally { await base.StopAsync(cancellationToken).ConfigureAwait(false); }
-    }
+
+    protected override Task StopConsumersAsync(CancellationToken cancellationToken) =>
+        _transport?.StopConsumersAsync(cancellationToken) ?? Task.CompletedTask;
+
+    /// <summary>Closes the publishers and the connection on host shutdown.</summary>
+    internal Task CloseAsync(CancellationToken cancellationToken) =>
+        _transport?.StopAsync(cancellationToken) ?? Task.CompletedTask;
 }
 
 // Compose the handler and failure pipeline once at startup. Native deliveries supply cached tracing
