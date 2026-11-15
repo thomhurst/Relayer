@@ -171,7 +171,21 @@ await sender.SendAsync(order, options => options.ServiceBus(message =>
 }));
 ```
 
-Callbacks receive the SDK's own `ServiceBusMessage` and may set session IDs, partition keys and other native properties. Do not retain the borrowed native message. Original CloudEvents and creation-context application properties take precedence over callback changes; a callback's `Subject` takes precedence over the message type. Native callbacks cannot be persisted in the outbox.
+Callbacks receive the SDK's own `ServiceBusMessage` and may set session IDs, partition keys and other native properties. Do not retain the borrowed native message. Original CloudEvents and creation-context application properties take precedence over callback changes; a callback's `Subject` takes precedence over the message type.
+
+Per-send callbacks cannot be persisted in the outbox. To set native properties on outbox sends too, declare a callback on the route. It is code on the route, not data on the row, so outbox dispatch applies it to stored rows as well as to direct sends and batches:
+
+```csharp
+bus.Send<OrderPlaced>("orders", route => route.ServiceBus(static (outgoing, message) =>
+{
+    message.TimeToLive = TimeSpan.FromHours(1);
+    message.ReplyTo = "order-replies";
+}));
+```
+
+The route callback receives the serialized send (`Destination`, `Body`, `Headers`, `OrderingKey`) and the native `ServiceBusMessage`, not the message object, so dispatch never deserializes a stored row. To derive a native property from message content, carry the value in a header. The callback runs before a per-send callback, which can override it, and before the CloudEvents application properties and `ContentType` are written, which take precedence. Use a static lambda, do not retain either argument, and declare one callback per route.
+
+Dispatch identifies the route by its CloudEvents type header, so the route must use the CloudEvents envelope; a route callback on a Raw-envelope route fails at startup, as does one declared on a route of another transport.
 
 The CloudEvents id (`cloudEvents:id`, or the id header of a route's custom `HeaderNames`) also becomes native `MessageId` on every send, including outbox redispatch, scheduled copies and dead-letter copies. On a queue or topic with `RequiresDuplicateDetection = true`, the broker drops a resend of the same message within its duplicate-detection window, such as an outbox row dispatched again after a crash before it was marked sent. A native callback that sets `MessageId` keeps its value.
 

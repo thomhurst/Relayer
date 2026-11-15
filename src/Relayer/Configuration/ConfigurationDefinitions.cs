@@ -80,6 +80,11 @@ public sealed class RouteDefinition<TMessage> : IRouteDefinition, ISendRouteDefi
     /// <summary>Portable send settings captured during registration.</summary>
     public SendRouteOptions SendOptions { get; }
 
+    internal Delegate? NativeConfigurator { get; init; }
+    internal Type? NativeTransportOptionsType { get; init; }
+    Delegate? ISendRouteDefinition.NativeConfigurator => NativeConfigurator;
+    Type? ISendRouteDefinition.NativeTransportOptionsType => NativeTransportOptionsType;
+
     SendRouteRegistration ISendRouteDefinition.CreateSendRegistration(string transportName) =>
         new SendRouteRegistration<TMessage>(transportName, Destination, SendOptions, _sendOrderingKey);
     /// <summary>Whether a native ordering key selector was declared.</summary>

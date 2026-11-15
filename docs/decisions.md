@@ -1968,3 +1968,11 @@ This resolves the release scope of D20, D45, D56, D60 and D66 without removals, 
 - Best-effort direct fan-out: a partial failure leaves some destinations sent and others not, with no durable record of which.
 - Several handlers per PostgreSQL local consumer: covers only local handlers, not broker destinations.
 
+## D83. Route-level native callbacks apply on outbox dispatch
+
+**Context.** Per-send native callbacks cannot be persisted, so outbox sends could not set native properties other than the default Service Bus `Subject` (#808). Stored rows carry the destination, body and headers, and every dispatch path ends in the transport's send.
+
+**Decision.** A transport may offer a typed route extension, starting with `route.ServiceBus(static (outgoing, message) => ...)`, that stores one native callback on the route definition. The transport keeps the callbacks per destination and matches each send to its route by the route's CloudEvents type header, so direct sends, batches and outbox dispatch from every store apply it the same way. The callback receives the serialized `OutgoingMessage`, not the message object, which keeps dispatch serializer-free. It runs before a per-send callback and before envelope properties are written. A route callback needs the CloudEvents envelope; startup rejects it on a Raw route or on a route of another transport.
+
+**Consequences.** Sends to a destination without route callbacks pay one array-length check. Matching scans the headers once and compares the type value without allocating. Messages forwarded to a destination with the same type, such as dead-letter copies, also get that route's callback.
+

@@ -1,5 +1,6 @@
 using Relayer.Transports;
 using System.Diagnostics.Metrics;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
 using Azure.Messaging.ServiceBus;
 using Azure.Messaging.ServiceBus.Administration;
@@ -44,6 +45,51 @@ public class ServiceBusSendEmulatorTests
             var delivered = await receiver.ReceiveMessageAsync(TimeSpan.FromSeconds(30), token);
             await Assert.That(delivered).IsNotNull();
             await Assert.That(delivered!.Body.ToArray()).IsEquivalentTo(new byte[] { 42 });
+            await receiver.CompleteMessageAsync(delivered, token);
+        }
+        finally { await admin.DeleteQueueAsync(queue, token); }
+    }
+
+    [Test]
+    public async Task Route_callback_sets_native_properties_on_dispatched_rows()
+    {
+        var stack = await SharedBrokers.ServiceBus.Value;
+        using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(2));
+        var token = timeout.Token;
+        await using var client = new ServiceBusClient(stack.Emulator.GetConnectionString());
+        var admin = new ServiceBusAdministrationClient(stack.Emulator.GetHttpConnectionString());
+        var queue = TestContext.Current!.Isolation.GetIsolatedName("route-native");
+        var services = new ServiceCollection();
+        services.AddRelayer(builder => builder.AddMessageTypesFromThisAssembly().ServiceBus("routed", bus =>
+        {
+            bus.Options.Configure(options =>
+            {
+                options.Client = client;
+                options.Queues.Add(new(queue) { DefaultMessageTimeToLive = TimeSpan.FromHours(1), MaxSizeInMegabytes = 100,
+                    DuplicateDetectionHistoryTimeWindow = TimeSpan.FromMinutes(10) });
+            });
+            bus.Send<ServiceBusSendTests.First>(queue, route => route.ServiceBus(static (_, native) =>
+            {
+                native.TimeToLive = TimeSpan.FromMinutes(5);
+                native.ReplyTo = "replies";
+                native.To = "billing";
+            }));
+        }));
+        await using var provider = services.BuildServiceProvider();
+        var transport = provider.GetServices<ITransport>().Single();
+        await admin.CreateQueueAsync(new CreateQueueOptions(queue) { DefaultMessageTimeToLive = TimeSpan.FromHours(1), MaxSizeInMegabytes = 100 }, token);
+        try
+        {
+            // The headers-only shape that outbox dispatch sends for a stored row.
+            await transport.SendAsync(new(queue, new byte[] { 7 },
+                new KeyValuePair<string, WireString>[] { new("cloudEvents:type", new("servicebus.first;v=1")) }), token);
+            await using var receiver = client.CreateReceiver(queue);
+            var delivered = await receiver.ReceiveMessageAsync(TimeSpan.FromSeconds(30), token)
+                ?? throw new InvalidOperationException("Routed send was not delivered.");
+            await Assert.That(delivered.TimeToLive).IsEqualTo(TimeSpan.FromMinutes(5));
+            await Assert.That(delivered.ReplyTo).IsEqualTo("replies");
+            await Assert.That(delivered.To).IsEqualTo("billing");
+            await Assert.That(delivered.Subject).IsEqualTo("servicebus.first;v=1");
             await receiver.CompleteMessageAsync(delivered, token);
         }
         finally { await admin.DeleteQueueAsync(queue, token); }

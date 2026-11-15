@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Text;
 using Azure;
 using Azure.Core.Amqp;
 using Azure.Messaging.ServiceBus;
@@ -6,6 +7,7 @@ using Azure.Messaging.ServiceBus.Administration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
 using Relayer.AzureServiceBus;
+using Relayer.InMemory;
 using Relayer.Transports;
 
 namespace Relayer.Tests;
@@ -210,6 +212,84 @@ public class ServiceBusSendTests
 
         await Assert.That((await SendAsync(enabled: true)).SequenceEqual(new string?[] { "orders.placed;v=1", null, null })).IsTrue();
         await Assert.That((await SendAsync(enabled: false)).All(subject => subject is null)).IsTrue();
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Route_callback_applies_to_its_route_type_before_per_send_callbacks_and_headers(bool batch)
+    {
+        var client = new NativeClient { BatchCapacity = 8 };
+        var services = new ServiceCollection();
+        services.AddRelayer(builder => builder.AddMessageTypesFromThisAssembly().ServiceBus("bus", bus =>
+        {
+            bus.Options.Configure(options => { options.Client = client; options.Topics.Add(new("events")); });
+            bus.Send<First>("events", route => route.ServiceBus(static (outgoing, native) =>
+            {
+                native.TimeToLive = TimeSpan.FromMinutes(5);
+                native.ReplyTo = "replies";
+                native.Subject = "route";
+                native.ApplicationProperties["x-type"] = "overwritten";
+                native.ApplicationProperties["body-length"] = outgoing.Body.Length;
+            }));
+            bus.Send<Second>("events");
+        }));
+        await using var provider = services.BuildServiceProvider();
+        var transport = provider.GetServices<ITransport>().Single();
+        // Outbox dispatch sends stored rows with headers only and no per-send callbacks, like these.
+        OutgoingMessage Row(string type, ReadOnlyMemory<byte> body, SendOptions? options = null) =>
+            new("events", body, new KeyValuePair<string, WireString>[] { new("cloudEvents:type", new WireString(Encoding.UTF8.GetBytes(type))) }, options: options);
+        OutgoingMessage[] messages = [
+            Row("servicebus.first;v=1", new byte[] { 1, 2 }),
+            Row("servicebus.second;v=1", new byte[] { 3 }),
+            Row("servicebus.first;v=1", new byte[] { 4 }, new SendOptions().ServiceBus(native => native.ReplyTo = "per-send")),
+            new("events", new byte[] { 5 }, new KeyValuePair<string, WireString>[] { new("cloudEvents:type", new WireString("servicebus.first;v=1")) })];
+        if (batch) await transport.SendBatchAsync(messages, default);
+        else foreach (var message in messages) await transport.SendAsync(message, default);
+
+        var sent = client.Senders.Single(sender => sender.Entity == "events").Sent;
+        await Assert.That(sent[0].TimeToLive).IsEqualTo(TimeSpan.FromMinutes(5));
+        await Assert.That(sent[0].ReplyTo).IsEqualTo("replies");
+        await Assert.That(sent[0].Subject).IsEqualTo("route");
+        await Assert.That(sent[0].ApplicationProperties["body-length"]).IsEqualTo(2);
+        await Assert.That(sent[1].ReplyTo).IsNull();
+        await Assert.That(sent[1].Subject).IsEqualTo("servicebus.second;v=1");
+        await Assert.That(sent[2].ReplyTo).IsEqualTo("per-send");
+        await Assert.That(sent[2].TimeToLive).IsEqualTo(TimeSpan.FromMinutes(5));
+        await Assert.That(sent[3].ReplyTo).IsEqualTo("replies");
+        await Assert.That(sent[3].ApplicationProperties["cloudEvents:type"]).IsEqualTo("servicebus.first;v=1");
+    }
+
+    [Test]
+    public async Task Route_callback_on_a_raw_envelope_route_fails_at_construction()
+    {
+        var client = new NativeClient();
+        var services = new ServiceCollection();
+        services.AddRelayer(builder => builder.ServiceBus("bus", bus =>
+        {
+            bus.Options.Configure(options => { options.Client = client; options.Queues.Add(new("orders")); });
+            bus.Send<First>("orders", route =>
+            {
+                route.SendOptions = new() { EnvelopeMode = MessageEnvelopeMode.Raw };
+                route.ServiceBus(static (_, native) => native.TimeToLive = TimeSpan.FromMinutes(1));
+            });
+        }));
+        await using var provider = services.BuildServiceProvider();
+
+        await Assert.That(() => provider.GetServices<ITransport>().ToList())
+            .Throws<InvalidOperationException>().WithMessageContaining("needs the CloudEvents envelope");
+    }
+
+    [Test]
+    public async Task Route_callback_on_another_transport_fails_validation()
+    {
+        var services = new ServiceCollection();
+        services.AddRelayer(builder => builder.InMemory("memory", memory =>
+            memory.Send<First>("orders", route => route.ServiceBus(static (_, native) => native.TimeToLive = TimeSpan.FromMinutes(1)))));
+        await using var provider = services.BuildServiceProvider();
+
+        await Assert.That(() => provider.GetRequiredService<RelayerConfigurationValidator>().Validate())
+            .Throws<OptionsValidationException>().WithMessageContaining("native callback is for a different transport (ServiceBusTransportOptions)");
     }
 
     [Test]
