@@ -69,19 +69,30 @@ public class DestinationSelectorTests
         await Assert.That(failure).IsNotNull();
         await Assert.That(failure!.Message).Contains("'regional-eu'");
         await Assert.That(failure.Message).Contains("'regional-us'");
-        await Assert.That(failure.Message).DoesNotContain("only one route");
+        await Assert.That(failure.Message).DoesNotContain("declared more than once");
     }
 
     [Test]
-    public async Task A_second_route_for_the_same_message_is_still_rejected()
+    public async Task A_destination_repeated_by_another_route_is_rejected()
     {
         using var host = Host(t =>
         {
             t.Send<RegionalOrder>(["regional-eu", "regional-us"], static order => order.Topic);
-            t.Send<RegionalOrder>("regional-apac");
+            t.Send<RegionalOrder>("regional-us");
         });
         await Assert.That(async () => await host.StartAsync()).Throws<OptionsValidationException>()
-            .WithMessageContaining("only one route");
+            .WithMessageContaining("'regional-us' is declared more than once");
+    }
+
+    [Test]
+    public async Task A_selector_route_fans_out_with_another_route_through_the_outbox()
+    {
+        var outbox = new RecordingOutbox();
+        await using var provider = SinkProvider(services => services.AddSingleton<IOutboxEnlistment>(outbox),
+            t => t.Send<RegionalOrder>("regional-audit"));
+        using var scope = provider.CreateScope();
+        await scope.ServiceProvider.GetRequiredService<ISender>().SendAsync(new RegionalOrder("regional-us", 1));
+        await Assert.That(outbox.Destinations).IsEquivalentTo(new[] { "regional-us", "regional-audit" });
     }
 
     [Test]
@@ -120,7 +131,8 @@ public class DestinationSelectorTests
             .Throws<InvalidOperationException>().WithMessageContaining("No send route");
     }
 
-    private static ServiceProvider SinkProvider(Action<IServiceCollection>? configure = null)
+    private static ServiceProvider SinkProvider(Action<IServiceCollection>? configure = null,
+        Action<TransportBuilder<SinkOptions, SinkOptions>>? routes = null)
     {
         var services = new ServiceCollection();
         services.AddSingleton<ITransport>(new Sink());
@@ -129,7 +141,11 @@ public class DestinationSelectorTests
         {
             r.AddMessageTypesFromThisAssembly();
             r.AddTransport<SinkOptions, SinkOptions>("sink",
-                t => t.Send<RegionalOrder>(["regional-eu", "regional-us"], static order => order.Topic));
+                t =>
+                {
+                    t.Send<RegionalOrder>(["regional-eu", "regional-us"], static order => order.Topic);
+                    routes?.Invoke(t);
+                });
         });
         return services.BuildServiceProvider();
     }
