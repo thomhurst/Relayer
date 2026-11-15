@@ -188,13 +188,21 @@ public sealed class ConfigurationAnalyzer : DiagnosticAnalyzer
         return messages;
     }
 
-    // Replaces the method's type parameters in a constraint type, including inside constructed
-    // and array types (IHandler<Envelope<TMessage>> called with TMessage = Order checks
-    // Envelope<Order>, and IHandler<TMessage[]> checks Order[]).
+    // Replaces the method's and its containing types' type parameters in a constraint type,
+    // including inside constructed and array types (IHandler<Envelope<TMessage>> called with
+    // TMessage = Order checks Envelope<Order>, IHandler<TMessage[]> checks Order[], and
+    // Registrar<Order>.Register<H>() with IHandler<TMessage> on the class checks Order).
     private static ITypeSymbol Substitute(ITypeSymbol type, IMethodSymbol method, Compilation compilation)
     {
         if (type is ITypeParameterSymbol { TypeParameterKind: TypeParameterKind.Method } parameter)
             return method.TypeArguments[parameter.Ordinal];
+        if (type is ITypeParameterSymbol { TypeParameterKind: TypeParameterKind.Type } typeParameter)
+        {
+            for (var containing = method.ContainingType; containing is not null; containing = containing.ContainingType)
+                if (SymbolEqualityComparer.Default.Equals(containing.OriginalDefinition, typeParameter.ContainingSymbol))
+                    return containing.TypeArguments[typeParameter.Ordinal];
+            return type;
+        }
         if (type is IArrayTypeSymbol array)
         {
             var element = Substitute(array.ElementType, method, compilation);

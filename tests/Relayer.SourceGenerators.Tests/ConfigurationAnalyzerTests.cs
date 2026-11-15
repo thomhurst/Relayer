@@ -397,6 +397,41 @@ public class ConfigurationAnalyzerTests
     }
 
     [Test]
+    [Arguments(true)]
+    [Arguments(false)]
+    public async Task Referenced_generic_class_helper_checks_the_containing_type_argument(bool registered)
+    {
+        // Registrar<Order>.Register<H>() closes the class's TMessage; the message and handler are
+        // referenced, so only the call site can report the missing identity.
+        var external = Compile(Imports + """
+            public record Order;
+            public class H : IHandler<Order>
+            {
+                public ValueTask HandleAsync(Order message, MessageContext context, CancellationToken ct) => default;
+            }
+            public static class Registrar<TMessage>
+            {
+                public static void Register<THandler>(IConsumerBuilder consumer)
+                    where THandler : class, IHandler<TMessage> => consumer.Handler<THandler, TMessage>();
+            }
+            """).WithAssemblyName("External");
+        using var stream = new MemoryStream();
+        await Assert.That(external.Emit(stream).Success).IsTrue();
+        var compilation = Compile(Imports + $$"""
+            static class Setup
+            {
+                public static void Add(IRelayerBuilder builder, IConsumerBuilder consumer)
+                {
+                    {{(registered ? "builder.Infrastructure().MessageTypes.Add<Order>(\"orders\");" : "")}}
+                    Registrar<Order>.Register<H>(consumer);
+                }
+            }
+            """).AddReferences(MetadataReference.CreateFromImage(stream.ToArray()));
+        var diagnostics = await compilation.WithAnalyzers([new ConfigurationAnalyzer()]).GetAnalyzerDiagnosticsAsync();
+        await Assert.That(Ids(diagnostics)).IsEqualTo(registered ? "" : "RLY001");
+    }
+
+    [Test]
     public async Task Unrelated_registration_names_do_not_register_handlers()
     {
         await Verify(Imports + InternalHandler + """
