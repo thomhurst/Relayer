@@ -550,7 +550,7 @@ public class RabbitMqReceiveTests
         await host.StopAsync(token);
     }
 
-    internal static IHost Host(ConnectionFactory factory, RabbitMqReceiveControl control, bool declareDeadLetter = true, RabbitMqClock? clock = null, int concurrency = 1) =>
+    internal static IHost Host(ConnectionFactory factory, RabbitMqReceiveControl control, bool declareDeadLetter = true, RabbitMqClock? clock = null, int concurrency = 1, bool autoStart = true, bool secondConsumer = false, bool thirdConsumer = false) =>
         new HostBuilder().ConfigureServices(services =>
         {
             services.AddSingleton(control);
@@ -567,9 +567,13 @@ public class RabbitMqReceiveTests
                     rabbit.Options.Configure(options =>
                     {
                         options.ConnectionFactory = factory;
+                        options.AutoStartConsumers = autoStart;
                         options.Queues.Add(new("orders"));
                         if (declareDeadLetter) options.Queues.Add(new("orders.dead-letter"));
+                        if (secondConsumer) { options.Queues.Add(new("audit")); options.Queues.Add(new("audit.dead-letter")); }
+                        if (thirdConsumer) { options.Queues.Add(new("billing")); options.Queues.Add(new("billing.dead-letter")); }
                     });
+                    if (secondConsumer) rabbit.Consume("audit", consumer => consumer.Handler<RabbitMqReceiveHandler>());
                     rabbit.Consume("orders", consumer =>
                     {
                         consumer.Concurrency(concurrency);
@@ -577,6 +581,7 @@ public class RabbitMqReceiveTests
                         consumer.Options.PrefetchCount = (ushort)concurrency;
                         consumer.Handler<RabbitMqReceiveHandler>();
                     });
+                    if (thirdConsumer) rabbit.Consume("billing", consumer => consumer.Handler<RabbitMqReceiveHandler>());
                 });
             });
         }).Build();

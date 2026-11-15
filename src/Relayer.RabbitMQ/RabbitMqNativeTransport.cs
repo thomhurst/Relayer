@@ -43,6 +43,13 @@ internal sealed partial class RabbitMqNativeTransport : ITransport
 
     public async Task StartAsync(CancellationToken cancellationToken)
     {
+        await ConnectAsync(cancellationToken).ConfigureAwait(false);
+        await StartConsumersAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    // Opens the connection and publisher channels so sending works before the consumers start.
+    internal async Task ConnectAsync(CancellationToken cancellationToken)
+    {
         await _lifecycle.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
@@ -58,16 +65,9 @@ internal sealed partial class RabbitMqNativeTransport : ITransport
                     publishers.Writer.TryWrite(new(await _connection.CreateChannelAsync(
                         _publisherChannelOptions, cancellationToken).ConfigureAwait(false)));
                 Volatile.Write(ref _publishers, publishers);
-                foreach (var consumer in Consumers)
-                {
-                    consumer.TrackHealth = HealthTracking;
-                    await consumer.StartAsync(_connection, cancellationToken).ConfigureAwait(false);
-                }
             }
             catch
             {
-                Volatile.Write(ref _publishers, null);
-                foreach (var consumer in Consumers) await consumer.StopAsync(cancellationToken).ConfigureAwait(false);
                 while (publishers.Reader.TryRead(out var publisher))
                     await publisher.Channel.DisposeAsync().ConfigureAwait(false);
                 throw;
@@ -76,11 +76,69 @@ internal sealed partial class RabbitMqNativeTransport : ITransport
         finally { _lifecycle.Release(); }
     }
 
-    public async Task StopAsync(CancellationToken cancellationToken)
+    internal async Task StartConsumersAsync(CancellationToken cancellationToken)
     {
         await _lifecycle.WaitAsync(cancellationToken).ConfigureAwait(false);
-        try { await CloseAsync(cancellationToken).ConfigureAwait(false); }
+        try
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            var connection = _connection ?? throw new InvalidOperationException($"RabbitMQ transport '{Name}' is not connected.");
+            try
+            {
+                foreach (var consumer in Consumers)
+                {
+                    consumer.TrackHealth = HealthTracking;
+                    await consumer.StartAsync(connection, cancellationToken).ConfigureAwait(false);
+                }
+            }
+            catch
+            {
+                // Roll back every consumer even when the token has expired; report the start failure.
+                try { await StopEachConsumerAsync(cancellationToken).ConfigureAwait(false); }
+                catch { }
+                throw;
+            }
+        }
         finally { _lifecycle.Release(); }
+    }
+
+    // Stops and drains the consumers but keeps publishing. An expired token still stops them: each consumer aborts
+    // in-flight work on it and cancels its native subscription.
+    internal async Task StopConsumersAsync(CancellationToken cancellationToken)
+    {
+        var entered = await EnterStopAsync(cancellationToken).ConfigureAwait(false);
+        try { await StopEachConsumerAsync(cancellationToken).ConfigureAwait(false); }
+        finally { if (entered) _lifecycle.Release(); }
+    }
+
+    // An expired token still closes the consumers, the publishers and the connection.
+    public async Task StopAsync(CancellationToken cancellationToken)
+    {
+        var entered = await EnterStopAsync(cancellationToken).ConfigureAwait(false);
+        try { await CloseAsync(cancellationToken).ConfigureAwait(false); }
+        finally { if (entered) _lifecycle.Release(); }
+    }
+
+    private async ValueTask<bool> EnterStopAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            await _lifecycle.WaitAsync(cancellationToken).ConfigureAwait(false);
+            return true;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { return false; }
+    }
+
+    // A consumer whose drain is cancelled still disposes its channel; keep stopping the others, then rethrow.
+    private async Task StopEachConsumerAsync(CancellationToken cancellationToken)
+    {
+        Exception? error = null;
+        foreach (var consumer in Consumers)
+        {
+            try { await consumer.StopAsync(cancellationToken).ConfigureAwait(false); }
+            catch (Exception exception) { error ??= exception; }
+        }
+        if (error is not null) System.Runtime.ExceptionServices.ExceptionDispatchInfo.Throw(error);
     }
 
     public async ValueTask DisposeAsync()
@@ -102,7 +160,7 @@ internal sealed partial class RabbitMqNativeTransport : ITransport
         var connection = _connection;
         try
         {
-            foreach (var consumer in Consumers) await consumer.StopAsync(cancellationToken).ConfigureAwait(false);
+            await StopEachConsumerAsync(cancellationToken).ConfigureAwait(false);
             publishers = Interlocked.Exchange(ref _publishers, null);
             if (publishers is not null)
             {

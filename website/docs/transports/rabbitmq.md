@@ -216,6 +216,22 @@ against the equivalent raw callback. The upstream [8.0 consumer API proposal](ht
 registered pipeline using `MemoryDiagnoser`. Both fixed and high-cardinality routing keys use equivalent native JSON/ack work. Warm pipeline, body binding and optional health
 tracking add no per-message objects of their own.
 
+### Start consumers later
+
+Consumers subscribe with the host by default. Set `AutoStartConsumers = false` to bring the host up first and start them yourself through the transport's keyed `IConsumerControl`:
+
+```csharp
+using Relayer.Transports;
+
+rabbit.Options.Configure(options => options.AutoStartConsumers = false);
+
+// Later, when the application is ready to receive:
+var consumers = app.Services.GetRequiredKeyedService<IConsumerControl>("orders");
+await consumers.StartAsync(cancellationToken);
+```
+
+The host still applies topology, validates and composes every consumer, and opens the connection and publisher channels at startup, so sending works while the consumers are stopped and messages wait on their queues. `StartAsync` issues the native `basic.consume` and fails before the host has started or after it stops. `StopAsync` sends `basic.cancel` and drains in-flight callbacks like host shutdown, so the same control pauses and resumes consumption; both calls do nothing when the consumers are already in that state. Host shutdown stops consumers that the control started, even when its token has expired. While stopped, consumer [health](#health) reports them as unavailable.
+
 ## Health
 
 Reference `Relayer.RabbitMQ.HealthChecks` alongside `Relayer.HealthChecks` and register before host startup:

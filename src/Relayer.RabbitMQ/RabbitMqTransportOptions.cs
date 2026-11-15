@@ -26,6 +26,13 @@ public sealed class RabbitMqTransportOptions
 
     /// <summary>Native queue-to-exchange bindings. AMQP cannot inspect bindings in Validate mode.</summary>
     public IList<RabbitMqBinding> Bindings { get; } = [];
+
+    /// <summary>
+    /// Starts the consumers with the host. Defaults to true. When false, the host composes and validates the consumers
+    /// and opens the publisher channels, but issues no <c>basic.consume</c> until the keyed
+    /// <see cref="Relayer.Transports.IConsumerControl"/> for this transport starts them. Sending works meanwhile.
+    /// </summary>
+    public bool AutoStartConsumers { get; set; } = true;
 }
 
 /// <summary>An AMQP exchange declaration. Provision defaults to a durable, non-auto-delete direct exchange.</summary>

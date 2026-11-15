@@ -34,7 +34,9 @@ public static class RabbitMqBuilderExtensions
                 definition.Routes.Select(route => route.Destination).Concat(definition.Consumers.SelectMany(declaration =>
                     new[] { declaration.Source, declaration.Failure.DeadLetterEndpoint ?? ":" + declaration.Source + ".dead-letter" })), provider.GetRequiredService<MessageTracing>(), provider.GetRequiredService<RelayerInstrumentation>());
         });
-        builder.Services.AddSingleton<IHostedService>(provider => new RabbitMqHostedService(provider, name));
+        builder.Services.AddKeyedSingleton<RabbitMqConsumerControl>(name, (provider, _) => new RabbitMqConsumerControl(provider, name));
+        builder.Services.AddKeyedSingleton<IConsumerControl>(name, (provider, key) => provider.GetRequiredKeyedService<RabbitMqConsumerControl>(key));
+        builder.Services.AddSingleton<IHostedService>(provider => new RabbitMqHostedService(provider.GetRequiredKeyedService<RabbitMqConsumerControl>(name)));
         return builder;
     }
 }
