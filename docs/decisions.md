@@ -596,7 +596,8 @@ A confirmed native automatic savepoint rollback during that context's SaveChange
 that boundary, including sends buffered before SaveChanges began, and permits the explicit unit to
 continue. Other participating contexts retain their own buffers. Successful native savepoint release
 drops the active checkpoint; failed/canceled-save callbacks preserve recovery only after confirmed
-rollback. Relayer does not issue savepoint SQL or emulate database recovery. Manual savepoint rollback,
+rollback, or after native automatic savepoint creation fails, since EF creates it before any save command
+(#826). Relayer does not issue savepoint SQL or emulate database recovery. Manual savepoint rollback,
 failed saves without confirmed recovery (including AutoSavepointsEnabled=false), and failed commits
 invalidate commit until the whole transaction ends. Callers retry complete units with either a fresh context
 or the same context after full rollback (or server abort), disposal of the EF transaction wrapper and any

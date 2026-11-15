@@ -202,12 +202,14 @@ internal sealed class OutboxContext(DbContext context, OutboxConfiguration confi
     internal int SelectionDepth { get; set; }
     private int _savedCount;
     internal bool Saving { get; private set; }
+    internal bool CreatingSavepoint { get; set; }
     internal bool SavepointCreated { get; set; }
     internal bool SaveRecovered { get; private set; }
 
     internal void BeginSave()
     {
         Saving = true;
+        CreatingSavepoint = false;
         SavepointCreated = false;
         SaveRecovered = false;
     }
@@ -216,13 +218,19 @@ internal sealed class OutboxContext(DbContext context, OutboxConfiguration confi
     {
         _savedCount = Count;
         Saving = false;
+        CreatingSavepoint = false;
         SavepointCreated = false;
         SaveRecovered = false;
     }
 
-    internal bool RollbackSave()
+    internal bool RollbackSave() => SavepointCreated && Recover();
+
+    // A failed automatic savepoint creation precedes every save command, so the database is unchanged by this save.
+    internal bool SavepointFailed() => CreatingSavepoint && !SavepointCreated && Recover();
+
+    private bool Recover()
     {
-        if (!Saving || !SavepointCreated || Failed) return false;
+        if (!Saving || Failed) return false;
         // Sends made before SavingChanges belong to this save too. The last successful
         // save, rather than native savepoint creation, establishes the buffer boundary.
         for (var i = _savedCount; i < Count; i++) Rows[i].Clear();
@@ -235,6 +243,7 @@ internal sealed class OutboxContext(DbContext context, OutboxConfiguration confi
     {
         var recovered = Saving && SaveRecovered && !Failed;
         Saving = false;
+        CreatingSavepoint = false;
         SavepointCreated = false;
         SaveRecovered = false;
         return recovered;
@@ -294,6 +303,7 @@ internal sealed class OutboxContext(DbContext context, OutboxConfiguration confi
         Count = 0;
         _savedCount = 0;
         Saving = false;
+        CreatingSavepoint = false;
         SavepointCreated = false;
         SaveRecovered = false;
         Transaction = null;
