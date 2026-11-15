@@ -370,6 +370,9 @@ public class ConfigurationAnalyzerTests
                     where THandler : class, IHandler<{{string.Format(contract, "TMessage")}}> => consumer.Handler<THandler, {{string.Format(contract, "TMessage")}}>();
             }
             """).WithAssemblyName("External");
+        // The helper's open contract is checked at the call site that closes it.
+        var helperDiagnostics = await external.WithAnalyzers([new ConfigurationAnalyzer()]).GetAnalyzerDiagnosticsAsync();
+        await Assert.That(Ids(helperDiagnostics)).IsEqualTo("");
         using var stream = new MemoryStream();
         await Assert.That(external.Emit(stream).Success).IsTrue();
         var message = string.Format(contract, "Order");

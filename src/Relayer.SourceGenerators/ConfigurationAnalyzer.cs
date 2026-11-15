@@ -61,7 +61,8 @@ public sealed class ConfigurationAnalyzer : DiagnosticAnalyzer
 
             void CheckMessage(ITypeSymbol message, Location use)
             {
-                if (message.TypeKind is TypeKind.TypeParameter or TypeKind.Error) return;
+                // An open contract (T, Envelope<T>, T[]) is checked where it is closed.
+                if (message.TypeKind is TypeKind.Error || ContainsTypeParameter(message)) return;
                 if (message is INamedTypeSymbol wrapper && SymbolEqualityComparer.Default.Equals(wrapper.OriginalDefinition, tombstone))
                     message = wrapper.TypeArguments[0];
                 if (registeredAtStartup.Contains(message)
@@ -219,6 +220,14 @@ public sealed class ConfigurationAnalyzer : DiagnosticAnalyzer
             if (argument.Key == "Version" && argument.Value.Value is int value) version = value;
         return (name, version);
     }
+
+    private static bool ContainsTypeParameter(ITypeSymbol type) => type switch
+    {
+        ITypeParameterSymbol => true,
+        IArrayTypeSymbol array => ContainsTypeParameter(array.ElementType),
+        INamedTypeSymbol named => named.TypeArguments.Any(ContainsTypeParameter),
+        _ => false,
+    };
 
     private static bool CanReference(INamedTypeSymbol type, Compilation compilation) =>
         !type.IsFileLocal && !type.IsUnboundGenericType && type.TypeArguments.All(static t => t.TypeKind != TypeKind.TypeParameter)
