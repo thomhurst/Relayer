@@ -65,9 +65,15 @@ public class KafkaSeekTests
         await Assert.That(replay.IsCompleted).IsFalse();
         state.Release.SetResult();
         await replay;
-        // The native seek discards records queued behind the held one, then restarts at offset 1.
-        foreach (var expected in new long[] { 0, 1, 2 })
-            await Assert.That(await state.Handled.Reader.ReadAsync(token)).IsEqualTo(expected);
+        // Dekaf applies the seek on its runtime loop, so records queued behind the held one can still
+        // run before the seek discards the rest (#798). A sentinel after the seek marks the end.
+        await fixture.Transport.SendAsync(Message(fixture.Destination, 3), token);
+        var handled = new List<long>();
+        while (handled.Count == 0 || handled[^1] != 3)
+            handled.Add(await state.Handled.Reader.ReadAsync(token));
+        // Offset 0 finishes first, any records handled before the seek follow in order, then replay restarts at offset 1.
+        long[] expected = [0, .. Enumerable.Range(1, Math.Max(0, handled.Count - 4)).Select(static i => (long)i), 1, 2, 3];
+        await Assert.That(string.Join(",", handled)).IsEqualTo(string.Join(",", expected));
         await host.StopAsync(token);
         await Assert.That(async () => await control.SeekAsync(fixture.Destination, new TopicPartitionOffset(fixture.Destination, 0, 0), token))
             .Throws<InvalidOperationException>().WithMessageContaining("not running");
