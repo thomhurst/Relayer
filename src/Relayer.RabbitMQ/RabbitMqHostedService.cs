@@ -19,7 +19,12 @@ internal sealed class RabbitMqHostedService(RabbitMqConsumerControl consumers) :
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         try { await consumers.Faulted.WaitAsync(stoppingToken).ConfigureAwait(false); }
-        catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { }
+        catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+        {
+            // Faulted resumes its waiters asynchronously, so a stop can cancel the wait after a consumer already
+            // faulted; report that fault instead of a clean stop.
+            if (consumers.Faulted.IsFaulted) await consumers.Faulted.ConfigureAwait(false);
+        }
     }
 
     public override async Task StopAsync(CancellationToken cancellationToken)
