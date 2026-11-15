@@ -3,7 +3,7 @@ title: Runnable samples
 description: "Build and run the in-memory, Kafka EF Core outbox and Azure Service Bus examples."
 ---
 
-Clone [the repository](https://github.com/thomhurst/Relayer) and use the .NET SDK selected by `global.json`. Packages are not published yet; each sample references the real library and source generator projects. `dotnet build -c Release` at the repository root builds these samples with the solution.
+Clone [the repository](https://github.com/thomhurst/Relayer) and use the .NET SDK selected by `global.json`. Each sample references the library and source generator projects directly rather than the published NuGet packages. `dotnet build -c Release` at the repository root builds these samples with the solution.
 
 | Sample | Run from repository root | Expected result |
 | --- | --- | --- |

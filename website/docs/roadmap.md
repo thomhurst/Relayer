@@ -20,7 +20,7 @@ Relayer is in early development. Track progress in [GitHub issues](https://githu
 
 - [Scoped tenant header propagation](guides/multi-tenancy.md) for sends, requests, replies and single-message consumers. Native scoped tenant stores and authorized durable tenant metadata binding are supported; bounded PostgreSQL catalog dispatch is implemented.
 - [Explicit saga process diagrams](guides/saga-diagrams.md), with immutable declarations and deterministic Mermaid export, independent of typed runtime transitions.
-- [NuGet packaging and tag-triggered releases](contributing/releases.md), with shared metadata, git-derived versions, SourceLink, portable symbols and OIDC publishing. This infrastructure does not mean packages have been released.
+- [NuGet packaging and tag-triggered releases](contributing/releases.md), with shared metadata, git-derived versions, SourceLink, portable symbols and OIDC publishing. Pre-1.0 packages are published to [NuGet](https://www.nuget.org/packages/Relayer).
 - Configuration, named transports, routes and consumers, with startup validation of declarations, options and endpoint capabilities, including [declared scheduling and transaction requirements](guides/sending.md).
 - Source-generated message registration, handler registration and dispatch, and System.Text.Json serialization.
 - Optional [Protobuf serialization](guides/messages.md#protobuf) and [MessagePack serialization](guides/messages.md#messagepack) with explicit generated contracts, native buffer APIs and Native AOT smoke coverage, and [Avro/schema registry serialization](guides/messages.md#avro) with explicit generated contracts, startup preparation and warning-clean trimming and Native AOT.

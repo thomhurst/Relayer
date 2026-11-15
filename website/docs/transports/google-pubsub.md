@@ -3,7 +3,7 @@ title: Google Cloud Pub/Sub
 description: Native Pub/Sub publishing, streaming pull, acknowledgement and topology with explicit capability limits.
 ---
 
-`Relayer.GooglePubSub` wraps `Google.Cloud.PubSub.V1` 3.x. Native publishing, streaming pull, ordering, lease extension, flow control, recovery and acknowledgement remain owned by Google's client. Relayer composes its generated dispatch, serialization, failure handling and tracing around those operations. Packages are not released yet; use project references while developing.
+`Relayer.GooglePubSub` wraps `Google.Cloud.PubSub.V1` 3.x. Native publishing, streaming pull, ordering, lease extension, flow control, recovery and acknowledgement remain owned by Google's client. Relayer composes its generated dispatch, serialization, failure handling and tracing around those operations. Install it with `dotnet add package Relayer.GooglePubSub`.
 
 ## Register topics and subscriptions
 

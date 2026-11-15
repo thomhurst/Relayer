@@ -148,7 +148,7 @@ function Hero() {
             </Link>
           </div>
           <p className={styles.heroStatus}>
-            Early development. The core pipeline is implemented; transports and NuGet packages are not released yet.
+            Early development. Pre-1.0 packages are on NuGet, and APIs may still change.
           </p>
         </div>
         <Layers />
@@ -274,7 +274,7 @@ function CallSite() {
 const status = [
   ['Saga process declarations and Mermaid export', 'Preview: Implemented diagram tooling', true],
   ['Durable saga timeouts through transactional scheduled sends', 'Preview: Implemented', true],
-  ['NuGet packaging, symbols and tag release workflow', 'Implemented; packages not released yet', true],
+  ['NuGet packaging, symbols and tag release workflow', 'Implemented; pre-1.0 packages on NuGet', true],
   ['Configuration, routes and startup validation', 'Implemented', true],
   ['Source-generated handlers, messages and JSON', 'Implemented', true],
   ['Native AOT handler round trips and trace propagation in CI', 'Implemented', true],

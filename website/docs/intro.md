@@ -17,7 +17,7 @@ It is **not** a new broker abstraction. Relayer never changes how the underlying
 
 :::caution[Early development]
 
-The core pipeline is implemented and tested: configuration, startup validation, source-generated handlers and messages, the send and consume pipelines, failure handling and declared topology. Broker transports, the outbox stores and telemetry are still in progress, and no NuGet packages are published yet. See the [roadmap](roadmap.md).
+The core pipeline is implemented and tested: configuration, startup validation, source-generated handlers and messages, the send and consume pipelines, failure handling and declared topology. Broker transports, the outbox stores and telemetry are implemented to varying degrees. Pre-1.0 packages are on [NuGet](https://www.nuget.org/packages/Relayer), and APIs may still change. See the [roadmap](roadmap.md).
 
 :::
 

@@ -14,7 +14,7 @@ This guide uses PostgreSQL and EF Core with Kafka. Reference `Relayer.Kafka`,
 
 ## Configure a store and dispatch
 
-Provision the Kafka topics externally; Kafka currently requires `TopologyMode.None`.
+Provision the Kafka topics externally; Relayer does not create them. The default `TopologyMode.Validate` checks that they exist; this example uses `TopologyMode.None` to skip that check.
 Deploy the [PostgreSQL schema](../reference/postgres-schema.md) before starting the host.
 The default schema is `public`, with table prefix `relayer_`; use the same settings for schema
 creation and registration. Register an ordinary scoped DbContext and the combined outbox:

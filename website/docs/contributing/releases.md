@@ -3,7 +3,7 @@ title: Packages and releases
 description: "Build, inspect and publish Relayer packages from version tags."
 ---
 
-Relayer has packaging and release infrastructure. Packages are not released yet, and some transport
+Relayer publishes pre-1.0 packages to [NuGet](https://www.nuget.org/packages/Relayer) from version tags. Some transport
 packages still contain scaffolding. Check the [roadmap](../roadmap.md) before choosing a transport.
 
 ## Dependency updates
