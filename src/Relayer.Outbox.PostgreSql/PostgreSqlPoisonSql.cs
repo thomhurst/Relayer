@@ -8,20 +8,25 @@ internal static class PostgreSqlPoisonSql
     internal static string Retry(string table, string fenced, string now) => $"""
         WITH retried AS (
             UPDATE {table} SET attempts = LEAST(attempts, 29) + 1, last_error = @error,
-                deliver_at = {now} + LEAST(300, power(2, LEAST(attempts, 9))) * interval '1 second',
+                deliver_at = {Backoff(now)},
                 claim_token = NULL, claim_expires_at = NULL
             WHERE {fenced} RETURNING id
         ) SELECT CASE WHEN EXISTS (SELECT 1 FROM retried) THEN 1 ELSE 0 END
         """;
 
-    internal static string Failure(string table, string dead, string fenced, int limit) => $"""
+    // One to 300 seconds, doubling per recorded attempt.
+    private static string Backoff(string now) => $"{now} + LEAST(300, power(2, LEAST(attempts, 9))) * interval '1 second'";
+
+    // Counted failures. With backoffFrom, a row that stays pending persists the same backoff as Retry,
+    // so local handler retries cannot run hot on any dispatch path before they exhaust the limit.
+    internal static string Failure(string table, string dead, string fenced, int limit, string? backoffFrom = null) => $"""
         WITH exhausted AS (
             DELETE FROM {table} WHERE {fenced} AND lane IS NULL AND attempts + 1 >= {limit}
             RETURNING *
         ), failed AS (
             UPDATE {table} SET attempts = attempts + 1, last_error = @error,
                 status = CASE WHEN lane IS NOT NULL AND attempts + 1 >= {limit} THEN 'parked' ELSE status END,
-                claim_token = NULL, claim_expires_at = NULL
+                {(backoffFrom is null ? "" : $"deliver_at = CASE WHEN attempts + 1 >= {limit} THEN deliver_at ELSE {Backoff(backoffFrom)} END, ")}claim_token = NULL, claim_expires_at = NULL
             WHERE {fenced} AND (lane IS NOT NULL OR attempts + 1 < {limit}) RETURNING *
         ), copied AS (
             INSERT INTO {dead} (id, lane, ordering_key, transport, destination, message_type, headers, body,

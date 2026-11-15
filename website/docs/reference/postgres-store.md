@@ -159,7 +159,7 @@ claims remain for recovery. Successful batches retain the existing batch send an
 
 Local-handler failures classified as `Retry`, ordered preparation errors (missing transport, key or ordering capability) and explicit low-level
 `RecordFailureAsync` calls retain the positive `MaxDispatchAttempts` budget (default **10**).
-Configure that limit consistently on store and worker options; classified retryable native sends never exhaust it. Local-handler retries dead-letter at the limit and park their ordered key.
+Configure that limit consistently on store and worker options; classified retryable native sends never exhaust it. Local-handler retries also persist the same 1 second to 5 minute backoff in `deliver_at` on every dispatch path, then dead-letter at the limit and park their ordered key.
 Broker success followed by database completion failure does not consume an attempt.
 
 One fenced statement persists the final error and attempt count and copies the original identity,

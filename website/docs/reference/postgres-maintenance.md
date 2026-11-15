@@ -79,7 +79,7 @@ Choose `ClaimDuration` longer than expected broker and database latency and keep
 Delivery is at-least-once. A crash after native acceptance and before deletion replays the same identity.
 Database fencing cannot retract an accepted native request, and connection loss or a native send that outlives
 its claim can still duplicate delivery. Connected leadership does not provide broker-side fencing.
-Native-send failures use [durable backoff and failure classification](postgres-store.md#poison-rows-and-key-release). Local-handler failures classified as `Retry` retain the `MaxDispatchAttempts` budget (default 10), then atomically move to dead storage.
+Native-send failures use [durable backoff and failure classification](postgres-store.md#poison-rows-and-key-release). Local-handler failures classified as `Retry` persist the same backoff and retain the `MaxDispatchAttempts` budget (default 10), then atomically move to dead storage.
 
 ## Retention
 

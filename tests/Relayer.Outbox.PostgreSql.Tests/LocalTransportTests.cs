@@ -224,6 +224,75 @@ public class LocalTransportTests(PostgreSqlLocalSessionFixture server)
     }
 
     [Test]
+    [Arguments("direct")]
+    [Arguments("recovery")]
+    [Arguments("ordered")]
+    public async Task Retry_failures_back_off_and_dead_letter_at_the_limit_on_every_dispatch_path(string path)
+    {
+        await using var database = server.CreateDatabase();
+        await database.StartAsync();
+        await using var source = NpgsqlDataSource.Create(database.ConnectionString);
+        await PostgreSqlOutboxStoreTests.CreateSchema(source);
+        await using (var command = source.CreateCommand("CREATE TABLE local_business (value integer PRIMARY KEY)")) await command.ExecuteNonQueryAsync();
+        var ordered = path == "ordered";
+        await using var provider = Provider(source, ordered, maxAttempts: 2, failureAction: FailureAction.Retry);
+        foreach (var starter in provider.GetServices<IHostedService>()) if (starter is not PostgreSqlDirectDispatcher) await starter.StartAsync(default);
+        var transport = provider.GetServices<ITransport>().Single();
+        await Enqueue(provider, source, new(-1), true);
+        // One ordered worker keeps the lane lease across both attempts.
+        using var lane = new PostgreSqlOrderedDispatcher(source, new() { Lanes = 1, MaxDispatchAttempts = 2 }, [transport], provider.GetRequiredService<ILogger<PostgreSqlOrderedDispatcher>>());
+
+        async Task DispatchAsync()
+        {
+            if (ordered)
+            {
+                await lane.DispatchLaneAsync(0, default);
+                return;
+            }
+            var store = new PostgreSqlOutboxStore(source, new() { MaxDispatchAttempts = 2 });
+            var rows = new OutboxRecord[1];
+            var count = await store.ReadPendingAsync(new(null, DateTimeOffset.UtcNow), rows, default);
+            await Assert.That(count).IsEqualTo(1);
+            if (path == "direct")
+            {
+                using var direct = new PostgreSqlDirectDispatcher(source, new() { MaxDispatchAttempts = 2 }, new(), [transport], provider.GetRequiredService<ILogger<PostgreSqlDirectDispatcher>>());
+                await direct.DispatchRecoveredAsync(rows.AsMemory(0, count), default);
+                return;
+            }
+            await using var connection = await source.OpenConnectionAsync();
+            await using var transaction = await connection.BeginTransactionAsync();
+            store.UseDispatchTransaction(connection, transaction);
+            using var recovery = new PostgreSqlDirectDispatcher(source, new() { MaxDispatchAttempts = 2 }, new(), [transport], provider.GetRequiredService<ILogger<PostgreSqlDirectDispatcher>>(), store);
+            await recovery.DispatchRecoveredAsync(rows.AsMemory(0, count), default, propagateDatabaseFailures: true);
+            await transaction.CommitAsync();
+        }
+
+        async Task<DateTime> DatabaseNow()
+        {
+            await using var now = source.CreateCommand("SELECT clock_timestamp()");
+            return (DateTime)(await now.ExecuteScalarAsync())!;
+        }
+
+        var before = await DatabaseNow();
+        await DispatchAsync();
+        var after = await DatabaseNow();
+        await using (var check = source.CreateCommand("SELECT attempts, deliver_at FROM relayer_outbox"))
+        await using (var reader = await check.ExecuteReaderAsync())
+        {
+            await Assert.That(await reader.ReadAsync()).IsTrue();
+            await Assert.That(reader.GetInt32(0)).IsEqualTo(1);
+            // The first retry is persisted one second after the failure, so no path retries the handler hot.
+            await Assert.That(reader.GetDateTime(1)).IsGreaterThan(before.AddSeconds(1)).And.IsLessThan(after.AddSeconds(1));
+        }
+        await Assert.That(await Count(source, "relayer_outbox_dead")).IsEqualTo(0L);
+
+        await using (var due = source.CreateCommand("UPDATE relayer_outbox SET deliver_at = clock_timestamp() - interval '1 second'")) await due.ExecuteNonQueryAsync();
+        await DispatchAsync();
+        await Assert.That(await Count(source, "relayer_outbox_dead")).IsEqualTo(1L);
+        await Assert.That(await Count(source, "local_business")).IsEqualTo(0L);
+    }
+
+    [Test]
     public async Task Killed_consumer_rolls_back_business_work_and_another_process_completes_once()
     {
         await using var database = server.CreateDatabase();

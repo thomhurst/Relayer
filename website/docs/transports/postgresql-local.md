@@ -80,7 +80,7 @@ Atomic completion covers only writes in that transaction and database. HTTP call
 
 ## Failures and capabilities
 
-The shared consume pipeline runs generated handlers, deserialization, tracing and the registered `IFailureClassifier`. Retry failures persist exponential backoff (1 second to 5 minutes) and use recovery passes without exhausting a poison budget. Permanent failures use the same fenced poison transition immediately. Discard rolls back failed business changes before deletion. Configure `MaxDispatchAttempts` consistently on the store and workers. Inspect, redrive and purge with the existing [dead-letter manager](../reference/postgres-store.md#poison-rows-and-key-release).
+The shared consume pipeline runs generated handlers, deserialization, tracing and the registered `IFailureClassifier`. A `Retry` failure counts against `MaxDispatchAttempts` and persists exponential backoff (1 second to 5 minutes) in `deliver_at`, whether commit-triggered dispatch, a recovery pass or an ordered lane ran the attempt. At the limit the row moves to dead storage, and an ordered row parks its key. Permanent failures use the same fenced poison transition immediately. Discard rolls back failed business changes before deletion. Configure `MaxDispatchAttempts` consistently on the store and workers. Inspect, redrive and purge with the existing [dead-letter manager](../reference/postgres-store.md#poison-rows-and-key-release).
 
 Send and completion state pools grow to retain peak concurrent usage, including beyond their initial 16 send and 64 completion slots. After warm-up, higher concurrency reuses those states; native Npgsql and serializer allocations still apply. Retained send resources are disposed with the transport.
 

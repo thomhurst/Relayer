@@ -129,7 +129,7 @@ queue and drains it within the host's shutdown deadline; cancellation leaves unf
 [Ordered lane dispatch](ordered-dispatch.md) handles rows with ordering keys separately.
 [Leased recovery and cleanup](postgres-maintenance.md) handles due unordered rows left by failure,
 overflow, cancellation, process death or a future `DeliverAt`. Register it explicitly alongside this worker.
-Local-handler retries retain the `storeOptions.MaxDispatchAttempts` poison budget (default 10).
+Local-handler retries persist the same backoff and retain the `storeOptions.MaxDispatchAttempts` poison budget (default 10).
 This worker handles immediate commit-triggered sends; maintenance revisits native retries when their
 persisted deadline becomes due.
 

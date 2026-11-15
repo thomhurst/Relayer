@@ -83,7 +83,8 @@ public sealed class PostgreSqlOutboxStore : IOutboxStore
         // Internal dispatch follows the same database clock as maintenance and ordered lanes.
         // Public explicit-time operations retain their caller-controlled clock contract.
         var directFence = Fenced("clock_timestamp()");
-        _failDirect = PostgreSqlPoisonSql.Failure(table, dead, directFence, options.MaxDispatchAttempts);
+        // Direct dispatch counts failures only for local handlers; they back off like native retries.
+        _failDirect = PostgreSqlPoisonSql.Failure(table, dead, directFence, options.MaxDispatchAttempts, "clock_timestamp()");
         _retryDirect = PostgreSqlPoisonSql.Retry(table, directFence, "clock_timestamp()");
         _failDirectImmediately = PostgreSqlPoisonSql.Failure(table, dead, directFence, 1);
         _count = $"SELECT count(*) FROM {table} WHERE {eligible}";
