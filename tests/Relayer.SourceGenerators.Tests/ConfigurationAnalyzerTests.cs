@@ -522,14 +522,16 @@ public class ConfigurationAnalyzerTests
     }
 
     [Test]
-    public async Task Referenced_handler_is_checked_on_explicit_registration()
+    [Arguments("consumer.Handler<H>()")]
+    [Arguments("consumer.Handler<H, Order>()")]
+    public async Task Referenced_handler_is_checked_on_explicit_registration(string registration)
     {
         var external = Compile(Imports + Handler.Replace("[Message(\"order\")] ", "")).WithAssemblyName("External");
         using var stream = new MemoryStream();
         await Assert.That(external.Emit(stream).Success).IsTrue();
         var compilation = Compile(Imports + """
-            static class Setup { public static void Add(IConsumerBuilder consumer) => consumer.Handler<H>(); }
-            """).AddReferences(MetadataReference.CreateFromImage(stream.ToArray()));
+            static class Setup { public static void Add(IConsumerBuilder consumer) => REGISTRATION; }
+            """.Replace("REGISTRATION", registration)).AddReferences(MetadataReference.CreateFromImage(stream.ToArray()));
         GeneratorDriver driver = CSharpGeneratorDriver.Create(new HandlerGenerator());
         driver.RunGeneratorsAndUpdateCompilation(compilation, out var output, out _);
         var diagnostics = await output.WithAnalyzers([new ConfigurationAnalyzer()]).GetAnalyzerDiagnosticsAsync();

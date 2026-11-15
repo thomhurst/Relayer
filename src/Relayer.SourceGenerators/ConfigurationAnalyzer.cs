@@ -107,7 +107,9 @@ public sealed class ConfigurationAnalyzer : DiagnosticAnalyzer
                     if (method.Name == "Consume") CheckConsumer(operationContext, invocation, consumer, consumerInterface);
                 }
 
-                if (method.TypeArguments.Length > 0) AddHandlerArguments(method, marker, single, batch, registered);
+                if (method.TypeArguments.Length > 0)
+                    foreach (var message in AddHandlerArguments(method, marker, single, batch, registered))
+                        CheckMessage(message, invocation.Syntax.GetLocation());
 
                 // Only our generated registration methods count. Unrelated APIs with the same
                 // names must not hide an unregistered handler.
@@ -165,20 +167,26 @@ public sealed class ConfigurationAnalyzer : DiagnosticAnalyzer
     }
 
     // A generic method whose type parameter must be a handler (Handler<THandler, TMessage>() or an
-    // application helper that forwards to it) registers its type argument.
-    private static void AddHandlerArguments(IMethodSymbol method, INamedTypeSymbol? marker, INamedTypeSymbol? single,
+    // application helper that forwards to it) registers its type argument. Returns the message
+    // types its IHandler<T>/IBatchHandler<T> constraints select, so their identities are checked.
+    private static List<ITypeSymbol> AddHandlerArguments(IMethodSymbol method, INamedTypeSymbol? marker, INamedTypeSymbol? single,
         INamedTypeSymbol? batch, ConcurrentDictionary<ITypeSymbol, byte> registered)
     {
+        var messages = new List<ITypeSymbol>();
         var parameters = method.OriginalDefinition.TypeParameters;
         for (var i = 0; i < parameters.Length; i++)
             foreach (var constraint in parameters[i].ConstraintTypes)
-                if (SymbolEqualityComparer.Default.Equals(constraint.OriginalDefinition, marker)
-                    || SymbolEqualityComparer.Default.Equals(constraint.OriginalDefinition, single)
-                    || SymbolEqualityComparer.Default.Equals(constraint.OriginalDefinition, batch))
-                {
-                    registered.TryAdd(method.TypeArguments[i], 0);
-                    break;
-                }
+            {
+                var contract = SymbolEqualityComparer.Default.Equals(constraint.OriginalDefinition, single)
+                    || SymbolEqualityComparer.Default.Equals(constraint.OriginalDefinition, batch);
+                if (!contract && !SymbolEqualityComparer.Default.Equals(constraint.OriginalDefinition, marker)) continue;
+                registered.TryAdd(method.TypeArguments[i], 0);
+                if (contract && constraint is INamedTypeSymbol { TypeArguments.Length: 1 } named)
+                    messages.Add(named.TypeArguments[0] is ITypeParameterSymbol { TypeParameterKind: TypeParameterKind.Method } parameter
+                        ? method.TypeArguments[parameter.Ordinal]
+                        : named.TypeArguments[0]);
+            }
+        return messages;
     }
 
     private static (string? Name, int Version) Identity(AttributeData attribute)
