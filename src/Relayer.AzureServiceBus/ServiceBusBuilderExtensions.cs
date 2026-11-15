@@ -34,10 +34,13 @@ public static class ServiceBusBuilderExtensions
             if ((options.Client is null) == string.IsNullOrWhiteSpace(options.ConnectionString))
                 throw new InvalidOperationException($"Service Bus transport '{name}': configure exactly one of Client or ConnectionString.");
             ArgumentNullException.ThrowIfNull(options.ClientOptions);
+            var mode = definition.TopologyMode ?? configuration.TopologyMode;
+            // With no topology checks, the routes and consumers already name every entity (#853).
+            if (mode == TopologyMode.None)
+                options = options.WithImpliedDeclarations(definition.Routes.Select(route => route.Destination), definition.Consumers);
             ServiceBusSendTransport.ValidateDeclarations(name, options, definition.Routes.Select(route => route.Destination));
             foreach (var consumer in definition.Consumers)
                 ServiceBusConsumer.ValidateDeclaration(name, options, (ConsumerDefinition<ServiceBusConsumerOptions>)consumer);
-            var mode = definition.TopologyMode ?? configuration.TopologyMode;
             var admin = options.AdministrationClient;
             if (mode == TopologyMode.Provision && admin is null)
                 admin = options.ConnectionString is { } connection ? new ServiceBusAdministrationClient(connection)

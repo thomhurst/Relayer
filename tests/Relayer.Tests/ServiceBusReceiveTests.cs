@@ -275,7 +275,6 @@ public sealed class ServiceBusReceiveTests
     [Arguments("auto-complete")]
     [Arguments("receive-delete")]
     [Arguments("batch")]
-    [Arguments("undeclared")]
     public async Task Unsupported_declarations_fail_before_starting_processors(string invalid)
     {
         var client = new NativeClient();
@@ -284,13 +283,13 @@ public sealed class ServiceBusReceiveTests
             if (invalid == "auto-complete") consumer.Options.ProcessorOptions.AutoCompleteMessages = true;
             if (invalid == "receive-delete") consumer.Options.ProcessorOptions.ReceiveMode = ServiceBusReceiveMode.ReceiveAndDelete;
             if (invalid == "batch") consumer.Batch(2, TimeSpan.FromMilliseconds(10));
-        }, declare: invalid != "undeclared");
+        });
         await Assert.That(async () => await Start(provider)).ThrowsException();
         await Assert.That(client.Processors.All(processor => processor.Starts == 0)).IsTrue();
     }
 
     internal static ServiceProvider Provider(NativeClient client, Action<ConsumerBuilder<ServiceBusConsumerOptions>>? configure = null,
-        string? subscription = null, bool declare = true, bool health = false, bool sessions = false, TimeProvider? time = null,
+        string? subscription = null, bool health = false, bool sessions = false, TimeProvider? time = null,
         bool autoStart = true)
     {
         var services = new ServiceCollection();
@@ -309,7 +308,6 @@ public sealed class ServiceBusReceiveTests
                 {
                     options.Client = client;
                     options.AutoStartConsumers = autoStart;
-                    if (!declare) return;
                     if (subscription is null) options.Queues.Add(new("orders") { RequiresSession = sessions });
                     else
                     {

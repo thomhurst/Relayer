@@ -96,6 +96,7 @@ To change a decision, add a new entry that supersedes it rather than editing his
 | [D83](#d83-route-level-native-callbacks-apply-on-outbox-dispatch) | Route-level native callbacks apply on outbox dispatch | Accepted |
 | [D84](#d84-a-route-can-choose-its-destination-per-message) | A route can choose its destination per message | Accepted |
 | [D85](#d85-applications-start-service-bus-consumers-through-a-keyed-control) | Applications start Service Bus consumers through a keyed control | Accepted |
+| [D86](#d86-service-bus-implies-entity-declarations-when-topology-is-none) | Service Bus implies entity declarations when topology is None | Accepted |
 
 ---
 
@@ -2005,3 +2006,11 @@ This resolves the release scope of D20, D45, D56, D60 and D66 without removals, 
 **Alternatives rejected.**
 - A per-consumer start gate delegate: it covers deferred start but not pause and resume, and it needs a background task the host does not observe.
 - Downgrading `MessagingEntityNotFound` at startup: it hides a real misconfiguration and still burns native retries.
+
+## D86. Service Bus implies entity declarations when topology is None
+
+**Context.** Issue #853: a Service Bus consumer or send destination also needed a native declaration in transport options, even with `TopologyMode.None`, where nothing is validated or provisioned. Apps whose topology is owned elsewhere wrote placeholder declarations that could drift from their routes and consumers.
+
+**Decision.** With `TopologyMode.None`, the transport implies each entity the routes and consumers name that the options do not declare: a consumer implies its queue, or its topic and subscription; `SessionProcessorOptions` implies `RequiresSession`; a send destination is a queue, or a topic when `TrustedSessionEntities` names it. Explicit declarations win and are still validated against consumers. Validate and Provision keep requiring declarations, because they need the native settings to check or create.
+
+**Consequences.** Implied entities live in a copy of the options built at startup, so the caller's options and the infrastructure exporter see only explicit declarations. The exporter still fails on a route or consumer entity that is not declared, so it never emits incomplete infrastructure. Ordering by key still needs explicit trust (D16).
