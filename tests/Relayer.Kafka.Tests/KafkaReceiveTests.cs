@@ -5,6 +5,7 @@ using System.Text;
 using System.Text.Json.Serialization;
 using System.Threading.Channels;
 using Dekaf;
+using Dekaf.Admin;
 using Dekaf.Consumer;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -398,6 +399,10 @@ public class KafkaReceiveTests
         await offsets.InitializeAsync(token);
         var committedBeforeProbe = await offsets.GetCommittedOffsetAsync(new(fixture.Destination, 0), token);
         await Assert.That(committedBeforeProbe is null || committedBeforeProbe <= retainedOffset).IsTrue();
+        // A replay seek stops the lane of the held record, which leaves unprocessed and stays held after replay.
+        await host.Services.GetRequiredKeyedService<IKafkaConsumerControl>("events")
+            .SeekAsync(fixture.Destination, new TopicPartitionOffset(fixture.Destination, 0, retainedOffset), token);
+        await Assert.That(receiver.Completion.IsCompleted).IsFalse();
         await Assert.That(control.CircuitAttempts).IsEqualTo(retry ? 2 : 1);
         if (stopOpen)
         {
@@ -434,6 +439,43 @@ public class KafkaReceiveTests
         }
     }
 
+    [Test]
+    public async Task Revoke_moves_a_circuit_held_record_to_the_new_owner_without_stopping_the_consumer()
+    {
+        using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(2));
+        var token = timeout.Token;
+        using var tracing = new MessageTracing(Options.Create(new TracingOptions()), []);
+        await using var fixture = (KafkaFixture)await KafkaFixture.CreateAsync(tracing, token);
+        await using (var admin = new AdminClientBuilder().WithBootstrapServers(fixture.Bootstrap).Build())
+            await admin.CreatePartitionsAsync(new Dictionary<string, int> { [fixture.Destination] = 2 }, token);
+        var heldControl = new KafkaReceiveControl { CircuitFailure = true };
+        using var held = BuildHost(fixture, heldControl, circuitClock: new CircuitClock(), concurrency: 2);
+        await held.StartAsync(token);
+        var receiver = held.Services.GetRequiredKeyedService<KafkaProducerTransport>("events").Consumers[0];
+        // The first record opens the circuit; both partitions then hold a record, so whichever moves is held.
+        await using (var producer = await new ProducerBuilder<byte[], byte[]>().WithBootstrapServers(fixture.Bootstrap).BuildAsync(token))
+            for (var partition = 0; partition < 2; partition++)
+                await producer.ProduceAsync(new()
+                {
+                    Topic = fixture.Destination, Partition = partition, Key = [(byte)partition], Value = "{\"Number\":5}"u8.ToArray(),
+                    Headers = new Dekaf.Serialization.Headers().Add("ce_id", "held-" + partition).Add("ce_type", "tests.kafka.receive;v=1"),
+                }, token);
+        while (Volatile.Read(ref heldControl.CircuitAttempts) == 0) await Task.Delay(20, token);
+
+        // A second member takes one partition, revoking it from the held lane.
+        var ownerControl = new KafkaReceiveControl();
+        using var owner = BuildHost(fixture, ownerControl);
+        await owner.StartAsync(token);
+        var ownerReceiver = owner.Services.GetRequiredKeyedService<KafkaProducerTransport>("events").Consumers[0];
+        await Assert.That(await ownerControl.ReadHandledAsync(ownerReceiver.Completion, token)).IsEqualTo(5);
+        await Assert.That(receiver.Completion.IsCompleted).IsFalse();
+        await Assert.That(heldControl.Handled.Reader.TryRead(out _)).IsFalse();
+
+        await held.StopAsync(token);
+        await Assert.That(receiver.Completion.IsCompletedSuccessfully).IsTrue();
+        await owner.StopAsync(token);
+    }
+
     internal sealed class CircuitClock : TimeProvider
     {
         private ManualTimer? _recovery;
@@ -461,7 +503,7 @@ public class KafkaReceiveTests
             new("traceparent", new(Creation)), new("tracestate", new("tenant=original")) }, new WireString("customer-1"));
 
     private static IHost BuildHost(KafkaFixture fixture, KafkaReceiveControl control, bool missingDeadLetter = false,
-        bool healthySibling = false, CircuitClock? circuitClock = null, bool circuitRetry = false)
+        bool healthySibling = false, CircuitClock? circuitClock = null, bool circuitRetry = false, int concurrency = 1)
     {
         var builder = Host.CreateApplicationBuilder();
         builder.Logging.ClearProviders();
@@ -490,14 +532,15 @@ public class KafkaReceiveTests
                 kafka.Consume(fixture.Destination, consumer =>
                 {
                     consumer.Options.Group = fixture.Destination;
+                    consumer.Concurrency(concurrency);
                     if (circuitClock is not null)
                     {
                         consumer.Options.CircuitBreaker = new() { MinimumThroughput = 1 };
-                        // A held record drains until StopTimeout when replay or shutdown stops its lane.
+                        // Expiry fails the run. A held record must leave a stopping lane long before it, within the test deadline.
                         consumer.Options.Processing = new()
                         {
-                            Ordering = PartitionedProcessingOrder.Key, CommitPolicy = PartitionCommitPolicy.CommitCompletedPeriodically,
-                            StopTimeout = TimeSpan.FromSeconds(1),
+                            Ordering = PartitionedProcessingOrder.Key, MaxConcurrentHandlersPerPartition = concurrency,
+                            CommitPolicy = PartitionCommitPolicy.CommitCompletedPeriodically, StopTimeout = TimeSpan.FromMinutes(1),
                         };
                     }
                     consumer.Failures(new()

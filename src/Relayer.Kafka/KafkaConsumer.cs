@@ -133,8 +133,9 @@ internal sealed class KafkaConsumer : IAsyncDisposable
             if (disposition.Kind is DispositionKind.Complete or DispositionKind.SettledByHandler) return;
             if (changed is null || disposition.Kind != DispositionKind.Redeliver)
                 throw new InvalidOperationException("Kafka receive must complete durable failure handling before returning Complete. Kafka has no native redelivery or dead-letter settlement.");
-            // Hold this record in its key lane until the circuit admits another attempt.
-            await changed.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
+            // Hold this record in its key lane until the circuit admits another attempt. When the lane starts stopping
+            // (revoke, seek or shutdown), the native stop-requested token leaves it unprocessed for replay.
+            await changed.Task.WaitAsync(context.StopRequestedToken).ConfigureAwait(false);
         }
     }
 
