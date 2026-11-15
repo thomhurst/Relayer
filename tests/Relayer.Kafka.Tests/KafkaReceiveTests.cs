@@ -298,6 +298,29 @@ public class KafkaReceiveTests
         await Assert.That(timeout.IsCancellationRequested).IsFalse();
     }
 
+    [Test]
+    public async Task Consumer_failure_recorded_before_shutdown_cancels_the_wait_still_faults_execution()
+    {
+        var failure = new TaskCompletionSource<Task>(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var stopping = new CancellationTokenSource();
+        var execution = KafkaHostedService.ReportFailureAsync(failure.Task, stopping.Token);
+        var error = new InvalidOperationException("receiver failed");
+        // The recorded failure resumes the wait on the thread pool, so this cancellation wins the wait.
+        failure.SetResult(Task.FromException(error));
+        stopping.Cancel();
+        await Assert.That(await Assert.ThrowsAsync<InvalidOperationException>(() => execution)).IsSameReferenceAs(error);
+    }
+
+    [Test]
+    public async Task Shutdown_without_consumer_failure_cancels_execution()
+    {
+        var failure = new TaskCompletionSource<Task>(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var stopping = new CancellationTokenSource();
+        var execution = KafkaHostedService.ReportFailureAsync(failure.Task, stopping.Token);
+        stopping.Cancel();
+        await Assert.That(async () => await execution).Throws<OperationCanceledException>();
+    }
+
     // Keep completed read tasks out of the collecting test's stack, including in Release builds.
     [MethodImpl(MethodImplOptions.NoInlining)]
     private static async Task ExerciseFaultedHandledReadAsync(TaskStatus receiverStatus, Exception channelFailure)
