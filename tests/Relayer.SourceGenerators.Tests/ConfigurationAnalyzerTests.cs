@@ -143,10 +143,11 @@ public class ConfigurationAnalyzerTests
     }
 
     [Test]
-    [Arguments("[RegistersMessageIdentity(nameof(TMessage))]", "")]
-    [Arguments("[RegistersMessageIdentity(nameof(TOther))]", "RLY001")]
-    [Arguments("", "RLY001")]
-    public async Task Marked_helper_registers_its_type_argument(string marker, string expected)
+    [Arguments("[RegistersMessageIdentity(nameof(TMessage))]", "PublishRaw<Order, int>(builder, \"orders\")", "")]
+    [Arguments("[RegistersMessageIdentity(nameof(TMessage))]", "builder.PublishRaw<Order, int>(\"orders\")", "")]
+    [Arguments("[RegistersMessageIdentity(nameof(TOther))]", "builder.PublishRaw<Order, int>(\"orders\")", "RLY001")]
+    [Arguments("", "PublishRaw<Order, int>(builder, \"orders\")", "RLY001")]
+    public async Task Marked_helper_registers_its_type_argument(string marker, string call, string expected)
     {
         await Verify(Imports + $$"""
             public record Order;
@@ -154,11 +155,11 @@ public class ConfigurationAnalyzerTests
             {
                 public static void Add(Broker broker, IRelayerBuilder builder)
                 {
-                    PublishRaw<Order, int>(builder, "orders");
+                    {{call}};
                     broker.Send<Order>("orders");
                 }
                 {{marker}}
-                static void PublishRaw<TMessage, TOther>(IRelayerBuilder builder, string name) =>
+                static void PublishRaw<TMessage, TOther>(this IRelayerBuilder builder, string name) =>
                     builder.Infrastructure().MessageTypes.Add<TMessage>(name);
             }
             """, expected);
@@ -173,7 +174,7 @@ public class ConfigurationAnalyzerTests
             public static class Messaging
             {
                 [RegistersMessageIdentity(nameof(TMessage))]
-                public static void PublishRaw<TMessage>(IRelayerBuilder builder, string name) =>
+                public static void PublishRaw<TMessage>(this IRelayerBuilder builder, string name) =>
                     builder.Infrastructure().MessageTypes.Add<TMessage>(name);
             }
             """).WithAssemblyName("External");
@@ -184,7 +185,7 @@ public class ConfigurationAnalyzerTests
             {
                 public static void Add(Broker broker, IRelayerBuilder builder)
                 {
-                    Messaging.PublishRaw<Order>(builder, "orders");
+                    builder.PublishRaw<Order>("orders");
                     broker.Send<Order>("orders");
                     broker.Send<Unregistered>("other");
                 }

@@ -47,6 +47,8 @@ public static void PublishRaw<TMessage>(this IRelayerBuilder builder, string nam
 builder.PublishRaw<OrderPlaced>("orders.placed"); // OrderPlaced counts as registered
 ```
 
+Pass the name with `nameof` so a rename keeps it in step: a name that matches none of the helper's type parameters registers nothing, and RLY001 keeps reporting.
+
 When startup registers every closed form of a generic contract, for example `Envelope<OrderPlaced>` from a catalog (`[Message]` cannot go on a generic type, [RLYM001](#rlym001)), declare that once per assembly:
 
 ```csharp
