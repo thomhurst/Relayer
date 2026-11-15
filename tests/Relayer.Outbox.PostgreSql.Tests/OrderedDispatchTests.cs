@@ -43,25 +43,25 @@ public class OrderedDispatchTests
         listener.Start();
         var harness = new Relayer.Testing.RelayerHarness();
         instrumentation.Observer = harness;
-        // Stands for the commit of the row that is about to be parked.
-        instrumentation.AddOutboxPending(1);
-        var idle = harness.WaitForIdleAsync();
+        // Stands for the commit of the three rows.
+        instrumentation.AddOutboxPending(3);
         var failing = new RecordingTransport((_, _) => throw new PostgreSqlLocalFailure(new InvalidOperationException("poison"), FailureAction.DeadLetter));
         using (var worker = new PostgreSqlOrderedDispatcher(source, new() { Lanes = 1, MaxDispatchAttempts = 1 },
             [failing], NullLogger<PostgreSqlOrderedDispatcher>.Instance, instrumentation: instrumentation))
             await Assert.That(await worker.DispatchLaneAsync(0, default)).IsEqualTo(0);
         await Assert.That(poisonCount).IsEqualTo(1L);
-        // A parked row stays in the lane but is settled for the harness.
-        await idle.WaitAsync(TimeSpan.FromSeconds(30));
-        instrumentation.Observer = null;
         await using (var expire = source.CreateCommand("UPDATE relayer_leases SET expires_at = clock_timestamp() - interval '1 second'"))
             await expire.ExecuteNonQueryAsync();
         // A new owner after the poison transaction committed must observe the same durable key barrier.
         var healthy = new RecordingTransport();
-        using var restarted = Worker(source, healthy);
+        using var restarted = new PostgreSqlOrderedDispatcher(source, new() { Lanes = 1 }, [healthy],
+            NullLogger<PostgreSqlOrderedDispatcher>.Instance, instrumentation: instrumentation);
         await Assert.That(await restarted.DispatchLaneAsync(0, default)).IsEqualTo(1);
         await Assert.That(healthy.Ids.SequenceEqual([Id(3)])).IsTrue();
-        var manager = new PostgreSqlDeadLetterManager("store", source, new());
+        // The parked row is settled for the harness, but the row behind it on the same key is still undelivered.
+        var idle = harness.WaitForIdleAsync();
+        await Assert.That(idle.IsCompleted).IsFalse();
+        var manager = new PostgreSqlDeadLetterManager("store", source, new(), instrumentation);
         var dead = (await manager.PeekAsync("store")).Messages.Single().Features.GetRequired<PostgreSqlDeadLetterDetails>();
         await Assert.That(dead.Record.Attempts).IsEqualTo(1);
         await Assert.That(dead.Record.LastError).IsEqualTo("poison");
@@ -75,6 +75,8 @@ public class OrderedDispatchTests
         else await manager.RedriveAsync("store");
         await Assert.That(await restarted.DispatchLaneAsync(0, default)).IsEqualTo(purge ? 1 : 2);
         await Assert.That(healthy.Ids.SequenceEqual(purge ? [Id(3), Id(2)] : new[] { Id(3), Id(1), Id(2) })).IsTrue();
+        // Purge or redrive releases the key, so the rows behind the barrier settle and the harness goes idle.
+        await idle.WaitAsync(TimeSpan.FromSeconds(30));
     }
 
     [Test]
