@@ -128,6 +128,35 @@ public class LocalAtLeastOnceTests(PostgreSqlLocalSessionFixture server)
     }
 
     [Test]
+    [Arguments("direct")]
+    [Arguments("recovered")]
+    [Arguments("ordered")]
+    public async Task Completion_database_failure_does_not_consume_an_attempt(string mode)
+    {
+        await using var database = server.CreateDatabase();
+        // Attempts remain, so a misrecorded failure would be a retry UPDATE that the trigger allows.
+        await using var harness = await Harness.StartAsync(database, mode, maxAttempts: 3);
+        await Enqueue(harness.Provider, harness.Source, new(7), true);
+        // Only the completion fails; the claim and failure transitions update the row.
+        await using (var command = harness.Source.CreateCommand("""
+            CREATE FUNCTION reject_completion() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'completion rejected'; END $$;
+            CREATE TRIGGER reject_completion BEFORE DELETE ON relayer_outbox FOR EACH ROW EXECUTE FUNCTION reject_completion();
+            """)) await command.ExecuteNonQueryAsync();
+
+        // Recovery surfaces the database error so CDC does not checkpoint; the ordered lane stops; direct dispatch logs it.
+        if (mode == "recovered") await Assert.That((await Assert.That(harness.DispatchCommittedAsync).Throws<PostgresException>())!.MessageText).IsEqualTo("completion rejected");
+        else if (mode == "ordered") await Assert.That(harness.DispatchAsync).Throws<InvalidOperationException>();
+        else
+        {
+            await harness.DispatchAsync();
+            await Assert.That(harness.Errors.SelectMany(Chain).OfType<PostgresException>().Any(error => error.MessageText == "completion rejected")).IsTrue();
+        }
+
+        await Assert.That(await Count(harness.Source, "local_business")).IsEqualTo(1L);
+        await Assert.That(await Count(harness.Source, "relayer_outbox WHERE status = 'pending' AND attempts = 0")).IsEqualTo(1L);
+    }
+
+    [Test]
     public async Task Undefined_completion_mode_fails_startup()
     {
         await using var source = NpgsqlDataSource.Create("Host=unused");

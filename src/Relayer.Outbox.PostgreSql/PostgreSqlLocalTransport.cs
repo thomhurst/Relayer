@@ -1,5 +1,6 @@
 using Relayer.Pipeline;
 using System.Collections.Frozen;
+using System.Data.Common;
 using System.Runtime.CompilerServices;
 using Npgsql;
 using Relayer.Transports;
@@ -173,8 +174,12 @@ internal sealed class PostgreSqlLocalTransport : ITransport, ITransportSendTraci
         {
             if (delivery.OpenTransaction is not { } transaction)
             {
-                if (await delivery.CompletionStore.CompleteDirectAsync(delivery.Claim, cancellationToken).ConfigureAwait(false) != 1)
-                    throw new InvalidOperationException("The PostgreSQL local claim was lost before completion. The handler already ran, so recovery delivers the row again; raise the claim or lease duration above the handler's run time.");
+                // The handler already ran, so a failed completion must not be recorded as a failed attempt.
+                long completed;
+                try { completed = await delivery.CompletionStore.CompleteDirectAsync(delivery.Claim, cancellationToken).ConfigureAwait(false); }
+                catch (DbException error) { throw new PostgreSqlLocalCompletionFailure(error.Message, error); }
+                if (completed != 1)
+                    throw new PostgreSqlLocalCompletionFailure("The PostgreSQL local claim was lost before completion. The handler already ran, so recovery delivers the row again; raise the claim or lease duration above the handler's run time.", null);
             }
             else if (!await delivery.CompletionStore.CompleteAsync(delivery.Claim, transaction, cancellationToken).ConfigureAwait(false))
                 throw new InvalidOperationException("The PostgreSQL local claim was lost. Business work is rolled back and recovery retries the row.");
@@ -260,3 +265,5 @@ internal sealed class PostgreSqlLocalFailure(Exception error, FailureAction acti
 {
     internal FailureAction Action { get; } = action;
 }
+// An at-least-once completion failed after the handler succeeded. A database error is the inner exception.
+internal sealed class PostgreSqlLocalCompletionFailure(string message, DbException? error) : Exception(message, error);

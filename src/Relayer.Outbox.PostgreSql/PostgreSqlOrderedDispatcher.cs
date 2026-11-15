@@ -223,6 +223,9 @@ internal sealed partial class PostgreSqlOrderedDispatcher : BackgroundService, I
                     }
                     catch (Exception error) when (!cancellationToken.IsCancellationRequested)
                     {
+                        // The handler ran but its completion is uncertain: stop the lane instead of recording an attempt.
+                        if (error is PostgreSqlLocalCompletionFailure)
+                            throw new InvalidOperationException("An at-least-once ordered local completion failed after the handler ran. The batch remains available for recovery.", error);
                         if (transaction is null)
                         {
                             // The claim token fences the failure transition. A lost lease stops the batch after it.
