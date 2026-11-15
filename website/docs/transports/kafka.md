@@ -3,7 +3,7 @@ title: Kafka
 description: "Named Kafka producers and key-ordered parallel consumers backed by Dekaf, with durable failure handling."
 ---
 
-`Relayer.Kafka` implements producers and consumer groups on [Dekaf](https://github.com/thomhurst/Dekaf). Consumers run on Dekaf's partitioned runtime with key-ordered parallelism, contiguous offset commits and bounded drain on revoke and shutdown. They use the core failure pipeline and mark records processed only after durable handling, including dead-letter copies. Optional [consumer circuit breaking](../guides/failure-handling.md#consumer-circuit-breaking) holds failed records during dependency outages. Optional health adapters are available in `Relayer.Kafka.HealthChecks`. Typed tombstones use native null values and the original message's wire identity. Batch handlers, topic provisioning and transactions remain planned.
+`Relayer.Kafka` implements producers and consumer groups on [Dekaf](https://github.com/thomhurst/Dekaf). Consumers run on Dekaf's partitioned runtime with key-ordered parallelism, contiguous offset commits and bounded drain on revoke and shutdown. They use the core failure pipeline and mark records processed only after durable handling, including dead-letter copies. Optional [consumer circuit breaking](../guides/failure-handling.md#consumer-circuit-breaking) holds failed records during dependency outages. Optional health adapters are available in `Relayer.Kafka.HealthChecks`. Typed tombstones use native null values and the original message's wire identity. Batch handlers, topic provisioning and Kafka-to-Kafka exactly-once through producer transactions remain planned.
 
 ## Register a producer
 
@@ -110,6 +110,12 @@ Dekaf 1.26.0 handles transient empty broker metadata during broker restarts thro
 Consumer failures that escape native recovery reach the application's background-service supervision immediately, even when another consumer is still running. The host's default policy stops the application. Shutdown signals every consumer before waiting for their drains, so a failed consumer cannot prevent its siblings from stopping. Override `HostOptions.BackgroundServiceExceptionBehavior` only when the application provides its own recovery policy.
 
 Relayer discards the legacy `relayer.internal.kafka.tombstone` header, including values added by native callbacks. Null-value state comes only from the native record or the explicit serialized send flag; a header cannot turn an empty value into a tombstone.
+
+### Kafka to a database
+
+To write database changes and outgoing messages for each record, attach the [EF Core consumer inbox](../reference/ef-core-inbox.md) with `consumer.EntityFrameworkCore<TContext>(...)`. The inbox row, business changes and outbox rows commit in one PostgreSQL transaction, and the receive returns `Complete` only after that commit, so the record's offset is never committed ahead of its database work. A crash before the commit rolls everything back and the record is replayed. A crash after the commit but before Dekaf's next offset commit also replays the record, and the inbox row makes the replay skip the handler, so business rows and outbox rows are written once. A failed attempt rolls back before its retry, and a handler cancelled at `StopTimeout` rolls back and leaves its record uncommitted.
+
+Delivery is still at least once: only the database work is deduplicated. Side effects outside the transaction, such as HTTP calls or direct `SendNowAsync` sends, can repeat on replay. Kafka-to-Kafka exactly-once with native producer transactions is planned and waits on a transactional commit mode in Dekaf's partitioned runtime ([Dekaf#4174](https://github.com/thomhurst/Dekaf/issues/4174)).
 
 ## Independent schema registries
 

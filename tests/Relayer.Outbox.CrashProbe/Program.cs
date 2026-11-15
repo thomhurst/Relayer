@@ -7,6 +7,19 @@ using Relayer;
 using Relayer.Outbox.PostgreSql;
 using Relayer.Transports;
 
+if (args.Length > 1 && args[0] == "kafka")
+{
+    // Blocks inside the handler's open transaction ("block") or after its commit, before the periodic
+    // offset commit ("committed"). The parent kills this process, so nothing commits gracefully.
+    var kafkaServices = new ServiceCollection().AddLogging();
+    KafkaInboxProbe.Configure(kafkaServices, new KafkaInboxSettings(args[1], args[2], args[3],
+        TimeSpan.FromHours(1)) { Block = args[4] == "block" });
+    await using var kafkaProvider = kafkaServices.BuildServiceProvider();
+    foreach (var worker in kafkaProvider.GetServices<IHostedService>()) await worker.StartAsync(default);
+    await Task.Delay(Timeout.InfiniteTimeSpan);
+    return;
+}
+
 if (args.Length > 1 && args[0] == "local")
 {
     await using var localSource = NpgsqlDataSource.Create(args[1]);

@@ -583,7 +583,7 @@ The transport wraps **[Dekaf](https://github.com/thomhurst/Dekaf)**, a pure C# K
 - **Rebalance safety:** use Dekaf's native cooperative assignment, `PartitionStopPolicy.Drain`, `StopTimeout` and `PartitionBackpressureMode.PauseResume`. The native runtime owns revoked lanes, drain and pause tracking, including rebalances while paused (KafkaFlow #456, #681). Preserve the configured native rebalance listeners.
 - **Consume-transform-produce:**
   - *Kafka → database → anything:* the inbox, business data, and outbox are written in one database transaction. The offset is committed only after that transaction commits. Redelivery after a crash is deduplicated by the inbox.
-  - *Kafka → Kafka:* optional native Kafka transactions (Dekaf's `SendOffsetsToTransactionAsync`) give exactly-once processing.
+  - *Kafka → Kafka:* optional native Kafka transactions (Dekaf's `SendOffsetsToTransactionAsync`) give exactly-once processing. Planned: it needs a transactional commit mode in Dekaf's partitioned runtime (#841).
 - **Tombstones:** `sender.SendAsync(Tombstone.For<Customer>(key))` sends a record with a null value (KafkaFlow #516). A consumer receives it as `Tombstone<T>`.
 - **Ordered batch produce:** batch produce preserves order per key (KafkaFlow #594).
 - **Replay and seek:** `IKafkaConsumerControl.SeekAsync(topic, partition | timestamp)` for operational replay (Wolverine #3479).

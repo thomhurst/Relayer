@@ -118,6 +118,10 @@ An acknowledgement failure after commit leaves durable data
 intact, and redelivery skips the handler. Commit failures with an unknown outcome remain safe to
 redeliver: the committed inbox row determines whether the handler runs again.
 
+On Kafka, the record's offset is committed only after this transaction commits. Broker-backed crash tests
+kill the consumer before and after the database commit and check that the replay writes business rows,
+inbox rows and outbox rows once. See [Kafka to a database](../transports/kafka.md#kafka-to-a-database).
+
 Each suppressed duplicate records `relayer.inbox.duplicates` on the registered `Relayer` meter,
 with the stable consumer name under `relayer.consumer`. Message IDs are never metric dimensions.
 
