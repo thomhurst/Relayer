@@ -14,7 +14,7 @@ namespace Relayer.Kafka.Tests;
 public class KafkaSeekTests
 {
     [Test]
-    public async Task Processing_cancellation_is_not_mistaken_for_a_control_wakeup()
+    public async Task Handler_cancellation_during_a_seek_leaves_the_record_for_replay()
     {
         using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(2));
         var token = timeout.Token;
@@ -22,8 +22,15 @@ public class KafkaSeekTests
         await using var fixture = (KafkaFixture)await KafkaFixture.CreateAsync(tracing, token);
         var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var replayed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var attempts = 0;
         fixture.RegisterConsumer(async (_, _) =>
         {
+            if (Interlocked.Increment(ref attempts) > 1)
+            {
+                replayed.TrySetResult();
+                return Disposition.Complete;
+            }
             entered.SetResult();
             await release.Task.WaitAsync(token);
             throw new OperationCanceledException("handler canceled independently");
@@ -34,8 +41,11 @@ public class KafkaSeekTests
         var consumer = ((KafkaProducerTransport)fixture.Transport).Consumers[0];
         var pending = consumer.SeekAsync(new(fixture.Destination, 0, 0), null, token).AsTask();
         release.SetResult();
-        await Assert.That(async () => await consumer.Completion.WaitAsync(token)).Throws<OperationCanceledException>();
-        await Assert.That(async () => await pending).Throws<InvalidOperationException>().WithMessageContaining("stopped before the seek");
+        // Dekaf treats an OperationCanceledException thrown once the lane is stopping as leaving the record
+        // unprocessed: the seek applies, the record replays from the seek offset and the consumer keeps running.
+        await pending.WaitAsync(token);
+        await replayed.Task.WaitAsync(token);
+        await Assert.That(consumer.Completion.IsCompleted).IsFalse();
     }
 
     [Test]
