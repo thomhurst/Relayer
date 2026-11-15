@@ -69,7 +69,7 @@ Receive and dispatch bodies are copied before native storage can be reused. Type
 
 `WaitForIdleAsync` tracks active sends, dispatches and consumption. With the registered in-memory transport, it also tracks queued, scheduled and redelivered messages until every consumer group releases them. It uses completion signals, not sleeps or polling. An endpoint with no consumer retains its queued messages and therefore does not become idle.
 
-Start producers before awaiting idle. Future external broker arrivals and durable outbox rows not yet being dispatched cannot be inferred from an idle pipeline. Include an application-owned producer or dispatch cycle explicitly. In this example, `CommitAndDispatchAsync` is your application's method:
+Start producers before awaiting idle. Future external broker arrivals ([wait for those instead](#wait-for-a-broker-round-trip)) and durable outbox rows not yet being dispatched cannot be inferred from an idle pipeline. Include an application-owned producer or dispatch cycle explicitly. In this example, `CommitAndDispatchAsync` is your application's method:
 
 ```csharp
 var cycle = harness.TrackWork();
@@ -91,6 +91,22 @@ Cancelling an idle wait cancels only that caller's wait. It does not stop proces
 Call `harness.Reset()` only after idle. It clears all observations and correlation state. Calling it while work is pending throws an actionable exception. Reset does not purge native queues, broker state or outbox rows.
 
 Each service provider owns its harness. Multiple named transports in one host share that host's observations and work counter. Separate hosts have independent harnesses and can run concurrently; no mutable process-wide state is used. `AddRelayer` currently has one registration per provider: configure all named transports there rather than calling it again for another bus.
+
+## Wait for a broker round-trip
+
+Against a real broker or emulator, a message that has left the host is not outstanding work, so idle can complete before the delivery comes back. Wait for the consumed message instead:
+
+```csharp
+using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+await sender.SendAsync(new OrderPlaced(orderId));
+
+var placed = await harness.WaitForConsumedAsync<OrderPlaced>(
+    message => message.OrderId == orderId, deadline.Token);
+```
+
+`WaitForConsumedAsync` completes with the first delivery of that registered message type that the consume pipeline handled successfully and that matches the optional predicate. It includes deliveries handled before the call, so start it before or after sending. A failed attempt does not match, nor does a delivery that failure handling redelivers, discards or dead-letters; a later successful redelivery does. Handlers that settle the native message themselves count as handled. The wait is signalled when processing finishes, not by polling. To wait for a cascade, wait for the last message in the chain.
+
+The predicate runs on the consuming thread, so keep it short. An exception from the predicate or from deserialization fails the wait, not the delivery. Cancellation cancels only that wait. `Reset()` clears the handled history, so a later wait only matches deliveries handled after the reset.
 
 ## Invoke a handler without a host
 

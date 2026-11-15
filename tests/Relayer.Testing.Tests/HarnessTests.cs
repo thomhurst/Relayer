@@ -555,16 +555,21 @@ public class HarnessTests
         {
             MessageId = "one", MessageType = new("harness.probe", 1), Body = new(body.WrittenMemory),
         });
+        var failedBody = new ArrayBufferWriter<byte>();
+        serializer.Serialize(new Probe(2), failedBody);
         using var second = pipeline.RentContext(new ConsumeMessage
         {
-            MessageId = "two", MessageType = new("harness.probe", 1), Body = new(body.WrittenMemory),
+            MessageId = "two", MessageType = new("harness.probe", 1), Body = new(failedBody.WrittenMemory),
         });
-        await pipeline.ProcessBatchAsync(new[] { first, second });
         var harness = provider.GetRequiredService<RelayerHarness>();
+        var failedItem = harness.WaitForConsumedAsync<Probe>(message => message.Value == 2);
+        await pipeline.ProcessBatchAsync(new[] { first, second });
         await harness.WaitForIdleAsync().WaitAsync(Limit);
+        await Assert.That((await harness.WaitForConsumedAsync<Probe>().WaitAsync(Limit)).Value).IsEqualTo(1);
+        await Assert.That(failedItem.IsCompleted).IsFalse();
         await Assert.That(harness.Consumed.Count).IsEqualTo(2);
-        await Assert.That(harness.GetConsumed<Probe>().Select(message => message.Value).ToArray()).IsEquivalentTo(new[] { 1, 1 });
-        await Assert.That(harness.Read<Probe>(harness.Failed[0].Message).Value).IsEqualTo(1);
+        await Assert.That(harness.GetConsumed<Probe>().Select(message => message.Value).ToArray()).IsEquivalentTo(new[] { 1, 2 });
+        await Assert.That(harness.Read<Probe>(harness.Failed[0].Message).Value).IsEqualTo(2);
         await Assert.That(harness.Failed.Count).IsEqualTo(1);
         await Assert.That(harness.Failed[0].Message.MessageId).IsEqualTo("two");
     }
@@ -580,6 +585,88 @@ public class HarnessTests
         await Assert.That(fixture.Harness.Failed.Count).IsEqualTo(1);
         await Assert.That(fixture.Harness.Failed[0].Operation).IsEqualTo(HarnessOperation.Dispatch);
         await Assert.That(fixture.Harness.Dispatched.Count).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task Wait_for_consumed_matches_deliveries_handled_before_and_after_the_call()
+    {
+        await using var fixture = await Fixture.Start();
+        await fixture.Send(new Probe(1));
+        await fixture.Idle();
+        var earlier = await fixture.Harness.WaitForConsumedAsync<Probe>(message => message.Value == 1).WaitAsync(Limit);
+        await Assert.That(earlier.Value).IsEqualTo(1);
+        var later = fixture.Harness.WaitForConsumedAsync<Probe>(message => message.Value == 2);
+        await Assert.That(later.IsCompleted).IsFalse();
+        await fixture.Send(new Probe(3));
+        await fixture.Idle();
+        await Assert.That(later.IsCompleted).IsFalse();
+        await fixture.Send(new Probe(2));
+        await Assert.That((await later.WaitAsync(Limit)).Value).IsEqualTo(2);
+        fixture.Harness.Reset();
+        var afterReset = fixture.Harness.WaitForConsumedAsync<Probe>();
+        await Assert.That(afterReset.IsCompleted).IsFalse();
+        await fixture.Send(new Probe(4));
+        await Assert.That((await afterReset.WaitAsync(Limit)).Value).IsEqualTo(4);
+    }
+
+    [Test]
+    public async Task Wait_for_consumed_completes_after_an_in_process_retry_succeeds()
+    {
+        var calls = 0;
+        await using var fixture = await Fixture.Start(new() { Handle = (_, _) =>
+            Interlocked.Increment(ref calls) == 1 ? ValueTask.FromException(new InvalidOperationException("transient")) : default },
+            failures: new() { RetryDelays = [TimeSpan.Zero] });
+        var consumed = fixture.Harness.WaitForConsumedAsync<Probe>();
+        await fixture.Send(new Probe(1));
+        await Assert.That((await consumed.WaitAsync(Limit)).Value).IsEqualTo(1);
+        await Assert.That(calls).IsEqualTo(2);
+        await Assert.That(fixture.Harness.Failed.Count).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task Wait_for_consumed_skips_a_failed_attempt_until_native_redelivery_succeeds()
+    {
+        await using var fixture = await Fixture.Start(new() { Handle = (_, context) =>
+            context.Attempt == 1 ? ValueTask.FromException(new InvalidOperationException("first")) : default },
+            failures: new() { RetryDelays = [], RedeliveryDelays = [TimeSpan.Zero] });
+        var consumed = fixture.Harness.WaitForConsumedAsync<Probe>();
+        await fixture.Send(new Probe(1));
+        await consumed.WaitAsync(Limit);
+        // The wait completes only after the second attempt, so both attempts are already recorded.
+        await Assert.That(fixture.Harness.Consumed.Count).IsEqualTo(2);
+        await Assert.That(fixture.Harness.Failed.Count).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task Wait_for_consumed_ignores_dead_lettered_and_discarded_deliveries_and_cancels_only_its_wait()
+    {
+        await using var fixture = await Fixture.Start(new() { Handle = (message, _) =>
+            ValueTask.FromException(message.Value == 1 ? new InvalidOperationException("poison") : new DiscardedProbeException()) },
+            failures: new() { RetryDelays = [] },
+            classifier: new FailureClassifierBuilder().On<DiscardedProbeException>(FailureAction.Discard).Build());
+        using var cancellation = new CancellationTokenSource();
+        var consumed = fixture.Harness.WaitForConsumedAsync<Probe>(cancellationToken: cancellation.Token);
+        await fixture.Send(new Probe(1));
+        await fixture.Send(new Probe(2));
+        await fixture.Idle();
+        await Assert.That(fixture.Harness.DeadLettered.Count).IsEqualTo(1);
+        await Assert.That(fixture.Harness.Failed.Count).IsEqualTo(2);
+        await Assert.That(consumed.IsCompleted).IsFalse();
+        cancellation.Cancel();
+        await Assert.That(async () => await consumed).Throws<OperationCanceledException>();
+        await Assert.That(fixture.Harness.WaitForIdleAsync().IsCompleted).IsTrue();
+    }
+
+    [Test]
+    public async Task Wait_for_consumed_reports_predicate_failures_to_the_waiter()
+    {
+        await using var fixture = await Fixture.Start();
+        var error = new InvalidOperationException("predicate");
+        var consumed = fixture.Harness.WaitForConsumedAsync<Probe>(_ => throw error);
+        await fixture.Send(new Probe(1));
+        await fixture.Idle();
+        await Assert.That(async () => await consumed.WaitAsync(Limit)).Throws<InvalidOperationException>().WithMessage("predicate");
+        await Assert.That(fixture.Harness.Failed.Count).IsEqualTo(0);
     }
 
     private sealed class TestOutbox : IOutboxEnlistment
@@ -605,12 +692,14 @@ public class HarnessTests
         private bool _started;
 
         internal static Task<Fixture> Create(ProbeControl? control = null, bool log = false,
-            TestOutbox? outbox = null, TimeProvider? clock = null, ILoggerFactory? logging = null, TimeSpan? maxRedeliveryDelay = null, FailureOptions? failures = null, byte? serializerMarker = null, bool tombstones = false)
+            TestOutbox? outbox = null, TimeProvider? clock = null, ILoggerFactory? logging = null, TimeSpan? maxRedeliveryDelay = null, FailureOptions? failures = null, byte? serializerMarker = null, bool tombstones = false,
+            IFailureClassifier? classifier = null)
         {
             var services = new ServiceCollection();
             services.AddSingleton(control ?? new ProbeControl());
             if (logging is not null) services.AddSingleton(logging);
             if (outbox is not null) services.AddScoped<IOutboxEnlistment>(_ => outbox);
+            if (classifier is not null) services.AddSingleton(classifier);
             services.AddRelayer(builder =>
             {
                 builder.AddMessageTypesFromThisAssembly();
@@ -645,9 +734,10 @@ public class HarnessTests
         }
 
         internal static async Task<Fixture> Start(ProbeControl? control = null, bool log = false,
-            TestOutbox? outbox = null, TimeProvider? clock = null, ILoggerFactory? logging = null, TimeSpan? maxRedeliveryDelay = null, FailureOptions? failures = null, byte? serializerMarker = null)
+            TestOutbox? outbox = null, TimeProvider? clock = null, ILoggerFactory? logging = null, TimeSpan? maxRedeliveryDelay = null, FailureOptions? failures = null, byte? serializerMarker = null,
+            IFailureClassifier? classifier = null)
         {
-            var fixture = await Create(control, log, outbox, clock, logging, maxRedeliveryDelay, failures, serializerMarker);
+            var fixture = await Create(control, log, outbox, clock, logging, maxRedeliveryDelay, failures, serializerMarker, classifier: classifier);
             await fixture.StartServices();
             return fixture;
         }
@@ -720,6 +810,8 @@ public class HarnessTests
 public sealed record Probe(int Value);
 [Message("harness.other")]
 public sealed record OtherProbe(int Value);
+
+public sealed class DiscardedProbeException : Exception;
 
 public sealed class ProbeControl
 {
