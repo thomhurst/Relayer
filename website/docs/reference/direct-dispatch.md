@@ -109,8 +109,10 @@ Native send failures use the registered `IFailureClassifier` after native client
 from one second to five minutes; retryable sends remain pending beyond `MaxDispatchAttempts`.
 `DeadLetter` immediately moves the fenced row to dead storage, while `Discard` completes it without
 a dead copy. See [failure classification and batch isolation](postgres-store.md#poison-rows-and-key-release)
-for default classification, native exception rules and partial batch handling. Native exception
-messages are stored in `last_error`; restrict database access as these messages can contain endpoint details.
+for default classification, native exception rules and partial batch handling. `last_error` stores the
+exception type and message, followed by the innermost exception's type and message, for example
+`System.InvalidOperationException: send failed ---> System.TimeoutException: socket timed out`, truncated
+to 4,096 characters. Restrict database access as these messages can contain endpoint details.
 A completion failure after a successful send logs a distinct error and leaves claims held until expiry,
 without changing attempts or `last_error`. If completion deletes fewer rows than were sent, a warning
 reports both counts and the duplicate-delivery risk. Increase `ClaimDuration` if native send or database

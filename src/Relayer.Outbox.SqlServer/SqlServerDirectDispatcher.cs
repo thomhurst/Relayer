@@ -103,7 +103,7 @@ internal sealed class SqlServerDirectDispatcher : OutboxDirectDispatchWorker<Out
             var claim = new OutboxClaim(id, Guid.NewGuid());
             var now = DateTimeOffset.UtcNow;
             if (await _store.TryClaimAsync(claim, now, now + _options.ClaimDuration, cancellationToken).ConfigureAwait(false))
-                await RecordFailureAsync(claim, error.Message, cancellationToken).ConfigureAwait(false);
+                await RecordFailureAsync(claim, OutboxErrorText.Describe(error), cancellationToken).ConfigureAwait(false);
         }
         while (offset < batch.Count && batch.Rows[offset].Transport == first.Transport &&
             batch.Rows[offset].Destination == first.Destination);
@@ -121,8 +121,8 @@ internal sealed class SqlServerDirectDispatcher : OutboxDirectDispatchWorker<Out
         CancellationToken cancellationToken, bool propagateDatabaseFailures, bool retryable = true)
     {
         if (SqlServerSendFailure.IsRetryable(_retrySendFailure, error, _logger))
-            return await _store.RecordRetryAsync(_claims[index], error.Message, DateTimeOffset.UtcNow, cancellationToken).ConfigureAwait(false);
-        await RecordFailureAsync(_claims[index], error.Message, cancellationToken).ConfigureAwait(false);
+            return await _store.RecordRetryAsync(_claims[index], OutboxErrorText.Describe(error), DateTimeOffset.UtcNow, cancellationToken).ConfigureAwait(false);
+        await RecordFailureAsync(_claims[index], OutboxErrorText.Describe(error), cancellationToken).ConfigureAwait(false);
         return true;
     }
 

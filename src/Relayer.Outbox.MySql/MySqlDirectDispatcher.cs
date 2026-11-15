@@ -91,7 +91,7 @@ internal sealed class MySqlDirectDispatcher : OutboxDirectDispatchWorker<OutboxD
             var claim = new OutboxClaim(id, Guid.NewGuid());
             var now = DateTimeOffset.UtcNow;
             if (await _store.TryClaimAsync(claim, now, now + _options.ClaimDuration, cancellationToken).ConfigureAwait(false))
-                (await _store.RecordDispatchFailureAsync(claim, error.Message, now, cancellationToken).ConfigureAwait(false)).RecordTelemetry(_instrumentation);
+                (await _store.RecordDispatchFailureAsync(claim, OutboxErrorText.Describe(error), now, cancellationToken).ConfigureAwait(false)).RecordTelemetry(_instrumentation);
         }
         while (offset < batch.Count && batch.Rows[offset].Transport == first.Transport &&
             batch.Rows[offset].Destination == first.Destination);
@@ -106,7 +106,7 @@ internal sealed class MySqlDirectDispatcher : OutboxDirectDispatchWorker<OutboxD
 
     protected override ValueTask<bool> RecordSendFailureAsync(OutboxDispatchBatch batch, int index, Exception error,
         CancellationToken cancellationToken, bool propagateDatabaseFailures, bool retryable = true) =>
-        _store.RecordRetryAsync(_claims[index], error.Message, DateTimeOffset.UtcNow, cancellationToken);
+        _store.RecordRetryAsync(_claims[index], OutboxErrorText.Describe(error), DateTimeOffset.UtcNow, cancellationToken);
 
     internal ValueTask DispatchRecoveredAsync(OutboxDispatchBatch batch, CancellationToken cancellationToken) =>
         DispatchAsync(batch, cancellationToken, recovery: true);

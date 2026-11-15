@@ -44,7 +44,7 @@ public abstract class OutboxOrderedDispatchContractTests
         var rows = await fixture.ReadRows();
         await Assert.That(rows.Length).IsEqualTo(3);
         await Assert.That(rows[0]).IsEqualTo(new Row(Id(1), 0, null, false, false));
-        await Assert.That(rows[1]).IsEqualTo(new Row(Id(2), 1, "broker offline", false, false));
+        await Assert.That(rows[1]).IsEqualTo(new Row(Id(2), 1, "System.InvalidOperationException: broker offline", false, false));
         fail = false;
         await fixture.MakeReady(Id(2)); // Retry eligibility may include a durable backoff.
         await Assert.That(await worker.DispatchLaneAsync(0)).IsEqualTo(2);
