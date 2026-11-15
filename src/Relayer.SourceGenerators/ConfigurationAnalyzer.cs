@@ -182,11 +182,26 @@ public sealed class ConfigurationAnalyzer : DiagnosticAnalyzer
                 if (!contract && !SymbolEqualityComparer.Default.Equals(constraint.OriginalDefinition, marker)) continue;
                 registered.TryAdd(method.TypeArguments[i], 0);
                 if (contract && constraint is INamedTypeSymbol { TypeArguments.Length: 1 } named)
-                    messages.Add(named.TypeArguments[0] is ITypeParameterSymbol { TypeParameterKind: TypeParameterKind.Method } parameter
-                        ? method.TypeArguments[parameter.Ordinal]
-                        : named.TypeArguments[0]);
+                    messages.Add(Substitute(named.TypeArguments[0], method));
             }
         return messages;
+    }
+
+    // Replaces the method's type parameters in a constraint type, including inside constructed
+    // types (IHandler<Envelope<TMessage>> called with TMessage = Order checks Envelope<Order>).
+    private static ITypeSymbol Substitute(ITypeSymbol type, IMethodSymbol method)
+    {
+        if (type is ITypeParameterSymbol { TypeParameterKind: TypeParameterKind.Method } parameter)
+            return method.TypeArguments[parameter.Ordinal];
+        if (type is not INamedTypeSymbol { IsGenericType: true } named) return type;
+        var arguments = new ITypeSymbol[named.TypeArguments.Length];
+        var changed = false;
+        for (var i = 0; i < arguments.Length; i++)
+        {
+            arguments[i] = Substitute(named.TypeArguments[i], method);
+            changed |= !SymbolEqualityComparer.Default.Equals(arguments[i], named.TypeArguments[i]);
+        }
+        return changed ? named.ConstructedFrom.Construct(arguments) : named;
     }
 
     private static (string? Name, int Version) Identity(AttributeData attribute)

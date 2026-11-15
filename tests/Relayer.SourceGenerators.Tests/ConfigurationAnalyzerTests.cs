@@ -354,6 +354,41 @@ public class ConfigurationAnalyzerTests
     }
 
     [Test]
+    [Arguments("builder.Infrastructure().MessageTypes.Add<Envelope<Order>>(\"orders\");", "")]
+    [Arguments("", "RLY001,RLY001")]
+    public async Task Referenced_generic_helper_checks_the_constructed_message_contract(string registration, string expected)
+    {
+        var external = Compile(Imports + """
+            public record Envelope<T>;
+            public static class Messaging
+            {
+                public static void LocalQueue<TMessage, THandler>(this IConsumerBuilder consumer)
+                    where THandler : class, IHandler<Envelope<TMessage>> => consumer.Handler<THandler, Envelope<TMessage>>();
+            }
+            """).WithAssemblyName("External");
+        using var stream = new MemoryStream();
+        await Assert.That(external.Emit(stream).Success).IsTrue();
+        var compilation = Compile(Imports + $$"""
+            public record Order;
+            static class Setup
+            {
+                public static void Add(IRelayerBuilder builder, IConsumerBuilder consumer)
+                {
+                    {{registration}}
+                    consumer.LocalQueue<Order, H>();
+                }
+            }
+            public class H : IHandler<Envelope<Order>>
+            {
+                public ValueTask HandleAsync(Envelope<Order> message, MessageContext context, CancellationToken ct) => default;
+            }
+            """).AddReferences(MetadataReference.CreateFromImage(stream.ToArray()));
+        var diagnostics = await compilation.WithAnalyzers([new ConfigurationAnalyzer()]).GetAnalyzerDiagnosticsAsync();
+        await Assert.That(Ids(diagnostics)).IsEqualTo(expected);
+        if (expected != "") await Assert.That(diagnostics.All(d => d.GetMessage().Contains("Envelope<Order>"))).IsTrue();
+    }
+
+    [Test]
     public async Task Unrelated_registration_names_do_not_register_handlers()
     {
         await Verify(Imports + InternalHandler + """
