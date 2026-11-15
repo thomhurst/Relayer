@@ -18,12 +18,13 @@ internal sealed class SqlServerDirectDispatcher : OutboxDirectDispatchWorker<Out
     private readonly string _prefix;
     private readonly string _dataSource;
     private readonly string _database;
+    private readonly SqlServerOrderedDispatcher? _ordered;
 
     [RequiresUnreferencedCode("SqlClient runtime trimming is unsupported; see https://github.com/dotnet/SqlClient/issues/1947.")]
     [RequiresDynamicCode("SqlClient runtime Native AOT is unsupported; see https://github.com/dotnet/SqlClient/issues/1947.")]
     internal SqlServerDirectDispatcher(string connectionString, SqlServerOutboxOptions storeOptions,
         SqlServerDirectDispatchOptions options, IEnumerable<ITransport> transports, ILogger<SqlServerDirectDispatcher> logger,
-        SqlServerOutboxStore? store = null, RelayerInstrumentation? instrumentation = null)
+        SqlServerOutboxStore? store = null, RelayerInstrumentation? instrumentation = null, SqlServerOrderedDispatcher? ordered = null)
         : base(options.QueueCapacity, options.BatchSize, options.ClaimDuration, transports, logger, instrumentation)
     {
         _store = store ?? new(connectionString, storeOptions);
@@ -34,6 +35,8 @@ internal sealed class SqlServerDirectDispatcher : OutboxDirectDispatchWorker<Out
         _schema = storeOptions.Schema ?? "dbo";
         _prefix = storeOptions.TablePrefix;
         _options = options;
+        // An in-process ordered worker for the same tables is woken after commit instead of waiting for its poll.
+        if (ordered is not null && ordered.Matches(_schema, _prefix)) _ordered = ordered;
     }
 
     internal void ValidateStore(string? schema, string prefix)
@@ -60,6 +63,8 @@ internal sealed class SqlServerDirectDispatcher : OutboxDirectDispatchWorker<Out
     // Called only after durable commit. Queue pressure and shutdown cannot make a committed transaction fail.
     internal void Committed(List<SqlServerBufferedMessage> rows, int count)
     {
+        // Take moves unordered rows out of the source, so read ordered lanes first.
+        _ordered?.Committed(rows, count);
         var batch = RentBatch();
         batch.Take(rows, count, DateTimeOffset.UtcNow);
         Enqueue(batch);

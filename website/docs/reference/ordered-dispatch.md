@@ -75,8 +75,10 @@ the lane lock before sending; a probe never grants ownership or permits overtaki
 A worker scans its assigned lanes and sends one bounded batch per lane per cycle. After any committed progress it immediately starts another cycle, including when the time budget shortened a batch. PollInterval applies only to scans with no progress, so a backlog is not limited to one batch per polling interval.
 
 A commit can also end an idle wait early. When the direct dispatcher and the ordered worker run in the
-committing process under the same store name and tables, as `UsePostgreSqlOutbox` registers them, a commit
-that writes an unscheduled keyed row to a lane this instance owns wakes the worker at once. Rows written by
+committing process under the same store name and tables, a commit that writes an unscheduled keyed row to a
+lane this instance owns wakes the worker at once. `UsePostgreSqlOutbox` registers them this way; with SQL Server
+and MySQL, pass the same name to `AddRelayerSqlServerDirectDispatch` and `AddRelayerSqlServerOrderedDispatch`,
+or to `AddRelayerMySqlDirectDispatch` and `AddRelayerMySqlOrderedDispatch`. Rows written by
 other processes, scheduled rows and lanes owned by another instance still wait for the next poll.
 
 Each lane lease has

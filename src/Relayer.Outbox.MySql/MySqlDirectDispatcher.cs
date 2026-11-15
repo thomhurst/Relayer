@@ -10,16 +10,19 @@ internal sealed class MySqlDirectDispatcher : OutboxDirectDispatchWorker<OutboxD
     private readonly MySqlDirectDispatchOptions _options;
     private readonly MySqlConnector.MySqlConnectionStringBuilder _target;
     private readonly string _prefix;
+    private readonly MySqlOrderedDispatcher? _ordered;
 
     internal MySqlDirectDispatcher(MySqlConnector.MySqlDataSource dataSource, MySqlOutboxOptions storeOptions,
         MySqlDirectDispatchOptions options, IEnumerable<ITransport> transports, ILogger<MySqlDirectDispatcher> logger,
-        MySqlOutboxStore? store = null, RelayerInstrumentation? instrumentation = null)
+        MySqlOutboxStore? store = null, RelayerInstrumentation? instrumentation = null, MySqlOrderedDispatcher? ordered = null)
         : base(options.QueueCapacity, options.BatchSize, options.ClaimDuration, transports, logger, instrumentation)
     {
         _store = store ?? new(dataSource, storeOptions);
         _target = ValidateDataSource(dataSource);
         _prefix = storeOptions.TablePrefix;
         _options = options;
+        // An in-process ordered worker for the same tables is woken after commit instead of waiting for its poll.
+        if (ordered is not null && ordered.Matches(_prefix)) _ordered = ordered;
     }
 
     internal static MySqlConnector.MySqlConnectionStringBuilder ValidateDataSource(MySqlConnector.MySqlDataSource source)
@@ -48,6 +51,8 @@ internal sealed class MySqlDirectDispatcher : OutboxDirectDispatchWorker<OutboxD
     // Called only after durable commit. Queue pressure and shutdown cannot make a committed transaction fail.
     internal void Committed(List<BufferedOutboxMessage> rows, int count)
     {
+        // Take moves unordered rows out of the source, so read ordered lanes first.
+        _ordered?.Committed(rows, count);
         var batch = RentBatch();
         batch.Take(rows, count, DateTimeOffset.UtcNow);
         Enqueue(batch);

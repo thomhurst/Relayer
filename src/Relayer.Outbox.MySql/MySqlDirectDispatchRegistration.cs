@@ -42,7 +42,8 @@ public static partial class MySqlOutboxServiceCollectionExtensions
             new MySqlDirectDispatcher(dataSource, snapshot,
                 provider.GetRequiredService<IOptionsMonitor<MySqlDirectDispatchOptions>>().Get(storeName),
                 provider.GetServices<ITransport>(), provider.GetRequiredService<ILogger<MySqlDirectDispatcher>>(),
-                instrumentation: provider.GetService<RelayerInstrumentation>()));
+                instrumentation: provider.GetService<RelayerInstrumentation>(),
+                ordered: provider.GetKeyedService<MySqlOrderedDispatcher>(storeName)));
         services.AddSingleton<IHostedService>(provider => provider.GetRequiredKeyedService<MySqlDirectDispatcher>(storeName));
         return services;
     }

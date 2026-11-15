@@ -202,6 +202,77 @@ public sealed class OrderedDispatchTests
         await Assert.That(transport.Ids.SequenceEqual(Enumerable.Range(1, 9).Select(Id))).IsTrue();
     }
 
+    [Test]
+    public async Task Commit_signals_only_unscheduled_keyed_rows_on_owned_lanes()
+    {
+        await using var database = new MySqlFixture();
+        await database.StartAsync();
+        using var ordered = Worker(database.Source, new RecordingTransport());
+        // No lane is assigned before the first rebalance.
+        ordered.Committed(Rows(Id(1)), 1);
+        await Assert.That(ordered.Wake.Signalled).IsFalse();
+        await ((IOrderedLaneWorker)ordered).RebalanceAsync(default);
+        try
+        {
+            ordered.Committed(Rows(Id(2), deliverAt: DateTimeOffset.UtcNow.AddMinutes(1)), 1);
+            ordered.Committed(Rows(Id(3), key: null), 1);
+            await Assert.That(ordered.Wake.Signalled).IsFalse();
+            ordered.Committed(Rows(Id(4)), 1);
+            await Assert.That(ordered.Wake.Signalled).IsTrue();
+        }
+        finally { await ((IOrderedLaneWorker)ordered).ReleaseAsync(default); }
+    }
+
+    [Test]
+    public async Task In_process_commit_wakes_an_idle_ordered_worker_before_its_poll()
+    {
+        await using var database = new MySqlFixture();
+        await database.StartAsync();
+        var delivered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var clock = new PollClock();
+        var transport = new RecordingTransport((_, _) => { delivered.TrySetResult(); return ValueTask.CompletedTask; });
+        using var ordered = new MySqlOrderedDispatcher(database.Source, new() { Lanes = 1 }, [transport],
+            NullLogger<MySqlOrderedDispatcher>.Instance, clock);
+        using var direct = new MySqlDirectDispatcher(database.Source, new() { Lanes = 1 }, new(), [transport],
+            NullLogger<MySqlDirectDispatcher>.Instance, ordered: ordered);
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+        await ordered.StartAsync(timeout.Token);
+        try
+        {
+            // The poll timer never fires, so only the commit handoff can start the next scan.
+            await clock.FirstPoll.Task.WaitAsync(timeout.Token);
+            await Insert(database, Id(1));
+            direct.Committed(Rows(Id(1)), 1);
+            await delivered.Task.WaitAsync(timeout.Token);
+        }
+        finally { await ordered.StopAsync(timeout.Token); }
+        await Assert.That(transport.Ids.SequenceEqual([Id(1)])).IsTrue();
+    }
+
+    private static List<BufferedOutboxMessage> Rows(Guid id, string? key = "key", DateTimeOffset? deliverAt = null)
+    {
+        var row = new BufferedOutboxMessage();
+        row.Copy(new OutboxRecord(id, "events", "event;v=1", new OutgoingMessage("orders", new byte[] { 1 },
+            orderingKey: key is null ? null : new WireString(key), deliverAt: deliverAt), DateTimeOffset.UtcNow), 1);
+        return [row];
+    }
+
+    private sealed class PollClock : TimeProvider
+    {
+        internal TaskCompletionSource FirstPoll { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public override ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period)
+        {
+            FirstPoll.TrySetResult();
+            return new SilentTimer();
+        }
+        private sealed class SilentTimer : ITimer
+        {
+            public bool Change(TimeSpan dueTime, TimeSpan period) => true;
+            public void Dispose() { }
+            public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+        }
+    }
+
     private sealed class BudgetClock : TimeProvider
     {
         private long _timestamp;

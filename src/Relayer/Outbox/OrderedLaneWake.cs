@@ -7,6 +7,8 @@ internal sealed class OrderedLaneWake
     private TaskCompletionSource? _waiter;
     private int _signalled;
 
+    internal bool Signalled => Volatile.Read(ref _signalled) != 0;
+
     // Called on the committing thread. The waiter continues asynchronously, never inline here.
     internal void Signal()
     {
