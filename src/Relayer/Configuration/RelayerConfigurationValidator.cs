@@ -32,7 +32,7 @@ internal sealed class RelayerConfigurationValidator(RelayerConfiguration configu
         var failures = new List<string>();
         if (!Enum.IsDefined(configuration.TopologyMode)) failures.Add("TopologyMode is not a defined value.");
         var names = new HashSet<string>(StringComparer.Ordinal);
-        var routes = new HashSet<Type>();
+        var routes = new HashSet<(Type, string, string)>();
         foreach (var transport in configuration.Transports)
         {
             if (transport.TopologyMode is { } mode && !Enum.IsDefined(mode))
@@ -44,7 +44,8 @@ internal sealed class RelayerConfigurationValidator(RelayerConfiguration configu
             {
                 var location = $"Route for '{route.MessageType}' on transport '{transport.Name}'";
                 if (string.IsNullOrWhiteSpace(route.Destination)) failures.Add($"{location}: destination must not be blank.");
-                if (!routes.Add(route.MessageType)) failures.Add($"{location}: a message type can have only one route.");
+                if (!routes.Add((route.MessageType, transport.Name, route.Destination)))
+                    failures.Add($"{location}: a message type can have only one route to each destination; '{route.Destination}' is declared more than once.");
                 if (!messages.TryGetMessageType(route.MessageType, out _))
                     failures.Add($"{location}: register a stable message identity before startup.");
                 if (route is ISendRouteDefinition send) send.SendOptions.Validate(location, failures);

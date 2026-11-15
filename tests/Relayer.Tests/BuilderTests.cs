@@ -138,7 +138,11 @@ public class BuilderTests
                 b.Send<OrderPlaced>("");
                 b.Consume("", c => c.Concurrency(0).Batch(0, TimeSpan.Zero));
             });
-            relayer.AddTransport<BrokerOptions, ConsumerOptions>("events", b => b.Send<OrderPlaced>("other"));
+            relayer.AddTransport<BrokerOptions, ConsumerOptions>("events", b =>
+            {
+                b.Send<OrderPlaced>("other");
+                b.Send<OrderPlaced>("other");
+            });
             relayer.AddTransport<OtherBrokerOptions, ConsumerOptions>("commands", b =>
                 b.Options.Validate(_ => false, "credentials required"));
         });

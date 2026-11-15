@@ -486,7 +486,7 @@ Refines [D8](#d8-systemtextjson-source-generation-by-default).
 **Decision.**
 - The core owns named, typed transport, route and consumer declarations, available before execution pipelines. Native transport packages wrap `AddTransport<TTransportOptions, TConsumerOptions>` in their own simple registration extensions.
 - The single route declaration is `Send<T>` for any native destination. Sending versus publishing remains native routing, as in §3.4.
-- Each message type has one route across all transports. Cross-broker fan-out is outside the default routing contract.
+- Each message type has one route across all transports. Cross-broker fan-out is outside the default routing contract. Superseded by [D82](#d82-several-send-routes-fan-out-through-the-outbox): a message type can have several routes, one per destination.
 - Consumer `Handler<THandler>()` registration is source-generated, just like root handler registration. It adds every single-message and batch descriptor to the shared registry before freezing it, and records the handler on that consumer. The untyped `IConsumerBuilder` keeps generated registration independent of native option types; the callback's typed builder retains access to native `Options`.
 - Transport option configuration uses named `OptionsBuilder<T>` and `IOptionsMonitor<T>`. Applications use generated binding for Native AOT rather than a generic reflection-based binder inside the core.
 - A core hosted validator reports declaration and named-option errors together before later native transport hosted services start. Pipeline, native capability and topology checks remain responsible for their own execution-specific contracts.
@@ -1950,3 +1950,21 @@ lookup, lock, eviction or route-dependent allocation; state is fixed per consume
 Terraform and Bicep exporters stay in their transport packages and ship as stable. `Relayer.RabbitMQ.Streams` is not packable until #316 delivers send and receive; its source and tests remain in the repository.
 
 This resolves the release scope of D20, D45, D56, D60 and D66 without removals, relocation or runtime behavior changes. Repository builds explicitly opt in to exercise preview implementations and samples. Consumer projects must make their own opt-in.
+
+## D82. Several send routes fan out through the outbox
+
+**Context.** D27 limited each message type to one route, so an application could not send one logical message to a broker topic and to another transport's queue without extra message types (#802). A native topic or exchange already fans out within one broker; across brokers, or to several queues, there is no native operation that covers every destination.
+
+**Decision.**
+- A message type can declare `Send<T>` for several destinations, on one transport or several. A repeated transport and destination fails startup validation. There is no separate publish API (§3.4).
+- A send to several routes enlists one outbox row per route, in declaration order, in the caller's transaction. All rows share the envelope message ID, time and parent context, so consumers deduplicate by message ID. Each route records its own send span, so its creation context is that route's span.
+- Outbox rows need distinct keys. The first row's ID is the message ID, which keeps single-route rows and lookups unchanged; each later row gets its own UUIDv7 ID, which dead-letter and failure tooling reports for that row.
+- A direct send to several routes cannot be atomic, so it fails before any send, including through a handler's send buffer. Use an outbox transaction.
+- Ordering keys, capability checks, transaction requirements and the per-send configuration callback apply per route. Request and response types keep exactly one route, because the reply must match one native destination.
+
+**Consequences.** Single-route sends keep their pooled path, with one extra virtual call and no allocation. A fan-out send pools its loop state and runs one operation per route. `OutboxRecord.Id` identifies the row; it equals the envelope message ID except on later fan-out rows.
+
+**Alternatives rejected.**
+- Best-effort direct fan-out: a partial failure leaves some destinations sent and others not, with no durable record of which.
+- Several handlers per PostgreSQL local consumer: covers only local handlers, not broker destinations.
+

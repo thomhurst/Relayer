@@ -15,7 +15,8 @@ public interface IOutboxEnlistment
     /// <summary>Takes an owned copy of the original row for the active transaction before completing.</summary>
     /// <remarks>
     /// Observe cancellation. Payload storage is borrowed only until completion. The transaction owner persists
-    /// buffered rows before commit. Id, MessageType and CreatedAt come from the original send envelope, including raw mode.
+    /// buffered rows before commit. MessageType and CreatedAt come from the original send envelope, including raw mode. Id is the message ID,
+    /// except on the later rows of a send to several routes, which each have their own row ID.
     /// </remarks>
     ValueTask EnlistAsync(OutboxRecord record, CancellationToken cancellationToken);
 }

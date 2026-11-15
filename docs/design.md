@@ -286,7 +286,7 @@ The core's `HandlerRegistry` freezes after configuration. Pipeline composition s
 
 `ISender` is scoped. When an outbox is configured and a transaction is active in the current scope, sends are enlisted automatically. Otherwise they go straight to the transport. To be explicit, use `sender.SendNowAsync` (bypass the outbox) or `sender.SendViaOutboxAsync` (require the outbox; throws when there is no transaction).
 
-Publish versus send is a routing concern, not a separate API. Whether a destination fans out depends on what the endpoint is natively (a topic or exchange versus a queue).
+Publish versus send is a routing concern, not a separate API. Whether a destination fans out depends on what the endpoint is natively (a topic or exchange versus a queue). Declaring `Send<T>` for several destinations sends one message to each of them through the outbox, sharing one envelope identity ([D82](decisions.md#d82-several-send-routes-fan-out-through-the-outbox)).
 
 The core route registration seam, middleware lifetime, timeout contract, and scoped outbox integration are documented in [Sending messages](https://relayer.tomlonghurst.dev/docs/guides/sending).
 

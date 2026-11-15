@@ -17,6 +17,8 @@ internal abstract class SendRouteRegistration
     internal abstract object Key { get; }
     internal abstract object TombstoneKey { get; }
     internal abstract object? BuildTombstone(object route);
+    internal abstract object CreateTarget(List<object> routes);
+    internal abstract object CreateTombstoneTarget(List<object> routes);
     internal abstract object Build(MessageTypeRegistry types, Dictionary<string, ITransport> transports,
         IMessageSerializer serializer, SendDelegate pipeline, EndpointCapabilityCache capabilitiesCache, OutboxCapabilities outbox);
 }
@@ -34,6 +36,16 @@ internal sealed class SendRouteRegistration<TMessage>(string transportName, stri
     internal override object Key => SendRouteKey<TMessage>.Value;
     internal override object TombstoneKey => SendRouteKey<Tombstone<TMessage>>.Value;
     internal override object? BuildTombstone(object route) => ((SendRoute<TMessage>)route).CreateTombstoneRoute();
+    internal override object CreateTarget(List<object> routes) => CreateTarget<TMessage>(routes);
+    internal override object CreateTombstoneTarget(List<object> routes) => CreateTarget<Tombstone<TMessage>>(routes);
+
+    private static SendTarget<T> CreateTarget<T>(List<object> routes)
+    {
+        if (routes.Count == 1) return (SendRoute<T>)routes[0];
+        var array = new SendRoute<T>[routes.Count];
+        for (var i = 0; i < array.Length; i++) array[i] = (SendRoute<T>)routes[i];
+        return new FanOutSendTarget<T>(array);
+    }
 
     internal override object Build(MessageTypeRegistry types, Dictionary<string, ITransport> transports,
         IMessageSerializer serializer, SendDelegate pipeline, EndpointCapabilityCache capabilitiesCache, OutboxCapabilities outbox)
@@ -87,30 +99,48 @@ internal sealed class SendPipeline
             pipeline = context => step.InvokeAsync(context, next);
         }
 
-        var routes = new Dictionary<object, object>(ReferenceEqualityComparer.Instance);
+        // Several Send<T> declarations fan one message out. Reject a repeated destination here too, because a
+        // sender resolved without the hosted startup validator would otherwise enlist duplicate rows.
+        var declared = new Dictionary<object, (SendRouteRegistration Registration, List<object> Routes, bool Tombstone)>(ReferenceEqualityComparer.Instance);
+        var destinations = new HashSet<(Type, string, string)>();
         foreach (var transport in configuration.Transports)
         {
             if (transport.Routes.Count == 0) continue;
             var serializer = services.GetMessageSerializer(transport.Name);
             foreach (var definition in transport.Routes)
             {
+                if (!destinations.Add((definition.MessageType, transport.Name, definition.Destination)))
+                {
+                    throw new InvalidOperationException($"Route for '{definition.MessageType}' on transport '{transport.Name}': a message type can have only one route to each destination; '{definition.Destination}' is declared more than once.");
+                }
                 var registration = ((ISendRouteDefinition)definition).CreateSendRegistration(transport.Name);
                 var route = registration.Build(types, namedTransports, serializer, pipeline, capabilitiesCache, outbox);
-                if (registration.BuildTombstone(route) is { } tombstone && !routes.TryAdd(registration.TombstoneKey, tombstone))
-                    throw new InvalidOperationException("A tombstone has more than one send route. Route its original message type only.");
-                if (!routes.TryAdd(registration.Key, route))
-                {
-                    throw new InvalidOperationException("A message has more than one send route. Configure one destination per message type.");
-                }
+                Add(declared, registration, registration.Key, route, tombstone: false);
+                if (registration.BuildTombstone(route) is { } tombstone)
+                    Add(declared, registration, registration.TombstoneKey, tombstone, tombstone: true);
             }
         }
+        var routes = new Dictionary<object, object>(declared.Count, ReferenceEqualityComparer.Instance);
+        foreach (var (key, entry) in declared)
+            routes.Add(key, entry.Tombstone ? entry.Registration.CreateTombstoneTarget(entry.Routes) : entry.Registration.CreateTarget(entry.Routes));
         _routes = routes.ToFrozenDictionary(ReferenceEqualityComparer.Instance);
     }
 
-    internal SendRoute<TMessage> GetRoute<TMessage>() =>
+    private static void Add(Dictionary<object, (SendRouteRegistration, List<object>, bool)> declared,
+        SendRouteRegistration registration, object key, object route, bool tombstone)
+    {
+        if (declared.TryGetValue(key, out var entry)) entry.Item2.Add(route);
+        else declared.Add(key, (registration, [route], tombstone));
+    }
+
+    internal SendTarget<TMessage> GetTarget<TMessage>() =>
         _routes.TryGetValue(SendRouteKey<TMessage>.Value, out var route)
-            ? (SendRoute<TMessage>)route
+            ? (SendTarget<TMessage>)route
             : throw new InvalidOperationException("No send route is configured for this message. Declare a Send<TMessage> route on its named transport inside AddRelayer.");
+
+    /// <summary>Requests and replies correlate with one native destination, so they need exactly one route.</summary>
+    internal SendRoute<TMessage> GetRoute<TMessage>() => GetTarget<TMessage>() as SendRoute<TMessage>
+        ?? throw new InvalidOperationException("Requests and replies need exactly one send route. Remove the extra Send<TMessage> declarations for this message type.");
 }
 
 internal interface ISendOperation

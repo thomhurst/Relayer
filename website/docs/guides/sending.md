@@ -42,7 +42,24 @@ Portable send settings live on `RouteBuilder.SendOptions`; see [configuration](c
 Transport authors use the lower-level [registration seam](../transports/authoring.md#registration).
 For atomic business changes and outgoing messages, follow the [outbox guide](outbox.md).
 
-When runtime `ITransport` services are registered, route composition resolves message identities, named transports, and destination capabilities once at host startup. Unknown transports, duplicate names, duplicate routes, missing message identities, nonpositive or infinite timeouts, and ordering-key declarations on endpoints without `OrderedByKey` support fail at startup. Declaration-only hosts remain usable without native adapters; resolving `ISender` still validates its routes. A send without a route fails with an actionable error. Routing uses the generic message type passed to `SendAsync<TMessage>`, so send the concrete contract type rather than `object`.
+When runtime `ITransport` services are registered, route composition resolves message identities, named transports, and destination capabilities once at host startup. Unknown transports, duplicate names, a repeated route to the same destination, missing message identities, nonpositive or infinite timeouts, and ordering-key declarations on endpoints without `OrderedByKey` support fail at startup. Declaration-only hosts remain usable without native adapters; resolving `ISender` still validates its routes. A send without a route fails with an actionable error. Routing uses the generic message type passed to `SendAsync<TMessage>`, so send the concrete contract type rather than `object`.
+
+## Sending to several routes
+
+Declare `Send<T>` more than once to send one message to several destinations, on the same transport or on different ones. For example, a domain event can go to a Kafka topic for other services and to a Service Bus queue for a billing worker:
+
+```csharp
+relayer.Kafka("events", kafka => kafka.Send<OrderPlaced>("orders",
+    route => route.OrderingKey(static message => message.CustomerId)));
+relayer.ServiceBus("bus", bus => bus.Send<OrderPlaced>("billing"));
+
+// Inside an active outbox transaction:
+await sender.SendAsync(new OrderPlaced(customerId), cancellationToken);
+```
+
+Each send enlists one outbox row per route in the same transaction, in declaration order. Every row carries the same envelope identity (`ce_id`) and time, so consumers can deduplicate by message ID. The first row's outbox ID is the message ID; each later row gets its own UUIDv7 outbox ID, which dead-letter tools and dispatch failures report for that row. Each route keeps its own ordering key, capability checks and send span. A per-send `configure` callback runs once for each route. If enlisting a later route fails, the exception reaches the caller before commit; roll back the transaction rather than committing the rows already enlisted.
+
+Sending to several routes needs an active outbox transaction. A direct send cannot be atomic across destinations, so `SendNowAsync`, and `SendAsync` without an active transaction, fail before anything is sent. Request and response types need exactly one route. A repeated route to the same destination fails at startup.
 
 String ordering selectors remain strings. Scalar selectors constrained to `IUtf8SpanFormattable` format into pooled UTF-8 storage without boxing or allocating a string. `OutgoingMessage.OrderingKey` carries either representation as a nullable `WireString`. A native adapter uses the original text or bytes directly, or converts at its required native boundary.
 

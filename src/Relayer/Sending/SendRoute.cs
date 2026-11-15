@@ -10,7 +10,43 @@ namespace Relayer;
 
 internal readonly record struct ReplyMetadata(WireString ReplyTo, WireString CorrelationId);
 
-internal sealed class SendRoute<TMessage>
+/// <summary>The send entry point for a message type: one route, or a fan-out over several.</summary>
+internal abstract class SendTarget<TMessage>
+{
+    internal abstract ValueTask SendAsync(TMessage message, Action<SendOptions>? configure,
+        IOutboxEnlistment? outbox, CancellationToken callerToken, AttemptSendBuffer? buffer,
+        ReplyMetadata reply = default, WireString tenant = default);
+}
+
+/// <summary>Enlists one outbox row per route in the caller's transaction, sharing one envelope identity (#802).</summary>
+internal sealed class FanOutSendTarget<TMessage>(SendRoute<TMessage>[] routes) : SendTarget<TMessage>
+{
+    internal override ValueTask SendAsync(TMessage message, Action<SendOptions>? configure,
+        IOutboxEnlistment? outbox, CancellationToken callerToken, AttemptSendBuffer? buffer,
+        ReplyMetadata reply = default, WireString tenant = default)
+    {
+        // Direct sends to several destinations cannot be atomic, so only the outbox fans out.
+        if (outbox is null)
+            throw new InvalidOperationException($"Message '{routes[0].MessageType}' has {routes.Length} send routes, and sending to several routes requires an active outbox transaction. Begin an outbox transaction and use SendAsync or SendViaOutboxAsync.");
+        return SendAllAsync(message, configure, outbox, callerToken, reply, tenant);
+    }
+
+    [RuntimeAsyncMethodGeneration(false)]
+    [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
+    private async ValueTask SendAllAsync(TMessage message, Action<SendOptions>? configure,
+        IOutboxEnlistment outbox, CancellationToken callerToken, ReplyMetadata reply, WireString tenant)
+    {
+        var metadata = MessageEnvelopeMetadata.Create(Activity.Current?.Context ?? default);
+        for (var i = 0; i < routes.Length; i++)
+        {
+            // Rows need distinct keys; the first keeps the message ID so lookups by ID still find a row.
+            var rowId = i == 0 ? metadata.MessageId : Guid.CreateVersion7();
+            await routes[i].SendAsync(message, configure, outbox, callerToken, null, reply, tenant, metadata, rowId).ConfigureAwait(false);
+        }
+    }
+}
+
+internal sealed class SendRoute<TMessage> : SendTarget<TMessage>
 {
     private readonly ITransport _transport;
     private readonly string _destination;
@@ -28,6 +64,7 @@ internal sealed class SendRoute<TMessage>
     private readonly bool _isTombstone;
 
     internal SendRouteOptions Options => _options;
+    internal MessageType MessageType => _messageType;
     internal bool MatchesDestination(WireString address) => address.Text is { } text
         ? string.Equals(text, _destination, StringComparison.Ordinal)
         : address.Utf8.Span.SequenceEqual(_destinationUtf8);
@@ -55,10 +92,15 @@ internal sealed class SendRoute<TMessage>
         _wireType = messageType.ToString();
     }
 
-    internal ValueTask SendAsync(TMessage message, Action<SendOptions>? configure,
+    internal override ValueTask SendAsync(TMessage message, Action<SendOptions>? configure,
         IOutboxEnlistment? outbox, CancellationToken callerToken, AttemptSendBuffer? buffer,
         ReplyMetadata reply = default, WireString tenant = default)
-        => Rent().Start(message, configure, outbox, callerToken, buffer, reply, tenant);
+        => Rent().Start(message, configure, outbox, callerToken, buffer, reply, tenant, default, default);
+
+    internal ValueTask SendAsync(TMessage message, Action<SendOptions>? configure,
+        IOutboxEnlistment? outbox, CancellationToken callerToken, AttemptSendBuffer? buffer,
+        ReplyMetadata reply, WireString tenant, MessageEnvelopeMetadata metadata, Guid rowId)
+        => Rent().Start(message, configure, outbox, callerToken, buffer, reply, tenant, metadata, rowId);
 
     private Operation Rent() => _operations.TryRentGuarded() ?? new Operation(this);
 
@@ -81,6 +123,7 @@ internal sealed class SendRoute<TMessage>
         private IOutboxEnlistment? _outbox;
         private AttemptSendBuffer? _buffer;
         private MessageEnvelopeMetadata _metadata;
+        private Guid _rowId;
         private ReplyMetadata _reply;
         private WireString _tenant;
         private string? _messageId;
@@ -109,7 +152,8 @@ internal sealed class SendRoute<TMessage>
         public override SendOptions Options { get; } = new();
         public override CancellationToken CancellationToken => Timeout.Token;
 
-        internal ValueTask Start(TMessage message, Action<SendOptions>? configure, IOutboxEnlistment? outbox, CancellationToken callerToken, AttemptSendBuffer? buffer, ReplyMetadata reply, WireString tenant)
+        internal ValueTask Start(TMessage message, Action<SendOptions>? configure, IOutboxEnlistment? outbox, CancellationToken callerToken, AttemptSendBuffer? buffer, ReplyMetadata reply, WireString tenant,
+            MessageEnvelopeMetadata metadata, Guid rowId)
         {
             _reply = reply;
             _tenant = tenant;
@@ -117,7 +161,8 @@ internal sealed class SendRoute<TMessage>
             _outbox = outbox;
             _buffer = buffer;
             _callerToken = callerToken;
-            _metadata = MessageEnvelopeMetadata.Create(Activity.Current?.Context ?? default);
+            _metadata = metadata.MessageId == Guid.Empty ? MessageEnvelopeMetadata.Create(Activity.Current?.Context ?? default) : metadata;
+            _rowId = rowId == Guid.Empty ? _metadata.MessageId : rowId;
             var previousActivity = Activity.Current;
             Exception? error = null;
             try
@@ -268,7 +313,7 @@ internal sealed class SendRoute<TMessage>
             }
             return _outbox is null
                 ? _route._transport.SendAsync(outgoing, CancellationToken)
-                : _outbox.EnlistAsync(new OutboxRecord(_metadata.MessageId, _route._transport.Name,
+                : _outbox.EnlistAsync(new OutboxRecord(_rowId, _route._transport.Name,
                     _route._wireType, outgoing, _metadata.Time), CancellationToken);
         }
 
@@ -299,6 +344,7 @@ internal sealed class SendRoute<TMessage>
             _outbox = null;
             _buffer = null;
             _metadata = default;
+            _rowId = default;
             _reply = default;
             _tenant = default;
             _messageId = null;
