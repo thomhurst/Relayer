@@ -283,7 +283,9 @@ public class TenantDispatchTests
         {
             await worker.PassAsync(guard.Token);
         } while (!blockedLaneEntered || transport.Sent.Count < 2);
-        await Assert.That(transport.Sent.Select(x => x.Id).SequenceEqual([Id(2), Id(3)])).IsTrue();
+        // Lanes are independent and a cut-short turn resumes at the next lane, so
+        // lanes 2 and 3 can be sent in either order. Each must be sent exactly once.
+        await Assert.That(transport.Sent.Select(x => x.Id).Order().ToArray()).IsEquivalentTo(new[] { Id(2), Id(3) }.Order().ToArray());
         await Assert.That(await Count(store, "outbox")).IsEqualTo(1L);
         await fixture.WaitForNoConnections();
         await worker.ReleaseAllAsync();
