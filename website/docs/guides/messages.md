@@ -63,6 +63,20 @@ services.AddRelayer(relayer => relayer.Infrastructure().MessageTypes.Add<OrderPl
 
 Analyzer [RLY001](../reference/diagnostics.md#rly001) accepts a statically visible `MessageTypeRegistry.Add<T>` call anywhere in the same compilation. It covers that exact type and its tombstone wrapper, including closed generic contracts. Registrations inside referenced assemblies or generic helpers are not inferred: mark a registering helper with `[RegistersMessageIdentity(nameof(TMessage))]`, or declare `[assembly: MessageIdentitiesRegisteredAtStartup(typeof(Envelope<>))]` for a generic contract registered at startup. See the [RLY001 guidance](../reference/diagnostics.md#rly001). Explicit identity registration does not generate JSON metadata: provide a source-generated JSON context or a custom serializer as described below.
 
+### One handler for several names
+
+Each CLR type has one wire identity, and sends always use it. A consumer can also accept other names for a type it handles, so one handler receives several event types that share a payload shape, without a wrapper type per name:
+
+```csharp
+transport.Consume("rsvps", consumer => consumer
+    .Handler<RsvpHandler>()
+    .Accepts<RsvpChanged>("rsvp.recorded", "rsvp.updated", "rsvp.withdrawn"));
+```
+
+The names are version 1; pass `MessageType` values, such as `new MessageType("rsvp.updated", 2)`, for other versions. Accepted deliveries are deserialized as `RsvpChanged`, and `context.MessageType` reports the name that arrived. A name may belong to another type registered in the same host, so a producer in the same process can keep its own types. Accepting applies only to this consumer; it never changes how messages are sent or what other consumers receive. It also covers a `Tombstone<RsvpChanged>` handler and batch consumers.
+
+Startup fails if the consumer has no handler for the type, or if another handler, version upcaster or `Accepts` call in the consumer already claims the name.
+
 ## Serialization
 
 Message contracts must be non-static classes, structs or records. A static `[Message]` class produces [RLYM004](../reference/diagnostics.md#rlym004) and is excluded from generated registration and JSON metadata. Ordinary message types may be nested inside an accessible static container.

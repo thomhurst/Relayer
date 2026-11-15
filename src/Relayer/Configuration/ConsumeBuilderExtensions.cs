@@ -31,4 +31,32 @@ public static class ConsumeBuilderExtensions
         builder.Services.TryAddSingleton<TMiddleware>();
         return builder;
     }
+
+    /// <summary>
+    /// Dispatches messages named <paramref name="names"/> (version 1) to this consumer's handler for
+    /// <typeparamref name="TMessage"/>, deserialized as that type. Receive only; sends keep the type's registered identity.
+    /// </summary>
+    /// <remarks><see cref="MessageContext.MessageType"/> reports the identity that arrived. Validated when the consumer starts.</remarks>
+    public static IConsumerBuilder Accepts<TMessage>(this IConsumerBuilder builder, params string[] names)
+    {
+        ArgumentNullException.ThrowIfNull(builder);
+        ArgumentNullException.ThrowIfNull(names);
+        var identities = new MessageType[names.Length];
+        for (var i = 0; i < names.Length; i++) identities[i] = new(names[i], 1);
+        return builder.Accepts<TMessage>(identities);
+    }
+
+    /// <summary>
+    /// Dispatches messages with the given wire identities to this consumer's handler for <typeparamref name="TMessage"/>,
+    /// deserialized as that type. Receive only; sends keep the type's registered identity.
+    /// </summary>
+    /// <remarks><see cref="MessageContext.MessageType"/> reports the identity that arrived. Validated when the consumer starts.</remarks>
+    public static IConsumerBuilder Accepts<TMessage>(this IConsumerBuilder builder, params MessageType[] identities)
+    {
+        ArgumentNullException.ThrowIfNull(builder);
+        ArgumentNullException.ThrowIfNull(identities);
+        ConsumePipelineBuilder.ValidateAccepted(identities);
+        var accepted = (MessageType[])identities.Clone();
+        return builder.ConfigurePipeline(pipeline => pipeline.Accepts<TMessage>(accepted));
+    }
 }

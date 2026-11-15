@@ -11,7 +11,7 @@ internal sealed class BatchExecution
     private readonly IServiceScopeFactory _scopes;
     private readonly BatchDispatcher _dispatch;
     private readonly MessageType _identity;
-    private readonly FrozenSet<MessageType>? _upcastIdentities;
+    private readonly FrozenSet<MessageType>? _additionalIdentities;
     private readonly ConsumeFailureDelegate _failure;
     private readonly IFailureClassifier _classifier;
     private readonly FailurePipeline? _failures;
@@ -25,12 +25,12 @@ internal sealed class BatchExecution
 
     internal BatchExecution(IServiceScopeFactory scopes, BatchDispatcher dispatch, MessageType identity,
         IConsumerDefinition consumer, ConsumeFailureDelegate failure, IFailureClassifier classifier,
-        FailurePipeline? failures, ActivitySource? source, ConsumeTracing? tracing, FrozenSet<MessageType>? upcastIdentities)
+        FailurePipeline? failures, ActivitySource? source, ConsumeTracing? tracing, FrozenSet<MessageType>? additionalIdentities)
     {
         _scopes = scopes;
         _dispatch = dispatch;
         _identity = identity;
-        _upcastIdentities = upcastIdentities;
+        _additionalIdentities = additionalIdentities;
         _failure = failure;
         _classifier = classifier;
         _failures = failures;
@@ -71,7 +71,7 @@ internal sealed class BatchExecution
                 try
                 {
                     context.CancellationToken.ThrowIfCancellationRequested();
-                    if (context.MessageType != _identity && _upcastIdentities?.Contains(context.MessageType) != true)
+                    if (context.MessageType != _identity && _additionalIdentities?.Contains(context.MessageType) != true)
                         throw new UnknownMessageTypeException(context.MessageType);
                     if (_failures is not null) context.InitializeAttempts();
                 }

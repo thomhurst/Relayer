@@ -18,6 +18,7 @@ public sealed class ConsumePipelineBuilder
     private readonly Dictionary<MessageType, ConsumeDelegate> _tombstones = [];
     private readonly List<HandlerDescriptor> _handlers = [];
     private readonly List<IConsumeMiddleware> _middleware = [];
+    private readonly List<AcceptedIdentity> _accepted = [];
     private bool _built;
     private EndpointTelemetry? _telemetry;
     private ConsumeDelegate? _settlement;
@@ -49,13 +50,22 @@ public sealed class ConsumePipelineBuilder
         var batch = descriptor.CreateBatchDispatcher(_serializer, consumer.BatchSize, consumer.Concurrency, readers);
         compositionScope.ServiceProvider.GetService<SenderPool>()?.Enable();
         _built = true;
-        var identities = new Dictionary<MessageType, ConsumeDelegate> { [identity] = static _ => throw new InvalidOperationException("Use ProcessBatchAsync for a batch handler.") };
-        foreach (var source in readers.Keys) identities.Add(source, identities[identity]);
+        var additional = new HashSet<MessageType>(readers.Keys);
+        foreach (var accepted in _accepted)
+        {
+            if (accepted.MessageType != descriptor.MessageType)
+                throw new InvalidOperationException($"Consumer accepts '{accepted.Identity}' for '{accepted.MessageType}', but its batch handler handles '{descriptor.MessageType}'.");
+            if (accepted.Identity == identity || !additional.Add(accepted.Identity))
+                throw new InvalidOperationException($"Consumer already handles '{accepted.Identity}'. Accept each incoming identity once.");
+        }
+        ConsumeDelegate batchOnly = static _ => throw new InvalidOperationException("Use ProcessBatchAsync for a batch handler.");
+        var identities = new Dictionary<MessageType, ConsumeDelegate> { [identity] = batchOnly };
+        foreach (var source in additional) identities.Add(source, batchOnly);
         return new ConsumePipeline(_scopes, identities.ToFrozenDictionary(), [], _failure, _classifier,
             checked(consumer.BatchSize * consumer.Concurrency), _failures, null, _settlement, _tracing)
         {
             BatchExecution = new BatchExecution(_scopes, batch, identity, consumer, _failure, _classifier, _failures, activitySource, _tracing,
-                readers.Count == 0 ? null : readers.Keys.ToFrozenSet())
+                additional.Count == 0 ? null : additional.ToFrozenSet())
         };
     }
 
@@ -105,6 +115,34 @@ public sealed class ConsumePipelineBuilder
         }
         _handlers.Add(descriptor);
         return this;
+    }
+
+    /// <summary>
+    /// Dispatches deliveries with extra wire identities to this consumer's handler for <typeparamref name="TMessage"/>,
+    /// deserialized as that type. Receive only: sends keep the type's one registered identity.
+    /// </summary>
+    /// <remarks>
+    /// <see cref="MessageContext.MessageType"/> reports the identity that arrived. An identity may belong to another
+    /// registered type that this consumer does not handle. Applies to a <see cref="Tombstone{T}"/> handler for the same
+    /// type too. Validated when the consumer is built.
+    /// </remarks>
+    public ConsumePipelineBuilder Accepts<TMessage>(params ReadOnlySpan<MessageType> identities)
+    {
+        EnsureMutable();
+        ValidateAccepted(identities);
+        foreach (var identity in identities)
+            _accepted.Add(new(typeof(TMessage), typeof(Tombstone<TMessage>), identity));
+        return this;
+    }
+
+    internal static void ValidateAccepted(ReadOnlySpan<MessageType> identities)
+    {
+        if (identities.IsEmpty) throw new ArgumentException("Accept at least one wire identity.", nameof(identities));
+        foreach (var identity in identities)
+        {
+            ArgumentException.ThrowIfNullOrWhiteSpace(identity.Name, nameof(identities));
+            ArgumentOutOfRangeException.ThrowIfLessThan(identity.Version, 1, nameof(identities));
+        }
     }
 
     /// <summary>Adds middleware. The first registered middleware is outermost.</summary>
@@ -195,6 +233,7 @@ public sealed class ConsumePipelineBuilder
                 }
             }
         }
+        AddAcceptedIdentities();
         foreach (var identity in _dispatch.Keys.Union(_tombstones.Keys).ToArray())
         {
             _dispatch.TryGetValue(identity, out var value);
@@ -226,6 +265,27 @@ public sealed class ConsumePipelineBuilder
         scope.Dispose();
         return null;
     }
+
+    private void AddAcceptedIdentities()
+    {
+        foreach (var accepted in _accepted)
+        {
+            var found = false;
+            foreach (var descriptor in _handlers)
+            {
+                var table = descriptor.IsTombstone ? _tombstones : _dispatch;
+                if (descriptor.MessageType != (descriptor.IsTombstone ? accepted.TombstoneType : accepted.MessageType)) continue;
+                _messages.TryGetMessageType(descriptor.MessageType, out var identity);
+                if (!table.TryAdd(accepted.Identity, table[identity]))
+                    throw new InvalidOperationException($"Consumer already handles '{accepted.Identity}'. Accept each incoming identity for one handler only.");
+                found = true;
+            }
+            if (!found)
+                throw new InvalidOperationException($"Consumer accepts '{accepted.Identity}' for '{accepted.MessageType}', but declares no handler for that type. Add its handler to this consumer.");
+        }
+    }
+
+    private readonly record struct AcceptedIdentity(Type MessageType, Type TombstoneType, MessageType Identity);
 
     private sealed class NativeValueDispatch(ConsumeDelegate? value, ConsumeDelegate? tombstone)
     {
