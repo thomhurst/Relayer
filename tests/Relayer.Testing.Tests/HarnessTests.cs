@@ -641,6 +641,23 @@ public class HarnessTests
     }
 
     [Test]
+    public async Task Wait_for_consumed_ignores_a_requested_dead_letter_that_a_copy_fallback_completes()
+    {
+        await using var fixture = await Fixture.Start(new() { Handle = (message, context) =>
+        {
+            if (message.Value == 1) context.Features.Get<ISettlementFeature>()!.DeadLetter("manual");
+            return default;
+        } }, failures: new() { RetryDelays = [], DeadLetterEndpoint = "probes-dead" }, nativeDeadLetter: false);
+        var deadLettered = fixture.Harness.WaitForConsumedAsync<Probe>(message => message.Value == 1);
+        await fixture.Send(new Probe(1));
+        // One receiver handles deliveries in order, so the first is settled once the second is handled.
+        await fixture.Send(new Probe(2));
+        await fixture.Harness.WaitForConsumedAsync<Probe>(message => message.Value == 2).WaitAsync(Limit);
+        await Assert.That(fixture.Harness.Failed.Count).IsEqualTo(0);
+        await Assert.That(deadLettered.IsCompleted).IsFalse();
+    }
+
+    [Test]
     public async Task Wait_for_consumed_skips_a_failed_attempt_until_native_redelivery_succeeds()
     {
         await using var fixture = await Fixture.Start(new() { Handle = (_, context) =>
@@ -710,7 +727,7 @@ public class HarnessTests
 
         internal static Task<Fixture> Create(ProbeControl? control = null, bool log = false,
             TestOutbox? outbox = null, TimeProvider? clock = null, ILoggerFactory? logging = null, TimeSpan? maxRedeliveryDelay = null, FailureOptions? failures = null, byte? serializerMarker = null, bool tombstones = false,
-            IFailureClassifier? classifier = null)
+            IFailureClassifier? classifier = null, bool nativeDeadLetter = true)
         {
             var services = new ServiceCollection();
             services.AddSingleton(control ?? new ProbeControl());
@@ -723,6 +740,7 @@ public class HarnessTests
                 builder.InMemory("first", transport =>
                 {
                     transport.Send<Probe>("probes");
+                    if (!nativeDeadLetter) transport.Send<DeadLetteredProbe>("probes-dead");
                     if (serializerMarker is { } marker)
                         transport.UseSerializer(provider => new MarkedSerializer(provider.GetRequiredService<IMessageSerializer>(), marker));
                     transport.Options.Configure(options =>
@@ -730,7 +748,7 @@ public class HarnessTests
                         options.Endpoints["probes"] = new() { Capabilities = new()
                         {
                             ConsumptionModel = log ? ConsumptionModel.Log : ConsumptionModel.Queue,
-                            DeadLetter = true, MaxDeliveryDelay = TimeSpan.MaxValue, MaxRedeliveryDelay = maxRedeliveryDelay ?? TimeSpan.MaxValue,
+                            DeadLetter = nativeDeadLetter, MaxDeliveryDelay = TimeSpan.MaxValue, MaxRedeliveryDelay = maxRedeliveryDelay ?? TimeSpan.MaxValue,
                             MaxBatchSize = 100, OrderedByKey = tombstones, Tombstones = tombstones,
                         } };
                     });
@@ -752,9 +770,9 @@ public class HarnessTests
 
         internal static async Task<Fixture> Start(ProbeControl? control = null, bool log = false,
             TestOutbox? outbox = null, TimeProvider? clock = null, ILoggerFactory? logging = null, TimeSpan? maxRedeliveryDelay = null, FailureOptions? failures = null, byte? serializerMarker = null,
-            IFailureClassifier? classifier = null)
+            IFailureClassifier? classifier = null, bool nativeDeadLetter = true)
         {
-            var fixture = await Create(control, log, outbox, clock, logging, maxRedeliveryDelay, failures, serializerMarker, classifier: classifier);
+            var fixture = await Create(control, log, outbox, clock, logging, maxRedeliveryDelay, failures, serializerMarker, classifier: classifier, nativeDeadLetter: nativeDeadLetter);
             await fixture.StartServices();
             return fixture;
         }
@@ -827,6 +845,9 @@ public class HarnessTests
 public sealed record Probe(int Value);
 [Message("harness.other")]
 public sealed record OtherProbe(int Value);
+
+[Message("harness.dead")]
+public sealed record DeadLetteredProbe(int Value);
 
 public sealed class DiscardedProbeException : Exception;
 

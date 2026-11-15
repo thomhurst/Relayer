@@ -31,7 +31,7 @@ public sealed class RelayerHarness : ISendMiddleware, IRelayerObserver
     private readonly List<HarnessDeadLetter> _deadLettered = [];
     private readonly Dictionary<string, HarnessMessage> _identities = new(StringComparer.Ordinal);
     private readonly List<HarnessMessage> _handled = [];
-    private readonly HashSet<DefaultMessageContext> _failing = new(ReferenceEqualityComparer.Instance);
+    private readonly Dictionary<DefaultMessageContext, int> _failing = new(ReferenceEqualityComparer.Instance);
     private readonly List<IConsumedWaiter> _waiters = [];
     private TaskCompletionSource _idle = CompletedSignal();
     private int _work;
@@ -238,21 +238,21 @@ public sealed class RelayerHarness : ISendMiddleware, IRelayerObserver
 
     void IRelayerObserver.Failed(DefaultMessageContext context, Exception error)
     {
-        lock (_gate) _failing.Add(context);
+        lock (_gate) _failing[context] = context.Attempt;
         RecordFailure(Snapshot(context), error, HarnessOperation.Consume);
     }
 
-    // Handled: processing returned without a failure decision. A retry that succeeds leaves no decision, or
-    // completes with the handler's own request; a discarded failure completes with neither, because a failed
-    // attempt clears its request. A batch item's requested completion completes without a failure.
+    // Handled: processing returned, the final attempt did not fail, and nothing requested or decided a retry or
+    // dead-letter. An in-process retry advances the attempt, so an earlier failed attempt does not count. A
+    // requested retry or dead-letter is never handled, even when a copy fallback completes the original.
     private void Processed(DefaultMessageContext context, HarnessMessage observation, bool returned)
     {
         IConsumedWaiter[] waiters;
         lock (_gate)
         {
-            var failed = _failing.Remove(context);
-            if (!returned || context.FailureDisposition is { } decision && (decision.Kind != DispositionKind.Complete ||
-                failed && context.Settlement.Request is not { Kind: DispositionKind.Complete })) return;
+            var finalAttemptFailed = _failing.Remove(context, out var attempt) && attempt == context.Attempt;
+            if (!returned || finalAttemptFailed || context.Settlement.Request is { Kind: not DispositionKind.Complete } ||
+                context.FailureDisposition is { Kind: not DispositionKind.Complete }) return;
             _handled.Add(observation);
             if (_waiters.Count == 0) return;
             waiters = _waiters.ToArray();
