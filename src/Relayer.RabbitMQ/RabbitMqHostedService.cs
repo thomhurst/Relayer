@@ -21,9 +21,8 @@ internal sealed class RabbitMqHostedService(RabbitMqConsumerControl consumers) :
         try { await consumers.Faulted.WaitAsync(stoppingToken).ConfigureAwait(false); }
         catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
         {
-            // Faulted resumes its waiters asynchronously, so a stop can cancel the wait after a consumer already
-            // faulted; report that fault instead of a clean stop.
-            if (consumers.Faulted.IsFaulted) await consumers.Faulted.ConfigureAwait(false);
+            // A stop can cancel the wait after a consumer already faulted; report that fault instead of a clean stop.
+            await consumers.FaultOrCompleted().ConfigureAwait(false);
         }
     }
 
@@ -47,6 +46,19 @@ internal sealed class RabbitMqConsumerControl(IServiceProvider provider, string 
 
     /// <summary>Faults with the first terminal failure of a started consumer; never completes otherwise.</summary>
     internal Task Faulted => _faulted.Task;
+
+    /// <summary>
+    /// Returns a started consumer's terminal failure, or a completed task. Reads the consumers' completions as well as
+    /// <see cref="Faulted"/>, because they resume continuations asynchronously and forwarding a fault can still be queued.
+    /// </summary>
+    internal Task FaultOrCompleted()
+    {
+        if (_faulted.Task.IsFaulted) return _faulted.Task;
+        if (_transport is { } transport)
+            foreach (var consumer in transport.Consumers)
+                if (consumer.Completion.IsFaulted) return consumer.Completion;
+        return Task.CompletedTask;
+    }
 
     protected override bool AutoStartConsumers =>
         provider.GetRequiredService<IOptionsMonitor<RabbitMqTransportOptions>>().Get(name).AutoStartConsumers;
