@@ -104,25 +104,39 @@ internal sealed partial class RabbitMqNativeTransport : ITransport
     // in-flight work on it and cancels its native subscription.
     internal async Task StopConsumersAsync(CancellationToken cancellationToken)
     {
-        var entered = false;
-        try
-        {
-            try
-            {
-                await _lifecycle.WaitAsync(cancellationToken).ConfigureAwait(false);
-                entered = true;
-            }
-            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { }
-            foreach (var consumer in Consumers) await consumer.StopAsync(cancellationToken).ConfigureAwait(false);
-        }
+        var entered = await EnterStopAsync(cancellationToken).ConfigureAwait(false);
+        try { await StopEachConsumerAsync(cancellationToken).ConfigureAwait(false); }
         finally { if (entered) _lifecycle.Release(); }
     }
 
+    // An expired token still closes the consumers, the publishers and the connection.
     public async Task StopAsync(CancellationToken cancellationToken)
     {
-        await _lifecycle.WaitAsync(cancellationToken).ConfigureAwait(false);
+        var entered = await EnterStopAsync(cancellationToken).ConfigureAwait(false);
         try { await CloseAsync(cancellationToken).ConfigureAwait(false); }
-        finally { _lifecycle.Release(); }
+        finally { if (entered) _lifecycle.Release(); }
+    }
+
+    private async ValueTask<bool> EnterStopAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            await _lifecycle.WaitAsync(cancellationToken).ConfigureAwait(false);
+            return true;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { return false; }
+    }
+
+    // A consumer whose drain is cancelled still disposes its channel; keep stopping the others, then rethrow.
+    private async Task StopEachConsumerAsync(CancellationToken cancellationToken)
+    {
+        Exception? error = null;
+        foreach (var consumer in Consumers)
+        {
+            try { await consumer.StopAsync(cancellationToken).ConfigureAwait(false); }
+            catch (Exception exception) { error ??= exception; }
+        }
+        if (error is not null) System.Runtime.ExceptionServices.ExceptionDispatchInfo.Throw(error);
     }
 
     public async ValueTask DisposeAsync()
@@ -144,7 +158,7 @@ internal sealed partial class RabbitMqNativeTransport : ITransport
         var connection = _connection;
         try
         {
-            foreach (var consumer in Consumers) await consumer.StopAsync(cancellationToken).ConfigureAwait(false);
+            await StopEachConsumerAsync(cancellationToken).ConfigureAwait(false);
             publishers = Interlocked.Exchange(ref _publishers, null);
             if (publishers is not null)
             {

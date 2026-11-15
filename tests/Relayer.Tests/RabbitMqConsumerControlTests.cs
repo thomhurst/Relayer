@@ -99,4 +99,25 @@ public sealed class RabbitMqConsumerControlTests
         await using var channel = await connection.CreateChannelAsync(cancellationToken: token);
         await Assert.That((await channel.QueueDeclarePassiveAsync("orders", token)).ConsumerCount).IsEqualTo(0u);
     }
+
+    [Test]
+    public async Task Host_shutdown_with_an_expired_token_stops_every_consumer_and_closes_the_connection()
+    {
+        using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(2));
+        var token = timeout.Token;
+        await using var broker = await RabbitMqTopologyTests.Broker.StartAsync(token);
+        using var host = RabbitMqReceiveTests.Host(broker.Factory(), new(), secondConsumer: true);
+        await host.StartAsync(token);
+        var transport = (RabbitMqNativeTransport)host.Services.GetRequiredService<ITransport>();
+        await Assert.That(transport.Consumers.Count).IsEqualTo(2);
+
+        try { await host.StopAsync(new CancellationToken(true)); }
+        catch (OperationCanceledException) { }
+        foreach (var consumer in transport.Consumers) await Assert.That(consumer.Completion.IsCompleted).IsTrue();
+        await Assert.That(transport.IsConnected).IsFalse();
+        await using var connection = await broker.Factory().CreateConnectionAsync(token);
+        await using var channel = await connection.CreateChannelAsync(cancellationToken: token);
+        await Assert.That((await channel.QueueDeclarePassiveAsync("orders", token)).ConsumerCount).IsEqualTo(0u);
+        await Assert.That((await channel.QueueDeclarePassiveAsync("audit", token)).ConsumerCount).IsEqualTo(0u);
+    }
 }
