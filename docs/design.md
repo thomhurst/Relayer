@@ -303,7 +303,7 @@ Messages are identified by a stable string name, never by the CLR type name. Tha
 public sealed record ChargeCard(Guid OrderId, decimal Amount);
 ```
 
-The identity is declared with `[Message]` or explicitly through `MessageTypeRegistry.Add<T>`. RLY001 warns when neither is visible in the current compilation; there is no CLR-name fallback. See the [message guide](../website/docs/guides/messages.md) for explicit registration and its analyzer limits.
+The identity is declared with `[Message]` or explicitly through `MessageTypeRegistry.Add<T>`. RLY001 warns when neither is visible in the current compilation; a helper marked `[RegistersMessageIdentity]` and an assembly-level `[MessageIdentitiesRegisteredAtStartup(typeof(Envelope<>))]` make registrations it cannot see explicit in source. There is no CLR-name fallback. See the [message guide](../website/docs/guides/messages.md) for explicit registration and its analyzer limits.
 
 ### 4.2 CloudEvents by default
 

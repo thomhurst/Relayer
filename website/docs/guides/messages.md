@@ -61,7 +61,7 @@ using Relayer.Transports;
 services.AddRelayer(relayer => relayer.Infrastructure().MessageTypes.Add<OrderPlaced>("orders.placed"));
 ```
 
-Analyzer [RLY001](../reference/diagnostics.md#rly001) accepts a statically visible `MessageTypeRegistry.Add<T>` call anywhere in the same compilation. It covers that exact type and its tombstone wrapper, including closed generic contracts. Registrations inside referenced assemblies or generic helpers are not inferred; see the diagnostic guidance for suppression when registration happens elsewhere. Explicit identity registration does not generate JSON metadata: provide a source-generated JSON context or a custom serializer as described below.
+Analyzer [RLY001](../reference/diagnostics.md#rly001) accepts a statically visible `MessageTypeRegistry.Add<T>` call anywhere in the same compilation. It covers that exact type and its tombstone wrapper, including closed generic contracts. Registrations inside referenced assemblies or generic helpers are not inferred: mark a registering helper with `[RegistersMessageIdentity(nameof(TMessage))]`, or declare `[assembly: MessageIdentitiesRegisteredAtStartup(typeof(Envelope<>))]` for a generic contract registered at startup. See the [RLY001 guidance](../reference/diagnostics.md#rly001). Explicit identity registration does not generate JSON metadata: provide a source-generated JSON context or a custom serializer as described below.
 
 ## Serialization
 

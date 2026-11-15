@@ -43,6 +43,14 @@ public sealed class ConfigurationAnalyzer : DiagnosticAnalyzer
             var consumerInterface = compilation.GetTypeByMetadataName("Relayer.IConsumerBuilder");
             var registration = compilation.GetTypeByMetadataName("Relayer.RelayerGeneratedHandlers");
             var messageRegistry = compilation.GetTypeByMetadataName("Relayer.Pipeline.MessageTypeRegistry");
+            var helperRegistration = compilation.GetTypeByMetadataName("Relayer.RegistersMessageIdentityAttribute");
+            var startupAttribute = compilation.GetTypeByMetadataName("Relayer.MessageIdentitiesRegisteredAtStartupAttribute");
+            var tombstone = compilation.GetTypeByMetadataName("Relayer.Tombstone`1");
+            var registeredAtStartup = compilation.Assembly.GetAttributes()
+                .Where(a => SymbolEqualityComparer.Default.Equals(a.AttributeClass, startupAttribute))
+                .Select(static a => a.ConstructorArguments.Length == 1 ? a.ConstructorArguments[0].Value as INamedTypeSymbol : null)
+                .Where(static t => t is not null).Select(static t => t!.OriginalDefinition)
+                .ToImmutableHashSet<INamedTypeSymbol>(SymbolEqualityComparer.Default);
             var explicitIdentities = new ConcurrentDictionary<ITypeSymbol, byte>(SymbolEqualityComparer.Default);
             var handlers = new ConcurrentDictionary<INamedTypeSymbol, byte>(SymbolEqualityComparer.Default);
             var registered = new ConcurrentDictionary<ITypeSymbol, byte>(SymbolEqualityComparer.Default);
@@ -52,9 +60,9 @@ public sealed class ConfigurationAnalyzer : DiagnosticAnalyzer
             void CheckMessage(ITypeSymbol message, Location use)
             {
                 if (message.TypeKind is TypeKind.TypeParameter or TypeKind.Error) return;
-                if (message is INamedTypeSymbol wrapper && SymbolEqualityComparer.Default.Equals(wrapper.OriginalDefinition,
-                        compilation.GetTypeByMetadataName("Relayer.Tombstone`1")))
+                if (message is INamedTypeSymbol wrapper && SymbolEqualityComparer.Default.Equals(wrapper.OriginalDefinition, tombstone))
                     message = wrapper.TypeArguments[0];
+                if (message is INamedTypeSymbol named && registeredAtStartup.Contains(named.OriginalDefinition)) return;
                 if (message.GetAttributes().Any(a => SymbolEqualityComparer.Default.Equals(a.AttributeClass, attribute))) return;
                 var location = message.Locations.FirstOrDefault(static l => l.IsInSource) ?? use;
                 missing.GetOrAdd(message, static _ => new ConcurrentDictionary<Location, byte>()).TryAdd(location, 0);
@@ -83,6 +91,8 @@ public sealed class ConfigurationAnalyzer : DiagnosticAnalyzer
                 if (method.Name == "Add" && method.TypeArguments.Length == 1
                     && SymbolEqualityComparer.Default.Equals(method.ContainingType, messageRegistry))
                     explicitIdentities.TryAdd(method.TypeArguments[0], 0);
+                if (helperRegistration is not null && method.TypeArguments.Length > 0)
+                    AddHelperRegistrations(method, helperRegistration, explicitIdentities);
 
                 if (SymbolEqualityComparer.Default.Equals(method.ContainingType.OriginalDefinition, transport))
                 {
@@ -130,6 +140,20 @@ public sealed class ConfigurationAnalyzer : DiagnosticAnalyzer
                         end.ReportDiagnostic(Diagnostic.Create(UnregisteredHandler, handler.Locations[0], handler.ToDisplayString()));
             });
         });
+    }
+
+    // A helper marked [RegistersMessageIdentity(nameof(T))] registers its type argument, even
+    // when the helper lives in a referenced assembly where its Add<T> call is not visible.
+    private static void AddHelperRegistrations(IMethodSymbol method, INamedTypeSymbol helperRegistration,
+        ConcurrentDictionary<ITypeSymbol, byte> explicitIdentities)
+    {
+        foreach (var attribute in method.OriginalDefinition.GetAttributes())
+        {
+            if (!SymbolEqualityComparer.Default.Equals(attribute.AttributeClass, helperRegistration)
+                || attribute.ConstructorArguments.Length != 1 || attribute.ConstructorArguments[0].Value is not string name) continue;
+            for (var i = 0; i < method.TypeParameters.Length; i++)
+                if (method.TypeParameters[i].Name == name) explicitIdentities.TryAdd(method.TypeArguments[i], 0);
+        }
     }
 
     private static (string? Name, int Version) Identity(AttributeData attribute)

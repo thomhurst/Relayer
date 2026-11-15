@@ -35,7 +35,25 @@ public sealed record OrderPlaced(string OrderId);
 
 The code fix adds `[global::Relayer.MessageAttribute("OrderPlaced")]` to the message declaration. **Edit this suggestion to the permanent wire name before publishing.** It is an explicit source declaration, not a runtime fallback to CLR names. The fix preserves comments and supports classes, structs and records. Referenced types cannot be edited; add the attribute in their owning project or register their identity explicitly. Each missing message type is reported once per compilation, even when routes and multiple handlers use it.
 
-Alternatively, call `builder.Infrastructure().MessageTypes.Add<OrderPlaced>("orders.placed")`. RLY001 recognizes calls to Relayer's `MessageTypeRegistry.Add<T>` anywhere in the current compilation, including after the route or handler use. The registration covers that exact type and its `Tombstone<T>` wrapper; registering one closed generic type does not cover other instantiations. Calls hidden inside a referenced assembly or generic helper are not inferred. If registration happens outside this compilation, suppress RLY001 at the reported location or through `.editorconfig` after checking that startup registers the identity. The analyzer does not prove that a visible registration executes; startup validation remains authoritative.
+Alternatively, call `builder.Infrastructure().MessageTypes.Add<OrderPlaced>("orders.placed")`. RLY001 recognizes calls to Relayer's `MessageTypeRegistry.Add<T>` anywhere in the current compilation, including after the route or handler use. The registration covers that exact type and its `Tombstone<T>` wrapper; registering one closed generic type does not cover other instantiations. Calls hidden inside a referenced assembly or generic helper are not inferred; mark the helper instead, as below. The analyzer does not prove that a visible registration executes; startup validation remains authoritative.
+
+When a helper registers the identity, for example a shared messaging library that registers it together with the route, mark the helper's type parameter with `[RegistersMessageIdentity]`. Each call with a concrete type argument then counts as a registration, including calls to a helper in a referenced assembly:
+
+```csharp
+[RegistersMessageIdentity(nameof(TMessage))]
+public static void PublishRaw<TMessage>(this IRelayerBuilder builder, string name) =>
+    builder.Infrastructure().MessageTypes.Add<TMessage>(name);
+
+builder.PublishRaw<OrderPlaced>("orders.placed"); // OrderPlaced counts as registered
+```
+
+When startup registers every closed form of a generic contract, for example `Envelope<OrderPlaced>` from a catalog (`[Message]` cannot go on a generic type, [RLYM001](#rlym001)), declare that once per assembly:
+
+```csharp
+[assembly: MessageIdentitiesRegisteredAtStartup(typeof(Envelope<>))]
+```
+
+RLY001 then skips every `Envelope<T>` in that compilation, and their `Tombstone<T>` wrappers, and stays on for every other type. If registration happens somewhere the analyzer cannot see and neither attribute fits, suppress RLY001 at the reported location after checking that startup registers the identity. Turning RLY001 off in `.editorconfig` also turns it off for `[Message]` contracts.
 
 ## RLY002
 
