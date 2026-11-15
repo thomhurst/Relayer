@@ -2,92 +2,31 @@ using Relayer.Transports;
 using Relayer.Pipeline;
 using Azure.Messaging.ServiceBus;
 using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Relayer.Serialization;
 
 namespace Relayer.AzureServiceBus;
 
-// Owns consumer lifetime for the host and for the keyed IConsumerControl. One gate serialises both callers.
-internal sealed class ServiceBusHostedService(IServiceProvider provider, string name) : IHostedService, IConsumerControl
+internal sealed class ServiceBusHostedService(IServiceProvider provider, string name)
+    : ConsumerHostedService($"Service Bus transport '{name}'")
 {
-    private readonly SemaphoreSlim _gate = new(1, 1);
     private ServiceBusSendTransport? _transport;
     private bool _composed;
-    private bool _hostRunning;
-    private bool _consuming;
 
-    public async Task StartAsync(CancellationToken cancellationToken)
+    protected override bool AutoStartConsumers =>
+        provider.GetRequiredService<IOptionsMonitor<ServiceBusTransportOptions>>().Get(name).AutoStartConsumers;
+
+    protected override Task ComposeAsync(CancellationToken cancellationToken)
     {
-        await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
-        try
-        {
-            Compose();
-            if (provider.GetRequiredService<IOptionsMonitor<ServiceBusTransportOptions>>().Get(name).AutoStartConsumers)
-                await StartConsumersAsync(cancellationToken).ConfigureAwait(false);
-            _hostRunning = true;
-        }
-        finally { _gate.Release(); }
+        Compose();
+        return Task.CompletedTask;
     }
 
-    public async Task StopAsync(CancellationToken cancellationToken)
-    {
-        // Shutdown must reach the consumers even when its deadline has passed or a control call holds the gate:
-        // the consumer's stop aborts in-flight work on an expired token and still stops the native processor.
-        Volatile.Write(ref _hostRunning, false);
-        var entered = false;
-        try
-        {
-            try
-            {
-                await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
-                entered = true;
-            }
-            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { }
-            if (entered) await StopConsumersAsync(cancellationToken).ConfigureAwait(false);
-            else if (_transport is { } transport)
-            {
-                _consuming = false;
-                await transport.StopAsync(cancellationToken).ConfigureAwait(false);
-            }
-        }
-        finally { if (entered) _gate.Release(); }
-    }
+    protected override Task StartConsumersAsync(CancellationToken cancellationToken) => _transport!.StartAsync(cancellationToken);
 
-    async Task IConsumerControl.StartAsync(CancellationToken cancellationToken)
-    {
-        await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
-        try
-        {
-            if (!Volatile.Read(ref _hostRunning))
-                throw new InvalidOperationException($"Service Bus transport '{name}': start the host before starting its consumers.");
-            await StartConsumersAsync(cancellationToken).ConfigureAwait(false);
-        }
-        finally { _gate.Release(); }
-    }
-
-    async Task IConsumerControl.StopAsync(CancellationToken cancellationToken)
-    {
-        await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
-        try { await StopConsumersAsync(cancellationToken).ConfigureAwait(false); }
-        finally { _gate.Release(); }
-    }
-
-    private async Task StartConsumersAsync(CancellationToken cancellationToken)
-    {
-        if (_consuming) return;
-        await _transport!.StartAsync(cancellationToken).ConfigureAwait(false);
-        _consuming = true;
-    }
-
-    private async Task StopConsumersAsync(CancellationToken cancellationToken)
-    {
-        if (!_consuming) return;
-        // A failed or expired drain still counts as stopped; the consumer itself rejects a restart after an abort.
-        _consuming = false;
-        await _transport!.StopAsync(cancellationToken).ConfigureAwait(false);
-    }
+    protected override Task StopConsumersAsync(CancellationToken cancellationToken) =>
+        _transport?.StopAsync(cancellationToken) ?? Task.CompletedTask;
 
     private void Compose()
     {

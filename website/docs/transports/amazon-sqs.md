@@ -89,6 +89,22 @@ SQS visibility changes cannot update attributes. The binding combines `Approxima
 
 SQS redrive cannot attach application failure metadata. `Failure.DeadLetterEndpoint` is required and must name a separately declared queue of the same standard/FIFO kind. The existing failure pipeline sends a copy with original identity, body, attributes, trace context and group key, then deletes the source only after that send succeeds. Copy or settlement failures leave the source available for native redelivery; duplicates are possible. Reserve room within SQS's ten-attribute limit for up to four failure attributes, and within the destination's native message-size limit for error history. These limits apply to externally produced messages too. Error history is bounded and shortened to the declared destination size budget as described in [failure handling](../guides/failure-handling.md). Native attribute type bytes and properties applied by native callbacks still count toward SQS’s size limit. If the copy still cannot fit, Relayer retains the original and logs the failure; it preserves application attributes and the body. Configure native `RedrivePolicy` as the broker safety net for messages that cannot be copied; native redrive preserves the original attributes but cannot add failure metadata. Native binary/typed attributes are preserved in direct failure copies with a native callback; these callbacks cannot be persisted by the outbox scheduler, which rejects such copies without deleting the original. FIFO copies preserve the native deduplication identity when the source or destination envelope identity is missing, cannot be used as a native SQS deduplication token (1–128 ASCII alphanumeric or punctuation characters, without spaces), or is a native typed attribute rather than an exact `String` attribute. Unusable identity attributes remain unchanged in the native copy and cannot overwrite the fallback. This fallback also requires a non-persistable native callback. Standard fair-queue copies preserve native `MessageGroupId` through the same non-persistable callback without requesting portable ordering. Text-only copies with both identities and no standard-queue group remain persistable.
 
+### Start consumers later
+
+Consumers start polling with the host by default. Set `AutoStartConsumers = false` to bring the host up first and start the long polls yourself through the transport's keyed `IConsumerControl`:
+
+```csharp
+using Relayer.Transports;
+
+sqs.Options.Configure(options => options.AutoStartConsumers = false);
+
+// Later, when the application is ready to receive:
+var consumers = app.Services.GetRequiredKeyedService<IConsumerControl>("orders");
+await consumers.StartAsync(cancellationToken);
+```
+
+The host still resolves queue URLs, validates redrive policies and composes every consumer at startup, so the queues must exist when the host starts; sending works while the consumers are stopped. `StartAsync` fails before the host has started or after it stops. `StopAsync` cancels the long polls and drains in-flight work like host shutdown, so the same control pauses and resumes consumption; both calls do nothing when the consumers are already in that state. A stop whose token expires aborts the drain, and the consumers cannot start again until the host is recreated. Host shutdown stops consumers that the control started. While stopped, consumer [health](#health) reports them as unavailable.
+
 ## Health
 
 Reference `Relayer.AmazonSqs.HealthChecks` and register before host startup:
