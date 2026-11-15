@@ -1,3 +1,4 @@
+using System.Diagnostics.Metrics;
 using Microsoft.Data.SqlClient;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.DependencyInjection;
@@ -92,6 +93,58 @@ public sealed class DispatchBackoffTests(SqlServerFixture database)
             await Assert.That(await Count(data.Table)).IsEqualTo(0L);
             await Assert.That(await Count(SqlServerOutboxSchema.DeadTable(data.Options))).IsEqualTo(1L);
         }
+    }
+
+    [Test]
+    [Arguments("direct")]
+    [Arguments("maintenance")]
+    public async Task Poisoned_unordered_row_is_subtracted_from_pending_and_counted_once(string mode)
+    {
+        var data = new StoreData(database, new()
+        { TablePrefix = TestContext.Current!.Isolation.GetIsolatedName("poison") + "_", MaxDispatchAttempts = 1 });
+        await data.Create();
+        await data.Insert(Guid.CreateVersion7(), DateTimeOffset.UtcNow.AddDays(-1));
+        using var instrumentation = new RelayerInstrumentation();
+        long pending = 0, poisoned = 0;
+        using var listener = new MeterListener();
+        listener.InstrumentPublished = (instrument, meterListener) =>
+        {
+            if (instrument == instrumentation.OutboxPending || instrument == instrumentation.OutboxPoison)
+                meterListener.EnableMeasurementEvents(instrument);
+        };
+        listener.SetMeasurementEventCallback<long>((instrument, value, _, _) =>
+            Interlocked.Add(ref instrument == instrumentation.OutboxPending ? ref pending : ref poisoned, value));
+        listener.Start();
+        var transport = new Transport();
+        if (mode == "maintenance")
+        {
+            using var worker = new SqlServerMaintenanceWorker(ConnectionString,
+                new() { TablePrefix = data.Options.TablePrefix, RecoveryDelay = TimeSpan.Zero, MaxDispatchAttempts = 1 },
+                [transport], NullLogger<SqlServerMaintenanceWorker>.Instance, instrumentation: instrumentation);
+            try { await worker.SweepAsync(); }
+            finally { await worker.ReleaseAsync(); }
+        }
+        else
+        {
+            await using var services = new ServiceCollection().AddLogging().AddSingleton<ITransport>(transport)
+                .AddSingleton(instrumentation)
+                .AddRelayerSqlServerDirectDispatch("poison", ConnectionString, data.Options).BuildServiceProvider();
+            var direct = services.GetRequiredKeyedService<SqlServerDirectDispatcher>("poison");
+            var records = new OutboxRecord[1];
+            await Assert.That(await data.Store().ReadPendingAsync(new(null, DateTimeOffset.UtcNow), records, default)).IsEqualTo(1);
+            var buffer = new SqlServerBufferedMessage();
+            buffer.Copy(records[0], 1, unordered: true);
+            direct.Committed([buffer], 1);
+            await direct.StartAsync(default);
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+            await direct.StopAsync(timeout.Token);
+        }
+        await Assert.That(transport.Calls).IsEqualTo(1);
+        await Assert.That(await Count(data.Table)).IsEqualTo(0L);
+        await Assert.That(await Count(SqlServerOutboxSchema.DeadTable(data.Options))).IsEqualTo(1L);
+        // This instrumentation did not count the commit, so the subtraction alone is visible.
+        await Assert.That(Interlocked.Read(ref pending)).IsEqualTo(-1L);
+        await Assert.That(Interlocked.Read(ref poisoned)).IsEqualTo(1L);
     }
 
     [Test]

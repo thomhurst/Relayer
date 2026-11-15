@@ -28,6 +28,8 @@ public sealed class RelayerInstrumentation : IDisposable
     private readonly ObservableGauge<long> _outboxParked;
     private readonly Lock _depthLock = new();
     private OutboxDepth[] _depths = [];
+    // Test harness only: committed outbox rows are outstanding work until dispatch settles them.
+    internal IRelayerObserver? Observer { get; set; }
 
     /// <summary>Creates instrumentation with an optional application logger factory.</summary>
     public RelayerInstrumentation(ILoggerFactory? loggerFactory = null)
@@ -78,7 +80,11 @@ public sealed class RelayerInstrumentation : IDisposable
         => Duplicates.Add(1, new KeyValuePair<string, object?>("relayer.consumer", consumer));
 
     /// <summary>Records this instance's durable outbox row-count delta, across all stores and transports.</summary>
-    public void AddOutboxPending(long delta) => OutboxPending.Add(delta);
+    public void AddOutboxPending(long delta)
+    {
+        OutboxPending.Add(delta);
+        Observer?.OutboxPending(delta);
+    }
 
     /// <summary>Records an outbox send attempt's start time minus its durable enqueue time, in seconds.</summary>
     public void RecordOutboxDispatchLag(TimeSpan elapsed) => DispatchLag.Record(elapsed.TotalSeconds);
@@ -116,6 +122,19 @@ public sealed class RelayerInstrumentation : IDisposable
         }
         return measurements;
     }
+
+    // An ordered lane parks an exhausted row in place, so the pending row count is unchanged.
+    internal void RecordOutboxParked()
+    {
+        OutboxPoison.Add(1);
+        Observer?.OutboxPending(-1);
+    }
+
+    // Redrive makes parked rows outstanding again; they never left the pending row count.
+    internal void RecordOutboxUnparked(long count) => Observer?.OutboxPending(count);
+
+    // Purge deletes parked rows, which the harness already settled when they parked.
+    internal void RecordOutboxParkedPurged(long count) => OutboxPending.Add(-count);
 
     /// <summary>Stops publishing every instrument owned by this instance.</summary>
     public void Dispose() => _meter.Dispose();

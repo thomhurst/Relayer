@@ -215,13 +215,17 @@ The PostgreSQL transaction integrations and dispatch workers also record:
 
 - `relayer.outbox.pending`: an up-down counter of durable row-count changes observed by
   this instance. A successful commit adds its rows; a successful fenced dispatch deletion
-  subtracts its rows. Rollback, failed sends, competing claims and failed completion do
-  not subtract rows. Ordered deletions count only after their transaction commits.
+  subtracts its rows, and so does an unordered poison transition that moves a row to dead
+  storage. Rollback, retried sends, competing claims and failed completion do not subtract
+  rows. A row parked on an ordered lane stays in the table and is not subtracted. Ordered
+  deletions and PostgreSQL recovery deletions count only after their transaction commits.
+  A PostgreSQL dead-letter redrive adds back the unordered rows it restores, and a purge
+  subtracts the parked ordered rows it deletes.
 - `relayer.outbox.dispatch_lag`: seconds from the row's enqueue timestamp to the start
   of each native dispatch attempt. Recovery uses the original durable timestamp. Failed
   native attempts also record lag.
 
-- `relayer.outbox.dead_lettered`: an alert counter incremented after a PostgreSQL poison
+- `relayer.outbox.dead_lettered`: an alert counter incremented after a poison
   transition commits. Durable dead storage is authoritative if a crash loses the metric.
 
 These store-wide metrics aggregate across stores and transports, without endpoint

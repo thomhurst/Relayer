@@ -32,6 +32,8 @@ public sealed class SharedDirectDispatchContractTests : OutboxDirectDispatchCont
             await _worker.StartAsync(default);
         }
 
+        public override RelayerInstrumentation Instrumentation => _provider!.GetRequiredService<RelayerInstrumentation>();
+
         public override async Task<DispatchSession> OpenSessionAsync()
         {
             var scope = _provider!.CreateAsyncScope();

@@ -200,6 +200,7 @@ public sealed class SharedDirectDispatchContractTests : OutboxDirectDispatchCont
             var services = new ServiceCollection();
             services.AddLogging();
             services.AddSingleton<ITransport>(transport);
+            services.AddSingleton<RelayerInstrumentation>();
             services.AddRelayerMySqlOutbox(_options);
             services.AddRelayerMySqlDirectDispatch("store", Source, _options,
                 new() { BatchSize = batchSize, QueueCapacity = queueCapacity });
@@ -214,6 +215,8 @@ public sealed class SharedDirectDispatchContractTests : OutboxDirectDispatchCont
             await using var command = new MySqlCommand(sql, connection);
             await command.ExecuteNonQueryAsync();
         }
+
+        public override RelayerInstrumentation Instrumentation => _provider!.GetRequiredService<RelayerInstrumentation>();
 
         public override Task<DispatchSession> OpenSessionAsync() => Task.FromResult<DispatchSession>(
             new Session(_provider!.CreateAsyncScope(), Source));

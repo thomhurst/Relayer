@@ -234,6 +234,7 @@ public sealed class SharedDirectDispatchContractTests(SqlServerFixture database)
             var services = new ServiceCollection();
             services.AddLogging();
             services.AddSingleton<ITransport>(transport);
+            services.AddSingleton<RelayerInstrumentation>();
             services.AddRelayerSqlServerOutbox(_options);
             services.AddRelayerSqlServerDirectDispatch("store", connectionString, _options,
                 new() { BatchSize = batchSize, QueueCapacity = queueCapacity });
@@ -249,6 +250,8 @@ public sealed class SharedDirectDispatchContractTests(SqlServerFixture database)
             await using var command = new SqlCommand(sql, connection);
             await command.ExecuteNonQueryAsync();
         }
+
+        public override RelayerInstrumentation Instrumentation => _provider!.GetRequiredService<RelayerInstrumentation>();
 
         public override Task<DispatchSession> OpenSessionAsync() => Task.FromResult<DispatchSession>(
             new Session(_provider!.CreateAsyncScope(), connectionString));

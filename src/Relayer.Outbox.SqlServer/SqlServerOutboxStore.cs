@@ -28,6 +28,7 @@ public sealed class SqlServerOutboxStore : IOutboxStore
     private readonly string _renew;
     private readonly string _complete;
     private readonly string _fail;
+    private readonly string _failOutcome;
     private readonly string _retry;
     private readonly string _count;
     private readonly string _boundedCount;
@@ -67,7 +68,7 @@ public sealed class SqlServerOutboxStore : IOutboxStore
             SET XACT_ABORT ON;
             DECLARE @own bit = CASE WHEN @@TRANCOUNT = 0 THEN 1 ELSE 0 END;
             IF @own = 1 BEGIN TRANSACTION;
-            DECLARE @changed int;
+            DECLARE @changed int, @removed int = 0;
             UPDATE {table} SET attempts = attempts + 1, last_error = @error,
                 status = CASE WHEN lane IS NOT NULL THEN 'parked' ELSE status END,
                 claim_token = NULL, claim_expires_at = NULL
@@ -79,7 +80,10 @@ public sealed class SqlServerOutboxStore : IOutboxStore
             WHERE {fenced} AND attempts + 1 >= @maxAttempts;
             SET @changed = @@ROWCOUNT;
             IF @changed = 1
+            BEGIN
                 DELETE FROM {table} WHERE id = @id AND lane IS NULL;
+                SET @removed = @@ROWCOUNT;
+            END
             ELSE
             BEGIN
                 UPDATE {table} SET attempts = attempts + 1, last_error = @error,
@@ -89,6 +93,8 @@ public sealed class SqlServerOutboxStore : IOutboxStore
             IF @own = 1 COMMIT;
             SELECT CAST(@changed AS bit);
             """;
+        // Reports whether an unordered row moved to dead storage instead of whether the claim was current.
+        _failOutcome = _fail.Replace("SELECT CAST(@changed AS bit);", "SELECT CAST(@removed AS bit);", StringComparison.Ordinal);
         _retry = SqlServerDispatchSql.Retry(table, fenced, "@now");
         _count = $"SELECT COUNT_BIG(*) FROM {table} WHERE {eligible}";
         _boundedCount = $"SELECT COUNT_BIG(*) FROM (SELECT TOP (@countLimit) 1 AS value FROM {table} WHERE {eligible}) AS pending";
@@ -221,6 +227,15 @@ public sealed class SqlServerOutboxStore : IOutboxStore
         Validate(claim);
         ArgumentNullException.ThrowIfNull(error);
         return MutateAsync(_fail, claim, now, null, error, cancellationToken);
+    }
+
+    // Returns true when the row moved to dead storage.
+    internal ValueTask<bool> RecordDispatchFailureAsync(OutboxClaim claim, string error, DateTimeOffset now,
+        CancellationToken cancellationToken)
+    {
+        Validate(claim);
+        ArgumentNullException.ThrowIfNull(error);
+        return MutateAsync(_failOutcome, claim, now, null, error, cancellationToken);
     }
 
     internal ValueTask<bool> RecordRetryAsync(OutboxClaim claim, string error, DateTimeOffset now, CancellationToken cancellationToken)

@@ -16,5 +16,6 @@
     <ProjectReference Include="../Relayer.Outbox.CrashProbe/Relayer.Outbox.CrashProbe.csproj" />
     <ProjectReference Include="../../src/Relayer.SourceGenerators/Relayer.SourceGenerators.csproj" ReferenceOutputAssembly="false" OutputItemType="Analyzer" />
     <ProjectReference Include="../../src/Relayer.Outbox.SqlServer/Relayer.Outbox.SqlServer.csproj" />
+    <ProjectReference Include="../../src/Relayer.Testing/Relayer.Testing.csproj" />
   </ItemGroup>
 </Project>

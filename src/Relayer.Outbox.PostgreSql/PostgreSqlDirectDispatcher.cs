@@ -14,6 +14,8 @@ internal sealed class PostgreSqlDirectDispatcher : OutboxDirectDispatchWorker<Ou
     private readonly List<BufferedOutboxMessage> _recoveryRows = [];
     private readonly OutboxDispatchBatch _recoveryBatch = new();
     private int _recoveredPoison;
+    private long _recoveredSettled;
+    private bool _deferSettlement;
     private readonly Npgsql.NpgsqlDataSource _source;
     private readonly bool _retainSentMessages;
     private readonly int _maxDispatchAttempts;
@@ -22,10 +24,17 @@ internal sealed class PostgreSqlDirectDispatcher : OutboxDirectDispatchWorker<Ou
     internal bool HasLocalTransport => _transports.Values.Any(static transport => PostgreSqlLocalTransport.Find(transport) is not null);
     internal void Quiesce() => Interlocked.Exchange(ref _quiescing, 1);
 
-    internal void RecoveryCommitted()
+    // The maintenance worker calls this once per recovery transaction. Settled rows are reported only
+    // after a commit; a rollback discards the totals so a later pass cannot report them.
+    internal void FinishRecovery(bool committed)
     {
-        for (var i = 0; i < _recoveredPoison; i++) _instrumentation?.RecordOutboxPoison();
+        var poisoned = _recoveredPoison;
+        var settled = _recoveredSettled + poisoned;
         _recoveredPoison = 0;
+        _recoveredSettled = 0;
+        if (!committed) return;
+        if (settled != 0) _instrumentation?.AddOutboxPending(-settled);
+        for (var i = 0; i < poisoned; i++) _instrumentation?.RecordOutboxPoison();
     }
 
     internal PostgreSqlDirectDispatcher(Npgsql.NpgsqlDataSource dataSource, PostgreSqlOutboxOptions storeOptions,
@@ -119,7 +128,9 @@ internal sealed class PostgreSqlDirectDispatcher : OutboxDirectDispatchWorker<Ou
 
     protected override void Completed(long count, bool recovery, bool single = false)
     {
-        if (!single || count == 1) base.Completed(count, recovery, single);
+        if (single && count != 1) return;
+        if (_deferSettlement) _recoveredSettled += count;
+        else base.Completed(count, recovery, single);
     }
 
     protected override bool HonorConfirmedSingle => true;
@@ -158,7 +169,8 @@ internal sealed class PostgreSqlDirectDispatcher : OutboxDirectDispatchWorker<Ou
         if (action == FailureAction.Discard)
         {
             var completed = await _store.CompleteDirectBatchAsync(_claims.AsMemory(index, 1), cancellationToken).ConfigureAwait(false);
-            _instrumentation?.AddOutboxPending(-completed);
+            if (_deferSettlement) _recoveredSettled += completed;
+            else _instrumentation?.AddOutboxPending(-completed);
             return completed != 0;
         }
         if (action is not (FailureAction.Retry or FailureAction.DeadLetter))
@@ -171,10 +183,15 @@ internal sealed class PostgreSqlDirectDispatcher : OutboxDirectDispatchWorker<Ou
                 consumer.RedeliveryDelay(row.Attempts + 1), cancellationToken).ConfigureAwait(false)
             : await _store.RecordDispatchFailureAsync(_claims[index], error.Message, null,
                 cancellationToken, permanent: action == FailureAction.DeadLetter, retryable: retryable).ConfigureAwait(false);
+        // Unordered exhaustion moves the row to dead storage. Recovery records it once its transaction commits.
         if (result == 2)
         {
             if (propagateDatabaseFailures) _recoveredPoison++;
-            else _instrumentation?.RecordOutboxPoison();
+            else if (_instrumentation is not null)
+            {
+                _instrumentation.AddOutboxPending(-1);
+                _instrumentation.RecordOutboxPoison();
+            }
         }
         return true;
     }
@@ -186,11 +203,17 @@ internal sealed class PostgreSqlDirectDispatcher : OutboxDirectDispatchWorker<Ou
         bool propagateDatabaseFailures = false, TimeSpan? admissionBudget = null, TimeProvider? admissionTimeProvider = null)
     {
         _recoveredPoison = 0;
+        _recoveredSettled = 0;
+        _deferSettlement = propagateDatabaseFailures;
         var batch = PrepareRecovered(rows.Span);
         // An aborted PostgreSQL transaction can accept COMMIT as ROLLBACK. Recovery must observe
         // database errors before its caller commits or advances the replication checkpoint.
         try { await DispatchAsync(batch, cancellationToken, recovery: true, propagateDatabaseFailures, admissionBudget, admissionTimeProvider).ConfigureAwait(false); }
-        finally { batch.Clear(); }
+        finally
+        {
+            _deferSettlement = false;
+            batch.Clear();
+        }
     }
 
     internal OutboxDispatchBatch PrepareRecovered(ReadOnlySpan<OutboxRecord> rows)

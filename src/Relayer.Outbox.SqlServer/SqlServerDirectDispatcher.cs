@@ -12,6 +12,8 @@ internal sealed class SqlServerDirectDispatcher : OutboxDirectDispatchWorker<Out
     private readonly Func<Exception, bool>? _retrySendFailure;
     private readonly SqlServerDirectDispatchOptions _options;
     private long _recoveredCompletions;
+    private long _recoveredPoison;
+    private bool _recovering;
     private readonly string _schema;
     private readonly string _prefix;
     private readonly string _dataSource;
@@ -101,7 +103,7 @@ internal sealed class SqlServerDirectDispatcher : OutboxDirectDispatchWorker<Out
             var claim = new OutboxClaim(id, Guid.NewGuid());
             var now = DateTimeOffset.UtcNow;
             if (await _store.TryClaimAsync(claim, now, now + _options.ClaimDuration, cancellationToken).ConfigureAwait(false))
-                await _store.RecordFailureAsync(claim, error.Message, DateTimeOffset.UtcNow, cancellationToken).ConfigureAwait(false);
+                await RecordFailureAsync(claim, error.Message, cancellationToken).ConfigureAwait(false);
         }
         while (offset < batch.Count && batch.Rows[offset].Transport == first.Transport &&
             batch.Rows[offset].Destination == first.Destination);
@@ -114,11 +116,30 @@ internal sealed class SqlServerDirectDispatcher : OutboxDirectDispatchWorker<Out
     protected override ValueTask<long> CompleteAsync(int offset, int count, CancellationToken cancellationToken) =>
         _store.CompleteBatchAsync(_claims.AsMemory(offset, count), DateTimeOffset.UtcNow, cancellationToken);
 
-    protected override ValueTask<bool> RecordSendFailureAsync(OutboxDispatchBatch batch, int index, Exception error,
-        CancellationToken cancellationToken, bool propagateDatabaseFailures, bool retryable = true) =>
-        SqlServerSendFailure.IsRetryable(_retrySendFailure, error, _logger)
-            ? _store.RecordRetryAsync(_claims[index], error.Message, DateTimeOffset.UtcNow, cancellationToken)
-            : _store.RecordFailureAsync(_claims[index], error.Message, DateTimeOffset.UtcNow, cancellationToken);
+    // The base worker ignores the result; a stale claim is recovered after expiry either way.
+    protected override async ValueTask<bool> RecordSendFailureAsync(OutboxDispatchBatch batch, int index, Exception error,
+        CancellationToken cancellationToken, bool propagateDatabaseFailures, bool retryable = true)
+    {
+        if (SqlServerSendFailure.IsRetryable(_retrySendFailure, error, _logger))
+            return await _store.RecordRetryAsync(_claims[index], error.Message, DateTimeOffset.UtcNow, cancellationToken).ConfigureAwait(false);
+        await RecordFailureAsync(_claims[index], error.Message, cancellationToken).ConfigureAwait(false);
+        return true;
+    }
+
+    // An exhausted row moves to dead storage. Recovery records it once its transaction commits.
+    private async ValueTask RecordFailureAsync(OutboxClaim claim, string error, CancellationToken cancellationToken)
+    {
+        if (!await _store.RecordDispatchFailureAsync(claim, error, DateTimeOffset.UtcNow, cancellationToken).ConfigureAwait(false)) return;
+        if (_recovering) _recoveredPoison++;
+        else Poisoned(1);
+    }
+
+    private void Poisoned(long count)
+    {
+        if (_instrumentation is null) return;
+        _instrumentation.AddOutboxPending(-count);
+        for (var i = 0; i < count; i++) _instrumentation.RecordOutboxPoison();
+    }
 
     protected override void Completed(long count, bool recovery, bool single = false)
     {
@@ -126,16 +147,29 @@ internal sealed class SqlServerDirectDispatcher : OutboxDirectDispatchWorker<Out
         else base.Completed(count, recovery, single);
     }
 
+    // Recovery reads only unordered rows, so a quarantined row has moved to dead storage; it settles with the transaction.
+    internal void RecoveredQuarantine() => _recoveredPoison++;
+
     // The maintenance worker owns this dispatcher and calls this once per transaction.
     internal void FinishRecovery(bool committed)
     {
         var completed = _recoveredCompletions;
+        var poisoned = _recoveredPoison;
         _recoveredCompletions = 0;
-        if (committed && completed != 0) _instrumentation?.AddOutboxPending(-completed);
+        _recoveredPoison = 0;
+        if (!committed) return;
+        if (completed != 0) _instrumentation?.AddOutboxPending(-completed);
+        if (poisoned != 0) Poisoned(poisoned);
     }
 
-    internal ValueTask DispatchRecoveredAsync(OutboxDispatchBatch batch, CancellationToken cancellationToken) =>
-        DispatchAsync(batch, cancellationToken, recovery: true);
+    [RuntimeAsyncMethodGeneration(false)]
+    [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
+    internal async ValueTask DispatchRecoveredAsync(OutboxDispatchBatch batch, CancellationToken cancellationToken)
+    {
+        _recovering = true;
+        try { await DispatchAsync(batch, cancellationToken, recovery: true).ConfigureAwait(false); }
+        finally { _recovering = false; }
+    }
 
 }
 

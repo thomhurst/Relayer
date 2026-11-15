@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using Relayer.Testing;
 using Relayer.Transports;
 
 namespace Relayer.TestFixtures;
@@ -17,6 +18,8 @@ public abstract class OutboxDirectDispatchContractTests
         // Drain committed work before returning. Tests release blocked native sends first.
         public abstract Task StopAsync();
         public abstract ValueTask RecoverAsync(OutboxRecord[] records, CancellationToken cancellationToken = default);
+        // The instrumentation the store's outbox and dispatcher report committed and settled rows through.
+        public abstract RelayerInstrumentation Instrumentation { get; }
         public abstract ValueTask DisposeAsync();
 
         public async Task CommitAsync(params OutboxRecord[] records)
@@ -255,6 +258,38 @@ public abstract class OutboxDirectDispatchContractTests
         await fixture.StopAsync();
         await Assert.That(transport.Received.Select(sent => sent.Body[0])).IsEquivalentTo(new byte[] { 1, 2 });
         await Assert.That(await fixture.ReadRowsAsync()).IsEquivalentTo(new[] { new Row(overflow.Id, 0, null, false, false) });
+    }
+
+    [Test]
+    public async Task Harness_idle_waits_for_committed_rows_until_they_are_sent()
+    {
+        var transport = new RecordingTransport { Block = true };
+        await using var fixture = await CreateFixtureAsync(transport);
+        var harness = new RelayerHarness();
+        fixture.Instrumentation.Observer = harness;
+        await fixture.CommitAsync(Record(1), Record(2));
+        await transport.Entered.Task.WaitAsync(TimeSpan.FromSeconds(30));
+        var idle = harness.WaitForIdleAsync();
+        await Assert.That(idle.IsCompleted).IsFalse();
+        transport.Release.TrySetResult();
+        await idle.WaitAsync(TimeSpan.FromSeconds(30));
+        await Assert.That(transport.Received.Count).IsEqualTo(2);
+        await Assert.That((await fixture.ReadRowsAsync()).Length).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task Harness_idle_keeps_a_retried_row_outstanding()
+    {
+        var transport = new RecordingTransport { FailFirst = 1 };
+        await using var fixture = await CreateFixtureAsync(transport);
+        var harness = new RelayerHarness();
+        fixture.Instrumentation.Observer = harness;
+        var failed = Record(1);
+        await fixture.CommitAsync(failed);
+        await fixture.StopAsync();
+        await Assert.That(await fixture.ReadRowsAsync()).IsEquivalentTo(new[]
+            { new Row(failed.Id, 1, "native send failed", false, false) });
+        await Assert.That(harness.WaitForIdleAsync().IsCompleted).IsFalse();
     }
 
     private static OutboxRecord Record(byte value, string destination = "destination", WireString? orderingKey = null,

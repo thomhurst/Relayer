@@ -19,6 +19,20 @@ public static class HarnessServiceCollectionExtensions
             throw new InvalidOperationException("Harness observation requires singleton ITransport registrations.");
 
         services.AddSingleton(static provider => new RelayerHarness(provider, provider.GetRequiredService<MessageTypeRegistry>()));
+        for (var i = 0; i < services.Count; i++)
+        {
+            var original = services[i];
+            if (original.ServiceType != typeof(RelayerInstrumentation) || original.IsKeyedService) continue;
+            // Outbox stores report committed and settled rows through the provider's instrumentation.
+            services[i] = ServiceDescriptor.Singleton(provider =>
+            {
+                var instrumentation = (RelayerInstrumentation)(original.ImplementationInstance
+                    ?? original.ImplementationFactory?.Invoke(provider)
+                    ?? ActivatorUtilities.CreateInstance(provider, original.ImplementationType!));
+                instrumentation.Observer = provider.GetRequiredService<RelayerHarness>();
+                return instrumentation;
+            });
+        }
         services.AddSingleton<IRelayerObserver>(static provider => provider.GetRequiredService<RelayerHarness>());
         services.Insert(0, ServiceDescriptor.Singleton<ISendMiddleware>(static provider => provider.GetRequiredService<RelayerHarness>()));
         for (var i = 0; i < services.Count; i++)

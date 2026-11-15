@@ -159,6 +159,35 @@ public sealed class MaintenanceTests(SqlServerFixture database)
     }
 
     [Test]
+    public async Task Quarantined_row_is_subtracted_from_pending_and_counted_once_after_recovery_commit()
+    {
+        var data = new StoreData(database);
+        await data.Create();
+        await data.Insert(Guid.CreateVersion7(), DateTimeOffset.UtcNow.AddDays(-1));
+        await data.Execute($"UPDATE {data.Table} SET headers=0x01");
+        using var instrumentation = new RelayerInstrumentation();
+        long pending = 0, poisoned = 0;
+        using var listener = new MeterListener();
+        listener.InstrumentPublished = (instrument, meterListener) =>
+        {
+            if (instrument == instrumentation.OutboxPending || instrument == instrumentation.OutboxPoison)
+                meterListener.EnableMeasurementEvents(instrument);
+        };
+        listener.SetMeasurementEventCallback<long>((instrument, value, _, _) =>
+            Interlocked.Add(ref instrument == instrumentation.OutboxPending ? ref pending : ref poisoned, value));
+        listener.Start();
+        using var worker = new SqlServerMaintenanceWorker(
+            new SqlConnectionStringBuilder(database.ConnectionString) { InitialCatalog = "master" }.ConnectionString,
+            new() { TablePrefix = data.Options.TablePrefix, BatchSize = 4, RecoveryDelay = TimeSpan.Zero },
+            [new Transport()], NullLogger<SqlServerMaintenanceWorker>.Instance, instrumentation: instrumentation);
+        await Assert.That(await worker.SweepAsync()).IsEqualTo(1);
+        await Assert.That(await Scalar($"SELECT COUNT_BIG(*) FROM {data.Table}")).IsEqualTo(0L);
+        // This instrumentation did not count the commit, so the subtraction alone is visible.
+        await Assert.That(Interlocked.Read(ref pending)).IsEqualTo(-1L);
+        await Assert.That(Interlocked.Read(ref poisoned)).IsEqualTo(1L);
+    }
+
+    [Test]
     public async Task Killed_process_recovers_broker_accepted_identity_after_connection_rollback()
     {
         var data = new StoreData(database);
