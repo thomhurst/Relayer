@@ -54,6 +54,21 @@ public class DestinationSelectorTests
     }
 
     [Test]
+    public async Task A_null_selected_destination_fails_the_send()
+    {
+        using var host = Host(t => t.Send<RegionalOrder>(["regional-eu"], static _ => null!));
+        await host.StartAsync();
+        try
+        {
+            using var scope = host.Services.CreateScope();
+            var sender = scope.ServiceProvider.GetRequiredService<ISender>();
+            await Assert.That(async () => await sender.SendAsync(new RegionalOrder("regional-eu", 1)))
+                .Throws<InvalidOperationException>().WithMessageContaining("returned null, which the route does not declare");
+        }
+        finally { await host.StopAsync(); }
+    }
+
+    [Test]
     public async Task Startup_validates_every_declared_destination()
     {
         using var host = Host(t => t.Send<RegionalOrder>(["regional-eu", "regional-us"], static order => order.Topic,

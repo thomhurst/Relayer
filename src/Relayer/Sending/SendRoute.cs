@@ -120,7 +120,7 @@ internal sealed class SendRoute<TMessage> : SendTarget<TMessage>
     {
         var destination = _selector!(message);
         if (destination is not null && _targets!.TryGetValue(destination, out var route)) return route;
-        throw new InvalidOperationException($"The destination selector for '{_messageType}' on transport '{_transport.Name}' returned '{destination}', which the route does not declare. Add it to the route's destinations.");
+        throw new InvalidOperationException($"The destination selector for '{_messageType}' on transport '{_transport.Name}' returned {(destination is null ? "null" : $"'{destination}'")}, which the route does not declare. Add it to the route's destinations.");
     }
 
     private Operation Rent() => _operations.TryRentGuarded() ?? new Operation(this);
