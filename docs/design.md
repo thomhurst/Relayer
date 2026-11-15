@@ -749,6 +749,7 @@ Relayer-specific instruments, for which the conventions define nothing:
   - Records sent (including sends routed to publish/subscribe destinations), dispatched, consumed, failed, and dead-lettered messages through the single send API.
   - Observes messages at both the logical send and the outbox dispatch, so outbox-enabled code is fully visible (MassTransit #4874).
   - `await harness.WaitForIdleAsync()` waits deterministically until in-flight work reaches zero. There are no sleeps and no race conditions (MassTransit #4835).
+  - `await harness.WaitForConsumedAsync<T>(predicate)` completes when a matching delivery has been handled successfully, for broker round-trips where idle cannot be inferred. It is signalled by the consume pipeline, not by polling.
   - `harness.Reset()` clears state between tests (MassTransit #4908).
   - Multiple buses and transports are supported (MassTransit #4718).
 - **Unit testing handlers:** handlers are POCOs. `TestMessageContext` builds a context with arbitrary features, including fake native features.
