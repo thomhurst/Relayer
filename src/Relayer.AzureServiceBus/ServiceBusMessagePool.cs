@@ -25,13 +25,15 @@ internal sealed class ServiceBusSendState
         Message = new(new AmqpAnnotatedMessage(_body));
     }
 
-    internal void Prepare(OutgoingMessage outgoing, string[]? subjectHeaders = null)
+    internal void Prepare(OutgoingMessage outgoing, string[]? subjectHeaders = null, string[]? idHeaders = null)
     {
         _data[0] = outgoing.Body;
         if (outgoing.OrderingKey is { } key) Message.SessionId = key.ToString();
         if (outgoing.DeliverAt is { } scheduled) Message.ScheduledEnqueueTime = scheduled;
         outgoing.ApplyNative(Message);
-        // The original envelope and creation context take precedence over a native callback.
+        // The original envelope and creation context take precedence over a native callback, except Subject and MessageId:
+        // a callback that sets either keeps it. Otherwise the envelope id becomes the native MessageId so broker duplicate
+        // detection drops a redispatched copy.
         foreach (var header in outgoing.Headers.Span)
         {
             if (header.Key == "content-type") Message.ContentType = header.Value.ToString();
@@ -42,6 +44,8 @@ internal sealed class ServiceBusSendState
                 // A native callback's Subject wins; otherwise the message type drives subscription filters.
                 if (Message.Subject is null && subjectHeaders is not null && Array.IndexOf(subjectHeaders, header.Key) >= 0)
                     Message.Subject = value;
+                if (Message.MessageId is null && idHeaders is not null && Array.IndexOf(idHeaders, header.Key) >= 0)
+                    Message.MessageId = value;
             }
         }
     }

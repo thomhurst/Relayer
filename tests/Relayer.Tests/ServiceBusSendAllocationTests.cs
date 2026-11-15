@@ -82,6 +82,7 @@ public class ServiceBusSendAllocationTests
     }
 
     private static readonly string[] SubjectHeaders = ["cloudEvents:type"];
+    private static readonly string[] IdHeaders = ["cloudEvents:id"];
 
     private static long Measure(Fixture fixture, ServiceBusSendState state, ServiceBusMessage native, ReadOnlyMemory<byte>[] nativeData, bool prepare, int count)
     {
@@ -91,7 +92,7 @@ public class ServiceBusSendAllocationTests
             var outgoing = fixture.Next();
             if (prepare)
             {
-                state.Prepare(outgoing, SubjectHeaders);
+                state.Prepare(outgoing, SubjectHeaders, IdHeaders);
                 state.Clear();
             }
             else

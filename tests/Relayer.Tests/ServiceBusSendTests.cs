@@ -96,14 +96,47 @@ public class ServiceBusSendTests
         await Assert.That(sent[0].SessionId).IsEqualTo("customer");
         await Assert.That(sent[0].ScheduledEnqueueTime).IsEqualTo(scheduled);
         await Assert.That(sent[0].ApplicationProperties["cloudEvents:id"]).IsEqualTo("id-1");
+        await Assert.That(sent[0].MessageId).IsEqualTo("id-1");
         await Assert.That(sent[0].ApplicationProperties["traceparent"]).IsEqualTo("creation");
         await Assert.That(sent[0].Subject).IsEqualTo("subject");
         await Assert.That(calls).IsEqualTo(1);
         await Assert.That(sent[1].ApplicationProperties.Count).IsEqualTo(0);
         await Assert.That(sent[1].SessionId).IsNull();
         await Assert.That(sent[1].Subject).IsNull();
+        await Assert.That(sent[1].MessageId).IsNull();
         await Assert.That(sent[1].ScheduledEnqueueTime).IsEqualTo(default(DateTimeOffset));
         await Assert.That(sent[1].GetRawAmqpMessage().Footer.Count).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task Native_callback_message_id_takes_precedence_over_envelope_id()
+    {
+        var client = new NativeClient();
+        await using var transport = Transport(client, sessions: true);
+        KeyValuePair<string, WireString>[] headers = [new("cloudEvents:id", new("envelope-id"))];
+        var options = new SendOptions().ServiceBus(message => message.MessageId = "native-id");
+        await transport.SendAsync(new("orders", new byte[] { 1 }, headers, options: options), default);
+        var sent = client.Senders[0].Sent;
+        await Assert.That(sent[0].MessageId).IsEqualTo("native-id");
+        await Assert.That(sent[0].ApplicationProperties["cloudEvents:id"]).IsEqualTo("envelope-id");
+    }
+
+    [Test]
+    public async Task Message_id_uses_the_route_id_header_binding()
+    {
+        var client = new NativeClient();
+        var services = new ServiceCollection();
+        services.AddRelayer(builder => builder.ServiceBus("bus", bus =>
+        {
+            bus.Options.Configure(options => { options.Client = client; options.Topics.Add(new("events")); });
+            bus.Send<First>("events", route => route.SendOptions = new() { HeaderNames = new("x-") });
+        }));
+        await using var provider = services.BuildServiceProvider();
+        var transport = provider.GetServices<ITransport>().Single();
+        foreach (var name in new[] { "x-id", "cloudEvents:id", "other-id" })
+            await transport.SendAsync(new("events", default, new KeyValuePair<string, WireString>[] { new(name, new WireString(name + "-value")) }), default);
+        var sent = client.Senders.Single().Sent;
+        await Assert.That(sent.Select(message => message.MessageId).SequenceEqual(new string?[] { "x-id-value", "cloudEvents:id-value", null })).IsTrue();
     }
 
     [Test]
