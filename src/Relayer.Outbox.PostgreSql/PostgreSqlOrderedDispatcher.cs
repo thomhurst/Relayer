@@ -216,9 +216,9 @@ internal sealed partial class PostgreSqlOrderedDispatcher : BackgroundService, I
                         // A consumed local row follows its consumer's retry schedule; preparation failures keep the store budget.
                         var consumer = preparedForSend && !nativeSend ? localAdmission : null;
                         if (!(consumer is not null && !permanent
-                                ? await _lane.FailLocalAsync(connection, transaction, claim, error.Message, consumer.MaxAttempts,
+                                ? await _lane.FailLocalAsync(connection, transaction, claim, PostgreSqlDispatchFailures.Describe(error), consumer.MaxAttempts,
                                     consumer.RedeliveryDelay(row.Attempts + 1), cancellationToken).ConfigureAwait(false)
-                                : await _lane.FailAsync(connection, transaction, claim, error.Message, cancellationToken, permanent, retryable: nativeSend).ConfigureAwait(false)))
+                                : await _lane.FailAsync(connection, transaction, claim, PostgreSqlDispatchFailures.Describe(error), cancellationToken, permanent, retryable: nativeSend).ConfigureAwait(false)))
                             throw new InvalidOperationException("Ordered outbox claim expired while recording a dispatch failure.", error);
                         poisoned = permanent || (!nativeSend && row.Attempts + 1 >= (consumer?.MaxAttempts ?? _options.MaxDispatchAttempts));
                         // The consume pipeline already logged a handler failure it handed back for retry or poison.

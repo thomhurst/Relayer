@@ -185,9 +185,9 @@ internal sealed class PostgreSqlDirectDispatcher : OutboxDirectDispatchWorker<Ou
         var consumer = !retryable && action == FailureAction.Retry && _transports.TryGetValue(row.Transport, out var transport)
             ? PostgreSqlLocalTransport.Find(transport)?.GetReceiver(row.Destination) : null;
         var result = consumer is not null
-            ? await _store.RecordLocalFailureAsync(_claims[index], error.Message, consumer.MaxAttempts,
+            ? await _store.RecordLocalFailureAsync(_claims[index], PostgreSqlDispatchFailures.Describe(error), consumer.MaxAttempts,
                 consumer.RedeliveryDelay(row.Attempts + 1), cancellationToken).ConfigureAwait(false)
-            : await _store.RecordDispatchFailureAsync(_claims[index], error.Message, null,
+            : await _store.RecordDispatchFailureAsync(_claims[index], PostgreSqlDispatchFailures.Describe(error), null,
                 cancellationToken, permanent: action == FailureAction.DeadLetter, retryable: retryable).ConfigureAwait(false);
         // Unordered exhaustion moves the row to dead storage. Recovery records it once its transaction commits.
         if (result == 2)

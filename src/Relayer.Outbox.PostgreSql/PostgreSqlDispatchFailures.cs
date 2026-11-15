@@ -10,6 +10,10 @@ internal sealed class PostgreSqlDispatchFailures(IServiceScopeFactory? scopes)
 {
     private readonly DefaultFailureClassifier _fallback = new();
 
+    // The local-delivery wrapper only carries the classified action; record the handler's own failure.
+    internal static string Describe(Exception error) =>
+        OutboxErrorText.Describe(error is PostgreSqlLocalFailure { InnerException: { } inner } ? inner : error);
+
     internal async ValueTask<FailureAction> ClassifyAsync(Exception error, Guid id, string wireType,
         int attempt, string? tenantId, OutgoingMessage message, CancellationToken cancellationToken)
     {

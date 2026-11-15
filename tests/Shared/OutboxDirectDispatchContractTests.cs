@@ -178,7 +178,7 @@ public abstract class OutboxDirectDispatchContractTests
         await Assert.That(transport.Calls.Count).IsEqualTo(2);
         await Assert.That(transport.Received.Select(sent => sent.Body[0])).IsEquivalentTo(new byte[] { 2 });
         await Assert.That(await fixture.ReadRowsAsync()).IsEquivalentTo(new[]
-            { new Row(failed.Id, 1, "native send failed", false, false) });
+            { new Row(failed.Id, 1, "System.InvalidOperationException: native send failed", false, false) });
     }
 
     [Test]
@@ -220,7 +220,7 @@ public abstract class OutboxDirectDispatchContractTests
         await Assert.That(transport.Received.Select(sent => sent.Body[0])).IsEquivalentTo(new byte[] { rejectedFirst ? (byte)2 : (byte)1 });
         await Assert.That(transport.Calls.Select(call => call.Count)).IsEquivalentTo(confirmed ? new[] { 2, 1 } : new[] { 2, 1, 1 });
         await Assert.That(await fixture.ReadRowsAsync()).IsEquivalentTo(new[]
-            { new Row(rejected.Id, 1, "native send rejected", false, false) });
+            { new Row(rejected.Id, 1, "System.InvalidOperationException: native send rejected", false, false) });
     }
 
     [Test]
@@ -288,7 +288,7 @@ public abstract class OutboxDirectDispatchContractTests
         await fixture.CommitAsync(failed);
         await fixture.StopAsync();
         await Assert.That(await fixture.ReadRowsAsync()).IsEquivalentTo(new[]
-            { new Row(failed.Id, 1, "native send failed", false, false) });
+            { new Row(failed.Id, 1, "System.InvalidOperationException: native send failed", false, false) });
         await Assert.That(harness.WaitForIdleAsync().IsCompleted).IsFalse();
     }
 

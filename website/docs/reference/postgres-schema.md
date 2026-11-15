@@ -56,7 +56,7 @@ and [store registrations](postgres-store.md) must use the same schema and prefix
 - `relayer_outbox` preserves the original UUID, transport, destination, stable message type, serialized headers
   and body, creation time, optional ordering key, lane, delivery time and tenant ID. `seq bigint GENERATED ALWAYS AS IDENTITY`
   records database insertion order for ordered dispatch; the UUID remains the primary key. Attempts default to zero;
-  `last_error` stores failure details. Status defaults to `pending` and permits `pending` or `parked`.
+  `last_error` stores the failure's exception type and message, and its innermost exception's ([format](direct-dispatch.md#failures-and-current-boundaries)). Status defaults to `pending` and permits `pending` or `parked`.
 - `relayer_outbox_dead` preserves the message and attempt/error data with a required `failed_at` timestamp.
   Dead rows live in this table, outside the eligible backlog.
 - `relayer_outbox_sent` contains only `id`, `destination` and `sent_at` for opt-in diagnostic history.

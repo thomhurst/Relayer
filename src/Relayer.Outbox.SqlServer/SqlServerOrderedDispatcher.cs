@@ -109,8 +109,8 @@ internal sealed partial class SqlServerOrderedDispatcher : BackgroundService, IO
                 {
                     var retryable = preparedForSend && SqlServerSendFailure.IsRetryable(_options.RetrySendFailure, error, _logger);
                     var recorded = retryable
-                        ? await _lane.RetryAsync(connection, transaction, claim, error.Message, cancellationToken).ConfigureAwait(false)
-                        : await _lane.FailAsync(connection, transaction, claim, error.Message, cancellationToken).ConfigureAwait(false);
+                        ? await _lane.RetryAsync(connection, transaction, claim, OutboxErrorText.Describe(error), cancellationToken).ConfigureAwait(false)
+                        : await _lane.FailAsync(connection, transaction, claim, OutboxErrorText.Describe(error), cancellationToken).ConfigureAwait(false);
                     if (!recorded)
                         throw new InvalidOperationException("Ordered outbox claim expired while recording a dispatch failure.", error);
                     poisoned = !retryable && row.Attempts + 1 >= _options.MaxDispatchAttempts;

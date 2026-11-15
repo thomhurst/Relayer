@@ -99,8 +99,8 @@ internal sealed partial class MySqlOrderedDispatcher : BackgroundService, IOrder
                 catch (Exception error) when (!cancellationToken.IsCancellationRequested)
                 {
                     var recorded = sending
-                        ? await _lane.RetryAsync(connection, transaction, claim, error.Message, cancellationToken).ConfigureAwait(false)
-                        : await _lane.FailAsync(connection, transaction, claim, error.Message, cancellationToken).ConfigureAwait(false);
+                        ? await _lane.RetryAsync(connection, transaction, claim, OutboxErrorText.Describe(error), cancellationToken).ConfigureAwait(false)
+                        : await _lane.FailAsync(connection, transaction, claim, OutboxErrorText.Describe(error), cancellationToken).ConfigureAwait(false);
                     if (!recorded)
                         throw new InvalidOperationException("Ordered outbox claim expired while recording a dispatch failure.", error);
                     poisoned = !sending && row.Attempts + 1 >= _options.MaxDispatchAttempts;

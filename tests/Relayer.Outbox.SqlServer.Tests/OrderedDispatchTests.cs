@@ -36,7 +36,7 @@ public sealed class OrderedDispatchTests(SqlServerFixture database)
         await using var reader = await query.ExecuteReaderAsync();
         await Assert.That(await reader.ReadAsync()).IsTrue();
         await Assert.That(reader.GetInt32(0)).IsEqualTo(2);
-        await Assert.That(reader.GetString(1).StartsWith("Malformed outbox row:", StringComparison.Ordinal)).IsTrue();
+        await Assert.That(reader.GetString(1).StartsWith("System.IO.InvalidDataException: Malformed outbox row:", StringComparison.Ordinal)).IsTrue();
         await Assert.That(reader.GetString(2)).IsEqualTo("parked");
         await Assert.That(reader.GetString(3)).IsEqualTo("customer-é");
         using var lane = new SqlServerOrderedLane(database.ConnectionString, data.Options, TimeSpan.FromSeconds(30), 2);
@@ -125,7 +125,7 @@ public sealed class OrderedDispatchTests(SqlServerFixture database)
         await using var reader = await query.ExecuteReaderAsync();
         await Assert.That(await reader.ReadAsync()).IsTrue();
         await Assert.That(reader.GetInt32(0)).IsEqualTo(1);
-        await Assert.That(reader.GetString(1).StartsWith("Malformed outbox row:", StringComparison.Ordinal)).IsTrue();
+        await Assert.That(reader.GetString(1).StartsWith("System.IO.InvalidDataException: Malformed outbox row:", StringComparison.Ordinal)).IsTrue();
         await Assert.That(reader.GetString(2)).IsEqualTo("parked");
     }
 

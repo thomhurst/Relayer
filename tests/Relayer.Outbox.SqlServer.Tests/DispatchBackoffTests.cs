@@ -33,7 +33,7 @@ public sealed class DispatchBackoffTests(SqlServerFixture database)
             var after = mode == "ordered" ? await DatabaseTime() : DateTimeOffset.UtcNow;
             var row = await Read(data);
             await Assert.That(row.Attempts).IsEqualTo(index + 1);
-            await Assert.That(row.Error).IsEqualTo("broker offline");
+            await Assert.That(row.Error).IsEqualTo("System.IO.IOException: broker offline");
             await Assert.That(row.Status).IsEqualTo("pending");
             await Assert.That(row.Claimed).IsFalse();
             await Assert.That(row.Due >= before.AddSeconds(delays[index])).IsTrue();
@@ -84,7 +84,7 @@ public sealed class DispatchBackoffTests(SqlServerFixture database)
         var transport = new Transport();
         using var ordered = Ordered(data, transport);
         await Dispatch(mode, data, transport, ordered);
-        await Assert.That((await Read(data)).Error).IsEqualTo("broker offline");
+        await Assert.That((await Read(data)).Error).IsEqualTo("System.IO.IOException: broker offline");
         await Dispatch(mode, data, transport, ordered);
         if (mode == "ordered")
             await Assert.That((await Read(data)).Status).IsEqualTo("parked");

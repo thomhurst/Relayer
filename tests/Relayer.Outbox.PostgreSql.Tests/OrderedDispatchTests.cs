@@ -64,7 +64,7 @@ public class OrderedDispatchTests
         var manager = new PostgreSqlDeadLetterManager("store", source, new(), instrumentation);
         var dead = (await manager.PeekAsync("store")).Messages.Single().Features.GetRequired<PostgreSqlDeadLetterDetails>();
         await Assert.That(dead.Record.Attempts).IsEqualTo(1);
-        await Assert.That(dead.Record.LastError).IsEqualTo("poison");
+        await Assert.That(dead.Record.LastError).IsEqualTo("System.InvalidOperationException: poison");
         await using (var age = source.CreateCommand("UPDATE relayer_outbox_dead SET failed_at = clock_timestamp() - interval '1 day'"))
             await age.ExecuteNonQueryAsync();
         using (var cleanup = new PostgreSqlMaintenanceWorker(source, new() { DeadRetention = TimeSpan.FromSeconds(1), InboxRetention = null },
