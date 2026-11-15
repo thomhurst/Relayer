@@ -92,6 +92,7 @@ To change a decision, add a new entry that supersedes it rather than editing his
 | [D79](#d79-route-builders-carry-only-the-message-type) | Route builders carry only the message type | Accepted |
 | [D80](#d80-rabbitmq-receive-tracing-is-scoped-to-the-consumed-queue) | RabbitMQ receive tracing is scoped to the consumed queue | Accepted |
 | [D81](#d81-post-v1-features-require-explicit-preview-opt-in) | Post-v1 features require explicit preview opt-in | Accepted |
+| [D82](#d82-a-route-can-choose-its-destination-per-message) | A route can choose its destination per message | Accepted |
 
 ---
 
@@ -486,7 +487,7 @@ Refines [D8](#d8-systemtextjson-source-generation-by-default).
 **Decision.**
 - The core owns named, typed transport, route and consumer declarations, available before execution pipelines. Native transport packages wrap `AddTransport<TTransportOptions, TConsumerOptions>` in their own simple registration extensions.
 - The single route declaration is `Send<T>` for any native destination. Sending versus publishing remains native routing, as in §3.4.
-- Each message type has one route across all transports. Cross-broker fan-out is outside the default routing contract. Superseded by [D82](#d82-several-send-routes-fan-out-through-the-outbox): a message type can have several routes, one per destination.
+- Each message type has one route across all transports. Cross-broker fan-out is outside the default routing contract. Superseded by [D82](#d82-several-send-routes-fan-out-through-the-outbox): a message type can have several routes, one per destination. A single route can also declare several destinations on its transport and choose one per message ([D84](#d84-a-route-can-choose-its-destination-per-message)).
 - Consumer `Handler<THandler>()` registration is source-generated, just like root handler registration. It adds every single-message and batch descriptor to the shared registry before freezing it, and records the handler on that consumer. The untyped `IConsumerBuilder` keeps generated registration independent of native option types; the callback's typed builder retains access to native `Options`.
 - Transport option configuration uses named `OptionsBuilder<T>` and `IOptionsMonitor<T>`. Applications use generated binding for Native AOT rather than a generic reflection-based binder inside the core.
 - A core hosted validator reports declaration and named-option errors together before later native transport hosted services start. Pipeline, native capability and topology checks remain responsible for their own execution-specific contracts.
@@ -1977,3 +1978,10 @@ This resolves the release scope of D20, D45, D56, D60 and D66 without removals, 
 
 **Consequences.** Sends to a destination without route callbacks pay one array-length check. Matching scans the headers once and compares the type value without allocating. Messages forwarded to a destination with the same type, such as dead-letter copies, also get that route's callback.
 
+## D84. A route can choose its destination per message
+
+**Context.** Issue #801: each route had one fixed destination, and fan-out (D82) sends to every route, so an envelope type carrying many logical events, or destinations partitioned by a message field, needed one CLR type per destination.
+
+**Decision.** `Send<TMessage>(destinations, selector)` declares a route with several destinations on one transport and a selector that returns one of them per message. Each destination becomes an ordinary route declaration, so capability validation, topology provisioning and exporters see every destination unchanged; together they count as one route, which can still take part in a fan-out ([D82](#d82-several-send-routes-fan-out-through-the-outbox)) alongside the message type's other routes. A destination declared both in a selector route and in another route fails startup validation like any repeated destination. At composition, the first declaration builds one send route per destination and a frozen ordinal lookup from the selected name. Routes without a selector pay one null check per send. A selected name outside the declared set fails the send. Selector routes do not carry replies (D27's reply-address match needs a fixed destination) or tombstones (a tombstone has no message to select from).
+
+**Consequences.** The selected destination flows into `OutgoingMessage.Destination`, so outbox rows store it and dispatch is unchanged. Send tracing and capabilities stay per destination.

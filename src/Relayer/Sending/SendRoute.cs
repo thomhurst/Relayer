@@ -1,4 +1,5 @@
 using System.Buffers;
+using System.Collections.Frozen;
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using System.Text;
@@ -62,14 +63,27 @@ internal sealed class SendRoute<TMessage> : SendTarget<TMessage>
     private readonly string _wireType;
     private readonly SlotPool<Operation> _operations = new(capacity: 64);
     private readonly bool _isTombstone;
+    // Set once at startup, before the route is published, when the destination is chosen per message.
+    private Func<TMessage, string>? _selector;
+    private FrozenDictionary<string, SendRoute<TMessage>>? _targets;
 
     internal SendRouteOptions Options => _options;
     internal MessageType MessageType => _messageType;
-    internal bool MatchesDestination(WireString address) => address.Text is { } text
+    // A selected destination does not come from the reply address, so selector routes cannot carry replies.
+    internal bool MatchesDestination(WireString address) => _selector is null && (address.Text is { } text
         ? string.Equals(text, _destination, StringComparison.Ordinal)
-        : address.Utf8.Span.SequenceEqual(_destinationUtf8);
+        : address.Utf8.Span.SequenceEqual(_destinationUtf8));
 
-    internal SendRoute<Tombstone<TMessage>>? CreateTombstoneRoute() => _capabilities.Tombstones
+    internal void RouteBy(Func<TMessage, string> selector, SendRoute<TMessage>[] targets)
+    {
+        var map = new Dictionary<string, SendRoute<TMessage>>(targets.Length, StringComparer.Ordinal);
+        foreach (var target in targets) map.Add(target._destination, target);
+        _targets = map.ToFrozenDictionary(StringComparer.Ordinal);
+        _selector = selector;
+    }
+
+    // A tombstone carries only a key, so a per-message destination cannot be selected for it.
+    internal SendRoute<Tombstone<TMessage>>? CreateTombstoneRoute() => _selector is null && _capabilities.Tombstones
         ? new(_transport, _destination, _messageType, _options, new TombstoneKeySelector<TMessage>(),
             _serializer, _pipeline, _capabilities, isTombstone: true) : null;
 
@@ -95,12 +109,19 @@ internal sealed class SendRoute<TMessage> : SendTarget<TMessage>
     internal override ValueTask SendAsync(TMessage message, Action<SendOptions>? configure,
         IOutboxEnlistment? outbox, CancellationToken callerToken, AttemptSendBuffer? buffer,
         ReplyMetadata reply = default, WireString tenant = default)
-        => Rent().Start(message, configure, outbox, callerToken, buffer, reply, tenant, default, default);
+        => (_selector is null ? this : Select(message)).Rent().Start(message, configure, outbox, callerToken, buffer, reply, tenant, default, default);
 
     internal ValueTask SendAsync(TMessage message, Action<SendOptions>? configure,
         IOutboxEnlistment? outbox, CancellationToken callerToken, AttemptSendBuffer? buffer,
         ReplyMetadata reply, WireString tenant, MessageEnvelopeMetadata metadata, Guid rowId)
-        => Rent().Start(message, configure, outbox, callerToken, buffer, reply, tenant, metadata, rowId);
+        => (_selector is null ? this : Select(message)).Rent().Start(message, configure, outbox, callerToken, buffer, reply, tenant, metadata, rowId);
+
+    private SendRoute<TMessage> Select(TMessage message)
+    {
+        var destination = _selector!(message);
+        if (destination is not null && _targets!.TryGetValue(destination, out var route)) return route;
+        throw new InvalidOperationException($"The destination selector for '{_messageType}' on transport '{_transport.Name}' returned '{destination}', which the route does not declare. Add it to the route's destinations.");
+    }
 
     private Operation Rent() => _operations.TryRentGuarded() ?? new Operation(this);
 

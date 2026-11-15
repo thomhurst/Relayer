@@ -72,4 +72,18 @@ public sealed class RouteBuilder<TMessage>
             NativeTransportOptionsType = _nativeTransportOptions,
         };
     }
+
+    internal IRouteDefinition[] Build(string[] destinations, Func<TMessage, string> selector)
+    {
+        _built = true;
+        var group = new DestinationGroup<TMessage>(destinations, selector);
+        var routes = new IRouteDefinition[destinations.Length];
+        for (var i = 0; i < routes.Length; i++)
+            routes[i] = new RouteDefinition<TMessage>(destinations[i], _orderingKey, _sendOrderingKey, _sendOptions, group)
+            {
+                NativeConfigurator = _nativeConfigurator,
+                NativeTransportOptionsType = _nativeTransportOptions,
+            };
+        return routes;
+    }
 }
