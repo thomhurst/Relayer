@@ -28,7 +28,9 @@ public class KafkaConformanceTests
 
 internal sealed class KafkaFixture : ITransportConformanceFixture<KafkaDelivery>, ITransportShutdownConformanceFixture
 {
-    internal KafkaRestartableBroker Broker { get; }
+    // Null when the fixture runs on a broker that the test session shares.
+    private readonly KafkaRestartableBroker? _broker;
+    internal KafkaRestartableBroker Broker => _broker ?? throw new InvalidOperationException("This fixture does not own its broker.");
     private readonly KafkaProducerTransport _transport;
     private readonly MessageTracing _tracing;
     public ConformanceLogCapture Logs { get; } = new();
@@ -43,18 +45,20 @@ internal sealed class KafkaFixture : ITransportConformanceFixture<KafkaDelivery>
             options.SingleLine = true;
             options.TimestampFormat = "HH:mm:ss.fff ";
         }));
-    internal string Bootstrap => Broker.Bootstrap;
+    internal string Bootstrap { get; }
     public TimeSpan? OutageSendTimeout => TimeSpan.FromSeconds(5);
     public bool IsExpectedOutageFailure(Exception error) => error is Dekaf.Errors.KafkaTimeoutException or Dekaf.Errors.KafkaException { IsRetriable: true };
-    public string Destination { get; } = "relayer-" + Guid.NewGuid().ToString("N");
+    public string Destination { get; }
     public ITransport Transport => _transport;
     public string MessagingSystem => "kafka";
     public string SettlementOperation => "commit";
     public HeaderNames HeaderNames { get; } = new();
 
-    private KafkaFixture(KafkaRestartableBroker broker, MessageTracing tracing)
+    private KafkaFixture(KafkaRestartableBroker? broker, string bootstrap, string destination, MessageTracing tracing)
     {
-        Broker = broker;
+        _broker = broker;
+        Bootstrap = bootstrap;
+        Destination = destination;
         _logs = CreateLogs(Logs);
         _tracing = tracing;
         var producer = new ProducerBuilder<WireString?, (ReadOnlyMemory<byte> Body, Headers Headers)?>()
@@ -71,10 +75,8 @@ internal sealed class KafkaFixture : ITransportConformanceFixture<KafkaDelivery>
         try
         {
             await broker.StartAsync(token);
-            fixture = new KafkaFixture(broker, tracing);
-            await using var admin = new AdminClientBuilder().WithBootstrapServers(fixture.Bootstrap).WithLoggerFactory(fixture._logs).Build();
-            await admin.CreateTopicsAsync([new() { Name = fixture.Destination, NumPartitions = 1, ReplicationFactor = 1 },
-                new() { Name = fixture.Destination + ".dead-letter", NumPartitions = 1, ReplicationFactor = 1 }], cancellationToken: token);
+            fixture = new KafkaFixture(broker, broker.Bootstrap, "relayer-" + Guid.NewGuid().ToString("N"), tracing);
+            await fixture.CreateTopicsAsync(token);
             return fixture;
         }
         catch
@@ -83,6 +85,29 @@ internal sealed class KafkaFixture : ITransportConformanceFixture<KafkaDelivery>
             else await fixture.DisposeAsync();
             throw;
         }
+    }
+
+    /// <summary>Creates a fixture on a running broker it does not own, for tests that leave the broker running.</summary>
+    internal static async ValueTask<KafkaFixture> CreateAsync(MessageTracing tracing, string bootstrap, string destination, CancellationToken token)
+    {
+        var fixture = new KafkaFixture(null, bootstrap, destination, tracing);
+        try
+        {
+            await fixture.CreateTopicsAsync(token);
+            return fixture;
+        }
+        catch
+        {
+            await fixture.DisposeAsync();
+            throw;
+        }
+    }
+
+    private async Task CreateTopicsAsync(CancellationToken token)
+    {
+        await using var admin = new AdminClientBuilder().WithBootstrapServers(Bootstrap).WithLoggerFactory(_logs).Build();
+        await admin.CreateTopicsAsync([new() { Name = Destination, NumPartitions = 1, ReplicationFactor = 1 },
+            new() { Name = Destination + ".dead-letter", NumPartitions = 1, ReplicationFactor = 1 }], cancellationToken: token);
     }
 
     public void RegisterConsumer(Func<KafkaDelivery, CancellationToken, ValueTask<Disposition>> receive) =>
@@ -134,7 +159,7 @@ internal sealed class KafkaFixture : ITransportConformanceFixture<KafkaDelivery>
         try { await _transport.DisposeAsync(); }
         finally
         {
-            try { await Broker.DisposeAsync(); }
+            try { if (_broker is not null) await _broker.DisposeAsync(); }
             finally
             {
                 _logs.Dispose();
