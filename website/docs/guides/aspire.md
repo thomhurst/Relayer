@@ -9,7 +9,6 @@ The optional `Relayer.Aspire` package subscribes OpenTelemetry to Relayer's exis
 ActivitySource and Meter and references no transport packages. Applications reference
 only the transports they use. These integrations do not create another broker client
 or change delivery, settlement or outbox transactions.
-While packages are unpublished, use project references from a repository checkout.
 
 ## AppHost resources
 

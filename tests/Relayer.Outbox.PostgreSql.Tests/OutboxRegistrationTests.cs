@@ -106,6 +106,51 @@ public class OutboxRegistrationTests
     }
 
     [Test]
+    public async Task Composed_registrations_with_matching_options_share_one_store_and_its_workers()
+    {
+        await using var source = NpgsqlDataSource.Create("Host=unused");
+        var services = new ServiceCollection().AddLogging();
+        services.AddSingleton<ITransport>(new FailingTransport());
+        services.AddDbContext<OrdersContext>(options => options.UseNpgsql(source));
+        services.AddDbContext<BillingContext>(options => options.UseNpgsql(source));
+        services.AddRelayer(relayer =>
+        {
+            relayer.UsePostgreSqlOutbox<OrdersContext>(source);
+            relayer.UsePostgreSqlOutbox<BillingContext>(source);
+        });
+        await using var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
+        await ValidateRecovery(provider);
+        var workers = provider.GetServices<IHostedService>().ToArray();
+        await Assert.That(workers.OfType<PostgreSqlDirectDispatcher>().Count()).IsEqualTo(1);
+        await Assert.That(workers.OfType<PostgreSqlOrderedDispatcher>().Count()).IsEqualTo(1);
+        await Assert.That(workers.OfType<PostgreSqlMaintenanceWorker>().Count()).IsEqualTo(1);
+        using var scope = provider.CreateScope();
+        var outbox = scope.ServiceProvider.GetRequiredService<IOutboxEnlistment>();
+        using (scope.ServiceProvider.GetRequiredService<OrdersContext>().EnlistRelayerOutbox()) await Assert.That(outbox.IsActive).IsTrue();
+        using (scope.ServiceProvider.GetRequiredService<BillingContext>().EnlistRelayerOutbox()) await Assert.That(outbox.IsActive).IsTrue();
+    }
+
+    [Test]
+    [Arguments("source")]
+    [Arguments("prefix")]
+    [Arguments("lanes")]
+    public async Task Composed_registration_rejects_a_shared_store_name_with_different_settings(string mismatch)
+    {
+        await using var source = NpgsqlDataSource.Create("Host=unused");
+        await using var other = NpgsqlDataSource.Create("Host=other");
+        var services = new ServiceCollection();
+        await Assert.That(() => services.AddRelayer(relayer =>
+        {
+            relayer.UsePostgreSqlOutbox<OrdersContext>(source);
+            relayer.UsePostgreSqlOutbox<BillingContext>(mismatch == "source" ? other : source, new()
+            {
+                TablePrefix = mismatch == "prefix" ? "billing_" : "relayer_",
+                Lanes = mismatch == "lanes" ? 16 : 32
+            });
+        })).Throws<InvalidOperationException>().WithMessageContaining("already composed with a different NpgsqlDataSource or options");
+    }
+
+    [Test]
     [Arguments("missing")]
     [Arguments("schema")]
     [Arguments("prefix")]
@@ -201,6 +246,7 @@ public class OutboxRegistrationTests
     }
 
     public sealed class OrdersContext(DbContextOptions<OrdersContext> options) : DbContext(options);
+    public sealed class BillingContext(DbContextOptions<BillingContext> options) : DbContext(options);
     [Message("registration.probe")]
     public sealed record Probe(byte Value);
     public sealed class Empty;
