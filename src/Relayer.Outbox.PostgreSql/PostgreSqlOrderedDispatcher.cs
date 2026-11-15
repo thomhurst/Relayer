@@ -211,6 +211,10 @@ internal sealed partial class PostgreSqlOrderedDispatcher : BackgroundService, I
                                 await connection!.DisposeAsync().ConfigureAwait(false);
                                 connection = null;
                                 await local.ConsumeAsync(prepared.Message, claim, row.Attempts + 1, null, cancellationToken).ConfigureAwait(false);
+                                // The fenced completion already committed: report it now, before the next row can fail the turn.
+                                _instrumentation?.AddOutboxPending(-1);
+                                committed++;
+                                continue;
                             }
                             else await local.ConsumeAsync(prepared.Message, claim, row.Attempts + 1, transaction, cancellationToken).ConfigureAwait(false);
                         }

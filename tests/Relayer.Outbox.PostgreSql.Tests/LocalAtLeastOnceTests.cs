@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Diagnostics.Metrics;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -157,6 +158,36 @@ public class LocalAtLeastOnceTests(PostgreSqlLocalSessionFixture server)
     }
 
     [Test]
+    public async Task Ordered_lane_reports_a_committed_completion_when_the_next_row_fails()
+    {
+        await using var database = server.CreateDatabase();
+        await using var harness = await Harness.StartAsync(database, "ordered", maxAttempts: null);
+        foreach (var value in new[] { 7, 8 }) await Enqueue(harness.Provider, harness.Source, new(value), true);
+        // The first row's claim is the only update allowed; claiming the second row fails the turn.
+        await using (var command = harness.Source.CreateCommand("""
+            CREATE SEQUENCE claim_updates;
+            CREATE FUNCTION reject_second_claim() RETURNS trigger LANGUAGE plpgsql AS $$
+            BEGIN IF nextval('claim_updates') > 1 THEN RAISE EXCEPTION 'claim rejected'; END IF; RETURN NEW; END $$;
+            CREATE TRIGGER reject_second_claim BEFORE UPDATE ON relayer_outbox FOR EACH ROW EXECUTE FUNCTION reject_second_claim();
+            """)) await command.ExecuteNonQueryAsync();
+        var instrumentation = harness.Provider.GetRequiredService<RelayerInstrumentation>();
+        var pending = new ConcurrentQueue<long>();
+        using var listener = new MeterListener();
+        listener.InstrumentPublished = (instrument, meters) =>
+        {
+            if (ReferenceEquals(instrument.Meter.Scope, instrumentation) && instrument.Name == "relayer.outbox.pending") meters.EnableMeasurementEvents(instrument);
+        };
+        listener.SetMeasurementEventCallback<long>((_, value, _, _) => pending.Enqueue(value));
+        listener.Start();
+
+        await Assert.That((await Assert.That(harness.DispatchAsync).Throws<PostgresException>())!.MessageText).IsEqualTo("claim rejected");
+
+        // The first row's fenced delete committed, so the gauge drops even though the turn failed.
+        await Assert.That(await Count(harness.Source, "relayer_outbox")).IsEqualTo(1L);
+        await Assert.That(pending.Sum()).IsEqualTo(-1L);
+    }
+
+    [Test]
     public async Task Undefined_completion_mode_fails_startup()
     {
         await using var source = NpgsqlDataSource.Create("Host=unused");
@@ -241,7 +272,8 @@ public class LocalAtLeastOnceTests(PostgreSqlLocalSessionFixture server)
             if (_mode == "ordered")
             {
                 // One worker keeps its lane lease across attempts.
-                _ordered ??= new(Source, new() { Lanes = 1, MaxDispatchAttempts = 1 }, [transport], _orderedLog);
+                _ordered ??= new(Source, new() { Lanes = 1, MaxDispatchAttempts = 1 }, [transport], _orderedLog,
+                    instrumentation: Provider.GetRequiredService<RelayerInstrumentation>());
                 await _ordered.DispatchLaneAsync(0, default);
                 return;
             }
