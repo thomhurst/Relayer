@@ -163,6 +163,11 @@ internal sealed class PostgreSqlDirectDispatcher : OutboxDirectDispatchWorker<Ou
 
     protected override void ExitGroup(object? admission) => ((PostgreSqlLocalTransport.Receiver?)admission)?.Exit();
 
+    // Recovery dispatches these rows only after its pass commits: their claim must commit before the handler runs.
+    internal bool IsAtLeastOnce(in OutboxRecord row) =>
+        _transports.TryGetValue(row.TransportName, out var transport)
+        && PostgreSqlLocalTransport.Find(transport)?.GetReceiver(row.Message.Destination)?.AtLeastOnce == true;
+
     protected override async ValueTask<bool> RecordSendFailureAsync(OutboxDispatchBatch batch, int index, Exception error,
         CancellationToken cancellationToken, bool propagateDatabaseFailures, bool retryable = true)
     {

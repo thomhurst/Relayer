@@ -51,15 +51,17 @@ internal sealed class PostgreSqlLocalTransport : ITransport, ITransportSendTraci
         return _capabilities;
     }
     internal void Register(string endpoint, Func<PostgreSqlLocalDelivery, CancellationToken, ValueTask<Disposition>> receive, int concurrency = 1,
-        int? maxAttempts = null, TimeSpan[]? redeliveryDelays = null)
+        int? maxAttempts = null, TimeSpan[]? redeliveryDelays = null, bool atLeastOnce = false)
     {
-        if (!_consumers.TryAdd(endpoint, new(receive, concurrency, maxAttempts ?? _options.MaxDispatchAttempts, redeliveryDelays?.ToArray() ?? []))) throw new InvalidOperationException($"Declare only one PostgreSQL local consumer for '{endpoint}'.");
+        if (!_consumers.TryAdd(endpoint, new(receive, concurrency, maxAttempts ?? _options.MaxDispatchAttempts, redeliveryDelays?.ToArray() ?? [], atLeastOnce))) throw new InvalidOperationException($"Declare only one PostgreSQL local consumer for '{endpoint}'.");
     }
     internal sealed class Receiver(Func<PostgreSqlLocalDelivery, CancellationToken, ValueTask<Disposition>> receive, int maximum,
-        int maxAttempts, TimeSpan[] redeliveryDelays)
+        int maxAttempts, TimeSpan[] redeliveryDelays, bool atLeastOnce = false)
     {
         internal readonly Func<PostgreSqlLocalDelivery, CancellationToken, ValueTask<Disposition>> Receive = receive;
         internal readonly int MaxAttempts = maxAttempts;
+        // The dispatcher commits the claim before the attempt and completes or fails the row in a separate fenced statement.
+        internal readonly bool AtLeastOnce = atLeastOnce;
         // The failed attempt is one-based; the last configured delay repeats.
         internal TimeSpan RedeliveryDelay(int attempt) =>
             redeliveryDelays.Length == 0 ? TimeSpan.Zero : redeliveryDelays[Math.Min(attempt, redeliveryDelays.Length) - 1];
@@ -102,6 +104,14 @@ internal sealed class PostgreSqlLocalTransport : ITransport, ITransportSendTraci
     {
         if (!_consumers.TryGetValue(message.Destination, out var consumer))
             throw new InvalidOperationException($"PostgreSQL local transport '{Name}': register a consumer for '{message.Destination}' on every dispatching instance.");
+        if (consumer.AtLeastOnce)
+        {
+            // An uncommitted claim would block the fenced completion on its own row lock.
+            if (transaction is not null)
+                throw new InvalidOperationException("An at-least-once PostgreSQL local attempt must run after its claim commits, outside the dispatch transaction.");
+            await ProcessAttemptAsync(consumer.Receive, new(message, claim, null!, attempt), cancellationToken).ConfigureAwait(false);
+            return;
+        }
         if (transaction is not null)
         {
             // A handler failure must not commit business changes when the lane records its retry/poison transition.
@@ -136,7 +146,7 @@ internal sealed class PostgreSqlLocalTransport : ITransport, ITransportSendTraci
             var disposition = await consumer(delivery with { CompletionStore = store, Owner = this }, cancellationToken).ConfigureAwait(false);
             if (disposition.Kind != DispositionKind.SettledByHandler)
                 throw new InvalidOperationException("The PostgreSQL local receive pipeline must complete its fenced row inside the delivery transaction.");
-            if (delivery.Transaction.Connection is null)
+            if (delivery.OpenTransaction is { Connection: null })
                 throw new InvalidOperationException("Do not commit or dispose the local delivery transaction. The dispatcher owns its completion.");
         }
         finally
@@ -161,7 +171,12 @@ internal sealed class PostgreSqlLocalTransport : ITransport, ITransportSendTraci
         using var activity = _settlementTracing?.GetValueOrDefault(delivery.Message.Destination)?.Start(default);
         try
         {
-            if (!await delivery.CompletionStore.CompleteAsync(delivery.Claim, delivery.Transaction, cancellationToken).ConfigureAwait(false))
+            if (delivery.OpenTransaction is not { } transaction)
+            {
+                if (await delivery.CompletionStore.CompleteDirectAsync(delivery.Claim, cancellationToken).ConfigureAwait(false) != 1)
+                    throw new InvalidOperationException("The PostgreSQL local claim was lost before completion. The handler already ran, so recovery delivers the row again; raise the claim or lease duration above the handler's run time.");
+            }
+            else if (!await delivery.CompletionStore.CompleteAsync(delivery.Claim, transaction, cancellationToken).ConfigureAwait(false))
                 throw new InvalidOperationException("The PostgreSQL local claim was lost. Business work is rolled back and recovery retries the row.");
         }
         catch { MessageOperationTracing.Fail(activity, "_OTHER"); throw; }
@@ -172,7 +187,8 @@ internal sealed class PostgreSqlLocalTransport : ITransport, ITransportSendTraci
     {
         if (action != FailureAction.Discard) throw new PostgreSqlLocalFailure(error, action);
         var native = context.Features.GetRequired<NativeMessage<PostgreSqlLocalDelivery>>();
-        await native.Message.Transaction.RollbackAsync("relayer_local_attempt", CancellationToken.None).ConfigureAwait(false);
+        if (native.Message.OpenTransaction is { } transaction)
+            await transaction.RollbackAsync("relayer_local_attempt", CancellationToken.None).ConfigureAwait(false);
         native.Disposition = Disposition.Complete;
     }
     public SendTracing? GetSendTracing(string destination) => _tracing?.GetValueOrDefault(destination);

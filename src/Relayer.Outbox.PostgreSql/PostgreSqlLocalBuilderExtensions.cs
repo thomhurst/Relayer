@@ -19,6 +19,19 @@ public sealed class PostgreSqlLocalConsumerOptions
 
     /// <summary>Handler attempts before a retrying row is dead-lettered, or its ordering key parked. Null uses <see cref="PostgreSqlOutboxOptions.MaxDispatchAttempts"/>; <see cref="int.MaxValue"/> retries until the handler succeeds.</summary>
     public int? MaxAttempts { get; set; }
+
+    /// <summary>How a successful delivery completes its row. <see cref="PostgreSqlLocalCompletion.Atomic"/> (the default) runs the handler inside the delivery transaction.</summary>
+    public PostgreSqlLocalCompletion Completion { get; set; }
+}
+
+/// <summary>Selects how a PostgreSQL local consumer completes its outbox rows.</summary>
+[Experimental("RLYEXP002", UrlFormat = "https://relayer.tomlonghurst.dev/docs/reference/diagnostics#rlyexp002")]
+public enum PostgreSqlLocalCompletion
+{
+    /// <summary>The handler runs inside the row's fenced transaction; business writes through <see cref="PostgreSqlLocalDelivery.Transaction"/> and the row deletion commit together.</summary>
+    Atomic,
+    /// <summary>The row is claimed in a short transaction, the handler runs with no open delivery transaction or connection, and a second short transaction fenced by the claim completes or retries the row. Handlers must be idempotent.</summary>
+    AtLeastOnce,
 }
 
 /// <summary>Declares named local consumption over existing PostgreSQL outbox dispatch.</summary>
@@ -69,6 +82,8 @@ public static class PostgreSqlLocalBuilderExtensions
                 foreach (var delay in options.RedeliveryDelays ?? throw new ArgumentNullException(nameof(options), $"PostgreSQL local consumer '{consumer.Source}': RedeliveryDelays must not be null."))
                     if (delay < TimeSpan.Zero)
                         throw new ArgumentOutOfRangeException(nameof(options), $"PostgreSQL local consumer '{consumer.Source}': RedeliveryDelays must be non-negative.");
+                if (!Enum.IsDefined(options.Completion))
+                    throw new ArgumentOutOfRangeException(nameof(options), $"PostgreSQL local consumer '{consumer.Source}': Completion must be Atomic or AtLeastOnce.");
                 if (consumer.BatchSize != 1)
                     throw new NotSupportedException($"PostgreSQL local consumer '{consumer.Source}': batch handlers are unsupported. Use single-message handlers.");
                 var pipeline = new ConsumePipelineBuilder(provider.GetRequiredService<IServiceScopeFactory>(),
@@ -85,7 +100,8 @@ public static class PostgreSqlLocalBuilderExtensions
                 var composed = pipeline.Build(consumer.Concurrency);
                 composed.BufferAttemptSends = true;
                 var receive = new ReceivePipeline<PostgreSqlLocalDelivery, PostgreSqlLocalMessageBinding>(composed, new(), consumer.Concurrency);
-                transport.Register(consumer.Source, receive.ProcessAsync, consumer.Concurrency, options.MaxAttempts, options.RedeliveryDelays);
+                transport.Register(consumer.Source, receive.ProcessAsync, consumer.Concurrency, options.MaxAttempts, options.RedeliveryDelays,
+                    options.Completion == PostgreSqlLocalCompletion.AtLeastOnce);
             }
             transport.ValidateConsumers();
             return Task.CompletedTask;

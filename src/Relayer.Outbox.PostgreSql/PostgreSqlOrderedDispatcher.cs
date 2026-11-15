@@ -158,19 +158,29 @@ internal sealed partial class PostgreSqlOrderedDispatcher : BackgroundService, I
         var admissionBudget = _options.LeaseDuration / 4;
         if (turnAdmissionBudget is { } turnBudget && turnBudget < admissionBudget)
             admissionBudget = turnBudget;
-        await using var connection = await _source.OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
-        await using var transaction = await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
-        if (!await _coordinator.AcquireAsync(connection, transaction, lane, cancellationToken).ConfigureAwait(false)) return 0;
+        // An at-least-once local row commits this transaction and returns its connection before the handler runs.
+        NpgsqlConnection? connection = await _source.OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+        NpgsqlTransaction? transaction = null;
         var count = 0;
         var sent = 0;
+        var committed = 0;
         var poisoned = false;
         try
         {
+            transaction = await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
+            if (!await _coordinator.AcquireAsync(connection, transaction, lane, cancellationToken).ConfigureAwait(false)) return 0;
             count = await _lane.ReadAsync(connection, transaction, lane, _rows, cancellationToken).ConfigureAwait(false);
             for (var index = 0; index < count && Volatile.Read(ref _localStop) == 0; index++)
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 if (_timeProvider.GetElapsedTime(started) >= admissionBudget) break;
+                if (transaction is null)
+                {
+                    // The lease is time-bound, so it survives the detached attempt. Renew it before the next row.
+                    connection = await _source.OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+                    transaction = await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
+                    if (!await _coordinator.AcquireAsync(connection, transaction, lane, cancellationToken).ConfigureAwait(false)) break;
+                }
                 var row = _rows[index];
                 var localTransport = _transports.TryGetValue(row.TransportName, out var registered) ? PostgreSqlLocalTransport.Find(registered) : null;
                 var localAdmission = localTransport?.TryEnter(row.Message.Destination);
@@ -178,7 +188,7 @@ internal sealed partial class PostgreSqlOrderedDispatcher : BackgroundService, I
                 try
                 {
                     var claim = new OutboxClaim(row.Id, Guid.NewGuid());
-                    if (!await _lane.ClaimAsync(connection, transaction, claim, cancellationToken).ConfigureAwait(false)) break;
+                    if (!await _lane.ClaimAsync(connection!, transaction, claim, cancellationToken).ConfigureAwait(false)) break;
                     var preparedForSend = false;
                     var nativeSend = false;
                     try
@@ -189,7 +199,20 @@ internal sealed partial class PostgreSqlOrderedDispatcher : BackgroundService, I
                         {
                             local.ValidateStore(_source, _options.Schema, _options.TablePrefix, _options.RetainSentMessages, _options.MaxDispatchAttempts);
                             preparedForSend = true;
-                            await local.ConsumeAsync(prepared.Message, claim, row.Attempts + 1, transaction, cancellationToken).ConfigureAwait(false);
+                            if (localAdmission!.AtLeastOnce)
+                            {
+                                // Commit the lease, the claim and earlier completions; the fenced claim settles the row afterwards.
+                                await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+                                _instrumentation?.AddOutboxPending(-sent);
+                                committed += sent;
+                                sent = 0;
+                                await transaction.DisposeAsync().ConfigureAwait(false);
+                                transaction = null;
+                                await connection!.DisposeAsync().ConfigureAwait(false);
+                                connection = null;
+                                await local.ConsumeAsync(prepared.Message, claim, row.Attempts + 1, null, cancellationToken).ConfigureAwait(false);
+                            }
+                            else await local.ConsumeAsync(prepared.Message, claim, row.Attempts + 1, transaction, cancellationToken).ConfigureAwait(false);
                         }
                         else
                         {
@@ -200,12 +223,19 @@ internal sealed partial class PostgreSqlOrderedDispatcher : BackgroundService, I
                     }
                     catch (Exception error) when (!cancellationToken.IsCancellationRequested)
                     {
+                        if (transaction is null)
+                        {
+                            // The claim token fences the failure transition. A lost lease stops the batch after it.
+                            connection = await _source.OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+                            transaction = await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
+                            if (!await _coordinator.AcquireAsync(connection, transaction, lane, cancellationToken).ConfigureAwait(false)) index = count;
+                        }
                         var action = preparedForSend
                             ? await _failures.ClassifyAsync(error, row.Id, row.MessageType, row.Attempts + 1, row.TenantId, row.Message, cancellationToken).ConfigureAwait(false)
                             : FailureAction.Retry;
                         if (action == FailureAction.Discard)
                         {
-                            if (!await _lane.CompleteAsync(connection, transaction, claim, cancellationToken).ConfigureAwait(false))
+                            if (!await _lane.CompleteAsync(connection!, transaction, claim, cancellationToken).ConfigureAwait(false))
                                 throw new InvalidOperationException("Ordered outbox claim expired while discarding a failed send.", error);
                             sent++;
                             continue;
@@ -216,9 +246,9 @@ internal sealed partial class PostgreSqlOrderedDispatcher : BackgroundService, I
                         // A consumed local row follows its consumer's retry schedule; preparation failures keep the store budget.
                         var consumer = preparedForSend && !nativeSend ? localAdmission : null;
                         if (!(consumer is not null && !permanent
-                                ? await _lane.FailLocalAsync(connection, transaction, claim, PostgreSqlDispatchFailures.Describe(error), consumer.MaxAttempts,
+                                ? await _lane.FailLocalAsync(connection!, transaction, claim, PostgreSqlDispatchFailures.Describe(error), consumer.MaxAttempts,
                                     consumer.RedeliveryDelay(row.Attempts + 1), cancellationToken).ConfigureAwait(false)
-                                : await _lane.FailAsync(connection, transaction, claim, PostgreSqlDispatchFailures.Describe(error), cancellationToken, permanent, retryable: nativeSend).ConfigureAwait(false)))
+                                : await _lane.FailAsync(connection!, transaction, claim, PostgreSqlDispatchFailures.Describe(error), cancellationToken, permanent, retryable: nativeSend).ConfigureAwait(false)))
                             throw new InvalidOperationException("Ordered outbox claim expired while recording a dispatch failure.", error);
                         poisoned = permanent || (!nativeSend && row.Attempts + 1 >= (consumer?.MaxAttempts ?? _options.MaxDispatchAttempts));
                         // The consume pipeline already logged a handler failure it handed back for retry or poison.
@@ -227,18 +257,23 @@ internal sealed partial class PostgreSqlOrderedDispatcher : BackgroundService, I
                     }
                     // Do not advance to another row after an uncertain completion. Rollback safely permits duplicates.
                     if (PostgreSqlLocalTransport.Find(_transports[row.TransportName]) is null &&
-                        !await _lane.CompleteAsync(connection, transaction, claim, cancellationToken).ConfigureAwait(false))
+                        !await _lane.CompleteAsync(connection!, transaction!, claim, cancellationToken).ConfigureAwait(false))
                         throw new InvalidOperationException("Ordered outbox claim expired after native send. The batch remains available for recovery.");
                     sent++;
                 }
                 finally { localAdmission?.Exit(); }
             }
-            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+            if (transaction is not null) await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
             _instrumentation?.AddOutboxPending(-sent);
             if (poisoned) _instrumentation?.RecordOutboxParked();
-            return sent;
+            return committed + sent;
         }
-        finally { Array.Clear(_rows); }
+        finally
+        {
+            Array.Clear(_rows);
+            if (transaction is not null) await transaction.DisposeAsync().ConfigureAwait(false);
+            if (connection is not null) await connection.DisposeAsync().ConfigureAwait(false);
+        }
     }
 
     internal static (ITransport Transport, OutgoingMessage Message) Prepare(OutboxRecord row,

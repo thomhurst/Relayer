@@ -28,6 +28,9 @@ internal sealed partial class PostgreSqlMaintenanceWorker : OutboxMaintenanceWor
     private readonly string _sent;
     private readonly string _depth;
     private readonly OutboxRecord[] _rows;
+    // At-least-once local rows from the last pass; they run after it commits and releases its connection.
+    private readonly OutboxRecord[] _detached;
+    private int _detachedCount;
     private Guid? _after;
     private int _localStop;
     private readonly CancellationTokenSource _idleStop = new();
@@ -50,6 +53,7 @@ internal sealed partial class PostgreSqlMaintenanceWorker : OutboxMaintenanceWor
         _dispatcher = new(source, store, new() { BatchSize = options.BatchSize, QueueCapacity = 1, ClaimDuration = options.ClaimDuration },
             transports, dispatchLogger ?? NullLogger<PostgreSqlDirectDispatcher>.Instance, _store, instrumentation, scopes);
         _rows = new OutboxRecord[options.BatchSize];
+        _detached = new OutboxRecord[options.BatchSize];
         var schema = PostgreSqlOutboxSchema.QuoteIdentifier(options.Schema ?? "public") + ".";
         string Table(string suffix) => schema + PostgreSqlOutboxSchema.QuoteIdentifier(options.TablePrefix + suffix);
         var leases = Table("leases");
@@ -110,22 +114,39 @@ internal sealed partial class PostgreSqlMaintenanceWorker : OutboxMaintenanceWor
         _through = null;
         do
         {
-            var committed = false;
-            try
-            {
-                await using var connection = await _source.OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
-                await using var transaction = await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
-                await DispatchAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
-                await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
-                committed = true;
-            }
-            finally { _dispatcher.FinishRecovery(committed); }
+            try { await DispatchCommittedPassAsync(cancellationToken).ConfigureAwait(false); }
+            catch { ClearDetached(); throw; }
+            await DispatchDetachedAsync(cancellationToken).ConfigureAwait(false);
         } while (_through is not null);
+    }
+
+    private async ValueTask DispatchCommittedPassAsync(CancellationToken cancellationToken)
+    {
+        var committed = false;
+        try
+        {
+            await using var connection = await _source.OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+            await using var transaction = await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
+            await DispatchAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
+            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+            committed = true;
+        }
+        finally { _dispatcher.FinishRecovery(committed); }
     }
 
     private async ValueTask<int> RunAsync(string name, bool cleanup, CancellationToken cancellationToken, TimeSpan? turnBudget = null, int cleanupTable = -1)
     {
         var started = turnBudget.HasValue ? Stopwatch.GetTimestamp() : 0;
+        int count;
+        // Rows deferred by a pass that did not commit are revisited by a later pass instead.
+        try { count = await RunPassAsync(name, cleanup, cancellationToken, started, turnBudget, cleanupTable).ConfigureAwait(false); }
+        catch { ClearDetached(); throw; }
+        if (!cleanup) await DispatchDetachedAsync(cancellationToken, turnBudget.HasValue ? (turnBudget.Value - Stopwatch.GetElapsedTime(started)) / 2 : null).ConfigureAwait(false);
+        return count;
+    }
+
+    private async ValueTask<int> RunPassAsync(string name, bool cleanup, CancellationToken cancellationToken, long started, TimeSpan? turnBudget, int cleanupTable)
+    {
         var committed = false;
         try
         {
@@ -176,10 +197,18 @@ internal sealed partial class PostgreSqlMaintenanceWorker : OutboxMaintenanceWor
             _after = count == 0 ? null : _rows[count - 1].Id;
             // A fixed boundary forces wrapping even while newer rows arrive, revisiting failed or newly eligible rows.
             if (count == 0) _through = null;
+            // An at-least-once claim must commit before its handler runs, and the pass must not hold its
+            // connection or transaction for that run; defer those rows until the pass commits.
+            var enlisted = 0;
+            for (var i = 0; i < count; i++)
+            {
+                if (_dispatcher.IsAtLeastOnce(_rows[i])) _detached[_detachedCount++] = _rows[i];
+                else _rows[enlisted++] = _rows[i];
+            }
             _store.UseDispatchTransaction(connection, transaction);
             // Preserve native destination batching; stop before another group and reserve time to commit.
             // The UUID boundary still wraps, so unadmitted durable rows are revisited.
-            await _dispatcher.DispatchRecoveredAsync(_rows.AsMemory(0, count), cancellationToken, propagateDatabaseFailures: true, admissionBudget: turnBudget.HasValue
+            await _dispatcher.DispatchRecoveredAsync(_rows.AsMemory(0, enlisted), cancellationToken, propagateDatabaseFailures: true, admissionBudget: turnBudget.HasValue
                 ? (turnBudget.Value - Stopwatch.GetElapsedTime(started)) / 2 : null, admissionTimeProvider: _admissionTimeProvider).ConfigureAwait(false);
             return count;
         }
@@ -188,6 +217,30 @@ internal sealed partial class PostgreSqlMaintenanceWorker : OutboxMaintenanceWor
             _store.UseDispatchTransaction(null, null);
             Array.Clear(_rows, 0, count);
         }
+    }
+
+    // The rows' own fenced claims arbitrate with direct dispatch, as they do outside recovery. Database
+    // failures still reach the caller, so CDC never checkpoints past them; each claim and failure
+    // transition commits on its own, so poison recorded before a failure is reported either way.
+    private async ValueTask DispatchDetachedAsync(CancellationToken cancellationToken, TimeSpan? admissionBudget = null)
+    {
+        if (_detachedCount == 0) return;
+        try
+        {
+            await _dispatcher.DispatchRecoveredAsync(_detached.AsMemory(0, _detachedCount), cancellationToken,
+                propagateDatabaseFailures: true, admissionBudget: admissionBudget, admissionTimeProvider: _admissionTimeProvider).ConfigureAwait(false);
+        }
+        finally
+        {
+            _dispatcher.FinishRecovery(committed: true);
+            ClearDetached();
+        }
+    }
+
+    private void ClearDetached()
+    {
+        Array.Clear(_detached, 0, _detachedCount);
+        _detachedCount = 0;
     }
 
     private async ValueTask<int> DeleteExpiredAsync(NpgsqlConnection connection, NpgsqlTransaction transaction, int table, CancellationToken cancellationToken)
