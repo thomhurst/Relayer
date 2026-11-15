@@ -30,12 +30,15 @@ Every packable project under `src/` includes the repository README, the Relayer 
 metadata and the source repository commit. The SDK supplies GitHub SourceLink, and each package has
 a matching `.snupkg` containing portable PDBs. Debuggers can retrieve the source for that exact commit.
 
-The packages are `Relayer`, `Relayer.Testing`, `Relayer.HealthChecks`, `Relayer.Kafka`,
-`Relayer.Kafka.HealthChecks`, `Relayer.AzureServiceBus`, `Relayer.AmazonSqs`, `Relayer.RabbitMQ`,
-`Relayer.Nats`,
-`Relayer.Outbox.PostgreSql`, `Relayer.Outbox.EntityFrameworkCore`, `Relayer.Outbox.PostgreSql.EntityFrameworkCore`, `Relayer.Sagas`,
-`Relayer.Sagas.EntityFrameworkCore` and the `dotnet-relayer` tool.
-`Relayer.Kafka.SchemaRegistry`, `Relayer.Serialization.Protobuf` and `Relayer.Kafka.Serialization.Avro` are optional integration packages.
+The packages are `Relayer`, `Relayer.Testing`, `Relayer.AspNetCore`, `Relayer.Aspire`, `Relayer.HealthChecks`,
+`Relayer.Kafka`, `Relayer.Kafka.HealthChecks`, `Relayer.AzureServiceBus`, `Relayer.AzureServiceBus.HealthChecks`,
+`Relayer.AmazonSqs`, `Relayer.AmazonSqs.HealthChecks`, `Relayer.RabbitMQ`, `Relayer.RabbitMQ.HealthChecks`,
+`Relayer.Nats`, `Relayer.GooglePubSub`, `Relayer.Outbox.PostgreSql`, `Relayer.Outbox.SqlServer`, `Relayer.Outbox.MySql`,
+`Relayer.Outbox.EntityFrameworkCore`, `Relayer.Outbox.PostgreSql.EntityFrameworkCore`, `Relayer.Sagas`,
+`Relayer.Sagas.EntityFrameworkCore` and `Relayer.Cli`, the tool that installs the `dotnet-relayer` command.
+Every package ID starts with `Relayer`, because the nuget.org trusted publishing policy only accepts that pattern.
+`Relayer.Kafka.SchemaRegistry`, `Relayer.Serialization.Protobuf`, `Relayer.Serialization.MessagePack` and
+`Relayer.Kafka.Serialization.Avro` are optional integration packages.
 `Relayer.Sagas` provides [process diagram declarations and export](../guides/saga-diagrams.md) and
 typed execution. [Transactional state transitions](../guides/sagas.md) use the optional EF Core
 integration; [durable process timeouts](../guides/saga-timeouts.md) reuse transactional scheduled sends.

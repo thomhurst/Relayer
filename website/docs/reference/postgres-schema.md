@@ -18,15 +18,15 @@ The separately registered dispatchers implement [poison-row handling and key rel
 No NuGet packages are published yet. From a repository checkout, run:
 
 ```shell
-dotnet run -c Release --project src/dotnet-relayer -- db script --provider postgres --schema messaging --prefix orders_
+dotnet run -c Release --project src/Relayer.Cli -- db script --provider postgres --schema messaging --prefix orders_
 ```
 
-The packable `dotnet-relayer` tool exposes the same command as `dotnet relayer db script --provider postgres`
+The `Relayer.Cli` tool package installs the `dotnet-relayer` command, which exposes the same command as `dotnet relayer db script --provider postgres`
 after installation. To build and install it locally:
 
 ```shell
-dotnet pack src/dotnet-relayer -c Release -o .artifacts/packages
-dotnet tool install dotnet-relayer --tool-path .artifacts/tools --add-source .artifacts/packages
+dotnet pack src/Relayer.Cli -c Release -o .artifacts/packages
+dotnet tool install Relayer.Cli --tool-path .artifacts/tools --add-source .artifacts/packages
 ```
 
 Run `.artifacts/tools/dotnet-relayer db script --provider postgres` to print SQL. The installed tool on `PATH`
