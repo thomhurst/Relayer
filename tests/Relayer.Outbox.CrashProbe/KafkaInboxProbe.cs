@@ -13,7 +13,8 @@ public static class KafkaInboxProbe
 {
     public const string Saved = "KAFKA_SAVED";
 
-    public static void Configure(IServiceCollection services, KafkaInboxSettings settings)
+    /// <param name="consume">False registers only the send routes, so seeding a record never processes it.</param>
+    public static void Configure(IServiceCollection services, KafkaInboxSettings settings, bool consume = true)
     {
         services.AddSingleton(settings);
         services.AddRelayerEntityFrameworkCoreOutbox();
@@ -33,6 +34,7 @@ public static class KafkaInboxProbe
                 // No dispatcher runs, so outgoing messages stay as outbox rows the test can count.
                 kafka.Send<KafkaInboxOutput>(settings.Topic + ".out");
                 kafka.Send<KafkaInboxWork>(settings.Topic);
+                if (!consume) return;
                 kafka.Consume(settings.Topic, consumer =>
                 {
                     consumer.Options.Group = settings.Topic;

@@ -114,8 +114,10 @@ public class KafkaInboxCrashTests(KafkaInboxBroker broker)
                 await scenario._admin.CreateTopicsAsync([new() { Name = scenario.Topic, NumPartitions = 1, ReplicationFactor = 1 }],
                     cancellationToken: token);
                 // Relayer's own send writes the wire identity and UUIDv7 message ID the inbox requires.
+                // No consumer here: the transport starts every registered consumer, which could process the seed.
                 var sending = new ServiceCollection().AddLogging();
-                KafkaInboxProbe.Configure(sending, new(broker.Bootstrap, scenario.ConnectionString, scenario.Topic, TimeSpan.FromSeconds(5)));
+                KafkaInboxProbe.Configure(sending, new(broker.Bootstrap, scenario.ConnectionString, scenario.Topic, TimeSpan.FromSeconds(5)),
+                    consume: false);
                 await using var provider = sending.BuildServiceProvider();
                 var transport = provider.GetRequiredService<Relayer.Transports.ITransport>();
                 await transport.StartAsync(token);
