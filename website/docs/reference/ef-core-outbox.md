@@ -52,8 +52,22 @@ The combined registration adds scoped interceptors to the native `AddDbContext` 
 registration order. It does not configure the EF provider or create tables. Configure `UseNpgsql` with
 the same data source. The default store name is `default`; use the optional `EntityFrameworkCoreOutboxOptions`
 argument to set `DispatchStoreName`, schema, table prefix, lanes, ordered lease duration and dispatch attempt limit.
-These store settings flow to the workers automatically. Direct dispatch, recovery and retention otherwise use
-their existing worker defaults. Stop the host before disposing the data source.
+These store settings flow to the workers automatically. Stop the host before disposing the data source.
+
+To tune the workers, pass `PostgreSqlDirectDispatchOptions`, `PostgreSqlOrderedDispatchOptions` or
+`PostgreSqlMaintenanceOptions`. Workers you don't configure use their defaults. For example, a shorter
+`RecoveryDelay` retries failed local-handler rows sooner:
+
+```csharp
+relayer.UsePostgreSqlOutbox<OrdersDbContext>(dataSource,
+    maintenance: new() { RecoveryDelay = TimeSpan.FromSeconds(5) },
+    orderedDispatch: new() { PollInterval = TimeSpan.FromMilliseconds(250) });
+```
+
+Leave schema, table prefix, lanes, the ordered lease duration and the attempt limit unset on the worker
+options; they come from `EntityFrameworkCoreOutboxOptions`, and a different value fails at registration.
+`RetainSentMessages` must match on the ordered dispatch and maintenance options, and it then applies to
+direct dispatch as well.
 
 Several contexts can share one store. Call `UsePostgreSqlOutbox` once per context with the same data source
 and options; the later calls only enlist their context, so the host runs one direct dispatcher, one ordered
@@ -68,7 +82,8 @@ services.AddRelayer(relayer =>
 ```
 
 A second registration for the same `DispatchStoreName` with a different data source, schema, table prefix,
-lane count, lease duration or attempt limit fails at registration. To keep contexts in separate stores, give
+lane count, lease duration, attempt limit or worker options instance fails at registration; pass the same
+worker options instances to every call for a store. To keep contexts in separate stores, give
 each one a distinct `DispatchStoreName` and separate store tables; each store then runs its own workers.
 The first composed registration supplies default capability settings before a context is selected, unless
 the application already registered configuration-bound defaults. A selected context always uses its own settings.

@@ -151,6 +151,77 @@ public class OutboxRegistrationTests
     }
 
     [Test]
+    public async Task Composed_registration_applies_worker_options_with_the_store_settings()
+    {
+        await using var source = NpgsqlDataSource.Create("Host=unused");
+        var services = new ServiceCollection().AddLogging();
+        services.AddSingleton<ITransport>(new FailingTransport());
+        services.AddDbContext<OrdersContext>(options => options.UseNpgsql(source));
+        var maintenance = new PostgreSqlMaintenanceOptions { RecoveryDelay = TimeSpan.FromSeconds(2), SweepInterval = TimeSpan.FromMilliseconds(200), RetainSentMessages = true };
+        var ordered = new PostgreSqlOrderedDispatchOptions { PollInterval = TimeSpan.FromMilliseconds(250), BatchSize = 7, RetainSentMessages = true };
+        var direct = new PostgreSqlDirectDispatchOptions { QueueCapacity = 64, BatchSize = 5 };
+        services.AddRelayer(relayer =>
+        {
+            relayer.UsePostgreSqlOutbox<OrdersContext>(source, new() { Schema = "messaging", MaxDispatchAttempts = 4 },
+                direct, ordered, maintenance);
+            relayer.UsePostgreSqlOutbox<BillingContext>(source, new() { Schema = "messaging", MaxDispatchAttempts = 4 },
+                direct, ordered, maintenance);
+        });
+        await using var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
+        await ValidateRecovery(provider);
+        var recovery = provider.GetRequiredService<IOptionsMonitor<PostgreSqlMaintenanceOptions>>().Get("default");
+        await Assert.That(recovery.RecoveryDelay).IsEqualTo(TimeSpan.FromSeconds(2));
+        await Assert.That(recovery.SweepInterval).IsEqualTo(TimeSpan.FromMilliseconds(200));
+        await Assert.That(recovery.RetainSentMessages).IsTrue();
+        await Assert.That(recovery.Schema).IsEqualTo("messaging");
+        await Assert.That(recovery.MaxDispatchAttempts).IsEqualTo(4);
+        var lanes = provider.GetRequiredService<IOptionsMonitor<PostgreSqlOrderedDispatchOptions>>().Get("default");
+        await Assert.That(lanes.PollInterval).IsEqualTo(TimeSpan.FromMilliseconds(250));
+        await Assert.That(lanes.BatchSize).IsEqualTo(7);
+        await Assert.That(lanes.Schema).IsEqualTo("messaging");
+        var dispatch = provider.GetRequiredService<IOptionsMonitor<PostgreSqlDirectDispatchOptions>>().Get("default");
+        await Assert.That(dispatch.QueueCapacity).IsEqualTo(64);
+        await Assert.That(dispatch.BatchSize).IsEqualTo(5);
+    }
+
+    [Test]
+    [Arguments("ordered-prefix")]
+    [Arguments("ordered-lease")]
+    [Arguments("maintenance-schema")]
+    [Arguments("maintenance-attempts")]
+    [Arguments("retain")]
+    public async Task Composed_registration_rejects_worker_options_that_conflict_with_the_store(string conflict)
+    {
+        await using var source = NpgsqlDataSource.Create("Host=unused");
+        var services = new ServiceCollection();
+        await Assert.That(() => services.AddRelayer(relayer => relayer.UsePostgreSqlOutbox<OrdersContext>(source,
+            orderedDispatch: new()
+            {
+                TablePrefix = conflict == "ordered-prefix" ? "other_" : "relayer_",
+                LeaseDuration = conflict == "ordered-lease" ? TimeSpan.FromSeconds(60) : TimeSpan.FromSeconds(30),
+                RetainSentMessages = conflict == "retain"
+            },
+            maintenance: new()
+            {
+                Schema = conflict == "maintenance-schema" ? "other" : null,
+                MaxDispatchAttempts = conflict == "maintenance-attempts" ? 3 : 10
+            }))).Throws<ArgumentException>();
+        await Assert.That(services.Any(static descriptor => descriptor.ServiceType == typeof(PostgreSqlDirectDispatcher))).IsFalse();
+    }
+
+    [Test]
+    public async Task Composed_registration_rejects_a_shared_store_name_with_different_worker_options()
+    {
+        await using var source = NpgsqlDataSource.Create("Host=unused");
+        var services = new ServiceCollection();
+        await Assert.That(() => services.AddRelayer(relayer =>
+        {
+            relayer.UsePostgreSqlOutbox<OrdersContext>(source, maintenance: new() { RecoveryDelay = TimeSpan.FromSeconds(1) });
+            relayer.UsePostgreSqlOutbox<BillingContext>(source);
+        })).Throws<InvalidOperationException>().WithMessageContaining("already composed with a different NpgsqlDataSource or options");
+    }
+
+    [Test]
     [Arguments("missing")]
     [Arguments("schema")]
     [Arguments("prefix")]

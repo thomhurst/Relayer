@@ -607,8 +607,9 @@ The explicit `UsePostgreSqlOutbox<TContext>` builder registration composes the e
 direct dispatch, ordered dispatch and maintenance registrations, with one shared store configuration.
 It leaves native EF provider configuration and schema deployment with the application. Direct-dispatch
 hosts validate that matching maintenance is registered before starting workers: process death, queue
-overflow and failed sends must leave rows recoverable by default. Individual registrations remain
-available for separate deployments and worker tuning; enqueue-only hosts need no local dispatcher.
+overflow and failed sends must leave rows recoverable by default. The composed registration accepts the
+existing worker options for tuning (#830) and takes their store settings from the writer options.
+Individual registrations remain available for separate deployments; enqueue-only hosts need no local dispatcher.
 
 **Pooling assessment (#356).** EF Core 10.0.14's
 [`AddPoolingOptions`](https://github.com/dotnet/efcore/blob/v10.0.14/src/EFCore/Extensions/EntityFrameworkServiceCollectionExtensions.cs#L342-L365)
