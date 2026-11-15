@@ -17,6 +17,7 @@ internal sealed partial class SqlServerOrderedDispatcher : BackgroundService, IO
     private readonly OutboxRecord[] _rows;
     private readonly bool[] _ready;
     private readonly OrderedDispatchCapabilityCache _capabilities = new();
+    internal OrderedLaneWake Wake { get; } = new();
     private readonly ILogger<SqlServerOrderedDispatcher> _logger;
     private readonly TimeProvider _timeProvider;
     private readonly RelayerInstrumentation? _instrumentation;
@@ -45,7 +46,23 @@ internal sealed partial class SqlServerOrderedDispatcher : BackgroundService, IO
 
     protected override Task ExecuteAsync(CancellationToken stoppingToken) =>
         OrderedLaneWorker.RunAsync(this, _options.LeaseDuration, _options.PollInterval,
-            _timeProvider, stoppingToken, stoppingToken);
+            _timeProvider, stoppingToken, stoppingToken, Wake);
+
+    internal bool Matches(string? schema, string prefix) =>
+        (_options.Schema ?? "dbo") == (schema ?? "dbo") && _options.TablePrefix == prefix;
+
+    // Called only after durable commit. Wakes an idle scan when a ready keyed row lands on a lane this instance owns.
+    internal void Committed(List<SqlServerBufferedMessage> rows, int count)
+    {
+        var assigned = _coordinator.Assigned;
+        for (var i = 0; i < count; i++)
+        {
+            var row = rows[i];
+            if (row.Lane is not { } lane || row.DeliverAt is not null || lane >= assigned.Length || !assigned[lane]) continue;
+            Wake.Signal();
+            return;
+        }
+    }
 
     int IOrderedLaneWorker.Lanes => _options.Lanes;
     bool IOrderedLaneWorker.StopRequested => false;

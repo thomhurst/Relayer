@@ -45,7 +45,8 @@ public static partial class SqlServerOutboxServiceCollectionExtensions
             new SqlServerDirectDispatcher(connectionString, snapshot,
                 provider.GetRequiredService<IOptionsMonitor<SqlServerDirectDispatchOptions>>().Get(storeName),
                 provider.GetServices<ITransport>(), provider.GetRequiredService<ILogger<SqlServerDirectDispatcher>>(),
-                instrumentation: provider.GetService<RelayerInstrumentation>()));
+                instrumentation: provider.GetService<RelayerInstrumentation>(),
+                ordered: provider.GetKeyedService<SqlServerOrderedDispatcher>(storeName)));
         services.AddSingleton<IHostedService>(provider => provider.GetRequiredKeyedService<SqlServerDirectDispatcher>(storeName));
         return services;
     }

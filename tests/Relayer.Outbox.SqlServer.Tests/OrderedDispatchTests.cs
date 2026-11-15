@@ -306,6 +306,79 @@ public sealed class OrderedDispatchTests(SqlServerFixture database)
         await Assert.That(() => new SqlServerOrderedDispatcher("Server=unused", new(), [], NullLogger<SqlServerOrderedDispatcher>.Instance)).Throws<InvalidOperationException>();
     }
 
+    [Test]
+    public async Task Commit_signals_only_unscheduled_keyed_rows_on_owned_lanes()
+    {
+        var data = new StoreData(database);
+        await data.Create();
+        using var ordered = Worker(data, new RecordingTransport());
+        // No lane is assigned before the first rebalance.
+        ordered.Committed(Rows(Id(1)), 1);
+        await Assert.That(ordered.Wake.Signalled).IsFalse();
+        await ((IOrderedLaneWorker)ordered).RebalanceAsync(default);
+        try
+        {
+            ordered.Committed(Rows(Id(2), DateTimeOffset.UtcNow.AddMinutes(1)), 1);
+            ordered.Committed(Rows(Id(3), unordered: true), 1);
+            await Assert.That(ordered.Wake.Signalled).IsFalse();
+            ordered.Committed(Rows(Id(4)), 1);
+            await Assert.That(ordered.Wake.Signalled).IsTrue();
+        }
+        finally { await ((IOrderedLaneWorker)ordered).ReleaseAsync(default); }
+    }
+
+    [Test]
+    public async Task In_process_commit_wakes_an_idle_ordered_worker_before_its_poll()
+    {
+        var data = new StoreData(database);
+        await data.Create();
+        var delivered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var clock = new PollClock();
+        var transport = new RecordingTransport((_, _) => { delivered.TrySetResult(); return ValueTask.CompletedTask; });
+        using var ordered = new SqlServerOrderedDispatcher(database.ConnectionString, Options(data), [transport],
+            NullLogger<SqlServerOrderedDispatcher>.Instance, clock);
+        // Direct dispatch requires an explicit catalog; the fixture's tables live in the login's default, master.
+        var catalog = new SqlConnectionStringBuilder(database.ConnectionString) { InitialCatalog = "master" }.ConnectionString;
+        using var direct = new SqlServerDirectDispatcher(catalog, data.Options, new(), [transport],
+            NullLogger<SqlServerDirectDispatcher>.Instance, ordered: ordered);
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+        await ordered.StartAsync(timeout.Token);
+        try
+        {
+            // The poll timer never fires, so only the commit handoff can start the next scan.
+            await clock.FirstPoll.Task.WaitAsync(timeout.Token);
+            await data.Insert(Id(1), DateTimeOffset.UtcNow, 0, orderedHeaders: true);
+            direct.Committed(Rows(Id(1)), 1);
+            await delivered.Task.WaitAsync(timeout.Token);
+        }
+        finally { await ordered.StopAsync(timeout.Token); }
+        await Assert.That(transport.Ids.SequenceEqual([Id(1)])).IsTrue();
+    }
+
+    private static List<SqlServerBufferedMessage> Rows(Guid id, DateTimeOffset? deliverAt = null, bool unordered = false)
+    {
+        var row = new SqlServerBufferedMessage();
+        row.Copy(new OutboxRecord(id, "events", "order.placed.v1",
+            new("orders", new byte[] { 1 }, orderingKey: new WireString("customer-é"), deliverAt: deliverAt), DateTimeOffset.UtcNow), 1, unordered);
+        return [row];
+    }
+
+    private sealed class PollClock : TimeProvider
+    {
+        internal TaskCompletionSource FirstPoll { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public override ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period)
+        {
+            FirstPoll.TrySetResult();
+            return new SilentTimer();
+        }
+        private sealed class SilentTimer : ITimer
+        {
+            public bool Change(TimeSpan dueTime, TimeSpan period) => true;
+            public void Dispose() { }
+            public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+        }
+    }
+
     private SqlServerOrderedDispatcher Worker(StoreData data, RecordingTransport transport, int batchSize = 100, int maxAttempts = 10) =>
         new(database.ConnectionString, Options(data, batchSize, maxAttempts), [transport], NullLogger<SqlServerOrderedDispatcher>.Instance);
     private static SqlServerOrderedDispatchOptions Options(StoreData data, int batchSize = 100, int maxAttempts = 10) => new()
