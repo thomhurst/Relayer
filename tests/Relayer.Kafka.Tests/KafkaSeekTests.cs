@@ -21,10 +21,9 @@ public class KafkaSeekTests
         using var tracing = new MessageTracing(Options.Create(new TracingOptions()), []);
         await using var fixture = (KafkaFixture)await KafkaFixture.CreateAsync(tracing, token);
         var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var replayed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var attempts = 0;
-        fixture.RegisterConsumer(async (_, _) =>
+        fixture.RegisterConsumer(async (_, cancellationToken) =>
         {
             if (Interlocked.Increment(ref attempts) > 1)
             {
@@ -32,15 +31,26 @@ public class KafkaSeekTests
                 return Disposition.Complete;
             }
             entered.SetResult();
-            await release.Task.WaitAsync(token);
+            // Under the Cancel stop policy Dekaf marks the lane as stopping before it cancels this token,
+            // so the handler's own exception below is always thrown while the seek stops the lane.
+            try
+            {
+                await Task.Delay(Timeout.Infinite, cancellationToken).WaitAsync(token);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+            }
             throw new OperationCanceledException("handler canceled independently");
+        }, new()
+        {
+            Ordering = PartitionedProcessingOrder.Key, MaxConcurrentHandlersPerPartition = 1,
+            CommitPolicy = PartitionCommitPolicy.CommitCompletedPeriodically, StopPolicy = PartitionStopPolicy.Cancel,
         });
         await fixture.Transport.StartAsync(token);
         await fixture.Transport.SendAsync(Message(fixture.Destination, 0), token);
         await entered.Task.WaitAsync(token);
         var consumer = ((KafkaProducerTransport)fixture.Transport).Consumers[0];
         var pending = consumer.SeekAsync(new(fixture.Destination, 0, 0), null, token).AsTask();
-        release.SetResult();
         // Dekaf treats an OperationCanceledException thrown once the lane is stopping as leaving the record
         // unprocessed: the seek applies, the record replays from the seek offset and the consumer keeps running.
         await pending.WaitAsync(token);

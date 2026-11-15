@@ -85,14 +85,17 @@ internal sealed class KafkaFixture : ITransportConformanceFixture<KafkaDelivery>
         }
     }
 
-    public void RegisterConsumer(Func<KafkaDelivery, CancellationToken, ValueTask<Disposition>> receive)
+    public void RegisterConsumer(Func<KafkaDelivery, CancellationToken, ValueTask<Disposition>> receive) =>
+        RegisterConsumer(receive, KafkaProcessing.Defaults(1));
+
+    internal void RegisterConsumer(Func<KafkaDelivery, CancellationToken, ValueTask<Disposition>> receive, PartitionedProcessingOptions processing)
     {
         var native = new ConsumerBuilder<byte[], byte[]>().WithBootstrapServers(Bootstrap).WithGroupId(Destination)
             .WithLoggerFactory(_logs)
             .WithAutoOffsetReset(AutoOffsetReset.Earliest).WithOffsetCommitMode(OffsetCommitMode.Manual)
             .WithAutoOffsetStore(false).SubscribeTo(Destination);
         _transport.Consumers.Add(new(() => NativeLifecycleProxy.Wrap(native.Build(), _consumerLifetime = new()), receive, _tracing,
-            new() { System = "kafka", Destination = Destination, ConsumerGroup = Destination }, KafkaProcessing.Defaults(1), 1));
+            new() { System = "kafka", Destination = Destination, ConsumerGroup = Destination }, processing, 1));
     }
 
     // Dekaf's partitioned runtime commits completed offsets, outside processing spans.
