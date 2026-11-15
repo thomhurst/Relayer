@@ -93,7 +93,9 @@ internal sealed partial class RabbitMqNativeTransport : ITransport
             }
             catch
             {
-                foreach (var consumer in Consumers) await consumer.StopAsync(cancellationToken).ConfigureAwait(false);
+                // Roll back every consumer even when the token has expired; report the start failure.
+                try { await StopEachConsumerAsync(cancellationToken).ConfigureAwait(false); }
+                catch { }
                 throw;
             }
         }

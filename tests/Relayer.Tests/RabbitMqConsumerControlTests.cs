@@ -1,6 +1,7 @@
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using RabbitMQ.Client;
+using RabbitMQ.Client.Events;
 using Relayer.RabbitMQ;
 using Relayer.Transports;
 
@@ -119,5 +120,41 @@ public sealed class RabbitMqConsumerControlTests
         await using var channel = await connection.CreateChannelAsync(cancellationToken: token);
         await Assert.That((await channel.QueueDeclarePassiveAsync("orders", token)).ConsumerCount).IsEqualTo(0u);
         await Assert.That((await channel.QueueDeclarePassiveAsync("audit", token)).ConsumerCount).IsEqualTo(0u);
+    }
+
+    [Test]
+    public async Task Cancelled_control_start_stops_every_consumer_it_started()
+    {
+        using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(2));
+        var token = timeout.Token;
+        await using var broker = await RabbitMqTopologyTests.Broker.StartAsync(token);
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var received = new RabbitMqReceiveControl { Handle = async _ => { entered.TrySetResult(); await release.Task; } };
+        using var host = RabbitMqReceiveTests.Host(broker.Factory(), received, autoStart: false, secondConsumer: true, thirdConsumer: true);
+        var control = host.Services.GetRequiredKeyedService<IConsumerControl>("rabbit");
+        await host.StartAsync(token);
+        var transport = (RabbitMqNativeTransport)host.Services.GetRequiredService<ITransport>();
+        await transport.SendAsync(new("audit", "{\"Value\":1}"u8.ToArray(), RabbitMqReceiveTests.Headers()), token);
+        await using var connection = await broker.Factory().CreateConnectionAsync(token);
+        await using var channel = await connection.CreateChannelAsync(cancellationToken: token);
+        // An exclusive consumer elsewhere makes the last consumer's start fail.
+        await channel.BasicConsumeAsync("billing", false, "holder", false, true, null, new AsyncEventingBasicConsumer(channel), token);
+
+        // The first consumer cannot drain its in-flight message, so the rollback waits until the start is cancelled.
+        using var start = CancellationTokenSource.CreateLinkedTokenSource(token);
+        var starting = control.StartAsync(start.Token);
+        await entered.Task.WaitAsync(token);
+        while ((await channel.QueueDeclarePassiveAsync("orders", token)).ConsumerCount == 0) await Task.Delay(10, token);
+        start.Cancel();
+        // Disposing a channel waits for its running handler, so let the handler finish.
+        release.TrySetResult();
+        await Assert.That(async () => await starting.WaitAsync(token)).ThrowsException();
+
+        await Assert.That(transport.Consumers[0].Completion.IsCompleted).IsTrue();
+        await Assert.That(transport.Consumers[1].Completion.IsCompleted).IsTrue();
+        await Assert.That((await channel.QueueDeclarePassiveAsync("audit", token)).ConsumerCount).IsEqualTo(0u);
+        await Assert.That((await channel.QueueDeclarePassiveAsync("orders", token)).ConsumerCount).IsEqualTo(0u);
+        await host.StopAsync(token);
     }
 }
