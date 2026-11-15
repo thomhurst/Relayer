@@ -48,7 +48,12 @@ internal sealed class RelayerConfigurationValidator(RelayerConfiguration configu
                     failures.Add($"{location}: a message type can have only one route to each destination; '{route.Destination}' is declared more than once.");
                 if (!messages.TryGetMessageType(route.MessageType, out _))
                     failures.Add($"{location}: register a stable message identity before startup.");
-                if (route is ISendRouteDefinition send) send.SendOptions.Validate(location, failures);
+                if (route is ISendRouteDefinition send)
+                {
+                    send.SendOptions.Validate(location, failures);
+                    if (send.NativeTransportOptionsType is { } native && native != transport.OptionsType)
+                        failures.Add($"{location}: the route's native callback is for a different transport ({native.Name}); declare it only on routes of that transport.");
+                }
             }
             foreach (var consumer in transport.Consumers)
             {

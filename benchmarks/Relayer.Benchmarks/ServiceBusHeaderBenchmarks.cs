@@ -12,10 +12,17 @@ namespace Relayer.Benchmarks;
 public class ServiceBusHeaderBenchmarks
 {
     private static readonly string[] SubjectHeaders = ["cloudEvents:type"];
+    private static readonly MessageType OrderType = new("benchmark.order", 1);
+    // Two route callbacks on the destination: one matches the first envelope, none matches the second.
+    private static readonly ServiceBusRouteCallback[] Callbacks =
+    [
+        new("cloudEvents:type", new MessageType("benchmark.unrouted", 1).ToString(), static (_, message) => message.ReplyTo = "replies"),
+        new("cloudEvents:type", OrderType.ToString(), static (_, message) => message.ReplyTo = "replies"),
+    ];
     private readonly ServiceBusSendState _relayer = new();
     private readonly ServiceBusMessage _raw = new();
     private readonly HeaderBuffer _headers = new();
-    private readonly MessageEnvelope _first = new(new("benchmark.order", 1), "/orders", new("cloudEvents:"));
+    private readonly MessageEnvelope _first = new(OrderType, "/orders", new("cloudEvents:"));
     private readonly MessageEnvelope _second = new(new("benchmark.other", 1), "/other", new("cloudEvents:"));
     private readonly DateTimeOffset _time = DateTimeOffset.UtcNow;
     private long _sequence;
@@ -26,6 +33,10 @@ public class ServiceBusHeaderBenchmarks
 
     [Params(false, true)]
     public bool Tracing { get; set; }
+
+    /// <summary>Route-level native callbacks on the destination (#808); with alternating routes, half the sends match none.</summary>
+    [Params(false, true)]
+    public bool RouteCallbacks { get; set; }
 
     [GlobalSetup]
     public void Setup()
@@ -52,7 +63,7 @@ public class ServiceBusHeaderBenchmarks
     [Benchmark]
     public int RelayerHeaders()
     {
-        _relayer.Prepare(Next(), SubjectHeaders);
+        _relayer.Prepare(Next(), SubjectHeaders, routeCallbacks: RouteCallbacks ? Callbacks : null);
         var count = _relayer.Message.ApplicationProperties.Count;
         _relayer.Clear();
         return count;

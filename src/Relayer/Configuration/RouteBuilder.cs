@@ -8,6 +8,8 @@ public sealed class RouteBuilder<TMessage>
     private Delegate? _orderingKey;
     private IOrderingKeySelector<TMessage>? _sendOrderingKey;
     private SendRouteOptions _sendOptions = new();
+    private Delegate? _nativeConfigurator;
+    private Type? _nativeTransportOptions;
     private bool _built;
 
     internal RouteBuilder(string destination) => _destination = destination;
@@ -49,9 +51,25 @@ public sealed class RouteBuilder<TMessage>
         return this;
     }
 
+    /// <summary>Stores a transport's route-level native callback. Transport packages expose it as a typed extension.</summary>
+    internal RouteBuilder<TMessage> ConfigureNative(Type transportOptionsType, Delegate configure)
+    {
+        ArgumentNullException.ThrowIfNull(configure);
+        if (_built) throw new InvalidOperationException("The route declaration is frozen.");
+        if (_nativeConfigurator is not null)
+            throw new InvalidOperationException("This route already has a native callback. Set every native property in one callback.");
+        _nativeConfigurator = configure;
+        _nativeTransportOptions = transportOptionsType;
+        return this;
+    }
+
     internal IRouteDefinition Build()
     {
         _built = true;
-        return new RouteDefinition<TMessage>(_destination, _orderingKey, _sendOrderingKey, _sendOptions);
+        return new RouteDefinition<TMessage>(_destination, _orderingKey, _sendOrderingKey, _sendOptions)
+        {
+            NativeConfigurator = _nativeConfigurator,
+            NativeTransportOptionsType = _nativeTransportOptions,
+        };
     }
 }

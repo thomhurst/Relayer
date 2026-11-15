@@ -4,6 +4,7 @@ using System.Runtime.ExceptionServices;
 using Azure.Messaging.ServiceBus;
 using Azure.Messaging.ServiceBus.Administration;
 using Microsoft.Extensions.Logging;
+using Relayer.Pipeline;
 using Relayer.Transports;
 
 namespace Relayer.AzureServiceBus;
@@ -56,7 +57,7 @@ internal sealed class ServiceBusSendTransport : ITransport, ITransportSendTracin
     internal ServiceBusSendTransport(string name, ServiceBusClient client, bool ownsClient,
         ServiceBusTransportOptions options, IEnumerable<string> destinations, TopologyMode mode,
         ServiceBusAdministrationClient? administration = null, MessageTracing? tracing = null, ILoggerFactory? logging = null, IReadOnlyList<IConsumerDefinition>? consumers = null,
-        IReadOnlyList<IRouteDefinition>? routes = null)
+        IReadOnlyList<IRouteDefinition>? routes = null, MessageTypeRegistry? types = null)
     {
         Name = name;
         _client = client;
@@ -79,7 +80,8 @@ internal sealed class ServiceBusSendTransport : ITransport, ITransportSendTracin
                   options.Subscriptions.Any(item => item.TopicName == destination) &&
                   options.Subscriptions.Where(item => item.TopicName == destination).All(item => item.RequiresSession &&
                       (mode == TopologyMode.Provision || options.TrustedSessionEntities.Contains(item.TopicName + "/Subscriptions/" + item.SubscriptionName)));
-            var endpoint = new Endpoint(client.CreateSender(destination), SubjectHeaders(options, destination, routes), IdHeaders(destination, routes), new()
+            var endpoint = new Endpoint(client.CreateSender(destination), SubjectHeaders(options, destination, routes), IdHeaders(destination, routes),
+                RouteCallbacks(name, destination, routes, types), new()
             {
                 OrderedByKey = ordered,
                 MaxBatchSize = int.MaxValue,
@@ -111,6 +113,27 @@ internal sealed class ServiceBusSendTransport : ITransport, ITransportSendTracin
         if (routes is null) return [standard];
         return routes.Where(route => route.Destination == destination && route.SendOptions.EnvelopeMode == MessageEnvelopeMode.CloudEvents)
             .Select(route => route.SendOptions.HeaderNames.Id).Append(standard).Distinct(StringComparer.Ordinal).ToArray();
+    }
+
+    // Route-level callbacks for a destination, matched to each send by the route's CloudEvents type header (#808).
+    private static ServiceBusRouteCallback[] RouteCallbacks(string name, string destination,
+        IReadOnlyList<IRouteDefinition>? routes, MessageTypeRegistry? types)
+    {
+        if (routes is null) return [];
+        List<ServiceBusRouteCallback>? callbacks = null;
+        foreach (var route in routes)
+        {
+            if (route.Destination != destination || route is not ISendRouteDefinition { NativeConfigurator: { } callback }) continue;
+            var location = $"Service Bus transport '{name}': route for '{route.MessageType}' to '{destination}'";
+            if (callback is not Action<OutgoingMessage, ServiceBusMessage> configure)
+                throw new InvalidOperationException($"{location}: the native callback is not a Service Bus route callback.");
+            if (route.SendOptions.EnvelopeMode != MessageEnvelopeMode.CloudEvents)
+                throw new InvalidOperationException($"{location}: a native route callback needs the CloudEvents envelope, whose type header identifies the route when stored outbox rows are dispatched.");
+            if (types is null || !types.TryGetMessageType(route.MessageType, out var type))
+                throw new InvalidOperationException($"{location}: register a stable message identity before declaring a native route callback.");
+            (callbacks ??= []).Add(new(route.SendOptions.HeaderNames.Type, type.ToString(), configure));
+        }
+        return callbacks?.ToArray() ?? [];
     }
 
     public string Name { get; }
@@ -147,7 +170,7 @@ internal sealed class ServiceBusSendTransport : ITransport, ITransportSendTracin
         var state = endpoint.Messages.Rent();
         try
         {
-            state.Prepare(outgoing, endpoint.SubjectHeaders, endpoint.IdHeaders);
+            state.Prepare(outgoing, endpoint.SubjectHeaders, endpoint.IdHeaders, endpoint.RouteCallbacks);
             endpoint.Tracing?.RecordNativeSend();
             var duration = endpoint.Tracing?.StartNativeSend() ?? default;
             var failed = true;
@@ -215,7 +238,7 @@ internal sealed class ServiceBusSendTransport : ITransport, ITransportSendTracin
                         {
                             pendingEndpoint = endpoint;
                             pending = endpoint.Messages.Rent();
-                            pending.Prepare(messages.Span[index], endpoint.SubjectHeaders, endpoint.IdHeaders);
+                            pending.Prepare(messages.Span[index], endpoint.SubjectHeaders, endpoint.IdHeaders, endpoint.RouteCallbacks);
                         }
                         // Service Bus requires each native batch to share session and partition IDs.
                         if (admitted.Count != 0 && (pending.Message.SessionId != session || pending.Message.PartitionKey != partition ||
@@ -345,11 +368,13 @@ internal sealed class ServiceBusSendTransport : ITransport, ITransportSendTracin
         if (failures is { Count: > 1 }) throw new AggregateException(failures);
     }
 
-    private sealed class Endpoint(ServiceBusSender sender, string[] subjectHeaders, string[] idHeaders, TransportCapabilities capabilities)
+    private sealed class Endpoint(ServiceBusSender sender, string[] subjectHeaders, string[] idHeaders,
+        ServiceBusRouteCallback[] routeCallbacks, TransportCapabilities capabilities)
     {
         internal ServiceBusSender Sender { get; } = sender;
         internal string[] SubjectHeaders { get; } = subjectHeaders;
         internal string[] IdHeaders { get; } = idHeaders;
+        internal ServiceBusRouteCallback[] RouteCallbacks { get; } = routeCallbacks;
         internal TransportCapabilities Capabilities { get; } = capabilities;
         internal ServiceBusPool<ServiceBusSendState> Messages { get; } = new(static () => new());
         internal ServiceBusPool<List<ServiceBusSendState>> Batches { get; } = new(static () => []);

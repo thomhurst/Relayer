@@ -6,6 +6,7 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
+using Relayer.Pipeline;
 using Relayer.Transports;
 
 namespace Relayer.AzureServiceBus;
@@ -46,7 +47,8 @@ public static class ServiceBusBuilderExtensions
             var logging = provider.GetService<ILoggerFactory>() ?? NullLoggerFactory.Instance;
             return new ServiceBusSendTransport(name, client, options.Client is null, options,
                 definition.Routes.Select(route => route.Destination), mode, admin,
-                provider.GetRequiredService<MessageTracing>(), logging, definition.Consumers, definition.Routes);
+                provider.GetRequiredService<MessageTracing>(), logging, definition.Consumers, definition.Routes,
+                provider.GetRequiredService<MessageTypeRegistry>());
         });
         builder.Services.AddSingleton<ITransport>(provider => provider.GetRequiredKeyedService<ServiceBusSendTransport>(name));
         builder.Services.AddKeyedSingleton<IDeadLetterManager>(name, (provider, _) =>
@@ -62,6 +64,19 @@ public static class ServiceBusBuilderExtensions
     /// <summary>Customises the native outgoing Service Bus message immediately before sending.</summary>
     public static SendOptions ServiceBus(this SendOptions options, Action<ServiceBusMessage> configure) =>
         options.ConfigureNative(configure);
+
+    /// <summary>
+    /// Customises the native Service Bus message for every send on this route, including outbox dispatch of stored rows.
+    /// The callback gets the serialized send (body, headers, ordering key), not the message object, so dispatch never deserializes.
+    /// It runs before a per-send callback and before CloudEvents properties are written. Use a static lambda; do not retain either argument.
+    /// </summary>
+    /// <remarks>The route must use the CloudEvents envelope: dispatch identifies the route by its type header.</remarks>
+    public static RouteBuilder<TMessage> ServiceBus<TMessage>(this RouteBuilder<TMessage> route,
+        Action<OutgoingMessage, ServiceBusMessage> configure)
+    {
+        ArgumentNullException.ThrowIfNull(route);
+        return route.ConfigureNative(typeof(ServiceBusTransportOptions), configure);
+    }
 }
 
 /// <summary>Native processor configuration and the common durable failure policy.</summary>

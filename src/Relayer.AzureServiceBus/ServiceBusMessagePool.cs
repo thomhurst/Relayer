@@ -25,11 +25,14 @@ internal sealed class ServiceBusSendState
         Message = new(new AmqpAnnotatedMessage(_body));
     }
 
-    internal void Prepare(OutgoingMessage outgoing, string[]? subjectHeaders = null, string[]? idHeaders = null)
+    internal void Prepare(OutgoingMessage outgoing, string[]? subjectHeaders = null, string[]? idHeaders = null,
+        ServiceBusRouteCallback[]? routeCallbacks = null)
     {
         _data[0] = outgoing.Body;
         if (outgoing.OrderingKey is { } key) Message.SessionId = key.ToString();
         if (outgoing.DeliverAt is { } scheduled) Message.ScheduledEnqueueTime = scheduled;
+        // Route callbacks run first, so a per-send callback can override them.
+        if (routeCallbacks is { Length: > 0 }) ApplyRouteCallback(outgoing, routeCallbacks);
         outgoing.ApplyNative(Message);
         // The original envelope and creation context take precedence over a native callback, except Subject and MessageId:
         // a callback that sets either keeps it. Otherwise the envelope id becomes the native MessageId so broker duplicate
@@ -46,6 +49,19 @@ internal sealed class ServiceBusSendState
                     Message.Subject = value;
                 if (Message.MessageId is null && idHeaders is not null && Array.IndexOf(idHeaders, header.Key) >= 0)
                     Message.MessageId = value;
+            }
+        }
+    }
+
+    private void ApplyRouteCallback(OutgoingMessage outgoing, ServiceBusRouteCallback[] routeCallbacks)
+    {
+        foreach (var header in outgoing.Headers.Span)
+        {
+            foreach (var route in routeCallbacks)
+            {
+                if (header.Key != route.TypeHeader || !route.Matches(header.Value)) continue;
+                route.Configure(outgoing, Message);
+                return;
             }
         }
     }
@@ -80,4 +96,16 @@ internal sealed class ServiceBusSendState
         properties.To = null;
         properties.UserId = null;
     }
+}
+
+/// <summary>A route's native callback and the CloudEvents type header that identifies the route's sends.</summary>
+internal sealed class ServiceBusRouteCallback(string typeHeader, string type, Action<OutgoingMessage, ServiceBusMessage> configure)
+{
+    private readonly byte[] _typeUtf8 = System.Text.Encoding.UTF8.GetBytes(type);
+    internal string TypeHeader { get; } = typeHeader;
+    internal Action<OutgoingMessage, ServiceBusMessage> Configure { get; } = configure;
+
+    internal bool Matches(WireString value) => value.Text is { } text
+        ? string.Equals(text, type, StringComparison.Ordinal)
+        : value.Utf8.Span.SequenceEqual(_typeUtf8);
 }

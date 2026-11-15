@@ -26,6 +26,10 @@ internal abstract class SendRouteRegistration
 internal interface ISendRouteDefinition
 {
     SendRouteOptions SendOptions { get; }
+    /// <summary>A route-level native callback the transport applies to every send on this route, including outbox dispatch.</summary>
+    Delegate? NativeConfigurator { get; }
+    /// <summary>The transport options type whose transport understands <see cref="NativeConfigurator"/>.</summary>
+    Type? NativeTransportOptionsType { get; }
     SendRouteRegistration CreateSendRegistration(string transportName);
 }
 
