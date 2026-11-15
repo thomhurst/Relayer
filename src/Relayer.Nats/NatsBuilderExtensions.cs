@@ -65,7 +65,7 @@ internal sealed class NatsHostedService(IServiceProvider provider, string name) 
             pipeline.Settle(worker.SettleContextAsync);
             pipeline.ConfigureConsumer(provider, consumer);
             foreach (var handler in registry.Descriptors)
-                if (consumer.Handlers.Contains(handler.HandlerType)) pipeline.Handler(handler);
+                if (consumer.Selects(handler)) pipeline.Handler(handler);
             var receive = new ReceivePipeline<NatsDelivery, NatsBinding>(pipeline.Build(consumer.Concurrency), new("ce-"), consumer.Concurrency);
             worker.Receive = receive.ProcessAsync;
         }

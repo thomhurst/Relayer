@@ -172,6 +172,25 @@ public class HandlerDispatchTests
     }
 
     [Test]
+    public async Task Generic_helper_selects_only_its_contract_on_each_consumer()
+    {
+        var services = new ServiceCollection();
+        services.AddRelayer(r => r.AddTransport<BuilderTests.BrokerOptions, BuilderTests.ConsumerOptions>("events", b => b
+            .Consume("numbers", static c => RegisterFromHelper<int, TwoContractHandler>(c))
+            .Consume("words", static c => RegisterFromHelper<string, TwoContractHandler>(c))));
+        await using var provider = services.BuildServiceProvider();
+        var registry = provider.GetRequiredService<HandlerRegistry>();
+        var numbers = registry.GetHandler<int, TwoContractHandler>();
+        var words = registry.GetHandler<string, TwoContractHandler>();
+        var consumers = provider.GetRequiredService<RelayerConfiguration>().Transports[0].Consumers;
+
+        await Assert.That(consumers[0].Selects(numbers)).IsTrue();
+        await Assert.That(consumers[0].Selects(words)).IsFalse();
+        await Assert.That(consumers[1].Selects(words)).IsTrue();
+        await Assert.That(consumers[1].Selects(numbers)).IsFalse();
+    }
+
+    [Test]
     public async Task Generic_helper_registration_rejects_tombstone_contracts()
     {
         await Assert.That(() => new ServiceCollection().AddRelayer(r =>
@@ -195,6 +214,12 @@ public class HandlerDispatchTests
     }
 
     public sealed class ScopedDependency;
+
+    public sealed class TwoContractHandler : IHandler<int>, IHandler<string>
+    {
+        public ValueTask HandleAsync(int message, MessageContext context, CancellationToken cancellationToken) => ValueTask.CompletedTask;
+        public ValueTask HandleAsync(string message, MessageContext context, CancellationToken cancellationToken) => ValueTask.CompletedTask;
+    }
 
     public sealed class TombstoneHandler : IHandler<Tombstone<string>>
     {

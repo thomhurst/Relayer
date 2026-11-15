@@ -79,7 +79,7 @@ internal sealed class RabbitMqReceiveComposer
         pipeline.Tracing(tracing, endpoint).Telemetry(telemetry).Settle(settlement.SettleAsync);
         pipeline.ConfigureConsumer(_provider, _consumer);
         foreach (var handler in _provider.GetRequiredService<HandlerRegistry>().Descriptors)
-            if (_consumer.Handlers.Contains(handler.HandlerType)) pipeline.Handler(handler);
+            if (_consumer.Selects(handler)) pipeline.Handler(handler);
         return new(pipeline.Build(_consumer.Concurrency), new("cloudEvents:"), _consumer.Concurrency, preserveSettledFailures: true);
     }
 

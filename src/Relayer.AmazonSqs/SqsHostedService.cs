@@ -40,7 +40,7 @@ internal sealed class SqsHostedService(IServiceProvider provider, string name) :
                 pipeline.Tracing(tracing, endpoint).Telemetry(telemetry).Settle(settlement.SettleAsync);
                 pipeline.ConfigureConsumer(provider, consumer);
                 foreach (var handler in handlers.Descriptors)
-                    if (consumer.Handlers.Contains(handler.HandlerType)) pipeline.Handler(handler);
+                    if (consumer.Selects(handler)) pipeline.Handler(handler);
                 // Standard workers may retain up to ten durable deliveries awaiting native batch deletion.
                 var capacity = checked(consumer.Concurrency * (consumer.Source.EndsWith(".fifo", StringComparison.Ordinal) ? 1 : 10));
                 var receive = new ReceivePipeline<SqsDelivery, SqsMessageBinding>(pipeline.Build(capacity), consumer.Options.HeaderNames, capacity);

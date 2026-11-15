@@ -58,7 +58,7 @@ internal sealed class GooglePubSubHostedService(IServiceProvider provider, strin
             pipeline.Settle(worker.SettleContextAsync);
             pipeline.ConfigureConsumer(provider, consumer);
             foreach (var handler in registry.Descriptors)
-                if (consumer.Handlers.Contains(handler.HandlerType)) pipeline.Handler(handler);
+                if (consumer.Selects(handler)) pipeline.Handler(handler);
             var receive = new ReceivePipeline<GooglePubSubDelivery, GooglePubSubBinding>(pipeline.Build(consumer.Concurrency), new("ce-"), consumer.Concurrency);
             worker.Receive = receive.ProcessAsync;
         }

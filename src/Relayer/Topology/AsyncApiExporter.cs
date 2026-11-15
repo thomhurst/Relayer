@@ -71,7 +71,7 @@ internal static class AsyncApiExporter
                 var keys = new List<string>();
                 foreach (var handler in handlers.Descriptors)
                 {
-                    if (!consumer.Handlers.Contains(handler.HandlerType)) continue;
+                    if (!consumer.Selects(handler)) continue;
                     var key = GetMessageKey(registry, messageKeys, handler.MessageType);
                     if (keys.Contains(key)) continue;
                     keys.Add(key);

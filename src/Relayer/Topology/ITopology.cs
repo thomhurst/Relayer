@@ -66,7 +66,7 @@ internal sealed class Topology(RelayerConfiguration configuration, MessageTypeRe
                 writer.WriteStartArray("messages");
                 var seen = new HashSet<Type>();
                 foreach (var descriptor in handlers.Descriptors)
-                    if (consumer.Handlers.Contains(descriptor.HandlerType) && seen.Add(descriptor.MessageType))
+                    if (consumer.Selects(descriptor) && seen.Add(descriptor.MessageType))
                         WriteMessage(writer, descriptor.MessageType);
                 writer.WriteEndArray();
                 writer.WriteEndObject();

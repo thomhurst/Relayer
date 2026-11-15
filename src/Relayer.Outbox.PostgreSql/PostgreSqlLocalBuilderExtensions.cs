@@ -81,7 +81,7 @@ public static class PostgreSqlLocalBuilderExtensions
                 pipeline.Tracing(tracing, endpoint).Telemetry(telemetry).Settle(PostgreSqlLocalTransport.SettleAsync);
                 pipeline.ConfigureConsumer(provider, consumer);
                 foreach (var handler in handlers.Descriptors)
-                    if (consumer.Handlers.Contains(handler.HandlerType)) pipeline.Handler(handler);
+                    if (consumer.Selects(handler)) pipeline.Handler(handler);
                 var composed = pipeline.Build(consumer.Concurrency);
                 composed.BufferAttemptSends = true;
                 var receive = new ReceivePipeline<PostgreSqlLocalDelivery, PostgreSqlLocalMessageBinding>(composed, new(), consumer.Concurrency);

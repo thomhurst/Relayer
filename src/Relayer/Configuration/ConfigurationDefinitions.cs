@@ -123,6 +123,8 @@ public interface IConsumerDefinition
     public string Source { get; }
     /// <summary>Explicit handler types for generated dispatch, in registration order.</summary>
     public IReadOnlyList<Type> Handlers { get; }
+    /// <summary>Whether this consumer selected <paramref name="descriptor"/>'s handler and message contract.</summary>
+    public bool Selects(HandlerDescriptor descriptor) => Handlers.Contains(descriptor.HandlerType);
     /// <summary>Startup-only pipeline configuration, in declaration order.</summary>
     public IReadOnlyList<Action<ConsumePipelineBuilder>> PipelineConfiguration => Array.Empty<Action<ConsumePipelineBuilder>>();
     /// <summary>The maximum number of concurrent handler invocations.</summary>
@@ -138,8 +140,10 @@ public sealed class ConsumerDefinition<TConsumerOptions> : IConsumerDefinition w
 {
     internal ConsumerDefinition(string source, TConsumerOptions options, Type[] handlers,
         int concurrency, int batchSize, TimeSpan batchWait, Action<ConsumePipelineBuilder>[]? pipelineConfiguration = null,
-        FailureOptions? failure = null, IFailureClassifier? failureClassifier = null)
+        FailureOptions? failure = null, IFailureClassifier? failureClassifier = null,
+        HashSet<(Type Handler, Type Message, bool IsBatch)>? selected = null)
     {
+        _selected = selected;
         HasFailurePolicy = failure is not null;
         Failure = failure ?? new();
         FailureClassifier = failureClassifier;
@@ -154,8 +158,14 @@ public sealed class ConsumerDefinition<TConsumerOptions> : IConsumerDefinition w
 
     /// <inheritdoc />
     public string Source { get; }
+    private readonly HashSet<(Type Handler, Type Message, bool IsBatch)>? _selected;
+
     /// <inheritdoc />
     public IReadOnlyList<Type> Handlers { get; }
+    /// <inheritdoc />
+    public bool Selects(HandlerDescriptor descriptor) => _selected is null
+        ? Handlers.Contains(descriptor.HandlerType)
+        : _selected.Contains((descriptor.HandlerType, descriptor.MessageType, descriptor.IsBatch));
     /// <inheritdoc />
     public int Concurrency { get; }
     /// <inheritdoc />
