@@ -371,7 +371,9 @@ limit records the outbox poison counter once.
 Unordered recovery records `relayer.outbox.dead_lettered` and decrements
 `relayer.outbox.pending` only after the fenced transaction commits a poison deletion.
 This includes invalid transport destinations and malformed-row quarantine. Retries, stale claims and
-rolled-back transitions do not change these counters.
+rolled-back transitions do not change these counters. Maintenance also refreshes the
+[`relayer.outbox.dead.depth` and `relayer.outbox.parked.depth` gauges](../guides/telemetry.md#outbox-depth-gauges)
+for alerts that stay raised until dead or parked rows are handled.
 
 All native send exceptions are retried indefinitely, including a permanent broker rejection, because
 the store has no portable per-row permanent classification. After a batch fails, direct and recovery

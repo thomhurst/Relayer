@@ -229,3 +229,20 @@ or message dimensions. The pending counter is a delta, not a database snapshot: 
 be negative on an instance that recovers rows written elsewhere or before startup.
 Use the [outbox backlog health check](health-checks.md) or durable store count to query
 current eligible backlog. Neither enqueue nor claim reads emit a sent measurement.
+
+### Outbox depth gauges
+
+The PostgreSQL, SQL Server and MySQL maintenance workers publish two observable gauges,
+so an alert can stay raised while dead letters wait for redrive or purge:
+
+- `relayer.outbox.dead.depth`: rows in the store's dead table.
+- `relayer.outbox.parked.depth`: parked ordered rows, each holding back its ordering key.
+
+Each maintenance worker counts both tables once per `CleanupInterval` (one minute by default),
+and only while a listener observes either gauge. Metric collection reads the cached counts and
+never queries the database. A store reports nothing until its first count succeeds; a failed
+count is logged and keeps the previous value. The gauges carry `db.system.name` (`postgresql`,
+`microsoft.sql_server` or `mysql`) and `relayer.outbox.store`, the name passed to
+`AddRelayer*Maintenance`. The counts are store-wide, so every instance running maintenance for
+the same store reports the same value: aggregate them across instances with max or last value,
+not sum.

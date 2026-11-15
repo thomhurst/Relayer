@@ -15,7 +15,7 @@ internal sealed partial class MySqlMaintenanceWorker : OutboxMaintenanceWorker
     private readonly RelayerInstrumentation? _instrumentation;
     private readonly Guid _owner = Guid.NewGuid();
     private readonly string _leases, _table, _dead, _inbox;
-    private readonly string _acquire, _renew, _read, _highWater, _deleteDead, _deleteInbox;
+    private readonly string _acquire, _renew, _read, _highWater, _deleteDead, _deleteInbox, _depth;
     private readonly string _sweeperResource, _cleanupResource;
     private readonly OutboxRecord[] _rows;
     private readonly List<BufferedOutboxMessage> _buffers = [];
@@ -25,10 +25,11 @@ internal sealed partial class MySqlMaintenanceWorker : OutboxMaintenanceWorker
 
     internal MySqlMaintenanceWorker(MySqlDataSource dataSource, MySqlMaintenanceOptions options,
         IEnumerable<ITransport> transports, ILogger<MySqlMaintenanceWorker> logger,
-        ILogger<MySqlDirectDispatcher>? dispatchLogger = null, RelayerInstrumentation? instrumentation = null, TimeProvider? idleTimeProvider = null)
+        ILogger<MySqlDirectDispatcher>? dispatchLogger = null, RelayerInstrumentation? instrumentation = null, TimeProvider? idleTimeProvider = null, string? storeName = null)
         : base(2, options.BatchSize, options.CleanupBatchLimit,
             (options.DeadRetention is not null ? 1 : 0) | (options.InboxRetention is not null ? 2 : 0),
-            options.SweepInterval, options.CleanupInterval, options.LeaseDuration, idleTimeProvider)
+            options.SweepInterval, options.CleanupInterval, options.LeaseDuration, idleTimeProvider,
+            storeName is null ? null : instrumentation?.TrackOutboxDepth("mysql", storeName))
     {
         _dataSource = dataSource;
         ValidateDataSource(dataSource);
@@ -51,6 +52,7 @@ internal sealed partial class MySqlMaintenanceWorker : OutboxMaintenanceWorker
         _renew = $"UPDATE {_leases} SET expires_at=TIMESTAMPADD(MICROSECOND,@duration,UTC_TIMESTAMP(6)) WHERE name=@name AND owner=@owner";
         _deleteDead = DeleteSql(_dead, "failed_at");
         _deleteInbox = DeleteSql(_inbox, "processed_at");
+        _depth = $"SELECT (SELECT COUNT(*) FROM {_dead}), (SELECT COUNT(*) FROM {_table} WHERE status='parked')";
         _acquire = $"""
             INSERT INTO {_leases} (name,owner,expires_at) VALUES (@name,@owner,TIMESTAMPADD(MICROSECOND,@duration,UTC_TIMESTAMP(6)))
             ON DUPLICATE KEY UPDATE
@@ -212,6 +214,15 @@ internal sealed partial class MySqlMaintenanceWorker : OutboxMaintenanceWorker
         await using var command = new MySqlCommand($"DELETE FROM {_leases} WHERE owner=@owner", connection);
         command.Parameters.AddWithValue("@owner", _owner.ToString("N"));
         await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    protected override async ValueTask<(long Dead, long Parked)> CountDepthAsync(CancellationToken cancellationToken)
+    {
+        await using var connection = await _dataSource.OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+        await using var command = new MySqlCommand(_depth, connection);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        await reader.ReadAsync(cancellationToken).ConfigureAwait(false);
+        return (reader.GetInt64(0), reader.GetInt64(1));
     }
 
     public override void Dispose() { _dispatcher.Dispose(); base.Dispose(); }

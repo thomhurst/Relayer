@@ -26,6 +26,7 @@ internal sealed partial class PostgreSqlMaintenanceWorker : OutboxMaintenanceWor
     private readonly string _dead;
     private readonly string _inbox;
     private readonly string _sent;
+    private readonly string _depth;
     private readonly OutboxRecord[] _rows;
     private Guid? _after;
     private int _localStop;
@@ -34,10 +35,11 @@ internal sealed partial class PostgreSqlMaintenanceWorker : OutboxMaintenanceWor
 
     internal PostgreSqlMaintenanceWorker(NpgsqlDataSource source, PostgreSqlMaintenanceOptions options,
         IEnumerable<ITransport> transports, ILogger<PostgreSqlMaintenanceWorker> logger,
-        ILogger<PostgreSqlDirectDispatcher>? dispatchLogger = null, RelayerInstrumentation? instrumentation = null, TimeProvider? admissionTimeProvider = null, IServiceScopeFactory? scopes = null, TimeProvider? idleTimeProvider = null)
+        ILogger<PostgreSqlDirectDispatcher>? dispatchLogger = null, RelayerInstrumentation? instrumentation = null, TimeProvider? admissionTimeProvider = null, IServiceScopeFactory? scopes = null, TimeProvider? idleTimeProvider = null, string? storeName = null)
         : base(3, options.BatchSize, options.CleanupBatchLimit,
             (options.RetainSentMessages ? 1 : 0) | (options.DeadRetention is not null ? 2 : 0) | (options.InboxRetention is not null ? 4 : 0),
-            options.SweepInterval, options.CleanupInterval, options.LeaseDuration, idleTimeProvider)
+            options.SweepInterval, options.CleanupInterval, options.LeaseDuration, idleTimeProvider,
+            storeName is null ? null : instrumentation?.TrackOutboxDepth("postgresql", storeName))
     {
         _source = source;
         _admissionTimeProvider = admissionTimeProvider;
@@ -57,6 +59,7 @@ internal sealed partial class PostgreSqlMaintenanceWorker : OutboxMaintenanceWor
         _highWaterMark = $"SELECT id FROM {Table("outbox")} WHERE lane IS NULL AND status = 'pending' ORDER BY id DESC LIMIT 1";
         _read = $"SELECT id, transport, message_type, destination, body, headers, ordering_key, deliver_at, created_at, lane, attempts, last_error, tenant_id, seq FROM {Table("outbox")} WHERE lane IS NULL AND status = 'pending' AND created_at <= clock_timestamp() - @age AND (deliver_at IS NULL OR deliver_at <= clock_timestamp()) AND (claim_expires_at IS NULL OR claim_expires_at <= clock_timestamp()) AND (@after IS NULL OR id > @after) AND id <= @through ORDER BY id LIMIT @limit";
         _dead = $"DELETE FROM {Table("outbox_dead")} WHERE id IN (SELECT id FROM {Table("outbox_dead")} WHERE failed_at <= clock_timestamp() - @retention AND NOT EXISTS (SELECT 1 FROM {Table("outbox")} AS parked WHERE parked.id = {Table("outbox_dead")}.id AND parked.status = 'parked') ORDER BY failed_at, id LIMIT @limit)";
+        _depth = $"SELECT (SELECT count(*) FROM {Table("outbox_dead")}), (SELECT count(*) FROM {Table("outbox")} WHERE status = 'parked')";
         // Recheck age on the target row after a concurrent completion refreshes it under a row lock.
         _sent = $"DELETE FROM {Table("outbox_sent")} WHERE sent_at <= clock_timestamp() - @retention AND id IN (SELECT id FROM {Table("outbox_sent")} WHERE sent_at <= clock_timestamp() - @retention ORDER BY sent_at, id LIMIT @limit)";
         _inbox = $"DELETE FROM {Table("inbox")} WHERE (consumer, message_id) IN (SELECT consumer, message_id FROM {Table("inbox")} WHERE processed_at <= clock_timestamp() - @retention ORDER BY processed_at, consumer, message_id LIMIT @limit)";
@@ -191,6 +194,14 @@ internal sealed partial class PostgreSqlMaintenanceWorker : OutboxMaintenanceWor
         command.Parameters.AddWithValue("retention", retention);
         command.Parameters.AddWithValue("limit", _options.BatchSize);
         return await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    protected override async ValueTask<(long Dead, long Parked)> CountDepthAsync(CancellationToken cancellationToken)
+    {
+        await using var command = _source.CreateCommand(_depth);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        await reader.ReadAsync(cancellationToken).ConfigureAwait(false);
+        return (reader.GetInt64(0), reader.GetInt64(1));
     }
 
     internal async ValueTask ReleaseAsync(CancellationToken cancellationToken)

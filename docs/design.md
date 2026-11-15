@@ -698,6 +698,7 @@ Relayer-specific instruments, for which the conventions define nothing:
 - `relayer.dead_lettered` (counter, `{message}`)
 - `relayer.outbox.pending` (up-down counter, `{message}`): instance-observed durable row-count deltas, aggregated across stores and transports without endpoint dimensions. Commit adds rows; successful fenced deletion subtracts rows. This is not a database snapshot and can be negative when recovering another instance's rows.
 - `relayer.outbox.dispatch_lag` (histogram, `s`): native dispatch attempt start minus original enqueue time, aggregated without endpoint dimensions. Includes failed native attempts.
+- `relayer.outbox.dead.depth` and `relayer.outbox.parked.depth` (observable gauges, `{message}`): store-wide dead rows and parked ordered rows, tagged `db.system.name` and `relayer.outbox.store`. SQL maintenance counts them once per cleanup interval while a listener observes either gauge; collection reads the cached counts and never queries the store.
 - `relayer.inbox.duplicates` (counter, `{message}`)
 - `relayer.consumer.lag` (gauge, `{message}`, Kafka): taken from Dekaf where Dekaf already exposes it.
 - `relayer.circuit.state` (gauge)
