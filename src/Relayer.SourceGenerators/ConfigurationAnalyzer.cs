@@ -49,7 +49,7 @@ public sealed class ConfigurationAnalyzer : DiagnosticAnalyzer
             var registeredAtStartup = compilation.Assembly.GetAttributes()
                 .Where(a => SymbolEqualityComparer.Default.Equals(a.AttributeClass, startupAttribute))
                 .Select(static a => a.ConstructorArguments.Length == 1 ? a.ConstructorArguments[0].Value as INamedTypeSymbol : null)
-                .Where(static t => t is not null).Select(static t => t!.OriginalDefinition)
+                .Where(static t => t is not null).Select(static t => t!.IsUnboundGenericType ? t.OriginalDefinition : t)
                 .ToImmutableHashSet<INamedTypeSymbol>(SymbolEqualityComparer.Default);
             var explicitIdentities = new ConcurrentDictionary<ITypeSymbol, byte>(SymbolEqualityComparer.Default);
             var handlers = new ConcurrentDictionary<INamedTypeSymbol, byte>(SymbolEqualityComparer.Default);
@@ -62,7 +62,8 @@ public sealed class ConfigurationAnalyzer : DiagnosticAnalyzer
                 if (message.TypeKind is TypeKind.TypeParameter or TypeKind.Error) return;
                 if (message is INamedTypeSymbol wrapper && SymbolEqualityComparer.Default.Equals(wrapper.OriginalDefinition, tombstone))
                     message = wrapper.TypeArguments[0];
-                if (message is INamedTypeSymbol named && registeredAtStartup.Contains(named.OriginalDefinition)) return;
+                if (message is INamedTypeSymbol named
+                    && (registeredAtStartup.Contains(named) || registeredAtStartup.Contains(named.OriginalDefinition))) return;
                 if (message.GetAttributes().Any(a => SymbolEqualityComparer.Default.Equals(a.AttributeClass, attribute))) return;
                 var location = message.Locations.FirstOrDefault(static l => l.IsInSource) ?? use;
                 missing.GetOrAdd(message, static _ => new ConcurrentDictionary<Location, byte>()).TryAdd(location, 0);

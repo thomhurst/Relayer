@@ -223,6 +223,25 @@ public class ConfigurationAnalyzerTests
     }
 
     [Test]
+    public async Task Startup_registered_closed_type_covers_only_that_type()
+    {
+        var diagnostics = await Analyze(Imports + """
+            [assembly: MessageIdentitiesRegisteredAtStartup(typeof(Envelope<int>))]
+            public record Envelope<T>(T Body);
+            static class Setup
+            {
+                public static void Add(Broker broker)
+                {
+                    broker.Send<Envelope<int>>("integers");
+                    broker.Send<Envelope<string>>("strings");
+                }
+            }
+            """);
+        await Assert.That(Ids(diagnostics)).IsEqualTo("RLY001");
+        await Assert.That(diagnostics[0].GetMessage()).Contains("Envelope<string>");
+    }
+
+    [Test]
     public async Task Registration_in_a_referenced_assembly_is_not_visible()
     {
         var external = Compile(Imports + """
