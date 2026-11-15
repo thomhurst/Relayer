@@ -147,6 +147,9 @@ internal sealed class SqlServerDirectDispatcher : OutboxDirectDispatchWorker<Out
         else base.Completed(count, recovery, single);
     }
 
+    // Recovery reads only unordered rows, so a quarantined row has moved to dead storage; it settles with the transaction.
+    internal void RecoveredQuarantine() => _recoveredPoison++;
+
     // The maintenance worker owns this dispatcher and calls this once per transaction.
     internal void FinishRecovery(bool committed)
     {
