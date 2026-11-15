@@ -48,9 +48,10 @@ public sealed class ConfigurationAnalyzer : DiagnosticAnalyzer
             var tombstone = compilation.GetTypeByMetadataName("Relayer.Tombstone`1");
             var registeredAtStartup = compilation.Assembly.GetAttributes()
                 .Where(a => SymbolEqualityComparer.Default.Equals(a.AttributeClass, startupAttribute))
-                .Select(static a => a.ConstructorArguments.Length == 1 ? a.ConstructorArguments[0].Value as INamedTypeSymbol : null)
-                .Where(static t => t is not null).Select(static t => t!.IsUnboundGenericType ? t.OriginalDefinition : t)
-                .ToImmutableHashSet<INamedTypeSymbol>(SymbolEqualityComparer.Default);
+                .Select(static a => a.ConstructorArguments.Length == 1 ? a.ConstructorArguments[0].Value as ITypeSymbol : null)
+                .Where(static t => t is not null)
+                .Select(static t => t is INamedTypeSymbol { IsUnboundGenericType: true } generic ? generic.OriginalDefinition : t!)
+                .ToImmutableHashSet<ITypeSymbol>(SymbolEqualityComparer.Default);
             var explicitIdentities = new ConcurrentDictionary<ITypeSymbol, byte>(SymbolEqualityComparer.Default);
             var handlers = new ConcurrentDictionary<INamedTypeSymbol, byte>(SymbolEqualityComparer.Default);
             var registered = new ConcurrentDictionary<ITypeSymbol, byte>(SymbolEqualityComparer.Default);
@@ -62,8 +63,8 @@ public sealed class ConfigurationAnalyzer : DiagnosticAnalyzer
                 if (message.TypeKind is TypeKind.TypeParameter or TypeKind.Error) return;
                 if (message is INamedTypeSymbol wrapper && SymbolEqualityComparer.Default.Equals(wrapper.OriginalDefinition, tombstone))
                     message = wrapper.TypeArguments[0];
-                if (message is INamedTypeSymbol named
-                    && (registeredAtStartup.Contains(named) || registeredAtStartup.Contains(named.OriginalDefinition))) return;
+                if (registeredAtStartup.Contains(message)
+                    || (message is INamedTypeSymbol named && registeredAtStartup.Contains(named.OriginalDefinition))) return;
                 if (message.GetAttributes().Any(a => SymbolEqualityComparer.Default.Equals(a.AttributeClass, attribute))) return;
                 var location = message.Locations.FirstOrDefault(static l => l.IsInSource) ?? use;
                 missing.GetOrAdd(message, static _ => new ConcurrentDictionary<Location, byte>()).TryAdd(location, 0);

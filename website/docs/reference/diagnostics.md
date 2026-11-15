@@ -53,7 +53,7 @@ When startup registers every closed form of a generic contract, for example `Env
 [assembly: MessageIdentitiesRegisteredAtStartup(typeof(Envelope<>))]
 ```
 
-RLY001 then skips every `Envelope<T>` in that compilation, and their `Tombstone<T>` wrappers, and stays on for every other type. A closed type such as `typeof(Envelope<OrderPlaced>)` covers only that type. If registration happens somewhere the analyzer cannot see and neither attribute fits, suppress RLY001 at the reported location after checking that startup registers the identity. Turning RLY001 off in `.editorconfig` also turns it off for `[Message]` contracts.
+RLY001 then skips every `Envelope<T>` in that compilation, and their `Tombstone<T>` wrappers, and stays on for every other type. Any other type, such as `typeof(Envelope<OrderPlaced>)` or `typeof(OrderPlaced[])`, covers only itself. If registration happens somewhere the analyzer cannot see and neither attribute fits, suppress RLY001 at the reported location after checking that startup registers the identity. Turning RLY001 off in `.editorconfig` also turns it off for `[Message]` contracts.
 
 ## RLY002
 
