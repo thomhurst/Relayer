@@ -1,10 +1,11 @@
 using System.Text;
+using Amazon.Runtime;
+using Amazon.SQS;
 using Amazon.SQS.Model;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Relayer.AmazonSqs;
 using Relayer.Transports;
-using TUnit.Core.Interfaces;
 
 namespace Relayer.Tests;
 
@@ -64,13 +65,15 @@ public sealed class SqsConsumerControlTests
     }
 
     [Test]
-    [ClassDataSource<SqsSessionBroker>(Shared = SharedType.PerTestSession)]
-    public async Task LocalStack_consumer_receives_only_after_the_deferred_start(SqsSessionBroker session)
+    public async Task LocalStack_consumer_receives_only_after_the_deferred_start()
     {
         using var deadline = new CancellationTokenSource(TimeSpan.FromMinutes(3));
         var token = deadline.Token;
-        var broker = session.Broker;
-        using var client = broker.Client();
+        using var client = new AmazonSQSClient(new BasicAWSCredentials("test", "test"), new AmazonSQSConfig
+        {
+            ServiceURL = await SharedBrokers.LocalStackUrlAsync(token),
+            AuthenticationRegion = "us-east-1",
+        });
         var source = TestContext.Current!.Isolation.GetIsolatedName("deferred");
         var dead = TestContext.Current!.Isolation.GetIsolatedName("deferred-dead");
         var control = new SqsReceiveLocalStackTests.Control();
@@ -142,10 +145,3 @@ public sealed class SqsConsumerControlTests
     }
 }
 
-// One LocalStack container for the test session; each test isolates its own queues.
-public sealed class SqsSessionBroker : IAsyncInitializer, IAsyncDisposable
-{
-    internal SqsBroker Broker { get; private set; } = null!;
-    public async Task InitializeAsync() => Broker = await SqsBroker.StartAsync(CancellationToken.None);
-    public ValueTask DisposeAsync() => Broker?.DisposeAsync() ?? ValueTask.CompletedTask;
-}
