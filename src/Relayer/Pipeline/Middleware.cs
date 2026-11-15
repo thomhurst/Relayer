@@ -13,6 +13,12 @@ public interface IConsumeMiddleware
 /// <summary>A database transaction boundary. Register exactly once, before other consume middleware.</summary>
 public interface IConsumeTransactionMiddleware : IConsumeMiddleware;
 
+// A transaction boundary that records an inbox row. Its commit makes a replay of the delivery skip the handler.
+internal interface IConsumeInbox
+{
+    bool Inbox { get; }
+}
+
 /// <summary>A step in the send pipeline.</summary>
 public delegate ValueTask SendDelegate(SendContext context);
 

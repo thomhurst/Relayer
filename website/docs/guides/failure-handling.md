@@ -167,6 +167,8 @@ These are the defaults when configured. Startup rejects non-finite ratios, ratio
 
 After the break duration, one held delivery probes recovery. A failed probe opens the circuit again without copying or committing it; a successful probe closes it and the held deliveries retry. Kafka's native polling and group membership continue while partitions are paused. A held delivery counts as in flight. When its partition stops, through shutdown, revocation or a seek, the held delivery is released at once without being marked processed, so the stop does not wait for `StopTimeout` and the consumer keeps running. The record stays uncommitted and replays on the partition's next owner, after restart or from the seek offset. Delivery remains at-least-once, so completed messages since the last commit can repeat.
 
+Kafka consumers with [exactly-once processing](../transports/kafka.md#kafka-to-kafka-exactly-once) cannot use a circuit breaker, because each transaction commit waits for in-flight records; startup rejects the combination.
+
 The endpoint's `relayer.circuit.state` metric records actual transitions: 0 closed, 1 open, 2 half-open. SQS and RabbitMQ native circuit integrations remain planned.
 
 ### Service Bus

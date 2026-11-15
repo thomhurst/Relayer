@@ -9,8 +9,10 @@ namespace Relayer.Outbox.EntityFrameworkCore;
 
 // Fixed stores select this at composition. Tenant stores select the native strategy in their delivery scope.
 internal sealed class RetryingEntityFrameworkCoreConsumer<TContext>(EntityFrameworkCoreConsumer<TContext> boundary,
-    string consumer, bool conflictRetries = false) : IConsumeTransactionMiddleware where TContext : DbContext
+    string consumer, bool conflictRetries = false) : IConsumeTransactionMiddleware, IConsumeInbox where TContext : DbContext
 {
+    public bool Inbox => boundary.Inbox;
+
     private readonly Operation?[] _operations = new Operation[16];
 
     [RuntimeAsyncMethodGeneration(false)]

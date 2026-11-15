@@ -41,8 +41,10 @@ public static class SqlServerConsumerExtensions
     }
 
     private sealed class Boundary(string consumer, string connectionString, string outboxTable, string? insert,
-        RelayerInstrumentation instrumentation) : IConsumeTransactionMiddleware
+        RelayerInstrumentation instrumentation) : IConsumeTransactionMiddleware, IConsumeInbox
     {
+        public bool Inbox => insert is not null;
+
         [RuntimeAsyncMethodGeneration(false)]
         [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
         public async ValueTask InvokeAsync(MessageContext context, ConsumeDelegate next)

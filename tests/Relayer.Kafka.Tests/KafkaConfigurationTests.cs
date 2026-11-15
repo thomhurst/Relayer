@@ -1,3 +1,4 @@
+using Dekaf;
 using Dekaf.Consumer;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
@@ -99,9 +100,11 @@ public class KafkaConfigurationTests
     [Arguments("user-commits")]
     [Arguments("ignore-errors")]
     [Arguments("monitor")]
+    [Arguments("transactional-producer")]
     [Arguments("batches")]
     public async Task Native_processing_options_that_break_durable_completion_fail_at_startup(string scenario)
     {
+        await using var producer = new ProducerBuilder<byte[], byte[]>().WithBootstrapServers("localhost:9092").WithTransactionalId("unused").Build();
         var services = new ServiceCollection();
         services.AddRelayer(builder => builder.Kafka("events", kafka => kafka.Consume("orders", consumer =>
         {
@@ -113,6 +116,11 @@ public class KafkaConfigurationTests
                 "user-commits" => new() { CommitPolicy = PartitionCommitPolicy.UserManaged },
                 "ignore-errors" => new() { ErrorPolicy = PartitionWorkerErrorPolicy.Ignore },
                 "monitor" => new() { Monitor = new() },
+                "transactional-producer" => new()
+                {
+                    CommitPolicy = PartitionCommitPolicy.CommitCompletedInTransaction,
+                    TransactionalProducer = PartitionedTransactionalProducer.Create(producer),
+                },
                 _ => new() { MaxHandlerBatchSize = 10 },
             };
             consumer.Handler<KafkaReceiveHandler>();
@@ -120,6 +128,40 @@ public class KafkaConfigurationTests
         await using var provider = services.BuildServiceProvider();
         await Assert.That(() => provider.GetServices<ITransport>().ToArray())
             .Throws<InvalidOperationException>().WithMessageContaining("Processing.");
+    }
+
+    [Test]
+    public async Task Exactly_once_consumers_reject_a_circuit_breaker_at_startup()
+    {
+        var services = new ServiceCollection();
+        services.AddRelayer(builder => builder.Kafka("events", kafka => kafka.Consume("orders", consumer =>
+        {
+            consumer.Options.Group = "orders";
+            consumer.Options.Processing = new() { CommitPolicy = PartitionCommitPolicy.CommitCompletedInTransaction };
+            consumer.Options.CircuitBreaker = new();
+            consumer.Handler<KafkaReceiveHandler>();
+        })));
+        await using var provider = services.BuildServiceProvider();
+        await Assert.That(() => provider.GetServices<ITransport>().ToArray())
+            .Throws<NotSupportedException>().WithMessageContaining("CircuitBreaker");
+    }
+
+    [Test]
+    [Arguments(false, "unused")]
+    [Arguments(true, " ")]
+    public async Task Transactional_ids_are_validated_at_startup(bool transactional, string id)
+    {
+        var services = new ServiceCollection();
+        services.AddRelayer(builder => builder.Kafka("events", kafka => kafka.Consume("orders", consumer =>
+        {
+            consumer.Options.Group = "orders";
+            if (transactional) consumer.Options.Processing = new() { CommitPolicy = PartitionCommitPolicy.CommitCompletedInTransaction };
+            consumer.Options.TransactionalId = id;
+            consumer.Handler<KafkaReceiveHandler>();
+        })));
+        await using var provider = services.BuildServiceProvider();
+        await Assert.That(() => provider.GetServices<ITransport>().ToArray())
+            .Throws<InvalidOperationException>().WithMessageContaining("TransactionalId");
     }
 
     [Test]

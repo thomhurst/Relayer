@@ -156,6 +156,8 @@ public sealed class ConsumePipelineBuilder
         return this;
     }
 
+    internal bool HasInbox => _middleware.Exists(static middleware => middleware is IConsumeInbox { Inbox: true });
+
     // Native feature setup must run before application middleware, including a transaction boundary.
     // Kept internal so application registrations cannot bypass the transaction ordering check.
     internal ConsumePipelineBuilder UseTransportMiddleware(IConsumeMiddleware middleware)

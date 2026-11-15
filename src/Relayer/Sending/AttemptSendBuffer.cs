@@ -4,7 +4,7 @@ using Relayer.Transports;
 namespace Relayer;
 
 // Owned by a pooled consume context, never shared across concurrent attempts.
-internal sealed class AttemptSendBuffer
+internal sealed class AttemptSendBuffer(Pipeline.ConsumePipeline? owner = null)
 {
     private readonly Segment _entries = new();
     private int _count;
@@ -24,7 +24,7 @@ internal sealed class AttemptSendBuffer
         // Each concurrent send owns one unique index. Flush starts only after the handler awaits its sends.
         var slot = index % Segment.Size;
         var entry = segment.Items[slot] ??= new Entry();
-        entry.Copy(transport, message, timeout);
+        entry.Copy(owner?.Redirect(transport) ?? transport, message, timeout);
     }
 
     [RuntimeAsyncMethodGeneration(false)]

@@ -3,7 +3,7 @@ title: Kafka
 description: "Named Kafka producers and key-ordered parallel consumers backed by Dekaf, with durable failure handling."
 ---
 
-`Relayer.Kafka` implements producers and consumer groups on [Dekaf](https://github.com/thomhurst/Dekaf). Consumers run on Dekaf's partitioned runtime with key-ordered parallelism, contiguous offset commits and bounded drain on revoke and shutdown. They use the core failure pipeline and mark records processed only after durable handling, including dead-letter copies. Optional [consumer circuit breaking](../guides/failure-handling.md#consumer-circuit-breaking) holds failed records during dependency outages. Optional health adapters are available in `Relayer.Kafka.HealthChecks`. Typed tombstones use native null values and the original message's wire identity. Batch handlers, topic provisioning and Kafka-to-Kafka exactly-once through producer transactions remain planned.
+`Relayer.Kafka` implements producers and consumer groups on [Dekaf](https://github.com/thomhurst/Dekaf). Consumers run on Dekaf's partitioned runtime with key-ordered parallelism, contiguous offset commits and bounded drain on revoke and shutdown. They use the core failure pipeline and mark records processed only after durable handling, including dead-letter copies. Optional [consumer circuit breaking](../guides/failure-handling.md#consumer-circuit-breaking) holds failed records during dependency outages. Optional health adapters are available in `Relayer.Kafka.HealthChecks`. Typed tombstones use native null values and the original message's wire identity. [Kafka-to-Kafka exactly-once](#kafka-to-kafka-exactly-once) uses native producer transactions. Batch handlers and topic provisioning remain planned.
 
 ## Register a producer
 
@@ -131,7 +131,45 @@ The host still composes and validates every consumer and starts the producer, so
 
 To write database changes and outgoing messages for each record, attach the [EF Core consumer inbox](../reference/ef-core-inbox.md) with `consumer.EntityFrameworkCore<TContext>(...)`. The inbox row, business changes and outbox rows commit in one PostgreSQL transaction, and the receive returns `Complete` only after that commit, so the record's offset is never committed ahead of its database work. A crash before the commit rolls everything back and the record is replayed. A crash after the commit but before Dekaf's next offset commit also replays the record, and the inbox row makes the replay skip the handler, so business rows and outbox rows are written once. A failed attempt rolls back before its retry, and a handler cancelled at `StopTimeout` rolls back and leaves its record uncommitted.
 
-Delivery is still at least once: only the database work is deduplicated. Side effects outside the transaction, such as HTTP calls or direct `SendNowAsync` sends, can repeat on replay. Kafka-to-Kafka exactly-once with native producer transactions is planned and waits on a transactional commit mode in Dekaf's partitioned runtime ([Dekaf#4174](https://github.com/thomhurst/Dekaf/issues/4174)).
+Delivery is still at least once: only the database work is deduplicated. Side effects outside the transaction, such as HTTP calls or direct `SendNowAsync` sends, can repeat on replay. For Kafka output, use [Kafka-to-Kafka exactly-once](#kafka-to-kafka-exactly-once) instead.
+
+### Kafka to Kafka exactly-once
+
+Set Dekaf's `PartitionCommitPolicy.CommitCompletedInTransaction` to commit the consumed offsets and the handler's Kafka output in one native transaction:
+
+```csharp
+kafka.Send<OrderShipped>("shipments");
+kafka.Consume("orders", consumer =>
+{
+    consumer.Options.Group = "shipping";
+    consumer.Options.Processing = new()
+    {
+        Ordering = PartitionedProcessingOrder.Key,
+        CommitPolicy = PartitionCommitPolicy.CommitCompletedInTransaction,
+    };
+    consumer.Options.TransactionalId = "shipping-" + Environment.MachineName; // optional
+    consumer.Handler<ShipOrder>();
+});
+
+public sealed class ShipOrder(ISender sender) : IHandler<Order>
+{
+    public ValueTask HandleAsync(Order order, MessageContext context, CancellationToken cancellationToken) =>
+        sender.SendAsync(new OrderShipped(order.Id), cancellationToken);
+}
+```
+
+Each run of the consumer creates its own transactional producer from the transport's `ConfigureProducer`, and Relayer passes it to Dekaf as `TransactionalProducer`. Dekaf keeps one transaction open across the consumer's partitions. At each commit (every `CommitInterval`, on revoke, before a seek and at shutdown) it waits for the records its handlers already took, then sends the completed offsets with the group metadata and commits. Readers of the output topics must use `IsolationLevel.ReadCommitted`; the consumer itself reads with `ReadCommitted` unless `ConfigureConsumer` sets another level.
+
+What joins the transaction:
+
+- Sends a handler makes through `ISender` to a route on the same Kafka transport, including `SendNowAsync` (which only bypasses a database outbox). They are buffered until the attempt succeeds, as always, and then produced through the transactional producer.
+- [Dead-letter copies](../guides/failure-handling.md) of the consumer's failed records, so a poison record's copy and its offset commit together.
+
+What does not: sends to other transports or Kafka transports, database outbox rows, and any other side effect. Those stay at least once and can repeat when a transaction aborts and its records are processed again.
+
+When a commit fails, a partition is lost, or a failure escapes the failure pipeline (for example a dead-letter copy that cannot be written), Dekaf aborts the transaction, so none of its output becomes visible, and the records are processed again from the committed offsets in a new transaction or by the partition's next owner. `CommitInterval` sets how long each transaction lasts, and so how late downstream readers see the output.
+
+`TransactionalId` defaults to the consumer group followed by a random suffix for each run. After a crash, the broker aborts the crashed run's open transaction only when the broker's transaction timeout expires, and read-committed readers of the affected partitions wait until then. Set an ID that is stable for each application instance, such as its pod name, to have a restarted instance abort it at once. Two running instances must never share an ID. A [consumer circuit breaker](../guides/failure-handling.md#consumer-circuit-breaking) cannot be combined with this policy: a held record would stall every commit, so startup rejects it. Startup also rejects a database consumer boundary with an inbox, such as the [EF Core consumer inbox](../reference/ef-core-inbox.md). Its row commits before the Kafka transaction, so after an abort the replay would skip the handler and the aborted output would never be produced. With `AddRelayerTenancy`, the EF Core boundary counts as having an inbox, because the context selected for each delivery turns one on when it has `AddRelayerOutbox`. A boundary without an inbox is allowed; its database writes stay at least once.
 
 ## Independent schema registries
 
