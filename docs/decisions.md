@@ -93,7 +93,8 @@ To change a decision, add a new entry that supersedes it rather than editing his
 | [D80](#d80-rabbitmq-receive-tracing-is-scoped-to-the-consumed-queue) | RabbitMQ receive tracing is scoped to the consumed queue | Accepted |
 | [D81](#d81-post-v1-features-require-explicit-preview-opt-in) | Post-v1 features require explicit preview opt-in | Accepted |
 | [D82](#d82-several-send-routes-fan-out-through-the-outbox) | Several send routes fan out through the outbox | Accepted |
-| [D83](#d83-a-route-can-choose-its-destination-per-message) | A route can choose its destination per message | Accepted |
+| [D83](#d83-route-level-native-callbacks-apply-on-outbox-dispatch) | Route-level native callbacks apply on outbox dispatch | Accepted |
+| [D84](#d84-a-route-can-choose-its-destination-per-message) | A route can choose its destination per message | Accepted |
 
 ---
 
