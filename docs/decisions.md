@@ -180,6 +180,7 @@ To change a decision, add a new entry that supersedes it rather than editing his
 
 **Decision.**
 - `[Message("name", Version = n)]` defines the wire identity.
+- Each CLR type has one identity for sending. A consumer may accept further identities for a type it handles, so one handler can receive several names without wrapper types.
 - The default wire format is CloudEvents in binary mode, with attributes in native headers.
 - A raw mode supports legacy producers.
 - Versions are upgraded through explicitly registered upcasters.
