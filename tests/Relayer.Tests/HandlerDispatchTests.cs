@@ -153,6 +153,58 @@ public class HandlerDispatchTests
     }
 
     [Test]
+    public async Task Generic_helper_registers_typed_dispatch_for_a_handler_type_parameter()
+    {
+        var services = new ServiceCollection();
+        services.AddScoped<ScopedDependency>();
+        services.AddRelayer(r => r.AddTransport<BuilderTests.BrokerOptions, BuilderTests.ConsumerOptions>(
+            "events", b => b.Consume("orders", static c => RegisterFromHelper<int, SingleHandler>(c))));
+        await using var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
+        using var scope = provider.CreateScope();
+        var descriptor = provider.GetRequiredService<HandlerRegistry>().GetHandler<int, SingleHandler>();
+        var handler = (SingleHandler)descriptor.Resolve(scope.ServiceProvider);
+        await descriptor.DispatchAsync(handler, 42, new TestContext(scope.ServiceProvider), default);
+
+        await Assert.That(handler.Message).IsEqualTo(42);
+        await Assert.That(handler.Dependency).IsSameReferenceAs(scope.ServiceProvider.GetRequiredService<ScopedDependency>());
+        await Assert.That(provider.GetRequiredService<RelayerConfiguration>().Transports[0].Consumers[0].Handlers)
+            .IsEquivalentTo([typeof(SingleHandler)]);
+    }
+
+    [Test]
+    public async Task Generic_helper_selects_only_its_contract_on_each_consumer()
+    {
+        var services = new ServiceCollection();
+        services.AddRelayer(r => r.AddTransport<BuilderTests.BrokerOptions, BuilderTests.ConsumerOptions>("events", b => b
+            .Consume("numbers", static c => RegisterFromHelper<int, TwoContractHandler>(c))
+            .Consume("words", static c => RegisterFromHelper<string, TwoContractHandler>(c))));
+        await using var provider = services.BuildServiceProvider();
+        var registry = provider.GetRequiredService<HandlerRegistry>();
+        var numbers = registry.GetHandler<int, TwoContractHandler>();
+        var words = registry.GetHandler<string, TwoContractHandler>();
+        var consumers = provider.GetRequiredService<RelayerConfiguration>().Transports[0].Consumers;
+
+        await Assert.That(consumers[0].Selects(numbers)).IsTrue();
+        await Assert.That(consumers[0].Selects(words)).IsFalse();
+        await Assert.That(consumers[1].Selects(words)).IsTrue();
+        await Assert.That(consumers[1].Selects(numbers)).IsFalse();
+    }
+
+    [Test]
+    public async Task Generic_helper_registration_rejects_tombstone_contracts()
+    {
+        await Assert.That(() => new ServiceCollection().AddRelayer(r =>
+            r.AddTransport<BuilderTests.BrokerOptions, BuilderTests.ConsumerOptions>("events", b =>
+                b.Consume("orders", static c => RegisterFromHelper<Tombstone<string>, TombstoneHandler>(c)))))
+            .Throws<InvalidOperationException>().WithMessageContaining("tombstones");
+    }
+
+    private static void RegisterFromHelper<TMessage,
+        [System.Diagnostics.CodeAnalysis.DynamicallyAccessedMembers(System.Diagnostics.CodeAnalysis.DynamicallyAccessedMemberTypes.PublicConstructors)] THandler>(
+        IConsumerBuilder consumer) where THandler : class, IHandler<TMessage>
+        => consumer.Handler<THandler, TMessage>();
+
+    [Test]
     public async Task Unsupported_handler_registration_fails_during_configuration()
     {
         await Assert.That(() => new ServiceCollection().AddRelayer(r =>
@@ -162,6 +214,18 @@ public class HandlerDispatchTests
     }
 
     public sealed class ScopedDependency;
+
+    public sealed class TwoContractHandler : IHandler<int>, IHandler<string>
+    {
+        public ValueTask HandleAsync(int message, MessageContext context, CancellationToken cancellationToken) => ValueTask.CompletedTask;
+        public ValueTask HandleAsync(string message, MessageContext context, CancellationToken cancellationToken) => ValueTask.CompletedTask;
+    }
+
+    public sealed class TombstoneHandler : IHandler<Tombstone<string>>
+    {
+        public ValueTask HandleAsync(Tombstone<string> message, MessageContext context, CancellationToken cancellationToken)
+            => ValueTask.CompletedTask;
+    }
 
     public sealed class SingleHandler(ScopedDependency? dependency = null) : IHandler<int>
     {

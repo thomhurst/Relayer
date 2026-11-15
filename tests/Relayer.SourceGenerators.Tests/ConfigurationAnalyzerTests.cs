@@ -326,11 +326,109 @@ public class ConfigurationAnalyzerTests
     [Arguments("", "RLY003")]
     [Arguments("consumer.Handler<H>();", "")]
     [Arguments("RelayerGeneratedHandlers.Handler<H>(consumer);", "")]
+    [Arguments("consumer.Handler<H, Order>();", "")]
     public async Task Registration_is_compilation_wide_and_supports_static_and_extension_calls(string registration, string expected)
     {
         await Verify(Imports + InternalHandler + $$"""
             static class Setup { public static void Add(IConsumerBuilder consumer) { {{registration}} } }
             """, expected);
+    }
+
+    [Test]
+    public async Task Handler_passed_to_a_referenced_generic_helper_is_registered()
+    {
+        var external = Compile(Imports + """
+            public static class Messaging
+            {
+                public static void LocalQueue<TMessage, THandler>(this IConsumerBuilder consumer)
+                    where THandler : class, IHandler<TMessage> => consumer.Handler<THandler, TMessage>();
+            }
+            """).WithAssemblyName("External");
+        using var stream = new MemoryStream();
+        await Assert.That(external.Emit(stream).Success).IsTrue();
+        var compilation = Compile(Imports + Handler + """
+            static class Setup { public static void Add(IConsumerBuilder consumer) => consumer.LocalQueue<Order, H>(); }
+            """).AddReferences(MetadataReference.CreateFromImage(stream.ToArray()));
+        var diagnostics = await compilation.WithAnalyzers([new ConfigurationAnalyzer()]).GetAnalyzerDiagnosticsAsync();
+        await Assert.That(Ids(diagnostics)).IsEqualTo("");
+    }
+
+    [Test]
+    [Arguments("Envelope<{0}>", true)]
+    [Arguments("Envelope<{0}>", false)]
+    [Arguments("{0}[]", true)]
+    [Arguments("{0}[]", false)]
+    [Arguments("Envelope<{0}[]>", true)]
+    [Arguments("Envelope<{0}[]>", false)]
+    public async Task Referenced_generic_helper_checks_the_constructed_message_contract(string contract, bool registered)
+    {
+        var external = Compile(Imports + $$"""
+            public record Envelope<T>;
+            public static class Messaging
+            {
+                public static void LocalQueue<TMessage, THandler>(this IConsumerBuilder consumer)
+                    where THandler : class, IHandler<{{string.Format(contract, "TMessage")}}> => consumer.Handler<THandler, {{string.Format(contract, "TMessage")}}>();
+            }
+            """).WithAssemblyName("External");
+        // The helper's open contract is checked at the call site that closes it.
+        var helperDiagnostics = await external.WithAnalyzers([new ConfigurationAnalyzer()]).GetAnalyzerDiagnosticsAsync();
+        await Assert.That(Ids(helperDiagnostics)).IsEqualTo("");
+        using var stream = new MemoryStream();
+        await Assert.That(external.Emit(stream).Success).IsTrue();
+        var message = string.Format(contract, "Order");
+        var compilation = Compile(Imports + $$"""
+            public record Order;
+            static class Setup
+            {
+                public static void Add(IRelayerBuilder builder, IConsumerBuilder consumer)
+                {
+                    {{(registered ? $"builder.Infrastructure().MessageTypes.Add<{message}>(\"orders\");" : "")}}
+                    consumer.LocalQueue<Order, H>();
+                }
+            }
+            public class H : IHandler<{{message}}>
+            {
+                public ValueTask HandleAsync({{message}} message, MessageContext context, CancellationToken ct) => default;
+            }
+            """).AddReferences(MetadataReference.CreateFromImage(stream.ToArray()));
+        var diagnostics = await compilation.WithAnalyzers([new ConfigurationAnalyzer()]).GetAnalyzerDiagnosticsAsync();
+        await Assert.That(Ids(diagnostics)).IsEqualTo(registered ? "" : "RLY001,RLY001");
+        if (!registered) await Assert.That(diagnostics.All(d => d.GetMessage().Contains(message))).IsTrue();
+    }
+
+    [Test]
+    [Arguments(true)]
+    [Arguments(false)]
+    public async Task Referenced_generic_class_helper_checks_the_containing_type_argument(bool registered)
+    {
+        // Registrar<Order>.Register<H>() closes the class's TMessage; the message and handler are
+        // referenced, so only the call site can report the missing identity.
+        var external = Compile(Imports + """
+            public record Order;
+            public class H : IHandler<Order>
+            {
+                public ValueTask HandleAsync(Order message, MessageContext context, CancellationToken ct) => default;
+            }
+            public static class Registrar<TMessage>
+            {
+                public static void Register<THandler>(IConsumerBuilder consumer)
+                    where THandler : class, IHandler<TMessage> => consumer.Handler<THandler, TMessage>();
+            }
+            """).WithAssemblyName("External");
+        using var stream = new MemoryStream();
+        await Assert.That(external.Emit(stream).Success).IsTrue();
+        var compilation = Compile(Imports + $$"""
+            static class Setup
+            {
+                public static void Add(IRelayerBuilder builder, IConsumerBuilder consumer)
+                {
+                    {{(registered ? "builder.Infrastructure().MessageTypes.Add<Order>(\"orders\");" : "")}}
+                    Registrar<Order>.Register<H>(consumer);
+                }
+            }
+            """).AddReferences(MetadataReference.CreateFromImage(stream.ToArray()));
+        var diagnostics = await compilation.WithAnalyzers([new ConfigurationAnalyzer()]).GetAnalyzerDiagnosticsAsync();
+        await Assert.That(Ids(diagnostics)).IsEqualTo(registered ? "" : "RLY001");
     }
 
     [Test]
@@ -502,14 +600,16 @@ public class ConfigurationAnalyzerTests
     }
 
     [Test]
-    public async Task Referenced_handler_is_checked_on_explicit_registration()
+    [Arguments("consumer.Handler<H>()")]
+    [Arguments("consumer.Handler<H, Order>()")]
+    public async Task Referenced_handler_is_checked_on_explicit_registration(string registration)
     {
         var external = Compile(Imports + Handler.Replace("[Message(\"order\")] ", "")).WithAssemblyName("External");
         using var stream = new MemoryStream();
         await Assert.That(external.Emit(stream).Success).IsTrue();
         var compilation = Compile(Imports + """
-            static class Setup { public static void Add(IConsumerBuilder consumer) => consumer.Handler<H>(); }
-            """).AddReferences(MetadataReference.CreateFromImage(stream.ToArray()));
+            static class Setup { public static void Add(IConsumerBuilder consumer) => REGISTRATION; }
+            """.Replace("REGISTRATION", registration)).AddReferences(MetadataReference.CreateFromImage(stream.ToArray()));
         GeneratorDriver driver = CSharpGeneratorDriver.Create(new HandlerGenerator());
         driver.RunGeneratorsAndUpdateCompilation(compilation, out var output, out _);
         var diagnostics = await output.WithAnalyzers([new ConfigurationAnalyzer()]).GetAnalyzerDiagnosticsAsync();

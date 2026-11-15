@@ -42,6 +42,7 @@ public sealed class ConfigurationAnalyzer : DiagnosticAnalyzer
             var consumer = compilation.GetTypeByMetadataName("Relayer.ConsumerBuilder`1");
             var consumerInterface = compilation.GetTypeByMetadataName("Relayer.IConsumerBuilder");
             var registration = compilation.GetTypeByMetadataName("Relayer.RelayerGeneratedHandlers");
+            var marker = compilation.GetTypeByMetadataName("Relayer.IHandlerMarker");
             var messageRegistry = compilation.GetTypeByMetadataName("Relayer.Pipeline.MessageTypeRegistry");
             var helperRegistration = compilation.GetTypeByMetadataName("Relayer.RegistersMessageIdentityAttribute");
             var startupAttribute = compilation.GetTypeByMetadataName("Relayer.MessageIdentitiesRegisteredAtStartupAttribute");
@@ -60,7 +61,8 @@ public sealed class ConfigurationAnalyzer : DiagnosticAnalyzer
 
             void CheckMessage(ITypeSymbol message, Location use)
             {
-                if (message.TypeKind is TypeKind.TypeParameter or TypeKind.Error) return;
+                // An open contract (T, Envelope<T>, T[]) is checked where it is closed.
+                if (message.TypeKind is TypeKind.Error || ContainsTypeParameter(message)) return;
                 if (message is INamedTypeSymbol wrapper && SymbolEqualityComparer.Default.Equals(wrapper.OriginalDefinition, tombstone))
                     message = wrapper.TypeArguments[0];
                 if (registeredAtStartup.Contains(message)
@@ -105,6 +107,10 @@ public sealed class ConfigurationAnalyzer : DiagnosticAnalyzer
                         CheckMessage(method.TypeArguments[0], invocation.Syntax.GetLocation());
                     if (method.Name == "Consume") CheckConsumer(operationContext, invocation, consumer, consumerInterface);
                 }
+
+                if (method.TypeArguments.Length > 0)
+                    foreach (var message in AddHandlerArguments(method, marker, single, batch, registered, operationContext.Compilation))
+                        CheckMessage(message, invocation.Syntax.GetLocation());
 
                 // Only our generated registration methods count. Unrelated APIs with the same
                 // names must not hide an unregistered handler.
@@ -161,6 +167,59 @@ public sealed class ConfigurationAnalyzer : DiagnosticAnalyzer
         }
     }
 
+    // A generic method whose type parameter must be a handler (Handler<THandler, TMessage>() or an
+    // application helper that forwards to it) registers its type argument. Returns the message
+    // types its IHandler<T>/IBatchHandler<T> constraints select, so their identities are checked.
+    private static List<ITypeSymbol> AddHandlerArguments(IMethodSymbol method, INamedTypeSymbol? marker, INamedTypeSymbol? single,
+        INamedTypeSymbol? batch, ConcurrentDictionary<ITypeSymbol, byte> registered, Compilation compilation)
+    {
+        var messages = new List<ITypeSymbol>();
+        var parameters = method.OriginalDefinition.TypeParameters;
+        for (var i = 0; i < parameters.Length; i++)
+            foreach (var constraint in parameters[i].ConstraintTypes)
+            {
+                var contract = SymbolEqualityComparer.Default.Equals(constraint.OriginalDefinition, single)
+                    || SymbolEqualityComparer.Default.Equals(constraint.OriginalDefinition, batch);
+                if (!contract && !SymbolEqualityComparer.Default.Equals(constraint.OriginalDefinition, marker)) continue;
+                registered.TryAdd(method.TypeArguments[i], 0);
+                if (contract && constraint is INamedTypeSymbol { TypeArguments.Length: 1 } named)
+                    messages.Add(Substitute(named.TypeArguments[0], method, compilation));
+            }
+        return messages;
+    }
+
+    // Replaces the method's and its containing types' type parameters in a constraint type,
+    // including inside constructed and array types (IHandler<Envelope<TMessage>> called with
+    // TMessage = Order checks Envelope<Order>, IHandler<TMessage[]> checks Order[], and
+    // Registrar<Order>.Register<H>() with IHandler<TMessage> on the class checks Order).
+    private static ITypeSymbol Substitute(ITypeSymbol type, IMethodSymbol method, Compilation compilation)
+    {
+        if (type is ITypeParameterSymbol { TypeParameterKind: TypeParameterKind.Method } parameter)
+            return method.TypeArguments[parameter.Ordinal];
+        if (type is ITypeParameterSymbol { TypeParameterKind: TypeParameterKind.Type } typeParameter)
+        {
+            for (var containing = method.ContainingType; containing is not null; containing = containing.ContainingType)
+                if (SymbolEqualityComparer.Default.Equals(containing.OriginalDefinition, typeParameter.ContainingSymbol))
+                    return containing.TypeArguments[typeParameter.Ordinal];
+            return type;
+        }
+        if (type is IArrayTypeSymbol array)
+        {
+            var element = Substitute(array.ElementType, method, compilation);
+            return SymbolEqualityComparer.Default.Equals(element, array.ElementType) ? array
+                : compilation.CreateArrayTypeSymbol(element, array.Rank, array.ElementNullableAnnotation);
+        }
+        if (type is not INamedTypeSymbol { IsGenericType: true } named) return type;
+        var arguments = new ITypeSymbol[named.TypeArguments.Length];
+        var changed = false;
+        for (var i = 0; i < arguments.Length; i++)
+        {
+            arguments[i] = Substitute(named.TypeArguments[i], method, compilation);
+            changed |= !SymbolEqualityComparer.Default.Equals(arguments[i], named.TypeArguments[i]);
+        }
+        return changed ? named.ConstructedFrom.Construct(arguments) : named;
+    }
+
     private static (string? Name, int Version) Identity(AttributeData attribute)
     {
         var name = attribute.ConstructorArguments.Length == 1 ? attribute.ConstructorArguments[0].Value as string : null;
@@ -169,6 +228,14 @@ public sealed class ConfigurationAnalyzer : DiagnosticAnalyzer
             if (argument.Key == "Version" && argument.Value.Value is int value) version = value;
         return (name, version);
     }
+
+    private static bool ContainsTypeParameter(ITypeSymbol type) => type switch
+    {
+        ITypeParameterSymbol => true,
+        IArrayTypeSymbol array => ContainsTypeParameter(array.ElementType),
+        INamedTypeSymbol named => named.TypeArguments.Any(ContainsTypeParameter),
+        _ => false,
+    };
 
     private static bool CanReference(INamedTypeSymbol type, Compilation compilation) =>
         !type.IsFileLocal && !type.IsUnboundGenericType && type.TypeArguments.All(static t => t.TypeKind != TypeKind.TypeParameter)

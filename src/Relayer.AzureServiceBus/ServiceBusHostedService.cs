@@ -61,7 +61,7 @@ internal sealed class ServiceBusHostedService(IServiceProvider provider, string 
                 pipeline.Tracing(tracing, endpoint).Telemetry(telemetry).Settle(settlement.SettleAsync);
                 pipeline.ConfigureConsumer(provider, consumer).UseTransportMiddleware(settlement);
                 foreach (var handler in handlers.Descriptors)
-                    if (consumer.Handlers.Contains(handler.HandlerType)) pipeline.Handler(handler);
+                    if (consumer.Selects(handler)) pipeline.Handler(handler);
                 var composed = pipeline.Build(consumer.Concurrency);
                 var logger = provider.GetService<ILoggerFactory>()?.CreateLogger<ServiceBusConsumer>();
                 var time = provider.GetService<TimeProvider>();

@@ -11,6 +11,7 @@ public sealed class ConsumerBuilder<TConsumerOptions> : IConsumerBuilder, IConsu
     private readonly HandlerRegistry _registry;
     private readonly string _source;
     private readonly List<Type> _handlers = [];
+    private readonly HashSet<(Type Handler, Type Message, bool IsBatch)> _selected = [];
     private readonly List<Action<ConsumePipelineBuilder>> _pipelineConfiguration = [];
     private int _concurrency = 1;
     private int _batchSize = 1;
@@ -35,6 +36,7 @@ public sealed class ConsumerBuilder<TConsumerOptions> : IConsumerBuilder, IConsu
     {
         EnsureMutable();
         _registry.Add(descriptor);
+        _selected.Add((descriptor.HandlerType, descriptor.MessageType, descriptor.IsBatch));
         if (!_handlers.Contains(descriptor.HandlerType)) _handlers.Add(descriptor.HandlerType);
     }
 
@@ -99,6 +101,6 @@ public sealed class ConsumerBuilder<TConsumerOptions> : IConsumerBuilder, IConsu
     internal IConsumerDefinition Build()
     {
         _built = true;
-        return new ConsumerDefinition<TConsumerOptions>(_source, Options, _handlers.ToArray(), _concurrency, _batchSize, _batchWait, _pipelineConfiguration.ToArray(), _failure, _classifier);
+        return new ConsumerDefinition<TConsumerOptions>(_source, Options, _handlers.ToArray(), _concurrency, _batchSize, _batchWait, _pipelineConfiguration.ToArray(), _failure, _classifier, _selected);
     }
 }

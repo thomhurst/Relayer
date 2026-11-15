@@ -178,7 +178,7 @@ public sealed class HandlerGenerator : IIncrementalGenerator
             builder.AppendLine("            return builder;");
             builder.AppendLine("        }");
         }
-        builder.AppendLine("        throw new global::System.InvalidOperationException($\"No generated descriptor for handler '{typeof(THandler)}'. Use a concrete, closed, assembly-accessible IHandler<T> or IBatchHandler<T> in Handler<THandler>().\");");
+        builder.AppendLine("        throw new global::System.InvalidOperationException($\"No generated descriptor for handler '{typeof(THandler)}'. Use a concrete, closed, assembly-accessible IHandler<T> or IBatchHandler<T> in Handler<THandler>(), or call Handler<THandler, TMessage>() from generic code.\");");
         builder.AppendLine("    }");
     }
 

@@ -45,7 +45,7 @@ internal sealed class KafkaHostedService(IServiceProvider provider, string name)
             pipeline.Tracing(tracing, endpoint).Telemetry(telemetry);
             pipeline.ConfigureConsumer(provider, consumer);
             foreach (var handler in handlers.Descriptors)
-                if (consumer.Handlers.Contains(handler.HandlerType)) pipeline.Handler(handler);
+                if (consumer.Selects(handler)) pipeline.Handler(handler);
             var composed = pipeline.Build(consumer.Concurrency);
             var receive = new ReceivePipeline<KafkaDelivery, KafkaMessageBinding>(composed, new(), consumer.Concurrency);
             var native = new Dekaf.ConsumerBuilder<byte[], byte[]>().WithBootstrapServers(options.BootstrapServers.ToArray())
