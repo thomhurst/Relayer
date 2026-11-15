@@ -125,6 +125,7 @@ public class ServiceBusSendEmulatorTests
             var published = await audit.ReceiveMessageAsync(TimeSpan.FromSeconds(30), token)
                 ?? throw new InvalidOperationException("Topic send was not delivered to the subscription.");
             await Assert.That(published.Body.ToMemory().Span[0]).IsEqualTo((byte)3);
+            await Assert.That(published.Subject).IsEqualTo("orders;v=1");
             await Assert.That(published.ContentType).IsEqualTo("application/x-protobuf");
             await Assert.That(published.ApplicationProperties.ContainsKey("content-type")).IsFalse();
             await audit.CompleteMessageAsync(published, token);

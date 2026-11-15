@@ -46,7 +46,7 @@ public static class ServiceBusBuilderExtensions
             var logging = provider.GetService<ILoggerFactory>() ?? NullLoggerFactory.Instance;
             return new ServiceBusSendTransport(name, client, options.Client is null, options,
                 definition.Routes.Select(route => route.Destination), mode, admin,
-                provider.GetRequiredService<MessageTracing>(), logging, definition.Consumers);
+                provider.GetRequiredService<MessageTracing>(), logging, definition.Consumers, definition.Routes);
         });
         builder.Services.AddSingleton<ITransport>(provider => provider.GetRequiredKeyedService<ServiceBusSendTransport>(name));
         builder.Services.AddKeyedSingleton<IDeadLetterManager>(name, (provider, _) =>

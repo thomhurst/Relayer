@@ -36,6 +36,10 @@ Declare destinations with native `CreateQueueOptions` or `CreateTopicOptions` in
 
 For single and batch sends, the serializer's `content-type` header maps to native `ServiceBusMessage.ContentType`, as required by the CloudEvents AMQP binary binding. It is not copied to application properties. The serializer's media type takes precedence over a native callback's `ContentType`; when no `content-type` header is present, a callback may set the native property.
 
+Native `Subject` (`sys.Label`) carries the CloudEvents type, for example `orders.placed;v=1` (stable name and version), on direct sends, batches and outbox dispatch. Topic subscriptions can then select message types with a native correlation filter such as `new CorrelationRuleFilter { Subject = "orders.placed;v=1" }` instead of an application-property SQL filter.
+
+The type also stays in the `cloudEvents:type` application property. A native callback that sets `Subject` takes precedence. Raw-envelope routes have no type and leave `Subject` unset. Set `options.SubjectFromMessageType = false` to keep `Subject` empty unless a callback sets it.
+
 ## Topology and permissions
 
 `Validate` is the default. Send destinations use an empty native message batch to open an authenticated send link, then dispose the batch and sender. No probe message is sent. Receive-only queues and declared subscriptions use native peek operations, which do not lock, consume or settle a message. Receive-only topic consumers validate their subscriptions without opening a topic send link. Send destinations need Send rights; receive checks need Listen rights. Validate never constructs or calls the administration client, even when one is supplied.
@@ -154,7 +158,7 @@ await sender.SendAsync(order, options => options.ServiceBus(message =>
 }));
 ```
 
-Callbacks receive the SDK's own `ServiceBusMessage` and may set session IDs, partition keys and other native properties. Do not retain the borrowed native message. Original CloudEvents and creation-context application properties take precedence over callback changes. Native callbacks cannot be persisted in the outbox.
+Callbacks receive the SDK's own `ServiceBusMessage` and may set session IDs, partition keys and other native properties. Do not retain the borrowed native message. Original CloudEvents and creation-context application properties take precedence over callback changes; a callback's `Subject` takes precedence over the message type. Native callbacks cannot be persisted in the outbox.
 
 Serialized transport batches use `CreateMessageBatchAsync`, `TryAddMessage` and `SendMessagesAsync`. Relayer splits batches at the native byte limit, destination changes, and native session/partition key changes, preserving input order. A message too large for an empty native batch fails with `MessageSizeExceeded`; use individual sending when a namespace permits single messages larger than its batch limit. All calls pass cancellation to the SDK. Batches are not atomic: cancellation or failure can follow successful earlier batches.
 

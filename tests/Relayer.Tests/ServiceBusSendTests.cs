@@ -133,6 +133,53 @@ public class ServiceBusSendTests
     }
 
     [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Subject_defaults_to_the_message_type_and_a_native_callback_wins(bool batch)
+    {
+        var client = new NativeClient { BatchCapacity = 4 };
+        await using var transport = Transport(client);
+        KeyValuePair<string, WireString>[] typed = [new("cloudEvents:type", new("orders.placed;v=1"u8.ToArray()))];
+        var native = new SendOptions().ServiceBus(message => message.Subject = "native");
+        OutgoingMessage[] messages = [
+            new("events", new byte[] { 1 }, typed),
+            new("events", new byte[] { 2 }, typed, options: native),
+            new("events", new byte[] { 3 })];
+        if (batch) await transport.SendBatchAsync(messages, default);
+        else foreach (var message in messages) await transport.SendAsync(message, default);
+
+        var sent = client.Senders.Single(sender => sender.Entity == "events").Sent;
+        await Assert.That(sent[0].Subject).IsEqualTo("orders.placed;v=1");
+        await Assert.That(sent[0].ApplicationProperties["cloudEvents:type"]).IsEqualTo("orders.placed;v=1");
+        await Assert.That(sent[1].Subject).IsEqualTo("native");
+        await Assert.That(sent[2].Subject).IsNull();
+    }
+
+    [Test]
+    public async Task Subject_uses_each_route_type_header_and_can_be_disabled()
+    {
+        async Task<string?[]> SendAsync(bool enabled)
+        {
+            var client = new NativeClient();
+            var services = new ServiceCollection();
+            services.AddRelayer(builder => builder.ServiceBus("bus", bus =>
+            {
+                bus.Options.Configure(options => { options.Client = client; options.Topics.Add(new("events")); options.SubjectFromMessageType = enabled; });
+                bus.Send<First>("events", route => route.SendOptions = new() { HeaderNames = new("x-") });
+                bus.Send<Second>("events", route => route.SendOptions = new() { HeaderNames = new("raw-"), EnvelopeMode = MessageEnvelopeMode.Raw });
+            }));
+            await using var provider = services.BuildServiceProvider();
+            var transport = provider.GetServices<ITransport>().Single();
+            foreach (var name in new[] { "x-type", "raw-type", "cloudEvents:type" })
+                await transport.SendAsync(new("events", default, new KeyValuePair<string, WireString>[] { new(name, new WireString("orders.placed;v=1")) }), default);
+            return client.Senders.Single().Sent.Select(message => message.Subject).ToArray();
+        }
+
+        await Assert.That((await SendAsync(enabled: true)).SequenceEqual(new string?[] { "orders.placed;v=1", null, null })).IsTrue();
+        await Assert.That((await SendAsync(enabled: false)).All(subject => subject is null)).IsTrue();
+    }
+
+    [Test]
     public async Task Native_batches_split_by_bytes_destination_and_session_and_apply_callbacks_once()
     {
         var client = new NativeClient { BatchCapacity = 2 };
