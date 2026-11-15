@@ -210,6 +210,20 @@ public class TenantStoreSelectionTests
     }
 
     [Test]
+    public async Task A_tenant_scoped_boundary_reports_a_possible_inbox_at_composition()
+    {
+        // The selected context can enable the inbox per delivery, so guards that reject an inbox must see one.
+        await using var stores = new TenantStores();
+        await stores.Start(false);
+        await using var provider = Services(stores, incomingTenants: true);
+        var builder = new ConsumePipelineBuilder(provider.GetRequiredService<IServiceScopeFactory>(),
+                provider.GetRequiredService<MessageTypeRegistry>(), new Serializer(),
+                static (_, error, _) => ValueTask.FromException(error))
+            .EntityFrameworkCore<OrdersContext>("orders");
+        await Assert.That(builder.HasInbox).IsTrue();
+    }
+
+    [Test]
     public async Task Selected_tenant_context_configuration_is_validated_before_opening_a_transaction()
     {
         await using var stores = new TenantStores();

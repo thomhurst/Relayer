@@ -15,7 +15,9 @@ internal sealed class EntityFrameworkCoreConsumer<TContext>(string consumer, boo
 
     internal bool ScopedValidation => scopedValidation;
 
-    public bool Inbox => inbox;
+    // A tenant-scoped boundary enables the inbox in the delivery scope when the selected context has
+    // AddRelayerOutbox, so composition cannot rule one out.
+    public bool Inbox => inbox || scopedValidation;
 
     internal EntityFrameworkCoreConsumerSettings Resolve(DbContext db) => scopedValidation
         ? OutboxConfiguration.ValidateConsumer(db, inbox, configuration, explicitOptions, requireOutbox)
