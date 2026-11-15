@@ -89,7 +89,10 @@ internal sealed class SqsConformanceFixture : ITransportConformanceFixture<SqsDe
         _logs = LoggerFactory.Create(builder => builder.AddProvider(Logs));
         Destination = TestContext.Current!.Isolation.GetIsolatedName("conformance-" + Guid.NewGuid().ToString("N")[..8]) + (fifo ? ".fifo" : "");
         var options = new AmazonSqsTransportOptions { SqsClient = _client };
-        options.Queues.Add(new(Destination) { Attributes = fifo ? new() { ["FifoQueue"] = "true" } : [] });
+        // A short visibility timeout keeps the redelivery scenarios from waiting out SQS's 30 s default.
+        options.Queues.Add(new(Destination) { Attributes = fifo
+            ? new() { ["FifoQueue"] = "true", ["VisibilityTimeout"] = "3" }
+            : new() { ["VisibilityTimeout"] = "3" } });
         _transport = new("sqs", _client, false, options, tracing, _logs);
         _settlement = new(tracing, new() { System = "aws_sqs", Destination = Destination });
     }
