@@ -44,6 +44,25 @@ public class FanOutSenderTests
         await Assert.That(broker.Count + local.Count + outbox.Rows.Count).IsEqualTo(0);
     }
 
+    [Test]
+    public async Task Repeated_destination_is_rejected_when_the_sender_is_resolved_without_a_host()
+    {
+        var services = new ServiceCollection();
+        services.AddSingleton<ITransport>(new CountingTransport("broker"));
+        services.AddScoped<IOutboxEnlistment>(_ => new RecordingOutbox { IsActive = true });
+        services.AddRelayer(builder =>
+        {
+            builder.AddMessageTypesFromThisAssembly();
+            builder.DeclareRoute<OrderPlaced>("broker", "orders");
+            builder.DeclareRoute<OrderPlaced>("broker", "orders");
+        });
+        using var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
+        using var scope = provider.CreateScope();
+
+        await Assert.That(() => scope.ServiceProvider.GetRequiredService<ISender>())
+            .Throws<InvalidOperationException>().WithMessageContaining("'orders' is declared more than once");
+    }
+
     private static (ServiceProvider, CountingTransport, CountingTransport, RecordingOutbox) Build(bool active)
     {
         var broker = new CountingTransport("broker");

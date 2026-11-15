@@ -99,14 +99,20 @@ internal sealed class SendPipeline
             pipeline = context => step.InvokeAsync(context, next);
         }
 
-        // Several Send<T> declarations fan one message out; the validator rejects a repeated destination.
+        // Several Send<T> declarations fan one message out. Reject a repeated destination here too, because a
+        // sender resolved without the hosted startup validator would otherwise enlist duplicate rows.
         var declared = new Dictionary<object, (SendRouteRegistration Registration, List<object> Routes, bool Tombstone)>(ReferenceEqualityComparer.Instance);
+        var destinations = new HashSet<(Type, string, string)>();
         foreach (var transport in configuration.Transports)
         {
             if (transport.Routes.Count == 0) continue;
             var serializer = services.GetMessageSerializer(transport.Name);
             foreach (var definition in transport.Routes)
             {
+                if (!destinations.Add((definition.MessageType, transport.Name, definition.Destination)))
+                {
+                    throw new InvalidOperationException($"Route for '{definition.MessageType}' on transport '{transport.Name}': a message type can have only one route to each destination; '{definition.Destination}' is declared more than once.");
+                }
                 var registration = ((ISendRouteDefinition)definition).CreateSendRegistration(transport.Name);
                 var route = registration.Build(types, namedTransports, serializer, pipeline, capabilitiesCache, outbox);
                 Add(declared, registration, registration.Key, route, tombstone: false);
