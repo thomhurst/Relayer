@@ -106,7 +106,9 @@ public sealed class ServiceBusConsumerControlTests
     [Test]
     public async Task Emulator_processor_receives_only_after_the_deferred_start()
     {
-        await using var broker = await ServiceBusReceiveBroker.StartAsync(["deferred-start"]);
+        // The emulator is shared by the session, so the queue is named per test.
+        var queue = TestContext.Current!.Isolation.GetIsolatedName("deferred-start");
+        await using var broker = await ServiceBusReceiveBroker.StartAsync([queue]);
         using var deadline = new CancellationTokenSource(TimeSpan.FromMinutes(4));
         var token = deadline.Token;
         await using var client = new ServiceBusClient(broker.ConnectionString);
@@ -124,20 +126,20 @@ public sealed class ServiceBusConsumerControlTests
                 {
                     options.Client = client;
                     options.AutoStartConsumers = false;
-                    options.Queues.Add(new("deferred-start"));
+                    options.Queues.Add(new(queue));
                 });
-                bus.Consume("deferred-start", consumer => consumer.Handler<DeferredHandler>());
+                bus.Consume(queue, consumer => consumer.Handler<DeferredHandler>());
             });
         });
         await using var provider = services.BuildServiceProvider();
         await ServiceBusReceiveTests.Start(provider, token);
 
-        await using var sender = client.CreateSender("deferred-start");
+        await using var sender = client.CreateSender(queue);
         var message = new ServiceBusMessage("{\"Value\":7}") { ContentType = "application/json" };
         message.ApplicationProperties["cloudEvents:id"] = Guid.NewGuid().ToString("N");
         message.ApplicationProperties["cloudEvents:type"] = "servicebus.deferred-start;v=1";
         await sender.SendMessageAsync(message, token);
-        await using (var receiver = client.CreateReceiver("deferred-start"))
+        await using (var receiver = client.CreateReceiver(queue))
             await Assert.That((await receiver.PeekMessageAsync(cancellationToken: token))?.DeliveryCount).IsEqualTo(0);
         await Assert.That(received.Reader.TryRead(out _)).IsFalse();
 
