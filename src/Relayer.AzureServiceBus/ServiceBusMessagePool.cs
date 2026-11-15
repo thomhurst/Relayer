@@ -25,7 +25,7 @@ internal sealed class ServiceBusSendState
         Message = new(new AmqpAnnotatedMessage(_body));
     }
 
-    internal void Prepare(OutgoingMessage outgoing)
+    internal void Prepare(OutgoingMessage outgoing, string[]? subjectHeaders = null)
     {
         _data[0] = outgoing.Body;
         if (outgoing.OrderingKey is { } key) Message.SessionId = key.ToString();
@@ -35,7 +35,14 @@ internal sealed class ServiceBusSendState
         foreach (var header in outgoing.Headers.Span)
         {
             if (header.Key == "content-type") Message.ContentType = header.Value.ToString();
-            else Message.ApplicationProperties[header.Key] = header.Value.ToString();
+            else
+            {
+                var value = header.Value.ToString();
+                Message.ApplicationProperties[header.Key] = value;
+                // A native callback's Subject wins; otherwise the message type drives subscription filters.
+                if (Message.Subject is null && subjectHeaders is not null && Array.IndexOf(subjectHeaders, header.Key) >= 0)
+                    Message.Subject = value;
+            }
         }
     }
 

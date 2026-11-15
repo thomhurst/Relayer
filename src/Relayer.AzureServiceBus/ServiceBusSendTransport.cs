@@ -49,7 +49,8 @@ internal sealed class ServiceBusSendTransport : ITransport, ITransportSendTracin
 
     internal ServiceBusSendTransport(string name, ServiceBusClient client, bool ownsClient,
         ServiceBusTransportOptions options, IEnumerable<string> destinations, TopologyMode mode,
-        ServiceBusAdministrationClient? administration = null, MessageTracing? tracing = null, ILoggerFactory? logging = null, IReadOnlyList<IConsumerDefinition>? consumers = null)
+        ServiceBusAdministrationClient? administration = null, MessageTracing? tracing = null, ILoggerFactory? logging = null, IReadOnlyList<IConsumerDefinition>? consumers = null,
+        IReadOnlyList<IRouteDefinition>? routes = null)
     {
         Name = name;
         _client = client;
@@ -71,7 +72,7 @@ internal sealed class ServiceBusSendTransport : ITransport, ITransportSendTracin
                 : options.Subscriptions.Any(item => item.TopicName == destination) &&
                   options.Subscriptions.Where(item => item.TopicName == destination).All(item => item.RequiresSession &&
                       (mode == TopologyMode.Provision || options.TrustedSessionEntities.Contains(item.TopicName + "/Subscriptions/" + item.SubscriptionName)));
-            var endpoint = new Endpoint(client.CreateSender(destination), new()
+            var endpoint = new Endpoint(client.CreateSender(destination), SubjectHeaders(options, destination, routes), new()
             {
                 OrderedByKey = ordered,
                 MaxBatchSize = int.MaxValue,
@@ -84,6 +85,15 @@ internal sealed class ServiceBusSendTransport : ITransport, ITransportSendTracin
             endpoints.Add(destination, endpoint);
         }
         _endpoints = endpoints.ToFrozenDictionary(StringComparer.Ordinal);
+    }
+
+    // The CloudEvents type header names of the routes to a destination; their value becomes the native Subject.
+    private static string[] SubjectHeaders(ServiceBusTransportOptions options, string destination, IReadOnlyList<IRouteDefinition>? routes)
+    {
+        if (!options.SubjectFromMessageType) return [];
+        if (routes is null) return [new HeaderNames("cloudEvents:").Type];
+        return routes.Where(route => route.Destination == destination && route.SendOptions.EnvelopeMode == MessageEnvelopeMode.CloudEvents)
+            .Select(route => route.SendOptions.HeaderNames.Type).Distinct(StringComparer.Ordinal).ToArray();
     }
 
     public string Name { get; }
@@ -120,7 +130,7 @@ internal sealed class ServiceBusSendTransport : ITransport, ITransportSendTracin
         var state = endpoint.Messages.Rent();
         try
         {
-            state.Prepare(outgoing);
+            state.Prepare(outgoing, endpoint.SubjectHeaders);
             endpoint.Tracing?.RecordNativeSend();
             var duration = endpoint.Tracing?.StartNativeSend() ?? default;
             var failed = true;
@@ -188,7 +198,7 @@ internal sealed class ServiceBusSendTransport : ITransport, ITransportSendTracin
                         {
                             pendingEndpoint = endpoint;
                             pending = endpoint.Messages.Rent();
-                            pending.Prepare(messages.Span[index]);
+                            pending.Prepare(messages.Span[index], endpoint.SubjectHeaders);
                         }
                         // Service Bus requires each native batch to share session and partition IDs.
                         if (admitted.Count != 0 && (pending.Message.SessionId != session || pending.Message.PartitionKey != partition ||
@@ -318,9 +328,10 @@ internal sealed class ServiceBusSendTransport : ITransport, ITransportSendTracin
         if (failures is { Count: > 1 }) throw new AggregateException(failures);
     }
 
-    private sealed class Endpoint(ServiceBusSender sender, TransportCapabilities capabilities)
+    private sealed class Endpoint(ServiceBusSender sender, string[] subjectHeaders, TransportCapabilities capabilities)
     {
         internal ServiceBusSender Sender { get; } = sender;
+        internal string[] SubjectHeaders { get; } = subjectHeaders;
         internal TransportCapabilities Capabilities { get; } = capabilities;
         internal ServiceBusPool<ServiceBusSendState> Messages { get; } = new(static () => new());
         internal ServiceBusPool<List<ServiceBusSendState>> Batches { get; } = new(static () => []);

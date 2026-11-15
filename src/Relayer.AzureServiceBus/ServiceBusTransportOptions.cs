@@ -31,6 +31,13 @@ public sealed class ServiceBusTransportOptions
     /// <summary>Native topic declarations. Names must match send destinations.</summary>
     public IList<CreateTopicOptions> Topics { get; } = [];
 
+    /// <summary>
+    /// Sets native <c>Subject</c> (<c>sys.Label</c>) to the CloudEvents type, for example <c>orders.placed;v=1</c>, so
+    /// subscription filters can match the message type. Applies to direct and outbox sends; a native callback's Subject wins.
+    /// Raw-envelope routes have no type and leave Subject unset. Defaults to true.
+    /// </summary>
+    public bool SubjectFromMessageType { get; set; } = true;
+
     /// <summary>Native subscriptions to provision independently of receive composition.</summary>
     public IList<CreateSubscriptionOptions> Subscriptions { get; } = [];
 }

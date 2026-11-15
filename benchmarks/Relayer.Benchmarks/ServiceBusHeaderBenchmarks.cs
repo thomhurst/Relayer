@@ -11,6 +11,7 @@ namespace Relayer.Benchmarks;
 [MemoryDiagnoser]
 public class ServiceBusHeaderBenchmarks
 {
+    private static readonly string[] SubjectHeaders = ["cloudEvents:type"];
     private readonly ServiceBusSendState _relayer = new();
     private readonly ServiceBusMessage _raw = new();
     private readonly HeaderBuffer _headers = new();
@@ -51,7 +52,7 @@ public class ServiceBusHeaderBenchmarks
     [Benchmark]
     public int RelayerHeaders()
     {
-        _relayer.Prepare(Next());
+        _relayer.Prepare(Next(), SubjectHeaders);
         var count = _relayer.Message.ApplicationProperties.Count;
         _relayer.Clear();
         return count;
