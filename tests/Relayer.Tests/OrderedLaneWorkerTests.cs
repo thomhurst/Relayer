@@ -78,8 +78,48 @@ public sealed class OrderedLaneWorkerTests
         await Assert.That(worker.Releases).IsEqualTo(1);
     }
 
+    [Test]
+    public async Task Commit_signal_wakes_an_idle_poll_and_a_signal_during_a_scan_rescans_at_once()
+    {
+        var clock = new StalledClock();
+        var wake = new OrderedLaneWake();
+        using var idle = new CancellationTokenSource();
+        var worker = new Worker();
+        worker.Ready[0] = worker.Ready[1] = false;
+        worker.Scan = () =>
+        {
+            // A commit that lands after the probe must not wait for the poll.
+            if (++worker.Scans == 1) wake.Signal();
+            if (worker.Scans == 3) { worker.StopRequested = true; idle.Cancel(); }
+        };
+        var run = OrderedLaneWorker.RunAsync(worker, TimeSpan.FromSeconds(30), TimeSpan.FromHours(1), clock, default, idle.Token, wake);
+        // The second scan finds nothing and parks on a poll timer that never fires.
+        await clock.Polled.Task.WaitAsync(TimeSpan.FromSeconds(30));
+        await Assert.That(worker.Scans).IsEqualTo(2);
+        wake.Signal();
+        await run.WaitAsync(TimeSpan.FromSeconds(30));
+        await Assert.That(worker.Scans).IsEqualTo(3);
+        await Assert.That(worker.Releases).IsEqualTo(1);
+    }
+
     private static Task Run(Worker worker, TimeProvider clock, CancellationToken idle = default) =>
         OrderedLaneWorker.RunAsync(worker, TimeSpan.FromSeconds(30), TimeSpan.FromSeconds(1), clock, default, idle);
+
+    private sealed class StalledClock : TimeProvider
+    {
+        internal TaskCompletionSource Polled { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public override ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period)
+        {
+            Polled.TrySetResult();
+            return new SilentTimer();
+        }
+        private sealed class SilentTimer : ITimer
+        {
+            public bool Change(TimeSpan dueTime, TimeSpan period) => true;
+            public void Dispose() { }
+            public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+        }
+    }
 
     private sealed class Clock : TimeProvider
     {

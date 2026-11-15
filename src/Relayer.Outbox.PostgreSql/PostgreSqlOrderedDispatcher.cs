@@ -20,6 +20,7 @@ internal sealed partial class PostgreSqlOrderedDispatcher : BackgroundService, I
     private int _nextLane;
     private int _localStop;
     private readonly CancellationTokenSource _idleStop = new();
+    private readonly OrderedLaneWake _wake = new();
     private readonly bool _hasLocal;
     private readonly OrderedDispatchCapabilityCache _capabilities = new();
     private readonly ILogger<PostgreSqlOrderedDispatcher> _logger;
@@ -59,7 +60,23 @@ internal sealed partial class PostgreSqlOrderedDispatcher : BackgroundService, I
     {
         using var idleStop = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken, _idleStop.Token);
         await OrderedLaneWorker.RunAsync(this, _options.LeaseDuration, _options.PollInterval,
-            _timeProvider, stoppingToken, idleStop.Token).ConfigureAwait(false);
+            _timeProvider, stoppingToken, idleStop.Token, _wake).ConfigureAwait(false);
+    }
+
+    internal bool Matches(string? schema, string prefix) =>
+        (_options.Schema ?? "public") == (schema ?? "public") && _options.TablePrefix == prefix;
+
+    // Called only after durable commit. Wakes an idle scan when a ready keyed row lands on a lane this instance owns.
+    internal void Committed(List<BufferedOutboxMessage> rows, int count)
+    {
+        var assigned = _coordinator.Assigned;
+        for (var i = 0; i < count; i++)
+        {
+            var row = rows[i];
+            if (row.Lane is not { } lane || row.DeliverAt is not null || lane >= assigned.Length || !assigned[lane]) continue;
+            _wake.Signal();
+            return;
+        }
     }
 
     int IOrderedLaneWorker.Lanes => _options.Lanes;
