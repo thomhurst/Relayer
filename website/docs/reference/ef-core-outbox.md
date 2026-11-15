@@ -117,6 +117,9 @@ services.AddDbContext<OrdersDbContext>((provider, options) =>
     options.UseNpgsql(dataSource).AddRelayerOutbox(provider));
 ```
 
+`DbContextOptions.HasRelayerOutbox()` returns whether `AddRelayerOutbox` configured those options, so a test can
+assert that a context participates in the outbox.
+
 Add direct dispatch with matching maintenance for commit-triggered sends and durable recovery; add ordered
 dispatch when needed. A host with direct dispatch and no matching maintenance fails startup before workers
 start. Maintenance must use the same `NpgsqlDataSource` instance, schema and table prefix; worker names can differ.

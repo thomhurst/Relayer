@@ -63,10 +63,8 @@ public static class EntityFrameworkCoreOutboxExtensions
             throw new InvalidOperationException("Relayer EF Core interceptors must bind to the current ISender scope, " +
                 "not the root service provider. Use AddDbContext instead of AddDbContextPool or AddPooledDbContextFactory " +
                 "and configure AddRelayerOutbox with its scoped provider.");
-        if (builder.Options.FindExtension<CoreOptionsExtension>()?.Interceptors is { } interceptors)
-            foreach (var interceptor in interceptors)
-                if (interceptor is OutboxSaveChangesInterceptor)
-                    throw new InvalidOperationException("AddRelayerOutbox is already configured on these DbContext options.");
+        if (builder.Options.HasRelayerOutbox())
+            throw new InvalidOperationException("AddRelayerOutbox is already configured on these DbContext options.");
         options ??= services.GetRequiredService<IOptionsSnapshot<EntityFrameworkCoreOutboxOptions>>().Value;
         if (services.GetService<TenantContext>() is { } tenant)
         {
@@ -99,6 +97,17 @@ public static class EntityFrameworkCoreOutboxExtensions
         builder.AddInterceptors(new OutboxSaveChangesInterceptor(outbox, configuration),
             new OutboxTransactionInterceptor(outbox, configuration));
         return builder;
+    }
+
+    /// <summary>Returns whether AddRelayerOutbox installed the outbox interceptors on these options.</summary>
+    public static bool HasRelayerOutbox(this DbContextOptions options)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        if (options.FindExtension<CoreOptionsExtension>()?.Interceptors is { } interceptors)
+            foreach (var interceptor in interceptors)
+                if (interceptor is OutboxSaveChangesInterceptor)
+                    return true;
+        return false;
     }
 
     /// <summary>Selects the context that owns sends before an implicit SaveChanges transaction, or disambiguates explicit transactions.</summary>

@@ -520,6 +520,17 @@ public class HarnessTests
     }
 
     [Test]
+    public async Task Test_context_accepts_a_native_message_feature()
+    {
+        var context = new TestMessageContext(new("harness.probe", 1));
+        var native = new Marker(7);
+        context.Features.Set(new NativeMessage<Marker>(native));
+        var feature = context.Features.GetRequired<NativeMessage<Marker>>();
+        await Assert.That(feature.Message).IsSameReferenceAs(native);
+        await Assert.That(feature.Disposition).IsEqualTo(Disposition.Complete);
+    }
+
+    [Test]
     public async Task Registration_rejects_missing_relayer_and_duplicate_harness()
     {
         var services = new ServiceCollection();

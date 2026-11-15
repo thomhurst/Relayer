@@ -40,6 +40,10 @@ and case-sensitive. Each scope has its own store. The registration snapshots sch
 and does not take ownership of the data source. Health registration requires the optional `Relayer.HealthChecks` package.
 Registration does not create tables, enable `IOutboxEnlistment`, or start workers.
 
+To inspect a registration, for example to assert in a test that the store and your EF Core contexts share one
+data source, resolve `GetRequiredKeyedService<PostgreSqlOutboxStoreDescriptor>("orders")`. It exposes the store
+`Name`, `DataSource`, `Schema` and `TablePrefix`, and changes no behavior.
+
 ## Reads and mutations
 
 The store follows the [core contract](outbox-stores.md):

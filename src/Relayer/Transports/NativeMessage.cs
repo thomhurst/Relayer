@@ -6,6 +6,10 @@ public sealed class NativeMessage<TIncoming>
 {
     internal NativeMessage() { }
 
+    /// <summary>Creates a feature for a native message, for example to set on a test context's features.</summary>
+    /// <remarks>Transports reuse pooled instances; this constructor is for tests and custom transports.</remarks>
+    public NativeMessage(TIncoming message) => Message = message;
+
     /// <summary>The untouched object or value supplied by the native receive callback.</summary>
     public TIncoming Message { get; internal set; } = default!;
 

@@ -118,10 +118,10 @@ var context = new TestMessageContext(
     services: provider,
     headers: new Dictionary<string, string> { ["tenant"] = "north" });
 
-context.Features.Set(new FakeNativeFeature());
+context.Features.Set(new NativeMessage<RabbitMqDelivery>(delivery));
 await handler.HandleAsync(new OrderPlaced("A-1001"), context, context.CancellationToken);
 ```
 
-`Features` accepts arbitrary typed features, including fake native features. The default context has a new UUIDv7 ID, attempt one, empty headers and an empty service provider. Header input is copied. The context does not create or dispose DI scopes; the test owns any provider or scope it supplies.
+`Features` accepts arbitrary typed features. Construct `NativeMessage<T>` around the native object the transport would supply, so code that reads `context.Features.Get<NativeMessage<T>>()` or an extension such as `context.RabbitMQ()` runs unchanged. The default context has a new UUIDv7 ID, attempt one, empty headers and an empty service provider. Header input is copied. The context does not create or dispose DI scopes; the test owns any provider or scope it supplies.
 
 Harness snapshots intentionally allocate and retain history until reset. Register the harness only in tests.
