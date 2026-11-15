@@ -1,5 +1,6 @@
 using Azure.Messaging.ServiceBus;
 using Azure.Messaging.ServiceBus.Administration;
+using Relayer.Transports;
 
 namespace Relayer.AzureServiceBus;
 
@@ -48,4 +49,45 @@ public sealed class ServiceBusTransportOptions
 
     /// <summary>Native subscriptions to provision independently of receive composition.</summary>
     public IList<CreateSubscriptionOptions> Subscriptions { get; } = [];
+
+    // TopologyMode.None: entities the routes and consumers name but these options do not declare are implied, in a copy,
+    // so the caller's options (and exporters reading them) are unchanged. Explicit declarations always win.
+    internal ServiceBusTransportOptions WithImpliedDeclarations(IEnumerable<string> destinations, IEnumerable<IConsumerDefinition> consumers)
+    {
+        // Copy every option here; a property added to this class without a line below is lost in None mode.
+        var implied = new ServiceBusTransportOptions
+        {
+            ConnectionString = ConnectionString, Client = Client, ClientOptions = ClientOptions,
+            AdministrationClient = AdministrationClient, SubjectFromMessageType = SubjectFromMessageType,
+            AutoStartConsumers = AutoStartConsumers,
+        };
+        foreach (var queue in Queues) implied.Queues.Add(queue);
+        foreach (var topic in Topics) implied.Topics.Add(topic);
+        foreach (var subscription in Subscriptions) implied.Subscriptions.Add(subscription);
+        foreach (var entity in TrustedSessionEntities) implied.TrustedSessionEntities.Add(entity);
+        foreach (var consumer in consumers)
+        {
+            if (consumer is not ConsumerDefinition<ServiceBusConsumerOptions> { Options: var options }) continue;
+            var sessions = options.SessionProcessorOptions is not null;
+            if (options.Subscription is not { } subscription)
+            {
+                if (!implied.Declares(consumer.Source)) implied.Queues.Add(new(consumer.Source) { RequiresSession = sessions });
+                continue;
+            }
+            if (!implied.Declares(consumer.Source)) implied.Topics.Add(new(consumer.Source));
+            if (!implied.Subscriptions.Any(item => item.TopicName == consumer.Source && item.SubscriptionName == subscription))
+                implied.Subscriptions.Add(new(consumer.Source, subscription) { RequiresSession = sessions });
+        }
+        // A trusted name asserts sessions on a whole topic; any other destination is a queue. The sender is the same for both.
+        foreach (var destination in destinations)
+            if (!implied.Declares(destination))
+            {
+                if (TrustedSessionEntities.Contains(destination)) implied.Topics.Add(new(destination));
+                else implied.Queues.Add(new(destination));
+            }
+        return implied;
+    }
+
+    private bool Declares(string entity) =>
+        Queues.Any(queue => queue.Name == entity) || Topics.Any(topic => topic.Name == entity);
 }

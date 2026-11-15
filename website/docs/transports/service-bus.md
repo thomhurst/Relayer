@@ -34,6 +34,22 @@ Messages need a stable `[Message]` identity and a source-generated JSON context.
 
 Declare destinations with native `CreateQueueOptions` or `CreateTopicOptions` in `Queues` or `Topics`. Every send destination needs exactly one declaration. Native `CreateSubscriptionOptions` in `Subscriptions` declare subscriptions of a declared topic. Every consumer needs a matching native queue or topic/subscription declaration.
 
+With `TopologyMode.None`, routes and consumers already name their entities, so these declarations are optional. A consumer implies its queue, or with `Subscription` set, its topic and subscription; `SessionProcessorOptions` implies `RequiresSession = true`. A send destination is implied as a queue, or as a topic when its name is in `TrustedSessionEntities`; the native sender is the same for both. An explicit declaration always wins, so declare an entity to override these defaults. Implied entities are not added to your options, so the [infrastructure export](../guides/topology.md#service-bus-infrastructure-export) still covers only explicit declarations:
+
+```csharp
+builder.ServiceBus("bus", bus =>
+{
+    bus.TopologyMode = TopologyMode.None; // topology owned by IaC
+    bus.Options.Configure(options => options.ConnectionString = connectionString);
+    bus.Send<OrderPlaced>("orders");
+    bus.Consume("orders", consumer =>
+    {
+        consumer.Handler<OrderPlacedHandler>();
+        consumer.Options.Subscription = "billing";
+    });
+});
+```
+
 For single and batch sends, the serializer's `content-type` header maps to native `ServiceBusMessage.ContentType`, as required by the CloudEvents AMQP binary binding. It is not copied to application properties. The serializer's media type takes precedence over a native callback's `ContentType`; when no `content-type` header is present, a callback may set the native property.
 
 Native `Subject` (`sys.Label`) carries the CloudEvents type, for example `orders.placed;v=1` (stable name and version), on direct sends, batches and outbox dispatch. Topic subscriptions can then select message types with a native correlation filter such as `new CorrelationRuleFilter { Subject = "orders.placed;v=1" }` instead of an application-property SQL filter.
@@ -50,7 +66,7 @@ Use `bus.TopologyMode = TopologyMode.Provision` explicitly to create missing ent
 
 Provision uses `AdministrationClient` when supplied. With an owned connection-string client it otherwise creates a native administration client using that connection string. With a caller-owned messaging client, supply an administration client explicitly; Relayer cannot extract credentials from the messaging client. The Service Bus emulator has a separate management endpoint: use its HTTP connection string for the administration client. Native administration clients are caller-owned and the SDK does not require disposal.
 
-`TopologyMode.None` skips all checks and writes. Native scheduling and batching remain available. Portable `OrderingKey` requires either Provision with verified session declarations or explicit trust in Validate and None. Consumers support native immediate abandon and dead-lettering. No transaction support or namespace-dependent message-size limit is advertised.
+`TopologyMode.None` skips all checks and writes, and implies undeclared entities as described above. Native scheduling and batching remain available. Portable `OrderingKey` requires either Provision with verified session declarations or explicit trust in Validate and None. Consumers support native immediate abandon and dead-lettering. No transaction support or namespace-dependent message-size limit is advertised.
 
 ## Register receiving
 
@@ -62,7 +78,7 @@ bus.Consume("orders", consumer => consumer.Handler<OrderPlacedHandler>());
 
 Relayer composes generated handlers, default JSON serialization, the core failure pipeline, process telemetry and native settlement before starting the processor. The default native `ServiceBusProcessorOptions` uses `PeekLock`, one concurrent callback and `AutoCompleteMessages = false`. Successful handling completes the message only after durable work and asynchronous scope disposal. Poison messages go to the native dead-letter queue without stopping healthy messages.
 
-Pass native options through `consumer.Options.ProcessorOptions`. Set `AutoCompleteMessages = false` on replacement options. `ReceiveAndDelete`, auto-complete, undeclared entities and batch handlers fail at startup. The portable concurrency declaration must match the native concurrency; Relayer never rewrites native options:
+Pass native options through `consumer.Options.ProcessorOptions`. Set `AutoCompleteMessages = false` on replacement options. `ReceiveAndDelete`, auto-complete, undeclared entities (in Validate and Provision) and batch handlers fail at startup. The portable concurrency declaration must match the native concurrency; Relayer never rewrites native options:
 
 ```csharp
 bus.Consume("orders", consumer =>
