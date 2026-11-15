@@ -249,7 +249,16 @@ internal sealed class KafkaProducerTransport : ITransport, ITransportSendTracing
     internal async Task StartConsumersAsync(CancellationToken cancellationToken)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
-        try { foreach (var consumer in Consumers) await consumer.StartAsync(cancellationToken).ConfigureAwait(false); }
+        try
+        {
+            foreach (var consumer in Consumers)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                await consumer.StartAsync(cancellationToken).ConfigureAwait(false);
+            }
+            // A cancellation that raced the last start (host shutdown) must not leave it running.
+            cancellationToken.ThrowIfCancellationRequested();
+        }
         catch
         {
             try { await StopConsumersAsync(CancellationToken.None).ConfigureAwait(false); }

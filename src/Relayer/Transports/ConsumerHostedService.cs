@@ -7,6 +7,9 @@ namespace Relayer.Transports;
 internal abstract class ConsumerHostedService(string transport) : BackgroundService, IConsumerControl
 {
     private readonly SemaphoreSlim _gate = new(1, 1);
+    // Cancels a control start still running when host shutdown bypasses the gate, so it cannot start consumers
+    // after the shutdown stop pass.
+    private CancellationTokenSource _shutdown = new();
     private bool _hostRunning;
     private bool _consuming;
 
@@ -24,6 +27,11 @@ internal abstract class ConsumerHostedService(string transport) : BackgroundServ
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
+            if (_shutdown.IsCancellationRequested)
+            {
+                _shutdown.Dispose();
+                _shutdown = new();
+            }
             await ComposeAsync(cancellationToken).ConfigureAwait(false);
             if (AutoStartConsumers) await StartAsyncCore(cancellationToken).ConfigureAwait(false);
             _hostRunning = true;
@@ -37,6 +45,7 @@ internal abstract class ConsumerHostedService(string transport) : BackgroundServ
         // Shutdown must reach the consumers even when its deadline has passed or a control call holds the gate:
         // the consumer's stop aborts in-flight work on an expired token and still stops the native receive.
         Volatile.Write(ref _hostRunning, false);
+        _shutdown.Cancel();
         var entered = false;
         try
         {
@@ -67,7 +76,8 @@ internal abstract class ConsumerHostedService(string transport) : BackgroundServ
         {
             if (!Volatile.Read(ref _hostRunning))
                 throw new InvalidOperationException($"{transport}: start the host before starting its consumers.");
-            await StartAsyncCore(cancellationToken).ConfigureAwait(false);
+            using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _shutdown.Token);
+            await StartAsyncCore(linked.Token).ConfigureAwait(false);
         }
         finally { _gate.Release(); }
     }
