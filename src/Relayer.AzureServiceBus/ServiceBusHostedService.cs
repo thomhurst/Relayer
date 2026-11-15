@@ -33,13 +33,26 @@ internal sealed class ServiceBusHostedService(IServiceProvider provider, string 
 
     public async Task StopAsync(CancellationToken cancellationToken)
     {
-        await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        // Shutdown must reach the consumers even when its deadline has passed or a control call holds the gate:
+        // the consumer's stop aborts in-flight work on an expired token and still stops the native processor.
+        Volatile.Write(ref _hostRunning, false);
+        var entered = false;
         try
         {
-            _hostRunning = false;
-            await StopConsumersAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
+                await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+                entered = true;
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { }
+            if (entered) await StopConsumersAsync(cancellationToken).ConfigureAwait(false);
+            else if (_transport is { } transport)
+            {
+                _consuming = false;
+                await transport.StopAsync(cancellationToken).ConfigureAwait(false);
+            }
         }
-        finally { _gate.Release(); }
+        finally { if (entered) _gate.Release(); }
     }
 
     async Task IConsumerControl.StartAsync(CancellationToken cancellationToken)
@@ -47,7 +60,7 @@ internal sealed class ServiceBusHostedService(IServiceProvider provider, string 
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            if (!_hostRunning)
+            if (!Volatile.Read(ref _hostRunning))
                 throw new InvalidOperationException($"Service Bus transport '{name}': start the host before starting its consumers.");
             await StartConsumersAsync(cancellationToken).ConfigureAwait(false);
         }

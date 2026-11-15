@@ -67,6 +67,43 @@ public sealed class ServiceBusConsumerControlTests
     }
 
     [Test]
+    public async Task Host_stop_with_an_expired_token_still_stops_consumers_and_the_control()
+    {
+        var client = new ServiceBusReceiveTests.NativeClient();
+        await using var provider = ServiceBusReceiveTests.Provider(client);
+        var control = provider.GetRequiredKeyedService<IConsumerControl>("bus");
+        await ServiceBusReceiveTests.Start(provider);
+
+        await ServiceBusReceiveTests.Stop(provider, new CancellationToken(true));
+        await Assert.That(client.Processors.Single().Stops).IsEqualTo(1);
+        await Assert.That(async () => await control.StartAsync(default)).Throws<InvalidOperationException>();
+    }
+
+    [Test]
+    public async Task Host_stop_reaches_consumers_while_a_control_start_holds_the_gate()
+    {
+        var client = new ServiceBusReceiveTests.NativeClient();
+        await using var provider = ServiceBusReceiveTests.Provider(client, autoStart: false);
+        var control = provider.GetRequiredKeyedService<IConsumerControl>("bus");
+        await ServiceBusReceiveTests.Start(provider);
+        var processor = client.Processors.Single();
+        var startBlocked = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        processor.StartWork = () => startBlocked.Task;
+
+        var start = control.StartAsync(default);
+        await Assert.That(await processor.Lifecycle.Reader.ReadAsync()).IsEqualTo("start");
+        using var deadline = new CancellationTokenSource();
+        var stop = ServiceBusReceiveTests.Stop(provider, deadline.Token);
+        await Assert.That(stop.IsCompleted).IsFalse();
+        await deadline.CancelAsync();
+
+        await stop;
+        await Assert.That(await processor.Lifecycle.Reader.ReadAsync()).IsEqualTo("stop");
+        startBlocked.SetResult();
+        await start;
+    }
+
+    [Test]
     public async Task Emulator_processor_receives_only_after_the_deferred_start()
     {
         await using var broker = await ServiceBusReceiveBroker.StartAsync(["deferred-start"]);
