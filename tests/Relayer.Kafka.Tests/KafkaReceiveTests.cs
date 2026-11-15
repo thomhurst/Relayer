@@ -18,6 +18,10 @@ namespace Relayer.Kafka.Tests;
 
 public class KafkaReceiveTests
 {
+    // Tests that leave the broker running share one broker and isolate their topics and groups.
+    [ClassDataSource<KafkaHeaderSnapshotBroker>(Shared = SharedType.PerTestSession)]
+    public required KafkaHeaderSnapshotBroker Broker { get; init; }
+
     [Test]
     public async Task Handled_observation_preserves_receiver_failure_and_releases_the_pending_read()
     {
@@ -144,7 +148,8 @@ public class KafkaReceiveTests
         using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(2));
         var token = timeout.Token;
         using var tracing = new MessageTracing(Options.Create(new TracingOptions()), []);
-        await using var fixture = (KafkaFixture)await KafkaFixture.CreateAsync(tracing, token);
+        await Broker.Started.WaitAsync(token);
+        await using var fixture = await KafkaFixture.CreateAsync(tracing, Broker.Bootstrap, Topic(), token);
         fixture.RegisterConsumer(static (_, _) => new(Disposition.Complete));
         fixture.RegisterConsumer(static (_, _) => new(Disposition.Complete));
         var transport = (KafkaProducerTransport)fixture.Transport;
@@ -161,7 +166,8 @@ public class KafkaReceiveTests
         using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(2));
         var token = timeout.Token;
         using var tracing = new MessageTracing(Options.Create(new TracingOptions()), []);
-        await using var fixture = (KafkaFixture)await KafkaFixture.CreateAsync(tracing, token);
+        await Broker.Started.WaitAsync(token);
+        await using var fixture = await KafkaFixture.CreateAsync(tracing, Broker.Bootstrap, Topic(), token);
         var control = new KafkaReceiveControl();
         var spans = new ConcurrentQueue<Activity>();
         using var listener = new ActivityListener
@@ -254,7 +260,8 @@ public class KafkaReceiveTests
         using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(2));
         var token = timeout.Token;
         using var tracing = new MessageTracing(Options.Create(new TracingOptions()), []);
-        await using var fixture = (KafkaFixture)await KafkaFixture.CreateAsync(tracing, token);
+        await Broker.Started.WaitAsync(token);
+        await using var fixture = await KafkaFixture.CreateAsync(tracing, Broker.Bootstrap, Topic(), token);
         var control = new KafkaReceiveControl();
         using var host = BuildHost(fixture.Bootstrap, fixture.Destination, control, missingDeadLetter: true);
         await host.StartAsync(token);
@@ -278,7 +285,8 @@ public class KafkaReceiveTests
         using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(2));
         var token = timeout.Token;
         using var tracing = new MessageTracing(Options.Create(new TracingOptions()), []);
-        await using var fixture = (KafkaFixture)await KafkaFixture.CreateAsync(tracing, token);
+        await Broker.Started.WaitAsync(token);
+        await using var fixture = await KafkaFixture.CreateAsync(tracing, Broker.Bootstrap, Topic(), token);
         var control = new KafkaReceiveControl();
         using var host = BuildHost(fixture.Bootstrap, fixture.Destination, control, missingDeadLetter: true, healthySibling: true);
         await host.StartAsync(token);
@@ -370,7 +378,8 @@ public class KafkaReceiveTests
         using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(2));
         var token = timeout.Token;
         using var tracing = new MessageTracing(Options.Create(new TracingOptions()), []);
-        await using var fixture = (KafkaFixture)await KafkaFixture.CreateAsync(tracing, token);
+        await Broker.Started.WaitAsync(token);
+        await using var fixture = await KafkaFixture.CreateAsync(tracing, Broker.Bootstrap, Topic(), token);
         var control = new KafkaReceiveControl { CircuitFailure = true };
         var clock = new CircuitClock();
         var states = Channel.CreateUnbounded<int>();
@@ -440,22 +449,21 @@ public class KafkaReceiveTests
     }
 
     [Test]
-    [ClassDataSource<KafkaHeaderSnapshotBroker>(Shared = SharedType.PerTestSession)]
-    public async Task Revoke_moves_a_circuit_held_record_to_the_new_owner_without_stopping_the_consumer(KafkaHeaderSnapshotBroker broker)
+    public async Task Revoke_moves_a_circuit_held_record_to_the_new_owner_without_stopping_the_consumer()
     {
         using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(2));
         var token = timeout.Token;
-        await broker.Started.WaitAsync(token);
+        await Broker.Started.WaitAsync(token);
         var topic = TestContext.Current!.Isolation.GetIsolatedName("held").ToLowerInvariant();
-        await using (var admin = new AdminClientBuilder().WithBootstrapServers(broker.Bootstrap).Build())
+        await using (var admin = new AdminClientBuilder().WithBootstrapServers(Broker.Bootstrap).Build())
             await admin.CreateTopicsAsync([new() { Name = topic, NumPartitions = 2, ReplicationFactor = 1 },
                 new() { Name = topic + ".dead-letter", NumPartitions = 1, ReplicationFactor = 1 }], cancellationToken: token);
         var heldControl = new KafkaReceiveControl { CircuitFailure = true };
-        using var held = BuildHost(broker.Bootstrap, topic, heldControl, circuitClock: new CircuitClock(), concurrency: 2);
+        using var held = BuildHost(Broker.Bootstrap, topic, heldControl, circuitClock: new CircuitClock(), concurrency: 2);
         await held.StartAsync(token);
         var receiver = held.Services.GetRequiredKeyedService<KafkaProducerTransport>("events").Consumers[0];
         // The first record opens the circuit; both partitions then hold a record, so whichever moves is held.
-        await using (var producer = await new ProducerBuilder<byte[], byte[]>().WithBootstrapServers(broker.Bootstrap).BuildAsync(token))
+        await using (var producer = await new ProducerBuilder<byte[], byte[]>().WithBootstrapServers(Broker.Bootstrap).BuildAsync(token))
             for (var partition = 0; partition < 2; partition++)
                 await producer.ProduceAsync(new()
                 {
@@ -466,7 +474,7 @@ public class KafkaReceiveTests
 
         // A second member takes one partition, revoking it from the held lane.
         var ownerControl = new KafkaReceiveControl();
-        using var owner = BuildHost(broker.Bootstrap, topic, ownerControl);
+        using var owner = BuildHost(Broker.Bootstrap, topic, ownerControl);
         await owner.StartAsync(token);
         var ownerReceiver = owner.Services.GetRequiredKeyedService<KafkaProducerTransport>("events").Consumers[0];
         await Assert.That(await ownerControl.ReadHandledAsync(ownerReceiver.Completion, token)).IsEqualTo(5);
@@ -477,6 +485,8 @@ public class KafkaReceiveTests
         await Assert.That(receiver.Completion.IsCompletedSuccessfully).IsTrue();
         await owner.StopAsync(token);
     }
+
+    private static string Topic() => TestContext.Current!.Isolation.GetIsolatedName("receive").ToLowerInvariant();
 
     internal sealed class CircuitClock : TimeProvider
     {
