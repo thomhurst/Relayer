@@ -352,7 +352,8 @@ public sealed partial class ConsumePipeline
                 {
                     if (error is not null && !(error is OperationCanceledException && _context.CancellationToken.IsCancellationRequested))
                     {
-                        if (!ReferenceEquals(Failure, error)) _owner.LogFailure(_context, error);
+                        if (!ReferenceEquals(Failure, error) && !(error is ConsumeFailureHandoff && ReferenceEquals(error.InnerException, Failure)))
+                            _owner.LogFailure(_context, error);
                         Failure = error;
                     }
                 }

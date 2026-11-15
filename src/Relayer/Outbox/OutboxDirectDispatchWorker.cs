@@ -3,6 +3,7 @@ using System.Runtime.CompilerServices;
 using System.Threading.Channels;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using Relayer.Pipeline;
 using Relayer.Transports;
 
 namespace Relayer.Outbox;
@@ -237,7 +238,8 @@ internal abstract class OutboxDirectDispatchWorker<TBatch> : BackgroundService w
                 catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
                 catch (Exception error)
                 {
-                    LogFailure(error);
+                    // The consume pipeline already logged a handler failure it handed back for retry or poison.
+                    if (error is not ConsumeFailureHandoff) LogFailure(error);
                     for (var i = 0; i < live; i++)
                     {
                         try

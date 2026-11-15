@@ -226,6 +226,28 @@ public class LocalTransportTests(PostgreSqlLocalSessionFixture server)
     [Test]
     [Arguments(false)]
     [Arguments(true)]
+    public async Task Handler_failure_is_logged_at_error_once(bool ordered)
+    {
+        await using var database = server.CreateDatabase();
+        await database.StartAsync();
+        await using var source = NpgsqlDataSource.Create(database.ConnectionString);
+        await PostgreSqlOutboxStoreTests.CreateSchema(source);
+        await using (var command = source.CreateCommand("CREATE TABLE local_business (value integer PRIMARY KEY)")) await command.ExecuteNonQueryAsync();
+        var logs = new ErrorLogs();
+        await using var provider = Provider(source, ordered, failureAction: FailureAction.Retry, logs: logs);
+        foreach (var starter in provider.GetServices<IHostedService>()) if (starter is not PostgreSqlDirectDispatcher) await starter.StartAsync(default);
+        var transport = provider.GetServices<ITransport>().Single();
+        await Enqueue(provider, source, new(-1), true);
+        using var worker = OrderedWorker(ordered, source, transport, provider);
+        await Attempt(worker, source, transport, provider);
+        await Assert.That(await Count(source, "relayer_outbox_dead")).IsEqualTo(1L);
+        await Assert.That(logs.Errors).Count().IsEqualTo(1);
+        await Assert.That(logs.Errors.Single()).StartsWith("Message processing failed.");
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
     public async Task Consumer_retry_schedule_delays_attempts_and_overrides_the_store_attempt_limit(bool ordered)
     {
         await using var database = server.CreateDatabase();
@@ -244,10 +266,10 @@ public class LocalTransportTests(PostgreSqlLocalSessionFixture server)
         await Enqueue(provider, source, new(-1), true);
         using var worker = OrderedWorker(ordered, source, transport, provider);
 
-        await Attempt(worker, source, transport, provider);
-        await Assert.That(await Pending(source)).IsEqualTo((1, true, 60));
-        await Attempt(worker, source, transport, provider);
-        await Assert.That(await Pending(source)).IsEqualTo((2, true, 3600));
+        var attempt = await Attempt(worker, source, transport, provider);
+        await Assert.That(await Pending(source, attempt, TimeSpan.FromMinutes(1))).IsEqualTo((1, true, true));
+        attempt = await Attempt(worker, source, transport, provider);
+        await Assert.That(await Pending(source, attempt, TimeSpan.FromHours(1))).IsEqualTo((2, true, true));
         await Attempt(worker, source, transport, provider);
         // The last attempt poisons: unordered rows move to the dead table, ordered keys park.
         await Assert.That(await Count(source, "relayer_outbox_dead")).IsEqualTo(1L);
@@ -271,9 +293,9 @@ public class LocalTransportTests(PostgreSqlLocalSessionFixture server)
         using var worker = OrderedWorker(ordered, source, transport, provider);
         for (var attempt = 1; attempt <= 3; attempt++)
         {
-            await Attempt(worker, source, transport, provider);
+            var window = await Attempt(worker, source, transport, provider);
             // Without delays the row is due again at once.
-            await Assert.That(await Pending(source)).IsEqualTo((attempt, true, 0));
+            await Assert.That(await Pending(source, window, TimeSpan.Zero)).IsEqualTo((attempt, true, true));
         }
         await Assert.That(await Count(source, "relayer_outbox_dead")).IsEqualTo(0L);
     }
@@ -294,10 +316,12 @@ public class LocalTransportTests(PostgreSqlLocalSessionFixture server)
     private static PostgreSqlOrderedDispatcher? OrderedWorker(bool ordered, NpgsqlDataSource source, ITransport transport, ServiceProvider provider) =>
         ordered ? new(source, new() { Lanes = 1, MaxDispatchAttempts = 1 }, [transport], provider.GetRequiredService<ILogger<PostgreSqlOrderedDispatcher>>()) : null;
 
-    private static async Task Attempt(PostgreSqlOrderedDispatcher? ordered, NpgsqlDataSource source, ITransport transport, ServiceProvider provider)
+    // Returns the database clock before and after the attempt; any failure is recorded between the two.
+    private static async Task<(DateTime Start, DateTime End)> Attempt(PostgreSqlOrderedDispatcher? ordered, NpgsqlDataSource source, ITransport transport, ServiceProvider provider)
     {
         // Make a delayed row due; the delay itself is asserted from the row before this runs.
         await using (var due = source.CreateCommand("UPDATE relayer_outbox SET deliver_at = NULL")) await due.ExecuteNonQueryAsync();
+        var start = await DatabaseNow(source);
         // One ordered worker keeps its lane lease across attempts.
         if (ordered is not null) await ordered.DispatchLaneAsync(0, default);
         else
@@ -307,16 +331,25 @@ public class LocalTransportTests(PostgreSqlLocalSessionFixture server)
             using var worker = new PostgreSqlDirectDispatcher(source, new() { MaxDispatchAttempts = 1 }, new(), [transport], provider.GetRequiredService<ILogger<PostgreSqlDirectDispatcher>>());
             await worker.DispatchRecoveredAsync(rows.AsMemory(0, count), default);
         }
+        return (start, await DatabaseNow(source));
     }
 
-    // Attempts, whether the row is still pending, and its remaining delay rounded to whole seconds.
-    // A row that is already due has no remaining delay, however long ago it became due.
-    private static async Task<(int Attempts, bool Pending, int DelaySeconds)> Pending(NpgsqlDataSource source)
+    private static async Task<DateTime> DatabaseNow(NpgsqlDataSource source)
     {
-        await using var command = source.CreateCommand("SELECT attempts, status = 'pending', greatest(0, round(extract(epoch FROM deliver_at - clock_timestamp())))::int FROM relayer_outbox");
+        await using var command = source.CreateCommand("SELECT clock_timestamp()");
+        return (DateTime)(await command.ExecuteScalarAsync())!;
+    }
+
+    // Attempts, whether the row is still pending, and whether it is due `delay` after a failure inside `attempt`.
+    private static async Task<(int Attempts, bool Pending, bool DueAfterDelay)> Pending(NpgsqlDataSource source, (DateTime Start, DateTime End) attempt, TimeSpan delay)
+    {
+        await using var command = source.CreateCommand("SELECT attempts, status = 'pending', deliver_at BETWEEN @start + @delay AND @end + @delay FROM relayer_outbox");
+        command.Parameters.AddWithValue("start", attempt.Start);
+        command.Parameters.AddWithValue("end", attempt.End);
+        command.Parameters.AddWithValue("delay", delay);
         await using var reader = await command.ExecuteReaderAsync();
         if (!await reader.ReadAsync()) throw new InvalidOperationException("The row is no longer in the outbox.");
-        return (reader.GetInt32(0), reader.GetBoolean(1), reader.GetInt32(2));
+        return (reader.GetInt32(0), reader.GetBoolean(1), reader.GetBoolean(2));
     }
 
     [Test]
@@ -571,9 +604,13 @@ public class LocalTransportTests(PostgreSqlLocalSessionFixture server)
     }
 
     internal static ServiceProvider Provider(NpgsqlDataSource source, bool ordered = false, bool directHandoff = false, int maxAttempts = 1, FailureAction? failureAction = null,
-        Action<PostgreSqlLocalConsumerOptions>? consumerOptions = null)
+        Action<PostgreSqlLocalConsumerOptions>? consumerOptions = null, ILoggerProvider? logs = null)
     {
-        var services = new ServiceCollection().AddLogging(logging => logging.AddConsole());
+        var services = new ServiceCollection().AddLogging(logging =>
+        {
+            logging.AddConsole();
+            if (logs is not null) logging.AddProvider(logs);
+        });
         services.AddSingleton(source);
         services.AddScoped<FailingCleanup>();
         if (failureAction is { } action) services.AddSingleton<IFailureClassifier>(new FixedClassifier(action));
@@ -608,6 +645,18 @@ public class LocalTransportTests(PostgreSqlLocalSessionFixture server)
     {
         await using var command = source.CreateCommand("SELECT count(*) FROM " + table);
         return (long)(await command.ExecuteScalarAsync())!;
+    }
+    private sealed class ErrorLogs : ILoggerProvider, ILogger
+    {
+        internal ConcurrentQueue<string> Errors { get; } = new();
+        public ILogger CreateLogger(string categoryName) => this;
+        public void Dispose() { }
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+        public bool IsEnabled(LogLevel logLevel) => true;
+        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter)
+        {
+            if (logLevel >= LogLevel.Error) Errors.Enqueue(formatter(state, exception));
+        }
     }
     public sealed class FailingCleanup(ISender sender) : IAsyncDisposable
     {

@@ -240,7 +240,7 @@ internal sealed class PostgreSqlLocalTransport : ITransport, ITransportSendTraci
     }
 }
 
-internal sealed class PostgreSqlLocalFailure(Exception error, FailureAction action) : Exception(error.Message, error)
+internal sealed class PostgreSqlLocalFailure(Exception error, FailureAction action) : ConsumeFailureHandoff(error)
 {
     internal FailureAction Action { get; } = action;
 }
