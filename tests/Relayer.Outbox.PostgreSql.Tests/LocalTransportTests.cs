@@ -226,6 +226,28 @@ public class LocalTransportTests(PostgreSqlLocalSessionFixture server)
     [Test]
     [Arguments(false)]
     [Arguments(true)]
+    public async Task Handler_failure_is_logged_at_error_once(bool ordered)
+    {
+        await using var database = server.CreateDatabase();
+        await database.StartAsync();
+        await using var source = NpgsqlDataSource.Create(database.ConnectionString);
+        await PostgreSqlOutboxStoreTests.CreateSchema(source);
+        await using (var command = source.CreateCommand("CREATE TABLE local_business (value integer PRIMARY KEY)")) await command.ExecuteNonQueryAsync();
+        var logs = new ErrorLogs();
+        await using var provider = Provider(source, ordered, failureAction: FailureAction.Retry, logs: logs);
+        foreach (var starter in provider.GetServices<IHostedService>()) if (starter is not PostgreSqlDirectDispatcher) await starter.StartAsync(default);
+        var transport = provider.GetServices<ITransport>().Single();
+        await Enqueue(provider, source, new(-1), true);
+        using var worker = OrderedWorker(ordered, source, transport, provider);
+        await Attempt(worker, source, transport, provider);
+        await Assert.That(await Count(source, "relayer_outbox_dead")).IsEqualTo(1L);
+        await Assert.That(logs.Errors).Count().IsEqualTo(1);
+        await Assert.That(logs.Errors.Single()).StartsWith("Message processing failed.");
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
     public async Task Consumer_retry_schedule_delays_attempts_and_overrides_the_store_attempt_limit(bool ordered)
     {
         await using var database = server.CreateDatabase();
@@ -571,9 +593,13 @@ public class LocalTransportTests(PostgreSqlLocalSessionFixture server)
     }
 
     internal static ServiceProvider Provider(NpgsqlDataSource source, bool ordered = false, bool directHandoff = false, int maxAttempts = 1, FailureAction? failureAction = null,
-        Action<PostgreSqlLocalConsumerOptions>? consumerOptions = null)
+        Action<PostgreSqlLocalConsumerOptions>? consumerOptions = null, ILoggerProvider? logs = null)
     {
-        var services = new ServiceCollection().AddLogging(logging => logging.AddConsole());
+        var services = new ServiceCollection().AddLogging(logging =>
+        {
+            logging.AddConsole();
+            if (logs is not null) logging.AddProvider(logs);
+        });
         services.AddSingleton(source);
         services.AddScoped<FailingCleanup>();
         if (failureAction is { } action) services.AddSingleton<IFailureClassifier>(new FixedClassifier(action));
@@ -608,6 +634,18 @@ public class LocalTransportTests(PostgreSqlLocalSessionFixture server)
     {
         await using var command = source.CreateCommand("SELECT count(*) FROM " + table);
         return (long)(await command.ExecuteScalarAsync())!;
+    }
+    private sealed class ErrorLogs : ILoggerProvider, ILogger
+    {
+        internal ConcurrentQueue<string> Errors { get; } = new();
+        public ILogger CreateLogger(string categoryName) => this;
+        public void Dispose() { }
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+        public bool IsEnabled(LogLevel logLevel) => true;
+        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter)
+        {
+            if (logLevel >= LogLevel.Error) Errors.Enqueue(formatter(state, exception));
+        }
     }
     public sealed class FailingCleanup(ISender sender) : IAsyncDisposable
     {

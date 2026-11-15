@@ -3,6 +3,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Npgsql;
+using Relayer.Pipeline;
 using Relayer.Transports;
 
 namespace Relayer.Outbox.PostgreSql;
@@ -220,7 +221,8 @@ internal sealed partial class PostgreSqlOrderedDispatcher : BackgroundService, I
                                 : await _lane.FailAsync(connection, transaction, claim, error.Message, cancellationToken, permanent, retryable: nativeSend).ConfigureAwait(false)))
                             throw new InvalidOperationException("Ordered outbox claim expired while recording a dispatch failure.", error);
                         poisoned = permanent || (!nativeSend && row.Attempts + 1 >= (consumer?.MaxAttempts ?? _options.MaxDispatchAttempts));
-                        DispatchFailed(_logger, error);
+                        // The consume pipeline already logged a handler failure it handed back for retry or poison.
+                        if (error is not ConsumeFailureHandoff) DispatchFailed(_logger, error);
                         break;
                     }
                     // Do not advance to another row after an uncertain completion. Rollback safely permits duplicates.
