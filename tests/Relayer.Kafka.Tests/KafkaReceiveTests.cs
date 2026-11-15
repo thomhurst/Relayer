@@ -301,13 +301,20 @@ public class KafkaReceiveTests
     [Test]
     public async Task Consumer_failure_recorded_before_shutdown_cancels_the_wait_still_faults_execution()
     {
-        var failure = new TaskCompletionSource<Task>(TaskCreationOptions.RunContinuationsAsynchronously);
+        // Synchronous continuations run in registration order, so the stop registered here cancels the wait
+        // after the failure is recorded but before the wait itself observes the failure.
+        var failure = new TaskCompletionSource<Task>();
         using var stopping = new CancellationTokenSource();
+        _ = failure.Task.ContinueWith(
+            static (_, state) => ((CancellationTokenSource)state!).Cancel(),
+            stopping,
+            CancellationToken.None,
+            TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
         var execution = KafkaHostedService.ReportFailureAsync(failure.Task, stopping.Token);
         var error = new InvalidOperationException("receiver failed");
-        // The recorded failure resumes the wait on the thread pool, so this cancellation wins the wait.
         failure.SetResult(Task.FromException(error));
-        stopping.Cancel();
+        await Assert.That(stopping.IsCancellationRequested).IsTrue();
         await Assert.That(await Assert.ThrowsAsync<InvalidOperationException>(() => execution)).IsSameReferenceAs(error);
     }
 
