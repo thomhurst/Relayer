@@ -263,6 +263,7 @@ public sealed class AuditHandler(AuditStore store) : IBatchHandler<AuditEvent>
 
 - `.Handler<THandler>()` is generic. The constraint `THandler : IHandlerMarker` together with source-generated descriptors gives the message type with zero reflection.
 - Register handlers on their consumer with `consumer.Handler<THandler>()`. This selects dispatch and registers generated descriptors and DI together; there is no separate builder or assembly-wide handler registration (D72).
+- Generic helpers whose handler is a type parameter call `consumer.Handler<THandler, TMessage>()`, which builds a typed, reflection-free descriptor in core for that one contract (D87).
 - Analyzers report problems at compile time: a handler that is registered nowhere, a message type with no stable name, a consumer with no handler, or a feature the transport does not support (for example, ordering on a non-FIFO SQS queue).
 
 The [diagnostics reference](https://relayer.tomlonghurst.dev/docs/reference/diagnostics) documents `RLY001`–`RLY004`, their limits, suppression and the `[Message]` code fix. Transport capability validation remains a startup check when configuration values are not statically known.

@@ -326,11 +326,31 @@ public class ConfigurationAnalyzerTests
     [Arguments("", "RLY003")]
     [Arguments("consumer.Handler<H>();", "")]
     [Arguments("RelayerGeneratedHandlers.Handler<H>(consumer);", "")]
+    [Arguments("consumer.Handler<H, Order>();", "")]
     public async Task Registration_is_compilation_wide_and_supports_static_and_extension_calls(string registration, string expected)
     {
         await Verify(Imports + InternalHandler + $$"""
             static class Setup { public static void Add(IConsumerBuilder consumer) { {{registration}} } }
             """, expected);
+    }
+
+    [Test]
+    public async Task Handler_passed_to_a_referenced_generic_helper_is_registered()
+    {
+        var external = Compile(Imports + """
+            public static class Messaging
+            {
+                public static void LocalQueue<TMessage, THandler>(this IConsumerBuilder consumer)
+                    where THandler : class, IHandler<TMessage> => consumer.Handler<THandler, TMessage>();
+            }
+            """).WithAssemblyName("External");
+        using var stream = new MemoryStream();
+        await Assert.That(external.Emit(stream).Success).IsTrue();
+        var compilation = Compile(Imports + Handler + """
+            static class Setup { public static void Add(IConsumerBuilder consumer) => consumer.LocalQueue<Order, H>(); }
+            """).AddReferences(MetadataReference.CreateFromImage(stream.ToArray()));
+        var diagnostics = await compilation.WithAnalyzers([new ConfigurationAnalyzer()]).GetAnalyzerDiagnosticsAsync();
+        await Assert.That(Ids(diagnostics)).IsEqualTo("");
     }
 
     [Test]

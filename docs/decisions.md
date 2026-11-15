@@ -97,6 +97,7 @@ To change a decision, add a new entry that supersedes it rather than editing his
 | [D84](#d84-a-route-can-choose-its-destination-per-message) | A route can choose its destination per message | Accepted |
 | [D85](#d85-applications-start-service-bus-consumers-through-a-keyed-control) | Applications start Service Bus consumers through a keyed control | Accepted |
 | [D86](#d86-service-bus-implies-entity-declarations-when-topology-is-none) | Service Bus implies entity declarations when topology is None | Accepted |
+| [D87](#d87-generic-code-registers-a-handler-with-its-message-type) | Generic code registers a handler with its message type | Accepted |
 
 ---
 
@@ -2014,3 +2015,10 @@ This resolves the release scope of D20, D45, D56, D60 and D66 without removals, 
 **Decision.** With `TopologyMode.None`, the transport implies each entity the routes and consumers name that the options do not declare: a consumer implies its queue, or its topic and subscription; `SessionProcessorOptions` implies `RequiresSession`; a send destination is a queue, or a topic when `TrustedSessionEntities` names it. Explicit declarations win and are still validated against consumers. Validate and Provision keep requiring declarations, because they need the native settings to check or create.
 
 **Consequences.** Implied entities live in a copy of the options built at startup, so the caller's options and the infrastructure exporter see only explicit declarations. The exporter still fails on a route or consumer entity that is not declared, so it never emits incomplete infrastructure. Ordering by key still needs explicit trust (D16).
+## D87. Generic code registers a handler with its message type
+
+**Context.** Issue #852: the generated `Handler<THandler>()` ([D72](#d72-handler-registration-belongs-to-the-consumer)) is emitted per compilation and switches on the handler types that compilation names, so a shared helper whose handler is a type parameter cannot register it. The issue suggested a descriptor generated next to each handler and reached through a static abstract interface; that needs every handler to be `partial`, every helper to add the constraint, and an instance member on `IConsumerBuilder` to avoid ambiguity with the generated extension.
+
+**Decision.** Core adds `Handler<THandler, TMessage>() where THandler : class, IHandler<TMessage>`. A generic helper already knows the message, which is all the generator would have discovered for a single contract, so a sealed generic `HandlerDescriptor<TMessage>` in core resolves the handler from DI and calls `HandleAsync` directly: no reflection, no runtime code generation, AOT-safe, and the same dispatch shape as generated descriptors. It registers one single-message contract; tombstone contracts are rejected at registration, and sagas and batch handlers use the generated overload. The generated `Handler<THandler>()` stays the default because it registers every contract and saga state. RLY003 counts a type argument passed to any generic method whose type parameter is constrained to a handler contract, so helpers in referenced assemblies register their handler without a marker attribute.
+
+**Consequences.** Library helpers compile and dispatch without generator support in their own compilation. Steady-state per-message work is unchanged. A non-registration API that constrains a type parameter to a handler contract also silences RLY003 for its argument.

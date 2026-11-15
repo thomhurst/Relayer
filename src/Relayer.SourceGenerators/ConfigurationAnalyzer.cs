@@ -42,6 +42,7 @@ public sealed class ConfigurationAnalyzer : DiagnosticAnalyzer
             var consumer = compilation.GetTypeByMetadataName("Relayer.ConsumerBuilder`1");
             var consumerInterface = compilation.GetTypeByMetadataName("Relayer.IConsumerBuilder");
             var registration = compilation.GetTypeByMetadataName("Relayer.RelayerGeneratedHandlers");
+            var marker = compilation.GetTypeByMetadataName("Relayer.IHandlerMarker");
             var messageRegistry = compilation.GetTypeByMetadataName("Relayer.Pipeline.MessageTypeRegistry");
             var helperRegistration = compilation.GetTypeByMetadataName("Relayer.RegistersMessageIdentityAttribute");
             var startupAttribute = compilation.GetTypeByMetadataName("Relayer.MessageIdentitiesRegisteredAtStartupAttribute");
@@ -106,6 +107,8 @@ public sealed class ConfigurationAnalyzer : DiagnosticAnalyzer
                     if (method.Name == "Consume") CheckConsumer(operationContext, invocation, consumer, consumerInterface);
                 }
 
+                if (method.TypeArguments.Length > 0) AddHandlerArguments(method, marker, single, batch, registered);
+
                 // Only our generated registration methods count. Unrelated APIs with the same
                 // names must not hide an unregistered handler.
                 if (!SymbolEqualityComparer.Default.Equals(method.ContainingType, registration)) return;
@@ -159,6 +162,23 @@ public sealed class ConfigurationAnalyzer : DiagnosticAnalyzer
             for (var i = 0; i < method.TypeParameters.Length; i++)
                 if (method.TypeParameters[i].Name == name) explicitIdentities.TryAdd(method.TypeArguments[i], 0);
         }
+    }
+
+    // A generic method whose type parameter must be a handler (Handler<THandler, TMessage>() or an
+    // application helper that forwards to it) registers its type argument.
+    private static void AddHandlerArguments(IMethodSymbol method, INamedTypeSymbol? marker, INamedTypeSymbol? single,
+        INamedTypeSymbol? batch, ConcurrentDictionary<ITypeSymbol, byte> registered)
+    {
+        var parameters = method.OriginalDefinition.TypeParameters;
+        for (var i = 0; i < parameters.Length; i++)
+            foreach (var constraint in parameters[i].ConstraintTypes)
+                if (SymbolEqualityComparer.Default.Equals(constraint.OriginalDefinition, marker)
+                    || SymbolEqualityComparer.Default.Equals(constraint.OriginalDefinition, single)
+                    || SymbolEqualityComparer.Default.Equals(constraint.OriginalDefinition, batch))
+                {
+                    registered.TryAdd(method.TypeArguments[i], 0);
+                    break;
+                }
     }
 
     private static (string? Name, int Version) Identity(AttributeData attribute)

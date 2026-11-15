@@ -23,7 +23,7 @@ internal static class RelayerGeneratedHandlers
             global::Microsoft.Extensions.DependencyInjection.Extensions.ServiceCollectionDescriptorExtensions.TryAddScoped<global::Example.Handler>(builder.Services);
             return builder;
         }
-        throw new global::System.InvalidOperationException($"No generated descriptor for handler '{typeof(THandler)}'. Use a concrete, closed, assembly-accessible IHandler<T> or IBatchHandler<T> in Handler<THandler>().");
+        throw new global::System.InvalidOperationException($"No generated descriptor for handler '{typeof(THandler)}'. Use a concrete, closed, assembly-accessible IHandler<T> or IBatchHandler<T> in Handler<THandler>(), or call Handler<THandler, TMessage>() from generic code.");
     }
 
     private sealed class Dispatcher0 : global::Relayer.Pipeline.HandlerDescriptor<int>

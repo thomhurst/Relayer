@@ -122,6 +122,23 @@ services.AddRelayer(relayer => relayer.Kafka("events", kafka =>
 
 `consumer.Handler<THandler>()` both selects the handler for that consumer and registers its generated descriptors and scoped DI service. No separate builder registration or assembly-wide handler registration is needed. The generator supports inherited contracts, explicit interface implementations, and handlers with several message or batch contracts. Explicit `Handler<ClosedHandler<OrderPlaced>>()` supports closed generic handlers and handlers in referenced assemblies. Repeated registration is idempotent, and an existing DI lifetime is preserved. Each assembly gets its own generated `Handler<THandler>()` and `AddMessageTypesFromThisAssembly()`, hidden from other assemblies even through `InternalsVisibleTo`, so a library and its test project can both register handlers.
 
+### Registering from a generic helper
+
+The generated `Handler<THandler>()` only knows the handlers named in its own compilation, so it cannot register a handler that is a type parameter. A shared helper names the message as well, with `Handler<THandler, TMessage>()`:
+
+```csharp
+// In a shared messaging library.
+public static void LocalQueue<TMessage, [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors)] THandler>(
+    this IConsumerBuilder consumer)
+    where THandler : class, IHandler<TMessage>
+    => consumer.Handler<THandler, TMessage>();
+
+// In each module.
+kafka.Consume("orders", consumer => consumer.LocalQueue<OrderPlaced, OrderPlacedHandler>());
+```
+
+It selects the handler for that one `IHandler<TMessage>` contract and registers it as a scoped service. Dispatch is typed and reflection-free, the same as the generated path, and registering the same handler both ways is idempotent. Tombstone handlers are rejected at startup, and saga handlers need the generated `Handler<THandler>()`, which also registers the saga's execution state. The `DynamicallyAccessedMembers` annotation keeps the handler's constructor under trimming and Native AOT.
+
 Message types must be accessible to the generated code; [RLYH001](../reference/diagnostics.md#rlyh001) reports ones that are not. Analyzer [RLY003](../reference/diagnostics.md#rly003) warns about a non-public handler that is never registered, and [RLY004](../reference/diagnostics.md#rly004) about a consumer with no handler.
 
 ## Dispatch
