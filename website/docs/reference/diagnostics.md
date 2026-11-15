@@ -13,7 +13,7 @@ Relayer ships compile-time analyzers and an IDE code fix in its NuGet package. T
 | [RLYEXP004](#rlyexp004) | Error | Explicit opt-in for PostgreSQL tenant catalog dispatch. |
 | [RLY001](#rly001) | Warning | A message used by a route or handler has neither `[Message]` nor an explicit identity registration. |
 | [RLY002](#rly002) | Error | Two types declare the same message name and version. |
-| [RLY003](#rly003) | Warning | A concrete handler is never registered in this compilation. |
+| [RLY003](#rly003) | Warning | A non-public concrete handler is never registered in this compilation. |
 | [RLY004](#rly004) | Warning | An inline consumer configuration has no handler. |
 | [RLYH001](#rlyh001) | Error | A handler message type is inaccessible to generated dispatch. |
 | [RLYM001](#rlym001) | Error | A message declaration has type parameters on itself or a containing type. |
@@ -75,7 +75,9 @@ kafka.Consume("orders", consumer =>
 
 This call registers the generated descriptors and DI service as well as binding the consumer. Builder-level `Handler<T>()` and `AddHandlersFromThisAssembly()` are no longer generated; move each registration into the consumer that handles its messages. Both static and extension forms of generated consumer registration calls are recognized throughout the compilation. Batch handlers, inherited contracts and explicit interface implementations are supported. Abstract, open generic, inaccessible and file-local handlers are excluded. Closed generic and referenced handlers can be registered explicitly.
 
-This is compilation-local analysis, not a proof of runtime reachability. A registration in a helper counts even if the helper is not called. If a library intentionally leaves registration to another assembly, suppress this warning in that library with `.editorconfig`:
+Public handlers are not reported: a handler that is public, and nested only in public types, can be registered by any assembly that references it, so a module library can leave registration to its host. The warning covers handlers that only their own compilation can register, such as `internal` handlers and public handlers nested in an `internal` type.
+
+This is compilation-local analysis, not a proof of runtime reachability. A registration in a helper counts even if the helper is not called. If a library intentionally leaves registration of an internal handler to another assembly, for example through `InternalsVisibleTo`, suppress this warning in that library with `.editorconfig`:
 
 ```ini
 [*.cs]

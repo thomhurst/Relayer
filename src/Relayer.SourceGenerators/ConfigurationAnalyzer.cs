@@ -81,7 +81,10 @@ public sealed class ConfigurationAnalyzer : DiagnosticAnalyzer
                     if (!SymbolEqualityComparer.Default.Equals(contract.OriginalDefinition, single)
                         && !SymbolEqualityComparer.Default.Equals(contract.OriginalDefinition, batch)) continue;
                     CheckMessage(contract.TypeArguments[0], type.Locations[0]);
-                    if (type.TypeKind == TypeKind.Class && !type.IsAbstract && CanReference(type, compilation))
+                    // A public handler can be registered by a referencing assembly, so only
+                    // handlers that this compilation alone can register are candidates.
+                    if (type.TypeKind == TypeKind.Class && !type.IsAbstract && CanReference(type, compilation)
+                        && !IsPublic(type))
                         handlers.TryAdd(type, 0);
                 }
             }, SymbolKind.NamedType);
@@ -171,6 +174,9 @@ public sealed class ConfigurationAnalyzer : DiagnosticAnalyzer
         !type.IsFileLocal && !type.IsUnboundGenericType && type.TypeArguments.All(static t => t.TypeKind != TypeKind.TypeParameter)
         && compilation.IsSymbolAccessibleWithin(type, compilation.Assembly)
         && (type.ContainingType is null || CanReference(type.ContainingType, compilation));
+
+    private static bool IsPublic(INamedTypeSymbol type) =>
+        type.DeclaredAccessibility == Accessibility.Public && (type.ContainingType is null || IsPublic(type.ContainingType));
 
     private static void CheckConsumer(OperationAnalysisContext context, IInvocationOperation invocation,
         INamedTypeSymbol? consumer, INamedTypeSymbol? consumerInterface)
