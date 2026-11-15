@@ -96,6 +96,70 @@ public class DestinationSelectorTests
         await Task.CompletedTask;
     }
 
+    [Test]
+    public async Task Outbox_rows_store_the_selected_destination()
+    {
+        var outbox = new RecordingOutbox();
+        await using var provider = SinkProvider(services => services.AddSingleton<IOutboxEnlistment>(outbox));
+        using var scope = provider.CreateScope();
+        var sender = scope.ServiceProvider.GetRequiredService<ISender>();
+        await sender.SendAsync(new RegionalOrder("regional-us", 1));
+        await sender.SendAsync(new RegionalOrder("regional-eu", 2));
+        await Assert.That(outbox.Destinations).IsEquivalentTo(new[] { "regional-us", "regional-eu" });
+    }
+
+    [Test]
+    public async Task Selector_routes_carry_no_replies_or_tombstones()
+    {
+        await using var provider = SinkProvider();
+        using var scope = provider.CreateScope();
+        var route = provider.GetRequiredService<SendPipeline>().GetRoute<RegionalOrder>();
+        await Assert.That(route.MatchesDestination(new WireString("regional-eu"))).IsFalse();
+        var sender = scope.ServiceProvider.GetRequiredService<ISender>();
+        await Assert.That(async () => await sender.SendAsync(Tombstone.For<RegionalOrder>("key")))
+            .Throws<InvalidOperationException>().WithMessageContaining("No send route");
+    }
+
+    private static ServiceProvider SinkProvider(Action<IServiceCollection>? configure = null)
+    {
+        var services = new ServiceCollection();
+        services.AddSingleton<ITransport>(new Sink());
+        configure?.Invoke(services);
+        services.AddRelayer(r =>
+        {
+            r.AddMessageTypesFromThisAssembly();
+            r.AddTransport<SinkOptions, SinkOptions>("sink",
+                t => t.Send<RegionalOrder>(["regional-eu", "regional-us"], static order => order.Topic));
+        });
+        return services.BuildServiceProvider();
+    }
+
+    public sealed class SinkOptions;
+
+    private sealed class RecordingOutbox : IOutboxEnlistment
+    {
+        public List<string> Destinations { get; } = [];
+        public bool IsActive => true;
+        public ValueTask EnlistAsync(OutboxRecord record, CancellationToken cancellationToken)
+        {
+            Destinations.Add(record.Message.Destination);
+            return default;
+        }
+    }
+
+    private sealed class Sink : ITransport
+    {
+        public string Name => "sink";
+        public TransportCapabilities GetCapabilities(string endpoint) => new() { Tombstones = true };
+        public ValueTask SendAsync(OutgoingMessage message, CancellationToken cancellationToken) => default;
+        public ValueTask SendBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken) => default;
+        public ValueTask<TopologyReport> ApplyTopologyAsync(TopologyMode mode, CancellationToken cancellationToken)
+            => ValueTask.FromResult(new TopologyReport([]));
+        public Task StartAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+        public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+    }
+
     private static IHost Host(Action<TransportBuilder<InMemoryTransportOptions, InMemoryConsumerOptions>> configure,
         Action<InMemoryTransportOptions>? options = null) =>
         new HostBuilder().ConfigureServices(services =>
