@@ -23,8 +23,9 @@ public sealed class ServiceBusTransportOptions
 
     /// <summary>
     /// Entity names whose native RequiresSession=true declarations are trusted in Validate and None modes.
-    /// Use a queue name or "topic/Subscriptions/subscription". Provision still verifies native settings.
-    /// This assertion does not enable sessions at the broker or verify externally managed subscriptions.
+    /// Use a queue name, "topic/Subscriptions/subscription", or a declared topic name to assert that every subscription
+    /// on that topic, including ones other applications own, requires sessions. Provision still verifies native settings.
+    /// This assertion does not enable sessions at the broker.
     /// </summary>
     public ISet<string> TrustedSessionEntities { get; } = new HashSet<string>(StringComparer.Ordinal);
 
