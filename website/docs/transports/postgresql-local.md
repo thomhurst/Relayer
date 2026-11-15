@@ -34,7 +34,7 @@ services.AddRelayerPostgreSqlMaintenance("local", source);
 services.AddRelayerPostgreSqlDeadLetters("local", source);
 ```
 
-`AddRelayerPostgreSqlOutbox("local")` selects the direct-dispatch store for commit notifications. Registrations without a name retain their previous behavior. `PostgreSqlLocal` defaults to a worker matching its transport name; pass `dispatchStoreName:` to share another named worker. Writers and workers must use the same data source, schema, prefix, lane count and poison limit. Every dispatching instance must declare the same local consumers. Instances compete for work; consumers are not broadcast subscriptions.
+`AddRelayerPostgreSqlOutbox("local")` selects the direct-dispatch store for commit notifications. Registrations without a name retain their previous behavior. `PostgreSqlLocal` defaults to a worker matching its transport name; pass `dispatchStoreName:` to share another named worker. Writers and workers must use the same data source, schema, prefix, lane count and `MaxDispatchAttempts`. Every dispatching instance must declare the same local consumers. Instances compete for work; consumers are not broadcast subscriptions.
 
 For keyed routes, use `route.OrderingKey(message => message.CustomerId)` and register `AddRelayerPostgreSqlOrderedDispatch("local", source)`. Use the same lane count everywhere. The existing ordered dispatcher preserves insertion order and parks poisoned keys until redrive or purge. Other keys continue. Register maintenance even with direct dispatch to recover after crashes, missed notifications, queue pressure and failed attempts.
 
@@ -80,7 +80,35 @@ Atomic completion covers only writes in that transaction and database. HTTP call
 
 ## Failures and capabilities
 
-The shared consume pipeline runs generated handlers, deserialization, tracing and the registered `IFailureClassifier`. Retry failures persist exponential backoff (1 second to 5 minutes) and use recovery passes without exhausting a poison budget. Permanent failures use the same fenced poison transition immediately. Discard rolls back failed business changes before deletion. Configure `MaxDispatchAttempts` consistently on the store and workers. Inspect, redrive and purge with the existing [dead-letter manager](../reference/postgres-store.md#poison-rows-and-key-release).
+The shared consume pipeline runs generated handlers, deserialization, tracing and the registered `IFailureClassifier`. A `Retry` failure rolls back the handler's business changes, counts one attempt in the row and makes it due again; maintenance or ordered dispatch picks it up on its next pass. At the attempt limit the row is dead-lettered, or its ordering key parked. Permanent failures use the same fenced poison transition immediately. Discard rolls back failed business changes before deletion. Configure `MaxDispatchAttempts` consistently on the store and workers. Inspect, redrive and purge with the existing [dead-letter manager](../reference/postgres-store.md#poison-rows-and-key-release).
+
+### Retry schedule per consumer
+
+By default a local consumer retries without delay and uses the store's `MaxDispatchAttempts`. Set a schedule per consumer on `consumer.Options`. The delay and attempt count are stored in the row by the same fenced transition, so they survive restarts and apply on every dispatching instance:
+
+```csharp
+builder.PostgreSqlLocal("local", source, transport =>
+{
+    // A few quick retries, then hours, then dead-letter after 10 attempts.
+    transport.Consume("notifications", consumer =>
+    {
+        consumer.Options.RedeliveryDelays =
+            [TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(30), TimeSpan.FromHours(1), TimeSpan.FromHours(6)];
+        consumer.Options.MaxAttempts = 10;
+        consumer.Handler<SendNotificationHandler>();
+    });
+    // Safe-to-repeat reconciliation: 1 minute, 10 minutes, then hourly until it succeeds.
+    transport.Consume("reconcile", consumer =>
+    {
+        consumer.Options.RedeliveryDelays =
+            [TimeSpan.FromMinutes(1), TimeSpan.FromMinutes(10), TimeSpan.FromHours(1)];
+        consumer.Options.MaxAttempts = int.MaxValue;
+        consumer.Handler<ReconcileHandler>();
+    });
+});
+```
+
+`RedeliveryDelays[n]` is the delay after the attempt numbered n + 1 fails, and the last delay repeats. `MaxAttempts` overrides `MaxDispatchAttempts` for that consumer; `int.MaxValue` never dead-letters a `Retry` failure, but a `DeadLetter` classification still dead-letters at once. Negative delays and a non-positive `MaxAttempts` fail startup. A delayed ordered row blocks later rows with its key until it succeeds. Declare the same schedule on every dispatching instance. `consumer.Failures(...)` is rejected for local consumers, because its in-process retries and copy-based redelivery cannot take part in the fenced row transition. Watch rows that keep retrying with the `relayer.outbox.dispatch_lag` histogram and the `attempts` and `last_error` columns.
 
 Send and completion state pools grow to retain peak concurrent usage, including beyond their initial 16 send and 64 completion slots. After warm-up, higher concurrency reuses those states; native Npgsql and serializer allocations still apply. Retained send resources are disposed with the transport.
 

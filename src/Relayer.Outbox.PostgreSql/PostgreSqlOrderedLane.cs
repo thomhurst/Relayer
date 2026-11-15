@@ -17,6 +17,7 @@ internal sealed class PostgreSqlOrderedLane : IDisposable
     private readonly NpgsqlCommand _retry;
     private readonly NpgsqlCommand _fail;
     private readonly NpgsqlCommand _failImmediately;
+    private readonly NpgsqlCommand _failLocal;
 
     internal PostgreSqlOrderedLane(NpgsqlDataSource source, PostgreSqlOutboxOptions options, TimeSpan duration)
     {
@@ -48,6 +49,10 @@ internal sealed class PostgreSqlOrderedLane : IDisposable
         _retry.Parameters.Add(new NpgsqlParameter<string>("error", NpgsqlDbType.Text));
         _failImmediately = CreateMutation(PostgreSqlPoisonSql.Failure(table, dead, fenced, 1));
         _failImmediately.Parameters.Add(new NpgsqlParameter<string>("error", NpgsqlDbType.Text));
+        _failLocal = CreateMutation(PostgreSqlPoisonSql.LocalFailure(table, dead, fenced));
+        _failLocal.Parameters.Add(new NpgsqlParameter<string>("error", NpgsqlDbType.Text));
+        _failLocal.Parameters.Add(new NpgsqlParameter<int>("limit", NpgsqlDbType.Integer));
+        _failLocal.Parameters.Add(new NpgsqlParameter<TimeSpan>("delay", NpgsqlDbType.Interval));
     }
 
     [RuntimeAsyncMethodGeneration(false)]
@@ -84,6 +89,14 @@ internal sealed class PostgreSqlOrderedLane : IDisposable
 
     internal ValueTask<bool> FailAsync(NpgsqlConnection connection, NpgsqlTransaction transaction,
         OutboxClaim claim, string error, CancellationToken cancellationToken, bool permanent = false, bool retryable = false) => MutateAsync(connection, transaction, permanent ? _failImmediately : retryable ? _retry : _fail, claim, error, cancellationToken);
+
+    internal ValueTask<bool> FailLocalAsync(NpgsqlConnection connection, NpgsqlTransaction transaction,
+        OutboxClaim claim, string error, int limit, TimeSpan delay, CancellationToken cancellationToken)
+    {
+        ((NpgsqlParameter<int>)_failLocal.Parameters[3]).TypedValue = limit;
+        ((NpgsqlParameter<TimeSpan>)_failLocal.Parameters[4]).TypedValue = delay;
+        return MutateAsync(connection, transaction, _failLocal, claim, error, cancellationToken);
+    }
 
     [RuntimeAsyncMethodGeneration(false)]
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder<>))]
@@ -130,5 +143,6 @@ internal sealed class PostgreSqlOrderedLane : IDisposable
         _retry.Dispose();
         _fail.Dispose();
         _failImmediately.Dispose();
+        _failLocal.Dispose();
     }
 }

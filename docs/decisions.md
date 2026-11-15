@@ -1681,7 +1681,7 @@ transaction's database and this store's schema/prefix. Expiry uses `clock_timest
 caller timestamp or the start of a potentially long transaction. The caller commits or rolls back; false
 means it must roll back all associated business work. No transaction is retained or rebound to the store.
 
-**Consequences.** #458 supplies the primitive; #459 adds named local routes and consumers. Direct dispatch opens a native transaction; maintenance and ordered dispatch lend their existing transaction. The consume settlement callback carries row identity and claim token into fenced deletion and rolls back on a lost fence. Native savepoints isolate failed handler writes before the existing retry/poison transition; discard rolls back handler writes before completion. Atomic per-consumer admission bounds local concurrency without a second queue or scheduler; rejected admission leaves the original row for shared recovery. Local attempts drain on shutdown before worker cancellation.
+**Consequences.** #458 supplies the primitive; #459 adds named local routes and consumers. Direct dispatch opens a native transaction; maintenance and ordered dispatch lend their existing transaction. The consume settlement callback carries row identity and claim token into fenced deletion and rolls back on a lost fence. Native savepoints isolate failed handler writes before the existing retry/poison transition; discard rolls back handler writes before completion. Atomic per-consumer admission bounds local concurrency without a second queue or scheduler; rejected admission leaves the original row for shared recovery. Local attempts drain on shutdown before worker cancellation. A local consumer may set `RedeliveryDelays` and `MaxAttempts` on `PostgreSqlLocalConsumerOptions` (#804): the same fenced poison transition takes that consumer's attempt limit and writes the next delay to `deliver_at`, so no second scheduler or retry table is introduced.
 Native row locks serialize deletion with competing claims. Rollback restores both business work and the row;
 a successful deletion remains provisional until commit. This permits atomic completion only for work in
 that same transaction, not exactly-once external effects. Existing broker dispatch and settlement are unchanged.
@@ -1808,7 +1808,7 @@ signals such as Azure.Messaging.ServiceBus 7.21.0's
 [`ServiceBusException.IsTransient`](https://github.com/Azure/azure-sdk-for-net/blob/4e4c19469fe598b9f28a73d065514106985e7560/sdk/servicebus/Azure.Messaging.ServiceBus/src/Primitives/ServiceBusException.cs),
 verified from the pinned package's checksum-matched source. Unclassified native failures still use the
 existing default classifier, so non-contract errors retry indefinitely until repaired or covered by a
-permanent rule. `MaxDispatchAttempts` still bounds local-handler `Retry` failures, including ordered poison barriers.
+permanent rule. `MaxDispatchAttempts` still bounds local-handler `Retry` failures, including ordered poison barriers, unless the local consumer sets its own `MaxAttempts` (D66).
 It does not bound native-send `Retry`; applications must configure native
 permanent-error rules and monitor pending rows. A retrying ordered head blocks its key until recovery.
 

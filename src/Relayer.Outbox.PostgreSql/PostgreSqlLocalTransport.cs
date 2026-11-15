@@ -50,13 +50,19 @@ internal sealed class PostgreSqlLocalTransport : ITransport, ITransportSendTraci
         if (!_endpoints.Contains(endpoint)) throw new InvalidOperationException($"PostgreSQL local transport '{Name}' has no endpoint '{endpoint}'. Declare a route or consumer.");
         return _capabilities;
     }
-    internal void Register(string endpoint, Func<PostgreSqlLocalDelivery, CancellationToken, ValueTask<Disposition>> receive, int concurrency = 1)
+    internal void Register(string endpoint, Func<PostgreSqlLocalDelivery, CancellationToken, ValueTask<Disposition>> receive, int concurrency = 1,
+        int? maxAttempts = null, TimeSpan[]? redeliveryDelays = null)
     {
-        if (!_consumers.TryAdd(endpoint, new(receive, concurrency))) throw new InvalidOperationException($"Declare only one PostgreSQL local consumer for '{endpoint}'.");
+        if (!_consumers.TryAdd(endpoint, new(receive, concurrency, maxAttempts ?? _options.MaxDispatchAttempts, redeliveryDelays?.ToArray() ?? []))) throw new InvalidOperationException($"Declare only one PostgreSQL local consumer for '{endpoint}'.");
     }
-    internal sealed class Receiver(Func<PostgreSqlLocalDelivery, CancellationToken, ValueTask<Disposition>> receive, int maximum)
+    internal sealed class Receiver(Func<PostgreSqlLocalDelivery, CancellationToken, ValueTask<Disposition>> receive, int maximum,
+        int maxAttempts, TimeSpan[] redeliveryDelays)
     {
         internal readonly Func<PostgreSqlLocalDelivery, CancellationToken, ValueTask<Disposition>> Receive = receive;
+        internal readonly int MaxAttempts = maxAttempts;
+        // The failed attempt is one-based; the last configured delay repeats.
+        internal TimeSpan RedeliveryDelay(int attempt) =>
+            redeliveryDelays.Length == 0 ? TimeSpan.Zero : redeliveryDelays[Math.Min(attempt, redeliveryDelays.Length) - 1];
         private int _active;
         internal bool TryEnter()
         {
@@ -71,6 +77,7 @@ internal sealed class PostgreSqlLocalTransport : ITransport, ITransportSendTraci
         }
         internal void Exit() => Interlocked.Decrement(ref _active);
     }
+    internal Receiver? GetReceiver(string endpoint) => _consumers.GetValueOrDefault(endpoint);
     internal Receiver? TryEnter(string endpoint) => _consumers.TryGetValue(endpoint, out var receiver) && receiver.TryEnter() ? receiver : null;
     internal void ValidateConsumers()
     {
@@ -150,7 +157,7 @@ internal sealed class PostgreSqlLocalTransport : ITransport, ITransportSendTraci
     internal async ValueTask SettleAsync(PostgreSqlLocalDelivery delivery, Disposition disposition, CancellationToken cancellationToken)
     {
         if (disposition.Kind != DispositionKind.Complete)
-            throw new NotSupportedException("Local work uses the shared outbox poison policy; native settlement overrides are unsupported.");
+            throw new NotSupportedException("Local work uses the consumer's outbox retry and poison policy; native settlement overrides are unsupported.");
         using var activity = _settlementTracing?.GetValueOrDefault(delivery.Message.Destination)?.Start(default);
         try
         {
