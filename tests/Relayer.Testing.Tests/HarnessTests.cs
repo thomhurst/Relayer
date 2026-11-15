@@ -602,6 +602,7 @@ public class HarnessTests
         await Assert.That(later.IsCompleted).IsFalse();
         await fixture.Send(new Probe(2));
         await Assert.That((await later.WaitAsync(Limit)).Value).IsEqualTo(2);
+        await fixture.Idle();
         fixture.Harness.Reset();
         var afterReset = fixture.Harness.WaitForConsumedAsync<Probe>();
         await Assert.That(afterReset.IsCompleted).IsFalse();
