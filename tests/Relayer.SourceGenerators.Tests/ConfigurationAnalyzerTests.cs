@@ -143,6 +143,126 @@ public class ConfigurationAnalyzerTests
     }
 
     [Test]
+    [Arguments("[RegistersMessageIdentity(nameof(TMessage))]", "PublishRaw<Order, int>(builder, \"orders\")", "")]
+    [Arguments("[RegistersMessageIdentity(nameof(TMessage))]", "builder.PublishRaw<Order, int>(\"orders\")", "")]
+    [Arguments("[RegistersMessageIdentity(nameof(TOther))]", "builder.PublishRaw<Order, int>(\"orders\")", "RLY001")]
+    [Arguments("", "PublishRaw<Order, int>(builder, \"orders\")", "RLY001")]
+    public async Task Marked_helper_registers_its_type_argument(string marker, string call, string expected)
+    {
+        await Verify(Imports + $$"""
+            public record Order;
+            static class Setup
+            {
+                public static void Add(Broker broker, IRelayerBuilder builder)
+                {
+                    {{call}};
+                    broker.Send<Order>("orders");
+                }
+                {{marker}}
+                static void PublishRaw<TMessage, TOther>(this IRelayerBuilder builder, string name) =>
+                    builder.Infrastructure().MessageTypes.Add<TMessage>(name);
+            }
+            """, expected);
+    }
+
+    [Test]
+    public async Task Marked_helper_in_a_referenced_assembly_registers_its_type_argument()
+    {
+        var external = Compile(Imports + """
+            public record Order;
+            public record Unregistered;
+            public static class Messaging
+            {
+                [RegistersMessageIdentity(nameof(TMessage))]
+                public static void PublishRaw<TMessage>(this IRelayerBuilder builder, string name) =>
+                    builder.Infrastructure().MessageTypes.Add<TMessage>(name);
+            }
+            """).WithAssemblyName("External");
+        using var stream = new MemoryStream();
+        await Assert.That(external.Emit(stream).Success).IsTrue();
+        var compilation = Compile(Imports + """
+            static class Setup
+            {
+                public static void Add(Broker broker, IRelayerBuilder builder)
+                {
+                    builder.PublishRaw<Order>("orders");
+                    broker.Send<Order>("orders");
+                    broker.Send<Unregistered>("other");
+                }
+            }
+            """).AddReferences(MetadataReference.CreateFromImage(stream.ToArray()));
+        var diagnostics = await compilation.WithAnalyzers([new ConfigurationAnalyzer()]).GetAnalyzerDiagnosticsAsync();
+        await Assert.That(Ids(diagnostics)).IsEqualTo("RLY001");
+        await Assert.That(diagnostics[0].GetMessage()).Contains("Unregistered");
+    }
+
+    [Test]
+    public async Task Startup_registered_generic_definition_covers_only_its_closed_types()
+    {
+        var diagnostics = await Analyze(Imports + """
+            [assembly: MessageIdentitiesRegisteredAtStartup(typeof(Envelope<>))]
+            public record Envelope<T>(T Body);
+            public record Wrapper<T>(T Body);
+            public record Order;
+            public class H : IHandler<Envelope<Order>>
+            {
+                public ValueTask HandleAsync(Envelope<Order> message, MessageContext context, CancellationToken ct) => default;
+            }
+            static class Setup
+            {
+                public static void Add(Broker broker, IConsumerBuilder consumer)
+                {
+                    consumer.Handler<H>();
+                    broker.Send<Envelope<string>>("strings");
+                    broker.Send<Tombstone<Envelope<int>>>("integers");
+                    broker.Send<Wrapper<Order>>("wrapped");
+                }
+            }
+            """);
+        await Assert.That(Ids(diagnostics)).IsEqualTo("RLY001");
+        await Assert.That(diagnostics[0].GetMessage()).Contains("Wrapper<Order>");
+    }
+
+    [Test]
+    public async Task Startup_registered_closed_type_covers_only_that_type()
+    {
+        var diagnostics = await Analyze(Imports + """
+            [assembly: MessageIdentitiesRegisteredAtStartup(typeof(Envelope<int>))]
+            public record Envelope<T>(T Body);
+            static class Setup
+            {
+                public static void Add(Broker broker)
+                {
+                    broker.Send<Envelope<int>>("integers");
+                    broker.Send<Envelope<string>>("strings");
+                }
+            }
+            """);
+        await Assert.That(Ids(diagnostics)).IsEqualTo("RLY001");
+        await Assert.That(diagnostics[0].GetMessage()).Contains("Envelope<string>");
+    }
+
+    [Test]
+    public async Task Startup_registered_array_type_covers_only_that_type()
+    {
+        var diagnostics = await Analyze(Imports + """
+            [assembly: MessageIdentitiesRegisteredAtStartup(typeof(Order[]))]
+            public record Order;
+            public record Refund;
+            static class Setup
+            {
+                public static void Add(Broker broker)
+                {
+                    broker.Send<Order[]>("orders");
+                    broker.Send<Refund[]>("refunds");
+                }
+            }
+            """);
+        await Assert.That(Ids(diagnostics)).IsEqualTo("RLY001");
+        await Assert.That(diagnostics[0].GetMessage()).Contains("Refund[]");
+    }
+
+    [Test]
     public async Task Registration_in_a_referenced_assembly_is_not_visible()
     {
         var external = Compile(Imports + """
