@@ -81,6 +81,23 @@ For a topic subscription, consume the topic name and set `consumer.Options.Subsc
 
 The SDK cancels its callback token as soon as processor shutdown starts. The composed pipeline uses `context.CancellationToken` for durable work and settlement; Relayer cancels it only when the host's drain deadline expires or the adapter is disposed. The original callback and its native token remain unchanged. Use the context token when draining application work.
 
+### Start consumers later
+
+Processors start with the host by default. Set `AutoStartConsumers = false` to bring the host up first, for example while other infrastructure creates the queues and subscriptions, and start the processors yourself through the transport's keyed `IConsumerControl`:
+
+```csharp
+using Relayer.Transports;
+
+bus.TopologyMode = TopologyMode.None; // the entities may not exist yet when the host starts
+bus.Options.Configure(options => options.AutoStartConsumers = false);
+
+// Later, once the entities exist:
+var consumers = app.Services.GetRequiredKeyedService<IConsumerControl>("orders");
+await consumers.StartAsync(cancellationToken);
+```
+
+The host still composes and validates every consumer at startup, and sending works while the processors are stopped. `StartAsync` fails before the host has started or after it stops. `StopAsync` stops new receives and drains in-flight work like host shutdown, so the same control pauses and resumes consumption, for example during a maintenance window; both calls do nothing when the processors are already in that state. Host shutdown stops processors that the control started. While the processors are stopped, consumer [health](#health) reports them as unavailable, not idle. Leave `TopologyMode` at `Validate` when the entities exist before startup; it checks them before the host starts.
+
 Configure the common `FailureOptions` with `consumer.Failures(policy)`. In-process retry delays and immediate durable redelivery use the core policy and native abandon. Service Bus has no delayed abandon operation: positive `RedeliveryDelays` fail at startup rather than broadcasting a retry copy to every topic subscription. Delayed redelivery requires a separately designed durable executor; it is not implemented by this adapter.
 
 Inside a handler, `context.ServiceBus()` exposes the unchanged received message and native callback. `CompleteAsync`, `AbandonAsync`, `DeferAsync` and `DeadLetterAsync` call the SDK, use the context cancellation token and suppress automatic settlement only after success. Native defer retains the message for later retrieval by sequence number. Persist that sequence number before deferring. See [manual native settlement](service-bus-receive.md).
