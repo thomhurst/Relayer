@@ -6,7 +6,7 @@ document executable application examples. A design here is not a claim of adapte
 
 Relayer is a modern .NET messaging library. It wraps existing messaging technologies (Kafka, Azure Service Bus, Amazon SQS/SNS, RabbitMQ, and more) and takes away the ceremony around them: resiliency, outbox/inbox, telemetry, trace propagation, serialization, topology, and testing.
 
-It is **not** a new broker abstraction. It does not change how the underlying technology sends, receives, orders, or acknowledges messages. It runs a thin, fast pipeline around the native client and gives you full access to that client whenever you need it.
+It is **not** a new broker abstraction. Sending, receiving, ordering and acknowledgement stay with the native client, and that client is always reachable. Relayer adds behaviour of its own in two deliberate places: messages a handler sends are held until its attempt succeeds (§5), and where a broker cannot dead-letter one message on demand with error metadata, Relayer sends a copy to the dead-letter endpoint and then completes the original (§2.3, D24).
 
 ---
 
@@ -85,11 +85,9 @@ Native configuration is passed straight through and never re-modelled: Dekaf's `
 
 Each transport declares the capabilities of each endpoint (decision D24). A feature that needs one either uses the native mechanism or a documented fallback, and when there is neither, startup fails with a clear error (no silent degradation). The core runs every fallback, so transports contain native code only (§2.4).
 
-`TransportCapabilities` is a sealed record with init-only values. A new record declares queue consumption, no optional features or native delays, and a maximum batch count of one. `MaxRedeliveryDelay = TimeSpan.Zero` declares immediate redelivery; `null` declares none. `MaxMessageBytes = null` means the endpoint limit has not been declared, not that messages are unlimited. Native envelope and batch byte limits still apply.
+`TransportCapabilities` is a sealed record of values, not flags, because limits change behaviour. `MaxRedeliveryDelay = TimeSpan.Zero` declares immediate redelivery only and `null` declares none; `MaxMessageBytes = null` means the limit is undeclared, not that messages are unlimited. The defaults are conservative. An adapter resolves anything that depends on configuration or on the broker at startup, asynchronously through `ITransportCapabilityInitializer` where it has to ask the broker, and never infers a capability from an endpoint name. [Capabilities](../website/docs/concepts/capabilities.md) lists every value; each transport page lists what its adapter declares.
 
-Transport stubs declare only conservative known values; native adapters must resolve configuration-dependent limits and features at startup. Adapters with asynchronous native evidence implement `ITransportCapabilityInitializer`; hosted startup awaits it before caching endpoint capabilities and composing send routes. None and Validate remain read-only. RabbitMQ verifies optional delayed exchanges through explicit native provisioning; otherwise it retains the outbox scheduling fallback. In particular, a Service Bus endpoint name does not establish session support, and a RabbitMQ queue name does not establish delayed-message plugin support. SQS declarations distinguish standard and FIFO queues: [FIFO queues do not support per-message delivery timers](https://docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSDeveloperGuide/sqs-message-timers.html).
-
-Send routes declare known scheduling needs with `SendRouteOptions.RequiredDeliveryDelay` and select transaction guarantees with `TransactionRequirement` (`None`, `Native`, `Outbox`). Composition validates native limits or the actual registered outbox executor and due-row workers once. Native transaction availability never implies database durability or automatic native transaction ownership. Runtime checks reject unavailable schedules and missing active outbox transactions before serialization. See the [send guide](https://relayer.tomlonghurst.dev/docs/guides/sending) for configuration and executor contracts.
+Send routes can declare what they need: `SendRouteOptions.RequiredDeliveryDelay` for scheduling and `TransactionRequirement` (`None`, `Native`, `Outbox`). Startup validates both against the endpoint and the registered outbox. A native transaction never stands in for database durability, or the reverse. See the [send guide](https://relayer.tomlonghurst.dev/docs/guides/sending).
 
 The native mechanisms and core fallbacks are:
 
@@ -162,7 +160,7 @@ The transport builds its native message, applies `options.ApplyNative<TNative>(n
 
 **4. Capabilities and topology.** `GetCapabilities(endpoint)` returns a `TransportCapabilities` record for one endpoint (D24). `ApplyTopologyAsync(mode, ct)` validates or provisions the endpoints the transport's builder declared and returns a report the core uses for the startup diff and for topology export.
 
-Service Bus sending uses native queue/topic/subscription declarations. Least-privilege Validate checks send-link accessibility and peeks subscriptions without sending probe messages or using administration APIs. Entity descriptions require Manage rights, so Validate cannot compare native settings or establish session ordering; declared session requirements fail explicitly. Explicit Provision verifies native settings and creates missing entities without updating or deleting existing ones. See [Service Bus](https://relayer.tomlonghurst.dev/docs/transports/service-bus) for ownership and validation boundaries. Hosted queue and subscription receivers compose the durable core pipeline with native processors. Session processors retain the original native callbacks. Both reject auto-complete and ReceiveAndDelete; settlement runs after scope disposal. Immediate redelivery uses native abandon and error-property updates; delayed redelivery is rejected instead of copying subscription retries back to the topic.
+What `Validate` can check depends on the broker's permission model, so each adapter documents its own limits. Service Bus is the sharpest case: with least-privilege rights it cannot read entity settings, so it cannot establish session ordering unless the application explicitly trusts its own declaration (D16, D54). See [Service Bus](https://relayer.tomlonghurst.dev/docs/transports/service-bus) for ownership and validation boundaries.
 
 **5. Builders.** The core ships generic builders, and the transport supplies its own option types:
 
@@ -175,9 +173,7 @@ public static ConsumerBuilder<KafkaConsumerOptions> Group(this ConsumerBuilder<K
 
 Handlers, inbox, failure policy and ordering keys are implemented once in the core and work the same on every transport. A Kafka-only setting such as `Group` exists only on Kafka's builder, so it cannot be applied to a queue by mistake. `OrderingKey` accepts a `string` or any `IUtf8SpanFormattable` value such as `Guid` or `long`; the latter is formatted into a pooled buffer, so a Kafka key costs no allocation.
 
-**Log-based transports.** Kafka, Event Hubs, Kinesis, Pulsar, RabbitMQ Streams and JetStream share ordering and durable-checkpoint requirements (§7), but their native clients may already implement scheduling, backpressure and ownership drain. Search the pinned client's source first and wrap those mechanisms (D1, D40, D42). Kafka's receive path wraps Dekaf's `RunPartitionedAsync`; it does not use the core scheduler.
-
-Relayer does not expose a fallback scheduler or completion window: no supported transport needs one. Native clients own scheduling, completion tracking, backpressure and ownership drain. A missing native capability belongs upstream; record a concrete gap and decision before introducing a core fallback (D23, D42).
+**Log-based transports.** Kafka, Event Hubs, Kinesis, Pulsar, RabbitMQ Streams and JetStream share ordering and durable-checkpoint requirements (§7). Their native clients own scheduling, completion tracking, backpressure and ownership drain, so Relayer wraps those mechanisms (D40, D42) and ships no scheduler or completion window of its own. Kafka's receive path wraps Dekaf's `RunPartitionedAsync`. A missing native capability is an upstream issue first; a core fallback needs a recorded gap and a decision (D23).
 
 Every transport proves the SPI contract by passing the transport conformance suite (§15). See the site roadmap for conformance coverage.
 
@@ -240,7 +236,7 @@ public sealed class OrderPlacedHandler(AppDbContext db, ISender sender) : IHandl
     }
 }
 ```
-
+That single transaction comes from the consumer's database boundary (§6.5). Without one, the send is not part of the save.
 There are also batch handlers. Each message in a batch can succeed or fail independently, and the transport settles each message natively.
 
 ```csharp
@@ -368,83 +364,29 @@ exception
 
 - **Classification** is a predicate per exception type or a custom `IFailureClassifier`. Deserialization and contract failures are permanent by default, so they never block a partition or crash a consumer (Silverback #249, SlimMessageBus #438).
 
-Compose exception rules once and apply them with `consumer.Classify(classifier)`; the low-level composer also accepts the classifier directly:
+  Compose exception rules once and apply them with `consumer.Classify(classifier)`:
 
-```csharp
-var classifier = new FailureClassifierBuilder()
-    .On<ArgumentException>(FailureAction.DeadLetter)
-    .On<TimeoutException>(FailureAction.DeadLetter,
-        static (_, context) => context.Attempt > 5)
-    .Build();
-```
+  ```csharp
+  var classifier = new FailureClassifierBuilder()
+      .On<ArgumentException>(FailureAction.DeadLetter)
+      .On<TimeoutException>(FailureAction.DeadLetter,
+          static (_, context) => context.Attempt > 5)
+      .Build();
+  ```
 
-Rules match the declared exception type and its derived types, in registration order. The first matching rule with a true predicate wins. Unmatched failures use `DefaultFailureClassifier`, or the custom `IFailureClassifier` passed to `Build`. Explicit rules can override permanent defaults. Builders freeze after `Build`; the resulting classifiers can be shared across consumers. Predicates and custom fallbacks must support concurrent calls. Predicate failures propagate without producing a settlement decision. Classification does not retry, send, or settle a delivery; the consumer's failure handler owns durable failure handling.
+  Rules match the declared exception type and its derived types, in registration order, and the first match wins. Unmatched failures use the default classifier. Classification only decides: it never retries, sends or settles.
 
-Declare portable policy with `consumer.Failures(policy)` on the core builder for broker and in-memory consumers. The declaration stores `FailureOptions` and an optional per-consumer classifier, which overrides a global registration. Bindable delay arrays use null `RetryDelays` for the default sequence so configuration binding replaces rather than appends defaults. Adapter-owned native options contain no retry/redelivery/dead-letter policy. PostgreSQL local consumers retain their fenced outbox row recovery policy and reject a separate consumer policy; their per-consumer delays and attempt limit live on `PostgreSqlLocalConsumerOptions` and are persisted by the same row transition.
-
-Transport authors compose executable failure handling before starting native receive services:
-
-```csharp
-var failures = new FailurePipeline(services, "broker", "orders", "billing",
-    new FailureOptions
-    {
-        RetryDelays = new[] { TimeSpan.FromMilliseconds(100), TimeSpan.FromMilliseconds(500) },
-        RedeliveryDelays = new[] { TimeSpan.FromSeconds(30), TimeSpan.FromMinutes(5) },
-        DeadLetterEndpoint = "orders.errors"
-    }, copy: CopyOriginalDelivery, scheduler: durableScheduler);
-
-var consumer = new ConsumePipelineBuilder(scopeFactory, messageTypes, serializer, failures, classifier)
-    .Handler(orderHandlerDescriptor).Build();
-var receive = new ReceivePipeline<NativeDelivery, NativeBinding>(consumer, headerNames);
-```
-
-`services` is the application service provider. `CopyOriginalDelivery` reads the native feature and returns
-an `OutgoingMessage` with the original body, **all** headers, and ordering key. It must preserve malformed
-envelopes as-is; it must not access `context.MessageType` to rebuild them. A copy factory is required only
-when a configured path needs a copy. `IFailureScheduler` is an available durable executor, not an Options
-flag: it must commit the scheduled message independently of the failed handler transaction before returning.
-Concrete outbox integrations supply that executor. No outbox integration is implied by configuring delays.
-
-Composition reuses the hosted validator's endpoint capability cache. It validates every configured delay
-(including the longest) and the dead-letter destination, and requires each fallback's executor. Native
-redelivery wins within `MaxRedeliveryDelay`, then native scheduled copy within `MaxDeliveryDelay`, then
-a durable scheduler. Native dead-lettering is used only when `DeadLetter` guarantees error metadata.
-Each delay entry permits one further attempt. The default policy uses three in-process retries at 100 ms, 500 ms and 1 s before jitter, with no durable redelivery (D69). `FailureOptions.None` or explicitly empty retry/redelivery lists select immediate dead-lettering for retryable failures. Permanent failures still bypass retries.
-Jitter shortens delays by up to 20% by default, keeping configured capability boundaries valid.
-
-Each immediate retry uses a fresh async DI scope. Direct `ISender` sends, including `SendNowAsync`, are
-serialized into reusable buffers and sent only after the handler, middleware and async scope disposal succeed. Failed attempts
-clear those buffers. Await every send started by the handler; concurrent awaited sends use distinct buffer slots. Native send callbacks run during the flush after scope disposal. The scoped sender is pooled for failure-enabled consumers; ordinary sender scopes
-retain their existing behavior. Active outbox sends still enlist in their transaction: the transaction owner
-must roll back a failed attempt, as required by the outbox contract. Native client calls made directly by user
-code remain the user's responsibility. A failure while flushing successful sends propagates without an
-in-process retry or successful settlement, because an earlier send may already have succeeded.
-
-Copies preserve the original identity and creation context. Native redelivery dispositions carry
-`FailureHeaders` that the adapter **must persist before releasing the original**. Native dead-letter dispositions
-carry the same history in `DeadLetterInfo.Headers`. Their owned metadata survives pooled-context disposal.
-Adapters must not advertise native redelivery if they cannot preserve that metadata. History records the
-original ID (null for a missing ID), total failed attempts, first/last failure times, and retained attempts' consumer,
-host, exception type, message and stack. D75 bounds diagnostics while retaining total counts. Error metadata uses generated JSON, including under Native AOT.
-Malformed failure counters are permanent envelope errors; corrupt history is replaced so poison messages can
-still reach the dead-letter destination. History construction and exception type diagnostics run only on failure.
-
-The receive adapter returns Complete for a copy fallback only after the send or durable schedule succeeds.
-Fallback exceptions, timeouts, cancellation, scope-disposal errors and flush failures propagate without a
-settlement decision. The native adapter must retain or release the delivery using its own failure semantics.
-Copies remain at-least-once: a crash between the copy and completion can duplicate it (D24).
-
-Manual settlement requests follow D11: the pooled `ISettlementFeature` queues an outcome for a successful
-attempt, while exceptions override it. The same durable fallback executors resolve manual retry and
-dead-letter requests. See [Failure handling](https://relayer.tomlonghurst.dev/docs/guides/failure-handling#manual-settlement)
-for the call site, precedence and buffered-send contract.
-
-
-- **Error metadata** goes on the dead-lettered message: the original message ID, exception type, message and stack trace for retained attempts (D75) (Rebus #1154), attempt count, first and last failure time, consumer name, and host. SQS visibility retries preserve immutable native attributes: their final copy retains previously stored history and the current delivery’s in-process failures; earlier visibility-delivery exceptions are unavailable from SQS (D67).
+- **Policy** is declared with `consumer.Failures(policy)` on the core builder, the same way on every transport (D74). The default is three in-process retries at 100 ms, 500 ms and 1 s, with no durable redelivery (D69). Each delay entry permits one further attempt, jitter only shortens a delay so capability limits stay valid, and empty lists mean immediate dead-lettering. Permanent failures always skip retries.
+- **Each action is resolved against the endpoint's capabilities** (§2.3), once, at composition. Native redelivery wins within `MaxRedeliveryDelay`, then a native scheduled copy within `MaxDeliveryDelay`, then a durable scheduler supplied by an outbox integration. Native dead-lettering is used only when the endpoint keeps error metadata. Every configured delay and the dead-letter destination are validated at startup, and a path with no executor fails there. Configuring delays never implies an outbox.
+- **Retries never duplicate side effects** (Rebus #1198, Rebus.PostgreSql #53). Each immediate retry runs in a fresh DI scope. Messages the handler sends through `ISender`, including `SendNowAsync`, are buffered and sent only after the handler, middleware and scope disposal succeed; a failed attempt discards them, and native send callbacks run during the flush. Outbox rows written by a failed attempt roll back with its transaction; calls made directly on a native client are the user's responsibility. A handler must await every send it starts, and concurrent awaited sends use distinct buffer slots. A failure while flushing is not retried in-process and does not settle the delivery, because an earlier send may already have gone.
+- **Copies keep the original.** A re-send or dead-letter copy carries the original identity, creation context, body and every header; a malformed envelope is preserved as it is, never rebuilt. The original is completed only after the copy or durable schedule succeeds. A failure on that path propagates without a settlement decision, and the broker's own semantics retain or release the delivery. Copies are at-least-once: a crash between the copy and completion can duplicate it (D24).
+- **Failure history travels with the message:** the original ID, total failed attempts, first and last failure times, and for retained attempts the consumer, host, exception type, message and stack (bounded by D75; Rebus #1154). It is built only on failure. An adapter must persist it before releasing the original, and must not declare native redelivery if it cannot. A malformed failure counter is a permanent envelope error; corrupt history is replaced so a poison message can still reach the dead-letter destination. SQS visibility retries cannot rewrite native attributes, so their final copy holds previously stored history plus the current delivery's in-process failures (D67).
+- **Manual settlement** follows D11: a handler's request applies to a successful attempt, and an exception overrides it.
 - **Redrive API:** `IDeadLetterManager` provides `List`, `Peek`, `Redrive(filter)`, and `Purge`, backed by native broker mechanisms. Queue redrive settles an original after an acknowledged send; Kafka redrive commits a dedicated group offset after that send and leaves the original subject to native retention. Kafka purge deletes scanned partition prefixes with native `DeleteRecords`, never arbitrary records. See the [site roadmap](../website/docs/roadmap.md) for implemented transports and optional endpoint/CLI status.
 - **Circuit breaker:** when the failure rate of a consumer crosses a threshold, Relayer **pauses the consumer natively** (Kafka `Pause`, ASB processor stop, RabbitMQ consumer cancel) instead of burning messages into the DLQ (SlimMessageBus #454). It then half-opens with a probe message.
-- **Retries never duplicate side effects.** Outbox rows written by a failed attempt are rolled back with the transaction. Without a transaction, sends made during a failed attempt are buffered and discarded (Rebus #1198, Rebus.PostgreSql #53).
 - Relayer implements this pipeline itself, because it has to integrate with native settlement and delayed redelivery, which Polly cannot model. Inside a handler, you remain free to use Polly or `Microsoft.Extensions.Resilience` for downstream calls.
+
+[Failure handling](https://relayer.tomlonghurst.dev/docs/guides/failure-handling) documents options, configuration binding and manual settlement. Transport authors compose the pipeline with `FailurePipeline`, `ConsumePipelineBuilder` and `ReceivePipeline`; [the consume pipeline](../website/docs/transports/consume-pipeline.md) documents that call site and its copy-factory and scheduler contracts.
 
 ---
 
@@ -462,10 +404,9 @@ The outbox is the area where every existing library has had correctness bugs, so
 
 ### 6.2 Enlisting: hard to misuse
 
-- **EF Core:** Relayer registers a `SaveChangesInterceptor` and a `DbTransactionInterceptor`. Before an implicit save, `context.EnlistRelayerOutbox()` explicitly selects the context that owns buffered sends. An explicit EF transaction activates enlistment automatically when unambiguous. `SaveChangesAsync`, or committing the EF transaction directly, writes business data and outgoing rows atomically. You do not need to override `SaveChanges` (Silverback #164), and it works with **multiple DbContexts** (Silverback #163). Commit through EF's `IDbContextTransaction`, including its `UseTransaction` wrapper: calling the underlying `DbTransaction.Commit` bypasses EF interception. D31 records ownership and failure boundaries; [the site](https://relayer.tomlonghurst.dev/docs/reference/ef-core-outbox) documents PostgreSQL enlistment and dispatch registration.
-- **ADO.NET / Dapper:** `await using var tx = await outbox.BeginTransactionAsync(connection)` returns a `DbTransaction` subclass. Commit writes the shared outbox batch before the native commit. Create business commands through `tx.Connection`, including Dapper calls: Npgsql commands from the original connection cannot accept a wrapper transaction (D32). Rollback and disposal discard buffered messages. See [PostgreSQL transactions](../website/docs/reference/postgres-outbox.md) for ownership and recovery boundaries. SQL Server follows the same command-connection lifecycle (D47), flushing reusable rows through native `SqlBulkCopy` on the business transaction. Its opt-in unordered commit dispatcher uses native fenced batches (D49); see [SQL Server transactions and dispatch](../website/docs/reference/sqlserver-store.md). SQL Server offers an opt-in ADO.NET consumer inbox boundary using native key-range locking and the same outbox transaction (D59). SQL Server ordered dispatch uses conditional lane leases and native sequence ranges (D64); unordered recovery uses D62. MySQL enqueue and dispatch use native MySqlBatch, fenced row counts, database insertion sequences and InnoDB lane leases (D48, D50, D55, D63, D65). See the [roadmap](../website/docs/roadmap.md) for provider support, including EF integration.
-
-- **MongoDB / DynamoDB:** use their session and transaction APIs in the same style.
+- **EF Core:** interceptors on `SaveChanges` and on the EF transaction write business data and outgoing rows atomically. You do not need to override `SaveChanges` (Silverback #164), and it works with **multiple DbContexts** (Silverback #163). An explicit EF transaction enlists automatically when it is unambiguous; an implicit save selects its context first with `context.EnlistRelayerOutbox()`. Commit through EF's transaction, not the underlying `DbTransaction`, which bypasses interception. D31 records ownership and failure boundaries; [the site](https://relayer.tomlonghurst.dev/docs/reference/ef-core-outbox) covers registration.
+- **ADO.NET / Dapper:** `await using var tx = await outbox.BeginTransactionAsync(connection)` returns a `DbTransaction` subclass. Commit writes the outbox batch before the native commit; rollback and disposal discard buffered messages. Business commands, including Dapper calls, go through `tx.Connection` (D32). PostgreSQL, SQL Server and MySQL follow the same lifecycle, each with its driver's native batch insert (D47, D48); see [PostgreSQL](../website/docs/reference/postgres-outbox.md), [SQL Server](../website/docs/reference/sqlserver-store.md) and [MySQL](../website/docs/reference/mysql-store.md). Dispatch, inbox and maintenance for SQL Server and MySQL are recorded in D49, D55, D58, D59 and D62–D65.
+- **MongoDB / DynamoDB** (planned): their session and transaction APIs in the same style.
 
 ### 6.3 Schema
 
@@ -500,47 +441,45 @@ relayer_leases
   expires_at     timestamptz
 ```
 
-PostgreSQL ships one embedded SQL creation script, exposed by the database CLI and an application-owned
-EF Core migration operation (D30). D50 adds an explicit insert-sequence SQL upgrade for existing PostgreSQL and SQL Server tables; creation does not upgrade them. Existing rows keep their former UUID order because historical insertion order cannot be recovered. Other database stores' ordered workers adopt native identity/sequence ordering as they adopt that design. Indexes are created by default
-(CAP #1599). Tables can be prefixed and given a schema (NSB.Persistence.Sql #2093). See
+Each store ships its schema as an explicit script, which is also available as an
+application-owned EF Core migration operation (D30). Creating a schema never upgrades an
+existing one; upgrades such as the insert sequence (D50) are separate, explicit scripts.
+Indexes are created by default (CAP #1599). Tables can be prefixed and given a schema
+(NSB.Persistence.Sql #2093). See
 [schema deployment and migration usage](../website/docs/reference/postgres-schema.md).
 
 The [durable store contract](../website/docs/reference/outbox-stores.md) separates transaction
-enlistment from dispatch reads and mutations. Reads fill caller-owned bounded buffers. Eligible rows are pending,
-not parked or dead, due at the query instant and without a live claim. Health uses the same predicate across
-all lanes. Claims use a unique token and an expiry; renew, completion and failure updates require the matching
-live token, so a stale dispatcher cannot mutate a reclaimed row. PostgreSQL schema creation and the
-[PostgreSQL read/claim store](../website/docs/reference/postgres-store.md),
-[EF Core transactional enqueue](../website/docs/reference/ef-core-outbox.md),
+enlistment from dispatch reads and mutations. A row is eligible when it is pending, due and has
+no live claim; health checks use the same predicate. A claim is a unique token with an expiry.
+Renewal, completion and failure all require the live token, so a stale dispatcher cannot change
+a row that another instance has reclaimed (D29).
+
+Enqueue, direct dispatch, ordered dispatch and maintenance are separate registrations, so a
+writer and a worker can be deployed apart; registering a store alone does not start dispatch.
+The reference pages cover each one: the
+[read/claim store](../website/docs/reference/postgres-store.md),
+[EF Core enqueue](../website/docs/reference/ef-core-outbox.md),
 [ADO.NET/Dapper transactions](../website/docs/reference/postgres-outbox.md),
-[unordered direct dispatch](../website/docs/reference/direct-dispatch.md),
-[ordered lane dispatch](../website/docs/reference/ordered-dispatch.md) and
-[leased recovery and cleanup](../website/docs/reference/postgres-maintenance.md) have separate registrations; registering the read/claim store alone does not start dispatch.
+[direct dispatch](../website/docs/reference/direct-dispatch.md),
+[ordered dispatch](../website/docs/reference/ordered-dispatch.md) and
+[recovery and cleanup](../website/docs/reference/postgres-maintenance.md).
 
 ### 6.4 Dispatching
 
 There are two paths, each chosen per message based on whether its route is ordered:
 
-1. **Unordered messages — direct dispatch.** After commit, the instance that committed dispatches immediately, in the background, without waiting for a poll. It claims an eligible row with a conditional update that sets a fresh claim token and expiry only when no live claim exists. Completion, renewal and failure updates require that token and an unexpired claim. This prevents concurrent claims and stale database mutations; a crash or a broker send that outlives its claim can still duplicate delivery, as allowed by the at-least-once guarantee. Latency equals the broker round trip (fixes the latency of polling designs, SlimMessageBus #275).
-2. **Ordered messages — lane leases.** Rows are hashed into N lanes (default 32). Instances lease lanes through `relayer_leases` (SQL Server uses `relayer_ordered_leases`, separate from maintenance leases) with heartbeats and fair-share rebalancing as instances join and leave. A lane owner reads its lane in database-assigned `seq` order with a simple indexed range scan. There are no `SKIP LOCKED` scans across the whole table, and connected owners do not overlap. D34 specifies transaction locks, deadlines and the at-least-once/native-send failure boundary; D50 preserves sequential commit order using insertion sequence, while genuinely concurrent transactions have no defined order. Each ordered worker retains at most 256 successful endpoint capability lookups with FIFO eviction. An evicted endpoint is resolved and validated again before its next native send; failed lookups never displace valid entries.
+1. **Unordered messages — direct dispatch.** After commit, the instance that committed dispatches immediately, in the background, without waiting for a poll. It claims a row with a conditional update that sets a fresh claim token and expiry only when no live claim exists (D29). Latency equals the broker round trip (fixes the latency of polling designs, SlimMessageBus #275). A crash, or a broker send that outlives its claim, can still duplicate a delivery, as at-least-once allows.
+2. **Ordered messages — lane leases.** Rows are hashed into N lanes (default 32). Instances lease lanes with heartbeats and fair-share rebalancing as instances join and leave. A lane owner reads its lane in database-assigned `seq` order with a simple indexed range scan. There are no `SKIP LOCKED` scans across the whole table, and connected owners do not overlap. Sequential transactions keep their commit order; genuinely concurrent transactions have no defined order (D34, D50).
 
-The PostgreSQL direct path transfers reusable buffers after EF commit to an explicitly named
-hosted worker (D33). It claims each native group of due unordered rows with one conditional statement,
-excludes competing claims, respects native batch-count limits and deletes successful groups with one
-fenced statement. Completion errors after a successful send leave claims held without incrementing
-send attempts; incomplete deletions warn about duplicate delivery. It does not poll, heartbeat
-during native sends or retry failed commits. Queue overflow and shutdown leave durable work pending with
-an error log; explicitly registered leased recovery polls those rows; ordered lane dispatch is registered separately.
-Each worker bounds successful endpoint capability retention to 256 entries using FIFO eviction (D35).
-Cache hits remain read-only; an evicted endpoint is resolved again before claiming its next group.
+The direct path hands its buffers to a named hosted worker after commit (D33). It does not poll and does not retry a failed commit: on queue overflow or shutdown the rows stay pending and the sweeper picks them up. Workers bound the endpoint capabilities they cache (D35, D37). See [direct dispatch](../website/docs/reference/direct-dispatch.md) and [ordered dispatch](../website/docs/reference/ordered-dispatch.md).
 
 A **sweeper** (also leased) picks up anything that was committed but not dispatched within a threshold, for example because the instance crashed. Postgres `LISTEN/NOTIFY` and SQL Server Service Broker can optionally replace the sweeper's poll.
 
-After dispatch, rows are deleted in batches. Opt-in PostgreSQL sent history atomically copies only ID, destination and completion time into `relayer_outbox_sent` through the fenced delete statement. One leased **cleanup** job handles retention for that metadata, the dead table and inbox; pending and parked outbox rows never expire by age (CAP #1811, Rebus.SqlServer #101). D38 records bounded PostgreSQL recovery, leadership and retention semantics.
+After dispatch, rows are deleted in batches; PostgreSQL can opt in to keeping minimal sent metadata. One leased **cleanup** job handles retention for that metadata, the dead table and the inbox. Pending and parked outbox rows never expire by age (CAP #1811, Rebus.SqlServer #101; D38).
 
 **Poison rows:** after a configurable number of attempts, the row is moved to `relayer_outbox_dead` and an alert metric is raised. For ordered routes, only later rows **with the same ordering key** are parked; the rest of the lane continues. Parked keys can be inspected and released through `IDeadLetterManager`.
 
-**Change data capture:** the optional [PostgreSQL dispatcher](../website/docs/reference/postgres-cdc.md) uses native Npgsql logical replication to wake bounded unordered recovery on committed inserts, instead of waiting for a poll. A persistent slot retains WAL, startup catch-up covers pre-slot rows, and feedback follows durable dispatch transactions. Maintenance recovers failures, expired claims and future schedules; ordered dispatch retains its lane leases. See the site roadmap for provider-specific CDC support. The unchanged table layout supports Debezium's event router with explicit column mappings and connector-specific header/payload handling, rather than its default schema. D56 records these boundaries.
+**Change data capture:** the optional [PostgreSQL dispatcher](../website/docs/reference/postgres-cdc.md) uses native logical replication to wake unordered recovery on committed inserts, instead of waiting for a poll. It only wakes the existing recovery: claims, leases and maintenance are unchanged, and ordered dispatch keeps its lane leases (D56). The table layout also works with Debezium's event router, given explicit column mappings.
 
 ### 6.5 Inbox
 
@@ -548,28 +487,21 @@ After dispatch, rows are deleted in batches. Opt-in PostgreSQL sent history atom
 - A duplicate delivery is acknowledged without invoking the handler, and a metric is recorded.
 - The inbox is opt-in per consumer. It is enabled automatically when the outbox is used on the same DbContext.
 
-The PostgreSQL EF Core consumer boundary explicitly selects its scoped DbContext at
-composition time, validates its provider and owns the transaction around the complete handler attempt.
-It inserts the inbox key before dispatch with `ON CONFLICT DO NOTHING`; the database unique constraint
-coordinates overlapping instances and permits a waiting delivery to run if the first rolls back.
-Outbox configuration on the selected context enables inbox deduplication automatically (D36).
-The transaction uses the provider's default isolation level unless an explicit native isolation level is supplied.
-Explicit isolation enables bounded PostgreSQL conflict replay through EF's native execution strategy
-when no application retrying strategy is configured; configured strategies remain authoritative (D51).
-Before commit the boundary requests completion if no settlement outcome is pending. The existing
-one-request rule rejects settlement changes during scope disposal after the work is durable.
-See [consumer configuration and failure boundaries](https://relayer.tomlonghurst.dev/docs/reference/ef-core-inbox).
+A consumer declares its database boundary explicitly: an EF Core context (PostgreSQL) or an
+ADO.NET transaction (SQL Server, MySQL). The boundary owns the transaction around the whole
+handler attempt and inserts the inbox key before dispatch. The database's unique constraint
+coordinates overlapping instances, and a waiting delivery runs if the first one rolls back.
+Native settlement follows the commit.
 
-SQL Server ADO.NET/Dapper consumers opt into `.SqlServer(consumer, connectionString, inbox: true)`
-as their outer transaction boundary (D59). Native key-range locks and primary-key uniqueness protect
-the inbox identity; business writes and outgoing rows share the existing outbox transaction.
-See [SQL Server consumer boundaries](../website/docs/reference/sqlserver-store.md#atomic-consumer-inbox).
+D36, D51, D58 and D59 record isolation levels, conflict replay and provider specifics. See
+[the EF Core inbox](https://relayer.tomlonghurst.dev/docs/reference/ef-core-inbox) and
+[SQL Server consumer boundaries](../website/docs/reference/sqlserver-store.md#atomic-consumer-inbox).
 
 ### 6.6 Multi-tenancy
 
-- Application-owned scoped factories select native connections or DbContexts, supporting a database per tenant or a schema per tenant (CAP #699, Rebus #1218, Wolverine #556). Reuse native `AddDbContext`/Npgsql configuration instead of introducing a library-owned `IOutboxStoreResolver` facade (D45). Manual units, explicit tenant endpoints and incoming single-message EF consumers use native scoped factories. With tenancy registered, the EF boundary validates the selected context per delivery/retry scope without resolving a startup context or requiring a fallback tenant. See the [native tenant store contract](../website/docs/reference/tenant-stores.md).
-- PostgreSQL `ITenantSource` enumerates immutable application-owned native store snapshots for one bounded scheduler. It reuses direct queues, unordered recovery, ordered lanes, native leases and cleanup without per-tenant hosted workers. All catalog activity, including lease release, shares `MaxConnections`; native unpooled dispatcher sources prevent idle per-source pool growth while business sources may remain pooled (D60). Store additions/removals take effect between finite turns. See [tenant catalog dispatch](../website/docs/reference/tenant-stores.md#dispatch-a-tenant-catalog).
-- The tenant ID travels in a header and is restored into the consumer's scope. [Scoped propagation](../website/docs/guides/multi-tenancy.md) covers single-message consumers and scoped sends, requests and replies. Application-authorized `OutboxTenantBinding` in native scoped store options binds durable tenant metadata to the current tenant and wire header (D45). PostgreSQL catalog dispatch is bounded; batch consumers cannot share a tenant scope.
+- Application-owned scoped factories select native connections or DbContexts, supporting a database per tenant or a schema per tenant (CAP #699, Rebus #1218, Wolverine #556). Relayer reuses native `AddDbContext`/Npgsql configuration and adds no store-resolver facade of its own (D45). See the [native tenant store contract](../website/docs/reference/tenant-stores.md).
+- One bounded scheduler can dispatch for a whole catalog of PostgreSQL tenant stores, without per-tenant hosted workers and within one shared connection limit (D60, preview). See [tenant catalog dispatch](../website/docs/reference/tenant-stores.md#dispatch-a-tenant-catalog).
+- The tenant ID travels in a header and is restored into the consumer's scope. Durable tenant metadata is bound only through an application-authorized binding (D45). Batch consumers share one scope, so they are rejected when tenancy is registered. See [scoped propagation](../website/docs/guides/multi-tenancy.md).
 
 ---
 
@@ -758,7 +690,7 @@ Relayer-specific instruments, for which the conventions define nothing:
 - The harness, its idle boundary and standalone contexts are documented in [Testing](https://relayer.tomlonghurst.dev/docs/guides/testing).
 - `ISender` and the batch APIs are interfaces with no static state, so they are easy to mock (MassTransit #3119).
 - No process-wide statics: the full test suite runs in parallel within one process (Wolverine #3521).
-- Testcontainers-based fixtures for every transport, published in `Relayer.Testing.Containers`.
+- Testcontainers-based fixtures for every transport, in `Relayer.Testing.Containers` (planned).
 
 ---
 
@@ -774,33 +706,18 @@ Techniques:
 
 - The middleware pipeline is compiled into a delegate chain once per consumer at startup. Nothing is resolved per message except the DI scope, which singleton-only consumers open on demand (D53).
 - `ValueTask` everywhere. Context objects are pooled. Headers are read lazily from the native message and only materialized when accessed.
-- Completion storage for consume, receive, send, send tracing and saga execution remains provider/context-owned. The [D43 builder assessment](decisions.md#completion-storage-assessment-726) records why runtime pooled builders cannot replace it under concurrent suspension; a serial cache-hit benchmark is insufficient.
-- Single-message dispatch with an explicit failure delegate keeps continuation storage with the rented context and native receive state. Cross-worker completion does not depend on runtime async state-machine cache hits. Fresh scopes, async disposal and settlement ordering remain unchanged; batch and executable-retry paths retain their existing implementations.
+- Async completion state for the consume, receive, send and saga paths is owned by the pooled context, not by the runtime's pooled async builders, which do not guarantee reuse when operations overlap ([D43 assessment](decisions.md#completion-storage-assessment-726)).
 - `IBufferWriter<byte>` / `ReadOnlySequence<byte>` serialization with pooled buffers.
 - Source-generated dispatch per message type: no `Type` lookups, no `MethodInfo.Invoke`, no `dynamic`.
 - Outbox writes are batched per transaction (one insert of N rows). Dispatch uses native batch send APIs.
 - Benchmarks (BenchmarkDotNet) run in CI on every push to `main` and on pull requests that opt in; a regression beyond a threshold fails that advisory run.
 
 The [performance regression gate](https://relayer.tomlonghurst.dev/docs/contributing/performance)
-documents the pinned-main comparison, thresholds, allocation attribution and
-raw-client benchmark pattern. The in-memory gate does not establish real-broker
-overhead compliance. Fresh receive DI scope costs remain in the reported totals;
-zero incremental composition allocations do not establish zero total pipeline allocations.
-CI brackets the candidate with two fixed baseline executions to expose runner
-drift. A throughput regression must exceed 5% against both. An allocation
-regression on the per-message path must exceed both baselines by more than
-0.5 B/op; an increase against only the lower baseline is inconclusive because
-unchanged asynchronous executions can allocate different totals. Inconclusive
-results remain visible and do not prove unchanged performance. CI hashes actual
-comparison inputs after the common harness/SDK overlay. Byte-identical inventories
-make throughput and allocation differences inconclusive execution variation, even
-above both baselines; changed or unverified inputs retain the strict thresholds.
-Separate processes can produce separated timing confidence intervals for unchanged
-code; those intervals do not identify a source-change regression. The site documents
-the inventory and excluded tooling/documentation. Input validation remains active.
-Candidate startup stays under 50 ms. Startup allocation totals
-are informational: randomized
-hashes can change frozen dispatch-table layouts across unchanged processes.
+documents how CI compares a candidate with `main`, its thresholds and how it treats
+runner noise (D18). Two limits apply when reading its results: the in-memory gate does
+not establish real-broker overhead, and a red run on a hosted runner is a lead, not proof
+of a regression. Raw-client comparisons against real brokers are separate paired
+benchmarks per transport, described on the same page.
 
 ---
 
@@ -820,13 +737,15 @@ hashes can change frozen dispatch-table layouts across unchanged processes.
 | `Relayer.Outbox.EntityFrameworkCore` | Provider-neutral EF Core transaction coordination | `Microsoft.EntityFrameworkCore.Relational` |
 | `Relayer.Outbox.PostgreSql.EntityFrameworkCore` | PostgreSQL EF Core outbox/inbox registrations and native operations | EF coordination and PostgreSQL outbox packages |
 | `Relayer.Outbox.PostgreSql` / `.SqlServer` / `.MySql` | ADO.NET outbox and inbox (`NpgsqlDataSource` supported) | The provider's driver |
-| `Relayer.Outbox.MongoDB` | MongoDB outbox and inbox | `MongoDB.Driver` |
-| `Relayer.Serialization.*` | Protobuf, Avro, MessagePack | The respective library |
-| `Relayer.Testing` / `.Testing.Containers` | Harness and fixtures | `Testcontainers` |
+| `Relayer.Outbox.MongoDB` (planned) | MongoDB outbox and inbox | `MongoDB.Driver` |
+| `Relayer.Serialization.Protobuf` / `.MessagePack`, `Relayer.Kafka.Serialization.Avro`, `Relayer.Kafka.SchemaRegistry` | Optional serializers and schema registry integration | The respective library |
+| `Relayer.Testing` | Harness and in-memory fixtures | `Relayer` |
+| `Relayer.Testing.Containers` (planned) | Testcontainers fixtures | `Testcontainers` |
 | `Relayer.Aspire` | OpenTelemetry subscription (D61); connections use extensions in the existing transport packages, native AppHost resources and existing health adapters | Relayer core, `OpenTelemetry.Extensions.Hosting` |
-| `Relayer.AzureServiceBus.HealthChecks` | Optional Service Bus native probes and receiver-owned liveness | `Relayer.AzureServiceBus`, `Relayer.HealthChecks` |
 | `Relayer.HealthChecks` | Connectivity, consumer liveness and outbox backlog health integration | `Microsoft.Extensions.Diagnostics.HealthChecks` |
-| `Relayer.Kafka.HealthChecks` | Optional native Kafka connectivity and receiver liveness adapters | `Relayer.Kafka`, `Relayer.HealthChecks` |
+| `Relayer.Kafka.HealthChecks`, `.AzureServiceBus.HealthChecks`, `.AmazonSqs.HealthChecks`, `.RabbitMQ.HealthChecks` | Optional native connectivity probes and receiver-owned liveness | The transport package, `Relayer.HealthChecks` |
+| `Relayer.AspNetCore` | Optional authorized HTTP endpoints for dead-letter management | `Relayer`, ASP.NET Core |
+| `Relayer.Cli` | The `dotnet relayer` tool: topology export and database schema scripts | `Relayer.Outbox.PostgreSql`, `Relayer.AzureServiceBus`, `Relayer.AmazonSqs` |
 | Later | `Relayer.Pulsar` | — |
 
 Transports target the latest major version of their native client. Updating clients is part of the release cadence (Rebus #1204, Rebus.RabbitMq #137, CAP #1573).
@@ -887,9 +806,9 @@ A **transport conformance test suite** (send, receive, settle, retry, DLQ, delay
 
 ---
 
-## 17. Open questions
+## 17. Resolved questions
 
-1. **Handler signature:** should Relayer also accept method-based handlers (`Handle(OrderPlaced m)` on any class) via the source generator, or keep `IHandler<T>` only? Recommendation: `IHandler<T>` only in v1, because it is more explicit.
-2. **Settlement override:** should handlers be able to settle manually (`context.DeadLetter(reason)`, `context.Defer()`)? Recommendation: yes, through a transport-neutral `ISettlementFeature`, with native extras exposed through the transport features.
+1. **Handler signature:** `IHandler<T>` only; no method-based handlers (D5).
+2. **Settlement override:** handlers can settle manually through a transport-neutral `ISettlementFeature`, with native extras on the transport features (D11).
 3. **Post-v1 release scope:** [D81](decisions.md#d81-post-v1-features-require-explicit-preview-opt-in) keeps sagas, PostgreSQL local transport, change capture and tenant catalog dispatch as explicit compile-time preview opt-ins, outside the first stable compatibility promise. Terraform/Bicep export stays stable in transport packages. RabbitMQ Streams is not published until it supports send and receive (#316).
-4. **Minimum native client versions:** latest major only, or latest and previous? Recommendation: latest only.
+4. **Minimum native client versions:** the latest major only (D19).
