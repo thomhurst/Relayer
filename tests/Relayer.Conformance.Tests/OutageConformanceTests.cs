@@ -58,12 +58,59 @@ public sealed class OutageConformanceTests
         await Assert.That(result.SkipReason).IsEqualTo("Fixture has no bounded broker-outage send contract.");
     }
 
+    [Test]
+    [Arguments(TransportConformanceCase.Reconnect, "broker disconnect")]
+    [Arguments(TransportConformanceCase.Reconnect, "broker reconnect")]
+    [Arguments(TransportConformanceCase.SendDuringOutage, "broker disconnect")]
+    [Arguments(TransportConformanceCase.SendDuringOutage, "broker reconnect")]
+    public async Task Cancellation_abandons_pending_broker_hook_and_attempts_cleanup(TransportConformanceCase scenario, string phase)
+    {
+        var hook = new PendingHook(phase);
+        using var caller = new CancellationTokenSource();
+        var suite = new TransportConformanceSuite<InMemoryDelivery, InMemoryMessageBinding>(
+            (tracing, _) => new ValueTask<ITransportConformanceFixture<InMemoryDelivery>>(new OutageFixture(tracing, "success", hook)));
+        var run = suite.RunAsync(scenario, caller.Token);
+        try
+        {
+            await hook.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            caller.Cancel();
+
+            var failure = await Assert.That(async () => await run.WaitAsync(TimeSpan.FromSeconds(5)))
+                .Throws<InvalidOperationException>().WithMessageContaining(phase);
+            await Assert.That(failure!.InnerException is OperationCanceledException).IsTrue();
+            await Assert.That(hook.StoppedWhilePending).IsTrue();
+            await Assert.That(hook.DisposedWhilePending).IsTrue();
+        }
+        finally
+        {
+            hook.Completion.TrySetCanceled();
+            try { await run.WaitAsync(TimeSpan.FromSeconds(5)); }
+            catch (InvalidOperationException) { }
+        }
+    }
+
+    private sealed class PendingHook(string phase)
+    {
+        public string Phase { get; } = phase;
+        public TaskCompletionSource Entered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource Completion { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public bool IsPending => Entered.Task.IsCompleted && !Completion.Task.IsCompleted;
+        public bool StoppedWhilePending { get; set; }
+        public bool DisposedWhilePending { get; set; }
+
+        public Task WaitAsync()
+        {
+            Entered.SetResult();
+            return Completion.Task;
+        }
+    }
+
     private static TransportConformanceSuite<InMemoryDelivery, InMemoryMessageBinding> Suite(string mode) =>
         new((tracing, _) => new ValueTask<ITransportConformanceFixture<InMemoryDelivery>>(new OutageFixture(tracing, mode)),
             TimeSpan.FromSeconds(2));
 
     // A controlled fixture tests the contract's assertions, not a broker's reconnect implementation.
-    private sealed class OutageFixture(MessageTracing tracing, string mode) : ITransportConformanceFixture<InMemoryDelivery>, ITransport
+    private sealed class OutageFixture(MessageTracing tracing, string mode, PendingHook? hook = null) : ITransportConformanceFixture<InMemoryDelivery>, ITransport
     {
         private readonly InMemoryFixture _inner = new(tracing);
         private bool _offline;
@@ -108,6 +155,7 @@ public sealed class OutageConformanceTests
         }
         public async Task StopAsync(CancellationToken token)
         {
+            if (hook is { IsPending: true }) hook.StoppedWhilePending = true;
             if (_offline && mode == "interrupted-shutdown")
             {
                 _shutdownIncomplete = true;
@@ -123,8 +171,21 @@ public sealed class OutageConformanceTests
                 throw new IOException("Expected disconnected native shutdown.");
             }
         }
-        public async Task DisconnectAsync(CancellationToken token) { await _inner.DisconnectAsync(token); _offline = true; }
-        public Task ReconnectAsync(CancellationToken token) { token.ThrowIfCancellationRequested(); _offline = false; _recovered = true; return Task.CompletedTask; }
+        public async Task DisconnectAsync(CancellationToken token)
+        {
+            if (hook is { Phase: "broker disconnect" }) await hook.WaitAsync();
+            await _inner.DisconnectAsync(token);
+            _offline = true;
+        }
+
+        public Task ReconnectAsync(CancellationToken token)
+        {
+            if (hook is { Phase: "broker reconnect" }) return hook.WaitAsync();
+            token.ThrowIfCancellationRequested();
+            _offline = false;
+            _recovered = true;
+            return Task.CompletedTask;
+        }
         public async ValueTask SendAsync(OutgoingMessage message, CancellationToken token)
         {
             if (_offline)
@@ -150,6 +211,10 @@ public sealed class OutageConformanceTests
         }
         public ValueTask SendBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken token) => _inner.Transport.SendBatchAsync(messages, token);
         public ValueTask<TopologyReport> ApplyTopologyAsync(TopologyMode mode, CancellationToken token) => _inner.Transport.ApplyTopologyAsync(mode, token);
-        public ValueTask DisposeAsync() => _inner.DisposeAsync();
+        public ValueTask DisposeAsync()
+        {
+            if (hook is { IsPending: true }) hook.DisposedWhilePending = true;
+            return _inner.DisposeAsync();
+        }
     }
 }
