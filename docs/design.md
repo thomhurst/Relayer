@@ -281,7 +281,7 @@ The core's `HandlerRegistry` freezes after configuration. Pipeline composition s
 
 ### 3.4 Sending from anywhere
 
-`ISender` is scoped. When an outbox is configured and a transaction is active in the current scope, sends are enlisted automatically. Otherwise Relayer sends them through the transport, buffering them during handler attempts as described in §5. To be explicit, use `sender.SendWithoutOutboxAsync` (bypass the outbox) or `sender.SendViaOutboxAsync` (require the outbox; throws when there is no transaction).
+`ISender` is scoped. When an outbox is registered, `SendAsync` requires an active outbox transaction or selected pending unit of work in the current scope and enlists automatically. It throws with an actionable message when the outbox is inactive ([D89](decisions.md#d89-registered-outboxes-require-enlistment-for-automatic-sends)). Without an outbox registration, sends use the transport. Use `sender.SendWithoutOutboxAsync` to deliberately bypass the outbox, or `sender.SendViaOutboxAsync` to require both a registered outbox and active enlistment. Direct sends are buffered during handler attempts as described in §5.
 
 Publish versus send is a routing concern, not a separate API. Whether a destination fans out depends on what the endpoint is natively (a topic or exchange versus a queue). Declaring `Send<T>` for several destinations sends one message to each of them through the outbox, sharing one envelope identity ([D82](decisions.md#d82-several-send-routes-fan-out-through-the-outbox)).
 

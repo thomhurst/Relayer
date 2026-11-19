@@ -82,8 +82,12 @@ public class EnlistmentTests
         {
             var db = scope.ServiceProvider.GetRequiredService<OrdersContext>();
             var sender = scope.ServiceProvider.GetRequiredService<ISender>();
-            // No transaction: native sending still works.
-            await sender.SendAsync(new Probe(9));
+            // Registration alone must not publish ahead of the business transaction.
+            await Assert.That(async () => await sender.SendAsync(new Probe(9)))
+                .Throws<InvalidOperationException>().WithMessageContaining("EnlistRelayerOutbox");
+            await Assert.That(provider.GetRequiredService<Transport>().Sends).IsEqualTo(0);
+            await Assert.That(await database.Count()).IsEqualTo(0);
+            await sender.SendWithoutOutboxAsync(new Probe(9));
             await Assert.That(provider.GetRequiredService<Transport>().Sends).IsEqualTo(1);
             using var enlistment = db.EnlistRelayerOutbox();
             db.Add(new Order { Id = 1 });

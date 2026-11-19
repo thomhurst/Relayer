@@ -179,8 +179,9 @@ await transaction.CommitAsync(cancellationToken);
 ```
 
 Sends made after the final save still join the same batch at commit. Several saves do not cause several
-outbox inserts. `SendViaOutboxAsync` requires an active transaction or context selection;
-`SendWithoutOutboxAsync` bypasses enlistment. Without either, `SendAsync` sends directly to the transport.
+outbox inserts. With the outbox registered, both `SendAsync` and `SendViaOutboxAsync` require an active
+transaction or context selection; otherwise they throw before sending. `SendWithoutOutboxAsync` deliberately
+bypasses enlistment. See [Upgrade outbox sends](../migration/outbox-sends.md) for migration from direct fallback.
 
 Commit through EF's `IDbContextTransaction`, including the wrapper returned by `UseTransactionAsync`.
 Calling `Commit` directly on the underlying `DbTransaction` bypasses EF interceptors and is unsupported.

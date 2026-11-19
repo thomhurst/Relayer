@@ -12,6 +12,41 @@ namespace Relayer.Tests;
 public class SenderTests
 {
     [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Registered_inactive_outbox_rejects_automatic_sends_before_configuration(bool configure)
+    {
+        var transport = new RecordingTransport("events");
+        var services = Services(transport);
+        var outbox = new TestOutbox();
+        services.AddScoped<IOutboxEnlistment>(_ => outbox);
+        services.AddRelayer(builder =>
+        {
+            builder.AddMessageTypesFromThisAssembly();
+            builder.DeclareRoute<OrderPlaced>("events", "orders");
+        });
+        using var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
+        using var scope = provider.CreateScope();
+        var sender = scope.ServiceProvider.GetRequiredService<ISender>();
+        var configured = false;
+        await Assert.That(async () =>
+        {
+            if (configure) await sender.SendAsync(new OrderPlaced(Guid.NewGuid()), _ => configured = true);
+            else await sender.SendAsync(new OrderPlaced(Guid.NewGuid()));
+        }).Throws<InvalidOperationException>().WithMessageContaining("SendWithoutOutboxAsync");
+        await Assert.That(configured).IsFalse();
+        await Assert.That(outbox.Count).IsEqualTo(0);
+        await Assert.That(transport.Count).IsEqualTo(0);
+
+        // Both explicit direct-send overloads remain available with an inactive outbox.
+        await sender.SendWithoutOutboxAsync(new OrderPlaced(Guid.NewGuid()));
+        await sender.SendWithoutOutboxAsync(new OrderPlaced(Guid.NewGuid()), options => options.Headers["direct"] = "yes");
+        await Assert.That(transport.Count).IsEqualTo(2);
+        await Assert.That(transport.Headers["direct"]).IsEqualTo("yes");
+        await Assert.That(outbox.Count).IsEqualTo(0);
+    }
+
+    [Test]
     public async Task Native_transaction_requirement_uses_native_sending_and_rejects_outbox_substitution()
     {
         var transport = new RecordingTransport("events") { Transactions = true };
@@ -233,7 +268,7 @@ public class SenderTests
         var transport = new RecordingTransport("events") { Completion = completion };
         var outbox = new TestOutbox { IsActive = throughOutbox, Completion = completion };
         var services = Services(transport);
-        services.AddScoped<IOutboxEnlistment>(_ => outbox);
+        if (throughOutbox) services.AddScoped<IOutboxEnlistment>(_ => outbox);
         services.AddRelayer(builder =>
         {
             builder.AddMessageTypesFromThisAssembly();
@@ -260,10 +295,19 @@ public class SenderTests
     }
 
     [Test]
-    public async Task Already_cancelled_send_never_enters_the_transport()
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Already_cancelled_send_never_enters_the_transport(bool registeredOutbox)
     {
         var transport = new RecordingTransport("events");
-        using var provider = CreateProvider(builder => builder.DeclareRoute<OrderPlaced>("events", "orders"), transport);
+        var services = Services(transport);
+        if (registeredOutbox) services.AddScoped<IOutboxEnlistment, TestOutbox>();
+        services.AddRelayer(builder =>
+        {
+            builder.AddMessageTypesFromThisAssembly();
+            builder.DeclareRoute<OrderPlaced>("events", "orders");
+        });
+        using var provider = services.BuildServiceProvider();
         using var scope = provider.CreateScope();
         using var cancellation = new CancellationTokenSource();
         cancellation.Cancel();
@@ -338,7 +382,15 @@ public class SenderTests
         await Assert.That(outbox.Destination).IsEqualTo("orders");
         await Assert.That(transport.Entered.Task.IsCompleted).IsFalse();
         await sender.SendWithoutOutboxAsync(new OrderPlaced(Guid.NewGuid()));
-        await secondScope.ServiceProvider.GetRequiredService<ISender>().SendAsync(new OrderPlaced(Guid.NewGuid()));
+        var secondSender = secondScope.ServiceProvider.GetRequiredService<ISender>();
+        await Assert.That(async () => await secondSender.SendAsync(new OrderPlaced(Guid.NewGuid())))
+            .Throws<InvalidOperationException>().WithMessageContaining("active outbox transaction");
+        await secondSender.SendWithoutOutboxAsync(new OrderPlaced(Guid.NewGuid()));
+        await Assert.That(transport.Count).IsEqualTo(2);
+        await Assert.That(outbox.Count).IsEqualTo(2);
+        outbox.IsActive = false;
+        await Assert.That(async () => await sender.SendAsync(new OrderPlaced(Guid.NewGuid())))
+            .Throws<InvalidOperationException>().WithMessageContaining("active outbox transaction");
         await Assert.That(transport.Count).IsEqualTo(2);
         await Assert.That(outbox.Count).IsEqualTo(2);
     }
@@ -594,7 +646,8 @@ public class SenderTests
     {
         var transport = new RecordingTransport("events") { UnorderedEndpoint = "orders" };
         var services = Services(transport);
-        services.AddScoped<IOutboxEnlistment, TestOutbox>();
+        var outbox = new TestOutbox { IsActive = activeOutbox };
+        if (activeOutbox) services.AddScoped<IOutboxEnlistment>(_ => outbox);
         if (middleware) services.AddSingleton<ISendMiddleware>(new ConfigureOptionsMiddleware(static options => options.OrderingKey = "customer"));
         services.AddRelayer(builder =>
         {
@@ -603,8 +656,6 @@ public class SenderTests
         });
         using var provider = services.BuildServiceProvider();
         using var scope = provider.CreateScope();
-        var outbox = (TestOutbox)scope.ServiceProvider.GetRequiredService<IOutboxEnlistment>();
-        outbox.IsActive = activeOutbox;
         var sender = scope.ServiceProvider.GetRequiredService<ISender>();
         await Assert.That(async () => await sender.SendAsync(new OrderPlaced(Guid.NewGuid()), options =>
         {
@@ -700,7 +751,7 @@ public class SenderTests
             .Throws<InvalidOperationException>().WithMessageContaining("MaxDeliveryDelay");
         outbox.IsActive = false;
         await Assert.That(async () => await sender.SendAsync(new OrderPlaced(Guid.NewGuid()), options => options.DeliverAt = deliverAt))
-            .Throws<InvalidOperationException>().WithMessageContaining("MaxDeliveryDelay");
+            .Throws<InvalidOperationException>().WithMessageContaining("active outbox transaction");
         await Assert.That(transport.Count).IsEqualTo(0);
         await Assert.That(outbox.Count).IsEqualTo(2);
         await Assert.That(transport.CapabilityEndpoints).IsEquivalentTo(new[] { "orders" });
