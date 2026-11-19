@@ -1,3 +1,4 @@
+using System.Threading.Tasks.Sources;
 using Relayer.InMemory;
 using Relayer.Testing;
 using Relayer.Transports;
@@ -6,6 +7,110 @@ namespace Relayer.Conformance.Tests;
 
 public class ConformanceFailureTests
 {
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Pending_fixture_creation_is_bounded_and_late_fixture_is_disposed(bool useDeadline)
+    {
+        using var caller = new CancellationTokenSource();
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var creation = new TaskCompletionSource<ITransportConformanceFixture<InMemoryDelivery>>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var fixture = new FailingFixture();
+        CancellationToken factoryToken = default;
+        var suite = new TransportConformanceSuite<InMemoryDelivery, InMemoryMessageBinding>((_, token) =>
+        {
+            factoryToken = token;
+            entered.SetResult();
+            return new(creation.Task);
+        }, useDeadline ? TimeSpan.FromMilliseconds(100) : TimeSpan.FromSeconds(30));
+        var run = suite.RunAsync(TransportConformanceCase.SendReceiveSettle, caller.Token);
+        try
+        {
+            await entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            if (!useDeadline) caller.Cancel();
+            var error = await CaptureAsync(run.WaitAsync(TimeSpan.FromSeconds(5)));
+            await Assert.That(error.Message).Contains("SendReceiveSettle failed during fixture creation");
+            await Assert.That(error.InnerException is OperationCanceledException).IsTrue();
+            await Assert.That(factoryToken.IsCancellationRequested).IsTrue();
+            await Assert.That(creation.Task.IsCompleted).IsFalse();
+            await Assert.That(fixture.Disposed).IsFalse();
+
+            creation.SetResult(fixture);
+            await fixture.DisposedSignal.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            await Assert.That(fixture.DisposeCount).IsEqualTo(1);
+        }
+        finally
+        {
+            creation.TrySetResult(fixture);
+            await CaptureAsync(run.WaitAsync(TimeSpan.FromSeconds(5)));
+        }
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Fixture_creation_failure_retains_original_exception(bool synchronous)
+    {
+        var original = new IOException("fixture provisioning failed");
+        var suite = new TransportConformanceSuite<InMemoryDelivery, InMemoryMessageBinding>((_, _) =>
+            synchronous ? throw original : ValueTask.FromException<ITransportConformanceFixture<InMemoryDelivery>>(original));
+        var error = await CaptureAsync(suite.RunAsync(TransportConformanceCase.SendReceiveSettle));
+        await Assert.That(error.Message).Contains("fixture creation");
+        await Assert.That(error.InnerException).IsSameReferenceAs(original);
+    }
+
+    [Test]
+    public async Task Cancellation_racing_completed_creation_disposes_fixture_once()
+    {
+        using var caller = new CancellationTokenSource();
+        var fixture = new FailingFixture();
+        var suite = new TransportConformanceSuite<InMemoryDelivery, InMemoryMessageBinding>((_, _) =>
+        {
+            caller.Cancel();
+            return new(fixture);
+        });
+        await CaptureAsync(suite.RunAsync(TransportConformanceCase.SendReceiveSettle, caller.Token));
+        await Assert.That(fixture.DisposeCount).IsEqualTo(1);
+    }
+
+    [Test]
+    [Arguments(false)]
+    [Arguments(true)]
+    public async Task Abandoned_creation_observes_late_factory_and_disposal_failures(bool factoryFails)
+    {
+        using var caller = new CancellationTokenSource();
+        var creation = new ObservedCompletion<ITransportConformanceFixture<InMemoryDelivery>>();
+        var disposal = new ObservedCompletion<int>();
+        var fixture = new FailingFixture { DisposalCompletion = new ValueTask(disposal, 0) };
+        var suite = new TransportConformanceSuite<InMemoryDelivery, InMemoryMessageBinding>((_, _) => new(creation, 0));
+        var run = suite.RunAsync(TransportConformanceCase.SendReceiveSettle, caller.Token);
+        try
+        {
+            // RunAsync has returned its pending task, so the factory has been invoked.
+            caller.Cancel();
+            var error = await CaptureAsync(run.WaitAsync(TimeSpan.FromSeconds(5)));
+            await Assert.That(error.Message).Contains("fixture creation");
+            if (factoryFails) creation.Fail(new IOException("late provisioning failed"));
+            else
+            {
+                creation.Complete(fixture);
+                await fixture.DisposedSignal.Task.WaitAsync(TimeSpan.FromSeconds(5));
+                disposal.Fail(new IOException("late disposal failed"));
+                await disposal.Observed.Task.WaitAsync(TimeSpan.FromSeconds(5));
+                await Assert.That(disposal.ConsumptionCount).IsEqualTo(1);
+                await Assert.That(fixture.DisposeCount).IsEqualTo(1);
+            }
+            await creation.Observed.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            await Assert.That(creation.ConsumptionCount).IsEqualTo(1);
+        }
+        finally
+        {
+            creation.TryComplete(fixture);
+            disposal.TryComplete(0);
+            await CaptureAsync(run.WaitAsync(TimeSpan.FromSeconds(5)));
+        }
+    }
+
     [Test]
     [Arguments(false, false)]
     [Arguments(true, false)]
@@ -67,6 +172,29 @@ public class ConformanceFailureTests
         throw new InvalidOperationException("Expected conformance failure.");
     }
 
+    // A single-consumption ValueTask source exposes observation without process-wide
+    // UnobservedTaskException handlers or forced garbage collection in parallel tests.
+    private sealed class ObservedCompletion<T> : IValueTaskSource<T>, IValueTaskSource
+    {
+        private ManualResetValueTaskSourceCore<T> _source = new() { RunContinuationsAsynchronously = true };
+        private bool _completed;
+        internal TaskCompletionSource Observed { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        internal int ConsumptionCount { get; private set; }
+        internal void Complete(T result) { _completed = true; _source.SetResult(result); }
+        internal void Fail(Exception error) { _completed = true; _source.SetException(error); }
+        internal void TryComplete(T result) { if (!_completed) Complete(result); }
+        public T GetResult(short token)
+        {
+            ConsumptionCount++;
+            try { return _source.GetResult(token); }
+            finally { Observed.TrySetResult(); }
+        }
+        void IValueTaskSource.GetResult(short token) => GetResult(token);
+        public ValueTaskSourceStatus GetStatus(short token) => _source.GetStatus(token);
+        public void OnCompleted(Action<object?> continuation, object? state, short token, ValueTaskSourceOnCompletedFlags flags) =>
+            _source.OnCompleted(continuation, state, token, flags);
+    }
+
     private sealed class FailingFixture : ITransportConformanceFixture<InMemoryDelivery>, ITransport
     {
         internal Exception PrimaryFailure { get; } = new IOException("native operation failed");
@@ -75,9 +203,12 @@ public class ConformanceFailureTests
         internal bool StopFails { get; init; }
         internal bool DisposeFails { get; init; }
         internal bool StartFails { get; init; }
+        internal ValueTask DisposalCompletion { get; init; }
         internal CancellationTokenSource? CancelAfterSend { get; init; }
         internal bool StoppedWithLiveToken { get; private set; }
         internal bool Disposed { get; private set; }
+        internal int DisposeCount { get; private set; }
+        internal TaskCompletionSource DisposedSignal { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public ITransport Transport => this;
         public string Name => "failing";
         public string Destination => "isolated";
@@ -100,8 +231,10 @@ public class ConformanceFailureTests
         }
         public ValueTask DisposeAsync()
         {
+            DisposeCount++;
             Disposed = true;
-            return DisposeFails ? ValueTask.FromException(DisposeFailure) : default;
+            DisposedSignal.TrySetResult();
+            return DisposeFails ? ValueTask.FromException(DisposeFailure) : DisposalCompletion;
         }
         public Task DisconnectAsync(CancellationToken cancellationToken) => throw new NotSupportedException();
         public Task ReconnectAsync(CancellationToken cancellationToken) => throw new NotSupportedException();

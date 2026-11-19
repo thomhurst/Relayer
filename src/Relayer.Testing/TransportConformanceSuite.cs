@@ -50,7 +50,20 @@ public sealed class TransportConformanceSuite<TIncoming, TBinding>
             ActivityStopped = spans.Enqueue,
         };
         ActivitySource.AddActivityListener(listener);
-        var fixture = await _create(tracing, token).ConfigureAwait(false);
+        Task<ITransportConformanceFixture<TIncoming>>? creation = null;
+        ITransportConformanceFixture<TIncoming> fixture;
+        try
+        {
+            creation = _create(tracing, token).AsTask();
+            fixture = await creation.WaitAsync(token).ConfigureAwait(false);
+        }
+        catch (Exception error)
+        {
+            // If cancellation wins, cleanup owns the task even when creation completes
+            // between WaitAsync throwing and this handoff. Consume each ValueTask only once.
+            if (creation is not null) _ = DisposeLateFixtureAsync(creation);
+            throw new InvalidOperationException($"Transport conformance {scenario} failed during fixture creation.", error);
+        }
         Exception? failure = null;
         try
         {
@@ -69,6 +82,20 @@ public sealed class TransportConformanceSuite<TIncoming, TBinding>
             {
                 throw new AggregateException("Transport conformance and fixture disposal both failed.", failure, cleanup);
             }
+        }
+    }
+
+    private static async Task DisposeLateFixtureAsync(Task<ITransportConformanceFixture<TIncoming>> creation)
+    {
+        try
+        {
+            var fixture = await creation.ConfigureAwait(false);
+            await fixture.DisposeAsync().ConfigureAwait(false);
+        }
+        catch (Exception)
+        {
+            // The scenario has already failed. Observe late creation and disposal failures
+            // without leaving an unobserved fault on this background cleanup task.
         }
     }
 
