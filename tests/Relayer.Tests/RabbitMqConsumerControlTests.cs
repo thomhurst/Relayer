@@ -1,7 +1,9 @@
+using System.Diagnostics;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using RabbitMQ.Client;
 using RabbitMQ.Client.Events;
+using RabbitMQ.Client.Exceptions;
 using Relayer.RabbitMQ;
 using Relayer.Transports;
 
@@ -129,14 +131,40 @@ public sealed class RabbitMqConsumerControlTests
         var token = timeout.Token;
         await using var broker = await RabbitMqTopologyTests.Broker.StartAsync(token);
         var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var processingToken = CancellationToken.None;
+        using var release = new ManualResetEventSlim();
+        var channelClosed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var failedAck = new TaskCompletionSource<Exception>(TaskCreationOptions.RunContinuationsAsynchronously);
         var received = new RabbitMqReceiveControl
         {
-            NativeCallback = context => processingToken = context.CancellationToken,
-            Handle = async _ => { entered.TrySetResult(); await release.Task; }
+            NativeCallback = context =>
+            {
+                var consumerChannel = context.RabbitMQ().Channel;
+                consumerChannel.ChannelShutdownAsync += (_, _) =>
+                {
+                    channelClosed.TrySetResult();
+                    return Task.CompletedTask;
+                };
+                consumerChannel.CallbackExceptionAsync += (_, args) =>
+                {
+                    failedAck.TrySetResult(args.Exception);
+                    return Task.CompletedTask;
+                };
+            }
         };
         using var host = RabbitMqReceiveTests.Host(broker.Factory(), received, autoStart: false, secondConsumer: true, thirdConsumer: true);
+        var tracing = host.Services.GetRequiredService<MessageTracing>();
+        using var listener = new ActivityListener
+        {
+            ShouldListenTo = source => ReferenceEquals(source, tracing.Source),
+            Sample = static (ref ActivityCreationOptions<ActivityContext> _) => ActivitySamplingResult.AllData,
+            ActivityStarted = activity =>
+            {
+                if (!activity.OperationName.StartsWith("ack ", StringComparison.Ordinal)) return;
+                entered.TrySetResult();
+                release.Wait(token);
+            }
+        };
+        ActivitySource.AddActivityListener(listener);
         var control = host.Services.GetRequiredKeyedService<IConsumerControl>("rabbit");
         await host.StartAsync(token);
         var transport = (RabbitMqNativeTransport)host.Services.GetRequiredService<ITransport>();
@@ -146,24 +174,21 @@ public sealed class RabbitMqConsumerControlTests
         // An exclusive consumer elsewhere makes the last consumer's start fail.
         await channel.BasicConsumeAsync("billing", false, "holder", false, true, null, new AsyncEventingBasicConsumer(channel), token);
 
-        // The first consumer cannot drain its in-flight message, so the rollback waits until the start is cancelled.
+        // Pause immediately before BasicAckAsync, after the receive pipeline's cancellation checks.
         using var start = CancellationTokenSource.CreateLinkedTokenSource(token);
         var starting = control.StartAsync(start.Token);
-        await entered.Task.WaitAsync(token);
-        while ((await channel.QueueDeclarePassiveAsync("orders", token)).ConsumerCount == 0) await Task.Delay(10, token);
-        var aborted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        using var registration = processingToken.Register(() => aborted.TrySetResult());
         try
         {
+            await entered.Task.WaitAsync(token);
+            while ((await channel.QueueDeclarePassiveAsync("orders", token)).ConsumerCount == 0) await Task.Delay(10, token);
             start.Cancel();
-            await aborted.Task.WaitAsync(token);
+            await channelClosed.Task.WaitAsync(token);
         }
-        finally
-        {
-            // Channel disposal waits for the handler to exit.
-            release.TrySetResult();
-        }
+        finally { release.Set(); }
         await Assert.That(async () => await starting.WaitAsync(token)).ThrowsException();
+        await Assert.That(await failedAck.Task.WaitAsync(token)).IsTypeOf<AlreadyClosedException>();
+        var redelivery = await channel.BasicGetAsync("audit", autoAck: true, token);
+        await Assert.That(redelivery is { Redelivered: true }).IsTrue();
 
         await Assert.That(transport.Consumers[0].Completion.IsCompletedSuccessfully).IsTrue();
         await Assert.That(transport.Consumers[1].Completion.IsCompletedSuccessfully).IsTrue();
