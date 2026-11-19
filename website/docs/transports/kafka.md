@@ -3,7 +3,7 @@ title: Kafka
 description: "Named Kafka producers and key-ordered parallel consumers backed by Dekaf, with durable failure handling."
 ---
 
-`Relayer.Kafka` implements producers and consumer groups on [Dekaf](https://github.com/thomhurst/Dekaf). Consumers run on Dekaf's partitioned runtime with key-ordered parallelism, contiguous offset commits and bounded drain on revoke and shutdown. They use the core failure pipeline and mark records processed only after durable handling, including dead-letter copies. Optional [consumer circuit breaking](../guides/failure-handling.md#consumer-circuit-breaking) holds failed records during dependency outages. Optional health adapters are available in `Relayer.Kafka.HealthChecks`. Typed tombstones use native null values and the original message's wire identity. [Kafka-to-Kafka exactly-once](#kafka-to-kafka-exactly-once) uses native producer transactions. Batch handlers and topic provisioning remain planned.
+`Relayer.Kafka` implements producers and consumer groups on [Dekaf](https://github.com/thomhurst/Dekaf). Consumers run on Dekaf's partitioned runtime with key-ordered parallelism, contiguous offset commits and bounded drain on revoke and shutdown. They use the core failure pipeline and mark records processed only after durable handling, including dead-letter copies. Optional [consumer circuit breaking](../guides/failure-handling.md#consumer-circuit-breaking) holds failed records during dependency outages. Optional health adapters are available in `Relayer.Kafka.HealthChecks`. Typed tombstones use native null values and the original message's wire identity. [Kafka-to-Kafka exactly-once](#kafka-to-kafka-exactly-once) uses native producer transactions. [Topic topology](#topic-topology) supports read-only validation and create-only provisioning. Batch handlers remain planned.
 
 ## Register a producer
 
@@ -45,7 +45,40 @@ Route `OrderingKey` selectors accept strings or `IUtf8SpanFormattable` values. R
 
 The serialized transport batch seam delegates same-topic batches to Dekaf's `ProduceAllAsync` in input order and awaits all admitted operations. Dekaf owns batching, per-key ordering and partial failures. Mixed-topic batches send in input order with individual acknowledgments. Native byte limits still apply; a batch is not atomic. Cancellation may stop waiting after Kafka has accepted a message, so an exception does not prove that nothing was delivered.
 
-Kafka has no native scheduled send or dead-letter operation. Scheduled direct sends fail with an actionable error. The default `TopologyMode.Validate` checks all declared send, receive and dead-letter topics through Dekaf’s native admin topic listing without creating missing topics. Missing or inaccessible topics produce actionable startup differences. Create topics externally; `Provision` remains unsupported. `TopologyMode.None` skips the admin check when external deployment tooling owns validation. Configure admin authentication with `options.ConfigureAdmin`; producer and consumer authentication settings do not configure the admin client. Validation checks existence only, not partition counts, replication factors or topic configuration.
+Kafka has no native scheduled send or dead-letter operation. Scheduled direct sends fail with an actionable error.
+
+## Topic topology
+
+The default `TopologyMode.Validate` checks send, receive and dead-letter topics through Dekaf's native admin metadata without creating missing topics. Missing or inaccessible topics produce actionable startup differences. `TopologyMode.None` skips topology checks and provisioning. Configure admin authentication with `options.ConfigureAdmin`; producer and consumer authentication settings do not configure the admin client.
+
+Use `TopologyMode.Provision` explicitly for development or bootstrap. Relayer creates missing topics through Dekaf's `CreateTopicsAsync`, including consumer dead-letter topics. Topics named only by routes or consumers use Dekaf's `NewTopic` defaults: one partition and replication factor one. Existing topics are never updated or deleted.
+
+Add native `NewTopic` declarations to override creation settings or declare additional topics:
+
+```csharp
+using Dekaf.Admin;
+
+relayer.Kafka("events", kafka =>
+{
+    kafka.TopologyMode = TopologyMode.Provision;
+    kafka.Options.Configure(options =>
+    {
+        options.BootstrapServers.Add("localhost:9092");
+        options.Topics.Add(new NewTopic
+        {
+            Name = "orders",
+            NumPartitions = 3,
+            ReplicationFactor = 1,
+            Configs = new Dictionary<string, string> { ["retention.ms"] = "86400000" },
+        });
+    });
+    kafka.Send<OrderPlaced>("orders");
+});
+```
+
+Explicit declarations are passed to Dekaf unchanged. Both Validate and Provision compare their partition counts, replication factors, manual replica assignments and declared configuration values. Native `-1` counts request broker defaults and are not compared; non-empty `ReplicaAssignments` take precedence over counts. Configuration values are compared as strings. Topics without explicit declarations get existence checks only, including topics that already exist when Provision runs. Relayer reports unresolved differences with expected and actual values and fails host startup before consumers start.
+
+`options.TopicCreationOptions` passes native `CreateTopicsOptions` through to Dekaf. Its `TimeoutMs` also bounds waiting for created topics to become visible before verification; null uses Dekaf's default options. Provision requires `ValidateOnly = false`. A concurrent creator is accepted only after reading and checking the resulting topic. Broker errors and cancellation propagate; provisioning across topics is not transactional.
 
 ## Register a consumer
 

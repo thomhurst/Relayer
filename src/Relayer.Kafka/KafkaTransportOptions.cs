@@ -16,8 +16,19 @@ public sealed class KafkaTransportOptions
     /// <remarks>Keep the supplied key and record-header serializers to preserve wire bodies and creation headers.</remarks>
     public Action<ProducerBuilder<WireString?, (ReadOnlyMemory<byte> Body, Dekaf.Serialization.Headers Headers)?>>? ConfigureProducer { get; set; }
 
-    /// <summary>Customises the native admin client used by topology validation and dead-letter management, including authentication.</summary>
+    /// <summary>Customises the native admin client used by topology validation, provisioning and dead-letter management, including authentication.</summary>
     public Action<AdminClientBuilder>? ConfigureAdmin { get; set; }
+
+    /// <summary>Native topic declarations, passed unchanged to Dekaf when provisioning missing topics.</summary>
+    /// <remarks>
+    /// Validate and Provision check declared settings without modifying existing topics. Routes and consumers without
+    /// explicit declarations receive existence checks; Provision creates their missing topics with Dekaf's defaults.
+    /// </remarks>
+    public IList<NewTopic> Topics { get; } = [];
+
+    /// <summary>Native topic creation options. Null uses Dekaf's defaults; Provision requires ValidateOnly to be false.</summary>
+    /// <remarks>TimeoutMs also bounds waiting for newly created topics to become visible before checking their settings.</remarks>
+    public CreateTopicsOptions? TopicCreationOptions { get; set; }
 
     /// <summary>Customises each Dekaf consumer builder. Keep raw byte deserializers; Relayer disables automatic commits and offset storage afterward.</summary>
     public Action<ConsumerBuilder<byte[], byte[]>>? ConfigureConsumer { get; set; }
