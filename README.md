@@ -77,14 +77,13 @@ await sender.SendAsync(new OrderPlaced(orderId, customerId));
 
 That is a complete setup. Failed messages are retried and then dead-lettered, offsets are committed only after the handler finishes, messages with the same key stay in order, and every hop is traced.
 
-Need the message and a database change to commit together? Add the outbox and send inside your transaction:
+Need the message and a database change to commit together? With the EF Core outbox, enqueue through the context that owns the order:
 
 ```csharp
-await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
+using var outbox = db.EnlistRelayerOutbox();
 db.Orders.Add(order);
-await sender.SendViaOutboxAsync(new OrderPlaced(order.Id, order.CustomerId), cancellationToken);
+await outbox.EnqueueAsync(new OrderPlaced(order.Id, order.CustomerId), cancellationToken);
 await db.SaveChangesAsync(cancellationToken);
-await transaction.CommitAsync(cancellationToken);
 ```
 
 ## How it works

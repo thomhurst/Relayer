@@ -78,14 +78,10 @@ var provider = scope.ServiceProvider;
 provider.GetRequiredService<AuthorizedTenant>().Id = authorizedTenantId;
 provider.GetRequiredService<TenantContext>().Id = new WireString(authorizedTenantId);
 var db = provider.GetRequiredService<OrdersDbContext>();
-var sender = provider.GetRequiredService<ISender>();
-
-using (db.EnlistRelayerOutbox())
-{
-    db.Orders.Add(order);
-    await sender.SendAsync(new OrderPlaced(order.Id), cancellationToken);
-    await db.SaveChangesAsync(cancellationToken);
-}
+using var outbox = db.EnlistRelayerOutbox();
+db.Orders.Add(order);
+await outbox.EnqueueAsync(new OrderPlaced(order.Id), cancellationToken);
+await db.SaveChangesAsync(cancellationToken);
 ```
 
 Treat the selected tenant as immutable for the lifetime of the scope. Create a fresh scope for another

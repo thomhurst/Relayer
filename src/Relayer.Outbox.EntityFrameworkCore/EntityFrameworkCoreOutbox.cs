@@ -3,6 +3,7 @@ using System.Data.Common;
 using System.Runtime.InteropServices;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Storage;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace Relayer.Outbox.EntityFrameworkCore;
 
@@ -50,13 +51,13 @@ internal sealed class EntityFrameworkCoreOutbox(bool supportsScheduling = false,
         return created;
     }
 
-    internal IDisposable Select(DbContext context, OutboxConfiguration configuration)
+    internal IOutboxSelection Select(DbContext context, OutboxConfiguration configuration, IServiceProvider services)
     {
         configuration.TenantBinding?.Validate();
         var state = Get(context, configuration);
         state.CheckTransaction();
         state.EnsureTransactionAvailable();
-        var selection = new Selection(this, state, _selection);
+        var selection = new Selection(this, state, _selection, services);
         state.SelectionDepth++;
         _selection = selection;
         return selection;
@@ -170,10 +171,46 @@ internal sealed class EntityFrameworkCoreOutbox(bool supportsScheduling = false,
         _batch?.Dispose();
     }
 
-    private sealed class Selection(EntityFrameworkCoreOutbox owner, OutboxContext state, Selection? previous) : IDisposable
+    private sealed class Selection(EntityFrameworkCoreOutbox owner, OutboxContext state, Selection? previous, IServiceProvider services) : IOutboxSelection, IOutboxEnlistment
     {
         internal OutboxContext State { get; } = state;
         private bool _disposed;
+        private SendPipeline? _pipeline;
+        private TenantContext? _tenant;
+
+        public ValueTask EnqueueAsync<TMessage>(TMessage message, CancellationToken cancellationToken = default) =>
+            Enqueue(message, null, cancellationToken);
+
+        public ValueTask EnqueueAsync<TMessage>(TMessage message, Action<SendOptions> configure, CancellationToken cancellationToken = default) =>
+            Enqueue(message, configure ?? throw new ArgumentNullException(nameof(configure)), cancellationToken);
+
+        private ValueTask Enqueue<TMessage>(TMessage message, Action<SendOptions>? configure, CancellationToken cancellationToken)
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            ArgumentNullException.ThrowIfNull(message);
+            if (cancellationToken.IsCancellationRequested) return ValueTask.FromCanceled(cancellationToken);
+            if (_pipeline is null)
+            {
+                _tenant = services.GetService<TenantContext>();
+                _pipeline = services.GetRequiredService<SendPipeline>();
+            }
+            return _pipeline.GetTarget<TMessage>().SendAsync(message, configure, this, cancellationToken, null, tenant: _tenant?.Id ?? default);
+        }
+
+        bool IOutboxEnlistment.IsActive => !_disposed;
+        bool IOutboxEnlistment.SupportsScheduling => State.Configuration.SupportsScheduling;
+        bool IOutboxEnlistment.SupportsOrderedScheduling => State.Configuration.SupportsOrderedScheduling;
+
+        ValueTask IOutboxEnlistment.EnlistAsync(OutboxRecord record, CancellationToken cancellationToken)
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            cancellationToken.ThrowIfCancellationRequested();
+            State.CheckTransaction();
+            State.EnsureTransactionAvailable();
+            State.Add(record, checked(++owner._enqueueOrder));
+            return ValueTask.CompletedTask;
+        }
+
         public void Dispose()
         {
             if (_disposed) return;

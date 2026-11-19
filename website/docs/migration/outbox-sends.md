@@ -42,6 +42,12 @@ Inside a handler, these sends still wait in the attempt buffer until the handler
 scope disposal succeed. They are not atomic with database changes. Route requirements still apply:
 `TransactionRequirement.Outbox` rejects direct sends, and several send routes require an active outbox.
 
+## EF Core context selections
+
+`db.EnlistRelayerOutbox()` now returns `IOutboxSelection` from the extension on `DbContextOutboxExtensions`.
+Use `selection.EnqueueAsync(message, cancellationToken)` to enlist in that particular context, including when another selection is active.
+Previously compiled callers can still use the original static method on `EntityFrameworkCoreOutboxExtensions`.
+
 ## Unchanged behavior
 
 - Without an outbox registration, `SendAsync` sends directly.

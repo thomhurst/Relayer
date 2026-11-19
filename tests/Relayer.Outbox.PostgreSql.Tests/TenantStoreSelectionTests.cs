@@ -67,6 +67,21 @@ public class TenantStoreSelectionTests
     }
 
     [Test]
+    public async Task Context_bound_enqueue_propagates_the_authorized_tenant()
+    {
+        await using var stores = new TenantStores();
+        await stores.Start(false);
+        await using var provider = Services(stores, incomingTenants: true);
+        await using var scope = provider.CreateAsyncScope();
+        scope.ServiceProvider.GetRequiredService<TenantContext>().Id = new(stores[0].Id);
+        var db = scope.ServiceProvider.GetRequiredService<OrdersContext>();
+        using var outbox = db.EnlistRelayerOutbox();
+        await outbox.EnqueueAsync(new Probe(1));
+        await db.SaveChangesAsync();
+        await Verify(stores[0], 0, 1, 0, tenantBound: true);
+    }
+
+    [Test]
     [Arguments(false)]
     [Arguments(true)]
     public async Task Explicit_per_tenant_consumers_isolate_inbox_identity_and_rollback(bool separateDatabases)

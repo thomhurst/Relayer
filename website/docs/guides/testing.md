@@ -76,7 +76,7 @@ await using (var scope = provider.CreateAsyncScope())
 {
     var db = scope.ServiceProvider.GetRequiredService<OrdersDbContext>();
     using var enlistment = db.EnlistRelayerOutbox();
-    await scope.ServiceProvider.GetRequiredService<ISender>().SendAsync(new OrderPlaced(id));
+    await enlistment.EnqueueAsync(new OrderPlaced(id));
     await db.SaveChangesAsync();
 }
 // Completes after the direct dispatcher has sent the row and its in-memory consumers have run.

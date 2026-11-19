@@ -91,7 +91,7 @@ public class EnlistmentTests
             await Assert.That(provider.GetRequiredService<Transport>().Sends).IsEqualTo(1);
             using var enlistment = db.EnlistRelayerOutbox();
             db.Add(new Order { Id = 1 });
-            await sender.SendAsync(new Probe(1), o => { o.OrderingKey = "café"; o.DeliverAt = scheduled; o.Headers["custom"] = "é"; });
+            await enlistment.EnqueueAsync(new Probe(1), o => { o.OrderingKey = "café"; o.DeliverAt = scheduled; o.Headers["custom"] = "é"; });
             await sender.SendViaOutboxAsync(new Probe(2));
             await Assert.That(await database.Count()).IsEqualTo(0L);
             if (synchronous) db.SaveChanges(); else await db.SaveChangesAsync();
@@ -122,6 +122,58 @@ public class EnlistmentTests
         await Assert.That(await database.Scalar("SELECT count(*) FROM batch_log")).IsEqualTo(3L);
         await Assert.That(provider.GetRequiredService<Transport>().Sends).IsEqualTo(1);
         await database.VerifyEnvelope(scheduled);
+    }
+
+    [Test]
+    public async Task Selection_enqueues_only_uncanceled_messages_and_respects_transaction_boundaries()
+    {
+        await using var database = new Database();
+        await database.Start();
+        await using var provider = database.Services();
+        await using var scope = provider.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<OrdersContext>();
+        using (var abandoned = db.EnlistRelayerOutbox())
+            await abandoned.EnqueueAsync(new Probe(1));
+        await db.SaveChangesAsync();
+        await Assert.That(await database.Count()).IsEqualTo(0L);
+
+        await using var transaction = await db.Database.BeginTransactionAsync();
+        using (var selected = db.EnlistRelayerOutbox())
+        {
+            await Assert.That(async () => await selected.EnqueueAsync(new Probe(2), new CancellationToken(canceled: true)))
+                .Throws<OperationCanceledException>();
+            await selected.EnqueueAsync(new Probe(3));
+        }
+        await db.SaveChangesAsync();
+        await Assert.That(await database.Count()).IsEqualTo(0L);
+        await transaction.CommitAsync();
+        await Assert.That(await database.Count()).IsEqualTo(1L);
+        await Assert.That(await database.Scalar($"SELECT count(*) FROM {Database.Table} WHERE get_byte(body, 0) = 3")).IsEqualTo(1L);
+    }
+
+    [Test]
+    public async Task Enqueue_targets_its_context_while_another_selection_is_active()
+    {
+        await using var database = new Database();
+        await database.Start();
+        await using var provider = database.Services();
+        await using var scope = provider.CreateAsyncScope();
+        var orders = scope.ServiceProvider.GetRequiredService<OrdersContext>();
+        var audit = scope.ServiceProvider.GetRequiredService<AuditContext>();
+
+        using var orderOutbox = orders.EnlistRelayerOutbox();
+        var auditOutbox = audit.EnlistRelayerOutbox();
+        using (auditOutbox)
+        {
+            await auditOutbox.EnqueueAsync(new Probe(2));
+            await orderOutbox.EnqueueAsync(new Probe(1));
+            orders.Add(new Order { Id = 1 });
+            await orders.SaveChangesAsync();
+        }
+        await Assert.That(async () => await auditOutbox.EnqueueAsync(new Probe(3))).Throws<ObjectDisposedException>();
+        await Assert.That(await database.Count()).IsEqualTo(1L);
+        await Assert.That(await database.Scalar($"SELECT count(*) FROM {Database.Table} WHERE get_byte(body, 0) = 1")).IsEqualTo(1L);
+        await Assert.That(await database.Scalar("SELECT count(*) FROM orders")).IsEqualTo(1L);
     }
 
     [Test]

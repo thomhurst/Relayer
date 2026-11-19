@@ -153,13 +153,13 @@ configure their attempt limits independently of enlistment.
 Select the context before sending, so Relayer knows which future save owns the messages:
 
 ```csharp
-using (db.EnlistRelayerOutbox())
-{
-    db.Orders.Add(order);
-    await sender.SendAsync(new OrderPlaced(order.Id), cancellationToken);
-    await db.SaveChangesAsync(cancellationToken);
-}
+using var outbox = db.EnlistRelayerOutbox();
+db.Orders.Add(order);
+await outbox.EnqueueAsync(new OrderPlaced(order.Id), cancellationToken);
+await db.SaveChangesAsync(cancellationToken);
 ```
+
+`EnqueueAsync` uses the configured routes and send middleware. Each selection targets its own context, including when another context is selected in the same scope. Await each send before saving or disposing the selection.
 
 `SaveChangesAsync` creates an owned transaction when rows are buffered, even for a single business
 command or an outbox-only save. It commits business changes and outgoing rows together. Synchronous

@@ -94,7 +94,7 @@ public static class EntityFrameworkCoreOutboxExtensions
                 break;
             }
         ((IDbContextOptionsBuilderInfrastructure)builder).AddOrUpdateExtension(configuration);
-        builder.AddInterceptors(new OutboxSaveChangesInterceptor(outbox, configuration),
+        builder.AddInterceptors(new OutboxSaveChangesInterceptor(outbox, configuration, services),
             new OutboxTransactionInterceptor(outbox, configuration));
         return builder;
     }
@@ -110,18 +110,9 @@ public static class EntityFrameworkCoreOutboxExtensions
         return false;
     }
 
-    /// <summary>Selects the context that owns sends before an implicit SaveChanges transaction, or disambiguates explicit transactions.</summary>
-    /// <remarks>Dispose before disposing the context. Uncommitted messages are discarded. Do not use a DI scope concurrently.</remarks>
-    public static IDisposable EnlistRelayerOutbox(this DbContext context)
-    {
-        ArgumentNullException.ThrowIfNull(context);
-        var options = context.GetService<IDbContextOptions>().FindExtension<CoreOptionsExtension>();
-        if (options?.Interceptors is { } interceptors)
-            foreach (var interceptor in interceptors)
-                if (interceptor is OutboxSaveChangesInterceptor save)
-                    return save.Outbox.Select(context, save.Configuration);
-        throw new InvalidOperationException("Configure this DbContext with AddRelayerOutbox before calling EnlistRelayerOutbox.");
-    }
+    /// <summary>Selects the context that owns sends. Retained for callers compiled against the disposable return type.</summary>
+    [System.ComponentModel.EditorBrowsable(System.ComponentModel.EditorBrowsableState.Never)]
+    public static IDisposable EnlistRelayerOutbox(DbContext context) => DbContextOutboxExtensions.EnlistRelayerOutbox(context);
 
     private sealed class RootProvider(IServiceProvider provider)
     {

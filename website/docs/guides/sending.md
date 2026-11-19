@@ -3,6 +3,18 @@ title: Sending messages
 description: "Send messages with ISender: routing, per-send options, middleware, timeouts and the outbox."
 ---
 
+## What has completed when I await a send?
+
+| Situation | Successful completion of `SendAsync` |
+| --- | --- |
+| Direct send outside a handler | The native send completed according to the transport. For in-memory messaging, the queue accepted the message. |
+| Direct send inside a handler | The attempt buffered the message. Relayer flushes after the handler, middleware and scope disposal succeed. A failed attempt discards it. |
+| Active outbox transaction or selected EF Core unit of work | The unit enlisted the message. Its database commit makes it durable. Dispatch follows separately. |
+
+With an outbox registered and no active unit of work, `SendAsync` throws. `SendWithoutOutboxAsync` bypasses the outbox and still follows the handler buffering rule.
+
+## Configure a send route
+
 Register a native transport and a route, then inject the scoped `ISender` into your
 endpoint or application service. For example, with `Relayer.Kafka`:
 

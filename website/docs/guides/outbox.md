@@ -40,15 +40,13 @@ public sealed record OrderPlaced(string OrderId);
 
 ## Send within the business transaction
 
-Resolve `db` and `sender` (`ISender`) from the same scope. Open an EF Core transaction and use
-`SendAsync` to save the message with the order when the transaction commits.
+Select the order context, enqueue the message, and save. EF Core commits the order and its outgoing message together.
 
 ```csharp
-await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
+using var outbox = db.EnlistRelayerOutbox();
 db.Orders.Add(new Order { Id = orderId });
-await sender.SendAsync(new OrderPlaced(orderId), cancellationToken);
+await outbox.EnqueueAsync(new OrderPlaced(orderId), cancellationToken);
 await db.SaveChangesAsync(cancellationToken);
-await transaction.CommitAsync(cancellationToken);
 ```
 
 ## Deduplicate a consumer and send follow-up messages
@@ -79,7 +77,7 @@ restrictions, multiple contexts and separate writer and worker deployments.
 
 ### Transaction choices and retries
 
-The explicit transaction enlists sends automatically when it is the scope's only active context.
+An explicit EF Core transaction enlists scoped sender calls automatically when it is the scope's only active context.
 With an outbox registered, `SendAsync` throws if no outbox transaction or pending unit of work is active.
 `SendViaOutboxAsync` also requires enlistment and additionally rejects a missing outbox registration.
 For an implicit save, call `db.EnlistRelayerOutbox()`
