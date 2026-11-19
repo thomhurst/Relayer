@@ -14,6 +14,119 @@ namespace Relayer.Outbox.PostgreSql.Tests;
 public class LocalAtLeastOnceTests(PostgreSqlLocalSessionFixture server)
 {
     [Test]
+    public async Task Hosted_direct_dispatch_settles_an_independent_commit_while_the_first_handler_is_blocked()
+    {
+        await using var database = server.CreateDatabase();
+        await database.StartAsync();
+        // The blocked handler owns no connection. The second claim, handler and completion can all use this pool.
+        await using var source = NpgsqlDataSource.Create(database.ConnectionString + ";Maximum Pool Size=1;Timeout=5");
+        await PostgreSqlOutboxStoreTests.CreateSchema(source);
+        await using (var command = source.CreateCommand("CREATE TABLE local_business (value integer PRIMARY KEY)"))
+            await command.ExecuteNonQueryAsync();
+        await using var provider = Provider(source, directHandoff: true, concurrency: 2, consumerOptions: options =>
+        {
+            options.Completion = PostgreSqlLocalCompletion.AtLeastOnce;
+        });
+        var services = provider.GetServices<IHostedService>().ToArray();
+        var probe = provider.GetRequiredService<Probe>();
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        probe.BeforeObserve = async (value, token) =>
+        {
+            if (value != 1) return;
+            entered.TrySetResult();
+            await release.Task.WaitAsync(token);
+        };
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+        foreach (var service in services) await service.StartAsync(deadline.Token);
+        try
+        {
+            await Enqueue(provider, source, new(1), true);
+            await entered.Task.WaitAsync(deadline.Token);
+            await Enqueue(provider, source, new(2), true);
+            // A committed delete is observable independently of handler entry or return.
+            while (await Count(source, "relayer_outbox") != 1)
+                await Task.Delay(10, deadline.Token);
+            await Assert.That(await Count(source, "local_business WHERE value = 2")).IsEqualTo(1L);
+            await Assert.That(await Count(source, "local_business WHERE value = 1")).IsEqualTo(0L);
+        }
+        finally
+        {
+            release.TrySetResult();
+            for (var index = services.Length - 1; index >= 0; index--) await services[index].StopAsync(default);
+        }
+        await Assert.That(await Count(source, "relayer_outbox")).IsEqualTo(0L);
+    }
+
+    [Test]
+    public async Task Hosted_direct_burst_shares_admission_with_recovery_and_retains_retry_deadlines()
+    {
+        await using var database = server.CreateDatabase();
+        await database.StartAsync();
+        await using var source = NpgsqlDataSource.Create(database.ConnectionString);
+        await PostgreSqlOutboxStoreTests.CreateSchema(source);
+        await using (var command = source.CreateCommand("CREATE TABLE local_business (value integer PRIMARY KEY)"))
+            await command.ExecuteNonQueryAsync();
+        await using var provider = Provider(source, directHandoff: true, concurrency: 2, maxAttempts: 3,
+            failureAction: FailureAction.Retry, consumerOptions: options =>
+            {
+                options.Completion = PostgreSqlLocalCompletion.AtLeastOnce;
+                options.RedeliveryDelays = [TimeSpan.FromHours(1)];
+            });
+        var services = provider.GetServices<IHostedService>().ToArray();
+        var worker = provider.GetRequiredKeyedService<PostgreSqlDirectDispatcher>("local");
+        var transport = provider.GetServices<ITransport>().Single();
+        using var maintenance = new PostgreSqlMaintenanceWorker(source,
+            new() { RecoveryDelay = TimeSpan.Zero, MaxDispatchAttempts = 3 }, [transport],
+            NullLogger<PostgreSqlMaintenanceWorker>.Instance);
+        var firstEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var retryEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var entered = new ConcurrentQueue<int>();
+        provider.GetRequiredService<Probe>().BeforeObserve = async (value, token) =>
+        {
+            entered.Enqueue(value);
+            if (value is not (1 or -1)) return;
+            (value == 1 ? firstEntered : retryEntered).TrySetResult();
+            await release.Task.WaitAsync(token);
+        };
+
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+        foreach (var service in services) await service.StartAsync(deadline.Token);
+        const int burst = 16;
+        try
+        {
+            await Enqueue(provider, source, new(1), true);
+            await firstEntered.Task.WaitAsync(deadline.Token);
+            await Enqueue(provider, source, new(-1), true);
+            await retryEntered.Task.WaitAsync(deadline.Token);
+            for (var value = 2; value < burst + 2; value++)
+                await Enqueue(provider, source, new(value), true);
+
+            // Both direct attempts still hold admission. An explicit recovery pass cannot claim the burst either.
+            await maintenance.SweepAsync(deadline.Token);
+            await Assert.That(entered.ToArray()).IsEquivalentTo([1, -1], TUnit.Assertions.Enums.CollectionOrdering.Matching);
+            await Assert.That(await Count(source, "relayer_outbox WHERE claim_token IS NOT NULL")).IsEqualTo(2L);
+
+            var draining = worker.StopAsync(deadline.Token);
+            await Assert.That(draining.IsCompleted).IsFalse();
+            release.TrySetResult();
+            await draining;
+
+            var settled = await Count(source, "local_business WHERE value > 0");
+            var recoveredLater = await Count(source, "relayer_outbox WHERE status = 'pending' AND attempts = 0 AND claim_token IS NULL");
+            await Assert.That(settled + recoveredLater).IsEqualTo(burst + 1L);
+            await Assert.That(await Count(source, "relayer_outbox WHERE status = 'pending' AND attempts = 1 AND claim_token IS NULL AND deliver_at > clock_timestamp()")).IsEqualTo(1L);
+            await Assert.That(await Count(source, "relayer_outbox")).IsEqualTo(recoveredLater + 1L);
+        }
+        finally
+        {
+            release.TrySetResult();
+            for (var index = services.Length - 1; index >= 0; index--) await services[index].StopAsync(default);
+        }
+    }
+
+    [Test]
     [Arguments("direct")]
     [Arguments("recovered")]
     [Arguments("ordered")]
@@ -206,10 +319,12 @@ public class LocalAtLeastOnceTests(PostgreSqlLocalSessionFixture server)
     // Records what an at-least-once handler can see from outside its attempt.
     public sealed class Probe
     {
+        internal Func<int, CancellationToken, ValueTask>? BeforeObserve { get; set; }
         internal ConcurrentQueue<(int Value, bool TransactionRejected, bool ClaimCommittedAndUnlocked)> Observations { get; } = new();
 
         internal async Task ObserveAsync(NpgsqlDataSource source, int value, PostgreSqlLocalDelivery delivery, CancellationToken cancellationToken)
         {
+            if (BeforeObserve is { } before) await before(value, cancellationToken);
             var rejected = false;
             try { _ = delivery.Transaction; }
             catch (InvalidOperationException error) when (error.Message.Contains("AtLeastOnce", StringComparison.Ordinal)) { rejected = true; }

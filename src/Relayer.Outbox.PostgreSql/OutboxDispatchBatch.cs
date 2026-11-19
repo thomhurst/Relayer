@@ -35,6 +35,13 @@ internal sealed class OutboxDispatchBatch
         source.Count = 0;
     }
 
+    internal BufferedOutboxMessage ExchangeRow(int index, BufferedOutboxMessage replacement)
+    {
+        var row = Rows[index];
+        Rows[index] = replacement;
+        return row;
+    }
+
     // Take excludes ordered lanes, so unstable sorting cannot change an ordering guarantee.
     internal void Sort() => CollectionsMarshal.AsSpan(Rows)[..Count].Sort(Comparison);
 

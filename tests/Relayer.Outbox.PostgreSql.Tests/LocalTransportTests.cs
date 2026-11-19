@@ -604,7 +604,7 @@ public class LocalTransportTests(PostgreSqlLocalSessionFixture server)
     }
 
     internal static ServiceProvider Provider(NpgsqlDataSource source, bool ordered = false, bool directHandoff = false, int maxAttempts = 1, FailureAction? failureAction = null,
-        Action<PostgreSqlLocalConsumerOptions>? consumerOptions = null, ILoggerProvider? logs = null)
+        Action<PostgreSqlLocalConsumerOptions>? consumerOptions = null, ILoggerProvider? logs = null, int concurrency = 1)
     {
         var services = new ServiceCollection().AddLogging(logging =>
         {
@@ -624,6 +624,7 @@ public class LocalTransportTests(PostgreSqlLocalSessionFixture server)
                 transport.Consume("work", consumer =>
                 {
                     consumerOptions?.Invoke(consumer.Options);
+                    consumer.Concurrency(concurrency);
                     consumer.Handler<LocalHandler>();
                 });
             }, new() { Lanes = 1, MaxDispatchAttempts = maxAttempts });
