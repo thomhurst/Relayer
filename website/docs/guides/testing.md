@@ -5,7 +5,7 @@ description: "Observe message handling with a host-local harness or invoke handl
 
 `Relayer.Testing` supplies `RelayerHarness`, `TestMessageContext` and the [transport conformance suite](../transports/conformance.md). The harness is independent of the test framework. Relayer tests it with parallel TUnit tests.
 
-## Observe a host
+## Test that a handler processes an order
 
 Register the harness **after** `AddRelayer` and all transport registrations. Configure real message identities, generated handlers and routes as usual:
 
@@ -21,7 +21,7 @@ services.AddRelayer(builder =>
     builder.InMemory("tests", transport =>
     {
         transport.Send<OrderPlaced>("orders");
-        transport.Consume("orders", consumer => consumer.Handler<OrderHandler>());
+        transport.Consume<OrderHandler>("orders");
     });
 });
 services.AddRelayerHarness();
@@ -36,8 +36,19 @@ await scope.ServiceProvider.GetRequiredService<ISender>()
     .SendAsync(new OrderPlaced("A-1001"));
 
 using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(10));
-await harness.WaitForIdleAsync(deadline.Token);
+var handled = await harness.WaitForConsumedAsync<OrderPlaced>(
+    order => order.OrderId == "A-1001", deadline.Token);
+```
 
+The wait matches a successfully handled delivery, even if it completed before the wait began.
+The same test works with a real broker. The deadline bounds the wait if the handler never processes the order.
+
+## Inspect a whole message flow
+
+For an in-memory test that asserts on every message in a flow, wait for idle before reading the snapshots:
+
+```csharp
+await harness.WaitForIdleAsync(deadline.Token);
 var logicalSend = harness.Sent[0];
 var received = harness.Consumed[0];
 var orders = harness.GetConsumed<OrderPlaced>();

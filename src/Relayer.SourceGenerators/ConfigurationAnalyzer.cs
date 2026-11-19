@@ -115,7 +115,7 @@ public sealed class ConfigurationAnalyzer : DiagnosticAnalyzer
                 // Only our generated registration methods count. Unrelated APIs with the same
                 // names must not hide an unregistered handler.
                 if (!SymbolEqualityComparer.Default.Equals(method.ContainingType, registration)) return;
-                if (method.Name == "Handler" && method.TypeArguments.Length == 1)
+                if (method.Name is "Handler" or "Consume" && method.TypeArguments.Length == 1)
                 {
                     var handler = method.TypeArguments[0];
                     registered.TryAdd(handler, 0);

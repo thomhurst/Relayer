@@ -111,6 +111,9 @@ broker can repeat on redelivery; cancellation does not undo them.
 
 ## Registration without scanning
 
+For a single handler with default consumer settings, call `local.Consume<OrderPlacedHandler>("orders")`.
+Use the configuration callback when the endpoint needs native options, middleware or several handlers.
+
 Relayer never scans assemblies at runtime. Register handlers inside `AddRelayer`:
 
 ```csharp

@@ -23,7 +23,7 @@ public sealed class HandlerGenerator : IIncrementalGenerator
         context.RegisterPostInitializationOutput(static output => output.AddEmbeddedAttributeDefinition());
         var handlers = context.SyntaxProvider.CreateSyntaxProvider(
                 static (node, _) => node is TypeDeclarationSyntax { BaseList: not null }
-                    or GenericNameSyntax { Identifier.ValueText: "Handler", TypeArgumentList.Arguments.Count: 1 },
+                    or GenericNameSyntax { Identifier.ValueText: "Handler" or "Consume", TypeArgumentList.Arguments.Count: 1 },
                 static (ctx, ct) => Discover(ctx, ct))
             .SelectMany(static (models, _) => models)
             .WithTrackingName("HandlerModels")
@@ -149,6 +149,14 @@ public sealed class HandlerGenerator : IIncrementalGenerator
 
     private static void EmitRegistration(StringBuilder builder, DispatchModel[] contracts)
     {
+        builder.AppendLine("    /// <summary>Consumes from the source using the named handler and default consumer settings.</summary>");
+        builder.AppendLine("    public static void Consume<THandler>(this global::Relayer.ITransportConsumerBuilder transport, string source)");
+        builder.AppendLine("        where THandler : class, global::Relayer.IHandlerMarker");
+        builder.AppendLine("    {");
+        builder.AppendLine("        global::System.ArgumentNullException.ThrowIfNull(transport);");
+        builder.AppendLine("        transport.Consume(source, static consumer => consumer.Handler<THandler>());");
+        builder.AppendLine("    }");
+        builder.AppendLine();
         builder.AppendLine("    public static global::Relayer.IConsumerBuilder Handler<THandler>(this global::Relayer.IConsumerBuilder builder)");
         builder.AppendLine("        where THandler : class, global::Relayer.IHandlerMarker");
         builder.AppendLine("    {");
