@@ -111,6 +111,7 @@ public static class EntityFrameworkCoreOutboxExtensions
     }
 
     /// <summary>Selects the context that owns sends. Retained for callers compiled against the disposable return type.</summary>
+    [System.ComponentModel.EditorBrowsable(System.ComponentModel.EditorBrowsableState.Never)]
     public static IDisposable EnlistRelayerOutbox(DbContext context) => DbContextOutboxExtensions.EnlistRelayerOutbox(context);
 
     private sealed class RootProvider(IServiceProvider provider)

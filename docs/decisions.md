@@ -100,6 +100,7 @@ To change a decision, add a new entry that supersedes it rather than editing his
 | [D87](#d87-generic-code-registers-a-handler-with-its-message-type) | Generic code registers a handler with its message type | Accepted |
 | [D88](#d88-kafka-provisioning-waits-for-concurrent-creations-through-read-only-metadata) | Kafka provisioning waits for concurrent creations through read-only metadata | Accepted |
 | [D89](#d89-registered-outboxes-require-enlistment-for-automatic-sends) | Registered outboxes require enlistment for automatic sends | Accepted |
+| [D90](#d90-ef-core-outbox-selections-own-their-sends) | EF Core outbox selections own their sends | Accepted |
 
 ---
 
@@ -2045,4 +2046,10 @@ This resolves the release scope of D20, D45, D56, D60 and D66 without removals, 
 
 **Consequences.** Applications that relied on the inactive-outbox fallback must activate their business transaction or explicitly select direct sending. `SendRouteOptions.TransactionRequirement.None` does not restore the fallback; it leaves route-specific guarantees unspecified. The common path adds only constant-time checks and no allocations. Native send, transaction, settlement and outbox dispatch implementations are unchanged. See the [upgrade guide](https://relayer.tomlonghurst.dev/docs/migration/outbox-sends).
 
-EF Core callers can also enqueue through the selection returned by `DbContext.EnlistRelayerOutbox()`. The handle binds each send to its own context through the existing send pipeline, even while a nested selection is active. The selected context retains its existing save, commit and rollback semantics.
+## D90. EF Core outbox selections own their sends
+
+**Context.** A scoped sender follows the innermost EF Core selection. Code holding two context selections needs to express which database should commit each event.
+
+**Decision.** When application code selects a context with `db.EnlistRelayerOutbox()`, use the returned handle's `EnqueueAsync` method. Each handle binds the existing send pipeline to its own context. Existing scoped senders keep their selection and explicit transaction semantics.
+
+**Consequences.** Enqueue completion means the selected context has enlisted the send. Its transaction commits or rolls back the row. The extension now resides on `DbContextOutboxExtensions`. Already compiled applications reference the original declaring type and the `IDisposable` return signature. Keep that static method as a forwarding shim hidden from IntelliSense.
