@@ -27,6 +27,7 @@ internal sealed class NatsNativeTransport : ITransport, ITransportSendTracing
     private readonly MessageTracing _tracing;
     private readonly ILogger<NatsConsumerWorker>? _consumerLogger;
     internal List<NatsConsumerWorker> Consumers { get; } = [];
+    internal NatsConnection? Connection => _connection;
 
     internal NatsNativeTransport(string name, NatsTransportOptions options, TransportDefinition definition, MessageTracing tracing, ILoggerFactory? logging = null)
     {

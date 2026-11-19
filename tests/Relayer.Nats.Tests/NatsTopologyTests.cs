@@ -146,23 +146,30 @@ public class NatsTopologyTests
             options.Streams.Add(new("events") { Configuration = new("events", ["events.>"]) });
             options.Consumers.Add(new("events", "handler") { Configuration = new("handler") });
         });
-        var transport = provider.GetRequiredService<ITransport>();
+        var transport = (NatsNativeTransport)provider.GetRequiredService<ITransport>();
         await transport.StartAsync(token);
         await Assert.That((await transport.ApplyTopologyAsync(TopologyMode.Validate, token)).Differences.Count).IsEqualTo(0);
-        var disconnected = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var reopened = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        admin.ConnectionDisconnected += (_, _) => { disconnected.TrySetResult(); return default; };
-        admin.ConnectionOpened += (_, _) =>
-        {
-            if (disconnected.Task.IsCompleted) reopened.TrySetResult();
-            return default;
-        };
+
+        var adminReopened = ObserveReconnect(admin);
+        var readerReopened = ObserveReconnect(transport.Connection!);
         await broker.RestartAsync(token);
-        await reopened.Task.WaitAsync(token);
-        // Native ping waits for the client's reconnect. No adapter reconnect loop or timing sleep is needed.
-        await transport.StartAsync(token);
+        await Task.WhenAll(adminReopened, readerReopened).WaitAsync(token);
+
         await Assert.That((await transport.ApplyTopologyAsync(TopologyMode.Validate, token)).Differences.Count).IsEqualTo(0);
         await Assert.That((await js.GetStreamAsync("events", cancellationToken: token)).Info.State.Messages).IsEqualTo(0L);
+
+        static Task ObserveReconnect(NatsConnection connection)
+        {
+            var disconnected = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var reopened = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            connection.ConnectionDisconnected += (_, _) => { disconnected.TrySetResult(); return default; };
+            connection.ConnectionOpened += (_, _) =>
+            {
+                if (disconnected.Task.IsCompleted) reopened.TrySetResult();
+                return default;
+            };
+            return reopened.Task;
+        }
     }
 
     internal sealed class Broker(IContainer container) : IAsyncDisposable
