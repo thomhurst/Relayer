@@ -1,7 +1,6 @@
 using System.Collections.Frozen;
 using System.Runtime.CompilerServices;
 using Dekaf;
-using Dekaf.Admin;
 using Dekaf.Producer;
 using Dekaf.Serialization;
 using Microsoft.Extensions.Logging;
@@ -73,27 +72,8 @@ internal sealed class KafkaProducerTransport : ITransport, ITransportSendTracing
     private SendTracing? Endpoint(string destination) => _endpoints.TryGetValue(destination, out var tracing) ? tracing
         : throw new InvalidOperationException($"Kafka transport '{Name}': undeclared topic '{destination}'. Declare a send route first.");
 
-    public async ValueTask<TopologyReport> ApplyTopologyAsync(TopologyMode mode, CancellationToken cancellationToken)
-    {
-        cancellationToken.ThrowIfCancellationRequested();
-        if (mode == TopologyMode.None) return new TopologyReport([]);
-        if (mode != TopologyMode.Validate)
-            throw new NotSupportedException($"Kafka transport '{Name}': topology provisioning is not implemented. Create topics externally and use TopologyMode.Validate or TopologyMode.None.");
-        if (_endpoints.Count == 0) return new TopologyReport([]);
-        var options = _options ?? throw new InvalidOperationException("Kafka topology validation requires native admin configuration.");
-        var builder = new AdminClientBuilder().WithBootstrapServers(options.BootstrapServers.ToArray());
-        options.ConfigureAdmin?.Invoke(builder);
-        await using var admin = builder.Build();
-        // Listing all topics never requests metadata for a missing name: unlike targeted
-        // DescribeTopicsAsync in Dekaf 1.27, it cannot trigger broker auto-creation.
-        var topics = await admin.ListTopicsAsync(new ListTopicsOptions { ListInternal = true }, cancellationToken).ConfigureAwait(false);
-        var existing = new HashSet<string>(topics.Select(static topic => topic.Name), StringComparer.Ordinal);
-        var differences = new List<string>();
-        foreach (var topic in _endpoints.Keys.Order(StringComparer.Ordinal))
-            if (!existing.Contains(topic))
-                differences.Add($"Topic '{topic}' is missing or not visible to the admin client. Create it externally and grant topic metadata access (ConfigureAdmin).");
-        return new TopologyReport(differences);
-    }
+    public ValueTask<TopologyReport> ApplyTopologyAsync(TopologyMode mode, CancellationToken cancellationToken) =>
+        KafkaTopology.ApplyAsync(Name, _options, _endpoints.Keys, mode, cancellationToken);
 
     public ValueTask SendAsync(OutgoingMessage message, CancellationToken cancellationToken) =>
         Endpoint(message.Destination) is { } tracing ? tracing.SendAsync(message, cancellationToken) : SendCoreAsync(message, cancellationToken);

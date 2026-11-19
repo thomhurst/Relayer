@@ -311,6 +311,7 @@ const status = [
   ['Apache Pulsar transport', 'Planned; Native AOT prerequisite', false],
   ['AsyncAPI topology and JSON contract export', 'Implemented; protocol bindings unsupported', true],
   ['Kafka parallel receive via Dekaf', 'Implemented; key ordering and native commits', true],
+  ['Kafka topic topology via native admin APIs', 'Implemented; validation and create-only provisioning', true],
   ['Kafka to database through the EF Core inbox/outbox', 'Implemented; crash-tested replay', true],
   ['Kafka-to-Kafka exactly-once via native transactions', 'Implemented; handler sends and dead-letter copies commit with offsets', true],
   ['Health checks with application-provided adapters', 'Implemented', true],
