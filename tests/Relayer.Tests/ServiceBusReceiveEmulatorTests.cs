@@ -271,7 +271,7 @@ internal sealed class ServiceBusReceiveBroker : IAsyncDisposable
                   { "name": "amqp", "listen": "0.0.0.0:5672", "upstream": "servicebus:5672", "enabled": true },
                   { "name": "management", "listen": "0.0.0.0:5300", "upstream": "servicebus:5300", "enabled": true }
                 ]
-                """), "/proxies.json")
+                """), FilePath.Of("/proxies.json"))
             .WithCommand("-config", "/proxies.json")
             .WithWaitStrategy(Wait.ForUnixContainer().UntilMessageIsLogged("Populated proxies from file"));
         if (OperatingSystem.IsLinux())
