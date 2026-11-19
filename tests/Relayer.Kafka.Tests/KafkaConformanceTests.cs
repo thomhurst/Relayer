@@ -11,14 +11,33 @@ namespace Relayer.Kafka.Tests;
 
 public class KafkaConformanceTests
 {
+    [ClassDataSource<KafkaHeaderSnapshotBroker>(Shared = SharedType.PerTestSession)]
+    public required KafkaHeaderSnapshotBroker Broker { get; init; }
+
     [Test]
     [Arguments(TransportConformanceCase.SendReceiveSettle)]
     [Arguments(TransportConformanceCase.OrderingByKey)]
     [Arguments(TransportConformanceCase.TracePropagation)]
     [Arguments(TransportConformanceCase.CreationContextCopies)]
+    [Arguments(TransportConformanceCase.CleanShutdown)]
+    public async Task Kafka_passes(TransportConformanceCase scenario)
+    {
+        // The fixture uses the destination as its consumer group ID.
+        var destination = TestContext.Current!.Isolation.GetIsolatedName("conformance").ToLowerInvariant();
+        var suite = new TransportConformanceSuite<KafkaDelivery, KafkaMessageBinding>(async (tracing, token) =>
+        {
+            await Broker.Started.WaitAsync(token);
+            return await KafkaFixture.CreateAsync(tracing, Broker.Bootstrap, destination, token);
+        }, TimeSpan.FromMinutes(2));
+        await Assert.That((await suite.RunAsync(scenario)).Skipped).IsFalse();
+    }
+}
+
+public class KafkaOutageConformanceTests
+{
+    [Test]
     [Arguments(TransportConformanceCase.Reconnect)]
     [Arguments(TransportConformanceCase.SendDuringOutage)]
-    [Arguments(TransportConformanceCase.CleanShutdown)]
     public async Task Kafka_passes(TransportConformanceCase scenario)
     {
         var suite = new TransportConformanceSuite<KafkaDelivery, KafkaMessageBinding>(KafkaFixture.CreateAsync, TimeSpan.FromMinutes(2));
