@@ -133,9 +133,38 @@ public class ShutdownConformanceTests
         }
     }
 
+    [Test]
+    public async Task Pending_initial_start_fails_when_scenario_is_cancelled_and_cleanup_releases_it()
+    {
+        using var cancellation = new CancellationTokenSource();
+        var startEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var startRelease = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var suite = new TransportConformanceSuite<InMemoryDelivery, InMemoryMessageBinding>((tracing, _) =>
+            new ValueTask<ITransportConformanceFixture<InMemoryDelivery>>(
+                new BrokenFixture(tracing, false, false, false, startEntered: startEntered, startRelease: startRelease)));
+
+        var run = suite.RunAsync(TransportConformanceCase.SendReceiveSettle, cancellation.Token);
+        try
+        {
+            await startEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            cancellation.Cancel();
+
+            var error = await Assert.That(async () => await run.WaitAsync(TimeSpan.FromSeconds(5)))
+                .Throws<InvalidOperationException>();
+            await Assert.That(error!.Message).Contains("transport start");
+            await Assert.That(error.InnerException is OperationCanceledException).IsTrue();
+            await Assert.That(startRelease.Task.IsCompletedSuccessfully).IsTrue();
+        }
+        finally
+        {
+            startRelease.TrySetResult();
+        }
+    }
+
     private sealed class BrokenFixture(MessageTracing tracing, bool earlyStop, bool disposalError, bool nativeViolation,
         bool asynchronousEarlyStop = false, Action? cancelScenarioAfterReceive = null,
-        Action? cancelPendingLifecycle = null, bool stallRestart = false, Func<ValueTask>? verifyShutdown = null)
+        Action? cancelPendingLifecycle = null, bool stallRestart = false, Func<ValueTask>? verifyShutdown = null,
+        TaskCompletionSource? startEntered = null, TaskCompletionSource? startRelease = null)
         : ITransportConformanceFixture<InMemoryDelivery>, ITransportShutdownConformanceFixture, ITransport
     {
         private readonly InMemoryFixture _inner = new(tracing);
@@ -178,6 +207,12 @@ public class ShutdownConformanceTests
         public ValueTask<TopologyReport> ApplyTopologyAsync(TopologyMode mode, CancellationToken token) => _inner.Transport.ApplyTopologyAsync(mode, token);
         public Task StartAsync(CancellationToken token)
         {
+            if (startRelease is not null)
+            {
+                startEntered!.SetResult();
+                return startRelease.Task;
+            }
+
             if (stallRestart && ++_startCalls == 2)
                 return StallLifecycle();
             return _inner.Transport.StartAsync(token);
@@ -206,6 +241,7 @@ public class ShutdownConformanceTests
                 PendingLifecycleReleasedByCleanup = token.CanBeCanceled && !token.IsCancellationRequested;
                 ReleasePendingLifecycle();
             }
+            startRelease?.TrySetResult();
             _stopRelease.TrySetResult();
             if (firstStop && asynchronousEarlyStop)
             {

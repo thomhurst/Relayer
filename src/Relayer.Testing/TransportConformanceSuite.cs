@@ -171,7 +171,7 @@ public sealed class TransportConformanceSuite<TIncoming, TBinding>
         Exception? failure = null;
         try
         {
-            await fixture.Transport.StartAsync(token).ConfigureAwait(false);
+            await fixture.Transport.StartAsync(token).WaitAsync(token).ConfigureAwait(false);
             await RunScenarioAsync(scenario, fixture, received.Reader, spans, () => redeliverAt, orderRelease, progress, shutdown, token).ConfigureAwait(false);
         }
         catch (Exception error)
