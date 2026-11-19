@@ -69,14 +69,47 @@ public class ShutdownConformanceTests
         await Assert.That(fixture!.PendingStopReleased).IsTrue();
     }
 
+    [Test]
+    [Arguments(false, "transport drain")]
+    [Arguments(true, "transport restart")]
+    public async Task Pending_lifecycle_operation_fails_when_scenario_is_cancelled(bool stallRestart, string phase)
+    {
+        using var cancellation = new CancellationTokenSource();
+        BrokenFixture? fixture = null;
+        var suite = new TransportConformanceSuite<InMemoryDelivery, InMemoryMessageBinding>((tracing, _) =>
+            new ValueTask<ITransportConformanceFixture<InMemoryDelivery>>(
+                fixture = new BrokenFixture(tracing, false, false, false,
+                    cancelPendingLifecycle: cancellation.Cancel, stallRestart: stallRestart)));
+
+        try
+        {
+            var error = await Assert.That(async () =>
+                    await suite.RunAsync(TransportConformanceCase.SendReceiveSettle, cancellation.Token)
+                        .WaitAsync(TimeSpan.FromSeconds(5)))
+                .Throws<InvalidOperationException>();
+            await Assert.That(error!.Message).Contains(phase);
+            await Assert.That(error.InnerException is OperationCanceledException).IsTrue();
+            await Assert.That(fixture!.PendingLifecycleReleasedByCleanup).IsTrue();
+        }
+        finally
+        {
+            fixture?.ReleasePendingLifecycle();
+        }
+    }
+
     private sealed class BrokenFixture(MessageTracing tracing, bool earlyStop, bool disposalError, bool nativeViolation,
-        bool asynchronousEarlyStop = false, Action? cancelScenarioAfterReceive = null)
+        bool asynchronousEarlyStop = false, Action? cancelScenarioAfterReceive = null,
+        Action? cancelPendingLifecycle = null, bool stallRestart = false)
         : ITransportConformanceFixture<InMemoryDelivery>, ITransportShutdownConformanceFixture, ITransport
     {
         private readonly InMemoryFixture _inner = new(tracing);
         private readonly TaskCompletionSource _settlementRelease = new(TaskCreationOptions.RunContinuationsAsynchronously);
         private readonly TaskCompletionSource _stopRelease = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource _pendingLifecycle = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private int _startCalls;
         private int _stopCalls;
+        public bool PendingLifecycleReleasedByCleanup { get; private set; }
+        public void ReleasePendingLifecycle() => _pendingLifecycle.TrySetResult();
         public bool PendingStopReleased => _stopRelease.Task.IsCompletedSuccessfully;
         public ConformanceLogCapture Logs => _inner.Logs;
         public ITransport Transport => this;
@@ -105,7 +138,18 @@ public class ShutdownConformanceTests
         public ValueTask SendAsync(OutgoingMessage message, CancellationToken token) => _inner.Transport.SendAsync(message, token);
         public ValueTask SendBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken token) => _inner.Transport.SendBatchAsync(messages, token);
         public ValueTask<TopologyReport> ApplyTopologyAsync(TopologyMode mode, CancellationToken token) => _inner.Transport.ApplyTopologyAsync(mode, token);
-        public Task StartAsync(CancellationToken token) => _inner.Transport.StartAsync(token);
+        public Task StartAsync(CancellationToken token)
+        {
+            if (stallRestart && ++_startCalls == 2)
+                return StallLifecycle();
+            return _inner.Transport.StartAsync(token);
+        }
+
+        private Task StallLifecycle()
+        {
+            cancelPendingLifecycle!.Invoke();
+            return _pendingLifecycle.Task;
+        }
         public async Task StopAsync(CancellationToken token)
         {
             var firstStop = Interlocked.Increment(ref _stopCalls) == 1;
@@ -113,6 +157,16 @@ public class ShutdownConformanceTests
             {
                 await _stopRelease.Task;
                 return;
+            }
+            if (firstStop && cancelPendingLifecycle is not null && !stallRestart)
+            {
+                await StallLifecycle();
+                return;
+            }
+            if (!firstStop && cancelPendingLifecycle is not null)
+            {
+                PendingLifecycleReleasedByCleanup = token.CanBeCanceled && !token.IsCancellationRequested;
+                ReleasePendingLifecycle();
             }
             _stopRelease.TrySetResult();
             if (firstStop && asynchronousEarlyStop)
