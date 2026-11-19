@@ -4,7 +4,7 @@ description: "Relayer wraps the native .NET client for your message broker and a
 slug: /intro
 ---
 
-Relayer is a .NET messaging library. It wraps the native client for your broker (Kafka through [Dekaf](https://dekaf.tomlonghurst.dev/), Azure Service Bus, Amazon SQS/SNS, RabbitMQ) and removes the ceremony around it:
+Relayer is a .NET messaging library that wraps native clients. See the [transport list](transports/index.md) for available integrations and their status. Relayer adds the following features.
 
 - retries, delayed redelivery and dead-lettering with full error history
 - a transactional outbox and inbox
@@ -13,7 +13,7 @@ Relayer is a .NET messaging library. It wraps the native client for your broker 
 - declared, validated topology
 - a test harness
 
-It is **not** a new broker abstraction. Relayer never changes how the underlying client sends, receives, orders or acknowledges messages. Native settlement, partitioning, sessions and dead-letter queues are used as they are, and the native message is always one call away.
+Relayer uses native sending, receiving, ordering and settlement, and the native message is always one call away. It buffers direct sends made through `ISender` in a handler until the attempt succeeds and discards them if it fails. When a broker cannot dead-letter a message on demand with error metadata, Relayer sends a copy with that metadata to the dead-letter endpoint before completing the original. See the [failure handling guide](guides/failure-handling.md) for details.
 
 :::caution[Early development]
 

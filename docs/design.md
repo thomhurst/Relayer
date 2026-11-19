@@ -4,15 +4,15 @@ This document records architectural contracts and target designs. Implementation
 planned capabilities live in the [site roadmap](../website/docs/roadmap.md); transport guides
 document executable application examples. A design here is not a claim of adapter support.
 
-Relayer is a modern .NET messaging library. It wraps existing messaging technologies (Kafka, Azure Service Bus, Amazon SQS/SNS, RabbitMQ, and more) and takes away the ceremony around them: resiliency, outbox/inbox, telemetry, trace propagation, serialization, topology, and testing.
+Relayer is a modern .NET messaging library. It wraps native clients and adds resiliency, outbox/inbox, telemetry, trace propagation, serialization, topology, and testing. The [transport list](../website/docs/transports/index.md) records each integration and its status.
 
-It is **not** a new broker abstraction. Sending, receiving, ordering and acknowledgement stay with the native client, and that client is always reachable. Relayer adds behaviour of its own in two deliberate places: messages a handler sends are held until its attempt succeeds (§5), and where a broker cannot dead-letter one message on demand with error metadata, Relayer sends a copy to the dead-letter endpoint and then completes the original (§2.3, D24).
+Sending, receiving, ordering and acknowledgement stay with the native client, and that client is always reachable. Relayer buffers direct sends a handler makes through `ISender` until the attempt succeeds and discards them if it fails (§5). When a broker cannot dead-letter a message on demand with error metadata, Relayer sends a copy with that metadata to the dead-letter endpoint before completing the original (§2.3, D24).
 
 ---
 
 ## 1. Principles
 
-1. **Wrap, don't replace.** Every transport uses a native .NET client for its technology: Dekaf for Kafka, and the official SDKs for Azure Service Bus, SQS/SNS, and RabbitMQ. Native settlement, ordering, partitioning, sessions, and dead-lettering are used as-is. Relayer never emulates a feature the broker already has, and it calls a feature the native client already ships rather than re-implementing it (D42).
+1. **Wrap, don't replace.** Broker transports use a native .NET client for their technology. Relayer uses native settlement, ordering, partitioning and sessions, and uses native dead-lettering when it can preserve error metadata on demand (D24). Relayer never emulates a feature the broker already has, and it calls a feature the native client already ships rather than re-implementing it (D42).
 2. **No lowest common denominator.** Portable features (retry, outbox, tracing) are uniform. Transport-specific features are exposed through typed, discoverable extensions rather than hidden behind a generic API.
 3. **Explicit over magic.** No assembly scanning. No runtime code generation. Every handler, route, and piece of topology is declared in code or produced by a source generator you can read.
 4. **Correct by default.** The safe behaviour is the default behaviour: at-least-once delivery, idempotent consumers via the inbox, poison messages go to a dead-letter queue (they never crash or stall a consumer), and settlement happens only after the work is durable.
