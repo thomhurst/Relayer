@@ -2,7 +2,6 @@ using System.Diagnostics;
 using Amazon.Runtime;
 using Amazon.SQS;
 using Amazon.SQS.Model;
-using DotNet.Testcontainers.Builders;
 using DotNet.Testcontainers.Containers;
 using Microsoft.Extensions.Logging;
 using Relayer.AmazonSqs;
@@ -14,7 +13,7 @@ namespace Relayer.Tests;
 public sealed class SqsConformanceTests
 {
     [Test]
-    public async Task LocalStack_passes_standard_and_FIFO_transport_contracts()
+    public async Task Floci_passes_standard_and_FIFO_transport_contracts()
     {
         using var deadline = new CancellationTokenSource(TimeSpan.FromMinutes(8));
         await using var broker = await SqsBroker.StartAsync(deadline.Token);
@@ -24,7 +23,7 @@ public sealed class SqsConformanceTests
             var suite = new TransportConformanceSuite<SqsDelivery, SqsMessageBinding>(
                 (tracing, token) => SqsConformanceFixture.CreateAsync(broker, tracing, fifo, token), TimeSpan.FromMinutes(1));
             var result = await suite.RunAsync(scenario, deadline.Token);
-            // Specific-message dead-lettering is a core durable-copy fallback, tested in SqsReceiveLocalStackTests.
+            // Specific-message dead-lettering is a core durable-copy fallback, tested in SqsReceiveFlociTests.
             await Assert.That(result.Skipped).IsEqualTo(scenario == TransportConformanceCase.DeadLetter);
         }
     }
@@ -32,15 +31,12 @@ public sealed class SqsConformanceTests
 
 internal sealed class SqsBroker(IContainer container) : IAsyncDisposable
 {
-    internal string Url => $"http://{container.Hostname}:{container.GetMappedPublicPort(4566)}";
+    internal string Url => SharedBrokers.GetFlociUrl(container);
     private bool _paused;
     internal bool IsPaused => _paused;
     internal static async Task<SqsBroker> StartAsync(CancellationToken token)
     {
-        var builder = new ContainerBuilder("localstack/localstack:4.10.0").WithEnvironment("SERVICES", "sqs")
-            .WithPortBinding(4566, true).WithWaitStrategy(Wait.ForUnixContainer().UntilMessageIsLogged("Ready\\."));
-        if (OperatingSystem.IsLinux()) builder = builder.WithPortBinding("20000-29999", "4566");
-        var container = builder.Build();
+        var container = SharedBrokers.CreateFlociContainer();
         try { await container.StartAsync(token); return new(container); }
         catch { await container.DisposeAsync(); throw; }
     }

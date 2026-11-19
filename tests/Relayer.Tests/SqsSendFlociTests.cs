@@ -7,7 +7,7 @@ using Relayer.AmazonSqs;
 
 namespace Relayer.Tests;
 
-public class SqsSendLocalStackTests
+public class SqsSendFlociTests
 {
     [Test]
     public async Task Standard_fifo_batches_delays_and_read_only_topology_round_trip()
@@ -17,7 +17,7 @@ public class SqsSendLocalStackTests
         var externalUrl = Environment.GetEnvironmentVariable("RELAYER_SQS_SERVICE_URL");
         using var client = new AmazonSQSClient(new BasicAWSCredentials("test", "test"), new AmazonSQSConfig
         {
-            ServiceURL = externalUrl ?? await SharedBrokers.LocalStackUrlAsync(token),
+            ServiceURL = externalUrl ?? await SharedBrokers.FlociUrlAsync(token),
             AuthenticationRegion = "us-east-1",
         });
         var standard = "relayer-" + Guid.NewGuid().ToString("N");
@@ -29,7 +29,7 @@ public class SqsSendLocalStackTests
         try
         {
             IRouteDefinition[] routes = [new RouteDefinition<SqsSendTests.Order>(fifo, null, null, new() { HeaderNames = new("event_") })];
-            await using var transport = new SqsSendTransport("localstack", client, false, options, identityHeaders: SqsSendTransport.ResolveIdentityHeaders(routes));
+            await using var transport = new SqsSendTransport("floci", client, false, options, identityHeaders: SqsSendTransport.ResolveIdentityHeaders(routes));
             var missing = await transport.ApplyTopologyAsync(TopologyMode.Validate, token);
             await Assert.That(missing.Differences.Count).IsEqualTo(2);
             await Assert.That((await transport.ApplyTopologyAsync(TopologyMode.Provision, token)).Differences.Count).IsEqualTo(0);
@@ -100,6 +100,6 @@ public class SqsSendLocalStackTests
             QueueUrl = url, WaitTimeSeconds = 10, MaxNumberOfMessages = 1,
             MessageAttributeNames = ["All"], MessageSystemAttributeNames = ["All"],
         }, token);
-        return response.Messages?.SingleOrDefault() ?? throw new InvalidOperationException("LocalStack did not deliver the expected SQS message.");
+        return response.Messages?.SingleOrDefault() ?? throw new InvalidOperationException("Floci did not deliver the expected SQS message.");
     }
 }

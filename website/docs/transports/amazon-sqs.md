@@ -3,7 +3,7 @@ title: Amazon SQS and SNS
 description: "Native SQS receiving, settlement, health and SNS publishing with AWS SDK v4."
 ---
 
-`Relayer.AmazonSqs` implements native SQS sending and standard/FIFO receivers, and SNS topic publishing with AWS SDK v4. Receivers use native long polling, visibility changes and deletion after durable handling. LocalStack tests cover the transport contracts and production poison-message fallback.
+`Relayer.AmazonSqs` implements native SQS sending and standard/FIFO receivers, and SNS topic publishing with AWS SDK v4. Receivers use native long polling, visibility changes and deletion after durable handling. Floci tests cover the transport contracts and production poison-message fallback.
 
 ## Register sending
 

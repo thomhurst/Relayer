@@ -65,18 +65,18 @@ public sealed class SqsConsumerControlTests
     }
 
     [Test]
-    public async Task LocalStack_consumer_receives_only_after_the_deferred_start()
+    public async Task Floci_consumer_receives_only_after_the_deferred_start()
     {
         using var deadline = new CancellationTokenSource(TimeSpan.FromMinutes(3));
         var token = deadline.Token;
         using var client = new AmazonSQSClient(new BasicAWSCredentials("test", "test"), new AmazonSQSConfig
         {
-            ServiceURL = await SharedBrokers.LocalStackUrlAsync(token),
+            ServiceURL = await SharedBrokers.FlociUrlAsync(token),
             AuthenticationRegion = "us-east-1",
         });
         var source = TestContext.Current!.Isolation.GetIsolatedName("deferred");
         var dead = TestContext.Current!.Isolation.GetIsolatedName("deferred-dead");
-        var control = new SqsReceiveLocalStackTests.Control();
+        var control = new SqsReceiveFlociTests.Control();
         var builder = Host.CreateApplicationBuilder();
         builder.Services.AddSingleton(control);
         builder.Services.AddRelayer(relayer =>
@@ -93,7 +93,7 @@ public sealed class SqsConsumerControlTests
                 });
                 sqs.Consume(source, consumer =>
                 {
-                    consumer.Handler<SqsReceiveLocalStackTests.Handler>();
+                    consumer.Handler<SqsReceiveFlociTests.Handler>();
                     consumer.Options.ConfigureReceive = request => request.WaitTimeSeconds = 1;
                     consumer.Failures(new() { DeadLetterEndpoint = dead });
                 });
@@ -121,7 +121,7 @@ public sealed class SqsConsumerControlTests
     {
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddSingleton(new SqsReceiveLocalStackTests.Control());
+        services.AddSingleton(new SqsReceiveFlociTests.Control());
         services.AddRelayer(relayer =>
         {
             relayer.AddMessageTypesFromThisAssembly();
@@ -136,7 +136,7 @@ public sealed class SqsConsumerControlTests
                 });
                 sqs.Consume("orders", consumer =>
                 {
-                    consumer.Handler<SqsReceiveLocalStackTests.Handler>();
+                    consumer.Handler<SqsReceiveFlociTests.Handler>();
                     consumer.Failures(new() { DeadLetterEndpoint = "dead" });
                 });
             });
