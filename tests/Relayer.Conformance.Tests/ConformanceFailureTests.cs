@@ -113,6 +113,74 @@ public class ConformanceFailureTests
 
     [Test]
     [Arguments(false, false)]
+    [Arguments(false, true)]
+    [Arguments(true, false)]
+    [Arguments(true, true)]
+    public async Task Pending_fixture_disposal_is_bounded_and_consumed_once(bool scenarioFails, bool lateFailure)
+    {
+        using var caller = new CancellationTokenSource();
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var disposal = new ObservedCompletion<int>();
+        var disposeCount = 0;
+        FailingFixture? failedFixture = null;
+        var suite = new TransportConformanceSuite<InMemoryDelivery, InMemoryMessageBinding>((tracing, _) =>
+        {
+            if (scenarioFails)
+            {
+                failedFixture = new FailingFixture
+                {
+                    CancelAfterSend = caller,
+                    DisposalCompletion = new ValueTask(disposal, 0),
+                };
+                return new(failedFixture);
+            }
+            return new(new InMemoryFixture(tracing)
+            {
+                AfterDisposal = () =>
+                {
+                    Interlocked.Increment(ref disposeCount);
+                    entered.TrySetResult();
+                    return new ValueTask(disposal, 0);
+                },
+            });
+        });
+        var run = suite.RunAsync(TransportConformanceCase.SendReceiveSettle, caller.Token);
+        var watchdog = TimeSpan.FromSeconds(30);
+        try
+        {
+            await (scenarioFails ? failedFixture!.DisposedSignal.Task : entered.Task).WaitAsync(watchdog);
+            var error = await CaptureAsync(run.WaitAsync(watchdog));
+            var failures = error is AggregateException aggregate ? aggregate.Flatten().InnerExceptions.ToArray() : [error];
+            await Assert.That(failures.Length).IsEqualTo(scenarioFails ? 2 : 1);
+            var timeout = failures.OfType<TimeoutException>().Single();
+            await Assert.That(timeout.Message).Contains("fixture disposal");
+            await Assert.That(timeout.Message).Contains("15");
+            await Assert.That(disposal.Observed.Task.IsCompleted).IsFalse();
+            if (scenarioFails)
+            {
+                var scenarioFailure = failures.OfType<InvalidOperationException>().Single();
+                await Assert.That(scenarioFailure.Message).Contains("receive completion");
+                await Assert.That(scenarioFailure.InnerException is OperationCanceledException).IsTrue();
+                await Assert.That(caller.IsCancellationRequested).IsTrue();
+                await Assert.That(failedFixture!.StoppedWithLiveToken).IsTrue();
+            }
+            if (lateFailure) disposal.Fail(new IOException("late fixture disposal failed"));
+            else disposal.Complete(0);
+            await disposal.Observed.Task.WaitAsync(watchdog);
+            await Assert.That(disposal.ConsumptionCount).IsEqualTo(1);
+            await Assert.That(scenarioFails ? failedFixture!.DisposeCount : disposeCount).IsEqualTo(1);
+        }
+        finally
+        {
+            disposal.TryComplete(0);
+            try { await run.WaitAsync(watchdog); }
+            catch (Exception) when (run.IsCompleted) { }
+            await disposal.Observed.Task.WaitAsync(watchdog);
+        }
+    }
+
+    [Test]
+    [Arguments(false, false)]
     [Arguments(true, false)]
     [Arguments(false, true)]
     [Arguments(true, true)]

@@ -159,6 +159,7 @@ internal sealed class InMemoryFixture : ITransportConformanceFixture<InMemoryDel
     private readonly bool _log;
     private int _completed;
     internal Func<Task>? AfterDeadLetterRead { get; init; }
+    internal Func<ValueTask>? AfterDisposal { get; init; }
     internal bool StoppedBeforeDisposal { get; private set; }
     internal bool Disposed { get; private set; }
     public ConformanceLogCapture Logs { get; } = new();
@@ -224,5 +225,6 @@ internal sealed class InMemoryFixture : ITransportConformanceFixture<InMemoryDel
         StoppedBeforeDisposal = _transport.Completion.IsCompletedSuccessfully;
         await _transport.DisposeAsync();
         Disposed = true;
+        if (AfterDisposal is { } afterDisposal) await afterDisposal();
     }
 }
