@@ -31,7 +31,7 @@ The EF integration currently supports PostgreSQL/Npgsql. SQL Server has separate
 
 For consumers that change a database, register the implemented [PostgreSQL EF inbox boundary](../reference/ef-core-inbox.md). Transport settlement follows durable work. Inbox deduplication is scoped to the stored consumer/message identity; business operations must still tolerate duplicates from bridges or publishers that assign a new identity. Match native consumer groups or subscriptions explicitly; no attribute scanning or CAP subscriber group discovery occurs.
 
-Configure [failure handling](../guides/failure-handling.md) rather than assuming CAP retry defaults. CAP callback names do not translate automatically; model an explicit response message or use the implemented [request/response](../guides/request-response.md) API after checking its timeout and routing constraints. CAP dashboard/storage history compatibility is unavailable. Scheduled delivery depends on the selected native transport or configured outbox fallback. Parallel Kafka receive remains planned.
+Configure [failure handling](../guides/failure-handling.md) rather than assuming CAP retry defaults. CAP callback names do not translate automatically; model an explicit response message or use the implemented [request/response](../guides/request-response.md) API after checking its timeout and routing constraints. CAP dashboard/storage history compatibility is unavailable. Scheduled delivery depends on the selected native transport or configured outbox fallback. [Kafka receive parallelism](../transports/kafka.md#parallelism-commits-and-rebalances) processes different keys concurrently while preserving offset order for records with the same key within a partition by default.
 
 ## Drain before switching
 
