@@ -242,7 +242,19 @@ public sealed class TransportConformanceSuite<TIncoming, TBinding>
             progress.Phase = $"send {value}";
             var body = Encoding.UTF8.GetBytes($"{{\"Value\":{value}}}");
             var headers = Headers(fixture.HeaderNames, creation);
-            await fixture.Transport.SendAsync(new(fixture.Destination, body, headers, key, at), token).ConfigureAwait(false);
+            var send = fixture.Transport.SendAsync(new(fixture.Destination, body, headers, key, at), token).AsTask();
+            try
+            {
+                await send.WaitAsync(token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (token.IsCancellationRequested)
+            {
+                // The wait can end while the adapter still borrows the arrays. Leave them intact
+                // and observe any late fault from the send after the scenario exits.
+                _ = send.ContinueWith(static task => { _ = task.Exception; }, CancellationToken.None,
+                    TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+                throw;
+            }
             // A native client must not retain the caller's borrowed buffers after SendAsync completes.
             Array.Clear(body);
             Array.Clear(headers);
