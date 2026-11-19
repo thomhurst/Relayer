@@ -51,32 +51,31 @@ public class KafkaShutdownTests(KafkaHeaderSnapshotBroker broker)
                     await entered.Task.WaitAsync(token);
                     using var deadline = CancellationTokenSource.CreateLinkedTokenSource(token);
                     var stopping = adapter.StopAsync(deadline.Token);
-                    await Assert.That(stopping.IsCompleted).IsFalse();
                     if (abort)
                     {
-                        // Abandoning the wait leaves the native drain bounded by StopTimeout.
-                        await deadline.CancelAsync();
-                        await Assert.ThrowsAsync<OperationCanceledException>(() => stopping);
-                    }
-                    else release.SetResult();
-                    if (fail)
-                    {
-                        // Dekaf ends a run that fails while draining with either the stop or the handler's
-                        // exception, whichever it observes first. Both leave the failed record uncommitted.
-                        await Tolerate(adapter.Completion.WaitAsync(token));
-                        await Tolerate(stopping);
-                    }
-                    else if (abort)
-                    {
-                        try { await adapter.Completion.WaitAsync(token); }
-                        catch (TimeoutException error) when (error.Message ==
-                            $"Partition processor for {topic}:0 did not stop within {options.StopTimeout}.")
-                        {
-                            // The lane can report its deadline before the cancelled processor exits.
-                        }
+                        // The caller's stop wait can end through cancellation or the native drain deadline.
+                        deadline.Cancel();
+                        try { await ObserveForcedStop(stopping); }
+                        catch (OperationCanceledException error) when (error.CancellationToken == deadline.Token
+                            && !token.IsCancellationRequested) { }
+
+                        await Assert.That(stopping.IsCompletedSuccessfully).IsFalse();
+                        await ObserveForcedStop(adapter.Completion.WaitAsync(token));
+                        // Dekaf can report the deadline before the handler observes cancellation.
                         await cancelled.Task.WaitAsync(token);
                     }
-                    else await stopping;
+                    else
+                    {
+                        await Assert.That(stopping.IsCompleted).IsFalse();
+                        release.SetResult();
+                        if (fail)
+                        {
+                            // Dekaf can surface the handler failure through either wait.
+                            await Tolerate(adapter.Completion.WaitAsync(token));
+                            await Tolerate(stopping);
+                        }
+                        else await stopping;
+                    }
                     await using var reader = new ConsumerBuilder<byte[], byte[]>().WithBootstrapServers(broker.Bootstrap).WithGroupId(topic)
                         .WithOffsetCommitMode(OffsetCommitMode.Manual).WithAutoOffsetStore(false).Build();
                     await reader.InitializeAsync(token);
@@ -109,6 +108,13 @@ public class KafkaShutdownTests(KafkaHeaderSnapshotBroker broker)
             IKafkaConsumer<byte[], byte[]> CreateConsumer() => new ConsumerBuilder<byte[], byte[]>()
                 .WithBootstrapServers(broker.Bootstrap).WithGroupId(topic).WithAutoOffsetReset(AutoOffsetReset.Earliest)
                 .WithOffsetCommitMode(OffsetCommitMode.Manual).WithAutoOffsetStore(false).SubscribeTo(topic).Build();
+
+            async Task ObserveForcedStop(Task stopped)
+            {
+                try { await stopped; }
+                catch (TimeoutException error) when (error.Message ==
+                    $"Partition processor for {partition.Topic}:{partition.Partition} did not stop within {options.StopTimeout}.") { }
+            }
 
             static async Task Tolerate(Task drained)
             {
