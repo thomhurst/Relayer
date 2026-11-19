@@ -130,7 +130,12 @@ public sealed class RabbitMqConsumerControlTests
         await using var broker = await RabbitMqTopologyTests.Broker.StartAsync(token);
         var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var received = new RabbitMqReceiveControl { Handle = async _ => { entered.TrySetResult(); await release.Task; } };
+        var processingToken = CancellationToken.None;
+        var received = new RabbitMqReceiveControl
+        {
+            NativeCallback = context => processingToken = context.CancellationToken,
+            Handle = async _ => { entered.TrySetResult(); await release.Task; }
+        };
         using var host = RabbitMqReceiveTests.Host(broker.Factory(), received, autoStart: false, secondConsumer: true, thirdConsumer: true);
         var control = host.Services.GetRequiredKeyedService<IConsumerControl>("rabbit");
         await host.StartAsync(token);
@@ -146,13 +151,22 @@ public sealed class RabbitMqConsumerControlTests
         var starting = control.StartAsync(start.Token);
         await entered.Task.WaitAsync(token);
         while ((await channel.QueueDeclarePassiveAsync("orders", token)).ConsumerCount == 0) await Task.Delay(10, token);
-        start.Cancel();
-        // Disposing a channel waits for its running handler, so let the handler finish.
-        release.TrySetResult();
+        var aborted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var registration = processingToken.Register(() => aborted.TrySetResult());
+        try
+        {
+            start.Cancel();
+            await aborted.Task.WaitAsync(token);
+        }
+        finally
+        {
+            // Channel disposal waits for the handler to exit.
+            release.TrySetResult();
+        }
         await Assert.That(async () => await starting.WaitAsync(token)).ThrowsException();
 
-        await Assert.That(transport.Consumers[0].Completion.IsCompleted).IsTrue();
-        await Assert.That(transport.Consumers[1].Completion.IsCompleted).IsTrue();
+        await Assert.That(transport.Consumers[0].Completion.IsCompletedSuccessfully).IsTrue();
+        await Assert.That(transport.Consumers[1].Completion.IsCompletedSuccessfully).IsTrue();
         await Assert.That((await channel.QueueDeclarePassiveAsync("audit", token)).ConsumerCount).IsEqualTo(0u);
         await Assert.That((await channel.QueueDeclarePassiveAsync("orders", token)).ConsumerCount).IsEqualTo(0u);
         await host.StopAsync(token);
