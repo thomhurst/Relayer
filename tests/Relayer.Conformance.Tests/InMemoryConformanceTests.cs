@@ -42,6 +42,46 @@ public class InMemoryConformanceTests
     }
 
     [Test]
+    public async Task Cancelled_dead_letter_read_reports_phase_and_cleans_up_while_read_is_pending()
+    {
+        using var cancellation = new CancellationTokenSource();
+        var readStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var pendingRead = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        InMemoryFixture? fixture = null;
+        var suite = new TransportConformanceSuite<InMemoryDelivery, InMemoryMessageBinding>((tracing, _) =>
+        {
+            fixture = new InMemoryFixture(tracing)
+            {
+                AfterDeadLetterRead = () =>
+                {
+                    readStarted.SetResult();
+                    return pendingRead.Task;
+                },
+            };
+            return new(fixture);
+        });
+        var run = suite.RunAsync(TransportConformanceCase.DeadLetter, cancellation.Token);
+        var watchdog = TimeSpan.FromSeconds(5);
+        try
+        {
+            await readStarted.Task.WaitAsync(watchdog);
+            cancellation.Cancel();
+            var error = await Assert.That(async () => { await run.WaitAsync(watchdog); }).Throws<InvalidOperationException>();
+            await Assert.That(error!.Message).Contains("dead-letter receive");
+            await Assert.That(error.InnerException is OperationCanceledException).IsTrue();
+            await Assert.That(fixture!.StoppedBeforeDisposal).IsTrue();
+            await Assert.That(fixture.Disposed).IsTrue();
+            await Assert.That(pendingRead.Task.IsCompleted).IsFalse();
+        }
+        finally
+        {
+            pendingRead.TrySetResult();
+            try { await run.WaitAsync(watchdog); }
+            catch (InvalidOperationException) { }
+        }
+    }
+
+    [Test]
     public async Task Ordering_allows_native_backpressure_with_one_unsettled_message()
     {
         var suite = new TransportConformanceSuite<InMemoryDelivery, InMemoryMessageBinding>((tracing, _) =>
@@ -118,6 +158,9 @@ internal sealed class InMemoryFixture : ITransportConformanceFixture<InMemoryDel
     private readonly InMemoryTransport _transport;
     private readonly bool _log;
     private int _completed;
+    internal Func<Task>? AfterDeadLetterRead { get; init; }
+    internal bool StoppedBeforeDisposal { get; private set; }
+    internal bool Disposed { get; private set; }
     public ConformanceLogCapture Logs { get; } = new();
 
     internal InMemoryFixture(MessageTracing? tracing, bool log = false, TransportCapabilities? capabilities = null, int capacity = 256)
@@ -162,6 +205,7 @@ internal sealed class InMemoryFixture : ITransportConformanceFixture<InMemoryDel
     public async ValueTask<ConformanceDeadLetter> ReadDeadLetterAsync(CancellationToken cancellationToken)
     {
         var dead = await _transport.DeadLetters(Destination).ReadAsync(cancellationToken);
+        if (AfterDeadLetterRead is { } afterRead) await afterRead();
         return new(dead.Body, dead.Headers.ToArray().ToDictionary(header => header.Key, header => header.Value.ToString()),
             dead.Error.Reason, dead.Error.Description);
     }
@@ -175,5 +219,10 @@ internal sealed class InMemoryFixture : ITransportConformanceFixture<InMemoryDel
         return ValueTask.CompletedTask;
     }
     // InMemoryTransport has no logger or external native receiver. Its completed loop is its closure boundary.
-    public ValueTask DisposeAsync() => _transport.DisposeAsync();
+    public async ValueTask DisposeAsync()
+    {
+        StoppedBeforeDisposal = _transport.Completion.IsCompletedSuccessfully;
+        await _transport.DisposeAsync();
+        Disposed = true;
+    }
 }
