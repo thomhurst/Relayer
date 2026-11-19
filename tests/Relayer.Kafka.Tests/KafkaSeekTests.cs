@@ -13,13 +13,19 @@ namespace Relayer.Kafka.Tests;
 
 public class KafkaSeekTests
 {
+    [ClassDataSource<KafkaHeaderSnapshotBroker>(Shared = SharedType.PerTestSession)]
+    public required KafkaHeaderSnapshotBroker Broker { get; init; }
+
+    private static string Topic() => TestContext.Current!.Isolation.GetIsolatedName("seek").ToLowerInvariant();
+
     [Test]
     public async Task Handler_cancellation_during_a_seek_leaves_the_record_for_replay()
     {
         using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(2));
         var token = timeout.Token;
         using var tracing = new MessageTracing(Options.Create(new TracingOptions()), []);
-        await using var fixture = (KafkaFixture)await KafkaFixture.CreateAsync(tracing, token);
+        await Broker.Started.WaitAsync(token);
+        await using var fixture = await KafkaFixture.CreateAsync(tracing, Broker.Bootstrap, Topic(), token);
         var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var replayed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var attempts = 0;
@@ -64,7 +70,8 @@ public class KafkaSeekTests
         using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(2));
         var token = timeout.Token;
         using var tracing = new MessageTracing(Options.Create(new TracingOptions()), []);
-        await using var fixture = (KafkaFixture)await KafkaFixture.CreateAsync(tracing, token);
+        await Broker.Started.WaitAsync(token);
+        await using var fixture = await KafkaFixture.CreateAsync(tracing, Broker.Bootstrap, Topic(), token);
         var state = new KafkaReplayState { BlockFirst = true };
         using var host = BuildHost(fixture, state);
         var control = host.Services.GetRequiredKeyedService<IKafkaConsumerControl>("events");
@@ -105,7 +112,8 @@ public class KafkaSeekTests
         using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(2));
         var token = timeout.Token;
         using var tracing = new MessageTracing(Options.Create(new TracingOptions()), []);
-        await using var fixture = (KafkaFixture)await KafkaFixture.CreateAsync(tracing, token);
+        await Broker.Started.WaitAsync(token);
+        await using var fixture = await KafkaFixture.CreateAsync(tracing, Broker.Bootstrap, Topic(), token);
         var state = new KafkaReplayState();
         using var host = BuildHost(fixture, state);
         await using var producer = await new ProducerBuilder<byte[], byte[]>().WithBootstrapServers(fixture.Bootstrap).BuildAsync(token);
@@ -154,7 +162,8 @@ public class KafkaSeekTests
         using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(2));
         var token = timeout.Token;
         using var tracing = new MessageTracing(Options.Create(new TracingOptions()), []);
-        await using var fixture = (KafkaFixture)await KafkaFixture.CreateAsync(tracing, token);
+        await Broker.Started.WaitAsync(token);
+        await using var fixture = await KafkaFixture.CreateAsync(tracing, Broker.Bootstrap, Topic(), token);
         var state = new KafkaReplayState { BlockFirst = true };
         using var host = BuildHost(fixture, state);
         await host.StartAsync(token);

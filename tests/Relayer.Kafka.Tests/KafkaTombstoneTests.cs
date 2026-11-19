@@ -17,6 +17,8 @@ namespace Relayer.Kafka.Tests;
 
 public class KafkaTombstoneTests
 {
+    private static string Topic() => TestContext.Current!.Isolation.GetIsolatedName("tombstone").ToLowerInvariant();
+
     [Test]
     public async Task Native_null_dispatches_without_deserialization_and_empty_values_ignore_private_headers()
     {
@@ -76,12 +78,14 @@ public class KafkaTombstoneTests
     }
 
     [Test]
-    public async Task Typed_send_and_receive_preserve_wire_identity_keys_null_values_and_durable_commit()
+    [ClassDataSource<KafkaHeaderSnapshotBroker>(Shared = SharedType.PerTestSession)]
+    public async Task Typed_send_and_receive_preserve_wire_identity_keys_null_values_and_durable_commit(KafkaHeaderSnapshotBroker broker)
     {
         using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(2));
         var token = timeout.Token;
         using var tracing = new MessageTracing(Options.Create(new TracingOptions()), []);
-        await using var fixture = (KafkaFixture)await KafkaFixture.CreateAsync(tracing, token);
+        await broker.Started.WaitAsync(token);
+        await using var fixture = await KafkaFixture.CreateAsync(tracing, broker.Bootstrap, Topic(), token);
         var control = new TombstoneControl { Pause = true };
         var firstCommit = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         using var listener = new ActivityListener
@@ -150,12 +154,14 @@ public class KafkaTombstoneTests
     }
 
     [Test]
-    public async Task Mixed_native_batch_preserves_null_and_empty_values_with_headers()
+    [ClassDataSource<KafkaHeaderSnapshotBroker>(Shared = SharedType.PerTestSession)]
+    public async Task Mixed_native_batch_preserves_null_and_empty_values_with_headers(KafkaHeaderSnapshotBroker broker)
     {
         using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(2));
         var token = timeout.Token;
         using var tracing = new MessageTracing(Options.Create(new TracingOptions()), []);
-        await using var fixture = (KafkaFixture)await KafkaFixture.CreateAsync(tracing, token);
+        await broker.Started.WaitAsync(token);
+        await using var fixture = await KafkaFixture.CreateAsync(tracing, broker.Bootstrap, Topic(), token);
         await fixture.Transport.StartAsync(token);
         KeyValuePair<string, WireString>[] headers = [new("ce_type", new("tests.kafka.tombstone;v=3")), new("ce_id", new("batch"))];
         OutgoingMessage[] messages = [new(fixture.Destination, default, headers, new WireString("delete"), isTombstone: true),
