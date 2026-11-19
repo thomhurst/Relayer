@@ -6,7 +6,7 @@ description: "Native RabbitMQ Stream systems and stream topology, with message e
 This package is not published until it supports both send and receive ([#316](https://github.com/thomhurst/Relayer/issues/316)). Source integration and tests remain available in the repository.
 
 
-`Relayer.RabbitMQ.Streams` manages named native `StreamSystem` instances and stream topology using `RabbitMQ.Stream.Client` 1.12.2. **Relayer sending and receiving are not implemented.** Declaring `Send` or `Consume` fails before connecting. Direct `ITransport.SendAsync` and `SendBatchAsync` calls also fail explicitly.
+`Relayer.RabbitMQ.Streams` manages named native `StreamSystem` instances and stream topology using `RabbitMQ.Stream.Client` 1.13.0. **Relayer sending and receiving are not implemented.** Declaring `Send` or `Consume` fails before connecting. Direct `ITransport.SendAsync` and `SendBatchAsync` calls also fail explicitly.
 
 ## Register a connection and topology
 
@@ -62,7 +62,7 @@ Super-stream provisioning and stream consumer declarations remain planned. A str
 
 ## Message execution status
 
-Full execution remains open under [#316](https://github.com/thomhurst/Relayer/issues/316). The native reliable consumer catches handler exceptions and advances its reconnect offset past failed processing. A failure while persisting handler work or a dead-letter copy must not allow later offsets to skip that work. [rabbitmq-stream-dotnet-client#491](https://github.com/rabbitmq/rabbitmq-stream-dotnet-client/pull/491) merged a native `ConsumerConfig.SubscriptionListener` that can override the subscription offset before each subscription, including reconnects and super-stream partitions, closing [#489](https://github.com/rabbitmq/rabbitmq-stream-dotnet-client/issues/489). The latest released client, 1.12.2, does not include it. Execution remains on hold until a released client supplies that listener; Relayer does not replace native recovery to work around the release gate.
+Message execution is tracked in [#316](https://github.com/thomhurst/Relayer/issues/316). RabbitMQ.Stream.Client 1.13.0 supplies [`ConsumerConfig.SubscriptionListener`](https://github.com/rabbitmq/rabbitmq-stream-dotnet-client/blob/v1.13.0/RabbitMQ.Stream.Client/Reliable/Consumer.cs#L108-L116), which can override the starting offset on each subscription, including reconnects and super-stream partitions. By default, the reliable consumer resumes after the last consumed offset. The planned receive path must resume from durable settlement so a failed handler or dead-letter write can be retried after reconnect. If the listener throws, the native client keeps its default offset, so recovery must handle offset lookup failures before returning from the listener.
 
 The planned adapter will use native stored offsets to resume after the last durable processing boundary. It must stop processing after an unsettled failure and preserve that boundary when offset lookup fails: a listener exception must not allow native recovery to fall back past unsettled work. These safeguards still require implementation and real-broker validation after adopting the released API.
 

@@ -49,12 +49,12 @@
     <PackageVersion Include="Dekaf" Version="1.29.0" />
     <PackageVersion Include="Dekaf.SchemaRegistry" Version="1.29.0" />
     <PackageVersion Include="Azure.Messaging.ServiceBus" Version="7.21.0" />
-    <PackageVersion Include="AWSSDK.SQS" Version="4.1.0" />
-    <PackageVersion Include="AWSSDK.SimpleNotificationService" Version="4.1.0" />
-    <PackageVersion Include="Google.Cloud.PubSub.V1" Version="3.39.0" />
+    <PackageVersion Include="AWSSDK.SQS" Version="4.1.0.2" />
+    <PackageVersion Include="AWSSDK.SimpleNotificationService" Version="4.1.0.2" />
+    <PackageVersion Include="Google.Cloud.PubSub.V1" Version="3.40.0" />
     <PackageVersion Include="RabbitMQ.Client" Version="7.2.2" />
-    <PackageVersion Include="RabbitMQ.Stream.Client" Version="1.12.2" />
-    <PackageVersion Include="NATS.Client.JetStream" Version="3.3.2" />
+    <PackageVersion Include="RabbitMQ.Stream.Client" Version="1.13.0" />
+    <PackageVersion Include="NATS.Client.JetStream" Version="3.4.0" />
   </ItemGroup>
 
   <ItemGroup Label="Serialization">
@@ -87,7 +87,7 @@
     <PackageVersion Include="Testcontainers.Redpanda" Version="4.16.0" />
     <PackageVersion Include="Testcontainers.ServiceBus" Version="4.16.0" />
     <PackageVersion Include="Testcontainers" Version="4.16.0" />
-    <PackageVersion Include="TUnit" Version="1.85.0" />
+    <PackageVersion Include="TUnit" Version="1.87.0" />
     <PackageVersion Include="BenchmarkDotNet" Version="0.15.8" />
   </ItemGroup>
 </Project>
