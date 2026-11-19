@@ -305,7 +305,7 @@ const status = [
   ['Avro with generated codecs and startup-prepared schema registry', 'Implemented; Native AOT/trimming unsupported', true],
   ['SQS receiving, health and SNS topic/queue/subscription topology', 'Implemented', true],
   ['RabbitMQ topology, confirmed sends, receive/settlement and health', 'Implemented', true],
-  ['RabbitMQ Streams native connection and topology', 'Not published; message execution awaits native client release', true],
+  ['RabbitMQ Streams native connection and topology', 'Unpublished. Message execution awaits native graceful shutdown', true],
   ['Google Cloud Pub/Sub native publishing, streaming pull, durable poison copies and topology', 'Implemented; prepared-client Native AOT coverage', true],
   ['NATS JetStream', 'Implemented; native comparison validated', true],
   ['Apache Pulsar transport', 'Planned; Native AOT prerequisite', false],
