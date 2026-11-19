@@ -23,6 +23,8 @@ foreach (var scenario in Enum.GetValues<TransportConformanceCase>())
 
 `NativeDelivery`, `NativeBinding` and `BrokerFixture` above are your adapter's types. Prefer a separate parameterized test for each enum value. Translate `result.Skipped` into your framework's skip mechanism, preserving `SkipReason`; let exceptions fail the test. A broker connection failure or missing tracing is a failure, never a capability skip.
 
+The initial `StartAsync` wait is bounded by the scenario deadline and caller cancellation. If the start task is still pending when that wait is canceled, the suite reports a failure during `transport start` and attempts shutdown.
+
 Scenario failures identify the case and active phase, such as `send 2`, `receive completion` or `broker reconnect`, and retain the original exception as the inner exception. Scenario drain, restart and dead-letter destination read waits, plus the `DisconnectAsync` and `ReconnectAsync` hook waits in `Reconnect` and `SendDuringOutage`, fail at the scenario deadline or on caller cancellation. Cleanup is attempted even when the adapter, fixture or hook task stays pending. Transport shutdown receives a separate ten-second cancellation budget even when the scenario deadline or caller token has expired. If shutdown or fixture disposal also fails, an `AggregateException` retains both the scenario failure and cleanup failures. Fixture disposal must still release its owned resources; the shutdown budget does not impose a disposal deadline.
 
 ## Fixture responsibilities
