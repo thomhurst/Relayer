@@ -28,7 +28,7 @@ public class SenderTests
         var sender = scope.ServiceProvider.GetRequiredService<ISender>();
         await Assert.That(async () => await sender.SendAsync(new OrderPlaced(Guid.NewGuid())))
             .Throws<InvalidOperationException>().WithMessageContaining("database outbox durability does not provide native broker transactions");
-        await sender.SendNowAsync(new OrderPlaced(Guid.NewGuid()), options => options.ConfigureNative<NativeOutgoing>(static native => native.Value = 42));
+        await sender.SendWithoutOutboxAsync(new OrderPlaced(Guid.NewGuid()), options => options.ConfigureNative<NativeOutgoing>(static native => native.Value = 42));
         await Assert.That(transport.Count).IsEqualTo(1);
         await Assert.That(transport.NativeValue).IsEqualTo(42);
         await Assert.That(outbox.Count).IsEqualTo(0);
@@ -75,7 +75,7 @@ public class SenderTests
         var sender = scope.ServiceProvider.GetRequiredService<ISender>();
         await Assert.That(async () => await sender.SendAsync(new OrderPlaced(Guid.NewGuid())))
             .Throws<InvalidOperationException>().WithMessageContaining("active outbox transaction");
-        await Assert.That(async () => await sender.SendNowAsync(new OrderPlaced(Guid.NewGuid())))
+        await Assert.That(async () => await sender.SendWithoutOutboxAsync(new OrderPlaced(Guid.NewGuid())))
             .Throws<InvalidOperationException>().WithMessageContaining("active outbox transaction");
     }
 
@@ -337,7 +337,7 @@ public class SenderTests
         await Assert.That(outbox.TransportName).IsEqualTo("events");
         await Assert.That(outbox.Destination).IsEqualTo("orders");
         await Assert.That(transport.Entered.Task.IsCompleted).IsFalse();
-        await sender.SendNowAsync(new OrderPlaced(Guid.NewGuid()));
+        await sender.SendWithoutOutboxAsync(new OrderPlaced(Guid.NewGuid()));
         await secondScope.ServiceProvider.GetRequiredService<ISender>().SendAsync(new OrderPlaced(Guid.NewGuid()));
         await Assert.That(transport.Count).IsEqualTo(2);
         await Assert.That(outbox.Count).IsEqualTo(2);
@@ -696,7 +696,7 @@ public class SenderTests
         await Assert.That(outbox.DeliverAt).IsEqualTo(deliverAt);
         await sender.SendViaOutboxAsync(new OrderPlaced(Guid.NewGuid()), options => options.DeliverAt = deliverAt);
         await Assert.That(outbox.DeliverAt).IsEqualTo(deliverAt);
-        await Assert.That(async () => await sender.SendNowAsync(new OrderPlaced(Guid.NewGuid()), options => options.DeliverAt = deliverAt))
+        await Assert.That(async () => await sender.SendWithoutOutboxAsync(new OrderPlaced(Guid.NewGuid()), options => options.DeliverAt = deliverAt))
             .Throws<InvalidOperationException>().WithMessageContaining("MaxDeliveryDelay");
         outbox.IsActive = false;
         await Assert.That(async () => await sender.SendAsync(new OrderPlaced(Guid.NewGuid()), options => options.DeliverAt = deliverAt))

@@ -21,10 +21,10 @@ internal class Sender(SendPipeline pipeline, IOutboxEnlistment? outbox = null) :
     public ValueTask SendAsync<TMessage>(TMessage message, Action<SendOptions> configure, CancellationToken cancellationToken = default) =>
         Send(message, configure ?? throw new ArgumentNullException(nameof(configure)), SendMode.Automatic, cancellationToken);
 
-    public ValueTask SendNowAsync<TMessage>(TMessage message, CancellationToken cancellationToken = default) =>
+    public ValueTask SendWithoutOutboxAsync<TMessage>(TMessage message, CancellationToken cancellationToken = default) =>
         Send(message, null, SendMode.Direct, cancellationToken);
 
-    public ValueTask SendNowAsync<TMessage>(TMessage message, Action<SendOptions> configure, CancellationToken cancellationToken = default) =>
+    public ValueTask SendWithoutOutboxAsync<TMessage>(TMessage message, Action<SendOptions> configure, CancellationToken cancellationToken = default) =>
         Send(message, configure ?? throw new ArgumentNullException(nameof(configure)), SendMode.Direct, cancellationToken);
 
     public ValueTask SendViaOutboxAsync<TMessage>(TMessage message, CancellationToken cancellationToken = default) =>

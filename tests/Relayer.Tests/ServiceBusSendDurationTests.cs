@@ -157,7 +157,7 @@ public class ServiceBusSendDurationTests
         ActivitySource.AddActivityListener(listener);
         using var scope = provider.CreateScope();
         var sender = scope.ServiceProvider.GetRequiredService<ISender>();
-        await sender.SendNowAsync(new ServiceBusSendTests.First());
+        await sender.SendWithoutOutboxAsync(new ServiceBusSendTests.First());
         await Assert.That(capture.Values.Count).IsEqualTo(1);
         capture.Values.Clear();
         await sender.SendAsync(new ServiceBusSendTests.First());

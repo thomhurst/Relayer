@@ -195,8 +195,8 @@ public class GooglePubSubTests
         using (var scope = host.Services.CreateScope())
         {
             var sender = scope.ServiceProvider.GetRequiredService<ISender>();
-            await sender.SendNowAsync(new PubSubOrder(-1), static options => options.GooglePubSub(static message => message.OrderingKey = "external-key"), cancellationToken: token);
-            await sender.SendNowAsync(new PubSubOrder(42), cancellationToken: token);
+            await sender.SendWithoutOutboxAsync(new PubSubOrder(-1), static options => options.GooglePubSub(static message => message.OrderingKey = "external-key"), cancellationToken: token);
+            await sender.SendWithoutOutboxAsync(new PubSubOrder(42), cancellationToken: token);
         }
         await Assert.That(await handled.Values.Reader.ReadAsync(token)).IsEqualTo(42);
         var dead = await broker.Subscriber.PullAsync(deadSubscription, 1, token);

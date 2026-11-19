@@ -122,7 +122,7 @@ public class KafkaInboxCrashTests(KafkaInboxBroker broker)
                 var transport = provider.GetRequiredService<Relayer.Transports.ITransport>();
                 await transport.StartAsync(token);
                 await using (var scope = provider.CreateAsyncScope())
-                    await scope.ServiceProvider.GetRequiredService<ISender>().SendNowAsync(new KafkaInboxWork(7), token);
+                    await scope.ServiceProvider.GetRequiredService<ISender>().SendWithoutOutboxAsync(new KafkaInboxWork(7), token);
                 await transport.StopAsync(token);
                 return scenario;
             }

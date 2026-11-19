@@ -329,7 +329,7 @@ public class InboxTests : InboxContractTests
         control.AfterSave = async context =>
         {
             scopes.Add(context.Services);
-            await context.Services.GetRequiredService<ISender>().SendNowAsync(new Probe(2));
+            await context.Services.GetRequiredService<ISender>().SendWithoutOutboxAsync(new Probe(2));
             var db = context.Services.GetRequiredService<OrdersContext>();
             contexts.Add(db);
             if (scopes.Count != 1) return;
@@ -381,7 +381,7 @@ public class InboxTests : InboxContractTests
         control.AfterSave = async context =>
         {
             var sender = context.Services.GetRequiredService<ISender>();
-            if (outbox) await sender.SendNowAsync(new Probe(2));
+            if (outbox) await sender.SendWithoutOutboxAsync(new Probe(2));
             else await sender.SendAsync(new Probe(2));
         };
         var failures = new FailurePipeline(provider, "events", "source", "orders", new());

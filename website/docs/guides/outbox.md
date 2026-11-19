@@ -73,7 +73,7 @@ await transaction.CommitAsync(cancellationToken);
 
 The explicit transaction activates enlistment automatically when it is the scope's only active
 context. `SendViaOutboxAsync` requires active enlistment and fails if it is missing. `SendAsync`
-also enlists while active, but sends directly otherwise. `SendNowAsync` bypasses the outbox.
+also enlists while active, but sends directly otherwise. `SendWithoutOutboxAsync` bypasses the outbox.
 Native send callbacks cannot be stored; use portable headers, ordering keys and delivery times.
 
 Commit writes business changes and outgoing rows atomically. Rollback or disposal discards the

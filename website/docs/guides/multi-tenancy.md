@@ -24,7 +24,7 @@ await scope.ServiceProvider.GetRequiredService<ISender>().SendAsync(message);
 ```
 
 Every scoped send carries `relayer.tenant_id` in the existing native headers. This includes
-`SendNowAsync`, outbox payloads, requests and replies. A send snapshots the tenant before invoking
+`SendWithoutOutboxAsync`, outbox payloads, requests and replies. A send snapshots the tenant before invoking
 send middleware. While a scoped tenant is set, `SendOptions.Headers` cannot override that header;
 use a separate authorized scope to send for another tenant. An empty ID means no scoped tenant.
 Explicit headers continue to work when no scoped tenant is set.

@@ -65,7 +65,7 @@ public sealed class ServiceBusImpliedTopologyEmulatorTests
             await ServiceBusReceiveTests.Start(provider, token);
 
             using (var scope = provider.CreateScope())
-                await scope.ServiceProvider.GetRequiredService<ISender>().SendNowAsync(new ImpliedPayload(1), token);
+                await scope.ServiceProvider.GetRequiredService<ISender>().SendWithoutOutboxAsync(new ImpliedPayload(1), token);
             await using (var sender = client.CreateSender(topic)) await sender.SendMessageAsync(Message(2), token);
             await using (var sender = client.CreateSender(sessions)) await sender.SendMessageAsync(Message(3, "customer"), token);
             var delivered = new List<string>();

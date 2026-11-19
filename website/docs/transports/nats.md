@@ -74,7 +74,7 @@ var delivery = context.Nats();
 var nativeMessage = delivery.Message;
 var nativeConsumer = delivery.Consumer;
 
-await sender.SendNowAsync(order,
+await sender.SendWithoutOutboxAsync(order,
     options => options.Nats(headers => headers["application-header"] = "value"), ct);
 ```
 

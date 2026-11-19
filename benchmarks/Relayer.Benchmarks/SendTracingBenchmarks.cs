@@ -90,7 +90,7 @@ public class SendTracingBenchmarks
     }
 
     [Benchmark, BenchmarkCategory("Single")]
-    public ValueTask DirectSend() => _sender.SendNowAsync(_message);
+    public ValueTask DirectSend() => _sender.SendWithoutOutboxAsync(_message);
 
     [Benchmark(Baseline = true), BenchmarkCategory("Batch")]
     public ValueTask NativeBatch() => _sink.SendBatchNative(_batch, default);

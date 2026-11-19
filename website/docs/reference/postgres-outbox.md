@@ -84,7 +84,7 @@ connection. Both overloads accept an optional native `IsolationLevel` unchanged.
 ## Durability and recovery
 
 - `SendAsync` enlists while this transaction is active. Outside it, `SendAsync` uses the normal send path.
-  `SendViaOutboxAsync` requires an active transaction; `SendNowAsync` deliberately bypasses the outbox.
+  `SendViaOutboxAsync` requires an active transaction; `SendWithoutOutboxAsync` deliberately bypasses the outbox.
 - Serialized bodies, header names, duplicate headers, header bytes and ordering keys are copied before
   `EnlistAsync` completes. The original UUIDv7 ID, stable wire type, creation time, tenant and `DeliverAt` persist.
   Ordered rows use the shared FNV-1a lane calculation; unordered rows have a null lane. Large transactions

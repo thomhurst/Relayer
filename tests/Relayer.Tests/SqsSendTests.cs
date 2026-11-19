@@ -51,7 +51,7 @@ public class SqsSendTests
         try
         {
             await using var scope = host.Services.CreateAsyncScope();
-            await scope.ServiceProvider.GetRequiredService<ISender>().SendNowAsync(new Order());
+            await scope.ServiceProvider.GetRequiredService<ISender>().SendWithoutOutboxAsync(new Order());
             var sent = client.Sent.Single();
             await Assert.That(sent.Body).IsEqualTo("{}");
             await Assert.That(sent.Attributes["ce_type"]).Contains("sqs.test.order");
@@ -90,8 +90,8 @@ public class SqsSendTests
         {
             await using var scope = host.Services.CreateAsyncScope();
             var sender = scope.ServiceProvider.GetRequiredService<ISender>();
-            await sender.SendNowAsync(new Order());
-            await sender.SendNowAsync(new Order());
+            await sender.SendWithoutOutboxAsync(new Order());
+            await sender.SendWithoutOutboxAsync(new Order());
             var first = client.Sent[0];
             var second = client.Sent[1];
             await Assert.That(first.Body).IsEqualTo(second.Body);

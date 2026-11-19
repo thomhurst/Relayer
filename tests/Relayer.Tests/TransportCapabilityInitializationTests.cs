@@ -41,7 +41,7 @@ public class TransportCapabilityInitializationTests
         await Assert.That(transport.Lookups).IsEqualTo(1);
         await Assert.That(transport.Mode).IsEqualTo(TopologyMode.None);
         using var scope = host.Services.CreateScope();
-        await scope.ServiceProvider.GetRequiredService<ISender>().SendNowAsync(new Sample(), cancellationToken: timeout.Token);
+        await scope.ServiceProvider.GetRequiredService<ISender>().SendWithoutOutboxAsync(new Sample(), cancellationToken: timeout.Token);
         await host.StopAsync(timeout.Token);
     }
 
