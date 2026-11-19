@@ -45,6 +45,7 @@ public class PublicApiSurfaceTests
             "ISender",
             "ISettlementFeature",
             "ITopology",
+            "ITransportConsumerBuilder",
             "IUpcaster",
             "JsonSerializerBuilderExtensions",
             "MessageAttribute",
