@@ -19,7 +19,7 @@ run ends:
 |---|---|---|
 | RabbitMQ | one broker, and a second with the delayed-message plugin | a virtual host, through `RabbitMqTopologyTests.Broker.StartAsync` |
 | Service Bus emulator | one emulator with its SQL Server | queues, topics and subscriptions it creates through the administration client |
-| LocalStack | one container for SQS and SNS | uniquely named queues and topics |
+| Floci | one container for SQS and SNS | uniquely named queues and topics |
 
 A test that changes the whole broker, such as stopping it to simulate an outage, asks
 for a dedicated one with `dedicated: true`. Keep those rare: each dedicated Service

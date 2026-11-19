@@ -14,23 +14,33 @@ public static class SharedBrokers
     internal static SessionResource<IContainer> RabbitMq { get; } = new(() => StartRabbitMqAsync(false));
     internal static SessionResource<IContainer> RabbitMqWithDelayedPlugin { get; } = new(() => StartRabbitMqAsync(true));
 
-    internal static SessionResource<IContainer> LocalStack { get; } = new(async () =>
+    internal static SessionResource<IContainer> Floci { get; } = new(async () =>
     {
         using var provisioning = new CancellationTokenSource(TimeSpan.FromMinutes(5));
-        var builder = new ContainerBuilder("localstack/localstack:4.10.0")
-            .WithEnvironment("SERVICES", "sqs,sns")
-            .WithPortBinding(4566, true)
-            .WithWaitStrategy(Wait.ForUnixContainer().UntilMessageIsLogged("Ready\\."));
-        if (OperatingSystem.IsLinux()) builder = builder.WithPortBinding("20000-29999", "4566");
-        var container = builder.Build();
+        var container = CreateFlociContainer();
         try { await container.StartAsync(provisioning.Token); return container; }
         catch { await container.DisposeAsync(); throw; }
     });
 
-    internal static async Task<string> LocalStackUrlAsync(CancellationToken token)
+    internal static async Task<string> FlociUrlAsync(CancellationToken token)
     {
-        var container = await LocalStack.Value.WaitAsync(token);
-        return $"http://{container.Hostname}:{container.GetMappedPublicPort(4566)}";
+        var container = await Floci.Value.WaitAsync(token);
+        return GetFlociUrl(container);
+    }
+
+    private const int FlociPort = 4566;
+
+    internal static string GetFlociUrl(IContainer container)
+        => $"http://{container.Hostname}:{container.GetMappedPublicPort(FlociPort)}";
+
+    internal static IContainer CreateFlociContainer()
+    {
+        var builder = new ContainerBuilder("floci/floci:2.5.0")
+            .WithPortBinding(FlociPort, true)
+            .WithWaitStrategy(Wait.ForUnixContainer()
+                .UntilHttpRequestIsSucceeded(request => request.ForPort(FlociPort).ForPath("/health")));
+        if (OperatingSystem.IsLinux()) builder = builder.WithPortBinding("20000-29999", FlociPort.ToString());
+        return builder.Build();
     }
 
     internal static SessionResource<ServiceBusStack> ServiceBus { get; } = new(ServiceBusStack.StartAsync);
@@ -46,7 +56,7 @@ public static class SharedBrokers
     {
         await RabbitMq.ResetAsync();
         await RabbitMqWithDelayedPlugin.ResetAsync();
-        await LocalStack.ResetAsync();
+        await Floci.ResetAsync();
         await ServiceBus.ResetAsync();
     }
 }

@@ -201,7 +201,7 @@ public sealed class SqsFailureTests
     private static IHost Host(SqsReceiveTests.ReceiveClient client, Scheduler? scheduler = null)
     {
         var builder = Microsoft.Extensions.Hosting.Host.CreateApplicationBuilder();
-        builder.Services.AddSingleton(new SqsReceiveLocalStackTests.Control());
+        builder.Services.AddSingleton(new SqsReceiveFlociTests.Control());
         if (scheduler is not null) builder.Services.AddSingleton<IFailureScheduler>(scheduler);
         builder.Services.AddRelayer(relayer =>
         {
@@ -212,7 +212,7 @@ public sealed class SqsFailureTests
                 sqs.Options.Configure(options => { options.SqsClient = client; options.Queues.Add(new("orders")); options.Queues.Add(new("dead")); });
                 sqs.Consume("orders", consumer =>
                 {
-                    consumer.Handler<SqsReceiveLocalStackTests.Handler>();
+                    consumer.Handler<SqsReceiveFlociTests.Handler>();
                     consumer.Failures(new() { DeadLetterEndpoint = "dead", Jitter = 0,
                         RedeliveryDelays = scheduler is null ? [] : new[] { TimeSpan.FromHours(13) } });
                 });

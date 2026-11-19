@@ -8,7 +8,7 @@ using Relayer.AmazonSqs;
 
 namespace Relayer.Tests;
 
-public sealed class SqsBatchLocalStackTests
+public sealed class SqsBatchFlociTests
 {
     [Test]
     [Arguments("partial")]
@@ -19,7 +19,7 @@ public sealed class SqsBatchLocalStackTests
     {
         using var deadline = new CancellationTokenSource(TimeSpan.FromMinutes(2));
         var token = deadline.Token;
-        var endpoint = await SharedBrokers.LocalStackUrlAsync(token);
+        var endpoint = await SharedBrokers.FlociUrlAsync(token);
         using var client = new BatchClient(endpoint, scenario == "partial");
         var name = TestContext.Current!.Isolation.GetIsolatedName("batch");
         var url = (await client.CreateQueueAsync(new CreateQueueRequest(name)

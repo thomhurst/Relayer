@@ -9,7 +9,7 @@ using Relayer.AmazonSqs;
 
 namespace Relayer.Tests;
 
-public class SnsSendLocalStackTests
+public class SnsSendFlociTests
 {
     [Test]
     public async Task Topics_raw_subscriptions_queue_policies_fifo_and_read_only_topology_round_trip()
@@ -17,7 +17,7 @@ public class SnsSendLocalStackTests
         using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(3));
         var token = timeout.Token;
         var externalUrl = Environment.GetEnvironmentVariable("RELAYER_SNS_SERVICE_URL");
-        var url = externalUrl ?? await SharedBrokers.LocalStackUrlAsync(token);
+        var url = externalUrl ?? await SharedBrokers.FlociUrlAsync(token);
         using var sns = new AmazonSimpleNotificationServiceClient(new BasicAWSCredentials("test", "test"), new AmazonSimpleNotificationServiceConfig { ServiceURL = url, AuthenticationRegion = "us-east-1" });
         using var sqs = new AmazonSQSClient(new BasicAWSCredentials("test", "test"), new AmazonSQSConfig { ServiceURL = url, AuthenticationRegion = "us-east-1" });
         var name = "relayer-" + Guid.NewGuid().ToString("N");
@@ -37,7 +37,7 @@ public class SnsSendLocalStackTests
             options.QueueTopology.Queues.Add(new(destination) { Attributes = attributes });
             options.Subscriptions.Add(new() { TopicArn = topicArn, Protocol = "sqs", Endpoint = queueArn, ReturnSubscriptionArn = true, Attributes = new() { ["RawMessageDelivery"] = "true" } });
         }
-        await using var transport = new SnsSendTransport("localstack", sns, false, options);
+        await using var transport = new SnsSendTransport("floci", sns, false, options);
         try
         {
             await Assert.That((await transport.ApplyTopologyAsync(TopologyMode.Validate, token)).Differences.Count).IsEqualTo(6);
@@ -90,6 +90,6 @@ public class SnsSendLocalStackTests
     private static async Task<Amazon.SQS.Model.Message> ReceiveAsync(IAmazonSQS sqs, string url, CancellationToken token)
     {
         var response = await sqs.ReceiveMessageAsync(new ReceiveMessageRequest { QueueUrl = url, WaitTimeSeconds = 10, MaxNumberOfMessages = 1, MessageAttributeNames = ["All"], MessageSystemAttributeNames = ["All"] }, token);
-        return response.Messages?.SingleOrDefault() ?? throw new InvalidOperationException("LocalStack did not deliver the SNS notification to SQS.");
+        return response.Messages?.SingleOrDefault() ?? throw new InvalidOperationException("Floci did not deliver the SNS notification to SQS.");
     }
 }

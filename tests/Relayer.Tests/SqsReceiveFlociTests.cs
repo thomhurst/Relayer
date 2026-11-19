@@ -11,7 +11,7 @@ using Relayer.Transports;
 
 namespace Relayer.Tests;
 
-public sealed class SqsReceiveLocalStackTests
+public sealed class SqsReceiveFlociTests
 {
     [Test]
     [Arguments(false, "ce_")]
