@@ -22,6 +22,33 @@ public sealed class PostgreSqlLocalSessionFixture
             _created = true;
             ConnectionString = new NpgsqlConnectionStringBuilder(_adminConnectionString) { Database = name }.ConnectionString;
         }
+        public async Task DisconnectAsync(CancellationToken cancellationToken)
+        {
+            await SetAllowConnectionsAsync(false, cancellationToken);
+
+            // ALLOW_CONNECTIONS only affects new sessions. Terminate existing ones on this database.
+            await using var admin = NpgsqlDataSource.Create(_adminConnectionString);
+            await using var command = admin.CreateCommand("""
+                SELECT coalesce(bool_and(pg_terminate_backend(pid, 5000)), true)
+                FROM pg_stat_activity
+                WHERE datname = @database
+                """);
+            command.Parameters.AddWithValue("database", name);
+            if (await command.ExecuteScalarAsync(cancellationToken) is not true)
+                throw new InvalidOperationException("PostgreSQL did not terminate all sessions on the test database.");
+        }
+
+        public Task ReconnectAsync(CancellationToken cancellationToken) =>
+            SetAllowConnectionsAsync(true, cancellationToken);
+
+        private async Task SetAllowConnectionsAsync(bool allow, CancellationToken cancellationToken)
+        {
+            await using var admin = NpgsqlDataSource.Create(_adminConnectionString);
+            var database = PostgreSqlOutboxSchema.QuoteIdentifier(name);
+            await using var command = admin.CreateCommand($"ALTER DATABASE {database} ALLOW_CONNECTIONS {(allow ? "true" : "false")}");
+            await command.ExecuteNonQueryAsync(cancellationToken);
+        }
+
         public async ValueTask DisposeAsync()
         {
             if (!_created) return;
