@@ -211,6 +211,44 @@ public class ConformanceFailureTests
     }
 
     [Test]
+    public async Task Cancelled_pending_send_reports_phase_and_preserves_borrowed_buffers_during_cleanup()
+    {
+        using var cancellation = new CancellationTokenSource();
+        var started = new TaskCompletionSource<OutgoingMessage>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var pending = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var fixture = new FailingFixture
+        {
+            Send = message =>
+            {
+                started.SetResult(message);
+                return new ValueTask(pending.Task);
+            },
+        };
+
+        var run = Suite(fixture).RunAsync(TransportConformanceCase.SendReceiveSettle, cancellation.Token);
+        try
+        {
+            var message = await started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            var body = message.Body.ToArray();
+            var headers = message.Headers.ToArray();
+            cancellation.Cancel();
+
+            var error = await CaptureAsync(run).WaitAsync(TimeSpan.FromSeconds(5));
+            await Assert.That(error.Message).Contains("send 1");
+            await Assert.That(error.InnerException).IsTypeOf<OperationCanceledException>();
+            await Assert.That(fixture.StoppedWithLiveToken).IsTrue();
+            await Assert.That(fixture.Disposed).IsTrue();
+            await Assert.That(pending.Task.IsCompleted).IsFalse();
+            await Assert.That(message.Body.Span.SequenceEqual(body)).IsTrue();
+            await Assert.That(message.Headers.Span.SequenceEqual(headers)).IsTrue();
+        }
+        finally
+        {
+            pending.SetResult();
+        }
+    }
+
+    [Test]
     public async Task Failed_start_is_reported_and_resources_are_cleaned_up()
     {
         var fixture = new FailingFixture { StartFails = true };
@@ -272,6 +310,7 @@ public class ConformanceFailureTests
         internal bool DisposeFails { get; init; }
         internal bool StartFails { get; init; }
         internal ValueTask DisposalCompletion { get; init; }
+        internal Func<OutgoingMessage, ValueTask>? Send { get; init; }
         internal CancellationTokenSource? CancelAfterSend { get; init; }
         internal bool StoppedWithLiveToken { get; private set; }
         internal bool Disposed { get; private set; }
@@ -293,6 +332,7 @@ public class ConformanceFailureTests
         }
         public ValueTask SendAsync(OutgoingMessage message, CancellationToken cancellationToken)
         {
+            if (Send is not null) return Send(message);
             if (CancelAfterSend is null) return ValueTask.FromException(PrimaryFailure);
             CancelAfterSend.Cancel();
             return default;
