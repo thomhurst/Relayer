@@ -12,7 +12,7 @@ or change delivery, settlement or outbox transactions.
 
 ## AppHost resources
 
-Use the standard `Aspire.Hosting.Kafka` and `Aspire.Hosting.Azure.ServiceBus`
+Use the `Aspire.Hosting.Dotnet`, `Aspire.Hosting.Kafka`, and `Aspire.Hosting.Azure.ServiceBus`
 integrations in your AppHost. Resource names identify connections; transport names
 remain independent. This example uses the local Service Bus emulator:
 
@@ -21,7 +21,7 @@ var kafka = builder.AddKafka("kafka");
 var serviceBus = builder.AddAzureServiceBus("servicebus").RunAsEmulator();
 serviceBus.AddServiceBusQueue("orders");
 
-builder.AddProject<Projects.RelayerSample_Api>("api")
+builder.AddDotnetProject("api", "../RelayerSample.Api/RelayerSample.Api.csproj")
     .WithReference(kafka)
     .WithReference(serviceBus)
     .WaitFor(kafka)
@@ -31,8 +31,8 @@ builder.AddProject<Projects.RelayerSample_Api>("api")
 ```
 
 For existing brokers, use `builder.AddConnectionString("kafka")` or
-`builder.AddConnectionString("servicebus")` with `WithReference`. Configure those
-connections in your AppHost's configuration or secrets. Aspire owns endpoint
+`builder.AddConnectionString("servicebus")` with `WithReference`. Set nonempty
+connection strings in your AppHost's configuration or secrets. Aspire owns endpoint
 resolution and injects `ConnectionStrings__<name>` into the consuming service.
 Never commit production credentials.
 
@@ -149,7 +149,8 @@ adds no transaction semantics.
 
 The repository contains
 [`samples/RelayerSample.AppHost`](https://github.com/thomhurst/Relayer/tree/main/samples/RelayerSample.AppHost)
-and its API project. With .NET 10, Aspire CLI 13.6 and Docker running:
+and its API project. Install the .NET SDK selected by the repository's `global.json`
+and Aspire CLI 17.0, then start Docker and run:
 
 ```shell
 aspire start --non-interactive --apphost samples/RelayerSample.AppHost/RelayerSample.AppHost.csproj

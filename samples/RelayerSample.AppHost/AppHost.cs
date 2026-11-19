@@ -4,7 +4,7 @@ var kafka = builder.AddKafka("kafka");
 var serviceBus = builder.AddAzureServiceBus("servicebus").RunAsEmulator();
 serviceBus.AddServiceBusQueue("orders");
 
-builder.AddProject<Projects.RelayerSample_Api>("api")
+builder.AddDotnetProject("api", "../RelayerSample.Api/RelayerSample.Api.csproj")
     .WithReference(kafka)
     .WithReference(serviceBus)
     .WaitFor(kafka)
