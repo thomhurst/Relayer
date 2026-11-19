@@ -209,12 +209,12 @@ public sealed class TransportConformanceSuite<TIncoming, TBinding>
         Task Stop()
         {
             progress.Phase = "transport drain";
-            return fixture.Transport.StopAsync(token);
+            return fixture.Transport.StopAsync(token).WaitAsync(token);
         }
         Task Start()
         {
             progress.Phase = "transport restart";
-            return fixture.Transport.StartAsync(token);
+            return fixture.Transport.StartAsync(token).WaitAsync(token);
         }
 
         switch (scenario)
