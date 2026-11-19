@@ -1,6 +1,7 @@
 using DotNet.Testcontainers.Builders;
 using Azure.Messaging.ServiceBus.Administration;
 using DotNet.Testcontainers.Containers;
+using DotNet.Testcontainers.Images;
 using DotNet.Testcontainers.Networks;
 using Testcontainers.MsSql;
 using Testcontainers.ServiceBus;
@@ -35,7 +36,8 @@ public static class SharedBrokers
 
     internal static IContainer CreateFlociContainer()
     {
-        var builder = new ContainerBuilder("floci/floci:2.5.0")
+        var builder = new ContainerBuilder("floci/floci:nightly")
+            .WithImagePullPolicy(PullPolicy.Always)
             .WithPortBinding(FlociPort, true)
             .WithWaitStrategy(Wait.ForUnixContainer()
                 .UntilHttpRequestIsSucceeded(request => request.ForPort(FlociPort).ForPath("/health")));

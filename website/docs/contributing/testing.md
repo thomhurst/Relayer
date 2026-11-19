@@ -21,6 +21,10 @@ run ends:
 | Service Bus emulator | one emulator with its SQL Server | queues, topics and subscriptions it creates through the administration client |
 | Floci | one container for SQS and SNS | uniquely named queues and topics |
 
+Floci tests use `floci/floci:nightly`. The shared container and dedicated conformance
+containers always pull the image at startup so cached images do not hide nightly
+updates. These tests require registry access and track Floci's unreleased changes.
+
 A test that changes the whole broker, such as stopping it to simulate an outage, asks
 for a dedicated one with `dedicated: true`. Keep those rare: each dedicated Service
 Bus emulator brings its own SQL Server, and ten of them starting together exhaust
