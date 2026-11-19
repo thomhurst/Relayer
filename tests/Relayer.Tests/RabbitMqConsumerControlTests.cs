@@ -168,6 +168,9 @@ public sealed class RabbitMqConsumerControlTests
         var control = host.Services.GetRequiredKeyedService<IConsumerControl>("rabbit");
         await host.StartAsync(token);
         var transport = (RabbitMqNativeTransport)host.Services.GetRequiredService<ITransport>();
+        transport.HealthTracking = true;
+        var audit = transport.Consumers.Single(consumer => consumer.Declaration.Source == "audit");
+        var orders = transport.Consumers.Single(consumer => consumer.Declaration.Source == "orders");
         await transport.SendAsync(new("audit", "{\"Value\":1}"u8.ToArray(), RabbitMqReceiveTests.Headers()), token);
         await using var connection = await broker.Factory().CreateConnectionAsync(token);
         await using var channel = await connection.CreateChannelAsync(cancellationToken: token);
@@ -180,7 +183,9 @@ public sealed class RabbitMqConsumerControlTests
         try
         {
             await entered.Task.WaitAsync(token);
-            while ((await channel.QueueDeclarePassiveAsync("orders", token)).ConsumerCount == 0) await Task.Delay(10, token);
+            // The broker can count a consumer before the client processes basic.consume-ok.
+            // Wait for Relayer to finish starting orders before cancelling the group.
+            while (orders.GetHealthState() is null) await Task.Delay(10, token);
             start.Cancel();
             await channelClosed.Task.WaitAsync(token);
         }
@@ -190,8 +195,8 @@ public sealed class RabbitMqConsumerControlTests
         var redelivery = await channel.BasicGetAsync("audit", autoAck: true, token);
         await Assert.That(redelivery is { Redelivered: true }).IsTrue();
 
-        await Assert.That(transport.Consumers[0].Completion.IsCompletedSuccessfully).IsTrue();
-        await Assert.That(transport.Consumers[1].Completion.IsCompletedSuccessfully).IsTrue();
+        await Assert.That(audit.Completion.IsCompletedSuccessfully).IsTrue();
+        await Assert.That(orders.Completion.IsCompletedSuccessfully).IsTrue();
         await Assert.That((await channel.QueueDeclarePassiveAsync("audit", token)).ConsumerCount).IsEqualTo(0u);
         await Assert.That((await channel.QueueDeclarePassiveAsync("orders", token)).ConsumerCount).IsEqualTo(0u);
         await host.StopAsync(token);

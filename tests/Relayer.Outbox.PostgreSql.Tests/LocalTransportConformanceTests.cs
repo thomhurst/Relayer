@@ -22,15 +22,23 @@ public class LocalTransportConformanceTests(PostgreSqlLocalSessionFixture server
     [Arguments(TransportConformanceCase.RedeliveryDelay)]
     public async Task Shared_transport_contract(TransportConformanceCase scenario)
     {
+        await using var database = server.CreateDatabase();
         var suite = new TransportConformanceSuite<PostgreSqlLocalDelivery, PostgreSqlLocalMessageBinding>(async (tracing, _) =>
         {
-            var fixture = new Fixture(tracing, server);
+            var fixture = new Fixture(tracing, database);
             try { await fixture.Initialize(); return fixture; }
             catch { await fixture.DisposeAsync(); throw; }
         });
         var result = await suite.RunAsync(scenario);
         await Assert.That(result.Skipped).IsEqualTo(scenario is TransportConformanceCase.Retry or TransportConformanceCase.DeadLetter
             or TransportConformanceCase.Delay or TransportConformanceCase.RedeliveryDelay);
+
+        if (scenario == TransportConformanceCase.Reconnect)
+        {
+            // The suite has drained the workers, so the recovered delivery must be durably settled.
+            await using var source = NpgsqlDataSource.Create(database.ConnectionString);
+            await Assert.That(await LocalTransportTests.Count(source, "relayer_outbox")).IsEqualTo(0L);
+        }
     }
 
     private sealed class Fixture : ITransportConformanceFixture<PostgreSqlLocalDelivery>, ITransportShutdownConformanceFixture
@@ -41,9 +49,9 @@ public class LocalTransportConformanceTests(PostgreSqlLocalSessionFixture server
         private PostgreSqlLocalTransport _local = null!;
         private readonly ILoggerFactory _logs;
         private Lifecycle _lifecycle = null!;
-        public Fixture(MessageTracing tracing, PostgreSqlLocalSessionFixture server)
+        public Fixture(MessageTracing tracing, PostgreSqlLocalSessionFixture.Database database)
         {
-            _database = server.CreateDatabase();
+            _database = database;
             _tracing = tracing;
             _logs = LoggerFactory.Create(logging => logging.AddProvider(Logs));
         }
@@ -65,8 +73,22 @@ public class LocalTransportConformanceTests(PostgreSqlLocalSessionFixture server
         public ValueTask SettleAsync(PostgreSqlLocalDelivery incoming, Disposition disposition, CancellationToken cancellationToken) =>
             _local.SettleAsync(incoming, disposition, cancellationToken);
         public ValueTask<ConformanceDeadLetter> ReadDeadLetterAsync(CancellationToken cancellationToken) => throw new NotSupportedException();
-        public Task DisconnectAsync(CancellationToken cancellationToken) => _lifecycle.StopAsync(cancellationToken);
-        public Task ReconnectAsync(CancellationToken cancellationToken) => _lifecycle.StartAsync(cancellationToken);
+        public async Task DisconnectAsync(CancellationToken cancellationToken)
+        {
+            await _database.DisconnectAsync(cancellationToken);
+            // Force the probe to open a physical connection so it observes PostgreSQL's refusal.
+            _source.Clear();
+            try
+            {
+                await using var connection = await _source.OpenConnectionAsync(cancellationToken);
+            }
+            catch (PostgresException error) when (error.SqlState == PostgresErrorCodes.ObjectNotInPrerequisiteState)
+            {
+                return; // PostgreSQL rejects connections to databases with ALLOW_CONNECTIONS false.
+            }
+            throw new InvalidOperationException("PostgreSQL accepted a connection during the outage.");
+        }
+        public Task ReconnectAsync(CancellationToken cancellationToken) => _database.ReconnectAsync(cancellationToken);
         public async ValueTask VerifyShutdownAsync(CancellationToken cancellationToken)
         {
             await Assert.That(await LocalTransportTests.Count(_source, "relayer_outbox")).IsEqualTo(0L);
@@ -78,7 +100,6 @@ public class LocalTransportConformanceTests(PostgreSqlLocalSessionFixture server
             if (_local is not null) await _local.DisposeAsync();
             if (_source is not null) await _source.DisposeAsync();
             _logs.Dispose();
-            await _database.DisposeAsync();
         }
 
         // Application lifecycle composition only: every queue, claim and settlement remains production code.
