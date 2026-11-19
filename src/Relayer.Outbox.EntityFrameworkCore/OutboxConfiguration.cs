@@ -45,6 +45,7 @@ internal abstract class OutboxConfiguration : IDbContextOptionsExtension
     internal abstract void ValidateProvider(IDbContextOptions options);
     internal abstract OutboxConfiguration? FindConfiguration(IDbContextOptions options);
     internal abstract IOutboxBatch CreateBatch();
+    internal abstract bool HasTransactionEnded(DbTransaction transaction);
     internal string InsertSql { get; init; } = null!;
     internal abstract void Committed(List<BufferedOutboxMessage> rows, int count);
     internal abstract IExecutionStrategy CreateConflictStrategy(DbContext context);
