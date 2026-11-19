@@ -7,6 +7,12 @@ using Relayer;
 using Relayer.Outbox.PostgreSql;
 using Relayer.Transports;
 
+if (args.Length > 1 && args[0] == "kafka-transaction")
+{
+    await KafkaTransactionProbe.RunAsync(args[1], args[2], args[3], bool.Parse(args[4]));
+    return;
+}
+
 if (args.Length > 1 && args[0] == "kafka")
 {
     // Blocks inside the handler's open transaction ("block") or after its commit, before the periodic
