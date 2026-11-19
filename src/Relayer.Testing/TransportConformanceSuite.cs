@@ -225,7 +225,7 @@ public sealed class TransportConformanceSuite<TIncoming, TBinding>
                     ? new WireString("conformance") : null).ConfigureAwait(false);
                 CheckBody(await Next().ConfigureAwait(false), 1);
                 progress.Phase = "in-flight transport shutdown";
-                var stopping = Stop();
+                var stopping = fixture.Transport.StopAsync(token);
                 Volatile.Write(ref shutdown.StopTask, stopping);
                 // Observe at completion; the consumer also checks the task in case native
                 // task options force this observer to run asynchronously.
@@ -237,7 +237,7 @@ public sealed class TransportConformanceSuite<TIncoming, TBinding>
                         "StopAsync completed before the in-flight consumer finished.");
                 }, shutdown, CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
                 orderRelease.TrySetResult();
-                await observedStop.ConfigureAwait(false);
+                await observedStop.WaitAsync(token).ConfigureAwait(false);
                 progress.Phase = "native shutdown verification";
                 await ((ITransportShutdownConformanceFixture)fixture).VerifyShutdownAsync(token).ConfigureAwait(false);
                 break;
