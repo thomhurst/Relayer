@@ -48,7 +48,7 @@ try
 {
     await host.StartAsync(token);
     using (var scope = host.Services.CreateScope())
-        await scope.ServiceProvider.GetRequiredService<ISender>().SendNowAsync(new SmokeOrder(42), cancellationToken: token);
+        await scope.ServiceProvider.GetRequiredService<ISender>().SendWithoutOutboxAsync(new SmokeOrder(42), cancellationToken: token);
     if (await completion.Value.Task.WaitAsync(token) != 42) throw new InvalidOperationException("AOT round trip changed the payload.");
     await host.StopAsync(token);
     if ((await host.Services.GetRequiredService<ITransport>().ApplyTopologyAsync(TopologyMode.Validate, token)).Differences.Count != 0)

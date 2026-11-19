@@ -88,7 +88,7 @@ public class FailurePipelineTests
             attempts.Add(context.Attempt);
             var sender = context.Services.GetRequiredService<ISender>();
             scopes.Add(context.Services);
-            await sender.SendNowAsync(new Payload(), options =>
+            await sender.SendWithoutOutboxAsync(new Payload(), options =>
             {
                 options.Headers["attempt"] = context.Attempt.ToString();
                 options.ConfigureNative<Native>(native => native.Attempt = context.Attempt);
@@ -403,7 +403,7 @@ public class FailurePipelineTests
         };
         control.Dispose = async () =>
         {
-            await sender.SendNowAsync(new Payload());
+            await sender.SendWithoutOutboxAsync(new Payload());
             await Assert.That(transport.Sends.Count).IsEqualTo(0);
             if (failDisposal) throw new ApplicationException("scope failed after sending");
         };
@@ -557,7 +557,7 @@ public class FailurePipelineTests
         var composed = scopes.Created;
         control.Invoke = async context =>
         {
-            await context.Services.GetRequiredService<ISender>().SendNowAsync(new Payload());
+            await context.Services.GetRequiredService<ISender>().SendWithoutOutboxAsync(new Payload());
             await Assert.That(transport.Sends.Count).IsEqualTo(0);
             if (context.Attempt == 1) throw new InvalidOperationException("failed attempt");
         };

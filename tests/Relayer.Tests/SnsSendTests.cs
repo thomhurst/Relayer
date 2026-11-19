@@ -51,7 +51,7 @@ public class SnsSendTests
             try
             {
                 await using var scope = host.Services.CreateAsyncScope();
-                await scope.ServiceProvider.GetRequiredService<ISender>().SendNowAsync(new Event());
+                await scope.ServiceProvider.GetRequiredService<ISender>().SendWithoutOutboxAsync(new Event());
                 var sent = client.Sent.Single();
                 await Assert.That(sent.Arn).IsEqualTo(SnsTestClient.Arn("orders"));
                 await Assert.That(sent.Body).IsEqualTo("{}");

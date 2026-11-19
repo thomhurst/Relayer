@@ -95,7 +95,7 @@ internal static class NatsTopologySmoke
         foreach (var worker in workers) await worker.StartAsync(token);
         phase("confirmed publication and handler completion");
         using var scope = provider.CreateScope();
-        await scope.ServiceProvider.GetRequiredService<ISender>().SendNowAsync(new NatsAotMessage(42), token);
+        await scope.ServiceProvider.GetRequiredService<ISender>().SendWithoutOutboxAsync(new NatsAotMessage(42), token);
         await completed.Done.Task.WaitAsync(token);
         phase("consumer drain and confirmed settlement");
         foreach (var worker in workers.Reverse()) await worker.StopAsync(token);

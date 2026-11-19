@@ -35,11 +35,11 @@ public class TombstoneSenderTests
         outbox.IsActive = true;
         await Assert.That(async () => await sender.SendAsync(tombstone)).Throws<InvalidOperationException>().WithMessageContaining("tombstones");
         await Assert.That(async () => await sender.SendViaOutboxAsync(tombstone)).Throws<InvalidOperationException>();
-        await sender.SendNowAsync(tombstone);
+        await sender.SendWithoutOutboxAsync(tombstone);
         await Assert.That(sink.Sends).IsEqualTo(2);
         await Assert.That(outbox.Enlisted).IsFalse();
         // An empty byte key remains a non-null native key.
-        await sender.SendNowAsync(Tombstone.For<Payload>(ReadOnlyMemory<byte>.Empty));
+        await sender.SendWithoutOutboxAsync(Tombstone.For<Payload>(ReadOnlyMemory<byte>.Empty));
         await Assert.That(sink.Key).IsEqualTo("");
         await Assert.That(() => Tombstone.For<Payload>((string)null!)).Throws<ArgumentNullException>();
     }

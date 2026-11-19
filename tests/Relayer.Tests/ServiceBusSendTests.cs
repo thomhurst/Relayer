@@ -492,7 +492,7 @@ public class ServiceBusSendTests
         await Assert.That(transport.GetCapabilities("orders").OrderedByKey).IsTrue();
         await using var scope = provider.CreateAsyncScope();
         var sender = scope.ServiceProvider.GetRequiredService<ISender>();
-        await sender.SendNowAsync(new First());
+        await sender.SendWithoutOutboxAsync(new First());
         await Assert.That(client.Senders[0].Sent.Single().SessionId).IsEqualTo("customer");
         await sender.SendViaOutboxAsync(new First());
         await Assert.That(enlistment.Message.OrderingKey!.Value.Span.SequenceEqual("customer"u8)).IsTrue();

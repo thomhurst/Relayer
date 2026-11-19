@@ -265,7 +265,7 @@ internal sealed class SendRoute<TMessage> : SendTarget<TMessage>
                 _tracingStarted = true;
             }
             if (_route._options.TransactionRequirement == SendTransactionRequirement.Native && _outbox is not null)
-                throw new InvalidOperationException($"Send route '{_route._messageType}' on transport '{_route._transport.Name}' to endpoint '{_route._destination}' requires native transactions. Use SendNowAsync with the native client's transaction configuration; database outbox durability does not provide native broker transactions.");
+                throw new InvalidOperationException($"Send route '{_route._messageType}' on transport '{_route._transport.Name}' to endpoint '{_route._destination}' requires native transactions. Use SendWithoutOutboxAsync with the native client's transaction configuration; database outbox durability does not provide native broker transactions.");
             if (_route._options.TransactionRequirement == SendTransactionRequirement.Outbox && _outbox is null)
                 throw new InvalidOperationException($"Send route '{_route._messageType}' on transport '{_route._transport.Name}' to endpoint '{_route._destination}' requires an active outbox transaction. Begin or select the outbox transaction and use SendAsync or SendViaOutboxAsync.");
             if (Options.OrderingKey is not null && !_route._capabilities.OrderedByKey)
@@ -285,7 +285,7 @@ internal sealed class SendRoute<TMessage> : SendTarget<TMessage>
                     throw new InvalidOperationException($"Send route '{_route._messageType}' on transport '{_route._transport.Name}' to endpoint '{_route._destination}' cannot execute DeliverAt. Use sufficient native MaxDeliveryDelay for direct sends, or an active outbox transaction with a matching due-row dispatch worker.");
             }
             if (_outbox is not null && _route._isTombstone)
-                throw new InvalidOperationException("Native tombstones cannot yet be persisted in the outbox. Use SendNowAsync outside the outbox path.");
+                throw new InvalidOperationException("Native tombstones cannot yet be persisted in the outbox. Use SendWithoutOutboxAsync.");
             if (_outbox is not null && Options.HasNativeConfigurators)
             {
                 // Reject before serialization or any durable side effect.

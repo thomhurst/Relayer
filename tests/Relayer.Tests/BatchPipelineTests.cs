@@ -307,7 +307,7 @@ public class BatchPipelineTests
         }
         control.Invoke = async (batch, _) =>
         {
-            await batch.Items[0].Context.Services.GetRequiredService<ISender>().SendNowAsync(new Payload());
+            await batch.Items[0].Context.Services.GetRequiredService<ISender>().SendWithoutOutboxAsync(new Payload());
             if (!duringDisposal) cancellation.Cancel();
             return BatchResult.Success;
         };
@@ -356,7 +356,7 @@ public class BatchPipelineTests
         control.Invoke = async (batch, _) =>
         {
             var sender = batch.Items[0].Context.Services.GetRequiredService<ISender>();
-            for (var i = 0; i < 3; i++) await sender.SendNowAsync(new Payload());
+            for (var i = 0; i < 3; i++) await sender.SendWithoutOutboxAsync(new Payload());
             return BatchResult.Success;
         };
         transport.Send = async (_, token) =>
@@ -504,7 +504,7 @@ public class BatchPipelineTests
         var transport = provider.GetRequiredService<Transport>();
         control.Invoke = async (batch, _) =>
         {
-            await batch.Items[0].Context.Services.GetRequiredService<ISender>().SendNowAsync(new Payload());
+            await batch.Items[0].Context.Services.GetRequiredService<ISender>().SendWithoutOutboxAsync(new Payload());
             await Assert.That(transport.Sends).IsEqualTo(0);
             return BatchResult.Success;
         };
@@ -528,7 +528,7 @@ public class BatchPipelineTests
             calls++;
             attempts.Add(string.Join(",", batch.Items.Select(item => item.Context.MessageId + ":" + item.Context.Attempt)));
             for (var i = 0; i < batch.Count; i++)
-                await batch.Items[i].Context.Services.GetRequiredService<ISender>().SendNowAsync(new Payload());
+                await batch.Items[i].Context.Services.GetRequiredService<ISender>().SendWithoutOutboxAsync(new Payload());
             return poison || calls == 1
                 ? Fail(batch.Items[1], new Exception("partial"))
                 : BatchResult.Success;
@@ -842,7 +842,7 @@ public class BatchPipelineTests
             if (BufferedSends)
             {
                 var sender = batch.Items[0].Context.Services.GetRequiredService<ISender>();
-                for (var i = 0; i < batch.Count; i++) await sender.SendNowAsync(batch.Items[i].Message, cancellationToken);
+                for (var i = 0; i < batch.Count; i++) await sender.SendWithoutOutboxAsync(batch.Items[i].Message, cancellationToken);
             }
             return BatchResult.Success;
         }

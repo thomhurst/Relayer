@@ -49,7 +49,7 @@ public class SendCounterTests
         metrics.SetMeasurementEventCallback<long>((_, count, _, _) => Interlocked.Add(ref sent, count));
         metrics.Start();
         await using var scope = provider.CreateAsyncScope();
-        await scope.ServiceProvider.GetRequiredService<ISender>().SendNowAsync(new ServiceBusSendTests.First());
+        await scope.ServiceProvider.GetRequiredService<ISender>().SendWithoutOutboxAsync(new ServiceBusSendTests.First());
         await Assert.That(sent).IsEqualTo(1);
         await Assert.That(client.Senders[0].Sent.Count).IsEqualTo(1);
     }

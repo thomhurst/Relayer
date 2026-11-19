@@ -83,7 +83,7 @@ public class BatchBufferedSendBenchmarks
         {
             var sender = batch.Items[0].Context.Services.GetRequiredService<ISender>();
             for (var i = 0; i < batch.Count; i++)
-                await sender.SendNowAsync(batch.Items[i].Message, cancellationToken).ConfigureAwait(false);
+                await sender.SendWithoutOutboxAsync(batch.Items[i].Message, cancellationToken).ConfigureAwait(false);
             return BatchResult.Success;
         }
     }

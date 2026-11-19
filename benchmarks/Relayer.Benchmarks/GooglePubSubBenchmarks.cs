@@ -78,7 +78,7 @@ public class GooglePubSubSendBenchmarks
     }
 
     [Benchmark]
-    public ValueTask RelayerJsonSend() => _sender.SendNowAsync(_order);
+    public ValueTask RelayerJsonSend() => _sender.SendWithoutOutboxAsync(_order);
 
     [GlobalCleanup]
     public async Task Cleanup()

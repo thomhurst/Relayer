@@ -93,7 +93,7 @@ public class NatsSendBenchmarks
         }
     }
     [Benchmark]
-    public ValueTask RelayerJsonSend() => _sender.SendNowAsync(_order);
+    public ValueTask RelayerJsonSend() => _sender.SendWithoutOutboxAsync(_order);
     // Isolate native invocation/header conversion from the full sender's route and continuation.
     // Use the same UTF-8 header storage as the full sender, native serializer, JSON and deadline.
     // Pool the diagnostic continuation too; an ordinary builder adds a per-call benchmark box.

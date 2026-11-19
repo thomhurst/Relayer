@@ -94,7 +94,7 @@ public readonly struct OutgoingMessage
     public void ValidateForOutbox()
     {
         if (IsTombstone)
-            throw new InvalidOperationException("Native tombstones cannot yet be persisted in the outbox. Use SendNowAsync outside the outbox path.");
+            throw new InvalidOperationException("Native tombstones cannot yet be persisted in the outbox. Use SendWithoutOutboxAsync.");
         if (_options is { HasNativeConfigurators: true })
         {
             throw new InvalidOperationException(

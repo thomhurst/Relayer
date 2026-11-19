@@ -131,7 +131,7 @@ The host still composes and validates every consumer and starts the producer, so
 
 To write database changes and outgoing messages for each record, attach the [EF Core consumer inbox](../reference/ef-core-inbox.md) with `consumer.EntityFrameworkCore<TContext>(...)`. The inbox row, business changes and outbox rows commit in one PostgreSQL transaction, and the receive returns `Complete` only after that commit, so the record's offset is never committed ahead of its database work. A crash before the commit rolls everything back and the record is replayed. A crash after the commit but before Dekaf's next offset commit also replays the record, and the inbox row makes the replay skip the handler, so business rows and outbox rows are written once. A failed attempt rolls back before its retry, and a handler cancelled at `StopTimeout` rolls back and leaves its record uncommitted.
 
-Delivery is still at least once: only the database work is deduplicated. Side effects outside the transaction, such as HTTP calls or direct `SendNowAsync` sends, can repeat on replay. For Kafka output, use [Kafka-to-Kafka exactly-once](#kafka-to-kafka-exactly-once) instead.
+Delivery is still at least once: only the database work is deduplicated. Side effects outside the transaction, such as HTTP calls or direct `SendWithoutOutboxAsync` sends, can repeat on replay. For Kafka output, use [Kafka-to-Kafka exactly-once](#kafka-to-kafka-exactly-once) instead.
 
 ### Kafka to Kafka exactly-once
 
@@ -162,7 +162,7 @@ Each run of the consumer creates its own transactional producer from the transpo
 
 What joins the transaction:
 
-- Sends a handler makes through `ISender` to a route on the same Kafka transport, including `SendNowAsync` (which only bypasses a database outbox). They are buffered until the attempt succeeds, as always, and then produced through the transactional producer.
+- Sends a handler makes through `ISender` to a route on the same Kafka transport, including `SendWithoutOutboxAsync`. They are buffered until the attempt succeeds, as always, and then produced through the transactional producer.
 - [Dead-letter copies](../guides/failure-handling.md) of the consumer's failed records, so a poison record's copy and its offset commit together.
 
 What does not: sends to other transports or Kafka transports, database outbox rows, and any other side effect. Those stay at least once and can repeat when a transaction aborts and its records are processed again.
@@ -360,7 +360,7 @@ public sealed class CustomerDeletedHandler(ICustomerCache cache) : IHandler<Tomb
 
 Register `Customer` with `AddMessageTypesFromThisAssembly()` or `MessageTypes.Add<Customer>(...)`; do not register a separate identity or route for `Tombstone<Customer>`. Conflicting payload and tombstone identities throw `InvalidOperationException` during registration in either order, leaving existing registry mappings unchanged. A consumer can register both its regular handler and its tombstone handler. Tombstones never enter the JSON deserializer or upcaster chain. Native null records require a non-null key for typed dispatch; unkeyed null records follow the failure policy. The Kafka feature remains available and offsets commit only after durable handling.
 
-This API requires a transport whose `TransportCapabilities.Tombstones` is true (currently Kafka). It does not enable broker log compaction; configure the topic's native cleanup policy separately. Tombstones can be buffered by a handler's send pipeline and retained in dead-letter copies. Database outbox persistence and durable redelivery of native null values remain unsupported: sends through an active outbox fail before enlistment. Use `SendNowAsync` for a direct native send when an outbox transaction is active.
+This API requires a transport whose `TransportCapabilities.Tombstones` is true (currently Kafka). It does not enable broker log compaction; configure the topic's native cleanup policy separately. Tombstones can be buffered by a handler's send pipeline and retained in dead-letter copies. Database outbox persistence and durable redelivery of native null values remain unsupported: sends through an active outbox fail before enlistment. Use `SendWithoutOutboxAsync` for a direct native send when an outbox transaction is active.
 
 
 ## Inspect and redrive dead letters

@@ -167,7 +167,7 @@ public class NatsExecutionTests
             headers: poisonHeaders, cancellationToken: token);
         ack.EnsureSuccess();
         using var scope = host.Services.CreateScope();
-        await scope.ServiceProvider.GetRequiredService<ISender>().SendNowAsync(new ExecutionMessage(42),
+        await scope.ServiceProvider.GetRequiredService<ISender>().SendWithoutOutboxAsync(new ExecutionMessage(42),
             options => options.Nats(headers => headers["custom"] = "native"), token);
         await control.Completed.Task.WaitAsync(token);
         var dead = await js.GetConsumerAsync(events, "dead_reader", token);

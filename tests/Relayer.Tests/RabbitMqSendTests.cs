@@ -210,7 +210,7 @@ public class RabbitMqSendTests
             await Assert.That(outbox.DeliverAt).IsEqualTo(due);
             await Assert.That(outbox.Count).IsEqualTo(1);
             await Assert.That((await channel.QueueDeclarePassiveAsync("orders", token)).MessageCount).IsEqualTo(0u);
-            await sender.SendNowAsync(new Sample(43), cancellationToken: token);
+            await sender.SendWithoutOutboxAsync(new Sample(43), cancellationToken: token);
             var sent = (await channel.BasicGetAsync("orders", true, token))!;
             await Assert.That(Header(sent, "cloudEvents:type")).IsEqualTo("rabbitmq.send.sample;v=1");
             await Assert.That(sent.BasicProperties.ContentType).IsEqualTo("application/json");

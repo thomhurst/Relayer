@@ -44,7 +44,7 @@ public class TenancyTests
             if (Interlocked.Increment(ref started) == 2) both.SetResult();
             await both.Task;
             await Assert.That(tenant.Id.ToString()).IsEqualTo(original);
-            await context.Services.GetRequiredService<ISender>().SendNowAsync(new Payload());
+            await context.Services.GetRequiredService<ISender>().SendWithoutOutboxAsync(new Payload());
         };
         var receive = Receive(provider);
         await Task.WhenAll(receive.ProcessAsync(new(new("north"))).AsTask(), receive.ProcessAsync(new(new("south"))).AsTask());
@@ -61,7 +61,7 @@ public class TenancyTests
             var tenant = context.Services.GetRequiredService<TenantContext>();
             attempts.Add(tenant.Id.ToString());
             if (context.Attempt == 1) tenant.Id = new("changed");
-            await context.Services.GetRequiredService<ISender>().SendNowAsync(new Payload());
+            await context.Services.GetRequiredService<ISender>().SendWithoutOutboxAsync(new Payload());
             if (context.Attempt == 1) throw new InvalidOperationException("retry");
         };
         await Receive(provider, retry: true).ProcessAsync(new(new("original")));
@@ -77,12 +77,12 @@ public class TenancyTests
         {
             scope.ServiceProvider.GetRequiredService<TenantContext>().Id = new("東京"u8.ToArray());
             var sender = scope.ServiceProvider.GetRequiredService<ISender>();
-            await sender.SendNowAsync(new Payload());
+            await sender.SendWithoutOutboxAsync(new Payload());
             await sender.SendAsync(new Payload());
             await sender.SendViaOutboxAsync(new Payload());
-            await Assert.That(async () => await sender.SendNowAsync(new Payload(), o => o.Headers[TenantContext.HeaderName] = "other"))
+            await Assert.That(async () => await sender.SendWithoutOutboxAsync(new Payload(), o => o.Headers[TenantContext.HeaderName] = "other"))
                 .Throws<InvalidOperationException>().WithMessageContaining("scoped tenant");
-            await sender.SendNowAsync(new Payload());
+            await sender.SendWithoutOutboxAsync(new Payload());
         }
         provider.GetRequiredService<Control>().Invoke = context => context.ReplyAsync(new Payload());
         await Receive(provider).ProcessAsync(new(new("reply-tenant")));
@@ -90,7 +90,7 @@ public class TenancyTests
         await Assert.That(provider.GetRequiredService<Outbox>().Tenants).IsEquivalentTo(new[] { "東京", "東京", "reply-tenant" });
         using var clean = provider.CreateScope();
         await Assert.That(clean.ServiceProvider.GetRequiredService<TenantContext>().Id.IsEmpty).IsTrue();
-        await clean.ServiceProvider.GetRequiredService<ISender>().SendNowAsync(new Payload());
+        await clean.ServiceProvider.GetRequiredService<ISender>().SendWithoutOutboxAsync(new Payload());
         await Assert.That(provider.GetRequiredService<Sink>().Tenants.Last()).IsEqualTo("");
     }
 
@@ -114,7 +114,7 @@ public class TenancyTests
     {
         await using var provider = Provider(tenancy: false);
         using var scope = provider.CreateScope();
-        await scope.ServiceProvider.GetRequiredService<ISender>().SendNowAsync(new Payload(), o => o.Headers[TenantContext.HeaderName] = "manual");
+        await scope.ServiceProvider.GetRequiredService<ISender>().SendWithoutOutboxAsync(new Payload(), o => o.Headers[TenantContext.HeaderName] = "manual");
         await Assert.That(provider.GetRequiredService<Sink>().Tenants).IsEquivalentTo(new[] { "manual" });
         var incoming = new Incoming(new("ignored"));
         await Receive(provider).ProcessAsync(incoming);

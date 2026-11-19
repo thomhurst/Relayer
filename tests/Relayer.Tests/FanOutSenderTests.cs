@@ -39,7 +39,7 @@ public class FanOutSenderTests
 
         await Assert.That(async () => await sender.SendAsync(new OrderPlaced(Guid.NewGuid())))
             .Throws<InvalidOperationException>().WithMessageContaining("requires an active outbox transaction");
-        await Assert.That(async () => await sender.SendNowAsync(new OrderPlaced(Guid.NewGuid())))
+        await Assert.That(async () => await sender.SendWithoutOutboxAsync(new OrderPlaced(Guid.NewGuid())))
             .Throws<InvalidOperationException>().WithMessageContaining("requires an active outbox transaction");
         await Assert.That(broker.Count + local.Count + outbox.Rows.Count).IsEqualTo(0);
     }

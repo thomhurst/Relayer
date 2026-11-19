@@ -17,7 +17,7 @@ public class SendTracingTests
     {
         using var fixture = new Fixture(new() { IncludeBodySize = true });
         using var ambient = new Activity("request").Start();
-        await fixture.Sender.SendNowAsync(fixture.Message);
+        await fixture.Sender.SendWithoutOutboxAsync(fixture.Message);
         var send = fixture.Stopped.Single();
         await Assert.That(send.Kind).IsEqualTo(ActivityKind.Producer);
         await Assert.That(send.ParentSpanId).IsEqualTo(ambient.SpanId);
@@ -38,7 +38,7 @@ public class SendTracingTests
         using var fixture = new Fixture();
         using var ambient = new Activity("request").Start();
         fixture.Sink.Completion = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        var pending = fixture.Sender.SendNowAsync(fixture.Message);
+        var pending = fixture.Sender.SendWithoutOutboxAsync(fixture.Message);
         await Assert.That(pending.IsCompleted).IsFalse();
         await Assert.That(fixture.Stopped).IsEmpty();
         await Assert.That(Activity.Current).IsSameReferenceAs(ambient);
@@ -46,7 +46,7 @@ public class SendTracingTests
         await pending;
         await Assert.That(fixture.Stopped.Count).IsEqualTo(1);
         fixture.Sink.Completion = null;
-        await fixture.Sender.SendNowAsync(fixture.Message);
+        await fixture.Sender.SendWithoutOutboxAsync(fixture.Message);
         await Assert.That(fixture.Stopped.Count).IsEqualTo(2);
         await Assert.That(fixture.Stopped[0].SpanId).IsNotEqualTo(fixture.Stopped[1].SpanId);
         await Assert.That(Activity.Current).IsSameReferenceAs(ambient);
@@ -57,7 +57,7 @@ public class SendTracingTests
     {
         using var fixture = new Fixture(raw: true);
         var parent = "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01";
-        await fixture.Sender.SendNowAsync(fixture.Message, options =>
+        await fixture.Sender.SendWithoutOutboxAsync(fixture.Message, options =>
         {
             options.Headers["traceparent"] = parent;
             options.Headers["tracestate"] = "vendor=value";
@@ -74,7 +74,7 @@ public class SendTracingTests
     {
         const string parent = "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01";
         using var fixture = new Fixture(raw: true, middleware: options => options.Headers["traceparent"] = parent);
-        await fixture.Sender.SendNowAsync(fixture.Message);
+        await fixture.Sender.SendWithoutOutboxAsync(fixture.Message);
         var send = fixture.Stopped.Single();
         await Assert.That(send.Kind).IsEqualTo(ActivityKind.Client);
         await Assert.That(send.Links.Single().Context.SpanId).IsEqualTo(fixture.Sink.Context.SpanId);
@@ -89,7 +89,7 @@ public class SendTracingTests
         using var ambient = new Activity("request").Start();
         if (serialization) fixture.Serializer.Error = new InvalidOperationException("serialize failed");
         else fixture.Sink.Error = new InvalidOperationException("native failed");
-        await Assert.That(async () => await fixture.Sender.SendNowAsync(fixture.Message)).Throws<InvalidOperationException>();
+        await Assert.That(async () => await fixture.Sender.SendWithoutOutboxAsync(fixture.Message)).Throws<InvalidOperationException>();
         var send = fixture.Stopped.Single();
         await Assert.That(send.Status).IsEqualTo(ActivityStatusCode.Error);
         await Assert.That(send.GetTagItem("error.type")).IsEqualTo("_OTHER");
@@ -224,9 +224,9 @@ public class SendTracingTests
     public async Task No_listener_direct_send_is_allocation_free_after_warmup()
     {
         using var fixture = new Fixture(listen: false);
-        for (var i = 0; i < 100; i++) fixture.Sender.SendNowAsync(fixture.Message).GetAwaiter().GetResult();
+        for (var i = 0; i < 100; i++) fixture.Sender.SendWithoutOutboxAsync(fixture.Message).GetAwaiter().GetResult();
         var before = GC.GetAllocatedBytesForCurrentThread();
-        for (var i = 0; i < 1000; i++) fixture.Sender.SendNowAsync(fixture.Message).GetAwaiter().GetResult();
+        for (var i = 0; i < 1000; i++) fixture.Sender.SendWithoutOutboxAsync(fixture.Message).GetAwaiter().GetResult();
         var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
         await Assert.That(allocated).IsEqualTo(0);
     }
@@ -260,7 +260,7 @@ public class SendTracingTests
     {
         using var fixture = new Fixture();
         fixture.Sink.Completion = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        var pending = fixture.Sender.SendNowAsync(fixture.Message);
+        var pending = fixture.Sender.SendWithoutOutboxAsync(fixture.Message);
         fixture.Sink.Completion.SetException(new InvalidOperationException("async native failed"));
         await Assert.That(async () => await pending).Throws<InvalidOperationException>();
         await Assert.That(fixture.Stopped.Single().Status).IsEqualTo(ActivityStatusCode.Error);
