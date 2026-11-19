@@ -98,6 +98,8 @@ To change a decision, add a new entry that supersedes it rather than editing his
 | [D85](#d85-applications-start-service-bus-consumers-through-a-keyed-control) | Applications start Service Bus consumers through a keyed control | Accepted |
 | [D86](#d86-service-bus-implies-entity-declarations-when-topology-is-none) | Service Bus implies entity declarations when topology is None | Accepted |
 | [D87](#d87-generic-code-registers-a-handler-with-its-message-type) | Generic code registers a handler with its message type | Accepted |
+| [D88](#d88-kafka-provisioning-waits-for-concurrent-creations-through-read-only-metadata) | Kafka provisioning waits for concurrent creations through read-only metadata | Accepted |
+| [D89](#d89-registered-outboxes-require-enlistment-for-automatic-sends) | Registered outboxes require enlistment for automatic sends | Accepted |
 
 ---
 
@@ -2034,3 +2036,11 @@ This resolves the release scope of D20, D45, D56, D60 and D66 without removals, 
 **Decision.** Provision uses native creation unchanged, then reads all-topic metadata until every declared topic is visible. While a topic is absent, reads are separated by 100 ms and bounded by native `TopicCreationOptions.TimeoutMs` plus host cancellation. A fresh native admin client is needed for each read because `ListTopicsAsync` caches its initial metadata. No targeted metadata request, create retry, broker mutation or settings reconciliation is added by this wait. Once topics are visible, native metadata and `DescribeConfigsAsync` verify explicit declarations. Native failures propagate; only missing metadata is retried. This startup-only exception to D42 reuses the available native reads and must be replaced by the native wait when available.
 
 **Consequences.** Concurrent application startup can verify the winning topic without a false missing-topic failure. Existing topics remain unchanged. No steady-state per-message work changes.
+
+## D89. Registered outboxes require enlistment for automatic sends
+
+**Context.** `SendAsync` previously sent directly when a registered outbox had no active transaction. A missing consumer database boundary or forgotten EF Core context selection could therefore publish a message before business data committed. The maintainer approved changing this pre-release default in [#885](https://github.com/thomhurst/Relayer/issues/885) on 2026-11-19.
+
+**Decision.** When an `IOutboxEnlistment` is registered in the scope, `ISender.SendAsync` requires its `IsActive` state before entering the send pipeline. An inactive outbox causes an actionable exception naming transaction activation, EF Core's `EnlistRelayerOutbox()`, and the explicit `SendWithoutOutboxAsync` alternative. Active transactions and selected pending EF Core units of work enlist through the existing integration. Without an outbox registration, automatic sends remain direct. `SendViaOutboxAsync` still requires a registered, active outbox. `SendWithoutOutboxAsync` bypasses enlistment, subject to existing route requirements and handler-attempt buffering. No broker transaction or database transaction is created implicitly.
+
+**Consequences.** Applications that relied on the inactive-outbox fallback must activate their business transaction or explicitly select direct sending. `SendRouteOptions.TransactionRequirement.None` does not restore the fallback; it leaves route-specific guarantees unspecified. The common path adds only constant-time checks and no allocations. Native send, transaction, settlement and outbox dispatch implementations are unchanged. See the [upgrade guide](https://relayer.tomlonghurst.dev/docs/migration/outbox-sends).

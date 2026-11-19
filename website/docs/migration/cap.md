@@ -23,7 +23,7 @@ await db.SaveChangesAsync(cancellationToken);
 await transaction.CommitAsync(cancellationToken);
 ```
 
-This is the sample's real call site: its PostgreSQL context has `AddRelayerOutbox` interceptors, and direct dispatch plus maintenance use the same database. Outside an active transaction or explicit context selection, ordinary `SendAsync` sends directly. Use `SendViaOutboxAsync` when missing enlistment must fail. See [EF transaction enlistment](../reference/ef-core-outbox.md) for setup and failure semantics.
+This is the sample's real call site: its PostgreSQL context has `AddRelayerOutbox` interceptors, and direct dispatch plus maintenance use the same database. With an outbox registered, ordinary `SendAsync` throws outside an active transaction or explicit context selection. `SendViaOutboxAsync` additionally requires an outbox registration; use `SendWithoutOutboxAsync` only for intentional direct sends. See [EF transaction enlistment](../reference/ef-core-outbox.md) for setup and failure semantics.
 
 ## Check storage and subscriber behavior
 

@@ -45,6 +45,10 @@ internal class Sender(SendPipeline pipeline, IOutboxEnlistment? outbox = null) :
         {
             throw new InvalidOperationException("SendViaOutboxAsync requires an outbox with an active transaction in this scope.");
         }
+        if (mode == SendMode.Automatic && Outbox is not null && enlistment is null)
+        {
+            throw new InvalidOperationException("SendAsync requires an active outbox transaction when an outbox is registered. Begin an outbox transaction or, with EF Core, call db.EnlistRelayerOutbox() before sending. Use SendWithoutOutboxAsync for an intentional direct send.");
+        }
         return pipeline.GetTarget<TMessage>().SendAsync(message, configure, enlistment, cancellationToken, AttemptBuffer, tenant: Tenant?.Id ?? default);
     }
 }

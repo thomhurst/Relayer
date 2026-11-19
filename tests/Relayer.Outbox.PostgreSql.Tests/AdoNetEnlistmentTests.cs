@@ -352,7 +352,9 @@ public class AdoNetEnlistmentTests
         var outbox = scope.ServiceProvider.GetRequiredService<PostgreSqlOutbox>();
         var sender = scope.ServiceProvider.GetRequiredService<ISender>();
         var transport = provider.GetRequiredService<Transport>();
-        await sender.SendAsync(new Probe(1));
+        await Assert.That(async () => await sender.SendAsync(new Probe(1))).Throws<InvalidOperationException>();
+        await Assert.That(transport.Sends).IsEqualTo(0);
+        await sender.SendWithoutOutboxAsync(new Probe(1));
         await Assert.That(transport.Sends).IsEqualTo(1);
         await using (var transaction = await outbox.BeginTransactionAsync(database.Source))
         {

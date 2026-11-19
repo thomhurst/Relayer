@@ -664,7 +664,7 @@ public class LocalTransportTests(PostgreSqlLocalSessionFixture server)
     {
         public async ValueTask DisposeAsync()
         {
-            await sender.SendAsync(new LocalWork(2000));
+            await sender.SendWithoutOutboxAsync(new LocalWork(2000));
             throw new InvalidOperationException("scope cleanup failed");
         }
     }
@@ -684,7 +684,7 @@ public class LocalTransportTests(PostgreSqlLocalSessionFixture server)
             await command.ExecuteNonQueryAsync(context.CancellationToken);
             if (message.Value is 10 or -10 or -11)
             {
-                await sender.SendAsync(new LocalWork(1000), cancellationToken);
+                await sender.SendWithoutOutboxAsync(new LocalWork(1000), cancellationToken);
                 if (message.Value == -11) context.Services.GetRequiredService<FailingCleanup>();
             }
             if (message.Value is -2 or -3)

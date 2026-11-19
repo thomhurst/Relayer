@@ -451,7 +451,7 @@ public class FailurePipelineTests
         {
             disposing.SetResult();
             await finish.Task;
-            await sender.SendAsync(new Payload());
+            await sender.SendWithoutOutboxAsync(new Payload());
             if (failDisposal) throw new ApplicationException("scope failed after sending");
         };
         var pipeline = Pipeline(provider);
@@ -465,7 +465,7 @@ public class FailurePipelineTests
             await using var other = provider.CreateAsyncScope();
             var otherSender = other.ServiceProvider.GetRequiredService<ISender>();
             await Assert.That(otherSender).IsNotSameReferenceAs(sender);
-            await otherSender.SendAsync(new Payload());
+            await otherSender.SendWithoutOutboxAsync(new Payload());
             await Assert.That(transport.Sends.Count).IsEqualTo(1);
         }
         finally

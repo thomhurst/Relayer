@@ -62,7 +62,7 @@ const sidebars = {
     {
       type: 'category',
       label: 'Migration',
-      items: ['migration/masstransit', 'migration/rebus', 'migration/cap'],
+      items: ['migration/outbox-sends', 'migration/masstransit', 'migration/rebus', 'migration/cap'],
     },
     'roadmap',
     'contributing/documentation',

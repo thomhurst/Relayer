@@ -41,12 +41,12 @@ public sealed record OrderPlaced(string OrderId);
 ## Send within the business transaction
 
 Resolve `db` and `sender` (`ISender`) from the same scope. Open an EF Core transaction and use
-`SendViaOutboxAsync` to save the message with the order when the transaction commits.
+`SendAsync` to save the message with the order when the transaction commits.
 
 ```csharp
 await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
 db.Orders.Add(new Order { Id = orderId });
-await sender.SendViaOutboxAsync(new OrderPlaced(orderId), cancellationToken);
+await sender.SendAsync(new OrderPlaced(orderId), cancellationToken);
 await db.SaveChangesAsync(cancellationToken);
 await transaction.CommitAsync(cancellationToken);
 ```
@@ -80,10 +80,13 @@ restrictions, multiple contexts and separate writer and worker deployments.
 ### Transaction choices and retries
 
 The explicit transaction enlists sends automatically when it is the scope's only active context.
-`SendViaOutboxAsync` requires enlistment. For an implicit save, call `db.EnlistRelayerOutbox()`
+With an outbox registered, `SendAsync` throws if no outbox transaction or pending unit of work is active.
+`SendViaOutboxAsync` also requires enlistment and additionally rejects a missing outbox registration.
+For an implicit save, call `db.EnlistRelayerOutbox()`
 before sending. See [EF Core transactions](../reference/ef-core-outbox.md#explicit-transactions)
 for retrying the whole business operation. To bypass the outbox, use `SendWithoutOutboxAsync`.
 See [sending messages](sending.md) for how each send method behaves.
+When upgrading an application that relied on direct fallback, follow [Upgrade outbox sends](../migration/outbox-sends.md).
 
 ### What the inbox protects
 
