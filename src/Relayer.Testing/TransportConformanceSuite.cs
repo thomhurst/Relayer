@@ -74,7 +74,7 @@ public sealed class TransportConformanceSuite<TIncoming, TBinding>
         {
             try
             {
-                await fixture.DisposeAsync().ConfigureAwait(false);
+                await DisposeFixtureAsync(scenario, fixture).ConfigureAwait(false);
                 if (scenario == TransportConformanceCase.CleanShutdown && fixture is ITransportShutdownConformanceFixture shutdown)
                     shutdown.Logs.AssertClean();
             }
@@ -82,6 +82,31 @@ public sealed class TransportConformanceSuite<TIncoming, TBinding>
             {
                 throw new AggregateException("Transport conformance and fixture disposal both failed.", failure, cleanup);
             }
+        }
+    }
+
+    private static async Task DisposeFixtureAsync(TransportConformanceCase scenario, ITransportConformanceFixture<TIncoming> fixture)
+    {
+        // Bound only the wait: IAsyncDisposable has no cancellation contract.
+        using var cleanupDeadline = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+        var disposal = fixture.DisposeAsync().AsTask();
+        try
+        {
+            await disposal.WaitAsync(cleanupDeadline.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException error) when (cleanupDeadline.IsCancellationRequested)
+        {
+            _ = ObserveDisposalAsync(disposal);
+            throw new TimeoutException($"Transport conformance {scenario} fixture disposal exceeded its independent 15-second cleanup budget. Disposal continues; the fixture must release its owned resources.", error);
+        }
+    }
+
+    private static async Task ObserveDisposalAsync(Task disposal)
+    {
+        try { await disposal.ConfigureAwait(false); }
+        catch
+        {
+            // RunAsync already reported the timeout. Observe late cleanup failures.
         }
     }
 
