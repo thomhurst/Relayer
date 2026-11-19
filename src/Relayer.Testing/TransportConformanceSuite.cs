@@ -334,7 +334,7 @@ public sealed class TransportConformanceSuite<TIncoming, TBinding>
                 await Send(0).ConfigureAwait(false);
                 CheckBody(await Next().ConfigureAwait(false), 0);
                 progress.Phase = "broker disconnect";
-                await fixture.DisconnectAsync(token).ConfigureAwait(false);
+                await fixture.DisconnectAsync(token).WaitAsync(token).ConfigureAwait(false);
                 progress.Phase = "outage sends";
                 using (var outage = CancellationTokenSource.CreateLinkedTokenSource(token))
                 {
@@ -355,7 +355,7 @@ public sealed class TransportConformanceSuite<TIncoming, TBinding>
                     // on reconnect; acknowledged-message checks below still apply to the same endpoint.
                     catch (Exception error) when (!token.IsCancellationRequested && fixture.IsExpectedOutageFailure(error)) { }
                     progress.Phase = "broker reconnect";
-                    await fixture.ReconnectAsync(token).ConfigureAwait(false);
+                    await fixture.ReconnectAsync(token).WaitAsync(token).ConfigureAwait(false);
                     // An offline stop can exhaust its budget while native drain is still
                     // running. Finish that shutdown with connectivity restored before
                     // Start can treat the still-started transport as an idempotent no-op.
@@ -385,9 +385,9 @@ public sealed class TransportConformanceSuite<TIncoming, TBinding>
                 await Stop().ConfigureAwait(false);
                 await Start().ConfigureAwait(false);
                 progress.Phase = "broker disconnect";
-                await fixture.DisconnectAsync(token).ConfigureAwait(false);
+                await fixture.DisconnectAsync(token).WaitAsync(token).ConfigureAwait(false);
                 progress.Phase = "broker reconnect";
-                await fixture.ReconnectAsync(token).ConfigureAwait(false);
+                await fixture.ReconnectAsync(token).WaitAsync(token).ConfigureAwait(false);
                 await Send(2).ConfigureAwait(false);
                 CheckBody(await Next().ConfigureAwait(false), 2);
                 break;
