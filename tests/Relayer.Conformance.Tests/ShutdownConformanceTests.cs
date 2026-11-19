@@ -51,12 +51,33 @@ public class ShutdownConformanceTests
         await Assert.That(error!.InnerException!.Message).Contains("StopAsync completed before the in-flight consumer finished");
     }
 
-    private sealed class BrokenFixture(MessageTracing tracing, bool earlyStop, bool disposalError, bool nativeViolation, bool asynchronousEarlyStop = false)
+    [Test]
+    public async Task Pending_stop_fails_when_scenario_is_cancelled_and_cleanup_releases_it()
+    {
+        using var cancellation = new CancellationTokenSource();
+        BrokenFixture? fixture = null;
+        var suite = new TransportConformanceSuite<InMemoryDelivery, InMemoryMessageBinding>((tracing, _) =>
+            new ValueTask<ITransportConformanceFixture<InMemoryDelivery>>(
+                fixture = new BrokenFixture(tracing, false, false, false, cancelScenarioAfterReceive: cancellation.Cancel)));
+
+        var error = await Assert.That(async () =>
+                await suite.RunAsync(TransportConformanceCase.CleanShutdown, cancellation.Token)
+                    .WaitAsync(TimeSpan.FromSeconds(5)))
+            .Throws<InvalidOperationException>();
+        await Assert.That(error!.Message).Contains("in-flight transport shutdown");
+        await Assert.That(error.InnerException is OperationCanceledException).IsTrue();
+        await Assert.That(fixture!.PendingStopReleased).IsTrue();
+    }
+
+    private sealed class BrokenFixture(MessageTracing tracing, bool earlyStop, bool disposalError, bool nativeViolation,
+        bool asynchronousEarlyStop = false, Action? cancelScenarioAfterReceive = null)
         : ITransportConformanceFixture<InMemoryDelivery>, ITransportShutdownConformanceFixture, ITransport
     {
         private readonly InMemoryFixture _inner = new(tracing);
         private readonly TaskCompletionSource _settlementRelease = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource _stopRelease = new(TaskCreationOptions.RunContinuationsAsynchronously);
         private int _stopCalls;
+        public bool PendingStopReleased => _stopRelease.Task.IsCompletedSuccessfully;
         public ConformanceLogCapture Logs => _inner.Logs;
         public ITransport Transport => this;
         public string Name => _inner.Transport.Name;
@@ -64,7 +85,13 @@ public class ShutdownConformanceTests
         public string MessagingSystem => _inner.MessagingSystem;
         public string SettlementOperation => _inner.SettlementOperation;
         public HeaderNames HeaderNames => _inner.HeaderNames;
-        public void RegisterConsumer(Func<InMemoryDelivery, CancellationToken, ValueTask<Disposition>> receive) => _inner.RegisterConsumer(receive);
+        public void RegisterConsumer(Func<InMemoryDelivery, CancellationToken, ValueTask<Disposition>> receive) =>
+            _inner.RegisterConsumer(async (delivery, token) =>
+            {
+                var disposition = await receive(delivery, token);
+                cancelScenarioAfterReceive?.Invoke();
+                return disposition;
+            });
         public async ValueTask SettleAsync(InMemoryDelivery incoming, Disposition disposition, CancellationToken token)
         {
             // Hold native completion until cleanup, so scheduling cannot hide the premature stop.
@@ -81,7 +108,14 @@ public class ShutdownConformanceTests
         public Task StartAsync(CancellationToken token) => _inner.Transport.StartAsync(token);
         public async Task StopAsync(CancellationToken token)
         {
-            if (asynchronousEarlyStop && Interlocked.Increment(ref _stopCalls) == 1)
+            var firstStop = Interlocked.Increment(ref _stopCalls) == 1;
+            if (firstStop && cancelScenarioAfterReceive is not null)
+            {
+                await _stopRelease.Task;
+                return;
+            }
+            _stopRelease.TrySetResult();
+            if (firstStop && asynchronousEarlyStop)
             {
                 await Task.Yield();
                 return;
