@@ -20,7 +20,7 @@ public static class RabbitMqStreamsBuilderExtensions
         {
             var definition = provider.GetRequiredService<RelayerConfiguration>().Transports.Single(item => item.Name == name);
             if (definition.Routes.Count != 0 || definition.Consumers.Count != 0)
-                throw new NotSupportedException("RabbitMQ Streams send and receive execution are not implemented (#316). This registration manages native connections and stream topology only; reliable consumer recovery cannot yet preserve failed processing offsets.");
+                throw new NotSupportedException("RabbitMQ Streams registration supports native connections and stream topology only. Remove send routes and consumers from this registration. Message execution (#316) awaits graceful shutdown in the native reliable consumer (rabbitmq/rabbitmq-stream-dotnet-client#498).");
             return new RabbitMqStreamsTransport(name, provider.GetRequiredService<IOptionsMonitor<RabbitMqStreamsOptions>>().Get(name));
         });
         builder.Services.AddSingleton<IHostedService>(provider => new RabbitMqStreamsHostedService(provider, name));

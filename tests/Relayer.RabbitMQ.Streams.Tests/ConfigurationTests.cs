@@ -58,7 +58,7 @@ public class ConfigurationTests
         services.AddRelayer(builder => builder.RabbitMQStreams("streams", streams => streams.Send<Sample>("orders")));
         await using var provider = services.BuildServiceProvider();
         var error = await Assert.That(() => provider.GetRequiredService<ITransport>()).Throws<NotSupportedException>();
-        await Assert.That(error!.Message).Contains("reliable consumer recovery");
+        await Assert.That(error!.Message).Contains("rabbitmq/rabbitmq-stream-dotnet-client#498");
         var consumers = new ServiceCollection();
         consumers.AddRelayer(builder => builder.RabbitMQStreams("streams", streams => streams.Consume("orders", consumer => consumer.Handler<SampleHandler>())));
         await using var consumerProvider = consumers.BuildServiceProvider();
