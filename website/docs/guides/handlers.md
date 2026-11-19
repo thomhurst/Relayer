@@ -54,7 +54,14 @@ Consumer registrations freeze when the consumer callback returns; global registr
 
 ## Batch handlers
 
-A batch handler receives several messages at once. Each message can succeed or fail independently. Without buffered direct sends, only failed items enter the failure pipeline:
+Use `IBatchHandler<TMessage>` with an adapter that composes batch dispatch with a
+receive executor. Built-in consumers require `BatchSize=1` and dispatch one
+message per handler call, including when the broker client fetches deliveries
+in batches. The [adapter authoring example](../transports/consume-pipeline.md#batch-consumers)
+shows how to wire up `BuildBatch`, `BatchReceiveExecutor`, and `ProcessBatchAsync`.
+
+Each message in a batch can succeed or fail independently. Without buffered
+direct sends, only failed items enter the failure pipeline:
 
 ```csharp
 public sealed class AuditHandler(AuditStore store) : IBatchHandler<AuditEvent>
@@ -81,7 +88,8 @@ Default or manually constructed items cannot report failures. Retained item
 copies reject `Fail` after the handler returns, including during pooled reuse;
 complete all item work before returning from the handler.
 
-Configure the existing consumer declaration with `.Batch(maxSize, maxWait)`.
+For an adapter that supports batch dispatch, configure its consumer with
+`.Batch(maxSize, maxWait)`.
 The core composes generated batch dispatch in one fresh scope per batch attempt.
 Normally only failed items are retried; an exception from the handler fails every item in
 that invocation. Success waits for asynchronous scope disposal and durable work
@@ -100,12 +108,6 @@ Cancellation of any active delivery or the batch call cancels an in-flight
 buffered-send flush, including when the batch-call token is omitted. The batch
 cannot complete successfully after cancellation. Sends already accepted by the
 broker can repeat on redelivery; cancellation does not undo them.
-
-Adapters must install a native or core client-side receive executor before
-starting consumers; declaring a size does not supply one. The core execution
-seam is available now; the in-memory hosted adapter still explicitly rejects
-batch-handler composition. See [batch composition](../transports/consume-pipeline.md#batch-consumers)
-for transport-author integration and native count/wait limits.
 
 ## Registration without scanning
 
