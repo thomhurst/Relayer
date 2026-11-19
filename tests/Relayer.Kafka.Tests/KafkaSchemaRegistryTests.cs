@@ -12,7 +12,6 @@ using Dekaf.Admin;
 using Dekaf.Consumer;
 using Dekaf.SchemaRegistry;
 using DotNet.Testcontainers.Builders;
-using DotNet.Testcontainers.Configurations;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -229,9 +228,8 @@ public class KafkaSchemaRegistryTests
         if (OperatingSystem.IsLinux())
             builder = builder.WithPortBinding("20000-29999", "8081").WithPortBinding("20000-29999", "9092");
         return builder
-            .WithCommand(new OverwriteEnumerable<string>([$"while [ ! -f /tmp/relayer-ready ]; do sleep 0.1; done; rm /tmp/relayer-ready; exec {RedpandaBuilder.StartupScriptFilePath}"]))
-            .WithWaitStrategy(Wait.ForUnixContainer().UntilCommandIsCompleted("touch", "/tmp/relayer-ready")
-                // Kafka readiness does not establish that the independent HTTP registry is ready.
+            // Kafka readiness does not establish that the independent HTTP registry is ready.
+            .WithWaitStrategy(Wait.ForUnixContainer()
                 .UntilHttpRequestIsSucceeded(request => request.ForPort(RedpandaBuilder.SchemaRegistryPort).ForPath("/subjects")))
             .Build();
     }

@@ -224,8 +224,8 @@ public class RabbitMqTopologyTests
             {
                 using var http = new HttpClient();
                 var plugin = await http.GetByteArrayAsync("https://github.com/rabbitmq/rabbitmq-delayed-message-exchange/releases/download/v4.1.0/rabbitmq_delayed_message_exchange-4.1.0.ez", token);
-                builder = builder.WithResourceMapping(plugin, "/opt/rabbitmq/plugins/rabbitmq_delayed_message_exchange-4.1.0.ez")
-                    .WithResourceMapping("[rabbitmq_delayed_message_exchange]."u8.ToArray(), "/etc/rabbitmq/enabled_plugins");
+                builder = builder.WithResourceMapping(plugin, FilePath.Of("/opt/rabbitmq/plugins/rabbitmq_delayed_message_exchange-4.1.0.ez"))
+                    .WithResourceMapping("[rabbitmq_delayed_message_exchange]."u8.ToArray(), FilePath.Of("/etc/rabbitmq/enabled_plugins"));
             }
             if (OperatingSystem.IsLinux()) builder = builder.WithPortBinding("20000-29999", "5672");
             var container = builder.Build();
