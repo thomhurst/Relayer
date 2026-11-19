@@ -148,7 +148,7 @@ public class TopologyTests
         internal static async Task<Broker> StartAsync(CancellationToken token)
         {
             var builder = new ContainerBuilder("rabbitmq:4.1.4-alpine")
-                .WithResourceMapping(Encoding.UTF8.GetBytes("[rabbitmq_stream].\n"), FilePath.Of("/etc/rabbitmq/enabled_plugins"))
+                .WithResourceMapping(Encoding.UTF8.GetBytes("[rabbitmq_stream].\n"), "/etc/rabbitmq/enabled_plugins")
                 .WithEnvironment("RABBITMQ_DEFAULT_USER", "relayer")
                 .WithEnvironment("RABBITMQ_DEFAULT_PASS", "relayer")
                 .WithEnvironment("RABBITMQ_SERVER_ADDITIONAL_ERL_ARGS", "+S 2:2 +A 2")

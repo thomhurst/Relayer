@@ -173,7 +173,7 @@ public class NatsTopologyTests
                 .WithPortBinding(4222, true)
                 .WithWaitStrategy(Wait.ForUnixContainer().UntilMessageIsLogged("Server is ready"));
             if (configuration is not null)
-                builder = builder.WithResourceMapping(Encoding.UTF8.GetBytes(configuration), FilePath.Of("/etc/nats.conf"));
+                builder = builder.WithResourceMapping(Encoding.UTF8.GetBytes(configuration), "/etc/nats.conf");
             var arguments = configuration is null ? "-js" : "-js -c /etc/nats.conf";
             // Docker stop/start reallocates random published ports. Restart only the broker process
             // so the recovery test preserves the endpoint every existing native client uses.
