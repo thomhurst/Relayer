@@ -7,12 +7,14 @@ namespace Relayer;
 /// </summary>
 public interface ISender
 {
-    /// <summary>Sends a message using its configured route.</summary>
+    /// <summary>Sends using the configured route. Completion means native send completion, buffering for the current handler attempt,
+    /// or enlistment in the active outbox unit of work. An enlisted send becomes durable at transaction commit.</summary>
     /// <exception cref="InvalidOperationException">An outbox is registered but no outbox transaction or pending unit of work is active.</exception>
     /// <remarks>In a handler, sends outside the outbox are buffered until the handler, middleware and scope disposal succeed. A failed attempt discards them.</remarks>
     ValueTask SendAsync<TMessage>(TMessage message, CancellationToken cancellationToken = default);
 
-    /// <summary>Sends a message, customising headers, scheduling or the native outgoing message.</summary>
+    /// <summary>Sends using the configured route. Completion means native send completion, buffering for the current handler attempt,
+    /// or enlistment in the active outbox unit of work. An enlisted send becomes durable at transaction commit.</summary>
     /// <exception cref="InvalidOperationException">An outbox is registered but no outbox transaction or pending unit of work is active.</exception>
     /// <remarks>In a handler, sends outside the outbox are buffered until the handler, middleware and scope disposal succeed. A failed attempt discards them.</remarks>
     ValueTask SendAsync<TMessage>(TMessage message, Action<SendOptions> configure, CancellationToken cancellationToken = default);

@@ -4,9 +4,10 @@ using Microsoft.EntityFrameworkCore.Diagnostics;
 
 namespace Relayer.Outbox.EntityFrameworkCore;
 
-internal sealed class OutboxSaveChangesInterceptor(EntityFrameworkCoreOutbox outbox, OutboxConfiguration configuration)
+internal sealed class OutboxSaveChangesInterceptor(EntityFrameworkCoreOutbox outbox, OutboxConfiguration configuration, IServiceProvider services)
     : SaveChangesInterceptor
 {
+    internal IServiceProvider Services { get; } = services;
     internal EntityFrameworkCoreOutbox Outbox { get; } = outbox;
     internal OutboxConfiguration Configuration { get; } = configuration;
 

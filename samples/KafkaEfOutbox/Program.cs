@@ -51,13 +51,12 @@ await using (var scope = app.Services.CreateAsyncScope())
     await using var schema = dataSource.CreateCommand(PostgreSqlOutboxSchema.CreateScript());
     await schema.ExecuteNonQueryAsync();
 }
-app.MapPost("/orders/{id}", async (string id, OrdersDbContext db, ISender sender, CancellationToken cancellationToken) =>
+app.MapPost("/orders/{id}", async (string id, OrdersDbContext db, CancellationToken cancellationToken) =>
 {
-    await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
+    using var outbox = db.EnlistRelayerOutbox();
     db.Orders.Add(new Order { Id = id });
-    await sender.SendViaOutboxAsync(new OrderPlaced(id), cancellationToken);
+    await outbox.EnqueueAsync(new OrderPlaced(id), cancellationToken);
     await db.SaveChangesAsync(cancellationToken);
-    await transaction.CommitAsync(cancellationToken);
     return Results.Accepted();
 });
 app.Run();
