@@ -119,11 +119,12 @@ internal sealed partial class RabbitMqConsumer
     {
         // Forced shutdown disposes the native channel while callbacks may still be settling.
         // RabbitMQ requeues their unacknowledged deliveries when the channel closes.
+        // The native event sender still identifies that channel after StopAsync clears _channel.
         if (Volatile.Read(ref _stopping) != 0 && _abort.IsCancellationRequested &&
             (args.Exception is OperationCanceledException cancelled && cancelled.CancellationToken == _abort.Token ||
              args.Exception is AlreadyClosedException closed &&
              closed.ShutdownReason is { Initiator: ShutdownInitiator.Application, ReplyCode: 200 } closeReason &&
-             ReferenceEquals(closeReason, _channel?.CloseReason)))
+             sender is IChannel channel && ReferenceEquals(closeReason, channel.CloseReason)))
             return Task.CompletedTask;
         // The native recoverable connection owns redelivery after a connection outage. Keep
         // its shutdown reason even after recovery so a delayed callback cannot fault the host.
