@@ -6,8 +6,15 @@ using Relayer.Serialization;
 
 namespace Relayer;
 
+/// <summary>Registers a consumer through a generated handler declaration.</summary>
+public interface ITransportConsumerBuilder
+{
+    /// <summary>Configures the handler for a native source using the transport defaults.</summary>
+    void Consume(string source, Action<IConsumerBuilder> configure);
+}
+
 /// <summary>The common declaration surface used by transport-specific extension methods.</summary>
-public sealed class TransportBuilder<TTransportOptions, TConsumerOptions>
+public sealed class TransportBuilder<TTransportOptions, TConsumerOptions> : ITransportConsumerBuilder
     where TTransportOptions : class, new()
     where TConsumerOptions : class, new()
 {
@@ -123,6 +130,8 @@ public sealed class TransportBuilder<TTransportOptions, TConsumerOptions>
         _consumers.Add(consumer.Build());
         return this;
     }
+
+    void ITransportConsumerBuilder.Consume(string source, Action<IConsumerBuilder> configure) => Consume(source, configure);
 
     private void EnsureMutable()
     {

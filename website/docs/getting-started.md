@@ -65,7 +65,7 @@ builder.Services.AddRelayer(relayer =>
     relayer.InMemory("local", local =>
     {
         local.Send<OrderPlaced>("orders");
-        local.Consume("orders", consumer => consumer.Handler<OrderPlacedHandler>());
+        local.Consume<OrderPlacedHandler>("orders");
     });
 });
 ```

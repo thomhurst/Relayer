@@ -141,7 +141,7 @@ To change a decision, add a new entry that supersedes it rather than editing his
 - Assembly scanning causes surprises: missed types (NSB #6967) and hidden process-wide state (Wolverine #3521).
 
 **Decision.**
-- Handlers, routes, and consumers are registered explicitly in code.
+- Handlers, routes, and consumers are registered explicitly in code. The generated `Consume<THandler>(source)` shorthand calls the same consumer and handler registration used by the configuration callback. Its non-generic receiver, `ITransportConsumerBuilder`, lets callers specify only the handler type across all transports.
 - An incremental source generator produces dispatch code, serializer contexts, and the message-type registry, plus an optional generated `AddHandlersFromThisAssembly()` that lists handlers explicitly.
 - No reflection on the hot path. All runtime packages set `IsAotCompatible`, and CI runs a Native AOT smoke test.
 - Optional native integrations with unresolved upstream limitations expose explicit build diagnostics;

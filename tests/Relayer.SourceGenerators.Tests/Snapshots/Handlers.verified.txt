@@ -6,6 +6,14 @@ namespace Relayer;
 [global::Microsoft.CodeAnalysis.EmbeddedAttribute]
 internal static class RelayerGeneratedHandlers
 {
+    /// <summary>Consumes from the source using the named handler and default consumer settings.</summary>
+    public static void Consume<THandler>(this global::Relayer.ITransportConsumerBuilder transport, string source)
+        where THandler : class, global::Relayer.IHandlerMarker
+    {
+        global::System.ArgumentNullException.ThrowIfNull(transport);
+        transport.Consume(source, static consumer => consumer.Handler<THandler>());
+    }
+
     public static global::Relayer.IConsumerBuilder Handler<THandler>(this global::Relayer.IConsumerBuilder builder)
         where THandler : class, global::Relayer.IHandlerMarker
     {
