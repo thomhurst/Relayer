@@ -18,14 +18,13 @@ boundaries; EF Core integration for these providers remains planned.
 [Inbox deduplication](ef-core-inbox.md) is implemented
 through the EF Core consumer boundary, separately from the read/claim store contract.
 
-## Database integration support
+## Relational database integration support {#database-integration-support}
 
 | Database | EF Core outbox | EF Core inbox boundary | ADO.NET/Dapper outbox | ADO.NET/Dapper inbox boundary |
 | --- | --- | --- | --- | --- |
 | PostgreSQL | Implemented | Implemented | Implemented | Planned |
 | SQL Server | Planned | Planned | Implemented | Implemented |
 | MySQL | Planned | Planned | Implemented | Implemented |
-| MongoDB | Planned | Planned | Planned | Planned |
 
 PostgreSQL EF integration uses `Relayer.Outbox.PostgreSql.EntityFrameworkCore` and the native Npgsql EF
 provider. Its provider-neutral coordination dependency, `Relayer.Outbox.EntityFrameworkCore`, supplies
@@ -33,6 +32,12 @@ no database commands or provider registration on its own. The PostgreSQL ADO.NET
 `Relayer.Outbox.PostgreSql`; SQL Server uses `Relayer.Outbox.SqlServer`, and MySQL uses
 `Relayer.Outbox.MySql`. An inbox table in a schema script does not by itself provide a consumer boundary.
 Planned combinations are unavailable; EF integration for another provider requires its own implementation.
+
+## MongoDB (planned)
+
+The planned MongoDB outbox and inbox will use native MongoDB driver sessions and transactions to commit
+application changes, outbox writes and inbox deduplication together. Follow
+[the MongoDB outbox tracking issue](https://github.com/thomhurst/Relayer/issues/42) for status.
 
 ## Register a named store
 
