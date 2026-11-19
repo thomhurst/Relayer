@@ -38,11 +38,13 @@ The reference fixture and executable tests live in [`tests/Relayer.Conformance.T
 
 SQS runs receive/settle, immediate and delayed visibility retries, standard-queue timers, FIFO group ordering, tracing, restart, outage recovery against Floci and clean shutdown. Its native dead-letter case is a capability skip; separate production-host tests verify poison copies with failure metadata before deletion, for standard and FIFO queues.
 
-RabbitMQ runs receive/settle, immediate requeue, consumer restart, tracing, broker recovery, outage sends and clean shutdown against a real broker. Native metadata-preserving dead-lettering, delayed requeue and ordering-by-key remain capability skips; separate RabbitMQ tests cover confirmed poison copies and native DLX routing.
+RabbitMQ runs receive/settle, immediate requeue, recovery after failure handling throws, consumer restart, tracing, broker recovery, outage sends and clean shutdown against a real broker. Native metadata-preserving dead-lettering, delayed requeue and ordering-by-key remain capability skips; separate RabbitMQ tests cover confirmed poison copies and native DLX routing.
 
 NATS JetStream runs receive/settle, tracing, creation-context copies, reconnect, outage sends and clean shutdown against a real server through the production durable pull consumer. Portable retry, native dead-lettering with error metadata, scheduled sends, delayed redelivery and ordering-by-key remain explicit capability skips. See [NATS delivery and failure boundaries](nats.md#delivery-and-failure-boundaries) for native acknowledgement behavior and durable poison-message copies.
 
 The Kafka adapter runs its supported cases against Kafka in Testcontainers, including sends and consumer shutdown while the broker process is stopped. Service Bus runs queue delivery, immediate redelivery, native dead-lettering, scheduling, tracing, creation-context copies and emulator restart recovery, plus native session ordering. Service Bus explicitly skips positive delayed redelivery because native abandon has no delay. Its receive recovery fixtures put owned endpoints in the emulator startup configuration: administration-created entities do not persist across an emulator restart. A separate provisioning test creates a queue through administration, proves it is missing after restart, reapplies `Provision`, and verifies native send/receive/complete on the restored queue. Startup-config persistence alone is not evidence of provisioning. `Provision` is reapplied through `ApplyTopologyAsync`; native connection recovery does not automatically recreate deleted entities. Kafka’s restart test uses externally provisioned topics. The default `TopologyMode.Validate` checks only that declared topics exist at startup, and `TopologyMode.None` skips that check. See [Kafka topology validation](kafka.md#keys-batches-and-failures). See [Service Bus validation boundaries](service-bus.md#health).
+
+The PostgreSQL local fixture runs `SendReceiveSettle`, `OrderingByKey`, `TracePropagation`, `CreationContextCopies`, `Reconnect` and `CleanShutdown` against an isolated database on a real PostgreSQL server. It verifies capability skips for `Retry`, `DeadLetter`, `Delay` and `RedeliveryDelay`. Its `Reconnect` case stops and restarts the production dispatch workers while the database connection stays available. [Issue #927](https://github.com/thomhurst/Relayer/issues/927) tracks database connection fault injection.
 
 ## Contracts
 
@@ -50,6 +52,7 @@ The Kafka adapter runs its supported cases against Kafka in Testcontainers, incl
 |---|---|---|
 | `SendReceiveSettle` | Body/header ownership, delivery, completion and no replay after consumer restart | None |
 | `Retry` | Redelivery, unchanged body/creation headers and increasing delivery count when the broker supplies one | `MaxRedeliveryDelay` is not null |
+| `FailureHandlingFailure` | The first handler attempt throws and the failure handler also throws. The native transport redelivers the original body and creation headers, then delivers a subsequent healthy message. | Native redelivery (no capability skip) |
 | `DeadLetter` | Original body/creation headers, reason/description and healthy-message progress | `DeadLetter` |
 | `Delay` | Scheduled message arrives at or after its due time | Positive `MaxDeliveryDelay` |
 | `RedeliveryDelay` | Redelivery arrives at or after its due time | Positive `MaxRedeliveryDelay` |
@@ -74,7 +77,7 @@ Give each fixture its own `ConformanceLogCapture` and expose it as `Logs`. Regis
 
 Implement `VerifyShutdownAsync` using native lifecycle instrumentation and durable broker state. Check that no settlement, renewal or send occurred after the corresponding receiver or sender closed. Verify that the in-flight message either completed durably or remains available for native redelivery. Do not treat a successful `StopAsync` alone as proof: the hook must throw on any violation. For an in-process transport, its receive-loop completion and actual message completion provide the reference evidence. External adapters need their real broker or emulator and client-specific observations; the harness does not emulate native closure or acknowledgements.
 
-Queue and log in-memory fixtures, Kafka, RabbitMQ, Service Bus queue and session processors, Google Pub/Sub, NATS JetStream and SQS run this case against their production receive/send lifecycles. Native cases use real brokers or emulators:
+Queue and log in-memory fixtures, Kafka, RabbitMQ, Service Bus queue and session processors, Google Pub/Sub, NATS JetStream, SQS and PostgreSQL local run this case against their production receive/send lifecycles. Native cases use real brokers or emulators:
 
 | Adapter | Native lifecycle and durability evidence |
 |---|---|
@@ -84,6 +87,7 @@ Queue and log in-memory fixtures, Kafka, RabbitMQ, Service Bus queue and session
 | NATS JetStream | The production pull worker must finish before shutdown verification. The fixture queries the real durable consumer and requires zero pending acknowledgements and a positive consumer ACK floor after confirmed ACK settlement. Native client and adapter logs remain captured through disposal. |
 | SQS | The production long-poll workers drain processing and await native deletion. The fixture rejects settlement after shutdown and checks Floci’s native in-flight count after the confirmed delete response; adapter logs remain captured through disposal. |
 | Google Pub/Sub | A pass-through gRPC interceptor observes broker-confirmed acknowledgement RPCs, streaming-pull closure, renewal calls and admitted publish RPCs. A forwarding subscriber observes actual native stop/disposal completion; the native publisher shutdown callback records its drained closure. The native subscriber must finish and the broker subscription must remain durable for redelivery if an acknowledgement was not persisted. API, gRPC and high-level native client logs use fixture-local capture. |
+| PostgreSQL local | The production dispatch and maintenance workers stop after the in-flight pipeline drains. The fixture queries PostgreSQL and requires zero rows in `relayer_outbox` after stop. Fixture-local worker logs are checked through disposal. |
 
 RabbitMQ Streams ([#316](https://github.com/thomhurst/Relayer/issues/316)) does not yet implement a production receiver. Its graceful-stop adoption is planned alongside receive execution; it is not a passing case or capability skip. A fixture must not simulate native delivery to claim coverage.
 
