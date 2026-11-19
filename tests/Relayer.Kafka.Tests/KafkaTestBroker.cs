@@ -1,23 +1,10 @@
 using DotNet.Testcontainers.Builders;
-using DotNet.Testcontainers.Configurations;
 using Testcontainers.Kafka;
 
 namespace Relayer.Kafka.Tests;
 
 internal static class KafkaTestBroker
 {
-    private const string StartupReady = "/tmp/relayer-kafka-startup-ready";
-
-    // Workaround for https://github.com/testcontainers/testcontainers-dotnet/issues/1809.
-    // File existence does not mean Docker has closed its writable descriptor. Release the
-    // entrypoint only from the readiness phase, after Testcontainers awaits CopyAsync.
-    // Consume the marker before exec so Stop/Start cannot reuse the previous release.
-    internal const string StartupCommand =
-        $"while [ ! -f {StartupReady} ]; do sleep 0.1; done; rm {StartupReady}; exec {KafkaBuilder.StartupScriptFilePath}";
-
-    internal static IWaitForContainerOS WaitForStartupCopy() => Wait.ForUnixContainer()
-        .UntilCommandIsCompleted("touch", StartupReady);
-
     // Apply to ordinary and restartable brokers: otherwise named-cluster tests start multiple
     // 1 GiB heaps and dedicated-server compiler pools beside the concurrent lifecycle test.
     internal static KafkaBuilder ForSmallWorkload(this KafkaBuilder builder) => builder
@@ -27,7 +14,8 @@ internal static class KafkaTestBroker
     internal static KafkaBuilder AfterStartupCopy(this KafkaBuilder builder) => builder
         .ForSmallWorkload()
         .WithKRaft()
-        // Testcontainers 4.17 releases its entrypoint after copying the startup script.
+        // Testcontainers releases its entrypoint after the script copy:
+        // https://github.com/testcontainers/testcontainers-dotnet/pull/1810
         .WithWaitStrategy(Wait.ForUnixContainer()
             .UntilMessageIsLogged(".*Transitioning from RECOVERY to RUNNING.*"));
 }
