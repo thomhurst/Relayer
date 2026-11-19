@@ -1,5 +1,6 @@
 using DotNet.Testcontainers.Builders;
 using DotNet.Testcontainers.Configurations;
+using DotNet.Testcontainers.Containers;
 using Testcontainers.Kafka;
 
 namespace Relayer.Kafka.Tests;
@@ -57,24 +58,30 @@ internal sealed class KafkaRestartableBroker : IAsyncDisposable
         Container = builder.Build();
     }
 
-    internal async Task StartAsync(CancellationToken token)
-    {
-        await Container.StartAsync(token);
-        await RestartAsync(token);
-    }
+    internal Task StartAsync(CancellationToken token) =>
+        RunLifecycleAsync("start", async () =>
+        {
+            await Container.StartAsync(token);
+            await StartBrokerAsync(token);
+        });
 
-    internal async Task StopAsync(CancellationToken token)
-    {
-        await ExecuteAsync("touch /tmp/relayer-kafka-stop; kill -TERM \"$(cat /tmp/relayer-kafka.pid)\"", token);
-        // The supervisor acknowledges only after wait has reaped the process and closed its sockets.
-        await WaitAsync("test -f /tmp/relayer-kafka-stopped", token);
-    }
+    internal Task StopAsync(CancellationToken token) =>
+        RunLifecycleAsync("stop", async () =>
+        {
+            await ExecuteAsync("touch /tmp/relayer-kafka-stop; kill -TERM \"$(cat /tmp/relayer-kafka.pid)\"", token);
+            // The supervisor acknowledges only after wait has reaped the process and closed its sockets.
+            await WaitAsync("test -f /tmp/relayer-kafka-stopped", token);
+        });
 
-    internal async Task RestartAsync(CancellationToken token, Action? onWaiting = null)
+    internal Task RestartAsync(CancellationToken token, Action? onWaiting = null) =>
+        RunLifecycleAsync("restart", () => StartBrokerAsync(token, onWaiting));
+
+    private async Task StartBrokerAsync(CancellationToken token, Action? onWaiting = null)
     {
         await ExecuteAsync("touch /tmp/relayer-kafka-start", token);
         // A fresh log prevents stale readiness. Kafka reports RUNNING before its socket acceptors start.
-        await WaitAsync("test ! -f /tmp/relayer-kafka-start && test -f /tmp/relayer-kafka.pid && grep -q 'Kafka Server started' /tmp/relayer-kafka.log", token, onWaiting);
+        onWaiting?.Invoke();
+        await WaitAsync("test ! -f /tmp/relayer-kafka-start && test -f /tmp/relayer-kafka.pid && grep -q 'Kafka Server started' /tmp/relayer-kafka.log", token);
     }
 
     private async Task ExecuteAsync(string command, CancellationToken token)
@@ -84,20 +91,48 @@ internal sealed class KafkaRestartableBroker : IAsyncDisposable
             throw new InvalidOperationException($"Kafka lifecycle command failed ({result.ExitCode}): {result.Stderr}");
     }
 
-    private async Task WaitAsync(string condition, CancellationToken token, Action? onWaiting = null)
+    // Keep the 100 ms readiness checks inside one exec to avoid competing with concurrent broker JVMs.
+    private Task WaitAsync(string condition, CancellationToken token) =>
+        ExecuteAsync($"until {condition}; do sleep 0.1; done", token);
+
+    private async Task RunLifecycleAsync(string operation, Func<Task> action)
     {
         try
         {
-            onWaiting?.Invoke();
-            // Keep the 100 ms readiness checks inside one exec. Launching a Docker exec for
-            // every probe competes with concurrent broker JVMs and their lifecycle commands.
-            await ExecuteAsync($"until {condition}; do sleep 0.1; done", token);
+            await action();
         }
         catch (Exception error)
         {
-            var log = await Container.ExecAsync(["/bin/bash", "-c", "cat /tmp/relayer-kafka.log 2>/dev/null"]);
-            throw new InvalidOperationException($"Kafka lifecycle wait failed: {log.Stdout}", error);
+            throw await DescribeFailureAsync(operation, error, token =>
+                Container.ExecAsync(["/bin/bash", "-c", "cat /tmp/relayer-kafka.log"], token));
         }
+    }
+
+    internal static async Task<InvalidOperationException> DescribeFailureAsync(
+        string operation, Exception error, Func<CancellationToken, Task<ExecResult>> collectLog)
+    {
+        var diagnosticTimeout = TimeSpan.FromSeconds(5);
+        using var timeout = new CancellationTokenSource(diagnosticTimeout);
+        string diagnostic;
+        try
+        {
+            // Use an independent deadline even when the lifecycle operation was cancelled.
+            var log = await collectLog(timeout.Token).WaitAsync(timeout.Token);
+            var stdout = string.IsNullOrWhiteSpace(log.Stdout) ? "(empty)" : log.Stdout.TrimEnd();
+            var stderr = string.IsNullOrWhiteSpace(log.Stderr) ? "(empty)" : log.Stderr.TrimEnd();
+            diagnostic = $"Broker log command exited with code {log.ExitCode?.ToString() ?? "unknown"}.\n"
+                + $"stdout: {stdout}\nstderr: {stderr}";
+        }
+        catch (OperationCanceledException) when (timeout.IsCancellationRequested)
+        {
+            diagnostic = $"Broker log collection timed out after {diagnosticTimeout.TotalSeconds} seconds.";
+        }
+        catch (Exception collectionError)
+        {
+            diagnostic = $"Broker log collection failed: {collectionError.GetType().Name}: {collectionError.Message}";
+        }
+
+        return new InvalidOperationException($"Kafka broker {operation} failed. {diagnostic}", error);
     }
 
     public ValueTask DisposeAsync() => Container.DisposeAsync();
