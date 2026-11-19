@@ -79,6 +79,10 @@ internal abstract class OutboxDirectDispatchWorker<TBatch> : BackgroundService w
 
     protected virtual ValueTask SendLocalAsync(TBatch batch, int offset, ITransport transport, CancellationToken cancellationToken) =>
         throw new InvalidOperationException("This dispatcher has no transactional local transport.");
+    // A provider that takes ownership of a claimed local row also owns its admission and settlement.
+    protected virtual bool TryDispatchLocalInBackground(TBatch batch, int offset, ITransport transport,
+        object admission, CancellationToken cancellationToken) => false;
+    protected virtual Task DrainLocalDispatchAsync() => Task.CompletedTask;
     protected virtual void ExitGroup(object? admission) { }
     protected virtual bool CanDispatch(long started, TimeSpan? budget, TimeProvider? timeProvider) => true;
 
@@ -112,7 +116,7 @@ internal abstract class OutboxDirectDispatchWorker<TBatch> : BackgroundService w
                     try
                     {
                         Coalesce(batch, _queueCapacity - 1);
-                        await DispatchAsync(batch, stoppingToken).ConfigureAwait(false);
+                        await DispatchAsync(batch, stoppingToken, background: true).ConfigureAwait(false);
                     }
                     catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { return; }
                     catch (Exception error) { LogFailure(error); }
@@ -120,7 +124,11 @@ internal abstract class OutboxDirectDispatchWorker<TBatch> : BackgroundService w
                 }
         }
         catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { }
-        finally { Retire(); }
+        finally
+        {
+            Retire();
+            await DrainLocalDispatchAsync().ConfigureAwait(false);
+        }
     }
 
     // Catalog scheduling executes one bounded pass without starting a background task.
@@ -175,7 +183,7 @@ internal abstract class OutboxDirectDispatchWorker<TBatch> : BackgroundService w
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
     protected async ValueTask DispatchAsync(TBatch batch, CancellationToken cancellationToken,
         bool recovery = false, bool propagateDatabaseFailures = false, TimeSpan? admissionBudget = null,
-        TimeProvider? admissionTimeProvider = null)
+        TimeProvider? admissionTimeProvider = null, bool background = false)
     {
         var started = admissionBudget.HasValue ? (admissionTimeProvider ?? TimeProvider.System).GetTimestamp() : 0;
         Sort(batch);
@@ -228,6 +236,11 @@ internal abstract class OutboxDirectDispatchWorker<TBatch> : BackgroundService w
                     }
                     if (admission is not null)
                     {
+                        if (background && TryDispatchLocalInBackground(batch, first, transport, admission, cancellationToken))
+                        {
+                            admission = null;
+                            continue;
+                        }
                         await SendLocalAsync(batch, first, transport, cancellationToken).ConfigureAwait(false);
                         Completed(1, recovery);
                         continue;

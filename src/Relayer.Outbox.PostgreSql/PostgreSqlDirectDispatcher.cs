@@ -23,6 +23,10 @@ internal sealed class PostgreSqlDirectDispatcher : OutboxDirectDispatchWorker<Ou
     private bool _schemaValidated;
     private int _quiescing;
     private readonly PostgreSqlOrderedDispatcher? _ordered;
+    private PostgreSqlLocalStatePool<LocalAttempt>? _localAttempts;
+    private TaskCompletionSource? _localDrained;
+    // The queue reader owns the initial count until it exits. Each detached attempt owns one more.
+    private int _localInFlight = 1;
     internal bool HasLocalTransport => _transports.Values.Any(static transport => PostgreSqlLocalTransport.Find(transport) is not null);
     internal void Quiesce() => Interlocked.Exchange(ref _quiescing, 1);
 
@@ -162,6 +166,101 @@ internal sealed class PostgreSqlDirectDispatcher : OutboxDirectDispatchWorker<Ou
         return local.ConsumeAsync(_messages[0], _claims[0], batch.Rows[offset].Attempts + 1, _store.DispatchTransaction, cancellationToken);
     }
 
+    protected override bool TryDispatchLocalInBackground(OutboxDispatchBatch batch, int offset, ITransport transport,
+        object admission, CancellationToken cancellationToken)
+    {
+        var receiver = (PostgreSqlLocalTransport.Receiver)admission;
+        if (!receiver.ConcurrentDirectDispatch) return false;
+        var local = PostgreSqlLocalTransport.Find(transport)!;
+        ValidateLocal(local);
+        _localDrained ??= new(TaskCreationOptions.RunContinuationsAsynchronously);
+        var attempts = _localAttempts ??= new(2, () => new LocalAttempt(this));
+        var attempt = attempts.Rent();
+        Interlocked.Increment(ref _localInFlight);
+        attempt.Start(batch, offset, local, receiver, _messages[0], _claims[0], cancellationToken);
+        return true;
+    }
+
+    protected override Task DrainLocalDispatchAsync()
+    {
+        if (_localDrained is not { } drained) return Task.CompletedTask;
+        LocalAttemptFinished();
+        return drained.Task;
+    }
+
+    private void LocalAttemptFinished()
+    {
+        if (Interlocked.Decrement(ref _localInFlight) == 0) _localDrained!.SetResult();
+    }
+
+    [RuntimeAsyncMethodGeneration(false)]
+    [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
+    private async ValueTask DispatchLocalAttemptAsync(PostgreSqlLocalTransport local, BufferedOutboxMessage row,
+        OutgoingMessage message, OutboxClaim claim, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await local.ConsumeAsync(message, claim, row.Attempts + 1, null, cancellationToken).ConfigureAwait(false);
+            base.Completed(1, recovery: false);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { }
+        catch (Exception error)
+        {
+            if (error is not Relayer.Pipeline.ConsumeFailureHandoff) LogFailure(error);
+            var store = local.RentCompletionStore();
+            try
+            {
+                await RecordFailureAsync(store, row, message, claim, error, cancellationToken,
+                    propagateDatabaseFailures: false, deferSettlement: false, retryable: false).ConfigureAwait(false);
+            }
+            finally { local.ReturnCompletionStore(store); }
+        }
+    }
+
+    private sealed class LocalAttempt
+    {
+        private readonly PostgreSqlDirectDispatcher _owner;
+        private readonly Action _finish;
+        private BufferedOutboxMessage _row = new();
+        private PostgreSqlLocalTransport.Receiver? _receiver;
+        private ConfiguredValueTaskAwaitable.ConfiguredValueTaskAwaiter _completion;
+
+        internal LocalAttempt(PostgreSqlDirectDispatcher owner)
+        {
+            _owner = owner;
+            _finish = Finish;
+        }
+
+        internal void Start(OutboxDispatchBatch batch, int offset, PostgreSqlLocalTransport local,
+            PostgreSqlLocalTransport.Receiver receiver, OutgoingMessage message, OutboxClaim claim,
+            CancellationToken cancellationToken)
+        {
+            _receiver = receiver;
+            _row = batch.ExchangeRow(offset, _row);
+            var completion = _owner.DispatchLocalAttemptAsync(local, _row, message, claim, cancellationToken)
+                .ConfigureAwait(false).GetAwaiter();
+            _completion = completion;
+            // Consume the pooled ValueTask exactly once, keeping the borrowed payload alive through settlement.
+            if (completion.IsCompleted) Finish();
+            else completion.UnsafeOnCompleted(_finish);
+        }
+
+        private void Finish()
+        {
+            try { _completion.GetResult(); }
+            catch (Exception error) { _owner.LogFailure(error); }
+            finally
+            {
+                _completion = default;
+                _row.Clear();
+                _receiver!.Exit();
+                _receiver = null;
+                _owner._localAttempts!.Return(this);
+                _owner.LocalAttemptFinished();
+            }
+        }
+    }
+
     protected override void ExitGroup(object? admission) => ((PostgreSqlLocalTransport.Receiver?)admission)?.Exit();
 
     // Recovery dispatches these rows only after its pass commits: their claim must commit before the handler runs.
@@ -169,8 +268,22 @@ internal sealed class PostgreSqlDirectDispatcher : OutboxDirectDispatchWorker<Ou
         _transports.TryGetValue(row.TransportName, out var transport)
         && PostgreSqlLocalTransport.Find(transport)?.GetReceiver(row.Message.Destination)?.AtLeastOnce == true;
 
-    protected override async ValueTask<bool> RecordSendFailureAsync(OutboxDispatchBatch batch, int index, Exception error,
+    protected override ValueTask<bool> RecordSendFailureAsync(OutboxDispatchBatch batch, int index, Exception error,
         CancellationToken cancellationToken, bool propagateDatabaseFailures, bool retryable = true)
+    {
+        BufferedOutboxMessage? row = null;
+        for (var i = 0; i < batch.Count; i++)
+            if (batch.Rows[i].Id == _claims[index].MessageId) { row = batch.Rows[i]; break; }
+        if (row is null) throw new InvalidOperationException("The failed claim has no dispatch row.");
+        return RecordFailureAsync(_store, row, _messages[index], _claims[index], error, cancellationToken,
+            propagateDatabaseFailures, _deferSettlement, retryable);
+    }
+
+    [RuntimeAsyncMethodGeneration(false)]
+    [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder<>))]
+    private async ValueTask<bool> RecordFailureAsync(PostgreSqlOutboxStore store, BufferedOutboxMessage row,
+        OutgoingMessage message, OutboxClaim claim, Exception error, CancellationToken cancellationToken,
+        bool propagateDatabaseFailures, bool deferSettlement, bool retryable)
     {
         // A failed at-least-once completion is not a failed attempt: the claim expires and the row is delivered again.
         // Recovery still surfaces its database error, so change capture never checkpoints past it.
@@ -179,16 +292,12 @@ internal sealed class PostgreSqlDirectDispatcher : OutboxDirectDispatchWorker<Ou
             if (propagateDatabaseFailures && completion.InnerException is { } database) ExceptionDispatchInfo.Throw(database);
             return false;
         }
-        BufferedOutboxMessage? row = null;
-        for (var i = 0; i < batch.Count; i++)
-            if (batch.Rows[i].Id == _claims[index].MessageId) { row = batch.Rows[i]; break; }
-        if (row is null) throw new InvalidOperationException("The failed claim has no dispatch row.");
         var action = await _failures.ClassifyAsync(error, row.Id, row.MessageType, row.Attempts + 1,
-            row.TenantId, _messages[index], cancellationToken).ConfigureAwait(false);
+            row.TenantId, message, cancellationToken).ConfigureAwait(false);
         if (action == FailureAction.Discard)
         {
-            var completed = await _store.CompleteDirectBatchAsync(_claims.AsMemory(index, 1), cancellationToken).ConfigureAwait(false);
-            if (_deferSettlement) _recoveredSettled += completed;
+            var completed = await store.CompleteDirectAsync(claim, cancellationToken).ConfigureAwait(false);
+            if (deferSettlement) _recoveredSettled += completed;
             else _instrumentation?.AddOutboxPending(-completed);
             return completed != 0;
         }
@@ -198,9 +307,9 @@ internal sealed class PostgreSqlDirectDispatcher : OutboxDirectDispatchWorker<Ou
         var consumer = !retryable && action == FailureAction.Retry && _transports.TryGetValue(row.Transport, out var transport)
             ? PostgreSqlLocalTransport.Find(transport)?.GetReceiver(row.Destination) : null;
         var result = consumer is not null
-            ? await _store.RecordLocalFailureAsync(_claims[index], PostgreSqlDispatchFailures.Describe(error), consumer.MaxAttempts,
+            ? await store.RecordLocalFailureAsync(claim, PostgreSqlDispatchFailures.Describe(error), consumer.MaxAttempts,
                 consumer.RedeliveryDelay(row.Attempts + 1), cancellationToken).ConfigureAwait(false)
-            : await _store.RecordDispatchFailureAsync(_claims[index], PostgreSqlDispatchFailures.Describe(error), null,
+            : await store.RecordDispatchFailureAsync(claim, PostgreSqlDispatchFailures.Describe(error), null,
                 cancellationToken, permanent: action == FailureAction.DeadLetter, retryable: retryable).ConfigureAwait(false);
         // Unordered exhaustion moves the row to dead storage. Recovery records it once its transaction commits.
         if (result == 2)

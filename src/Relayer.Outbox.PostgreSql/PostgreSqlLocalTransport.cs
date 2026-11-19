@@ -63,6 +63,7 @@ internal sealed class PostgreSqlLocalTransport : ITransport, ITransportSendTraci
         internal readonly int MaxAttempts = maxAttempts;
         // The dispatcher commits the claim before the attempt and completes or fails the row in a separate fenced statement.
         internal readonly bool AtLeastOnce = atLeastOnce;
+        internal readonly bool ConcurrentDirectDispatch = atLeastOnce && maximum > 1;
         // The failed attempt is one-based; the last configured delay repeats.
         internal TimeSpan RedeliveryDelay(int attempt) =>
             redeliveryDelays.Length == 0 ? TimeSpan.Zero : redeliveryDelays[Math.Min(attempt, redeliveryDelays.Length) - 1];
@@ -80,6 +81,9 @@ internal sealed class PostgreSqlLocalTransport : ITransport, ITransportSendTraci
         }
         internal void Exit() => Interlocked.Decrement(ref _active);
     }
+    internal PostgreSqlOutboxStore RentCompletionStore() => _completionStores.Rent();
+    internal void ReturnCompletionStore(PostgreSqlOutboxStore store) => _completionStores.Return(store);
+
     internal Receiver? GetReceiver(string endpoint) => _consumers.GetValueOrDefault(endpoint);
     internal Receiver? TryEnter(string endpoint) => _consumers.TryGetValue(endpoint, out var receiver) && receiver.TryEnter() ? receiver : null;
     internal void ValidateConsumers()
