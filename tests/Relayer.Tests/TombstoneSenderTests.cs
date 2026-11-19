@@ -23,8 +23,9 @@ public class TombstoneSenderTests
         using var scope = provider.CreateScope();
         var sender = (Sender)scope.ServiceProvider.GetRequiredService<ISender>();
         var tombstone = Tombstone.For<Payload>("customer-1");
+        await Assert.That(async () => await sender.SendAsync(tombstone)).Throws<InvalidOperationException>();
         sender.AttemptBuffer = new AttemptSendBuffer();
-        await sender.SendAsync(tombstone);
+        await sender.SendWithoutOutboxAsync(tombstone);
         await Assert.That(sink.Sends).IsEqualTo(0);
         await sender.AttemptBuffer.FlushAsync(default);
         sender.AttemptBuffer.Clear();

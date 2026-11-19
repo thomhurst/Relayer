@@ -381,8 +381,7 @@ public class InboxTests : InboxContractTests
         control.AfterSave = async context =>
         {
             var sender = context.Services.GetRequiredService<ISender>();
-            if (outbox) await sender.SendWithoutOutboxAsync(new Probe(2));
-            else await sender.SendAsync(new Probe(2));
+            await sender.SendWithoutOutboxAsync(new Probe(2));
         };
         var failures = new FailurePipeline(provider, "events", "source", "orders", new());
         var settled = 0;
