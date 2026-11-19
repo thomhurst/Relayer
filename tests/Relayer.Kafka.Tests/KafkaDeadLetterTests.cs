@@ -12,6 +12,8 @@ namespace Relayer.Kafka.Tests;
 
 public class KafkaDeadLetterTests
 {
+    private static string Topic() => TestContext.Current!.Isolation.GetIsolatedName("deadletter").ToLowerInvariant();
+
     [Test]
     public async Task Named_registration_lists_only_configured_topics_and_validates_requests_before_IO()
     {
@@ -40,12 +42,14 @@ public class KafkaDeadLetterTests
     }
 
     [Test]
-    public async Task Peek_redrive_progress_filter_and_prefix_purge_use_native_records()
+    [ClassDataSource<KafkaHeaderSnapshotBroker>(Shared = SharedType.PerTestSession)]
+    public async Task Peek_redrive_progress_filter_and_prefix_purge_use_native_records(KafkaHeaderSnapshotBroker broker)
     {
         using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(3));
         var token = timeout.Token;
         using var tracing = new MessageTracing(Options.Create(new TracingOptions()), []);
-        await using var fixture = (KafkaFixture)await KafkaFixture.CreateAsync(tracing, token);
+        await broker.Started.WaitAsync(token);
+        await using var fixture = await KafkaFixture.CreateAsync(tracing, broker.Bootstrap, Topic(), token);
         var source = fixture.Destination + ".dead-letter";
         await using var provider = Provider(fixture.Bootstrap, fixture.Destination);
         var manager = provider.GetRequiredKeyedService<IDeadLetterManager>("events");
@@ -104,12 +108,14 @@ public class KafkaDeadLetterTests
     }
 
     [Test]
-    public async Task Filter_failure_and_cancellation_leave_original_available_for_redrive()
+    [ClassDataSource<KafkaHeaderSnapshotBroker>(Shared = SharedType.PerTestSession)]
+    public async Task Filter_failure_and_cancellation_leave_original_available_for_redrive(KafkaHeaderSnapshotBroker broker)
     {
         using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(2));
         var token = timeout.Token;
         using var tracing = new MessageTracing(Options.Create(new TracingOptions()), []);
-        await using var fixture = (KafkaFixture)await KafkaFixture.CreateAsync(tracing, token);
+        await broker.Started.WaitAsync(token);
+        await using var fixture = await KafkaFixture.CreateAsync(tracing, broker.Bootstrap, Topic(), token);
         var source = fixture.Destination + ".dead-letter";
         await using var producer = new ProducerBuilder<byte[], byte[]>().WithBootstrapServers(fixture.Bootstrap).Build();
         await producer.InitializeAsync(token);
@@ -125,12 +131,14 @@ public class KafkaDeadLetterTests
     }
 
     [Test]
-    public async Task Multi_partition_peek_and_purge_skip_empty_prefixes_and_remain_bounded()
+    [ClassDataSource<KafkaHeaderSnapshotBroker>(Shared = SharedType.PerTestSession)]
+    public async Task Multi_partition_peek_and_purge_skip_empty_prefixes_and_remain_bounded(KafkaHeaderSnapshotBroker broker)
     {
         using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(2));
         var token = timeout.Token;
         using var tracing = new MessageTracing(Options.Create(new TracingOptions()), []);
-        await using var fixture = (KafkaFixture)await KafkaFixture.CreateAsync(tracing, token);
+        await broker.Started.WaitAsync(token);
+        await using var fixture = await KafkaFixture.CreateAsync(tracing, broker.Bootstrap, Topic(), token);
         var source = fixture.Destination + ".dead-letter";
         await using var admin = new AdminClientBuilder().WithBootstrapServers(fixture.Bootstrap).Build();
         await admin.CreatePartitionsAsync(new Dictionary<string, int> { [source] = 3 }, token);
@@ -156,7 +164,7 @@ public class KafkaDeadLetterTests
         await Assert.That(records[0].Features.GetRequired<KafkaDeadLetterFeature>().Record.IsKeyNull).IsFalse();
         await Assert.That(records[0].Features.GetRequired<KafkaDeadLetterFeature>().Record.Key!.Length).IsEqualTo(0);
         // The callback's ordinary group must not make purge skip a retained prefix.
-        await admin.AlterConsumerGroupOffsetsAsync("ordinary-consumer", [new(source, 1, 1)], token);
+        await admin.AlterConsumerGroupOffsetsAsync(OrdinaryGroup(fixture.Destination), [new(source, 1, 1)], token);
         await Assert.That(await manager.PurgeAsync(source, 1, token)).IsEqualTo(1);
         var retainedFirst = await manager.PeekAsync(source, 1, source + ":1:0", token);
         await Assert.That(retainedFirst.Messages.Count).IsEqualTo(0);
@@ -165,12 +173,14 @@ public class KafkaDeadLetterTests
     }
 
     [Test]
-    public async Task Native_send_failure_does_not_commit_redrive_progress()
+    [ClassDataSource<KafkaHeaderSnapshotBroker>(Shared = SharedType.PerTestSession)]
+    public async Task Native_send_failure_does_not_commit_redrive_progress(KafkaHeaderSnapshotBroker broker)
     {
         using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(2));
         var token = timeout.Token;
         using var tracing = new MessageTracing(Options.Create(new TracingOptions()), []);
-        await using var fixture = (KafkaFixture)await KafkaFixture.CreateAsync(tracing, token);
+        await broker.Started.WaitAsync(token);
+        await using var fixture = await KafkaFixture.CreateAsync(tracing, broker.Bootstrap, Topic(), token);
         var source = fixture.Destination + ".dead-letter";
         await using var producer = new ProducerBuilder<byte[], byte[]>().WithBootstrapServers(fixture.Bootstrap).Build();
         await producer.InitializeAsync(token);
@@ -184,12 +194,14 @@ public class KafkaDeadLetterTests
     }
 
     [Test]
-    public async Task Slow_native_fetch_does_not_end_peek_or_purge_before_a_record_arrives()
+    [ClassDataSource<KafkaHeaderSnapshotBroker>(Shared = SharedType.PerTestSession)]
+    public async Task Slow_native_fetch_does_not_end_peek_or_purge_before_a_record_arrives(KafkaHeaderSnapshotBroker broker)
     {
         using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(2));
         var token = timeout.Token;
         using var tracing = new MessageTracing(Options.Create(new TracingOptions()), []);
-        await using var fixture = (KafkaFixture)await KafkaFixture.CreateAsync(tracing, token);
+        await broker.Started.WaitAsync(token);
+        await using var fixture = await KafkaFixture.CreateAsync(tracing, broker.Bootstrap, Topic(), token);
         var source = fixture.Destination + ".dead-letter";
         await using var producer = new ProducerBuilder<byte[], byte[]>().WithBootstrapServers(fixture.Bootstrap).Build();
         await producer.InitializeAsync(token);
@@ -213,9 +225,12 @@ public class KafkaDeadLetterTests
             throw new InvalidOperationException("send failed");
     }
 
+    private static string OrdinaryGroup(string destination) => destination + "-ordinary";
+
     private static ServiceProvider Provider(string bootstrap, string destination, bool failSend = false, bool slowFetch = false)
     {
         var services = new ServiceCollection();
+        var group = OrdinaryGroup(destination);
         services.AddRelayer(r => r.Kafka("events", kafka =>
         {
             kafka.Options.Configure(o =>
@@ -223,12 +238,12 @@ public class KafkaDeadLetterTests
                 o.BootstrapServers.Add(bootstrap);
                 o.ConfigureConsumer = native =>
                 {
-                    native.WithGroupId("ordinary-consumer");
+                    native.WithGroupId(group);
                     if (slowFetch) native.WithFetchMinBytes(1_000_000).WithFetchMaxWait(TimeSpan.FromSeconds(3));
                 };
                 if (failSend) o.ConfigureProducer = native => native.WithValueSerializer(new FailingSerializer());
             });
-            kafka.Consume(destination, c => { c.Options.Group = "ordinary-consumer"; c.Handler<TombstoneValueHandler>(); });
+            kafka.Consume(destination, c => { c.Options.Group = group; c.Handler<TombstoneValueHandler>(); });
         }));
         return services.BuildServiceProvider();
     }

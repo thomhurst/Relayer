@@ -12,14 +12,16 @@ namespace Relayer.Kafka.Tests;
 public class KafkaSendDurationTests
 {
     [Test]
-    public async Task Acknowledged_singles_batches_mixed_destinations_and_tombstones_record_native_durations()
+    [ClassDataSource<KafkaHeaderSnapshotBroker>(Shared = SharedType.PerTestSession)]
+    public async Task Acknowledged_singles_batches_mixed_destinations_and_tombstones_record_native_durations(KafkaHeaderSnapshotBroker broker)
     {
         using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(2));
         var token = timeout.Token;
         using var instrumentation = new RelayerInstrumentation();
         using var capture = new SendDurationCapture(instrumentation);
         using var tracing = new MessageTracing(Options.Create(new TracingOptions()), [], instrumentation: instrumentation);
-        await using var fixture = (KafkaFixture)await KafkaFixture.CreateAsync(tracing, token);
+        await broker.Started.WaitAsync(token);
+        await using var fixture = await KafkaFixture.CreateAsync(tracing, broker.Bootstrap, TestContext.Current!.Isolation.GetIsolatedName("send-duration").ToLowerInvariant(), token);
         await fixture.Transport.StartAsync(token);
         var first = new OutgoingMessage(fixture.Destination, new byte[] { 1 });
         var other = new OutgoingMessage(fixture.Destination + ".dead-letter", new byte[] { 2 });
