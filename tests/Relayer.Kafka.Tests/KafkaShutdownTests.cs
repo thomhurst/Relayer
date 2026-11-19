@@ -34,6 +34,7 @@ public class KafkaShutdownTests(KafkaHeaderSnapshotBroker broker)
             using var tracing = new MessageTracing(Options.Create(new TracingOptions()), []);
             var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
             var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var cancelled = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
             var handled = new List<long>();
             var options = new PartitionedProcessingOptions
             {
@@ -65,11 +66,17 @@ public class KafkaShutdownTests(KafkaHeaderSnapshotBroker broker)
                         await Tolerate(adapter.Completion.WaitAsync(token));
                         await Tolerate(stopping);
                     }
-                    else
+                    else if (abort)
                     {
-                        await adapter.Completion.WaitAsync(token);
-                        if (!abort) await stopping;
+                        try { await adapter.Completion.WaitAsync(token); }
+                        catch (TimeoutException error) when (error.Message ==
+                            $"Partition processor for {topic}:0 did not stop within {options.StopTimeout}.")
+                        {
+                            // The lane can report its deadline before the cancelled processor exits.
+                        }
+                        await cancelled.Task.WaitAsync(token);
                     }
+                    else await stopping;
                     await using var reader = new ConsumerBuilder<byte[], byte[]>().WithBootstrapServers(broker.Bootstrap).WithGroupId(topic)
                         .WithOffsetCommitMode(OffsetCommitMode.Manual).WithAutoOffsetStore(false).Build();
                     await reader.InitializeAsync(token);
@@ -115,7 +122,12 @@ public class KafkaShutdownTests(KafkaHeaderSnapshotBroker broker)
                 if (delivery.Result.Offset == blocked)
                 {
                     entered.SetResult();
-                    await release.Task.WaitAsync(cancellationToken);
+                    try { await release.Task.WaitAsync(cancellationToken); }
+                    catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                    {
+                        cancelled.SetResult();
+                        throw;
+                    }
                     if (fail) throw new InvalidOperationException("Durable receive failed.");
                 }
                 return Disposition.Complete;

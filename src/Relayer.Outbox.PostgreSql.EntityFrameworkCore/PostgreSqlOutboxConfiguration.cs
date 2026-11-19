@@ -40,6 +40,23 @@ internal sealed class PostgreSqlOutboxConfiguration : OutboxConfiguration
         InsertSql = PostgreSqlOutboxBatch.CreateInsertSql(Table);
     }
 
+    internal override bool HasTransactionEnded(DbTransaction transaction)
+    {
+        if (transaction is not NpgsqlTransaction nativeTransaction) return false;
+
+        // Npgsql checks whether the transaction has completed or been disposed when reading
+        // IsolationLevel. Connection can still be non-null after PostgreSQL aborts COMMIT.
+        try
+        {
+            _ = nativeTransaction.IsolationLevel;
+            return false;
+        }
+        catch (InvalidOperationException)
+        {
+            return true;
+        }
+    }
+
     internal override void ValidateProvider(string? providerName)
     {
         if (providerName != "Npgsql.EntityFrameworkCore.PostgreSQL")

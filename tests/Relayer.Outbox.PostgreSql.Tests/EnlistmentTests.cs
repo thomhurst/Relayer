@@ -353,11 +353,26 @@ public class EnlistmentTests
         await using var database = new Database();
         await database.Start();
         await using var source = NpgsqlDataSource.Create(database.ConnectionString);
-        await using var provider = database.Services(dispatchSource: source);
+        await using var provider = database.Services(dispatchSource: source, poolContexts: serializationFailure);
         await using var scope = provider.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<OrdersContext>();
         var sender = scope.ServiceProvider.GetRequiredService<ISender>();
         var transport = provider.GetRequiredService<Transport>();
+        if (serializationFailure)
+        {
+            // Raise 40001 only when PostgreSQL executes COMMIT, after the outbox insert.
+            await db.Database.ExecuteSqlRawAsync("""
+                CREATE FUNCTION fail_order_commit() RETURNS trigger LANGUAGE plpgsql AS $$
+                BEGIN
+                    RAISE EXCEPTION 'serialization failure at commit' USING ERRCODE = '40001';
+                END;
+                $$;
+                CREATE CONSTRAINT TRIGGER fail_order_commit AFTER INSERT ON orders
+                    DEFERRABLE INITIALLY DEFERRED FOR EACH ROW WHEN (NEW."Id" = 1)
+                    EXECUTE FUNCTION fail_order_commit();
+                """);
+        }
+        DbTransaction? failedTransaction = null;
         await using (var transaction = synchronous
             ? db.Database.BeginTransaction(IsolationLevel.Serializable)
             : await db.Database.BeginTransactionAsync(IsolationLevel.Serializable))
@@ -366,20 +381,8 @@ public class EnlistmentTests
             using (db.EnlistRelayerOutbox()) await sender.SendAsync(new Probe(1));
             if (serializationFailure)
             {
-                // Deterministic write skew: both transactions read the same predicate, then
-                // insert different rows. Committing the competitor forces SQLSTATE 40001
-                // from the first unit's Commit (including its outbox flush).
-                await db.Database.SqlQueryRaw<long>("SELECT count(*) AS \"Value\" FROM orders").SingleAsync();
-                await using var competitor = new NpgsqlConnection(database.ConnectionString);
-                await competitor.OpenAsync();
-                await using var competingTransaction = await competitor.BeginTransactionAsync(IsolationLevel.Serializable);
-                await using var read = new NpgsqlCommand("SELECT count(*) FROM orders", competitor, competingTransaction);
-                await read.ExecuteScalarAsync();
                 db.Add(new Order { Id = 1 });
                 if (synchronous) db.SaveChanges(); else await db.SaveChangesAsync();
-                await using var insert = new NpgsqlCommand("INSERT INTO orders VALUES (2)", competitor, competingTransaction);
-                await insert.ExecuteNonQueryAsync();
-                await competingTransaction.CommitAsync();
                 var failure = synchronous
                     ? await Assert.That(() => transaction.Commit()).Throws<PostgresException>()
                     : await Assert.That(async () => await transaction.CommitAsync()).Throws<PostgresException>();
@@ -394,13 +397,24 @@ public class EnlistmentTests
                 if (synchronous) await Assert.That(() => transaction.Commit()).Throws<InvalidOperationException>();
                 else await Assert.That(async () => await transaction.CommitAsync()).Throws<InvalidOperationException>();
             }
-            // A server-aborted transaction may already be complete. Dispose its EF wrapper
-            // in either case; otherwise perform a full rollback, never just a savepoint.
-            if (transaction.GetDbTransaction().Connection is not null)
+            if (serializationFailure)
             {
-                if (synchronous) transaction.Rollback(); else await transaction.RollbackAsync();
+                failedTransaction = transaction.GetDbTransaction();
+                if (synchronous) await Assert.That(() => transaction.Rollback()).Throws<InvalidOperationException>();
+                else await Assert.That(async () => await transaction.RollbackAsync()).Throws<InvalidOperationException>();
             }
+            else if (synchronous) transaction.Rollback();
+            else await transaction.RollbackAsync();
         }
+
+        // Rent the original connector before the outbox can observe its disposed transaction.
+        // Keep the peer's transaction alive so the retry uses a different connector.
+        await using var peerScope = provider.CreateAsyncScope();
+        var peer = peerScope.ServiceProvider.GetRequiredService<OrdersContext>();
+        await using var peerTransaction = serializationFailure ? await peer.Database.BeginTransactionAsync() : null;
+        if (peerTransaction is not null)
+            await Assert.That(ReferenceEquals(peerTransaction.GetDbTransaction(), failedTransaction)).IsTrue();
+
         await Assert.That(scope.ServiceProvider.GetRequiredService<IOutboxEnlistment>().IsActive).IsFalse();
         await Assert.That(await database.Count()).IsEqualTo(0L);
         await Assert.That(transport.Sends).IsEqualTo(0);
@@ -761,7 +775,7 @@ public class EnlistmentTests
             await using var command = new NpgsqlCommand(sql, connection);
             await command.ExecuteNonQueryAsync();
         }
-        internal ServiceProvider Services(bool retries = false, NpgsqlDataSource? schedulerSource = null, NpgsqlDataSource? dispatchSource = null)
+        internal ServiceProvider Services(bool retries = false, NpgsqlDataSource? schedulerSource = null, NpgsqlDataSource? dispatchSource = null, bool poolContexts = false)
         {
             var services = new ServiceCollection();
             if (schedulerSource is not null)
@@ -777,7 +791,10 @@ public class EnlistmentTests
             services.AddSingleton<ITransport>(static sp => sp.GetRequiredService<Transport>());
             services.AddSingleton<IMessageSerializer, Serializer>();
             services.AddRelayerEntityFrameworkCoreOutbox();
-            services.AddDbContext<OrdersContext>((sp, o) => o.UseNpgsql(ConnectionString, native =>
+            var contextConnectionString = poolContexts
+                ? new NpgsqlConnectionStringBuilder(ConnectionString) { Pooling = true }.ConnectionString
+                : ConnectionString;
+            services.AddDbContext<OrdersContext>((sp, o) => o.UseNpgsql(contextConnectionString, native =>
             {
                 if (retries) native.EnableRetryOnFailure(1, TimeSpan.Zero, null);
             }).AddRelayerOutbox(sp, new EntityFrameworkCoreOutboxOptions { Schema = Options.Schema, TablePrefix = Options.TablePrefix,

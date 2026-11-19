@@ -74,6 +74,12 @@ internal sealed class OutboxTransactionInterceptor(EntityFrameworkCoreOutbox out
 
     public override void TransactionFailed(DbTransaction transaction, TransactionErrorEventData eventData)
     {
+        if (eventData.Action == "Commit" && configuration.HasTransactionEnded(transaction))
+        {
+            outbox.Ended(transaction);
+            return;
+        }
+
         // EF creates its automatic savepoint before any save command. When that fails, for example on a
         // canceled token, nothing from this save reached the database and the unit can continue.
         if (eventData.Context is { } context && outbox.Get(context, configuration).SavepointFailed()) return;

@@ -203,7 +203,9 @@ last successful save. With `AutoSavepointsEnabled = false`, a failed rollback, o
 prevents rollback, Relayer invalidates the unit. Manual savepoint rollback remains unsupported.
 After an unrecovered failed save, failed commit, or manual savepoint rollback, roll back the complete explicit transaction
 and dispose its EF wrapper before retrying the whole unit. If PostgreSQL has already aborted the transaction
-(for example after a serialization failure), dispose the wrapper. Relayer rejects commit of an invalidated unit.
+during commit (for example after a serialization failure), Relayer discards the failed unit immediately.
+Dispose the wrapper before starting a new transaction. Relayer rejects commit of an invalidated unit
+while the native transaction is still active.
 
 You can reuse the same DbContext after that transaction ends: clear its change tracker with
 `db.ChangeTracker.Clear()`, reload the business state, start a new EF transaction, and repeat all business
