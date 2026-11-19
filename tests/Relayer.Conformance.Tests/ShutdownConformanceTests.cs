@@ -97,9 +97,45 @@ public class ShutdownConformanceTests
         }
     }
 
+    [Test]
+    public async Task Pending_native_verification_fails_on_cancellation_and_runs_cleanup()
+    {
+        using var cancellation = new CancellationTokenSource();
+        var verificationStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var verification = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        BrokenFixture? fixture = null;
+        var suite = new TransportConformanceSuite<InMemoryDelivery, InMemoryMessageBinding>((tracing, _) =>
+            new ValueTask<ITransportConformanceFixture<InMemoryDelivery>>(
+                fixture = new BrokenFixture(tracing, false, false, false, verifyShutdown: () =>
+                {
+                    verificationStarted.SetResult();
+                    return new ValueTask(verification.Task);
+                })));
+
+        var run = suite.RunAsync(TransportConformanceCase.CleanShutdown, cancellation.Token);
+        try
+        {
+            await verificationStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            cancellation.Cancel();
+
+            var error = await Assert.That(async () => await run.WaitAsync(TimeSpan.FromSeconds(5)))
+                .Throws<InvalidOperationException>();
+            await Assert.That(error!.Message).Contains("native shutdown verification");
+            await Assert.That(error.InnerException is OperationCanceledException).IsTrue();
+            await Assert.That(fixture!.StopCalls).IsEqualTo(2);
+            await Assert.That(fixture.Disposed).IsTrue();
+            await Assert.That(verification.Task.IsCompleted).IsFalse();
+        }
+        finally
+        {
+            verification.SetResult();
+            await ((Task)run).ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
+        }
+    }
+
     private sealed class BrokenFixture(MessageTracing tracing, bool earlyStop, bool disposalError, bool nativeViolation,
         bool asynchronousEarlyStop = false, Action? cancelScenarioAfterReceive = null,
-        Action? cancelPendingLifecycle = null, bool stallRestart = false)
+        Action? cancelPendingLifecycle = null, bool stallRestart = false, Func<ValueTask>? verifyShutdown = null)
         : ITransportConformanceFixture<InMemoryDelivery>, ITransportShutdownConformanceFixture, ITransport
     {
         private readonly InMemoryFixture _inner = new(tracing);
@@ -110,6 +146,8 @@ public class ShutdownConformanceTests
         private int _stopCalls;
         public bool PendingLifecycleReleasedByCleanup { get; private set; }
         public void ReleasePendingLifecycle() => _pendingLifecycle.TrySetResult();
+        public int StopCalls => Volatile.Read(ref _stopCalls);
+        public bool Disposed { get; private set; }
         public bool PendingStopReleased => _stopRelease.Task.IsCompletedSuccessfully;
         public ConformanceLogCapture Logs => _inner.Logs;
         public ITransport Transport => this;
@@ -179,10 +217,11 @@ public class ShutdownConformanceTests
         }
         public ValueTask VerifyShutdownAsync(CancellationToken token) => nativeViolation
             ? ValueTask.FromException(new InvalidOperationException("settlement after native close"))
-            : _inner.VerifyShutdownAsync(token);
+            : verifyShutdown?.Invoke() ?? _inner.VerifyShutdownAsync(token);
         public async ValueTask DisposeAsync()
         {
             await _inner.DisposeAsync();
+            Disposed = true;
             if (disposalError) Logs.CreateLogger("native").LogError("receiver disposal failed");
         }
     }

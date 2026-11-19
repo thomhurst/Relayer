@@ -239,7 +239,7 @@ public sealed class TransportConformanceSuite<TIncoming, TBinding>
                 orderRelease.TrySetResult();
                 await observedStop.WaitAsync(token).ConfigureAwait(false);
                 progress.Phase = "native shutdown verification";
-                await ((ITransportShutdownConformanceFixture)fixture).VerifyShutdownAsync(token).ConfigureAwait(false);
+                await ((ITransportShutdownConformanceFixture)fixture).VerifyShutdownAsync(token).AsTask().WaitAsync(token).ConfigureAwait(false);
                 break;
             case TransportConformanceCase.SendReceiveSettle:
                 await Send(1).ConfigureAwait(false);
