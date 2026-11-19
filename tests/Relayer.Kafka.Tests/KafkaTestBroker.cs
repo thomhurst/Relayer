@@ -27,7 +27,7 @@ internal static class KafkaTestBroker
     internal static KafkaBuilder AfterStartupCopy(this KafkaBuilder builder) => builder
         .ForSmallWorkload()
         .WithKRaft()
-        .WithCommand(new OverwriteEnumerable<string>([StartupCommand]))
-        .WithWaitStrategy(WaitForStartupCopy()
+        // Testcontainers 4.17 releases its entrypoint after copying the startup script.
+        .WithWaitStrategy(Wait.ForUnixContainer()
             .UntilMessageIsLogged(".*Transitioning from RECOVERY to RUNNING.*"));
 }

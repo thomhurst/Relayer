@@ -1,5 +1,4 @@
 using DotNet.Testcontainers.Builders;
-using DotNet.Testcontainers.Configurations;
 using DotNet.Testcontainers.Containers;
 using Testcontainers.Kafka;
 
@@ -48,8 +47,13 @@ internal sealed class KafkaRestartableBroker : IAsyncDisposable
             .WithEnvironment("KAFKA_GROUP_CONSUMER_MIN_HEARTBEAT_INTERVAL_MS", "1000")
             .WithEnvironment("KAFKA_GROUP_CONSUMER_HEARTBEAT_INTERVAL_MS", "1000")
             .WithKRaft().WithWaitStrategy(Wait.ForUnixContainer())
-            .WithEntrypoint("/bin/bash", "-c")
-            .WithCommand(new OverwriteEnumerable<string>([Supervisor.ReplaceLineEndings("\n")]));
+            // KafkaBuilder.Build installs its own entrypoint and command when it registers
+            // the script-copy callback. Override the Docker create parameters after Build.
+            .WithCreateParameterModifier(static parameters =>
+            {
+                parameters.Entrypoint = ["/bin/bash", "-c"];
+                parameters.Cmd = [Supervisor.ReplaceLineEndings("\n")];
+            });
         if (OperatingSystem.IsLinux())
         {
             // Docker selects and binds the port atomically, outside Linux's outbound ephemeral range.
