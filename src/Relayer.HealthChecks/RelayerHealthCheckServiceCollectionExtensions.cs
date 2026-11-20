@@ -17,13 +17,16 @@ public static class RelayerHealthCheckServiceCollectionExtensions
     /// <param name="services">The application services.</param>
     /// <param name="options">Optional immutable defaults, also configurable through the Options pattern.</param>
     public static IHealthChecksBuilder AddRelayerHealthChecks(this IServiceCollection services,
-        RelayerHealthCheckOptions? options = null) => AddChecks(services, options is null ? null : () => new()
+        RelayerHealthCheckOptions? options = null)
+    {
+        return AddChecks(services, options is null ? null : () => new()
         {
             ConsumerStallTimeout = options.ConsumerStallTimeout,
             OutboxDegradedThreshold = options.OutboxDegradedThreshold,
             OutboxUnhealthyThreshold = options.OutboxUnhealthyThreshold,
             OutboxNames = options.OutboxNames?.ToArray()!
         });
+    }
 
     /// <summary>Binds immutable options from configuration without reflection; validates at startup and on reload.</summary>
     public static IHealthChecksBuilder AddRelayerHealthChecks(this IServiceCollection services, IConfiguration configuration)
@@ -38,12 +41,19 @@ public static class RelayerHealthCheckServiceCollectionExtensions
     private static IHealthChecksBuilder AddChecks(IServiceCollection services, Func<RelayerHealthCheckOptions>? createOptions)
     {
         ArgumentNullException.ThrowIfNull(services);
+
         if (services.Any(static descriptor => descriptor.ServiceType == typeof(HealthRegistration)))
         {
-            if (createOptions is not null) throw new InvalidOperationException("Relayer health checks are already configured.");
+            if (createOptions is not null)
+            {
+                throw new InvalidOperationException("Relayer health checks are already configured.");
+            }
+
             return services.AddHealthChecks();
         }
+
         services.AddSingleton(new HealthRegistration());
+
         if (createOptions is not null)
         {
             services.AddSingleton<IOptionsFactory<RelayerHealthCheckOptions>>(provider =>
@@ -52,6 +62,7 @@ public static class RelayerHealthCheckServiceCollectionExtensions
                     provider.GetServices<IPostConfigureOptions<RelayerHealthCheckOptions>>(),
                     provider.GetServices<IValidateOptions<RelayerHealthCheckOptions>>()));
         }
+
         services.AddOptions<RelayerHealthCheckOptions>()
             .Validate(static value => value.ConsumerStallTimeout > TimeSpan.Zero,
                 "ConsumerStallTimeout must be positive.")
@@ -80,7 +91,10 @@ public static class RelayerHealthCheckServiceCollectionExtensions
         IEnumerable<IValidateOptions<RelayerHealthCheckOptions>> validations)
         : OptionsFactory<RelayerHealthCheckOptions>(setups, postConfigures, validations)
     {
-        protected override RelayerHealthCheckOptions CreateInstance(string name) => createOptions();
+        protected override RelayerHealthCheckOptions CreateInstance(string name)
+        {
+            return createOptions();
+        }
     }
 
     // The configuration binding generator skips init-only properties. Keep this small binding explicit and AOT safe.
@@ -88,9 +102,13 @@ public static class RelayerHealthCheckServiceCollectionExtensions
     {
         var defaults = new RelayerHealthCheckOptions();
         var outboxes = configuration.GetSection(nameof(RelayerHealthCheckOptions.OutboxNames));
+
         if (outboxes.Value is not null)
+        {
             throw new OptionsValidationException(Options.DefaultName, typeof(RelayerHealthCheckOptions),
                 ["OutboxNames must be an array of store names."]);
+        }
+
         return new RelayerHealthCheckOptions
         {
             ConsumerStallTimeout = Read(nameof(RelayerHealthCheckOptions.ConsumerStallTimeout), defaults.ConsumerStallTimeout),
@@ -102,8 +120,17 @@ public static class RelayerHealthCheckServiceCollectionExtensions
         T Read<T>(string key, T fallback) where T : IParsable<T>
         {
             var value = configuration[key];
-            if (value is null) return fallback;
-            if (T.TryParse(value, CultureInfo.InvariantCulture, out var parsed)) return parsed;
+
+            if (value is null)
+            {
+                return fallback;
+            }
+
+            if (T.TryParse(value, CultureInfo.InvariantCulture, out var parsed))
+            {
+                return parsed;
+            }
+
             throw new OptionsValidationException(Options.DefaultName, typeof(RelayerHealthCheckOptions),
                 [$"{key}: '{value}' is not a valid {typeof(T).Name}."]);
         }

@@ -1,8 +1,8 @@
+using System.Reflection;
 using Google.Api.Gax;
 using Google.Api.Gax.Grpc;
-using Grpc.Core;
-using System.Reflection;
 using Google.Cloud.PubSub.V1;
+using Grpc.Core;
 using Grpc.Core.Interceptors;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
@@ -31,24 +31,45 @@ public class GooglePubSubConformanceTests
         var result = await suite.RunAsync(scenario);
         var unsupported = scenario is TransportConformanceCase.Retry or TransportConformanceCase.DeadLetter or TransportConformanceCase.Delay or TransportConformanceCase.RedeliveryDelay;
         await Assert.That(result.Skipped).IsEqualTo(unsupported);
-        if (unsupported) await Assert.That(result.SkipReason).IsNotNull();
+
+        if (unsupported)
+        {
+            await Assert.That(result.SkipReason).IsNotNull();
+        }
     }
 }
 
 internal sealed class PubSubFixture : ITransportConformanceFixture<GooglePubSubDelivery>, ITransportShutdownConformanceFixture
 {
-    internal PubSubBroker Broker { get; }
+    internal PubSubBroker Broker
+    {
+        get;
+    }
     private ServiceProvider _provider = null!;
-    internal GooglePubSubTransport Adapter { get; private set; } = null!;
+
+    internal GooglePubSubTransport Adapter
+    {
+        get; private set;
+    } = null!;
     private GooglePubSubConsumer? _worker;
+
     public TimeSpan? OutageSendTimeout => TimeSpan.FromSeconds(10);
     private bool _observedNativeFailure;
     private bool _disconnected;
+
     public bool IsExpectedOutageFailure(Exception error)
     {
-        if (IsExpectedPublishFailure(error, _disconnected)) return true;
+        if (IsExpectedPublishFailure(error, _disconnected))
+        {
+            return true;
+        }
+
         if (_worker?.Completion.Exception is not { } failure || !IsNativeStreamWriteFailure(failure)
-            || !IsObservedSubscriberFailure(error, failure)) return false;
+            || !IsObservedSubscriberFailure(error, failure))
+        {
+            return false;
+        }
+
         _observedNativeFailure = true;
         return true;
     }
@@ -58,13 +79,29 @@ internal sealed class PubSubFixture : ITransportConformanceFixture<GooglePubSubD
     private Func<GooglePubSubDelivery, CancellationToken, ValueTask<Disposition>>? _receive;
     private readonly MessageTracing _tracing;
     private bool _verifyShutdown;
-    public ConformanceLogCapture Logs { get; }
-    public string Destination { get; } = TopicName.FromProjectTopic("relayer-test", "conformance-" + Guid.NewGuid().ToString("N")).ToString();
+
+    public ConformanceLogCapture Logs
+    {
+        get;
+    }
+
+    public string Destination
+    {
+        get;
+    } = TopicName.FromProjectTopic("relayer-test", "conformance-" + Guid.NewGuid().ToString("N")).ToString();
+
     internal string Subscription => Destination.Replace("/topics/", "/subscriptions/", StringComparison.Ordinal);
+
     public ITransport Transport => Adapter;
+
     public string MessagingSystem => "gcp_pubsub";
+
     public string SettlementOperation => "ack";
-    public HeaderNames HeaderNames { get; } = new("ce-");
+
+    public HeaderNames HeaderNames
+    {
+        get;
+    } = new("ce-");
 
     private PubSubFixture(PubSubBroker broker, MessageTracing tracing, ConformanceLogCapture logs, ILoggerFactory loggerFactory)
     {
@@ -93,7 +130,13 @@ internal sealed class PubSubFixture : ITransportConformanceFixture<GooglePubSubD
                 options.Subscriber = _subscriber;
                 options.PublisherSettings = WithNativeLogger(new PublisherClient.Settings { EnableMessageOrdering = true }, _logs.CreateLogger("PubSub.Publisher"));
                 options.Topics.Add(TopicName.Parse(Destination));
-                options.Subscriptions.Add(new() { Name = Subscription, Topic = Destination, EnableMessageOrdering = true, AckDeadlineSeconds = 10 });
+                options.Subscriptions.Add(new()
+                {
+                    Name = Subscription,
+                    Topic = Destination,
+                    EnableMessageOrdering = true,
+                    AckDeadlineSeconds = 10
+                });
             });
         }));
         // Use the source-local tracing owner supplied by the conformance suite.
@@ -118,20 +161,43 @@ internal sealed class PubSubFixture : ITransportConformanceFixture<GooglePubSubD
         var logs = new ConformanceLogCapture();
         var loggerFactory = LoggerFactory.Create(builder => builder.AddProvider(logs));
         PubSubBroker broker;
-        try { broker = await PubSubBroker.StartAsync(token, loggerFactory); }
-        catch { loggerFactory.Dispose(); throw; }
+
+        try
+        {
+            broker = await PubSubBroker.StartAsync(token, loggerFactory);
+        }
+        catch
+        {
+            loggerFactory.Dispose();
+            throw;
+        }
+
         PubSubFixture? fixture = null;
+
         try
         {
             fixture = new(broker, tracing, logs, loggerFactory);
             var report = await fixture.Adapter.ApplyTopologyAsync(TopologyMode.Provision, token);
-            if (report.Differences.Count != 0) throw new InvalidOperationException(string.Join("; ", report.Differences));
+
+            if (report.Differences.Count != 0)
+            {
+                throw new InvalidOperationException(string.Join("; ", report.Differences));
+            }
+
             return fixture;
         }
         catch
         {
-            if (fixture is null) { await broker.DisposeAsync(); loggerFactory.Dispose(); }
-            else await fixture.DisposeAsync();
+            if (fixture is null)
+            {
+                await broker.DisposeAsync();
+                loggerFactory.Dispose();
+            }
+            else
+            {
+                await fixture.DisposeAsync();
+            }
+
             throw;
         }
     }
@@ -146,11 +212,24 @@ internal sealed class PubSubFixture : ITransportConformanceFixture<GooglePubSubD
         Adapter.Consumers.Add(_worker);
         _worker.Receive = receive;
     }
-    internal Task ConsumerCompletion => _worker!.Completion;
-    internal void InjectInitialWriteFailure(IOException error) => _native.InitialWriteFailure = error;
 
-    public ValueTask SettleAsync(GooglePubSubDelivery incoming, Disposition disposition, CancellationToken token) => _worker!.SettleAsync(incoming, disposition, token);
-    public ValueTask<ConformanceDeadLetter> ReadDeadLetterAsync(CancellationToken token) => throw new NotSupportedException("Pub/Sub cannot dead-letter on demand with error attributes.");
+    internal Task ConsumerCompletion => _worker!.Completion;
+
+    internal void InjectInitialWriteFailure(IOException error)
+    {
+        _native.InitialWriteFailure = error;
+    }
+
+    public ValueTask SettleAsync(GooglePubSubDelivery incoming, Disposition disposition, CancellationToken token)
+    {
+        return _worker!.SettleAsync(incoming, disposition, token);
+    }
+
+    public ValueTask<ConformanceDeadLetter> ReadDeadLetterAsync(CancellationToken token)
+    {
+        throw new NotSupportedException("Pub/Sub cannot dead-letter on demand with error attributes.");
+    }
+
     // Closing the proxy drops live TCP streams while preserving the emulator's native endpoint state.
     public async Task DisconnectAsync(CancellationToken token)
     {
@@ -166,79 +245,135 @@ internal sealed class PubSubFixture : ITransportConformanceFixture<GooglePubSubD
         await Broker.SetConnectedAsync(false, token);
         _disconnected = true;
     }
+
     public async Task ReconnectAsync(CancellationToken token)
     {
         await Broker.SetConnectedAsync(true, token);
         var wasDisconnected = _disconnected;
         _disconnected = false;
         var failure = _worker?.Completion.Exception;
-        if (failure is null) return;
+
+        if (failure is null)
+        {
+            return;
+        }
         // Google's client intentionally makes an initial StreamingPull write I/O failure fatal
         // (googleapis/google-cloud-dotnet#16088). Recreate the application explicitly, retaining
         // the real broker, topic and subscription; never add a subscriber retry loop to Relayer.
-        if ((!_observedNativeFailure && !wasDisconnected) || !IsNativeStreamWriteFailure(failure)) throw failure;
+        if ((!_observedNativeFailure && !wasDisconnected) || !IsNativeStreamWriteFailure(failure))
+        {
+            throw failure;
+        }
         // Reconnect runs with a live application; the outage-send case already observed
         // its failure during StopAsync and starts the replacement explicitly.
         var restart = !_observedNativeFailure;
-        try { await _provider.DisposeAsync(); }
-        catch (Exception error) when (IsObservedSubscriberFailure(error, failure)) { }
+
+        try
+        {
+            await _provider.DisposeAsync();
+        }
+        catch (Exception error) when (IsObservedSubscriberFailure(error, failure))
+        {
+        }
+
         _observedNativeFailure = false;
         _native = new();
         BuildApplication();
         RegisterConsumer(_receive!);
         var persisted = await _subscriber.GetSubscriptionAsync(Subscription, cancellationToken: token);
-        if (persisted.Topic != Destination) throw new InvalidOperationException("Recovery replaced the durable Pub/Sub endpoint.");
-        if (restart) await Adapter.StartAsync(token);
+
+        if (persisted.Topic != Destination)
+        {
+            throw new InvalidOperationException("Recovery replaced the durable Pub/Sub endpoint.");
+        }
+
+        if (restart)
+        {
+            await Adapter.StartAsync(token);
+        }
     }
 
-    private static bool IsNativeStreamWriteFailure(Exception error) => error is AggregateException aggregate
-        ? aggregate.InnerExceptions.All(IsNativeStreamWriteFailure)
-        : error is IOException && ContainsDisconnectedConnection(error);
+    private static bool IsNativeStreamWriteFailure(Exception error)
+    {
+        return error is AggregateException aggregate
+                ? aggregate.InnerExceptions.All(IsNativeStreamWriteFailure)
+                : error is IOException && ContainsDisconnectedConnection(error);
+    }
 
-    internal static bool IsExpectedPublishFailure(Exception error, bool disconnected = false) => error is RpcException rpc
-        && (rpc.StatusCode is StatusCode.Unavailable or StatusCode.DeadlineExceeded
-            || (rpc.StatusCode == StatusCode.Internal && rpc.Status.DebugException is { } cause
-                && (ContainsDisconnectedConnection(cause)
-                    // Observed on net11.0 with SDK 11.0.100 in CI run 43368433359
-                    // (job 131698298994); the log does not record the runtime patch.
-                    // dotnet/runtime v11.0.0 HttpConnectionPool.Http2.cs ReturnHttp2Connection
-                    // constructs HttpRequestException(message) with no inner exception and
-                    // HttpRequestError.Unknown; neither gives a specific discriminator.
-                    // Keep the exact wording fail-closed and only in our deliberate outage.
-                    || (disconnected && cause is System.Net.Http.HttpRequestException
-                        && cause.Message == "An HTTP/2 connection could not be established because the server did not complete the HTTP/2 handshake."))));
+    internal static bool IsExpectedPublishFailure(Exception error, bool disconnected = false)
+    {
+        return error is RpcException rpc
+                && (rpc.StatusCode is StatusCode.Unavailable or StatusCode.DeadlineExceeded
+                    || (rpc.StatusCode == StatusCode.Internal && rpc.Status.DebugException is { } cause
+                        && (ContainsDisconnectedConnection(cause)
+                            // Observed on net11.0 with SDK 11.0.100 in CI run 43368433359
+                            // (job 131698298994); the log does not record the runtime patch.
+                            // dotnet/runtime v11.0.0 HttpConnectionPool.Http2.cs ReturnHttp2Connection
+                            // constructs HttpRequestException(message) with no inner exception and
+                            // HttpRequestError.Unknown; neither gives a specific discriminator.
+                            // Keep the exact wording fail-closed and only in our deliberate outage.
+                            || (disconnected && cause is System.Net.Http.HttpRequestException
+                                && cause.Message == "An HTTP/2 connection could not be established because the server did not complete the HTTP/2 handshake."))));
+    }
 
-    private static bool ContainsDisconnectedConnection(Exception error) =>
-        error is System.Net.Sockets.SocketException { SocketErrorCode: System.Net.Sockets.SocketError.ConnectionReset or System.Net.Sockets.SocketError.ConnectionAborted
-            or System.Net.Sockets.SocketError.Shutdown }
-        || error is System.Net.Http.HttpIOException { HttpRequestError: System.Net.Http.HttpRequestError.InvalidResponse or System.Net.Http.HttpRequestError.ResponseEnded }
-        || (error.InnerException is { } inner && ContainsDisconnectedConnection(inner));
+    private static bool ContainsDisconnectedConnection(Exception error)
+    {
+        return error is System.Net.Sockets.SocketException
+        {
+            SocketErrorCode: System.Net.Sockets.SocketError.ConnectionReset or System.Net.Sockets.SocketError.ConnectionAborted
+            or System.Net.Sockets.SocketError.Shutdown
+        }
+                || error is System.Net.Http.HttpIOException { HttpRequestError: System.Net.Http.HttpRequestError.InvalidResponse or System.Net.Http.HttpRequestError.ResponseEnded }
+                || (error.InnerException is { } inner && ContainsDisconnectedConnection(inner));
+    }
 
-    private static bool IsObservedSubscriberFailure(Exception error, AggregateException failure) => error is AggregateException aggregate
-        ? aggregate.InnerExceptions.All(inner => IsObservedSubscriberFailure(inner, failure))
-        : failure.Flatten().InnerExceptions.Any(observed => ReferenceEquals(observed, error));
+    private static bool IsObservedSubscriberFailure(Exception error, AggregateException failure)
+    {
+        return error is AggregateException aggregate
+                ? aggregate.InnerExceptions.All(inner => IsObservedSubscriberFailure(inner, failure))
+                : failure.Flatten().InnerExceptions.Any(observed => ReferenceEquals(observed, error));
+    }
+
     public async ValueTask VerifyShutdownAsync(CancellationToken token)
     {
         _verifyShutdown = true;
+
         if (!_worker!.Completion.IsCompletedSuccessfully)
+        {
             throw new InvalidOperationException("Native Pub/Sub subscriber did not drain.");
+        }
+
         _native.AssertClean();
         // In addition to the successful native Ack RPC, verify the broker still owns the
         // subscription used for native redelivery if acknowledgement outcome is ambiguous.
         var persisted = await _subscriber.GetSubscriptionAsync(Subscription, cancellationToken: token);
-        if (persisted.Topic != Destination) throw new InvalidOperationException("The durable Pub/Sub subscription disappeared.");
+
+        if (persisted.Topic != Destination)
+        {
+            throw new InvalidOperationException("The durable Pub/Sub subscription disappeared.");
+        }
     }
 
     public async ValueTask DisposeAsync()
     {
-        try { await _provider.DisposeAsync(); }
+        try
+        {
+            await _provider.DisposeAsync();
+        }
         finally
         {
-            try { await Broker.DisposeAsync(); }
+            try
+            {
+                await Broker.DisposeAsync();
+            }
             finally
             {
                 _logs.Dispose();
-                if (_verifyShutdown) _native.AssertClean(requireClosure: true);
+
+                if (_verifyShutdown)
+                {
+                    _native.AssertClean(requireClosure: true);
+                }
             }
         }
     }

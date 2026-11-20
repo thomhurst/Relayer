@@ -21,12 +21,24 @@ public class SnsSendTests
         OutgoingMessage[] messages = [new("ordered.fifo", "{}"u8.ToArray(), orderingKey: new WireString("key")),
             .. Enumerable.Repeat(new OutgoingMessage("orders", "{}"u8.ToArray()), 12)];
         AmazonSnsBatchException? failure = null;
-        try { await transport.SendBatchAsync(messages, default); }
-        catch (AmazonSnsBatchException error) { failure = error; }
+
+        try
+        {
+            await transport.SendBatchAsync(messages, default);
+        }
+        catch (AmazonSnsBatchException error)
+        {
+            failure = error;
+        }
+
         await Assert.That(failure).IsNotNull();
         await Assert.That(failure!.BatchOffset).IsEqualTo(10);
+
         for (var index = 0; index < 12; index++)
+        {
             await Assert.That(((IBatchSendFailure)failure).IsConfirmed(index)).IsTrue();
+        }
+
         await Assert.That(((IBatchSendFailure)failure).IsConfirmed(12)).IsFalse();
         await Assert.That(((IBatchSendFailure)failure).IsConfirmed(13)).IsFalse();
     }
@@ -41,13 +53,19 @@ public class SnsSendTests
             builder.AddMessageTypesFromThisAssembly();
             builder.AmazonSns("sns", sns =>
             {
-                sns.Options.Configure(o => { o.SnsClient = client; o.Topics.Add(new("orders")); });
+                sns.Options.Configure(o =>
+                {
+                    o.SnsClient = client;
+                    o.Topics.Add(new("orders"));
+                });
                 sns.Send<Event>("orders");
             });
         });
+
         using (var host = app.Build())
         {
             await host.StartAsync();
+
             try
             {
                 await using var scope = host.Services.CreateAsyncScope();
@@ -58,8 +76,12 @@ public class SnsSendTests
                 await Assert.That(sent.Attributes["ce_type"]).Contains("sns.test.event");
                 await Assert.That(sent.Attributes["ce_specversion"]).IsEqualTo("1.0");
             }
-            finally { await host.StopAsync(); }
+            finally
+            {
+                await host.StopAsync();
+            }
         }
+
         await Assert.That(client.Disposals).IsEqualTo(0);
     }
 
@@ -113,8 +135,7 @@ public class SnsSendTests
         await transport.SendBatchAsync(new[] { message, message }, default);
         await Assert.That(client.Sent.Single().Deduplication).IsEqualTo("stable");
         await Assert.That(client.Batches.Single().All(entry => entry.Message.Deduplication == "stable")).IsTrue();
-        await transport.SendAsync(new("ordered.fifo", "{}"u8.ToArray(), orderingKey: new WireString("group"), options:
-            new SendOptions().AmazonSns(request => request.MessageDeduplicationId = "native")), default);
+        await transport.SendAsync(new("ordered.fifo", "{}"u8.ToArray(), orderingKey: new WireString("group"), options: new SendOptions().AmazonSns(request => request.MessageDeduplicationId = "native")), default);
         await Assert.That(client.Sent[1].Deduplication).IsEqualTo("native");
     }
 
@@ -136,8 +157,16 @@ public class SnsSendTests
         await Assert.That(calls).IsEqualTo(14);
         client.FailBatch = true;
         AmazonSnsBatchException? failure = null;
-        try { await transport.SendBatchAsync(messages.ToArray(), default); }
-        catch (AmazonSnsBatchException error) { failure = error; }
+
+        try
+        {
+            await transport.SendBatchAsync(messages.ToArray(), default);
+        }
+        catch (AmazonSnsBatchException error)
+        {
+            failure = error;
+        }
+
         await Assert.That(failure).IsNotNull();
         await Assert.That(failure!.Response.Successful.Single().Id).IsEqualTo("0");
         await Assert.That(failure.Response.Failed.Single().Id).IsEqualTo("1");
@@ -189,7 +218,10 @@ public class SnsSendTests
     {
         using var client = new SnsTestClient { Missing = true };
         var options = Options(client);
-        options.Topics[0].Attributes = new() { ["DisplayName"] = "Orders" };
+        options.Topics[0].Attributes = new()
+        {
+            ["DisplayName"] = "Orders"
+        };
         options.Subscriptions.Add(Subscription());
         await using var transport = new SnsSendTransport("sns", client, false, options);
         await Assert.That((await transport.ApplyTopologyAsync(TopologyMode.None, default)).Differences.Count).IsEqualTo(0);
@@ -260,7 +292,9 @@ public class SnsSendTests
             InstrumentPublished = (instrument, observer) =>
             {
                 if (ReferenceEquals(instrument.Meter.Scope, instrumentation) && instrument.Name == "messaging.client.sent.messages")
+                {
                     observer.EnableMeasurementEvents(instrument);
+                }
             },
         };
         meter.SetMeasurementEventCallback<long>((_, value, _, _) => sent += value);
@@ -274,10 +308,25 @@ public class SnsSendTests
         await Assert.That(pending.IsCompleted).IsFalse();
         await Assert.That(sent).IsEqualTo(batch ? 2L : 1L);
         await Assert.That(durations.Values.Count).IsEqualTo(0);
-        if (fail) client.Gate.SetException(new AmazonSimpleNotificationServiceException("failure"));
-        else client.Gate.SetResult();
-        if (fail) await Assert.That(async () => await pending).Throws<AmazonSimpleNotificationServiceException>();
-        else await pending;
+
+        if (fail)
+        {
+            client.Gate.SetException(new AmazonSimpleNotificationServiceException("failure"));
+        }
+        else
+        {
+            client.Gate.SetResult();
+        }
+
+        if (fail)
+        {
+            await Assert.That(async () => await pending).Throws<AmazonSimpleNotificationServiceException>();
+        }
+        else
+        {
+            await pending;
+        }
+
         var duration = durations.Values.Single();
         await Assert.That(duration.Tags["messaging.system"]).IsEqualTo("aws.sns");
         await Assert.That(duration.Tags["messaging.destination.name"]).IsEqualTo("orders");
@@ -331,7 +380,13 @@ public class SnsSendTests
             sns.Options.Configure(options =>
             {
                 options.SnsClient = client;
-                options.Topics.Add(new("ordered.fifo") { Attributes = new() { ["FifoTopic"] = "true" } });
+                options.Topics.Add(new("ordered.fifo")
+                {
+                    Attributes = new()
+                    {
+                        ["FifoTopic"] = "true"
+                    }
+                });
             });
             sns.Send<Event>("ordered.fifo");
             sns.Send<SqsSendTests.Order>("ordered.fifo", route => route.SendOptions = new() { HeaderNames = new("event_") });
@@ -360,15 +415,36 @@ public class SnsSendTests
     {
         var options = new AmazonSnsTransportOptions { SnsClient = client };
         options.Topics.Add(new("orders"));
-        options.Topics.Add(new("ordered.fifo") { Attributes = new() { ["FifoTopic"] = "true" } });
+        options.Topics.Add(new("ordered.fifo")
+        {
+            Attributes = new()
+            {
+                ["FifoTopic"] = "true"
+            }
+        });
         return options;
     }
-    private static SubscribeRequest Subscription() => new()
+
+    private static SubscribeRequest Subscription()
     {
-        TopicArn = SnsTestClient.Arn("orders"), Protocol = "sqs", Endpoint = "arn:aws:sqs:us-east-1:000000000000:orders",
-        Attributes = new() { ["RawMessageDelivery"] = "true" }, ReturnSubscriptionArn = true,
-    };
-    private static SnsSendTransport Transport(IAmazonSimpleNotificationService client) => new("sns", client, false, Options(client));
+        return new()
+        {
+            TopicArn = SnsTestClient.Arn("orders"),
+            Protocol = "sqs",
+            Endpoint = "arn:aws:sqs:us-east-1:000000000000:orders",
+            Attributes = new()
+            {
+                ["RawMessageDelivery"] = "true"
+            },
+            ReturnSubscriptionArn = true,
+        };
+    }
+
+    private static SnsSendTransport Transport(IAmazonSimpleNotificationService client)
+    {
+        return new("sns", client, false, Options(client));
+    }
+
     [Message("sns.test.event")]
     public sealed record Event;
 }
@@ -390,50 +466,122 @@ internal sealed class SnsTestClient() : AmazonSimpleNotificationServiceClient(ne
     internal int Lookups;
     internal int Disposals;
     internal TaskCompletionSource? Gate;
-    internal static string Arn(string name) => "arn:aws:sns:us-east-1:000000000000:" + name;
+
+    internal static string Arn(string name)
+    {
+        return "arn:aws:sns:us-east-1:000000000000:" + name;
+    }
 
     public override async Task<PublishResponse> PublishAsync(PublishRequest request, CancellationToken cancellationToken = default)
     {
         Requests.Add(request);
         Sent.Add(Snapshot(request));
-        if (Gate is not null) await Gate.Task.WaitAsync(cancellationToken);
-        return new() { ResponseMetadata = new() { RequestId = "request-1" } };
+
+        if (Gate is not null)
+        {
+            await Gate.Task.WaitAsync(cancellationToken);
+        }
+
+        return new()
+        {
+            ResponseMetadata = new()
+            {
+                RequestId = "request-1"
+            }
+        };
     }
+
     public override async Task<PublishBatchResponse> PublishBatchAsync(PublishBatchRequest request, CancellationToken cancellationToken = default)
     {
         Batches.Add(request.PublishBatchRequestEntries.Select(entry => (entry.Id, Snapshot(new()
         {
-            TopicArn = request.TopicArn, Message = entry.Message, MessageGroupId = entry.MessageGroupId,
-            MessageDeduplicationId = entry.MessageDeduplicationId, Subject = entry.Subject, MessageAttributes = entry.MessageAttributes,
+            TopicArn = request.TopicArn,
+            Message = entry.Message,
+            MessageGroupId = entry.MessageGroupId,
+            MessageDeduplicationId = entry.MessageDeduplicationId,
+            Subject = entry.Subject,
+            MessageAttributes = entry.MessageAttributes,
         }))).ToArray());
-        if (Gate is not null) await Gate.Task.WaitAsync(cancellationToken);
-        return new() { Successful = [new() { Id = "0" }], Failed = FailBatch && (FailBatchOnCall == 0 || Batches.Count == FailBatchOnCall) ? [new() { Id = "1", Code = "InvalidParameter", SenderFault = true }] : [], ResponseMetadata = new() { RequestId = "batch-request" } };
+
+        if (Gate is not null)
+        {
+            await Gate.Task.WaitAsync(cancellationToken);
+        }
+
+        return new()
+        {
+            Successful = [new() { Id = "0" }],
+            Failed = FailBatch && (FailBatchOnCall == 0 || Batches.Count == FailBatchOnCall) ? [new() { Id = "1", Code = "InvalidParameter", SenderFault = true }] : [],
+            ResponseMetadata = new()
+            {
+                RequestId = "batch-request"
+            }
+        };
     }
+
     public override Task<ListTopicsResponse> ListTopicsAsync(ListTopicsRequest request, CancellationToken cancellationToken = default)
     {
         Lookups++;
         var names = Missing ? Creates.Select(topic => topic.Name) : new[] { "orders", "ordered.fifo" };
-        if (Paginate) names = request.NextToken is null ? ["orders"] : ["ordered.fifo"];
+
+        if (Paginate)
+        {
+            names = request.NextToken is null ? ["orders"] : ["ordered.fifo"];
+        }
+
         return Task.FromResult(new ListTopicsResponse { NextToken = Paginate && request.NextToken is null ? "next" : null, Topics = Missing && Creates.Count == 0 ? null : names.Select(name => new Topic { TopicArn = Arn(name) }).ToList() });
     }
+
     public override Task<CreateTopicResponse> CreateTopicAsync(CreateTopicRequest request, CancellationToken cancellationToken = default)
     {
         Creates.Add(request);
         return Task.FromResult(new CreateTopicResponse { TopicArn = Arn(request.Name) });
     }
-    public override Task<GetTopicAttributesResponse> GetTopicAttributesAsync(GetTopicAttributesRequest request, CancellationToken cancellationToken = default) =>
-        Task.FromResult(new GetTopicAttributesResponse { Attributes = new() { ["FifoTopic"] = "true" } });
-    public override Task<ListSubscriptionsByTopicResponse> ListSubscriptionsByTopicAsync(ListSubscriptionsByTopicRequest request, CancellationToken cancellationToken = default) =>
-        Task.FromResult(new ListSubscriptionsByTopicResponse { NextToken = Paginate && request.NextToken is null ? "next" : null, Subscriptions = (Paginate && request.NextToken is null ? Enumerable.Empty<SubscribeRequest>() : Subscribes).Select(subscription => new Subscription
-        { TopicArn = subscription.TopicArn, Endpoint = subscription.Endpoint, Protocol = subscription.Protocol, SubscriptionArn = "arn:subscription" }).ToList() });
+
+    public override Task<GetTopicAttributesResponse> GetTopicAttributesAsync(GetTopicAttributesRequest request, CancellationToken cancellationToken = default)
+    {
+        return Task.FromResult(new GetTopicAttributesResponse { Attributes = new() { ["FifoTopic"] = "true" } });
+    }
+
+    public override Task<ListSubscriptionsByTopicResponse> ListSubscriptionsByTopicAsync(ListSubscriptionsByTopicRequest request, CancellationToken cancellationToken = default)
+    {
+        return Task.FromResult(new ListSubscriptionsByTopicResponse
+        {
+            NextToken = Paginate && request.NextToken is null ? "next" : null,
+            Subscriptions = (Paginate && request.NextToken is null ? Enumerable.Empty<SubscribeRequest>() : Subscribes).Select(subscription => new Subscription
+            {
+                TopicArn = subscription.TopicArn,
+                Endpoint = subscription.Endpoint,
+                Protocol = subscription.Protocol,
+                SubscriptionArn = "arn:subscription"
+            }).ToList()
+        });
+    }
+
     public override Task<SubscribeResponse> SubscribeAsync(SubscribeRequest request, CancellationToken cancellationToken = default)
     {
         Subscribes.Add(request);
         return Task.FromResult(new SubscribeResponse { SubscriptionArn = "arn:subscription" });
     }
-    public override Task<GetSubscriptionAttributesResponse> GetSubscriptionAttributesAsync(GetSubscriptionAttributesRequest request, CancellationToken cancellationToken = default) =>
-        Task.FromResult(new GetSubscriptionAttributesResponse { Attributes = SubscriptionAttributes });
-    protected override void Dispose(bool disposing) { if (disposing) Disposals++; base.Dispose(disposing); }
-    private static SnsSent Snapshot(PublishRequest request) => new(request.TopicArn, request.Message, request.MessageGroupId,
-        request.MessageDeduplicationId, request.Subject, request.MessageAttributes?.ToDictionary(item => item.Key, item => item.Value.StringValue) ?? []);
+
+    public override Task<GetSubscriptionAttributesResponse> GetSubscriptionAttributesAsync(GetSubscriptionAttributesRequest request, CancellationToken cancellationToken = default)
+    {
+        return Task.FromResult(new GetSubscriptionAttributesResponse { Attributes = SubscriptionAttributes });
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing)
+        {
+            Disposals++;
+        }
+
+        base.Dispose(disposing);
+    }
+
+    private static SnsSent Snapshot(PublishRequest request)
+    {
+        return new(request.TopicArn, request.Message, request.MessageGroupId,
+                request.MessageDeduplicationId, request.Subject, request.MessageAttributes?.ToDictionary(item => item.Key, item => item.Value.StringValue) ?? []);
+    }
 }

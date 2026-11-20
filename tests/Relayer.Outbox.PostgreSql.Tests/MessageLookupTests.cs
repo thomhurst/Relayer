@@ -16,20 +16,34 @@ public class MessageLookupTests
         await PostgreSqlOutboxStoreTests.CreateSchema(source, options);
         // Existing schemas have no sent-history table. Default API and CLI lookups must still work.
         await using (var drop = source.CreateCommand("DROP TABLE \"lookup\"\"schema\".test_outbox_sent"))
+        {
             await drop.ExecuteNonQueryAsync();
-        var enabled = new PostgreSqlMessageLookup(source, new() { Schema = options.Schema, TablePrefix = options.TablePrefix, RetainSentMessages = true });
+        }
+
+        var enabled = new PostgreSqlMessageLookup(source, new()
+        {
+            Schema = options.Schema,
+            TablePrefix = options.TablePrefix,
+            RetainSentMessages = true
+        });
         var schemaError = await Assert.ThrowsAsync<InvalidOperationException>(async () => await enabled.FindAsync(Guid.NewGuid()));
         await Assert.That(schemaError!.Message).Contains("PostgreSqlOutboxSchema.CreateScript");
         var table = "\"lookup\"\"schema\".\"test_outbox\"";
         var now = DateTimeOffset.UtcNow;
-        var pending = Guid.NewGuid(); var scheduled = Guid.NewGuid(); var claimed = Guid.NewGuid();
-        var follower = Guid.NewGuid(); var parked = Guid.NewGuid(); var dead = Guid.NewGuid(); var absent = Guid.NewGuid();
+        var pending = Guid.NewGuid();
+        var scheduled = Guid.NewGuid();
+        var claimed = Guid.NewGuid();
+        var follower = Guid.NewGuid();
+        var parked = Guid.NewGuid();
+        var dead = Guid.NewGuid();
+        var absent = Guid.NewGuid();
         await PostgreSqlOutboxStoreTests.Insert(source, options, pending, now, lane: 2);
         await PostgreSqlOutboxStoreTests.Insert(source, options, scheduled, now, lane: 2, deliverAt: now.AddHours(1));
         await PostgreSqlOutboxStoreTests.Insert(source, options, claimed, now, expires: now.AddHours(1));
         await PostgreSqlOutboxStoreTests.Insert(source, options, parked, now, lane: 2, status: "parked");
         await PostgreSqlOutboxStoreTests.Insert(source, options, follower, now, lane: 2);
         await PostgreSqlOutboxStoreTests.Insert(source, options, dead, now);
+
         await using (var command = source.CreateCommand($"""
             INSERT INTO "lookup""schema".test_outbox_dead (id, transport, destination, message_type, headers, body, created_at, attempts, last_error, failed_at)
             SELECT id, transport, destination, message_type, headers, body, created_at, 10, 'poison', clock_timestamp() FROM {table} WHERE id IN (@dead, @parked);
@@ -39,38 +53,71 @@ public class MessageLookupTests
             INSERT INTO "lookup""schema".test_inbox VALUES ('consumer-a', @absent, clock_timestamp()), ('consumer-b', @absent, clock_timestamp());
             """))
         {
-            command.Parameters.AddWithValue("dead", dead); command.Parameters.AddWithValue("parked", parked);
-            command.Parameters.AddWithValue("claimed", claimed); command.Parameters.AddWithValue("absent", absent);
+            command.Parameters.AddWithValue("dead", dead);
+            command.Parameters.AddWithValue("parked", parked);
+            command.Parameters.AddWithValue("claimed", claimed);
+            command.Parameters.AddWithValue("absent", absent);
             await command.ExecuteNonQueryAsync();
         }
+
         var start = new ProcessStartInfo("dotnet") { RedirectStandardOutput = true, RedirectStandardError = true };
         start.ArgumentList.Add(typeof(RelayerCommand).Assembly.Location);
+
         foreach (var argument in new[] { "message", "locate", "--id", scheduled.ToString(), "--schema", options.Schema!, "--prefix", options.TablePrefix })
+        {
             start.ArgumentList.Add(argument);
+        }
+
         start.Environment["RELAYER_POSTGRES_CONNECTION_STRING"] = fixture.ConnectionString;
+
         using (var process = Process.Start(start)!)
         {
             var stdout = process.StandardOutput.ReadToEndAsync();
             var stderr = process.StandardError.ReadToEndAsync();
             using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-            try { await process.WaitForExitAsync(timeout.Token); }
-            finally { if (!process.HasExited) process.Kill(entireProcessTree: true); }
+
+            try
+            {
+                await process.WaitForExitAsync(timeout.Token);
+            }
+            finally
+            {
+                if (!process.HasExited)
+                {
+                    process.Kill(entireProcessTree: true);
+                }
+            }
+
             await Assert.That(process.ExitCode).IsEqualTo(0);
             await Assert.That(await stdout).Contains("State: scheduled");
             await Assert.That(await stderr).IsEqualTo("");
         }
+
         start.ArgumentList.Add("--sent-history");
+
         using (var process = Process.Start(start)!)
         {
             var stdout = process.StandardOutput.ReadToEndAsync();
             var stderr = process.StandardError.ReadToEndAsync();
             using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-            try { await process.WaitForExitAsync(timeout.Token); }
-            finally { if (!process.HasExited) process.Kill(entireProcessTree: true); }
+
+            try
+            {
+                await process.WaitForExitAsync(timeout.Token);
+            }
+            finally
+            {
+                if (!process.HasExited)
+                {
+                    process.Kill(entireProcessTree: true);
+                }
+            }
+
             await Assert.That(process.ExitCode).IsEqualTo(1);
             await Assert.That(await stderr).Contains("PostgreSqlOutboxSchema.CreateScript");
             await Assert.That(await stdout).IsEqualTo("");
         }
+
         var lookup = new PostgreSqlMessageLookup(source, options);
         await Assert.That((await lookup.FindAsync(pending)).State).IsEqualTo("pending");
         var future = await lookup.FindAsync(scheduled);
@@ -107,7 +154,8 @@ public class MessageLookupTests
     [Test]
     public async Task Lookup_command_validates_options_before_connecting()
     {
-        using var output = new StringWriter(); using var error = new StringWriter();
+        using var output = new StringWriter();
+        using var error = new StringWriter();
         await Assert.That(await RelayerCommand.RunAsync(["message", "locate", "--id", "invalid"], output, error)).IsEqualTo(1);
         await Assert.That(error.ToString()).Contains("nonempty message UUID");
         error.GetStringBuilder().Clear();

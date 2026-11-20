@@ -16,8 +16,12 @@ public sealed class MessagePackMessageSerializer : IMessageSerializer
     public MessagePackMessageSerializer(MessagePackSerializerOptions options)
     {
         ArgumentNullException.ThrowIfNull(options);
+
         if (options.Compression != MessagePackCompression.None)
+        {
             throw new ArgumentException("MessagePack compression is not supported by the AOT-safe formatter adapter. Use MessagePackCompression.None.", nameof(options));
+        }
+
         _options = options;
     }
 
@@ -30,6 +34,7 @@ public sealed class MessagePackMessageSerializer : IMessageSerializer
         ArgumentNullException.ThrowIfNull(message);
         ArgumentNullException.ThrowIfNull(destination);
         var writer = new MessagePackWriter(destination) { OldSpec = _options.OldSpec ?? false };
+
         try
         {
             _options.Resolver.GetFormatterWithVerify<TMessage>().Serialize(ref writer, message, _options);
@@ -46,6 +51,7 @@ public sealed class MessagePackMessageSerializer : IMessageSerializer
     {
         var reader = new MessagePackReader(source);
         TMessage message;
+
         try
         {
             message = _options.Resolver.GetFormatterWithVerify<TMessage>().Deserialize(ref reader, _options);
@@ -54,8 +60,17 @@ public sealed class MessagePackMessageSerializer : IMessageSerializer
         {
             throw new MessagePackSerializationException("Failed to deserialize the message body.", error);
         }
-        if (message is null) throw new MessagePackSerializationException("A message body cannot be nil.");
-        if (!reader.End) throw new MessagePackSerializationException("A message body must contain exactly one MessagePack value.");
+
+        if (message is null)
+        {
+            throw new MessagePackSerializationException("A message body cannot be nil.");
+        }
+
+        if (!reader.End)
+        {
+            throw new MessagePackSerializationException("A message body must contain exactly one MessagePack value.");
+        }
+
         return message;
     }
 }

@@ -1,9 +1,9 @@
-using Relayer.Transports;
 using System.Buffers;
 using Microsoft.Extensions.DependencyInjection;
 using Npgsql;
 using NpgsqlTypes;
 using Relayer.Outbox.PostgreSql;
+using Relayer.Transports;
 
 namespace Relayer.Outbox.PostgreSql.Tests;
 
@@ -114,15 +114,22 @@ public class PostgreSqlOutboxStoreTests
         await CreateSchema(source);
         var store = new PostgreSqlOutboxStore(source);
         var now = Microseconds(DateTimeOffset.UtcNow);
+
         foreach (var kind in new[] { "future", "parked", "live", "missing", "due", "expired" })
         {
             var claim = new OutboxClaim(Guid.CreateVersion7(), Guid.NewGuid());
-            if (kind != "missing") await Insert(source, new(), claim.MessageId, now,
+
+            if (kind != "missing")
+            {
+                await Insert(source, new(), claim.MessageId, now,
                 deliverAt: kind == "future" ? now.AddHours(1) : now,
                 status: kind == "parked" ? "parked" : "pending",
                 expires: kind == "live" ? now.AddHours(1) : kind == "expired" ? now : null);
+            }
+
             await Assert.That(await store.TryClaimAsync(claim, now, now.AddMinutes(1), default)).IsEqualTo(kind is "due" or "expired");
         }
+
         using var cancelled = new CancellationTokenSource();
         await cancelled.CancelAsync();
         await Assert.ThrowsAsync<OperationCanceledException>(async () =>
@@ -147,23 +154,30 @@ public class PostgreSqlOutboxStoreTests
         await Insert(source, new(), claim.MessageId, now);
         await using var connection = await source.OpenConnectionAsync();
         await using var transaction = await connection.BeginTransactionAsync();
+
         await using (var blocker = new NpgsqlCommand("SELECT id FROM relayer_outbox WHERE id = @id FOR UPDATE", connection, transaction))
         {
             blocker.Parameters.AddWithValue("id", claim.MessageId);
             await blocker.ExecuteScalarAsync();
         }
+
         var store = new PostgreSqlOutboxStore(source);
         using var cancelled = new CancellationTokenSource();
         var pending = store.TryClaimAsync(claim, now, now.AddMinutes(1), cancelled.Token);
         // Observe the native command waiting on our row lock before cancelling it. Cancelling
         // during connection startup does not exercise cancellation of a blocked mutation.
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+
         await using (var blocked = source.CreateCommand("SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE @pid = ANY(pg_blocking_pids(pid)))"))
         {
             blocked.Parameters.AddWithValue("pid", connection.ProcessID);
+
             while (await blocked.ExecuteScalarAsync(timeout.Token) is not true)
+            {
                 await Task.Delay(10, timeout.Token);
+            }
         }
+
         await Assert.ThrowsAsync<InvalidOperationException>(async () =>
             await store.TryClaimAsync(new(claim.MessageId, Guid.NewGuid()), now, now.AddMinutes(1), default));
         await cancelled.CancelAsync();
@@ -182,6 +196,7 @@ public class PostgreSqlOutboxStoreTests
         await CreateSchema(source, options);
         var services = new ServiceCollection();
         services.AddRelayerPostgreSqlOutboxStore("orders", source, options);
+
         await using (var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true }))
         {
             await using var first = provider.CreateAsyncScope();
@@ -191,6 +206,7 @@ public class PostgreSqlOutboxStoreTests
             await Assert.That(store).IsNotSameReferenceAs(second.ServiceProvider.GetRequiredKeyedService<IOutboxStore>("orders"));
             await Assert.That(await store.GetPendingCountAsync(DateTimeOffset.UtcNow, default)).IsEqualTo(0L);
         }
+
         await using var command = source.CreateCommand("SELECT 1");
         await Assert.That((int)(await command.ExecuteScalarAsync())!).IsEqualTo(1);
     }
@@ -228,33 +244,51 @@ public class PostgreSqlOutboxStoreTests
         var kinds = new[] { "due", "future", "live", "expired", "parked", "missing", "ordered", "due" };
         var claims = new OutboxClaim[kinds.Length];
         var claimed = Enumerable.Repeat(true, kinds.Length).ToArray();
+
         for (var i = 0; i < kinds.Length; i++)
         {
             claims[i] = new(Guid.CreateVersion7(), Guid.NewGuid());
-            if (kinds[i] == "missing") continue;
+
+            if (kinds[i] == "missing")
+            {
+                continue;
+            }
+
             await Insert(source, options, claims[i].MessageId, now,
                 lane: kinds[i] == "ordered" ? 1 : null,
                 deliverAt: kinds[i] == "future" ? now.AddHours(1) : now,
                 status: kinds[i] == "parked" ? "parked" : "pending",
                 expires: kinds[i] == "live" ? now.AddHours(1) : kinds[i] == "expired" ? now : null);
         }
+
         await store.ClaimBatchAsync(claims, claimed, now, now.AddMinutes(1), default);
         var expected = new[] { true, false, false, true, false, false, false, true };
+
         for (var i = 0; i < claims.Length; i++)
         {
             await Assert.That(claimed[i]).IsEqualTo(expected[i]);
-            if (!claimed[i]) continue;
+
+            if (!claimed[i])
+            {
+                continue;
+            }
+
             await Assert.That(await store.CompleteAsync(new(claims[i].MessageId, Guid.NewGuid()), now, default)).IsFalse();
             await Assert.That(await store.RenewClaimAsync(claims[i], now, now.AddMinutes(1), default)).IsTrue();
         }
+
         var competitor = new PostgreSqlOutboxStore(source, options);
         var competingClaims = claims.Select(claim => new OutboxClaim(claim.MessageId, Guid.NewGuid())).ToArray();
         var competingResults = new bool[claims.Length];
         await competitor.ClaimBatchAsync(competingClaims, competingResults, now, now.AddMinutes(2), default);
         await Assert.That(competingResults.Any(result => result)).IsFalse();
         await competitor.ClaimBatchAsync(competingClaims, competingResults, now.AddMinutes(1), now.AddMinutes(2), default);
+
         for (var i = 0; i < claims.Length; i++)
+        {
             await Assert.That(competingResults[i]).IsEqualTo(expected[i]);
+        }
+
         await Assert.That(await store.CompleteBatchAsync(claims, now.AddMinutes(1), default)).IsEqualTo(0L);
         await Assert.That(await competitor.CompleteBatchAsync(competingClaims, now.AddMinutes(1), default)).IsEqualTo(3L);
         await store.ClaimBatchAsync(claims, claimed, now, now.AddMinutes(1), default);
@@ -291,17 +325,29 @@ public class PostgreSqlOutboxStoreTests
         await store.TryClaimAsync(second, now, now.AddMinutes(1), default);
         await store.TryClaimAsync(expired, now, now.AddSeconds(1), default);
         await store.TryClaimAsync(new(replaced.MessageId, Guid.NewGuid()), now, now.AddMinutes(1), default);
+
         await using (var command = source.CreateCommand($"""
             CREATE TABLE delete_log (id integer);
             CREATE FUNCTION log_delete() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN INSERT INTO delete_log VALUES (1); RETURN NULL; END; $$;
             CREATE TRIGGER delete_count AFTER DELETE ON {table} FOR EACH STATEMENT EXECUTE FUNCTION log_delete();
-            """)) await command.ExecuteNonQueryAsync();
+            """))
+        {
+            await command.ExecuteNonQueryAsync();
+        }
+
         OutboxClaim[] claims = [first, second, expired, replaced, new(Guid.CreateVersion7(), Guid.NewGuid()), first];
         await Assert.That(await store.CompleteBatchAsync(claims, now.AddSeconds(1), default)).IsEqualTo(2L);
+
         await using (var command = source.CreateCommand($"SELECT count(*) FROM {table}"))
+        {
             await Assert.That((long)(await command.ExecuteScalarAsync())!).IsEqualTo(2L);
+        }
+
         await using (var command = source.CreateCommand("SELECT count(*) FROM delete_log"))
+        {
             await Assert.That((long)(await command.ExecuteScalarAsync())!).IsEqualTo(1L);
+        }
+
         await Assert.That(await store.CompleteBatchAsync(claims, now.AddSeconds(1), default)).IsEqualTo(0L);
         await Assert.That(await store.CompleteBatchAsync(ReadOnlyMemory<OutboxClaim>.Empty, now, default)).IsEqualTo(0L);
         await Assert.ThrowsAsync<ArgumentException>(async () =>
@@ -340,5 +386,8 @@ public class PostgreSqlOutboxStoreTests
         await command.ExecuteNonQueryAsync();
     }
 
-    private static DateTimeOffset Microseconds(DateTimeOffset value) => new(value.Ticks - value.Ticks % 10, value.Offset);
+    private static DateTimeOffset Microseconds(DateTimeOffset value)
+    {
+        return new(value.Ticks - value.Ticks % 10, value.Offset);
+    }
 }

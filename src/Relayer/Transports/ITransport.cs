@@ -4,7 +4,10 @@ namespace Relayer.Transports;
 public interface ITransport : IAsyncDisposable
 {
     /// <summary>The transport name, unique within the application.</summary>
-    string Name { get; }
+    string Name
+    {
+        get;
+    }
 
     /// <summary>Resolves the native capabilities of a declared endpoint at startup (docs/decisions.md D24).</summary>
     /// <param name="endpoint">The native source or destination name used in the transport declaration.</param>

@@ -15,9 +15,18 @@ public sealed class OrderedLaneWorkerTests
         };
         worker.Rebalance = () =>
         {
-            if (++worker.Rebalances == 2) worker.Assigned[1] = false;
+            if (++worker.Rebalances == 2)
+            {
+                worker.Assigned[1] = false;
+            }
         };
-        worker.Scan = () => { if (++worker.Scans == 2) worker.StopRequested = true; };
+        worker.Scan = () =>
+        {
+            if (++worker.Scans == 2)
+            {
+                worker.StopRequested = true;
+            }
+        };
         await Run(worker, clock);
         await Assert.That(worker.Sent).IsEquivalentTo(new[] { 0 });
         await Assert.That(worker.Rebalances).IsEqualTo(2);
@@ -31,7 +40,12 @@ public sealed class OrderedLaneWorkerTests
         worker.Send = lane =>
         {
             worker.Sent.Add(lane);
-            if (lane == 0) return ValueTask.FromException<int>(new InvalidOperationException("send failed"));
+
+            if (lane == 0)
+            {
+                return ValueTask.FromException<int>(new InvalidOperationException("send failed"));
+            }
+
             worker.StopRequested = true;
             return new(1);
         };
@@ -72,7 +86,11 @@ public sealed class OrderedLaneWorkerTests
         using var idle = new CancellationTokenSource();
         var worker = new Worker();
         worker.Ready[0] = worker.Ready[1] = false;
-        worker.Scan = () => { worker.StopRequested = true; idle.Cancel(); };
+        worker.Scan = () =>
+        {
+            worker.StopRequested = true;
+            idle.Cancel();
+        };
         await Run(worker, TimeProvider.System, idle.Token);
         await Assert.That(worker.Sent.Count).IsEqualTo(0);
         await Assert.That(worker.Releases).IsEqualTo(1);
@@ -89,8 +107,16 @@ public sealed class OrderedLaneWorkerTests
         worker.Scan = () =>
         {
             // A commit that lands after the probe must not wait for the poll.
-            if (++worker.Scans == 1) wake.Signal();
-            if (worker.Scans == 3) { worker.StopRequested = true; idle.Cancel(); }
+            if (++worker.Scans == 1)
+            {
+                wake.Signal();
+            }
+
+            if (worker.Scans == 3)
+            {
+                worker.StopRequested = true;
+                idle.Cancel();
+            }
         };
         var run = OrderedLaneWorker.RunAsync(worker, TimeSpan.FromSeconds(30), TimeSpan.FromHours(1), clock, default, idle.Token, wake);
         // The second scan finds nothing and parks on a poll timer that never fires.
@@ -102,56 +128,121 @@ public sealed class OrderedLaneWorkerTests
         await Assert.That(worker.Releases).IsEqualTo(1);
     }
 
-    private static Task Run(Worker worker, TimeProvider clock, CancellationToken idle = default) =>
-        OrderedLaneWorker.RunAsync(worker, TimeSpan.FromSeconds(30), TimeSpan.FromSeconds(1), clock, default, idle);
+    private static Task Run(Worker worker, TimeProvider clock, CancellationToken idle = default)
+    {
+        return OrderedLaneWorker.RunAsync(worker, TimeSpan.FromSeconds(30), TimeSpan.FromSeconds(1), clock, default, idle);
+    }
 
     private sealed class StalledClock : TimeProvider
     {
-        internal TaskCompletionSource Polled { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        internal TaskCompletionSource Polled
+        {
+            get;
+        } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
         public override ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period)
         {
             Polled.TrySetResult();
             return new SilentTimer();
         }
+
         private sealed class SilentTimer : ITimer
         {
-            public bool Change(TimeSpan dueTime, TimeSpan period) => true;
-            public void Dispose() { }
-            public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+            public bool Change(TimeSpan dueTime, TimeSpan period)
+            {
+                return true;
+            }
+
+            public void Dispose()
+            {
+            }
+
+            public ValueTask DisposeAsync()
+            {
+                return ValueTask.CompletedTask;
+            }
         }
     }
 
     private sealed class Clock : TimeProvider
     {
         private long _ticks;
+
         public override long TimestampFrequency => TimeSpan.TicksPerSecond;
-        public override long GetTimestamp() => _ticks;
-        internal void Advance(TimeSpan time) => _ticks += time.Ticks;
+
+        public override long GetTimestamp()
+        {
+            return _ticks;
+        }
+
+        internal void Advance(TimeSpan time)
+        {
+            _ticks += time.Ticks;
+        }
     }
 
     private sealed class Worker : IOrderedLaneWorker
     {
         public int Lanes => 2;
-        public bool StopRequested { get; set; }
+
+        public bool StopRequested
+        {
+            get; set;
+        }
         internal readonly bool[] Ready = [true, true];
         internal readonly bool[] Assigned = [true, true];
         internal readonly List<int> Sent = [];
         internal Func<int, ValueTask<int>> Send = _ => new(0);
-        internal Action Scan = () => { };
-        internal Action Rebalance = () => { };
+        internal Action Scan = () =>
+        {
+        };
+        internal Action Rebalance = () =>
+        {
+        };
         internal int Rebalances, Scans, Errors, Releases;
-        public bool IsReady(int lane) => Ready[lane];
-        public bool IsAssigned(int lane) => Assigned[lane];
-        public ValueTask FindReadyAsync(CancellationToken token) { Scan(); return ValueTask.CompletedTask; }
-        public ValueTask RebalanceAsync(CancellationToken token) { Rebalance(); return ValueTask.CompletedTask; }
-        public ValueTask<int> DispatchLaneAsync(int lane, CancellationToken token) => Send(lane);
+
+        public bool IsReady(int lane)
+        {
+            return Ready[lane];
+        }
+
+        public bool IsAssigned(int lane)
+        {
+            return Assigned[lane];
+        }
+
+        public ValueTask FindReadyAsync(CancellationToken token)
+        {
+            Scan();
+            return ValueTask.CompletedTask;
+        }
+
+        public ValueTask RebalanceAsync(CancellationToken token)
+        {
+            Rebalance();
+            return ValueTask.CompletedTask;
+        }
+
+        public ValueTask<int> DispatchLaneAsync(int lane, CancellationToken token)
+        {
+            return Send(lane);
+        }
+
         public ValueTask ReleaseAsync(CancellationToken token)
         {
             token.ThrowIfCancellationRequested();
             Releases++;
             return ValueTask.CompletedTask;
         }
-        public void DispatchFailed(Exception error) => Errors++;
-        public void ReleaseFailed(Exception error) => throw error;
+
+        public void DispatchFailed(Exception error)
+        {
+            Errors++;
+        }
+
+        public void ReleaseFailed(Exception error)
+        {
+            throw error;
+        }
     }
 }

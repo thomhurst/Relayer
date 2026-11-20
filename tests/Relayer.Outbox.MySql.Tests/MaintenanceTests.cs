@@ -19,26 +19,48 @@ public sealed class MaintenanceTests
         await using var data = new MySqlFixture();
         await data.StartAsync();
         await data.Insert(Guid.CreateVersion7(), DateTimeOffset.UtcNow.AddDays(-1));
-        if (failure == "malformed") await data.Execute("UPDATE relayer_outbox SET headers=X'FF'");
-        if (failure == "transport") await data.Execute("UPDATE relayer_outbox SET transport='missing'");
+
+        if (failure == "malformed")
+        {
+            await data.Execute("UPDATE relayer_outbox SET headers=X'FF'");
+        }
+
+        if (failure == "transport")
+        {
+            await data.Execute("UPDATE relayer_outbox SET transport='missing'");
+        }
+
         using var instrumentation = new RelayerInstrumentation();
         long pending = 0, poison = 0;
         using var listener = new MeterListener();
         listener.InstrumentPublished = (instrument, meterListener) =>
         {
             if (instrument == instrumentation.OutboxPending || instrument == instrumentation.OutboxPoison)
+            {
                 meterListener.EnableMeasurementEvents(instrument);
+            }
         };
         listener.SetMeasurementEventCallback<long>((instrument, count, _, _) =>
         {
-            if (instrument == instrumentation.OutboxPending) Interlocked.Add(ref pending, count);
-            else Interlocked.Add(ref poison, count);
+            if (instrument == instrumentation.OutboxPending)
+            {
+                Interlocked.Add(ref pending, count);
+            }
+            else
+            {
+                Interlocked.Add(ref poison, count);
+            }
         });
         listener.Start();
         instrumentation.AddOutboxPending(1);
         var transport = new Transport();
         using var worker = new MySqlMaintenanceWorker(data.Source,
-            new() { BatchSize = 4, RecoveryDelay = TimeSpan.Zero, MaxDispatchAttempts = 2 },
+            new()
+            {
+                BatchSize = 4,
+                RecoveryDelay = TimeSpan.Zero,
+                MaxDispatchAttempts = 2
+            },
             [transport], NullLogger<MySqlMaintenanceWorker>.Instance, instrumentation: instrumentation);
         await worker.SweepAsync();
         await Assert.That(poison).IsEqualTo(failure == "malformed" ? 1L : 0L);
@@ -95,17 +117,27 @@ public sealed class MaintenanceTests
         await data.Insert(Guid.CreateVersion7(), DateTimeOffset.UtcNow.AddDays(-1));
         var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var transport = new Transport(async token => { entered.SetResult(); await release.Task.WaitAsync(token); });
+        var transport = new Transport(async token =>
+        {
+            entered.SetResult();
+            await release.Task.WaitAsync(token);
+        });
         using var first = Worker(data, transport);
         using var rival = Worker(data, new());
         var send = first.SweepAsync().AsTask();
+
         try
         {
             await entered.Task.WaitAsync(TimeSpan.FromSeconds(30));
             await data.Execute("UPDATE relayer_leases SET expires_at=UTC_TIMESTAMP(6)-INTERVAL 1 SECOND");
             await Assert.That(await rival.SweepAsync()).IsEqualTo(0);
         }
-        finally { release.TrySetResult(); await send; }
+        finally
+        {
+            release.TrySetResult();
+            await send;
+        }
+
         await first.ReleaseAsync();
         await Assert.That(await rival.SweepAsync()).IsEqualTo(0);
         await Assert.That(transport.Sent).IsEqualTo(1);
@@ -118,7 +150,10 @@ public sealed class MaintenanceTests
         await data.StartAsync();
         var id = Guid.CreateVersion7();
         await data.Insert(id, DateTimeOffset.UtcNow, lane: 3);
-        using var store = new MySqlOutboxStore(data.Source, new() { MaxDispatchAttempts = 1 });
+        using var store = new MySqlOutboxStore(data.Source, new()
+        {
+            MaxDispatchAttempts = 1
+        });
         var claim = new OutboxClaim(id, Guid.NewGuid());
         var now = DateTimeOffset.UtcNow;
         await Assert.That(await store.TryClaimAsync(claim, now, now.AddMinutes(1), default)).IsTrue();
@@ -138,8 +173,12 @@ public sealed class MaintenanceTests
         await data.StartAsync();
         var id = Guid.CreateVersion7();
         await data.Insert(id, DateTimeOffset.UtcNow, lane: 3);
-        using var store = new MySqlOutboxStore(data.Source, new() { MaxDispatchAttempts = 2 });
+        using var store = new MySqlOutboxStore(data.Source, new()
+        {
+            MaxDispatchAttempts = 2
+        });
         var now = DateTimeOffset.UtcNow;
+
         for (var cycle = 0; cycle < 2; cycle++)
         {
             for (var attempt = 0; attempt < 2; attempt++)
@@ -149,10 +188,15 @@ public sealed class MaintenanceTests
                 await Assert.That(await store.RecordFailureAsync(claim, cycle == 0 ? "original" : "repaired", now, default)).IsTrue();
                 await Assert.That(await store.RecordFailureAsync(claim, "stale", now, default)).IsFalse();
             }
+
             await Assert.That(await Scalar(data, "SELECT COUNT(*) FROM relayer_outbox WHERE status='parked' AND attempts=2 AND lane=3")).IsEqualTo(1L);
+
             if (cycle == 0)
+            {
                 await data.Execute("UPDATE relayer_outbox SET status='pending', attempts=0, body=X'ABCD'");
+            }
         }
+
         await Assert.That(await Scalar(data, "SELECT COUNT(*) FROM relayer_dead")).IsEqualTo(1L);
         await Assert.That(await Scalar(data, "SELECT COUNT(*) FROM relayer_dead WHERE attempts=2 AND last_error='repaired' AND body=X'ABCD'")).IsEqualTo(1L);
     }
@@ -182,7 +226,10 @@ public sealed class MaintenanceTests
         var id = Guid.CreateVersion7();
         await data.Insert(id, DateTimeOffset.UtcNow);
         await data.Execute("CREATE TRIGGER fail_dead BEFORE INSERT ON relayer_dead FOR EACH ROW SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='dead unavailable'");
-        using var store = new MySqlOutboxStore(data.Source, new() { MaxDispatchAttempts = 1 });
+        using var store = new MySqlOutboxStore(data.Source, new()
+        {
+            MaxDispatchAttempts = 1
+        });
         var claim = new OutboxClaim(id, Guid.NewGuid());
         var now = DateTimeOffset.UtcNow;
         await Assert.That(await store.TryClaimAsync(claim, now, now.AddMinutes(1), default)).IsTrue();
@@ -205,10 +252,18 @@ public sealed class MaintenanceTests
         await data.StartAsync();
         await data.Insert(Guid.CreateVersion7(), DateTimeOffset.UtcNow.AddDays(-1));
         var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var blocked = new Transport(async token => { entered.SetResult(); await Task.Delay(Timeout.InfiniteTimeSpan, token); });
+        var blocked = new Transport(async token =>
+        {
+            entered.SetResult();
+            await Task.Delay(Timeout.InfiniteTimeSpan, token);
+        });
         // Session reset is application configuration. Cleanup cannot rely on pool reset to drop named locks.
         await using var source = new MySqlDataSource(data.Source.ConnectionString + ";ConnectionReset=false;MaximumPoolSize=2");
-        using var first = new MySqlMaintenanceWorker(source, new() { BatchSize = 4, RecoveryDelay = TimeSpan.Zero },
+        using var first = new MySqlMaintenanceWorker(source, new()
+        {
+            BatchSize = 4,
+            RecoveryDelay = TimeSpan.Zero
+        },
             [blocked], NullLogger<MySqlMaintenanceWorker>.Instance);
         using var stop = new CancellationTokenSource();
         var sweep = first.SweepAsync(stop.Token).AsTask();
@@ -265,12 +320,19 @@ public sealed class MaintenanceTests
         using var listener = new MeterListener();
         listener.InstrumentPublished = (instrument, meterListener) =>
         {
-            if (instrument == instrumentation.OutboxPoison) meterListener.EnableMeasurementEvents(instrument);
+            if (instrument == instrumentation.OutboxPoison)
+            {
+                meterListener.EnableMeasurementEvents(instrument);
+            }
         };
         listener.SetMeasurementEventCallback<long>((_, count, _, _) => Interlocked.Add(ref poisonCount, count));
         listener.Start();
         var transport = new Transport();
-        using var ordered = new MySqlOrderedDispatcher(data.Source, new() { Lanes = 1, MaxDispatchAttempts = 2 },
+        using var ordered = new MySqlOrderedDispatcher(data.Source, new()
+        {
+            Lanes = 1,
+            MaxDispatchAttempts = 2
+        },
             [transport], NullLogger<MySqlOrderedDispatcher>.Instance, instrumentation: instrumentation);
         await Assert.That(await ordered.DispatchLaneAsync(0, default)).IsEqualTo(0);
         await Assert.That(await ordered.DispatchLaneAsync(0, default)).IsEqualTo(0);
@@ -281,8 +343,17 @@ public sealed class MaintenanceTests
         await Assert.That(await Scalar(data, "SELECT COUNT(*) FROM relayer_outbox WHERE status='parked' AND headers=X'FF' AND last_error LIKE '%Malformed%'")).IsEqualTo(1L);
     }
 
-    private static MySqlMaintenanceWorker Worker(MySqlFixture data, Transport transport) => new(data.Source,
-        new() { BatchSize = 4, RecoveryDelay = TimeSpan.Zero, MaxDispatchAttempts = 2 }, [transport], NullLogger<MySqlMaintenanceWorker>.Instance);
+    private static MySqlMaintenanceWorker Worker(MySqlFixture data, Transport transport)
+    {
+        return new(data.Source,
+                new()
+                {
+                    BatchSize = 4,
+                    RecoveryDelay = TimeSpan.Zero,
+                    MaxDispatchAttempts = 2
+                }, [transport], NullLogger<MySqlMaintenanceWorker>.Instance);
+    }
+
     private static async Task<long> Scalar(MySqlFixture data, string sql)
     {
         await using var command = data.Source.CreateCommand(sql);
@@ -291,22 +362,59 @@ public sealed class MaintenanceTests
 
     private sealed class Transport(Func<CancellationToken, ValueTask>? send = null) : ITransport
     {
-        public int Sent { get; private set; }
+        public int Sent
+        {
+            get; private set;
+        }
+
         public string Name => "events";
-        public TransportCapabilities GetCapabilities(string endpoint) => new() { MaxBatchSize = 1, OrderedByKey = true };
+
+        public TransportCapabilities GetCapabilities(string endpoint)
+        {
+            return new()
+            {
+                MaxBatchSize = 1,
+                OrderedByKey = true
+            };
+        }
+
         public async ValueTask SendAsync(OutgoingMessage message, CancellationToken cancellationToken)
         {
-            if (send is not null) await send(cancellationToken);
+            if (send is not null)
+            {
+                await send(cancellationToken);
+            }
+
             Sent++;
         }
+
         public async ValueTask SendBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken)
         {
-            for (var i = 0; i < messages.Length; i++) await SendAsync(messages.Span[i], cancellationToken);
+            for (var i = 0; i < messages.Length; i++)
+            {
+                await SendAsync(messages.Span[i], cancellationToken);
+            }
         }
-        public ValueTask<TopologyReport> ApplyTopologyAsync(TopologyMode mode, CancellationToken cancellationToken) => new(new TopologyReport([]));
-        public Task StartAsync(CancellationToken cancellationToken) => Task.CompletedTask;
-        public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
-        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+
+        public ValueTask<TopologyReport> ApplyTopologyAsync(TopologyMode mode, CancellationToken cancellationToken)
+        {
+            return new(new TopologyReport([]));
+        }
+
+        public Task StartAsync(CancellationToken cancellationToken)
+        {
+            return Task.CompletedTask;
+        }
+
+        public Task StopAsync(CancellationToken cancellationToken)
+        {
+            return Task.CompletedTask;
+        }
+
+        public ValueTask DisposeAsync()
+        {
+            return ValueTask.CompletedTask;
+        }
     }
 }
 
@@ -317,7 +425,12 @@ public sealed class MaintenanceRegistrationTests
     {
         await using var source = new MySqlDataSource("Server=unused;Database=orders");
         var config = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
-        { ["BatchSize"] = "7", ["CleanupBatchLimit"] = "3", ["DeadRetention"] = "infinite", ["InboxRetention"] = "2.00:00:00" }).Build();
+        {
+            ["BatchSize"] = "7",
+            ["CleanupBatchLimit"] = "3",
+            ["DeadRetention"] = "infinite",
+            ["InboxRetention"] = "2.00:00:00"
+        }).Build();
         var services = new ServiceCollection().AddLogging();
         services.AddRelayerMySqlMaintenance("a", source, config);
         config["BatchSize"] = "99";

@@ -1,7 +1,7 @@
-using Relayer.Pipeline;
 using System.Diagnostics.CodeAnalysis;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Relayer.Pipeline;
 
 namespace Relayer;
 
@@ -19,9 +19,13 @@ public static class HandlerRegistrationExtensions
         where THandler : class, IHandler<TMessage>
     {
         ArgumentNullException.ThrowIfNull(builder);
+
         if (typeof(TMessage).IsConstructedGenericType && typeof(TMessage).GetGenericTypeDefinition() == typeof(Tombstone<>))
+        {
             throw new InvalidOperationException(
                 $"Handler '{typeof(THandler)}' handles tombstones. Register it with the generated consumer.Handler<{typeof(THandler).Name}>().");
+        }
+
         builder.AddHandler(new TypedHandlerDescriptor<THandler, TMessage>());
         builder.Services.TryAddScoped<THandler>();
         return builder;
@@ -30,9 +34,15 @@ public static class HandlerRegistrationExtensions
     private sealed class TypedHandlerDescriptor<THandler, TMessage>() : HandlerDescriptor<TMessage>(typeof(THandler))
         where THandler : class, IHandler<TMessage>
     {
-        public override IHandlerMarker Resolve(IServiceProvider services) => services.GetRequiredService<THandler>();
+        public override IHandlerMarker Resolve(IServiceProvider services)
+        {
+            return services.GetRequiredService<THandler>();
+        }
 
         public override ValueTask DispatchAsync(IHandlerMarker handler, TMessage message, MessageContext context,
-            CancellationToken cancellationToken) => ((THandler)handler).HandleAsync(message, context, cancellationToken);
+            CancellationToken cancellationToken)
+        {
+            return ((THandler)handler).HandleAsync(message, context, cancellationToken);
+        }
     }
 }

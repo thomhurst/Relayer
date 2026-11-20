@@ -1,16 +1,16 @@
-using Relayer.Transports;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Options;
 using Relayer.HealthChecks;
+using Relayer.Transports;
 
 namespace Relayer.Tests;
 
 public class HealthCheckTests
 {
-    private static readonly DateTimeOffset Now = new(2026, 11, 1, 12, 0, 0, TimeSpan.Zero);
+    private static readonly DateTimeOffset s_now = new(2026, 11, 1, 12, 0, 0, TimeSpan.Zero);
 
     [Test]
     public async Task Registration_is_idempotent_and_works_before_AddRelayer()
@@ -19,7 +19,9 @@ public class HealthCheckTests
         services.AddLogging();
         services.AddRelayerHealthChecks();
         services.AddRelayerHealthChecks();
-        services.AddRelayer(_ => { });
+        services.AddRelayer(_ =>
+        {
+        });
         await using var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
         var report = await Check(provider);
         await Assert.That(report.Status).IsEqualTo(HealthStatus.Healthy);
@@ -33,11 +35,13 @@ public class HealthCheckTests
     {
         await using var provider = Create(new RelayerHealthCheckOptions { OutboxNames = ["orders"] });
         var report = await Check(provider);
+
         foreach (var entry in report.Entries.Values)
         {
             await Assert.That(entry.Status).IsEqualTo(HealthStatus.Unhealthy);
             await Assert.That(entry.Description!).Contains("No keyed I");
         }
+
         await Assert.That(report.Entries["relayer.transport"].Description!).Contains("events");
         await Assert.That(report.Entries["relayer.consumer"].Description!).Contains("orders");
     }
@@ -67,7 +71,9 @@ public class HealthCheckTests
         await using var provider = Create(configure: services =>
             services.AddKeyedSingleton<ITransportHealthProbe>("events",
                 new TransportProbe(_ => ValueTask.FromResult(HealthCheckResult.Degraded("warming up")))),
-            extra: builder => builder.AddTransport<EmptyOptions, EmptyOptions>("missing", _ => { }));
+            extra: builder => builder.AddTransport<EmptyOptions, EmptyOptions>("missing", _ =>
+            {
+            }));
         var entry = (await Check(provider)).Entries["relayer.transport"];
         await Assert.That(entry.Status).IsEqualTo(HealthStatus.Unhealthy);
         await Assert.That(entry.Description!).Contains("warming up");
@@ -88,7 +94,7 @@ public class HealthCheckTests
             services.AddKeyedSingleton<IConsumerHealthProvider>("events", new ConsumerProvider((consumer, _) =>
             {
                 observed = consumer;
-                return ValueTask.FromResult<ConsumerHealthState?>(new(idle, Now.AddSeconds(-ageSeconds)));
+                return ValueTask.FromResult<ConsumerHealthState?>(new(idle, s_now.AddSeconds(-ageSeconds)));
             })));
         var entry = (await Check(provider)).Entries["relayer.consumer"];
         await Assert.That(entry.Status).IsEqualTo(expected);
@@ -103,7 +109,7 @@ public class HealthCheckTests
             services.AddKeyedSingleton<IConsumerHealthProvider>("events", new ConsumerProvider((consumer, _) =>
             {
                 calls.Add(consumer);
-                return ValueTask.FromResult<ConsumerHealthState?>(new(false, Now));
+                return ValueTask.FromResult<ConsumerHealthState?>(new(false, s_now));
             })), secondConsumer: true);
         var entry = (await Check(provider)).Entries["relayer.consumer"];
         await Assert.That(entry.Status).IsEqualTo(HealthStatus.Healthy);
@@ -136,8 +142,11 @@ public class HealthCheckTests
             services.AddKeyedSingleton<IOutboxHealthProvider>("store", new OutboxProvider(_ => ValueTask.FromResult<long?>(count))));
         var entry = (await Check(provider)).Entries["relayer.outbox"];
         await Assert.That(entry.Status).IsEqualTo(expected);
+
         if (count >= 0)
+        {
             await Assert.That((long)((HealthCheckResult)entry.Data["store"]).Data["pending_count"]).IsEqualTo(count);
+        }
     }
 
     [Test]
@@ -193,12 +202,14 @@ public class HealthCheckTests
     {
         var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         using var cancellation = new CancellationTokenSource();
+
         async ValueTask<T> Wait<T>(CancellationToken token)
         {
             entered.SetResult();
             await Task.Delay(Timeout.InfiniteTimeSpan, token);
             throw new InvalidOperationException("Unreachable");
         }
+
         await using var provider = Create(BacklogOptions(), services =>
         {
             services.AddKeyedSingleton<ITransportHealthProbe>("events", new TransportProbe(Wait<HealthCheckResult>));
@@ -296,7 +307,7 @@ public class HealthCheckTests
             services.AddKeyedSingleton<ITransportHealthProbe>("events",
                 new TransportProbe(_ => ValueTask.FromResult(HealthCheckResult.Healthy("connected"))));
             services.AddKeyedSingleton<IConsumerHealthProvider>("events",
-                new ConsumerProvider((_, _) => ValueTask.FromResult<ConsumerHealthState?>(new(false, Now))));
+                new ConsumerProvider((_, _) => ValueTask.FromResult<ConsumerHealthState?>(new(false, s_now))));
             services.AddKeyedSingleton<IOutboxHealthProvider>("store", new OutboxProvider(_ => ValueTask.FromResult<long?>(0)));
         });
         await Assert.That((await Check(provider)).Status).IsEqualTo(HealthStatus.Healthy);
@@ -318,11 +329,15 @@ public class HealthCheckTests
     {
         var configuration = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
         {
-            ["OutboxDegradedThreshold"] = "10", ["OutboxUnhealthyThreshold"] = "20", ["OutboxNames:0"] = "store"
+            ["OutboxDegradedThreshold"] = "10",
+            ["OutboxUnhealthyThreshold"] = "20",
+            ["OutboxNames:0"] = "store"
         }).Build();
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddRelayer(_ => { });
+        services.AddRelayer(_ =>
+        {
+        });
         services.AddRelayerHealthChecks(configuration);
         services.AddKeyedSingleton<IOutboxHealthProvider>("store", new OutboxProvider(_ => ValueTask.FromResult<long?>(5)));
         await using var provider = services.BuildServiceProvider();
@@ -349,10 +364,15 @@ public class HealthCheckTests
             .Throws<OptionsValidationException>();
     }
 
-    private static RelayerHealthCheckOptions BacklogOptions() => new()
+    private static RelayerHealthCheckOptions BacklogOptions()
     {
-        OutboxNames = ["store"], OutboxDegradedThreshold = 10, OutboxUnhealthyThreshold = 20
-    };
+        return new()
+        {
+            OutboxNames = ["store"],
+            OutboxDegradedThreshold = 10,
+            OutboxUnhealthyThreshold = 20
+        };
+    }
 
     private static ServiceProvider Create(RelayerHealthCheckOptions? options = null,
         Action<IServiceCollection>? configure = null, Action<IRelayerBuilder>? extra = null, bool secondConsumer = false)
@@ -366,7 +386,11 @@ public class HealthCheckTests
             {
                 // Health reads declarations without starting the transport or invoking handlers.
                 transport.Consume("orders", consumer => consumer.Handler<HealthHandler>());
-                if (secondConsumer) transport.Consume("orders", consumer => consumer.Handler<HealthHandler>());
+
+                if (secondConsumer)
+                {
+                    transport.Consume("orders", consumer => consumer.Handler<HealthHandler>());
+                }
             });
             extra?.Invoke(builder);
         });
@@ -376,39 +400,81 @@ public class HealthCheckTests
     }
 
     private static Task<Microsoft.Extensions.Diagnostics.HealthChecks.HealthReport> Check(IServiceProvider provider,
-        CancellationToken token = default) => provider.GetRequiredService<HealthCheckService>().CheckHealthAsync(token);
+        CancellationToken token = default)
+    {
+        return provider.GetRequiredService<HealthCheckService>().CheckHealthAsync(token);
+    }
 
     private static void RegisterFailure(IServiceCollection services, string kind, Exception error)
     {
-        if (kind == "transport") services.AddKeyedSingleton<ITransportHealthProbe>("events",
+        if (kind == "transport")
+        {
+            services.AddKeyedSingleton<ITransportHealthProbe>("events",
             new TransportProbe(_ => ValueTask.FromException<HealthCheckResult>(error)));
-        if (kind == "consumer") services.AddKeyedSingleton<IConsumerHealthProvider>("events",
+        }
+
+        if (kind == "consumer")
+        {
+            services.AddKeyedSingleton<IConsumerHealthProvider>("events",
             new ConsumerProvider((_, _) => ValueTask.FromException<ConsumerHealthState?>(error)));
-        if (kind == "outbox") services.AddKeyedSingleton<IOutboxHealthProvider>("store",
+        }
+
+        if (kind == "outbox")
+        {
+            services.AddKeyedSingleton<IOutboxHealthProvider>("store",
             new OutboxProvider(_ => ValueTask.FromException<long?>(error)));
+        }
     }
 
-    private sealed class HealthClock : TimeProvider { public override DateTimeOffset GetUtcNow() => Now; }
+    private sealed class HealthClock : TimeProvider
+    {
+        public override DateTimeOffset GetUtcNow()
+        {
+            return s_now;
+        }
+    }
+
     public sealed class EmptyOptions;
+
     public sealed class HealthHandler : IHandler<OrderPlaced>
     {
-        public ValueTask HandleAsync(OrderPlaced message, MessageContext context, CancellationToken cancellationToken) => ValueTask.CompletedTask;
+        public ValueTask HandleAsync(OrderPlaced message, MessageContext context, CancellationToken cancellationToken)
+        {
+            return ValueTask.CompletedTask;
+        }
     }
+
     private sealed class TransportProbe(Func<CancellationToken, ValueTask<HealthCheckResult>> check) : ITransportHealthProbe
     {
-        public ValueTask<HealthCheckResult> CheckAsync(CancellationToken cancellationToken) => check(cancellationToken);
+        public ValueTask<HealthCheckResult> CheckAsync(CancellationToken cancellationToken)
+        {
+            return check(cancellationToken);
+        }
     }
+
     private sealed class ConsumerProvider(Func<IConsumerDefinition, CancellationToken, ValueTask<ConsumerHealthState?>> read) : IConsumerHealthProvider
     {
-        public ValueTask<ConsumerHealthState?> GetStateAsync(IConsumerDefinition consumer, CancellationToken cancellationToken) => read(consumer, cancellationToken);
+        public ValueTask<ConsumerHealthState?> GetStateAsync(IConsumerDefinition consumer, CancellationToken cancellationToken)
+        {
+            return read(consumer, cancellationToken);
+        }
     }
+
     private sealed class OutboxProvider(Func<CancellationToken, ValueTask<long?>> read) : IOutboxHealthProvider
     {
-        public ValueTask<long?> GetPendingCountAsync(CancellationToken cancellationToken) => read(cancellationToken);
+        public ValueTask<long?> GetPendingCountAsync(CancellationToken cancellationToken)
+        {
+            return read(cancellationToken);
+        }
     }
+
     private sealed class UnusedOutbox : IOutboxEnlistment
     {
         public bool IsActive => throw new InvalidOperationException("Health must not resolve an enlistment.");
-        public ValueTask EnlistAsync(OutboxRecord record, CancellationToken cancellationToken) => throw new NotImplementedException();
+
+        public ValueTask EnlistAsync(OutboxRecord record, CancellationToken cancellationToken)
+        {
+            throw new NotImplementedException();
+        }
     }
 }

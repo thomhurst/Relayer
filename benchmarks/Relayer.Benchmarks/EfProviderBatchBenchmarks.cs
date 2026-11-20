@@ -1,8 +1,8 @@
-using Relayer.Transports;
 using BenchmarkDotNet.Attributes;
 using Npgsql;
 using Relayer.Outbox.EntityFrameworkCore;
 using Relayer.Outbox.PostgreSql;
+using Relayer.Transports;
 
 namespace Relayer.Benchmarks;
 
@@ -19,7 +19,10 @@ public class EfProviderBatchBenchmarks
     private string _insert = null!;
 
     [Params(1, 256)]
-    public int Count { get; set; }
+    public int Count
+    {
+        get; set;
+    }
 
     [GlobalSetup]
     public async Task Setup()
@@ -45,7 +48,11 @@ public class EfProviderBatchBenchmarks
     public void NativeBuffer()
     {
         _native.Prepare(_transaction, _insert);
-        for (var i = 0; i < _rows.Length; i++) _native.Add(_rows[i]);
+
+        for (var i = 0; i < _rows.Length; i++)
+        {
+            _native.Add(_rows[i]);
+        }
     }
 
     [Benchmark]

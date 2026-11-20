@@ -16,12 +16,16 @@ public interface IKafkaConsumerControl
 
 internal sealed class KafkaConsumerControl(IServiceProvider provider, string name) : IKafkaConsumerControl
 {
-    public ValueTask SeekAsync(string group, TopicPartitionOffset offset, CancellationToken cancellationToken = default) =>
-        Find(group, offset.Topic, cancellationToken).SeekAsync(offset, null, cancellationToken);
+    public ValueTask SeekAsync(string group, TopicPartitionOffset offset, CancellationToken cancellationToken = default)
+    {
+        return Find(group, offset.Topic, cancellationToken).SeekAsync(offset, null, cancellationToken);
+    }
 
-    public ValueTask SeekAsync(string group, TopicPartitionTimestamp timestamp, CancellationToken cancellationToken = default) =>
-        Find(group, timestamp.Topic, cancellationToken).SeekAsync(
-            new(timestamp.Topic, timestamp.Partition, 0), timestamp, cancellationToken);
+    public ValueTask SeekAsync(string group, TopicPartitionTimestamp timestamp, CancellationToken cancellationToken = default)
+    {
+        return Find(group, timestamp.Topic, cancellationToken).SeekAsync(
+                    new(timestamp.Topic, timestamp.Partition, 0), timestamp, cancellationToken);
+    }
 
     private KafkaConsumer Find(string group, string topic, CancellationToken cancellationToken)
     {
@@ -30,13 +34,22 @@ internal sealed class KafkaConsumerControl(IServiceProvider provider, string nam
         ArgumentException.ThrowIfNullOrWhiteSpace(topic);
         var transport = provider.GetRequiredKeyedService<KafkaProducerTransport>(name);
         KafkaConsumer? match = null;
+
         foreach (var consumer in transport.Consumers)
         {
-            if (consumer.Group != group || consumer.Topic != topic) continue;
+            if (consumer.Group != group || consumer.Topic != topic)
+            {
+                continue;
+            }
+
             if (match is not null)
+            {
                 throw new InvalidOperationException($"Kafka transport '{name}': multiple consumer declarations match group '{group}' and topic '{topic}'. Declare one consumer for this target to use operational replay.");
+            }
+
             match = consumer;
         }
+
         return match ?? throw new InvalidOperationException($"Kafka transport '{name}': no running consumer for group '{group}' and topic '{topic}'. Start the host before seeking.");
     }
 }

@@ -27,17 +27,22 @@ public class OrderedDispatchTests
         await Insert(source, Id(1), 0);
         await Insert(source, Id(2), 0);
         await Insert(source, Id(3), 0);
+
         await using (var unrelated = source.CreateCommand("UPDATE relayer_outbox SET ordering_key = 'other' WHERE id = @id"))
         {
             unrelated.Parameters.AddWithValue("id", Id(3));
             await unrelated.ExecuteNonQueryAsync();
         }
+
         using var instrumentation = new RelayerInstrumentation();
         long poisonCount = 0;
         using var listener = new MeterListener();
         listener.InstrumentPublished = (instrument, meterListener) =>
         {
-            if (instrument == instrumentation.OutboxPoison) meterListener.EnableMeasurementEvents(instrument);
+            if (instrument == instrumentation.OutboxPoison)
+            {
+                meterListener.EnableMeasurementEvents(instrument);
+            }
         };
         listener.SetMeasurementEventCallback<long>((_, count, _, _) => Interlocked.Add(ref poisonCount, count));
         listener.Start();
@@ -46,15 +51,29 @@ public class OrderedDispatchTests
         // Stands for the commit of the three rows.
         instrumentation.AddOutboxPending(3);
         var failing = new RecordingTransport((_, _) => throw new PostgreSqlLocalFailure(new InvalidOperationException("poison"), FailureAction.DeadLetter));
-        using (var worker = new PostgreSqlOrderedDispatcher(source, new() { Lanes = 1, MaxDispatchAttempts = 1 },
+
+        using (var worker = new PostgreSqlOrderedDispatcher(source, new()
+        {
+            Lanes = 1,
+            MaxDispatchAttempts = 1
+        },
             [failing], NullLogger<PostgreSqlOrderedDispatcher>.Instance, instrumentation: instrumentation))
+        {
             await Assert.That(await worker.DispatchLaneAsync(0, default)).IsEqualTo(0);
+        }
+
         await Assert.That(poisonCount).IsEqualTo(1L);
+
         await using (var expire = source.CreateCommand("UPDATE relayer_leases SET expires_at = clock_timestamp() - interval '1 second'"))
+        {
             await expire.ExecuteNonQueryAsync();
+        }
         // A new owner after the poison transaction committed must observe the same durable key barrier.
         var healthy = new RecordingTransport();
-        using var restarted = new PostgreSqlOrderedDispatcher(source, new() { Lanes = 1 }, [healthy],
+        using var restarted = new PostgreSqlOrderedDispatcher(source, new()
+        {
+            Lanes = 1
+        }, [healthy],
             NullLogger<PostgreSqlOrderedDispatcher>.Instance, instrumentation: instrumentation);
         await Assert.That(await restarted.DispatchLaneAsync(0, default)).IsEqualTo(1);
         await Assert.That(healthy.Ids.SequenceEqual([Id(3)])).IsTrue();
@@ -65,14 +84,33 @@ public class OrderedDispatchTests
         var dead = (await manager.PeekAsync("store")).Messages.Single().Features.GetRequired<PostgreSqlDeadLetterDetails>();
         await Assert.That(dead.Record.Attempts).IsEqualTo(1);
         await Assert.That(dead.Record.LastError).IsEqualTo("System.InvalidOperationException: poison");
+
         await using (var age = source.CreateCommand("UPDATE relayer_outbox_dead SET failed_at = clock_timestamp() - interval '1 day'"))
+        {
             await age.ExecuteNonQueryAsync();
-        using (var cleanup = new PostgreSqlMaintenanceWorker(source, new() { DeadRetention = TimeSpan.FromSeconds(1), InboxRetention = null },
+        }
+
+        using (var cleanup = new PostgreSqlMaintenanceWorker(source, new()
+        {
+            DeadRetention = TimeSpan.FromSeconds(1),
+            InboxRetention = null
+        },
             [healthy], NullLogger<PostgreSqlMaintenanceWorker>.Instance))
+        {
             await Assert.That(await cleanup.CleanupAsync(default)).IsEqualTo(0);
+        }
+
         await Assert.That((await manager.PeekAsync("store")).Messages.Count).IsEqualTo(1);
-        if (purge) await manager.PurgeAsync("store");
-        else await manager.RedriveAsync("store");
+
+        if (purge)
+        {
+            await manager.PurgeAsync("store");
+        }
+        else
+        {
+            await manager.RedriveAsync("store");
+        }
+
         await Assert.That(await restarted.DispatchLaneAsync(0, default)).IsEqualTo(purge ? 1 : 2);
         await Assert.That(healthy.Ids.SequenceEqual(purge ? [Id(3), Id(2)] : new[] { Id(3), Id(1), Id(2) })).IsTrue();
         // Purge or redrive releases the key, so the rows behind the barrier settle and the harness goes idle.
@@ -113,12 +151,17 @@ public class OrderedDispatchTests
         await Insert(source, Id(3), 0);
         await Insert(source, Id(2), 0);
         await Insert(source, Id(1), 0);
+
         await using (var park = source.CreateCommand("UPDATE relayer_outbox SET status = 'parked' WHERE id = @id"))
         {
             park.Parameters.AddWithValue("id", Id(2));
             await park.ExecuteNonQueryAsync();
         }
-        using var lane = new PostgreSqlOrderedLane(source, new() { Lanes = 1 }, TimeSpan.FromSeconds(30));
+
+        using var lane = new PostgreSqlOrderedLane(source, new()
+        {
+            Lanes = 1
+        }, TimeSpan.FromSeconds(30));
         var ready = new bool[1];
         await lane.FindReadyAsync([true], ready, default);
         await Assert.That(ready[0]).IsTrue();
@@ -128,8 +171,12 @@ public class OrderedDispatchTests
         await Assert.That(transport.Ids.SequenceEqual([Id(3)])).IsTrue();
         await lane.FindReadyAsync([true], ready, default);
         await Assert.That(ready[0]).IsFalse();
+
         await using (var unpark = source.CreateCommand("UPDATE relayer_outbox SET status = 'pending'"))
+        {
             await unpark.ExecuteNonQueryAsync();
+        }
+
         await Assert.That(await worker.DispatchLaneAsync(0, default)).IsEqualTo(2);
         await Assert.That(transport.Ids.SequenceEqual([Id(3), Id(2), Id(1)])).IsTrue();
     }
@@ -142,7 +189,10 @@ public class OrderedDispatchTests
         services.AddSingleton<ITransport>(new RecordingTransport());
         var configuration = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
         {
-            ["Lanes"] = "8", ["BatchSize"] = "17", ["Schema"] = "custom", ["TablePrefix"] = "orders_"
+            ["Lanes"] = "8",
+            ["BatchSize"] = "17",
+            ["Schema"] = "custom",
+            ["TablePrefix"] = "orders_"
         }).Build();
         services.AddRelayerPostgreSqlOrderedDispatch("orders", source, configuration);
         services.AddRelayerPostgreSqlOrderedDispatch("billing", source, new PostgreSqlOrderedDispatchOptions { Lanes = 2 });
@@ -168,15 +218,34 @@ public class OrderedDispatchTests
         var options = new PostgreSqlOrderedDispatchOptions { Lanes = 8 };
         await PostgreSqlOutboxStoreTests.CreateSchema(source);
         var workers = new[] { new PostgreSqlLaneCoordinator(source, options), new(source, options), new(source, options) };
-        foreach (var worker in workers) await worker.HeartbeatAsync(default);
-        foreach (var worker in workers) await worker.RebalanceAsync(default);
+
         foreach (var worker in workers)
+        {
+            await worker.HeartbeatAsync(default);
+        }
+
+        foreach (var worker in workers)
+        {
+            await worker.RebalanceAsync(default);
+        }
+
+        foreach (var worker in workers)
+        {
             await Assert.That(worker.Assigned.Count(static assigned => assigned) is 2 or 3).IsTrue();
+        }
+
         for (var lane = 0; lane < 8; lane++)
+        {
             await Assert.That(workers.Count(worker => worker.Assigned[lane])).IsEqualTo(1);
+        }
+
         await workers[0].ReleaseAsync(default);
+
         await using (var expire = source.CreateCommand("UPDATE relayer_leases SET expires_at = clock_timestamp() - interval '1 second' WHERE name LIKE 'member:%'"))
+        {
             await expire.ExecuteNonQueryAsync();
+        }
+
         await workers[1].RebalanceAsync(default);
         await Assert.That(workers[1].Assigned.All(static assigned => assigned)).IsTrue();
         await using var count = source.CreateCommand("SELECT count(*) FROM relayer_leases WHERE name LIKE 'member:%'");
@@ -194,19 +263,28 @@ public class OrderedDispatchTests
         await Insert(source, Id(2), 0);
         var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var firstTransport = new RecordingTransport(async (_, _) => { entered.TrySetResult(); await release.Task; });
+        var firstTransport = new RecordingTransport(async (_, _) =>
+        {
+            entered.TrySetResult();
+            await release.Task;
+        });
         using var first = Worker(source, firstTransport);
         using var second = Worker(source, new RecordingTransport());
         using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(20));
         var pending = first.DispatchLaneAsync(0, cancellation.Token).AsTask();
         await entered.Task.WaitAsync(cancellation.Token);
         var rival = second.DispatchLaneAsync(0, cancellation.Token).AsTask();
+
         try
         {
             await WaitForLock(source, cancellation.Token);
             await Assert.That(rival.IsCompleted).IsFalse();
         }
-        finally { release.TrySetResult(); }
+        finally
+        {
+            release.TrySetResult();
+        }
+
         await Assert.That(await pending).IsEqualTo(2);
         await Assert.That(await rival).IsEqualTo(0);
         await Assert.That(firstTransport.Ids.SequenceEqual([Id(1), Id(2)])).IsTrue();
@@ -219,7 +297,12 @@ public class OrderedDispatchTests
         await fixture.StartAsync();
         await using var source = NpgsqlDataSource.Create(fixture.ConnectionString);
         await PostgreSqlOutboxStoreTests.CreateSchema(source);
-        for (var i = 1; i <= 20; i++) await Insert(source, Id(i), (i - 1) % 4);
+
+        for (var i = 1; i <= 20; i++)
+        {
+            await Insert(source, Id(i), (i - 1) % 4);
+        }
+
         var observed = new ConcurrentQueue<Guid>();
         var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -233,32 +316,51 @@ public class OrderedDispatchTests
         using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(20));
         var pending = first.DispatchLaneAsync(0, cancellation.Token).AsTask();
         await entered.Task.WaitAsync(cancellation.Token);
+
         try
         {
             await using var terminate = source.CreateCommand("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE state = 'idle in transaction' AND query LIKE 'UPDATE %SET claim_token%' AND datname = current_database()");
             await terminate.ExecuteNonQueryAsync(cancellation.Token);
         }
-        finally { release.TrySetResult(); }
+        finally
+        {
+            release.TrySetResult();
+        }
+
         await Assert.ThrowsAsync<NpgsqlException>(async () => await pending);
-        var recovered = new RecordingTransport((message, _) => { observed.Enqueue(HeaderId(message)); return ValueTask.CompletedTask; });
+        var recovered = new RecordingTransport((message, _) =>
+        {
+            observed.Enqueue(HeaderId(message));
+            return ValueTask.CompletedTask;
+        });
         using var second = Worker(source, recovered, lanes: 4);
         // Repeated ownership changes: each transfer uses the existing lease, then an expired lease simulates a lost instance.
         for (var lane = 0; lane < 4; lane++)
         {
             await using (var expire = source.CreateCommand("UPDATE relayer_leases SET expires_at = clock_timestamp() - interval '1 second' WHERE name LIKE 'lane:%'"))
+            {
                 await expire.ExecuteNonQueryAsync();
+            }
+
             await Assert.That(await second.DispatchLaneAsync(lane, cancellation.Token)).IsEqualTo(5);
         }
+
         var seen = new HashSet<Guid>();
         var last = new int[4];
+
         foreach (var id in observed)
         {
-            if (!seen.Add(id)) continue; // Crash replay is at-least-once, with the original identity.
+            if (!seen.Add(id))
+            {
+                continue; // Crash replay is at-least-once, with the original identity.
+            }
+
             var number = int.Parse(id.ToString("N")[24..], System.Globalization.NumberStyles.HexNumber);
             var lane = (number - 1) % 4;
             await Assert.That(number > last[lane]).IsTrue();
             last[lane] = number;
         }
+
         await Assert.That(seen.Count).IsEqualTo(20);
         await Assert.That(observed.Count).IsEqualTo(21);
     }
@@ -276,8 +378,15 @@ public class OrderedDispatchTests
         var transport = new RecordingTransport(async (_, cancellationToken) =>
         {
             entered.TrySetResult();
-            try { await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken); }
-            finally { cancelled.TrySetResult(); }
+
+            try
+            {
+                await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+            }
+            finally
+            {
+                cancelled.TrySetResult();
+            }
         });
         using var worker = Worker(source, transport);
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(20));
@@ -299,7 +408,12 @@ public class OrderedDispatchTests
         await fixture.StartAsync();
         await using var source = NpgsqlDataSource.Create(fixture.ConnectionString);
         await PostgreSqlOutboxStoreTests.CreateSchema(source);
-        for (var number = 1; number <= 20; number++) await Insert(source, Id(number), 0);
+
+        for (var number = 1; number <= 20; number++)
+        {
+            await Insert(source, Id(number), 0);
+        }
+
         var clock = new BudgetClock();
         var transport = new RecordingTransport((_, _) =>
         {
@@ -309,8 +423,12 @@ public class OrderedDispatchTests
         using var worker = new PostgreSqlOrderedDispatcher(source, new(), [transport],
             NullLogger<PostgreSqlOrderedDispatcher>.Instance, clock);
         await Assert.That(await worker.DispatchLaneAsync(0, default)).IsEqualTo(8);
+
         await using (var count = source.CreateCommand("SELECT count(*) FROM relayer_outbox"))
+        {
             await Assert.That((long)(await count.ExecuteScalarAsync())!).IsEqualTo(12);
+        }
+
         await Assert.That(await worker.DispatchLaneAsync(0, default)).IsEqualTo(8);
         await Assert.That(await worker.DispatchLaneAsync(0, default)).IsEqualTo(4);
         await Assert.That(transport.Ids.SequenceEqual(Enumerable.Range(1, 20).Select(Id))).IsTrue();
@@ -325,7 +443,12 @@ public class OrderedDispatchTests
         await fixture.StartAsync();
         await using var source = NpgsqlDataSource.Create(fixture.ConnectionString);
         await PostgreSqlOutboxStoreTests.CreateSchema(source);
-        for (var number = 1; number <= 3; number++) await Insert(source, Id(number), 0);
+
+        for (var number = 1; number <= 3; number++)
+        {
+            await Insert(source, Id(number), 0);
+        }
+
         var clock = new BudgetClock();
         var transport = new RecordingTransport((_, _) =>
         {
@@ -335,6 +458,7 @@ public class OrderedDispatchTests
         using var worker = new PostgreSqlOrderedDispatcher(source,
             new PostgreSqlOrderedDispatchOptions { Lanes = 1 }, [transport],
             NullLogger<PostgreSqlOrderedDispatcher>.Instance, clock);
+
         for (var sent = 1; sent <= 3; sent++)
         {
             await worker.DispatchPassAsync(TimeSpan.FromSeconds(1), default);
@@ -342,6 +466,7 @@ public class OrderedDispatchTests
             await using var count = source.CreateCommand("SELECT count(*) FROM relayer_outbox");
             await Assert.That((long)(await count.ExecuteScalarAsync())!).IsEqualTo(3L - sent);
         }
+
         await Assert.That(transport.Ids.SequenceEqual([Id(1), Id(2), Id(3)])).IsTrue();
         await worker.ReleaseAsync(default);
     }
@@ -353,31 +478,56 @@ public class OrderedDispatchTests
         await fixture.StartAsync();
         await using var source = NpgsqlDataSource.Create(fixture.ConnectionString);
         await PostgreSqlOutboxStoreTests.CreateSchema(source);
-        for (var number = 1; number <= 5; number++) await Insert(source, Id(number), 0);
+
+        for (var number = 1; number <= 5; number++)
+        {
+            await Insert(source, Id(number), 0);
+        }
+
         var delivered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var clock = new PollClock();
         var transport = new RecordingTransport((message, _) =>
         {
-            if (HeaderId(message) == Id(5)) delivered.TrySetResult();
+            if (HeaderId(message) == Id(5))
+            {
+                delivered.TrySetResult();
+            }
+
             return ValueTask.CompletedTask;
         });
         using var worker = new PostgreSqlOrderedDispatcher(source,
-            new() { Lanes = 1, BatchSize = 2, PollInterval = TimeSpan.FromSeconds(9) },
+            new()
+            {
+                Lanes = 1,
+                BatchSize = 2,
+                PollInterval = TimeSpan.FromSeconds(9)
+            },
             [transport], NullLogger<PostgreSqlOrderedDispatcher>.Instance, clock);
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(20));
         await worker.StartAsync(timeout.Token);
+
         try
         {
             var first = await Task.WhenAny(delivered.Task, clock.FirstPoll.Task).WaitAsync(timeout.Token);
             await Assert.That(first).IsSameReferenceAs(delivered.Task);
+
             while (true)
             {
                 await using var count = source.CreateCommand("SELECT count(*) FROM relayer_outbox");
-                if ((long)(await count.ExecuteScalarAsync(timeout.Token))! == 0) break;
+
+                if ((long)(await count.ExecuteScalarAsync(timeout.Token))! == 0)
+                {
+                    break;
+                }
+
                 await Task.Yield();
             }
         }
-        finally { await worker.StopAsync(timeout.Token); }
+        finally
+        {
+            await worker.StopAsync(timeout.Token);
+        }
+
         await Assert.That(transport.Ids.SequenceEqual(Enumerable.Range(1, 5).Select(Id))).IsTrue();
     }
 
@@ -393,6 +543,7 @@ public class OrderedDispatchTests
             NullLogger<PostgreSqlOrderedDispatcher>.Instance, clock);
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(20));
         await worker.StartAsync(timeout.Token);
+
         try
         {
             var poll = await clock.Polls.Reader.ReadAsync(timeout.Token);
@@ -415,7 +566,10 @@ public class OrderedDispatchTests
             await using var remaining = source.CreateCommand("SELECT count(*) FROM relayer_outbox");
             await Assert.That((long)(await remaining.ExecuteScalarAsync(timeout.Token))!).IsEqualTo(0);
         }
-        finally { await worker.StopAsync(timeout.Token); }
+        finally
+        {
+            await worker.StopAsync(timeout.Token);
+        }
     }
 
     [Test]
@@ -437,33 +591,44 @@ public class OrderedDispatchTests
             "claimed" => "claim_token = gen_random_uuid(), claim_expires_at = clock_timestamp() + interval '1 day'",
             _ => "status = 'parked'"
         };
+
         await using (var command = source.CreateCommand($"UPDATE relayer_outbox SET {change} WHERE id = @id"))
         {
             command.Parameters.AddWithValue("id", Id(1));
             await command.ExecuteNonQueryAsync();
         }
+
         var clock = new ScanClock();
         var transport = new RecordingTransport();
-        using var worker = new PostgreSqlOrderedDispatcher(source, new() { Lanes = 2 }, [transport],
+        using var worker = new PostgreSqlOrderedDispatcher(source, new()
+        {
+            Lanes = 2
+        }, [transport],
             NullLogger<PostgreSqlOrderedDispatcher>.Instance, clock);
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(20));
         await worker.StartAsync(timeout.Token);
+
         try
         {
             var poll = await clock.Polls.Reader.ReadAsync(timeout.Token);
             await Assert.That(transport.Ids.SequenceEqual([Id(3)])).IsTrue();
             await using var lanes = source.CreateCommand("SELECT count(*) FROM relayer_leases WHERE name = 'lane:0'");
             await Assert.That((long)(await lanes.ExecuteScalarAsync(timeout.Token))!).IsEqualTo(0);
+
             await using (var command = source.CreateCommand("UPDATE relayer_outbox SET status = 'pending', deliver_at = clock_timestamp(), claim_token = NULL, claim_expires_at = NULL WHERE id = @id"))
             {
                 command.Parameters.AddWithValue("id", Id(1));
                 await command.ExecuteNonQueryAsync(timeout.Token);
             }
+
             poll.Callback(poll.State);
             await clock.Polls.Reader.ReadAsync(timeout.Token);
             await Assert.That(transport.Ids.SequenceEqual([Id(3), Id(1), Id(2)])).IsTrue();
         }
-        finally { await worker.StopAsync(timeout.Token); }
+        finally
+        {
+            await worker.StopAsync(timeout.Token);
+        }
     }
 
     [Test]
@@ -483,10 +648,14 @@ public class OrderedDispatchTests
             await join.ExecuteNonQueryAsync();
             clock.Advance(TimeSpan.FromSeconds(10));
         });
-        using var worker = new PostgreSqlOrderedDispatcher(source, new() { Lanes = 2 }, [transport],
+        using var worker = new PostgreSqlOrderedDispatcher(source, new()
+        {
+            Lanes = 2
+        }, [transport],
             NullLogger<PostgreSqlOrderedDispatcher>.Instance, clock);
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(20));
         await worker.StartAsync(timeout.Token);
+
         try
         {
             await clock.Polls.Reader.ReadAsync(timeout.Token);
@@ -494,7 +663,10 @@ public class OrderedDispatchTests
             await using var lane = source.CreateCommand("SELECT count(*) FROM relayer_leases WHERE name = 'lane:1'");
             await Assert.That((long)(await lane.ExecuteScalarAsync(timeout.Token))!).IsEqualTo(0);
         }
-        finally { await worker.StopAsync(timeout.Token); }
+        finally
+        {
+            await worker.StopAsync(timeout.Token);
+        }
     }
 
     [Test]
@@ -509,16 +681,22 @@ public class OrderedDispatchTests
         await Insert(source, Id(1), 0);
         using var lane = new PostgreSqlOrderedLane(source, new(), TimeSpan.FromSeconds(30));
         await using var connection = await source.OpenConnectionAsync();
+
         await using (var transaction = await connection.BeginTransactionAsync())
         {
             var claim = new OutboxClaim(Id(1), Guid.NewGuid());
             await Assert.That(await lane.ClaimAsync(connection, transaction, claim, default)).IsTrue();
-            if (kind == "stale") claim = new(claim.MessageId, Guid.NewGuid());
+
+            if (kind == "stale")
+            {
+                claim = new(claim.MessageId, Guid.NewGuid());
+            }
             else
             {
                 await using var expire = new NpgsqlCommand("UPDATE relayer_outbox SET claim_expires_at = clock_timestamp() - interval '1 second'", connection, transaction);
                 await expire.ExecuteNonQueryAsync();
             }
+
             await Assert.That(await lane.CompleteAsync(connection, transaction, claim, default)).IsFalse();
             await Assert.That(await lane.FailAsync(connection, transaction, claim, "stale failure", default)).IsFalse();
             await transaction.RollbackAsync();
@@ -541,9 +719,17 @@ public class OrderedDispatchTests
         await using var source = NpgsqlDataSource.Create(fixture.ConnectionString);
         await PostgreSqlOutboxStoreTests.CreateSchema(source);
         var count = OrderedDispatchCapabilityCache.Capacity + 1;
-        for (var i = 1; i <= count; i++) await Insert(source, Id(i), 0);
+
+        for (var i = 1; i <= count; i++)
+        {
+            await Insert(source, Id(i), 0);
+        }
+
         await using (var change = source.CreateCommand("UPDATE relayer_outbox SET destination = id::text"))
+        {
             await change.ExecuteNonQueryAsync();
+        }
+
         var transport = new RecordingTransport();
         using var worker = new PostgreSqlOrderedDispatcher(source,
             new PostgreSqlOrderedDispatchOptions { Lanes = 1, BatchSize = count, LeaseDuration = TimeSpan.FromMinutes(1) },
@@ -553,13 +739,16 @@ public class OrderedDispatchTests
         transport.Ordered = false;
         await Insert(source, Id(count + 1), 0);
         await Insert(source, Id(count + 2), 0);
+
         await using (var change = source.CreateCommand("UPDATE relayer_outbox SET destination = @destination"))
         {
             change.Parameters.AddWithValue("destination", Id(1).ToString());
             await change.ExecuteNonQueryAsync();
         }
+
         await Assert.That(await worker.DispatchLaneAsync(0, default)).IsEqualTo(0);
         await Assert.That(transport.Ids.Count).IsEqualTo(count);
+
         await using (var command = source.CreateCommand("SELECT attempts, last_error, claim_token FROM relayer_outbox ORDER BY id"))
         await using (var reader = await command.ExecuteReaderAsync())
         {
@@ -571,6 +760,7 @@ public class OrderedDispatchTests
             await Assert.That(reader.GetInt32(0)).IsEqualTo(0);
             await Assert.That(await reader.ReadAsync()).IsFalse();
         }
+
         transport.Ordered = true;
         await Assert.That(await worker.DispatchLaneAsync(0, default)).IsEqualTo(2);
         await Assert.That(transport.Ids.SequenceEqual(Enumerable.Range(1, count + 2).Select(Id))).IsTrue();
@@ -585,13 +775,21 @@ public class OrderedDispatchTests
         await PostgreSqlOutboxStoreTests.CreateSchema(source);
         var delivered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var clock = new PollClock();
-        var transport = new RecordingTransport((_, _) => { delivered.TrySetResult(); return ValueTask.CompletedTask; });
-        using var ordered = new PostgreSqlOrderedDispatcher(source, new() { Lanes = 1 },
+        var transport = new RecordingTransport((_, _) =>
+        {
+            delivered.TrySetResult();
+            return ValueTask.CompletedTask;
+        });
+        using var ordered = new PostgreSqlOrderedDispatcher(source, new()
+        {
+            Lanes = 1
+        },
             [transport], NullLogger<PostgreSqlOrderedDispatcher>.Instance, clock);
         using var direct = new PostgreSqlDirectDispatcher(source, new(), new(), [transport],
             NullLogger<PostgreSqlDirectDispatcher>.Instance, ordered: ordered);
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(20));
         await ordered.StartAsync(timeout.Token);
+
         try
         {
             // The poll timer never fires, so only the commit handoff can start the next scan.
@@ -603,60 +801,122 @@ public class OrderedDispatchTests
             direct.Committed(rows, rows.Count);
             await delivered.Task.WaitAsync(timeout.Token);
         }
-        finally { await ordered.StopAsync(timeout.Token); }
+        finally
+        {
+            await ordered.StopAsync(timeout.Token);
+        }
+
         await Assert.That(transport.Ids.SequenceEqual([Id(1)])).IsTrue();
     }
 
     private sealed class ScanClock : TimeProvider
     {
         private long _ticks;
-        internal Channel<(TimerCallback Callback, object? State)> Polls { get; } =
+
+        internal Channel<(TimerCallback Callback, object? State)> Polls
+        {
+            get;
+        } =
             Channel.CreateUnbounded<(TimerCallback, object?)>();
+
         public override long TimestampFrequency => TimeSpan.TicksPerSecond;
-        public override long GetTimestamp() => Interlocked.Read(ref _ticks);
-        internal void Advance(TimeSpan duration) => Interlocked.Add(ref _ticks, duration.Ticks);
+
+        public override long GetTimestamp()
+        {
+            return Interlocked.Read(ref _ticks);
+        }
+
+        internal void Advance(TimeSpan duration)
+        {
+            Interlocked.Add(ref _ticks, duration.Ticks);
+        }
+
         public override ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period)
         {
             Polls.Writer.TryWrite((callback, state));
             return new SilentTimer();
         }
+
         private sealed class SilentTimer : ITimer
         {
-            public bool Change(TimeSpan dueTime, TimeSpan period) => true;
-            public void Dispose() { }
-            public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+            public bool Change(TimeSpan dueTime, TimeSpan period)
+            {
+                return true;
+            }
+
+            public void Dispose()
+            {
+            }
+
+            public ValueTask DisposeAsync()
+            {
+                return ValueTask.CompletedTask;
+            }
         }
     }
 
     private sealed class PollClock : TimeProvider
     {
-        internal TaskCompletionSource FirstPoll { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        internal TaskCompletionSource FirstPoll
+        {
+            get;
+        } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
         public override ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period)
         {
             FirstPoll.TrySetResult();
             return new SilentTimer();
         }
+
         private sealed class SilentTimer : ITimer
         {
-            public bool Change(TimeSpan dueTime, TimeSpan period) => true;
-            public void Dispose() { }
-            public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+            public bool Change(TimeSpan dueTime, TimeSpan period)
+            {
+                return true;
+            }
+
+            public void Dispose()
+            {
+            }
+
+            public ValueTask DisposeAsync()
+            {
+                return ValueTask.CompletedTask;
+            }
         }
     }
 
     private sealed class BudgetClock : TimeProvider
     {
         private long _ticks;
+
         public override long TimestampFrequency => TimeSpan.TicksPerSecond;
-        public override long GetTimestamp() => Interlocked.Read(ref _ticks);
-        internal void Advance(TimeSpan duration) => Interlocked.Add(ref _ticks, duration.Ticks);
+
+        public override long GetTimestamp()
+        {
+            return Interlocked.Read(ref _ticks);
+        }
+
+        internal void Advance(TimeSpan duration)
+        {
+            Interlocked.Add(ref _ticks, duration.Ticks);
+        }
     }
 
-    private static PostgreSqlOrderedDispatcher Worker(NpgsqlDataSource source, RecordingTransport transport, int lanes = 1) =>
-        new(source, new PostgreSqlOrderedDispatchOptions { Lanes = lanes }, [transport], NullLogger<PostgreSqlOrderedDispatcher>.Instance);
+    private static PostgreSqlOrderedDispatcher Worker(NpgsqlDataSource source, RecordingTransport transport, int lanes = 1)
+    {
+        return new(source, new PostgreSqlOrderedDispatchOptions { Lanes = lanes }, [transport], NullLogger<PostgreSqlOrderedDispatcher>.Instance);
+    }
 
-    private static Guid Id(int number) => Guid.Parse($"01900000-0000-7000-8000-{number:x12}");
-    private static Guid HeaderId(OutgoingMessage message) => Guid.Parse(message.Headers.Span[0].Value.ToString());
+    private static Guid Id(int number)
+    {
+        return Guid.Parse($"01900000-0000-7000-8000-{number:x12}");
+    }
+
+    private static Guid HeaderId(OutgoingMessage message)
+    {
+        return Guid.Parse(message.Headers.Span[0].Value.ToString());
+    }
 
     private static async Task Insert(NpgsqlDataSource source, Guid id, int? lane)
     {
@@ -675,7 +935,12 @@ public class OrderedDispatchTests
         while (true)
         {
             await using var command = source.CreateCommand("SELECT count(*) FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND query LIKE 'INSERT INTO %leases%' AND datname = current_database()");
-            if ((long)(await command.ExecuteScalarAsync(cancellationToken))! > 0) return;
+
+            if ((long)(await command.ExecuteScalarAsync(cancellationToken))! > 0)
+            {
+                return;
+            }
+
             await Task.Yield();
         }
     }
@@ -683,18 +948,58 @@ public class OrderedDispatchTests
     private sealed class RecordingTransport(Func<OutgoingMessage, CancellationToken, ValueTask>? send = null) : ITransport
     {
         public string Name => "events";
-        internal ConcurrentQueue<Guid> Ids { get; } = new();
-        internal bool Ordered { get; set; } = true;
-        public TransportCapabilities GetCapabilities(string endpoint) => new() { OrderedByKey = Ordered && endpoint != "unsupported" };
-        public ValueTask<TopologyReport> ApplyTopologyAsync(TopologyMode mode, CancellationToken cancellationToken) => new(new TopologyReport([]));
+
+        internal ConcurrentQueue<Guid> Ids
+        {
+            get;
+        } = new();
+
+        internal bool Ordered
+        {
+            get; set;
+        } = true;
+
+        public TransportCapabilities GetCapabilities(string endpoint)
+        {
+            return new()
+            {
+                OrderedByKey = Ordered && endpoint != "unsupported"
+            };
+        }
+
+        public ValueTask<TopologyReport> ApplyTopologyAsync(TopologyMode mode, CancellationToken cancellationToken)
+        {
+            return new(new TopologyReport([]));
+        }
+
         public async ValueTask SendAsync(OutgoingMessage message, CancellationToken cancellationToken)
         {
-            if (send is not null) await send(message, cancellationToken);
+            if (send is not null)
+            {
+                await send(message, cancellationToken);
+            }
+
             Ids.Enqueue(HeaderId(message));
         }
-        public ValueTask SendBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken) => throw new NotSupportedException();
-        public Task StartAsync(CancellationToken cancellationToken) => Task.CompletedTask;
-        public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
-        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+
+        public ValueTask SendBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken)
+        {
+            throw new NotSupportedException();
+        }
+
+        public Task StartAsync(CancellationToken cancellationToken)
+        {
+            return Task.CompletedTask;
+        }
+
+        public Task StopAsync(CancellationToken cancellationToken)
+        {
+            return Task.CompletedTask;
+        }
+
+        public ValueTask DisposeAsync()
+        {
+            return ValueTask.CompletedTask;
+        }
     }
 }

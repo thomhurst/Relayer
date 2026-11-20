@@ -12,8 +12,17 @@ public sealed class SharedMaintenanceContractTests : OutboxMaintenanceContractTe
     protected override async Task<MaintenanceFixture> CreateFixtureAsync()
     {
         var fixture = new Fixture();
-        try { await fixture.Start(); return fixture; }
-        catch { await fixture.DisposeAsync(); throw; }
+
+        try
+        {
+            await fixture.Start();
+            return fixture;
+        }
+        catch
+        {
+            await fixture.DisposeAsync();
+            throw;
+        }
     }
 
     private sealed class Fixture : MaintenanceFixture
@@ -30,14 +39,19 @@ public sealed class SharedMaintenanceContractTests : OutboxMaintenanceContractTe
 
         public override MaintenanceWorker Worker(RecordingTransport transport, int batchSize = 1,
             bool deadRetention = true, bool inboxRetention = true, int cleanupBatchLimit = 10, Action? failure = null, TimeProvider? idleTimeProvider = null,
-            RelayerInstrumentation? instrumentation = null) => new WorkerAdapter(new(_source!, new()
+            RelayerInstrumentation? instrumentation = null)
+        {
+            return new WorkerAdapter(new(_source!, new()
             {
-                BatchSize = batchSize, CleanupBatchLimit = cleanupBatchLimit,
-                SweepInterval = TimeSpan.FromMilliseconds(1), CleanupInterval = TimeSpan.FromHours(1),
+                BatchSize = batchSize,
+                CleanupBatchLimit = cleanupBatchLimit,
+                SweepInterval = TimeSpan.FromMilliseconds(1),
+                CleanupInterval = TimeSpan.FromHours(1),
                 RecoveryDelay = TimeSpan.FromHours(1),
                 DeadRetention = deadRetention ? TimeSpan.FromDays(30) : null,
                 InboxRetention = inboxRetention ? TimeSpan.FromDays(7) : null
             }, [transport], new FailureLogger<PostgreSqlMaintenanceWorker>(failure), instrumentation: instrumentation, idleTimeProvider: idleTimeProvider, storeName: "store"));
+        }
 
         public override async Task Insert(Guid id, DateTimeOffset createdAt, int? lane = null,
             DateTimeOffset? deliverAt = null, string status = "pending", DateTimeOffset? claimExpiresAt = null)
@@ -121,20 +135,52 @@ public sealed class SharedMaintenanceContractTests : OutboxMaintenanceContractTe
 
         public override async ValueTask DisposeAsync()
         {
-            if (_source is not null) await _source.DisposeAsync();
+            if (_source is not null)
+            {
+                await _source.DisposeAsync();
+            }
+
             await _database.DisposeAsync();
         }
     }
 
     private sealed class WorkerAdapter(PostgreSqlMaintenanceWorker worker) : MaintenanceWorker
     {
-        public override ValueTask<int> SweepAsync(CancellationToken cancellationToken = default) => worker.SweepAsync(cancellationToken);
+        public override ValueTask<int> SweepAsync(CancellationToken cancellationToken = default)
+        {
+            return worker.SweepAsync(cancellationToken);
+        }
+
         public override bool CleanupPending => worker.CleanupPending;
-        public override ValueTask<int> CleanupAsync(CancellationToken cancellationToken = default) => worker.CleanupAsync(cancellationToken);
-        public override ValueTask ReleaseAsync(CancellationToken cancellationToken = default) => worker.ReleaseAsync(cancellationToken);
-        public override Task StartAsync(CancellationToken cancellationToken = default) => worker.StartAsync(cancellationToken);
-        public override Task StopAsync(CancellationToken cancellationToken = default) => worker.StopAsync(cancellationToken);
-        public override ValueTask RefreshDepthAsync(CancellationToken cancellationToken = default) => worker.RefreshDepthAsync(cancellationToken);
-        public override void Dispose() => worker.Dispose();
+
+        public override ValueTask<int> CleanupAsync(CancellationToken cancellationToken = default)
+        {
+            return worker.CleanupAsync(cancellationToken);
+        }
+
+        public override ValueTask ReleaseAsync(CancellationToken cancellationToken = default)
+        {
+            return worker.ReleaseAsync(cancellationToken);
+        }
+
+        public override Task StartAsync(CancellationToken cancellationToken = default)
+        {
+            return worker.StartAsync(cancellationToken);
+        }
+
+        public override Task StopAsync(CancellationToken cancellationToken = default)
+        {
+            return worker.StopAsync(cancellationToken);
+        }
+
+        public override ValueTask RefreshDepthAsync(CancellationToken cancellationToken = default)
+        {
+            return worker.RefreshDepthAsync(cancellationToken);
+        }
+
+        public override void Dispose()
+        {
+            worker.Dispose();
+        }
     }
 }

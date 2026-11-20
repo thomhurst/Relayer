@@ -1,4 +1,3 @@
-using Relayer.Transports;
 using Dekaf.Admin;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
@@ -6,6 +5,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Relayer.HealthChecks;
+using Relayer.Transports;
 
 namespace Relayer.Kafka;
 
@@ -32,8 +32,12 @@ public static class KafkaHealthServiceCollectionExtensions
         {
             var declaration = provider.GetRequiredService<RelayerConfiguration>().Transports
                 .SingleOrDefault(item => item.Name == transportName);
+
             if (declaration?.OptionsType != typeof(KafkaTransportOptions))
+            {
                 throw new InvalidOperationException($"Kafka health: no Kafka transport named '{transportName}' is declared. Use the exact case-sensitive transport name.");
+            }
+
             var options = provider.GetRequiredService<IOptionsMonitor<KafkaTransportOptions>>().Get(transportName);
             var native = new AdminClientBuilder().WithBootstrapServers(options.BootstrapServers.ToArray())
                 .WithLoggerFactory(provider.GetService<ILoggerFactory>() ?? NullLoggerFactory.Instance);

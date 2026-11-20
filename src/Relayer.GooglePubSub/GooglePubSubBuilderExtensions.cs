@@ -1,7 +1,7 @@
-using Relayer.Pipeline;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Options;
+using Relayer.Pipeline;
 using Relayer.Transports;
 
 namespace Relayer.GooglePubSub;
@@ -17,7 +17,10 @@ public static class GooglePubSubBuilderExtensions
         ArgumentNullException.ThrowIfNull(configure);
         builder.AddTransport<GooglePubSubTransportOptions, GooglePubSubConsumerOptions>(name, transport =>
         {
-            transport.SendDefaults = new() { HeaderNames = new("ce-") };
+            transport.SendDefaults = new()
+            {
+                HeaderNames = new("ce-")
+            };
             configure(transport);
         });
         builder.Services.AddKeyedSingleton<GooglePubSubTransport>(name, (provider, _) =>
@@ -43,6 +46,7 @@ internal sealed class GooglePubSubHostedService(IServiceProvider provider, strin
         var definition = provider.GetRequiredService<RelayerConfiguration>().Transports.Single(item => item.Name == name);
         var registry = provider.GetRequiredService<HandlerRegistry>();
         var tracing = provider.GetRequiredService<MessageTracing>();
+
         foreach (var declaration in definition.Consumers)
         {
             var consumer = (ConsumerDefinition<GooglePubSubConsumerOptions>)declaration;
@@ -53,15 +57,27 @@ internal sealed class GooglePubSubHostedService(IServiceProvider provider, strin
                 consumer.FailureClassifier ?? provider.GetService<IFailureClassifier>())
                 .Tracing(tracing, endpoint)
                 .Telemetry(provider.GetRequiredService<RelayerInstrumentation>().CreateEndpoint(new()
-                { System = "gcp_pubsub", Destination = endpoint.Destination, Subscription = endpoint.Subscription }));
+                {
+                    System = "gcp_pubsub",
+                    Destination = endpoint.Destination,
+                    Subscription = endpoint.Subscription
+                }));
             var worker = _transport.AddConsumer(consumer.Source, consumer.Options.Settings);
             pipeline.Settle(worker.SettleContextAsync);
             pipeline.ConfigureConsumer(provider, consumer);
+
             foreach (var handler in registry.Descriptors)
-                if (consumer.Selects(handler)) pipeline.Handler(handler);
+            {
+                if (consumer.Selects(handler))
+                {
+                    pipeline.Handler(handler);
+                }
+            }
+
             var receive = new ReceivePipeline<GooglePubSubDelivery, GooglePubSubBinding>(pipeline.Build(consumer.Concurrency), new("ce-"), consumer.Concurrency);
             worker.Receive = receive.ProcessAsync;
         }
+
         await _transport.StartAsync(cancellationToken).ConfigureAwait(false);
         await base.StartAsync(cancellationToken).ConfigureAwait(false);
     }
@@ -69,13 +85,24 @@ internal sealed class GooglePubSubHostedService(IServiceProvider provider, strin
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         await foreach (var completion in Task.WhenEach(_transport!.Consumers.Select(worker => worker.Completion)).ConfigureAwait(false))
+        {
             await completion.ConfigureAwait(false);
+        }
     }
 
     public override async Task StopAsync(CancellationToken cancellationToken)
     {
-        try { if (_transport is not null) await _transport.StopAsync(cancellationToken).ConfigureAwait(false); }
-        finally { await base.StopAsync(cancellationToken).ConfigureAwait(false); }
+        try
+        {
+            if (_transport is not null)
+            {
+                await _transport.StopAsync(cancellationToken).ConfigureAwait(false);
+            }
+        }
+        finally
+        {
+            await base.StopAsync(cancellationToken).ConfigureAwait(false);
+        }
     }
 
     private static OutgoingMessage Copy(MessageContext context)
@@ -86,13 +113,26 @@ internal sealed class GooglePubSubHostedService(IServiceProvider provider, strin
     internal static OutgoingMessage Copy(Google.Cloud.PubSub.V1.PubsubMessage message)
     {
         var count = 0;
+
         foreach (var header in message.Attributes)
-            if (!header.Key.StartsWith("goog", StringComparison.Ordinal) && !GooglePubSubFailureHeaders.IsHistory(header.Key)) count++;
+        {
+            if (!header.Key.StartsWith("goog", StringComparison.Ordinal) && !GooglePubSubFailureHeaders.IsHistory(header.Key))
+            {
+                count++;
+            }
+        }
+
         var headers = new KeyValuePair<string, WireString>[count];
         var index = 0;
+
         foreach (var header in message.Attributes)
+        {
             if (!header.Key.StartsWith("goog", StringComparison.Ordinal) && !GooglePubSubFailureHeaders.IsHistory(header.Key))
+            {
                 headers[index++] = new(header.Key, new(header.Value));
+            }
+        }
+
         return new("copy", message.Data.Memory, headers, message.OrderingKey.Length == 0 ? null : new WireString(message.OrderingKey));
     }
 }

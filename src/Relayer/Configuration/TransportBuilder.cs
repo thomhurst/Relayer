@@ -1,8 +1,8 @@
-using Relayer.Transports;
-using Relayer.Pipeline;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
+using Relayer.Pipeline;
 using Relayer.Serialization;
+using Relayer.Transports;
 
 namespace Relayer;
 
@@ -36,23 +36,44 @@ public sealed class TransportBuilder<TTransportOptions, TConsumerOptions> : ITra
     }
 
     /// <summary>The transport's case-sensitive registration and Options name.</summary>
-    public string Name { get; }
+    public string Name
+    {
+        get;
+    }
 
     /// <summary>Overrides the Relayer topology mode for this transport; null inherits the default.</summary>
     public TopologyMode? TopologyMode
     {
-        get => _topologyMode;
-        set { EnsureMutable(); _topologyMode = value; }
+        get
+        {
+            return _topologyMode;
+        }
+        set
+        {
+            EnsureMutable();
+            _topologyMode = value;
+        }
     }
 
     /// <summary>Named Options pattern configuration, binding, validation and reload registration.</summary>
-    public OptionsBuilder<TTransportOptions> Options { get; }
+    public OptionsBuilder<TTransportOptions> Options
+    {
+        get;
+    }
 
     /// <summary>Default portable send settings for routes declared afterward. A route may replace them with SendOptions.</summary>
     public SendRouteOptions SendDefaults
     {
-        get => _sendDefaults;
-        set { EnsureMutable(); ArgumentNullException.ThrowIfNull(value); _sendDefaults = value; }
+        get
+        {
+            return _sendDefaults;
+        }
+        set
+        {
+            EnsureMutable();
+            ArgumentNullException.ThrowIfNull(value);
+            _sendDefaults = value;
+        }
     }
 
     /// <summary>Declares a message destination. Whether this sends or publishes is a native routing concern.</summary>
@@ -80,10 +101,22 @@ public sealed class TransportBuilder<TTransportOptions, TConsumerOptions> : ITra
         ArgumentNullException.ThrowIfNull(destinations);
         ArgumentNullException.ThrowIfNull(destination);
         var declared = destinations.ToArray();
-        if (declared.Length == 0) throw new ArgumentException("Declare at least one destination.", nameof(destinations));
-        if (Array.IndexOf(declared, null) >= 0) throw new ArgumentNullException(nameof(destinations), "A destination must not be null.");
+
+        if (declared.Length == 0)
+        {
+            throw new ArgumentException("Declare at least one destination.", nameof(destinations));
+        }
+
+        if (Array.IndexOf(declared, null) >= 0)
+        {
+            throw new ArgumentNullException(nameof(destinations), "A destination must not be null.");
+        }
+
         if (declared.Distinct(StringComparer.Ordinal).Count() != declared.Length)
+        {
             throw new ArgumentException("Declare each destination once.", nameof(destinations));
+        }
+
         var route = new RouteBuilder<TMessage>(declared[0]);
         route.SendOptions = _sendDefaults;
         configure?.Invoke(route);
@@ -104,8 +137,12 @@ public sealed class TransportBuilder<TTransportOptions, TConsumerOptions> : ITra
         configure?.Invoke(request);
         var options = request.Options;
         options.Validate();
+
         if (_services.Any(service => service.ServiceType == typeof(IRequestClient<TRequest, TResponse>)))
+        {
             throw new InvalidOperationException("This request/response pair already has a registration. Declare it once.");
+        }
+
         _services.AddSingleton(new RequestReplies<TRequest, TResponse>(Name, replyAddress, options));
         _services.AddScoped<IRequestClient<TRequest, TResponse>, RequestClient<TRequest, TResponse>>();
         _services.AddSingleton<IRequestRegistration, RequestRegistration<TRequest, TResponse>>();
@@ -131,17 +168,28 @@ public sealed class TransportBuilder<TTransportOptions, TConsumerOptions> : ITra
         return this;
     }
 
-    void ITransportConsumerBuilder.Consume(string source, Action<IConsumerBuilder> configure) => Consume(source, configure);
+    void ITransportConsumerBuilder.Consume(string source, Action<IConsumerBuilder> configure)
+    {
+        Consume(source, configure);
+    }
 
     private void EnsureMutable()
     {
-        if (_built) throw new InvalidOperationException("The transport declaration is frozen.");
+        if (_built)
+        {
+            throw new InvalidOperationException("The transport declaration is frozen.");
+        }
     }
 
     internal void RegisterSerializer(Func<IServiceProvider, IMessageSerializer> factory)
     {
         EnsureMutable();
-        if (_hasSerializer) throw new InvalidOperationException($"Transport '{Name}' already has a serializer. Call UseSerializer once.");
+
+        if (_hasSerializer)
+        {
+            throw new InvalidOperationException($"Transport '{Name}' already has a serializer. Call UseSerializer once.");
+        }
+
         _hasSerializer = true;
         _services.AddKeyedSingleton<IMessageSerializer>(Name, (provider, _) => factory(provider)
             ?? throw new InvalidOperationException($"Transport '{Name}': the serializer factory returned null."));
@@ -153,10 +201,16 @@ public sealed class TransportBuilder<TTransportOptions, TConsumerOptions> : ITra
         return new TransportDefinition(Name, typeof(TTransportOptions), _routes.ToArray(), _consumers.ToArray(), _topologyMode,
             (provider, failures) =>
             {
-                try { _ = provider.GetRequiredService<IOptionsMonitor<TTransportOptions>>().Get(Name); }
+                try
+                {
+                    _ = provider.GetRequiredService<IOptionsMonitor<TTransportOptions>>().Get(Name);
+                }
                 catch (OptionsValidationException error)
                 {
-                    foreach (var failure in error.Failures) failures.Add($"Transport '{Name}': {failure}");
+                    foreach (var failure in error.Failures)
+                    {
+                        failures.Add($"Transport '{Name}': {failure}");
+                    }
                 }
                 catch (InvalidOperationException error)
                 {

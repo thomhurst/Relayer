@@ -1,4 +1,3 @@
-using Relayer.Transports;
 using System.Buffers;
 using System.Diagnostics;
 using Azure.Core.Amqp;
@@ -6,6 +5,7 @@ using Azure.Messaging.ServiceBus;
 using Microsoft.Extensions.DependencyInjection;
 using Relayer.AzureServiceBus;
 using Relayer.Serialization;
+using Relayer.Transports;
 
 namespace Relayer.Tests;
 
@@ -45,6 +45,7 @@ public class ServiceBusSendAllocationTests
         var state = new ServiceBusSendState();
         string? previousId = null;
         string? previousTime = null;
+
         for (var i = 0; i < 4; i++)
         {
             var outgoing = fixture.Next();
@@ -59,11 +60,15 @@ public class ServiceBusSendAllocationTests
             await Assert.That(state.Message.ApplicationProperties.ContainsKey("content-type")).IsFalse();
             await Assert.That(id).IsNotEqualTo(previousId);
             await Assert.That(time).IsNotEqualTo(previousTime);
+
             for (var headerIndex = 0; headerIndex < outgoing.Headers.Length; headerIndex++)
             {
                 var header = outgoing.Headers.Span[headerIndex];
+
                 if (header.Key != "content-type")
+                {
                     await Assert.That(state.Message.ApplicationProperties[header.Key]).IsEqualTo(header.Value.ToString());
+                }
             }
 
             await Assert.That(snapshot.ApplicationProperties["traceparent"]).IsEqualTo(Fixture.TraceParent);
@@ -81,33 +86,44 @@ public class ServiceBusSendAllocationTests
         }
     }
 
-    private static readonly string[] SubjectHeaders = ["cloudEvents:type"];
-    private static readonly string[] IdHeaders = ["cloudEvents:id"];
+    private static readonly string[] s_subjectHeaders = ["cloudEvents:type"];
+    private static readonly string[] s_idHeaders = ["cloudEvents:id"];
 
     private static long Measure(Fixture fixture, ServiceBusSendState state, ServiceBusMessage native, ReadOnlyMemory<byte>[] nativeData, bool prepare, int count)
     {
         var before = GC.GetAllocatedBytesForCurrentThread();
+
         for (var i = 0; i < count; i++)
         {
             var outgoing = fixture.Next();
+
             if (prepare)
             {
-                state.Prepare(outgoing, SubjectHeaders, IdHeaders);
+                state.Prepare(outgoing, s_subjectHeaders, s_idHeaders);
                 state.Clear();
             }
             else
             {
                 nativeData[0] = outgoing.Body;
+
                 foreach (var header in outgoing.Headers.Span)
                 {
-                    if (header.Key == "content-type") native.ContentType = header.Value.ToString();
-                    else native.ApplicationProperties[header.Key] = header.Value.ToString();
+                    if (header.Key == "content-type")
+                    {
+                        native.ContentType = header.Value.ToString();
+                    }
+                    else
+                    {
+                        native.ApplicationProperties[header.Key] = header.Value.ToString();
+                    }
                 }
+
                 nativeData[0] = default;
                 native.ApplicationProperties.Clear();
                 native.ContentType = null;
             }
         }
+
         return GC.GetAllocatedBytesForCurrentThread() - before;
     }
 
@@ -131,7 +147,9 @@ public class ServiceBusSendAllocationTests
             services.AddRelayer(builder =>
             {
                 builder.AddMessageTypesFromThisAssembly();
-                builder.ServiceBus("json", _ => { });
+                builder.ServiceBus("json", _ =>
+                {
+                });
                 builder.ServiceBus("custom", bus => bus.UseSerializer(_ => new TestSerializer()));
             });
             _provider = services.BuildServiceProvider();
@@ -145,20 +163,42 @@ public class ServiceBusSendAllocationTests
             _envelope.Write<SendHeaders, SendHeaders>(_headers,
                 new(new Guid(sequence, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0), DateTimeOffset.UnixEpoch.AddTicks(sequence), _creation));
             var contentType = _contentTypes[(sequence - 1) % _contentTypes.Length];
-            if (_utf8ContentType) SendHeaders.SetHeader(_headers, "content-type", contentType);
-            else _headers.Add("content-type", new(contentType));
+
+            if (_utf8ContentType)
+            {
+                SendHeaders.SetHeader(_headers, "content-type", contentType);
+            }
+            else
+            {
+                _headers.Add("content-type", new(contentType));
+            }
+
             return new("orders", _body, _headers.Written);
         }
 
-        internal void OverwriteId() => SendHeaders.SetHeader(_headers, "cloudEvents:id", "overwritten");
+        internal void OverwriteId()
+        {
+            SendHeaders.SetHeader(_headers, "cloudEvents:id", "overwritten");
+        }
 
-        public void Dispose() => _provider.Dispose();
+        public void Dispose()
+        {
+            _provider.Dispose();
+        }
     }
 
     private sealed class TestSerializer : IMessageSerializer
     {
         public string ContentType => "application/test";
-        public void Serialize<TMessage>(TMessage message, IBufferWriter<byte> destination) => throw new NotSupportedException();
-        public TMessage Deserialize<TMessage>(ReadOnlySequence<byte> source) => throw new NotSupportedException();
+
+        public void Serialize<TMessage>(TMessage message, IBufferWriter<byte> destination)
+        {
+            throw new NotSupportedException();
+        }
+
+        public TMessage Deserialize<TMessage>(ReadOnlySequence<byte> source)
+        {
+            throw new NotSupportedException();
+        }
     }
 }

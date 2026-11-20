@@ -1,4 +1,3 @@
-using Relayer.Transports;
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Diagnostics.Metrics;
@@ -12,6 +11,7 @@ using OpenTelemetry.Metrics;
 using OpenTelemetry.Trace;
 using Relayer.AzureServiceBus;
 using Relayer.Kafka;
+using Relayer.Transports;
 
 namespace Relayer.Aspire.Tests;
 
@@ -22,7 +22,9 @@ public class AspireRegistrationTests
     {
         var configuration = Config(("kafka-resource", " first:9092, [::1]:9093 "), ("bus-resource", "native-connection"));
         var services = new ServiceCollection();
-        Action<Dekaf.ConsumerBuilder<byte[], byte[]>> nativeConsumer = _ => { };
+        Action<Dekaf.ConsumerBuilder<byte[], byte[]>> nativeConsumer = _ =>
+        {
+        };
         var nativeOptions = new ServiceBusClientOptions { TransportType = ServiceBusTransportType.AmqpWebSockets };
         services.AddRelayer(relayer =>
         {
@@ -100,7 +102,9 @@ public class AspireRegistrationTests
         using var activityExporter = new ActivityCapture(activities);
         using var metricExporter = new MetricCapture(metrics);
         var builder = Host.CreateApplicationBuilder();
-        builder.Services.AddRelayer(_ => { });
+        builder.Services.AddRelayer(_ =>
+        {
+        });
         builder.Services.AddOpenTelemetry()
             .AddRelayerInstrumentation()
             .WithTracing(tracing => tracing.SetSampler(new AlwaysOnSampler())
@@ -109,8 +113,12 @@ public class AspireRegistrationTests
         using var host = builder.Build();
         await host.StartAsync();
         var source = host.Services.GetRequiredService<MessageTracing>().Source;
+
         using (var activity = source.StartActivity("aspire.registration.test"))
+        {
             await Assert.That(activity?.Recorded).IsTrue();
+        }
+
         using var meter = new Meter(RelayerTelemetry.MeterName);
         meter.CreateCounter<long>("aspire.registration.test.counter").Add(1);
         host.Services.GetRequiredService<MeterProvider>().ForceFlush();
@@ -119,15 +127,21 @@ public class AspireRegistrationTests
         await host.StopAsync();
     }
 
-    private static IConfiguration Config(params (string Name, string? Value)[] connections) =>
-        new ConfigurationBuilder().AddInMemoryCollection(connections.Select(connection =>
-            new KeyValuePair<string, string?>("ConnectionStrings:" + connection.Name, connection.Value))).Build();
+    private static IConfiguration Config(params (string Name, string? Value)[] connections)
+    {
+        return new ConfigurationBuilder().AddInMemoryCollection(connections.Select(connection =>
+                    new KeyValuePair<string, string?>("ConnectionStrings:" + connection.Name, connection.Value))).Build();
+    }
 
     private sealed class ActivityCapture(ConcurrentQueue<Activity> items) : BaseExporter<Activity>
     {
         public override ExportResult Export(in OpenTelemetry.Batch<Activity> batch)
         {
-            foreach (var item in batch) items.Enqueue(item);
+            foreach (var item in batch)
+            {
+                items.Enqueue(item);
+            }
+
             return ExportResult.Success;
         }
     }
@@ -136,7 +150,11 @@ public class AspireRegistrationTests
     {
         public override ExportResult Export(in OpenTelemetry.Batch<Metric> batch)
         {
-            foreach (var item in batch) items.Enqueue(item.Name);
+            foreach (var item in batch)
+            {
+                items.Enqueue(item.Name);
+            }
+
             return ExportResult.Success;
         }
     }

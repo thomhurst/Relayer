@@ -1,4 +1,5 @@
 using Relayer.Transports;
+
 namespace Relayer;
 
 /// <summary>What to do with a message whose handler failed.</summary>
@@ -31,7 +32,10 @@ public interface IFailureClassifier
 public interface ISettlementFeature
 {
     /// <summary>The requested outcome, or null when handling has not requested settlement.</summary>
-    Disposition? RequestedDisposition { get; }
+    Disposition? RequestedDisposition
+    {
+        get;
+    }
 
     /// <summary>Requests completion after successful handling and durable sends.</summary>
     void Complete();

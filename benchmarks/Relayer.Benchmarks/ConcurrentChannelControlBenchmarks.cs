@@ -22,7 +22,11 @@ public class ConcurrentChannelControlBenchmarks
         _limit.CancelAfter(TimeSpan.FromMinutes(15));
         var handler = new ConcurrentHandler(_signals);
         _workers = new Task[ConcurrentMessages];
-        for (var i = 0; i < _workers.Length; i++) _workers[i] = Task.Run(() => RunWorker(handler));
+
+        for (var i = 0; i < _workers.Length; i++)
+        {
+            _workers[i] = Task.Run(() => RunWorker(handler));
+        }
     }
 
     private async Task RunWorker(ConcurrentHandler handler)
@@ -35,7 +39,9 @@ public class ConcurrentChannelControlBenchmarks
                 await handler.HandleAsync(order, null!, _limit.Token);
             }
         }
-        catch (ChannelClosedException) { }
+        catch (ChannelClosedException)
+        {
+        }
     }
 
     [Benchmark(OperationsPerInvoke = ConcurrentMessages)]
@@ -44,12 +50,33 @@ public class ConcurrentChannelControlBenchmarks
     {
         // Match the gate's eight genuinely pending handler reads and its three signal channels.
         for (var i = 0; i < ConcurrentMessages; i++)
-            if (!_work.Writer.TryWrite(_order)) throw new InvalidOperationException("Control channel is full.");
-        for (var i = 0; i < ConcurrentMessages; i++) await _signals.Entered.Reader.ReadAsync(_limit.Token);
+        {
+            if (!_work.Writer.TryWrite(_order))
+            {
+                throw new InvalidOperationException("Control channel is full.");
+            }
+        }
+
         for (var i = 0; i < ConcurrentMessages; i++)
-            if (!_signals.Release.Writer.TryWrite(0)) throw new InvalidOperationException("Release channel is full.");
+        {
+            await _signals.Entered.Reader.ReadAsync(_limit.Token);
+        }
+
+        for (var i = 0; i < ConcurrentMessages; i++)
+        {
+            if (!_signals.Release.Writer.TryWrite(0))
+            {
+                throw new InvalidOperationException("Release channel is full.");
+            }
+        }
+
         var total = 0;
-        for (var i = 0; i < ConcurrentMessages; i++) total += await _signals.Completed.Reader.ReadAsync(_limit.Token);
+
+        for (var i = 0; i < ConcurrentMessages; i++)
+        {
+            total += await _signals.Completed.Reader.ReadAsync(_limit.Token);
+        }
+
         return total;
     }
 

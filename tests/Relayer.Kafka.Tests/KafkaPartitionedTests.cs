@@ -26,6 +26,7 @@ public class KafkaPartitionedTests(KafkaHeaderSnapshotBroker broker)
         var handled = Channel.CreateUnbounded<long>();
         await using var adapter = Adapter(Native(topic.Name), (delivery, cancellation) => Receive(delivery, cancellation), topic.Name, concurrency: 2);
         await adapter.StartAsync(token);
+
         try
         {
             // B completes while the first A record is blocked; the second A record must wait for it.
@@ -37,11 +38,18 @@ public class KafkaPartitionedTests(KafkaHeaderSnapshotBroker broker)
             await adapter.StopAsync(token);
             await Assert.That(await CommittedAsync(topic.Name, 0, token)).IsEqualTo(3L);
         }
-        finally { blockA.TrySetResult(); }
+        finally
+        {
+            blockA.TrySetResult();
+        }
 
         async ValueTask<Disposition> Receive(KafkaDelivery delivery, CancellationToken cancellation)
         {
-            if (delivery.Result.Offset == 0) await blockA.Task.WaitAsync(cancellation);
+            if (delivery.Result.Offset == 0)
+            {
+                await blockA.Task.WaitAsync(cancellation);
+            }
+
             handled.Writer.TryWrite(delivery.Result.Offset);
             return Disposition.Complete;
         }
@@ -56,9 +64,14 @@ public class KafkaPartitionedTests(KafkaHeaderSnapshotBroker broker)
         await ProduceAsync(topic.Name, token, Enumerable.Range(0, 8).Select(i => (new[] { (byte)i }, i)).ToArray());
         var gap = new TaskCompletionSource<Disposition>(TaskCreationOptions.RunContinuationsAsynchronously);
         var peer = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
         await using (var failed = Adapter(Native(topic.Name), (delivery, _) =>
         {
-            if (delivery.Result.Offset == 0) return new(gap.Task);
+            if (delivery.Result.Offset == 0)
+            {
+                return new(gap.Task);
+            }
+
             peer.TrySetResult();
             return new(Disposition.Complete);
         }, topic.Name, concurrency: 2))
@@ -68,6 +81,7 @@ public class KafkaPartitionedTests(KafkaHeaderSnapshotBroker broker)
             gap.SetException(new ApplicationException("simulated durable failure"));
             await Assert.That(async () => await failed.Completion.WaitAsync(token)).Throws<ApplicationException>();
         }
+
         await Assert.That(await CommittedAsync(topic.Name, 0, token) is null or 0).IsTrue();
         var replayed = Channel.CreateUnbounded<long>();
         await using var restarted = Adapter(Native(topic.Name), (delivery, _) =>
@@ -76,7 +90,12 @@ public class KafkaPartitionedTests(KafkaHeaderSnapshotBroker broker)
             return new(Disposition.Complete);
         }, topic.Name);
         await restarted.StartAsync(token);
-        for (var i = 0; i < 8; i++) await Assert.That(await replayed.Reader.ReadAsync(token)).IsEqualTo((long)i);
+
+        for (var i = 0; i < 8; i++)
+        {
+            await Assert.That(await replayed.Reader.ReadAsync(token)).IsEqualTo((long)i);
+        }
+
         await restarted.StopAsync(token);
         await Assert.That(await CommittedAsync(topic.Name, 0, token)).IsEqualTo(8L);
     }
@@ -92,9 +111,11 @@ public class KafkaPartitionedTests(KafkaHeaderSnapshotBroker broker)
         var handled = new ConcurrentQueue<long>();
         var options = new PartitionedProcessingOptions
         {
-            Ordering = PartitionedProcessingOrder.Key, CommitPolicy = PartitionCommitPolicy.CommitCompletedPeriodically,
+            Ordering = PartitionedProcessingOrder.Key,
+            CommitPolicy = PartitionCommitPolicy.CommitCompletedPeriodically,
             StopTimeout = TimeSpan.FromMilliseconds(200),
         };
+
         await using (var adapter = Adapter(Native(topic.Name), async (delivery, cancellation) =>
         {
             if (delivery.Result.Offset == 1)
@@ -102,6 +123,7 @@ public class KafkaPartitionedTests(KafkaHeaderSnapshotBroker broker)
                 entered.TrySetResult();
                 await Task.Delay(Timeout.Infinite, cancellation);
             }
+
             handled.Enqueue(delivery.Result.Offset);
             return Disposition.Complete;
         }, topic.Name, options: options))
@@ -110,6 +132,7 @@ public class KafkaPartitionedTests(KafkaHeaderSnapshotBroker broker)
             await entered.Task.WaitAsync(token);
             await adapter.StopAsync(token).WaitAsync(TimeSpan.FromSeconds(10), token);
         }
+
         await Assert.That(handled.ToArray()).IsEquivalentTo(new long[] { 0 });
         // The final commit shares the expired stop budget, so it may not run; it never passes the stuck record.
         var committed = await CommittedAsync(topic.Name, 0, token) ?? 0;
@@ -121,7 +144,12 @@ public class KafkaPartitionedTests(KafkaHeaderSnapshotBroker broker)
             return new(Disposition.Complete);
         }, topic.Name);
         await restarted.StartAsync(token);
-        for (var i = committed; i < 4; i++) await Assert.That(await replayed.Reader.ReadAsync(token)).IsEqualTo(i);
+
+        for (var i = committed; i < 4; i++)
+        {
+            await Assert.That(await replayed.Reader.ReadAsync(token)).IsEqualTo(i);
+        }
+
         await restarted.StopAsync(token);
     }
 
@@ -131,21 +159,35 @@ public class KafkaPartitionedTests(KafkaHeaderSnapshotBroker broker)
         using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(2));
         var token = timeout.Token;
         await using var topic = await TopicAsync("gaps", 1, token);
+
         await using (var transactional = await new ProducerBuilder<byte[], byte[]>().WithBootstrapServers(broker.Bootstrap)
             .WithTransactionalId(topic.Name).BuildAsync(token))
         {
             await transactional.InitTransactionsAsync(token);
+
             await using (var aborted = transactional.BeginTransaction())
             {
-                await aborted.ProduceAsync(new() { Topic = topic.Name, Partition = 0, Value = [0] }, token);
+                await aborted.ProduceAsync(new()
+                {
+                    Topic = topic.Name,
+                    Partition = 0,
+                    Value = [0]
+                }, token);
                 await aborted.AbortAsync(token);
             }
+
             await using (var commit = transactional.BeginTransaction())
             {
-                await commit.ProduceAsync(new() { Topic = topic.Name, Partition = 0, Value = [1] }, token);
+                await commit.ProduceAsync(new()
+                {
+                    Topic = topic.Name,
+                    Partition = 0,
+                    Value = [1]
+                }, token);
                 await commit.CommitAsync(token);
             }
         }
+
         var offsets = new ConcurrentQueue<long>();
         var handled = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var native = new ConsumerBuilder<byte[], byte[]>().WithBootstrapServers(broker.Bootstrap).WithGroupId(topic.Name)
@@ -177,8 +219,15 @@ public class KafkaPartitionedTests(KafkaHeaderSnapshotBroker broker)
         const int Partitions = 4, Keys = 8, PerKey = 50;
         await using var topic = await TopicAsync("rebalance", Partitions, token);
         var records = new List<(byte[] Key, int Value)>();
+
         for (var i = 0; i < PerKey; i++)
-            for (var key = 0; key < Keys; key++) records.Add(([(byte)key], i));
+        {
+            for (var key = 0; key < Keys; key++)
+            {
+                records.Add(([(byte)key], i));
+            }
+        }
+
         await ProduceAsync(topic.Name, null, token, records.ToArray());
         var seen = new ConcurrentDictionary<(int Key, int Value), int>();
         var last = new ConcurrentDictionary<(string Consumer, int Key), int>();
@@ -189,12 +238,22 @@ public class KafkaPartitionedTests(KafkaHeaderSnapshotBroker broker)
         await first.StartAsync(token);
         await halfway.Task.WaitAsync(token);
         await second.StartAsync(token);
-        while (seen.Count < records.Count) await Task.Delay(50, token);
+
+        while (seen.Count < records.Count)
+        {
+            await Task.Delay(50, token);
+        }
+
         await first.StopAsync(token);
         await second.StopAsync(token);
         await Assert.That(violations).IsEqualTo(0);
         var committed = 0L;
-        for (var partition = 0; partition < Partitions; partition++) committed += await CommittedAsync(topic.Name, partition, token) ?? 0;
+
+        for (var partition = 0; partition < Partitions; partition++)
+        {
+            committed += await CommittedAsync(topic.Name, partition, token) ?? 0;
+        }
+
         await Assert.That(committed).IsEqualTo((long)records.Count);
 
         async ValueTask<Disposition> Receive(string consumer, KafkaDelivery delivery)
@@ -203,11 +262,19 @@ public class KafkaPartitionedTests(KafkaHeaderSnapshotBroker broker)
             // A replay after rebalance may repeat a record, but one consumer never sees a key regress.
             last.AddOrUpdate((consumer, key), value, (_, previous) =>
             {
-                if (value < previous) Interlocked.Increment(ref violations);
+                if (value < previous)
+                {
+                    Interlocked.Increment(ref violations);
+                }
+
                 return value;
             });
+
             if (seen.AddOrUpdate((key, value), 1, static (_, count) => count + 1) == 1 && seen.Count >= records.Count / 2)
+            {
                 halfway.TrySetResult();
+            }
+
             await Task.Yield();
             return Disposition.Complete;
         }
@@ -236,9 +303,19 @@ public class KafkaPartitionedTests(KafkaHeaderSnapshotBroker broker)
             parents.Enqueue(Activity.Current);
             Interlocked.Increment(ref handled);
             return new(Disposition.Complete);
-        }, tracing, new() { System = "kafka", Destination = topic.Name, ConsumerGroup = topic.Name }, KafkaProcessing.Defaults(1), 1);
+        }, tracing, new()
+        {
+            System = "kafka",
+            Destination = topic.Name,
+            ConsumerGroup = topic.Name
+        }, KafkaProcessing.Defaults(1), 1);
         await adapter.StartAsync(token);
-        while (Volatile.Read(ref handled) < 3) await Task.Delay(20, token);
+
+        while (Volatile.Read(ref handled) < 3)
+        {
+            await Task.Delay(20, token);
+        }
+
         await adapter.StopAsync(token);
         var commits = spans.Where(span => span.DisplayName == "commit " + topic.Name).ToArray();
         await Assert.That(commits.Length).IsGreaterThan(0);
@@ -252,13 +329,21 @@ public class KafkaPartitionedTests(KafkaHeaderSnapshotBroker broker)
         PartitionedProcessingOptions? options = null)
     {
         var tracing = new MessageTracing(Options.Create(new TracingOptions()), []);
-        return new(() => native, receive, tracing, new() { System = "kafka", Destination = topic, ConsumerGroup = topic },
+        return new(() => native, receive, tracing, new()
+        {
+            System = "kafka",
+            Destination = topic,
+            ConsumerGroup = topic
+        },
             options ?? KafkaProcessing.Defaults(concurrency), concurrency);
     }
 
-    private IKafkaConsumer<byte[], byte[]> Native(string topic) => new ConsumerBuilder<byte[], byte[]>()
-        .WithBootstrapServers(broker.Bootstrap).WithGroupId(topic).WithAutoOffsetReset(AutoOffsetReset.Earliest)
-        .WithOffsetCommitMode(OffsetCommitMode.Manual).WithAutoOffsetStore(false).SubscribeTo(topic).Build();
+    private IKafkaConsumer<byte[], byte[]> Native(string topic)
+    {
+        return new ConsumerBuilder<byte[], byte[]>()
+                .WithBootstrapServers(broker.Bootstrap).WithGroupId(topic).WithAutoOffsetReset(AutoOffsetReset.Earliest)
+                .WithOffsetCommitMode(OffsetCommitMode.Manual).WithAutoOffsetStore(false).SubscribeTo(topic).Build();
+    }
 
     private async Task<long?> CommittedAsync(string topic, int partition, CancellationToken token)
     {
@@ -271,13 +356,24 @@ public class KafkaPartitionedTests(KafkaHeaderSnapshotBroker broker)
 
     // Partition 0 unless keyed partitioning is requested with null.
     private Task ProduceAsync(string topic, CancellationToken token, params (byte[] Key, int Value)[] records)
-        => ProduceAsync(topic, 0, token, records);
+    {
+        return ProduceAsync(topic, 0, token, records);
+    }
 
     private async Task ProduceAsync(string topic, int? partition, CancellationToken token, params (byte[] Key, int Value)[] records)
     {
         await using var producer = await new ProducerBuilder<byte[], byte[]>().WithBootstrapServers(broker.Bootstrap).BuildAsync(token);
+
         foreach (var (key, value) in records)
-            await producer.ProduceAsync(new() { Topic = topic, Partition = partition, Key = key, Value = [(byte)value] }, token);
+        {
+            await producer.ProduceAsync(new()
+            {
+                Topic = topic,
+                Partition = partition,
+                Key = key,
+                Value = [(byte)value]
+            }, token);
+        }
     }
 
     private async Task<IsolatedTopic> TopicAsync(string name, int partitions, CancellationToken token)
@@ -291,11 +387,21 @@ public class KafkaPartitionedTests(KafkaHeaderSnapshotBroker broker)
 
     private sealed class IsolatedTopic(string name, IAdminClient admin) : IAsyncDisposable
     {
-        internal string Name { get; } = name;
+        internal string Name
+        {
+            get;
+        } = name;
+
         public async ValueTask DisposeAsync()
         {
-            try { await admin.DeleteTopicsAsync([Name]); }
-            finally { await admin.DisposeAsync(); }
+            try
+            {
+                await admin.DeleteTopicsAsync([Name]);
+            }
+            finally
+            {
+                await admin.DisposeAsync();
+            }
         }
     }
 }

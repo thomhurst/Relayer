@@ -1,6 +1,6 @@
-using MySqlConnector;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
+using MySqlConnector;
 using Relayer.Transports;
 
 namespace Relayer.Outbox.MySql;
@@ -36,8 +36,12 @@ internal sealed partial class MySqlMaintenanceWorker : OutboxMaintenanceWorker
         _options = options;
         var settings = options.Validate();
         _store = new(dataSource, settings);
-        _dispatcher = new(dataSource, settings, new() { BatchSize = options.BatchSize, QueueCapacity = 1,
-            ClaimDuration = options.ClaimDuration }, transports, dispatchLogger ?? NullLogger<MySqlDirectDispatcher>.Instance, _store, instrumentation);
+        _dispatcher = new(dataSource, settings, new()
+        {
+            BatchSize = options.BatchSize,
+            QueueCapacity = 1,
+            ClaimDuration = options.ClaimDuration
+        }, transports, dispatchLogger ?? NullLogger<MySqlDirectDispatcher>.Instance, _store, instrumentation);
         _logger = logger;
         _instrumentation = instrumentation;
         _table = MySqlOutboxSchema.Table(settings);
@@ -74,17 +78,37 @@ internal sealed partial class MySqlMaintenanceWorker : OutboxMaintenanceWorker
     internal static void ValidateDataSource(MySqlDataSource dataSource)
     {
         var target = MySqlDirectDispatcher.ValidateDataSource(dataSource);
+
         if (target.Pooling && target.MaximumPoolSize < 2)
+        {
             throw new ArgumentException("MySQL maintenance requires MaximumPoolSize >= 2: one connection holds admission while another dispatches rows.", nameof(dataSource));
+        }
     }
 
-    protected override ValueTask<int> RecoverAsync(CancellationToken cancellationToken) => SweepAsync(cancellationToken);
-    protected override ValueTask ReleaseMaintenanceAsync(CancellationToken cancellationToken) => ReleaseAsync(cancellationToken);
-    protected override void ReportFailure(string job, Exception error) => Failed(_logger, error);
+    protected override ValueTask<int> RecoverAsync(CancellationToken cancellationToken)
+    {
+        return SweepAsync(cancellationToken);
+    }
 
-    internal ValueTask<int> SweepAsync(CancellationToken cancellationToken = default) => RunAsync(false, cancellationToken);
-    protected override ValueTask<int> DeleteRetentionBatchAsync(int table, CancellationToken cancellationToken) =>
-        RunAsync(true, cancellationToken, table);
+    protected override ValueTask ReleaseMaintenanceAsync(CancellationToken cancellationToken)
+    {
+        return ReleaseAsync(cancellationToken);
+    }
+
+    protected override void ReportFailure(string job, Exception error)
+    {
+        Failed(_logger, error);
+    }
+
+    internal ValueTask<int> SweepAsync(CancellationToken cancellationToken = default)
+    {
+        return RunAsync(false, cancellationToken);
+    }
+
+    protected override ValueTask<int> DeleteRetentionBatchAsync(int table, CancellationToken cancellationToken)
+    {
+        return RunAsync(true, cancellationToken, table);
+    }
 
     private async ValueTask<int> RunAsync(bool cleanup, CancellationToken cancellationToken, int cleanupTable = -1)
     {
@@ -93,16 +117,26 @@ internal sealed partial class MySqlMaintenanceWorker : OutboxMaintenanceWorker
         var resource = cleanup ? _cleanupResource : _sweeperResource;
         await using var admission = new MySqlCommand("SELECT GET_LOCK(@resource,0)", connection);
         admission.Parameters.AddWithValue("resource", resource);
+
         try
         {
             // Cancellation may arrive after MySQL acquired admission but before its reply arrives.
             // Always release, even when acquisition's outcome is unknown.
-            if (Convert.ToInt32(await admission.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false)) != 1) return cleanup ? -1 : 0;
+            if (Convert.ToInt32(await admission.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false)) != 1)
+            {
+                return cleanup ? -1 : 0;
+            }
+
             await using var acquire = new MySqlCommand(_acquire, connection);
             acquire.Parameters.AddWithValue("name", name);
             acquire.Parameters.AddWithValue("owner", _owner.ToString("N"));
             acquire.Parameters.AddWithValue("duration", Micros(_options.LeaseDuration));
-            if (Convert.ToInt32(await acquire.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false)) != 1) return cleanup ? -1 : 0;
+
+            if (Convert.ToInt32(await acquire.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false)) != 1)
+            {
+                return cleanup ? -1 : 0;
+            }
+
             var count = cleanup ? await DeleteExpiredAsync(connection, cleanupTable, cancellationToken).ConfigureAwait(false)
                 : await DispatchAsync(connection, cancellationToken).ConfigureAwait(false);
             await using var renew = new MySqlCommand(_renew, connection);
@@ -141,45 +175,75 @@ internal sealed partial class MySqlMaintenanceWorker : OutboxMaintenanceWorker
         if (!_hasThrough)
         {
             await using var boundary = new MySqlCommand(_highWater, connection);
-            if (await boundary.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) is not string through) return 0;
+
+            if (await boundary.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) is not string through)
+            {
+                return 0;
+            }
+
             Convert.FromHexString(through).CopyTo(_through, 0);
             _hasThrough = true;
         }
+
         await using var command = new MySqlCommand(_read, connection);
         command.Parameters.AddWithValue("@limit", _rows.Length);
         command.Parameters.AddWithValue("age", Micros(_options.RecoveryDelay));
         command.Parameters.Add("@after", MySqlDbType.Binary, 16).Value = _hasAfter ? _after : DBNull.Value;
         command.Parameters.Add("@through", MySqlDbType.Binary, 16).Value = _through;
         var count = await _store.ReadRecoveryAsync(command, _rows, cancellationToken).ConfigureAwait(false);
+
         try
         {
-            if (count == 0) { _hasAfter = _hasThrough = false; return 0; }
+            if (count == 0)
+            {
+                _hasAfter = _hasThrough = false;
+                return 0;
+            }
+
             _rows[count - 1].Id.TryWriteBytes(_after, bigEndian: true, out _);
             _hasAfter = true;
             var valid = 0;
+
             for (var i = 0; i < count; i++)
             {
                 var row = _rows[i];
+
                 if (row.TransportName.Length == 0)
                 {
                     var claim = new OutboxClaim(row.Id, Guid.NewGuid());
                     var now = DateTimeOffset.UtcNow;
+
                     if (await _store.TryClaimAsync(claim, now, now + _options.ClaimDuration, cancellationToken).ConfigureAwait(false))
                     {
                         var outcome = await _store.QuarantineAsync(claim, row.LastError!, cancellationToken).ConfigureAwait(false);
                         outcome.RecordTelemetry(_instrumentation);
-                        if (outcome.Accepted) Quarantined(_logger, row.Id, row.LastError!);
+
+                        if (outcome.Accepted)
+                        {
+                            Quarantined(_logger, row.Id, row.LastError!);
+                        }
                     }
+
                     continue;
                 }
-                if (valid == _buffers.Count) _buffers.Add(new());
+
+                if (valid == _buffers.Count)
+                {
+                    _buffers.Add(new());
+                }
+
                 _buffers[valid++].Copy(row, 1);
             }
+
             _batch.Take(_buffers, valid, DateTimeOffset.UtcNow, recovered: true);
             await _dispatcher.DispatchRecoveredAsync(_batch, cancellationToken).ConfigureAwait(false);
             return count;
         }
-        finally { _batch.Clear(); Array.Clear(_rows, 0, count); }
+        finally
+        {
+            _batch.Clear();
+            Array.Clear(_rows, 0, count);
+        }
     }
 
     private async ValueTask<int> DeleteExpiredAsync(MySqlConnection connection, int table, CancellationToken cancellationToken)
@@ -206,7 +270,10 @@ internal sealed partial class MySqlMaintenanceWorker : OutboxMaintenanceWorker
         return $"DELETE FROM {table} WHERE {column} <= TIMESTAMPADD(MICROSECOND,-@age,UTC_TIMESTAMP(6)){preserve} ORDER BY {column} LIMIT @limit";
     }
 
-    private static long Micros(TimeSpan duration) => checked((long)Math.Ceiling(duration.TotalMicroseconds));
+    private static long Micros(TimeSpan duration)
+    {
+        return checked((long)Math.Ceiling(duration.TotalMicroseconds));
+    }
 
     internal async ValueTask ReleaseAsync(CancellationToken cancellationToken = default)
     {
@@ -225,7 +292,11 @@ internal sealed partial class MySqlMaintenanceWorker : OutboxMaintenanceWorker
         return (reader.GetInt64(0), reader.GetInt64(1));
     }
 
-    public override void Dispose() { _dispatcher.Dispose(); base.Dispose(); }
+    public override void Dispose()
+    {
+        _dispatcher.Dispose();
+        base.Dispose();
+    }
 
     [LoggerMessage(2, LogLevel.Error, "MySQL outbox row {MessageId} moved to dead storage: {Error}")]
     private static partial void Quarantined(ILogger logger, Guid messageId, string error);

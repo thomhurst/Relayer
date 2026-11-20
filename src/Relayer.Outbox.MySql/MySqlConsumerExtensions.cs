@@ -1,10 +1,10 @@
-using Relayer.Transports;
-using Relayer.Pipeline;
 using System.Data;
 using System.Runtime.CompilerServices;
 using System.Text;
 using Microsoft.Extensions.DependencyInjection;
 using MySqlConnector;
+using Relayer.Pipeline;
+using Relayer.Transports;
 
 namespace Relayer.Outbox.MySql;
 
@@ -26,7 +26,12 @@ public static class MySqlConsumerExtensions
         ArgumentException.ThrowIfNullOrWhiteSpace(consumer);
         // Strict encoding prevents two invalid UTF-16 identities from becoming the same replacement bytes.
         var identity = new UTF8Encoding(false, true).GetBytes(consumer);
-        if (identity.Length > 768) throw new ArgumentException("MySQL consumer identities must fit in 768 UTF-8 bytes.", nameof(consumer));
+
+        if (identity.Length > 768)
+        {
+            throw new ArgumentException("MySQL consumer identities must fit in 768 UTF-8 bytes.", nameof(consumer));
+        }
+
         return builder.Use(services =>
         {
             _ = services.GetRequiredService<MySqlOutbox>();
@@ -50,6 +55,7 @@ internal sealed class MySqlConsumer(MySqlDataSource dataSource, string consumer,
         var outbox = context.Services.GetRequiredService<MySqlOutbox>();
         await using var transaction = (MySqlOutboxTransaction)await outbox.BeginTransactionAsync(dataSource, isolationLevel, cancellation).ConfigureAwait(false);
         transaction.ConsumerOwned = true;
+
         if (inbox && !await outbox.TryInsertInboxAsync(transaction, identity, id, cancellation).ConfigureAwait(false))
         {
             RequestCompletion(context);
@@ -57,12 +63,21 @@ internal sealed class MySqlConsumer(MySqlDataSource dataSource, string consumer,
             instrumentation.RecordInboxDuplicate(consumer);
             return;
         }
+
         await next(context).ConfigureAwait(false);
+
         if (!ReferenceEquals(outbox.CurrentTransaction, transaction))
+        {
             throw new InvalidOperationException("The handler disposed the MySQL consumer transaction. Let Relayer own its lifecycle.");
+        }
+
         cancellation.ThrowIfCancellationRequested();
+
         if (context.Features.Get<ISettlementFeature>()?.RequestedDisposition is { Kind: not DispositionKind.Complete })
+        {
             return; // Native disposal rolls back before ordinary failure handling and settlement.
+        }
+
         RequestCompletion(context);
         await transaction.CommitConsumerAsync(cancellation).ConfigureAwait(false);
     }
@@ -70,13 +85,18 @@ internal sealed class MySqlConsumer(MySqlDataSource dataSource, string consumer,
     private static Guid ParseMessageId(string messageId)
     {
         if (!Guid.TryParse(messageId, out var id) || id == Guid.Empty || id.Version != 7)
+        {
             throw new MessageEnvelopeException("Inbox processing requires the original non-empty UUIDv7 message ID.");
+        }
+
         return id;
     }
 
     private static void RequestCompletion(MessageContext context)
     {
         if (context.Features.Get<ISettlementFeature>() is { RequestedDisposition: null } settlement)
+        {
             settlement.Complete();
+        }
     }
 }

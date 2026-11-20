@@ -22,9 +22,15 @@ public static partial class PostgreSqlOutboxServiceCollectionExtensions
         ArgumentNullException.ThrowIfNull(dataSource);
         options ??= new();
         _ = options.Validate();
+
         foreach (var descriptor in services)
+        {
             if (descriptor.ServiceType == typeof(PostgreSqlMaintenanceWorker) && Equals(descriptor.ServiceKey, name))
+            {
                 throw new InvalidOperationException($"PostgreSQL maintenance worker '{name}' is already registered.");
+            }
+        }
+
         services.AddOptions<PostgreSqlMaintenanceOptions>(name);
         services.AddSingleton(new MaintenanceRegistration(name, options));
         services.AddSingleton<PostgreSqlDispatchRegistration>(provider => new(name, dataSource,
@@ -73,13 +79,25 @@ public static partial class PostgreSqlOutboxServiceCollectionExtensions
         T ReadValue<T>(string key, T fallback) where T : IParsable<T>
         {
             var value = configuration[key];
-            if (value is null) return fallback;
-            if (T.TryParse(value, CultureInfo.InvariantCulture, out var result)) return result;
+
+            if (value is null)
+            {
+                return fallback;
+            }
+
+            if (T.TryParse(value, CultureInfo.InvariantCulture, out var result))
+            {
+                return result;
+            }
+
             throw new ArgumentException($"Maintenance {key}: '{value}' is invalid.", nameof(configuration));
         }
-        TimeSpan? ReadRetention(string key, TimeSpan? fallback) =>
-            string.Equals(configuration[key], "infinite", StringComparison.OrdinalIgnoreCase)
-                ? null : ReadValue(key, fallback!.Value);
+
+        TimeSpan? ReadRetention(string key, TimeSpan? fallback)
+        {
+            return string.Equals(configuration[key], "infinite", StringComparison.OrdinalIgnoreCase)
+                            ? null : ReadValue(key, fallback!.Value);
+        }
     }
 
     private sealed record MaintenanceRegistration(string Name, PostgreSqlMaintenanceOptions Options);
@@ -93,7 +111,13 @@ public static partial class PostgreSqlOutboxServiceCollectionExtensions
         protected override PostgreSqlMaintenanceOptions CreateInstance(string name)
         {
             foreach (var registration in registrations)
-                if (registration.Name == name) return registration.Options;
+            {
+                if (registration.Name == name)
+                {
+                    return registration.Options;
+                }
+            }
+
             return new();
         }
     }

@@ -1,8 +1,8 @@
-using Relayer.Transports;
 using System.Data;
 using System.Data.Common;
 using Microsoft.Extensions.Options;
 using Npgsql;
+using Relayer.Transports;
 
 namespace Relayer.Outbox.PostgreSql;
 
@@ -24,7 +24,9 @@ public sealed class PostgreSqlOutbox : IOutboxEnlistment, IDisposable, IAsyncDis
 
     /// <summary>Creates an enlistment using this scope's validated options.</summary>
     public PostgreSqlOutbox(IOptionsSnapshot<PostgreSqlOutboxOptions> options, RelayerInstrumentation? instrumentation = null)
-        : this(options, [], instrumentation) { }
+        : this(options, [], instrumentation)
+    {
+    }
 
     internal PostgreSqlOutbox(IOptionsSnapshot<PostgreSqlOutboxOptions> options,
         IEnumerable<PostgreSqlSchedulingRegistration> workers, RelayerInstrumentation? instrumentation = null, PostgreSqlDirectDispatcher? dispatcher = null)
@@ -46,10 +48,16 @@ public sealed class PostgreSqlOutbox : IOutboxEnlistment, IDisposable, IAsyncDis
     }
 
     /// <inheritdoc />
-    public bool SupportsScheduling { get; }
+    public bool SupportsScheduling
+    {
+        get;
+    }
 
     /// <inheritdoc />
-    public bool SupportsOrderedScheduling { get; }
+    public bool SupportsOrderedScheduling
+    {
+        get;
+    }
 
     /// <inheritdoc />
     public bool IsActive => _transaction is { IsActive: true };
@@ -72,6 +80,7 @@ public sealed class PostgreSqlOutbox : IOutboxEnlistment, IDisposable, IAsyncDis
         ArgumentNullException.ThrowIfNull(dataSource);
         EnsureAvailable();
         var connection = await dataSource.OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+
         try
         {
             var native = await connection.BeginTransactionAsync(isolationLevel, cancellationToken).ConfigureAwait(false);
@@ -88,8 +97,11 @@ public sealed class PostgreSqlOutbox : IOutboxEnlistment, IDisposable, IAsyncDis
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         _tenant?.Validate();
+
         if (_transaction is not null)
+        {
             throw new InvalidOperationException("Complete or dispose the current PostgreSQL outbox transaction before beginning another.");
+        }
     }
 
     /// <inheritdoc />
@@ -97,15 +109,37 @@ public sealed class PostgreSqlOutbox : IOutboxEnlistment, IDisposable, IAsyncDis
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         cancellationToken.ThrowIfCancellationRequested();
-        if (!IsActive) throw new InvalidOperationException("Begin a PostgreSQL outbox transaction before sending via the outbox.");
-        if (_failed) throw new InvalidOperationException("Roll back the failed outbox transaction before sending again.");
+
+        if (!IsActive)
+        {
+            throw new InvalidOperationException("Begin a PostgreSQL outbox transaction before sending via the outbox.");
+        }
+
+        if (_failed)
+        {
+            throw new InvalidOperationException("Roll back the failed outbox transaction before sending again.");
+        }
+
         if (_tenant is not null)
         {
-            try { record = _tenant.Bind(record); }
-            catch { _failed = true; throw; }
+            try
+            {
+                record = _tenant.Bind(record);
+            }
+            catch
+            {
+                _failed = true;
+                throw;
+            }
         }
+
         BufferedOutboxMessage.Validate(record);
-        if (_count == _rows.Count) _rows.Add(new());
+
+        if (_count == _rows.Count)
+        {
+            _rows.Add(new());
+        }
+
         _rows[_count].Copy(record, _lanes);
         _count++;
         return ValueTask.CompletedTask;
@@ -113,11 +147,25 @@ public sealed class PostgreSqlOutbox : IOutboxEnlistment, IDisposable, IAsyncDis
 
     internal PostgreSqlOutboxBatch? Prepare(NpgsqlTransaction transaction)
     {
-        if (_failed) throw new InvalidOperationException("This outbox unit failed. Roll back and retry the complete unit of work.");
+        if (_failed)
+        {
+            throw new InvalidOperationException("This outbox unit failed. Roll back and retry the complete unit of work.");
+        }
+
         _tenant?.Validate();
-        if (_count == 0) return null;
+
+        if (_count == 0)
+        {
+            return null;
+        }
+
         _batch.Prepare(transaction, _insertSql);
-        for (var i = 0; i < _count; i++) _batch.Add(_rows[i]);
+
+        for (var i = 0; i < _count; i++)
+        {
+            _batch.Add(_rows[i]);
+        }
+
         return _batch;
     }
 
@@ -129,8 +177,16 @@ public sealed class PostgreSqlOutbox : IOutboxEnlistment, IDisposable, IAsyncDis
 
     internal void Ended(PostgreSqlOutboxTransaction transaction)
     {
-        if (!ReferenceEquals(_transaction, transaction)) return;
-        for (var i = 0; i < _count; i++) _rows[i].Clear();
+        if (!ReferenceEquals(_transaction, transaction))
+        {
+            return;
+        }
+
+        for (var i = 0; i < _count; i++)
+        {
+            _rows[i].Clear();
+        }
+
         _count = 0;
         _failed = false;
         _transaction = null;
@@ -140,25 +196,51 @@ public sealed class PostgreSqlOutbox : IOutboxEnlistment, IDisposable, IAsyncDis
     {
         _ = PostgreSqlOutboxSchema.CreateScript(options);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(options.MaxDispatchAttempts);
-        if (options.Lanes <= 0) throw new ArgumentOutOfRangeException(nameof(options), "Lanes must be positive.");
+
+        if (options.Lanes <= 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(options), "Lanes must be positive.");
+        }
     }
 
     /// <inheritdoc />
     public void Dispose()
     {
-        if (_disposed) return;
-        try { _transaction?.Dispose(); }
-        finally { _disposed = true; _batch.Dispose(); }
+        if (_disposed)
+        {
+            return;
+        }
+
+        try
+        {
+            _transaction?.Dispose();
+        }
+        finally
+        {
+            _disposed = true;
+            _batch.Dispose();
+        }
     }
 
     /// <inheritdoc />
     public async ValueTask DisposeAsync()
     {
-        if (_disposed) return;
+        if (_disposed)
+        {
+            return;
+        }
+
         try
         {
-            if (_transaction is not null) await _transaction.DisposeAsync().ConfigureAwait(false);
+            if (_transaction is not null)
+            {
+                await _transaction.DisposeAsync().ConfigureAwait(false);
+            }
         }
-        finally { _disposed = true; _batch.Dispose(); }
+        finally
+        {
+            _disposed = true;
+            _batch.Dispose();
+        }
     }
 }

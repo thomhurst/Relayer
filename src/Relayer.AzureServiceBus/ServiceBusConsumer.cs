@@ -1,9 +1,9 @@
-using Relayer.Transports;
-using Relayer.Pipeline;
 using System.Runtime.CompilerServices;
 using System.Threading.Channels;
 using Azure.Messaging.ServiceBus;
 using Microsoft.Extensions.Logging;
+using Relayer.Pipeline;
+using Relayer.Transports;
 
 namespace Relayer.AzureServiceBus;
 
@@ -19,7 +19,11 @@ internal sealed partial class ServiceBusConsumer : IAsyncDisposable
     private readonly ILogger? _logger;
     private readonly CancellationTokenSource _abort = new();
     private readonly Channel<bool> _control = Channel.CreateBounded<bool>(new BoundedChannelOptions(1)
-    { SingleReader = true, AllowSynchronousContinuations = false, FullMode = BoundedChannelFullMode.DropWrite });
+    {
+        SingleReader = true,
+        AllowSynchronousContinuations = false,
+        FullMode = BoundedChannelFullMode.DropWrite
+    });
     private int _pauseRequested;
     private Task? _controlTask;
     private Exception? _controlFailure;
@@ -27,8 +31,16 @@ internal sealed partial class ServiceBusConsumer : IAsyncDisposable
     private EndpointTelemetry? _telemetry;
     private int _running;
     private int _disposed;
-    internal IConsumerDefinition Declaration { get; }
-    internal bool TrackHealth { get; set; }
+
+    internal IConsumerDefinition Declaration
+    {
+        get;
+    }
+
+    internal bool TrackHealth
+    {
+        get; set;
+    }
 
     internal ServiceBusConsumer(IConsumerDefinition declaration, ServiceBusProcessor processor,
         Func<ProcessMessageEventArgs, CancellationToken, ValueTask> receive, TimeProvider? timeProvider = null,
@@ -64,31 +76,60 @@ internal sealed partial class ServiceBusConsumer : IAsyncDisposable
         var options = consumer.Options;
         ArgumentNullException.ThrowIfNull(options.ProcessorOptions);
         ArgumentNullException.ThrowIfNull(consumer.Failure);
+
         if (options.CircuitBreaker is { } circuit)
         {
             // Reuse the policy's exact validation before native clients/processors are constructed.
             circuit.Validate();
         }
+
         var subscription = options.Subscription;
         var queue = subscription is null ? transport.Queues.SingleOrDefault(queue => queue.Name == consumer.Source) : null;
         var topic = subscription is null ? null : transport.Subscriptions.SingleOrDefault(item => item.TopicName == consumer.Source && item.SubscriptionName == subscription);
+
         if (queue is null && topic is null)
+        {
             throw Invalid("declare the native queue or topic/subscription in transport Options before consuming it.");
+        }
+
         var requiresSession = queue?.RequiresSession ?? topic!.RequiresSession;
+
         if (requiresSession != (options.SessionProcessorOptions is not null))
+        {
             throw Invalid("SessionProcessorOptions must be supplied exactly when the native queue/subscription declares RequiresSession=true.");
+        }
+
         var sessions = options.SessionProcessorOptions;
         var automatic = sessions?.AutoCompleteMessages ?? options.ProcessorOptions.AutoCompleteMessages;
         var mode = sessions?.ReceiveMode ?? options.ProcessorOptions.ReceiveMode;
-        if (automatic) throw Invalid("AutoCompleteMessages must be false; Relayer settles only after durable handling.");
-        if (mode != ServiceBusReceiveMode.PeekLock) throw Invalid("ReceiveMode must be PeekLock; ReceiveAndDelete cannot guarantee durable handling.");
+
+        if (automatic)
+        {
+            throw Invalid("AutoCompleteMessages must be false; Relayer settles only after durable handling.");
+        }
+
+        if (mode != ServiceBusReceiveMode.PeekLock)
+        {
+            throw Invalid("ReceiveMode must be PeekLock; ReceiveAndDelete cannot guarantee durable handling.");
+        }
+
         var concurrency = sessions is null ? options.ProcessorOptions.MaxConcurrentCalls
             : checked(sessions.MaxConcurrentSessions * sessions.MaxConcurrentCallsPerSession);
-        if (consumer.Concurrency != concurrency)
-            throw Invalid($"Concurrency({concurrency}) must match the native processor concurrency; SDK options are passed through unchanged.");
-        if (consumer.BatchSize != 1) throw Invalid("batch handlers are not supported by native processor callbacks. Use a single-message handler.");
 
-        InvalidOperationException Invalid(string reason) => new($"Service Bus consumer '{consumer.Source}' on transport '{name}': {reason}");
+        if (consumer.Concurrency != concurrency)
+        {
+            throw Invalid($"Concurrency({concurrency}) must match the native processor concurrency; SDK options are passed through unchanged.");
+        }
+
+        if (consumer.BatchSize != 1)
+        {
+            throw Invalid("batch handlers are not supported by native processor callbacks. Use a single-message handler.");
+        }
+
+        InvalidOperationException Invalid(string reason)
+        {
+            return new($"Service Bus consumer '{consumer.Source}' on transport '{name}': {reason}");
+        }
     }
 
     internal void ConfigureCircuit(ConsumerCircuitOptions options, ConsumePipeline pipeline, EndpointTelemetry telemetry)
@@ -103,12 +144,20 @@ internal sealed partial class ServiceBusConsumer : IAsyncDisposable
 
     // A bounded, asynchronous channel coalesces control requests. No native lifecycle operation runs on
     // a processor callback or policy timer; StopProcessingAsync can safely drain those callbacks here.
-    private void SignalProbe() => SignalCircuit(false);
+    private void SignalProbe()
+    {
+        SignalCircuit(false);
+    }
 
     private void SignalCircuit(bool opened)
     {
         var state = _circuit!.State;
-        if (opened) Volatile.Write(ref _pauseRequested, 1);
+
+        if (opened)
+        {
+            Volatile.Write(ref _pauseRequested, 1);
+        }
+
         _telemetry?.RecordCircuitState(state);
         _control.Writer.TryWrite(true);
     }
@@ -117,26 +166,54 @@ internal sealed partial class ServiceBusConsumer : IAsyncDisposable
     {
         ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
         cancellationToken.ThrowIfCancellationRequested();
+
         if (Volatile.Read(ref _controlFailure) is not null)
+        {
             throw new InvalidOperationException("Recreate the application host after a Service Bus circuit control failure.");
+        }
+
         if (_abort.IsCancellationRequested)
+        {
             throw new InvalidOperationException("Recreate the application host after an aborted Service Bus drain.");
+        }
+
         if (Interlocked.CompareExchange(ref _running, 1, 0) != 0)
+        {
             throw new InvalidOperationException("The Service Bus processor is already running.");
+        }
+
         try
         {
             var started = _circuit?.State != 1;
-            if (started) await StartNativeAsync(cancellationToken).ConfigureAwait(false);
-            if (_circuit is not null) _controlTask = ControlAsync(started);
+
+            if (started)
+            {
+                await StartNativeAsync(cancellationToken).ConfigureAwait(false);
+            }
+
+            if (_circuit is not null)
+            {
+                _controlTask = ControlAsync(started);
+            }
         }
-        catch { Volatile.Write(ref _running, 0); throw; }
+        catch
+        {
+            Volatile.Write(ref _running, 0);
+            throw;
+        }
     }
 
-    private Task StartNativeAsync(CancellationToken token) => _processor is { } processor
-        ? processor.StartProcessingAsync(token) : _sessions!.StartProcessingAsync(token);
+    private Task StartNativeAsync(CancellationToken token)
+    {
+        return _processor is { } processor
+                ? processor.StartProcessingAsync(token) : _sessions!.StartProcessingAsync(token);
+    }
 
-    private Task StopNativeAsync() => _processor is { } processor
-        ? processor.StopProcessingAsync(CancellationToken.None) : _sessions!.StopProcessingAsync(CancellationToken.None);
+    private Task StopNativeAsync()
+    {
+        return _processor is { } processor
+                ? processor.StopProcessingAsync(CancellationToken.None) : _sessions!.StopProcessingAsync(CancellationToken.None);
+    }
 
     private async Task ControlAsync(bool started)
     {
@@ -145,7 +222,12 @@ internal sealed partial class ServiceBusConsumer : IAsyncDisposable
             while (true)
             {
                 await _control.Reader.ReadAsync().ConfigureAwait(false);
-                if (Volatile.Read(ref _running) == 0) break;
+
+                if (Volatile.Read(ref _running) == 0)
+                {
+                    break;
+                }
+
                 if ((Interlocked.Exchange(ref _pauseRequested, 0) != 0 || _circuit?.State == 1) && started)
                 {
                     started = false;
@@ -159,23 +241,36 @@ internal sealed partial class ServiceBusConsumer : IAsyncDisposable
                 }
             }
         }
-        catch (OperationCanceledException) when (_abort.IsCancellationRequested && Volatile.Read(ref _running) == 0) { }
+        catch (OperationCanceledException) when (_abort.IsCancellationRequested && Volatile.Read(ref _running) == 0)
+        {
+        }
         catch (Exception error)
         {
             Volatile.Write(ref _controlFailure, error);
             Volatile.Write(ref _running, 0);
-            if (_logger is { } logger) CircuitControlFailed(logger, error, Declaration.Source);
+
+            if (_logger is { } logger)
+            {
+                CircuitControlFailed(logger, error, Declaration.Source);
+            }
+
             throw;
         }
         finally
         {
             if (started)
             {
-                try { await StopNativeAsync().ConfigureAwait(false); }
+                try
+                {
+                    await StopNativeAsync().ConfigureAwait(false);
+                }
                 catch (Exception error) when (Volatile.Read(ref _controlFailure) is not null)
                 {
                     // Preserve the original control failure if cleanup also fails.
-                    if (_logger is { } logger) CircuitControlFailed(logger, error, Declaration.Source);
+                    if (_logger is { } logger)
+                    {
+                        CircuitControlFailed(logger, error, Declaration.Source);
+                    }
                 }
             }
         }
@@ -191,6 +286,7 @@ internal sealed partial class ServiceBusConsumer : IAsyncDisposable
         using var registration = cancellationToken.UnsafeRegister(static state => ((CancellationTokenSource)state!).Cancel(), _abort);
         Volatile.Write(ref _running, 0);
         _control.Writer.TryWrite(true);
+
         try
         {
             var stopping = _controlTask ?? StopNativeAsync();
@@ -205,19 +301,30 @@ internal sealed partial class ServiceBusConsumer : IAsyncDisposable
 
     // The SDK callback must return a Task. AsTask is its smallest form: it allocates only when the pipeline
     // suspends, and a pipeline that finishes synchronously returns the cached completed Task.
-    internal Task ProcessAsync(ProcessMessageEventArgs args) =>
-        (TrackHealth ? ProcessTrackedAsync(args) : _receive!(args, _abort.Token)).AsTask();
+    internal Task ProcessAsync(ProcessMessageEventArgs args)
+    {
+        return (TrackHealth ? ProcessTrackedAsync(args) : _receive!(args, _abort.Token)).AsTask();
+    }
 
-    internal Task ProcessSessionAsync(ProcessSessionMessageEventArgs args) =>
-        (TrackHealth ? ProcessSessionTrackedAsync(args) : _receiveSession!(args, _abort.Token)).AsTask();
+    internal Task ProcessSessionAsync(ProcessSessionMessageEventArgs args)
+    {
+        return (TrackHealth ? ProcessSessionTrackedAsync(args) : _receiveSession!(args, _abort.Token)).AsTask();
+    }
 
     [RuntimeAsyncMethodGeneration(false)]
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
     private async ValueTask ProcessTrackedAsync(ProcessMessageEventArgs args)
     {
         var slot = Activate();
-        try { await _receive!(args, _abort.Token).ConfigureAwait(false); }
-        finally { Deactivate(slot); }
+
+        try
+        {
+            await _receive!(args, _abort.Token).ConfigureAwait(false);
+        }
+        finally
+        {
+            Deactivate(slot);
+        }
     }
 
     [RuntimeAsyncMethodGeneration(false)]
@@ -225,42 +332,80 @@ internal sealed partial class ServiceBusConsumer : IAsyncDisposable
     private async ValueTask ProcessSessionTrackedAsync(ProcessSessionMessageEventArgs args)
     {
         var slot = Activate();
-        try { await _receiveSession!(args, _abort.Token).ConfigureAwait(false); }
-        finally { Deactivate(slot); }
+
+        try
+        {
+            await _receiveSession!(args, _abort.Token).ConfigureAwait(false);
+        }
+        finally
+        {
+            Deactivate(slot);
+        }
     }
 
     // Liveness bookkeeping never affects delivery. A callback without a slot is processed but not reported.
     private int Activate()
     {
         var ticks = _time.GetUtcNow().UtcTicks;
+
         for (var i = 0; i < _active.Length; i++)
-            if (Interlocked.CompareExchange(ref _active[i], ticks, 0) == 0) return i;
+        {
+            if (Interlocked.CompareExchange(ref _active[i], ticks, 0) == 0)
+            {
+                return i;
+            }
+        }
+
         return -1;
     }
 
     private void Deactivate(int slot)
     {
-        if (slot >= 0) Volatile.Write(ref _active[slot], 0);
+        if (slot >= 0)
+        {
+            Volatile.Write(ref _active[slot], 0);
+        }
     }
 
     internal (bool IsIdle, DateTimeOffset LastProgressAt)? GetHealthState()
     {
-        if (!TrackHealth) return null;
+        if (!TrackHealth)
+        {
+            return null;
+        }
+
         if (Volatile.Read(ref _controlFailure) is { } failure)
+        {
             throw new InvalidOperationException("Service Bus circuit control failed. Recreate the application host to resume consumption.", failure);
-        if (Volatile.Read(ref _running) == 0) return null;
+        }
+
+        if (Volatile.Read(ref _running) == 0)
+        {
+            return null;
+        }
+
         var oldest = long.MaxValue;
+
         for (var i = 0; i < _active.Length; i++)
         {
             var active = Volatile.Read(ref _active[i]);
-            if (active != 0 && active < oldest) oldest = active;
+
+            if (active != 0 && active < oldest)
+            {
+                oldest = active;
+            }
         }
+
         return oldest == long.MaxValue ? (true, _time.GetUtcNow()) : (false, new DateTimeOffset(oldest, TimeSpan.Zero));
     }
 
     private Task ErrorAsync(ProcessErrorEventArgs args)
     {
-        if (_logger is { } logger) ProcessorFailed(logger, args.Exception, args.EntityPath, args.ErrorSource);
+        if (_logger is { } logger)
+        {
+            ProcessorFailed(logger, args.Exception, args.EntityPath, args.ErrorSource);
+        }
+
         return Task.CompletedTask;
     }
 
@@ -269,17 +414,32 @@ internal sealed partial class ServiceBusConsumer : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
-        if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
+        if (Interlocked.Exchange(ref _disposed, 1) != 0)
+        {
+            return;
+        }
+
         Volatile.Write(ref _running, 0);
         _abort.Cancel();
+
         try
         {
-            try { await StopAsync(CancellationToken.None).ConfigureAwait(false); }
+            try
+            {
+                await StopAsync(CancellationToken.None).ConfigureAwait(false);
+            }
             finally
             {
                 _circuit?.Dispose();
-                if (_processor is { } processor) await processor.DisposeAsync().ConfigureAwait(false);
-                else await _sessions!.DisposeAsync().ConfigureAwait(false);
+
+                if (_processor is { } processor)
+                {
+                    await processor.DisposeAsync().ConfigureAwait(false);
+                }
+                else
+                {
+                    await _sessions!.DisposeAsync().ConfigureAwait(false);
+                }
             }
         }
         finally

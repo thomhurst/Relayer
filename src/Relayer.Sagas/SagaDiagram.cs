@@ -13,10 +13,16 @@ public sealed class SagaDiagram
     }
 
     /// <summary>All declared states, sorted by ordinal name, including states with no transitions.</summary>
-    public IReadOnlyList<SagaState> States { get; }
+    public IReadOnlyList<SagaState> States
+    {
+        get;
+    }
 
     /// <summary>All declared transitions, sorted by ordinal source, destination and trigger.</summary>
-    public IReadOnlyList<SagaTransition> Transitions { get; }
+    public IReadOnlyList<SagaTransition> Transitions
+    {
+        get;
+    }
 
     /// <summary>Exports Mermaid stateDiagram-v2 syntax with stable identifiers and LF line endings.</summary>
     /// <remarks>Names and triggers are encoded as labels, never interpreted as diagram syntax. No file is written.</remarks>
@@ -24,6 +30,7 @@ public sealed class SagaDiagram
     {
         var text = new StringBuilder("stateDiagram-v2\n");
         var identifiers = new Dictionary<string, string>(States.Count, StringComparer.Ordinal);
+
         for (var i = 0; i < States.Count; i++)
         {
             var state = States[i];
@@ -32,9 +39,18 @@ public sealed class SagaDiagram
             text.Append("    state \"");
             AppendLabel(text, state.Name);
             text.Append("\" as ").Append(identifier).Append('\n');
-            if (state.IsInitial) text.Append("    [*] --> ").Append(identifier).Append('\n');
-            if (state.IsFinal) text.Append("    ").Append(identifier).Append(" --> [*]\n");
+
+            if (state.IsInitial)
+            {
+                text.Append("    [*] --> ").Append(identifier).Append('\n');
+            }
+
+            if (state.IsFinal)
+            {
+                text.Append("    ").Append(identifier).Append(" --> [*]\n");
+            }
         }
+
         foreach (var transition in Transitions)
         {
             text.Append("    ").Append(identifiers[transition.From]).Append(" --> ")
@@ -42,6 +58,7 @@ public sealed class SagaDiagram
             AppendLabel(text, transition.Trigger);
             text.Append('\n');
         }
+
         return text.ToString();
     }
 
@@ -52,9 +69,13 @@ public sealed class SagaDiagram
         foreach (var rune in label.EnumerateRunes())
         {
             if (rune.IsAscii && (char.IsAsciiLetterOrDigit((char)rune.Value) || rune.Value is '_' or '-' or '.'))
+            {
                 text.Append((char)rune.Value);
+            }
             else
+            {
                 text.Append('#').Append(rune.Value.ToString(CultureInfo.InvariantCulture)).Append(';');
+            }
         }
     }
 }

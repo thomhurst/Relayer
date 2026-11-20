@@ -16,16 +16,23 @@ internal static class BoundedTransportPoolAssertions
             .Single(field => field.FieldType.Name.StartsWith("SlotPool", StringComparison.Ordinal)).GetValue(pool)!;
         var page = first.GetType().GetField("_first", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(first);
         var pages = 0;
+
         while (page is not null)
         {
             pages++;
             page = page.GetType().GetField("Next", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(page);
         }
+
         await Assert.That(pages).IsEqualTo(256 / pageSize);
         var rentals = Enumerable.Range(0, 256).Select(_ => rent()).ToArray();
         await Assert.That(rentals.Distinct(ReferenceEqualityComparer.Instance).Count()).IsEqualTo(256);
         await Assert.That(rentals.All(item => references.Any(reference => ReferenceEquals(reference.Target, item)))).IsTrue();
-        foreach (var item in rentals) giveBack(item);
+
+        foreach (var item in rentals)
+        {
+            giveBack(item);
+        }
+
         GC.KeepAlive(pool);
     }
 
@@ -34,7 +41,12 @@ internal static class BoundedTransportPoolAssertions
     {
         var items = Enumerable.Range(0, 512).Select(_ => rent()).ToArray();
         var references = items.Select(item => new WeakReference(item)).ToArray();
-        foreach (var item in items) giveBack(item);
+
+        foreach (var item in items)
+        {
+            giveBack(item);
+        }
+
         return references;
     }
 
@@ -45,13 +57,26 @@ internal static class BoundedTransportPoolAssertions
         var workers = Enumerable.Range(0, 32).Select(async _ =>
         {
             await start.Task;
+
             for (var i = 0; i < 100; i++)
             {
                 var item = rent();
+
                 lock (active)
-                    if (!active.Add(item)) throw new InvalidOperationException("Concurrent rental of the same state.");
+                {
+                    if (!active.Add(item))
+                    {
+                        throw new InvalidOperationException("Concurrent rental of the same state.");
+                    }
+                }
+
                 await Task.Yield();
-                lock (active) active.Remove(item);
+
+                lock (active)
+                {
+                    active.Remove(item);
+                }
+
                 giveBack(item);
             }
         }).ToArray();

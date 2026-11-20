@@ -1,8 +1,8 @@
-using Relayer.Transports;
 using BenchmarkDotNet.Attributes;
 using Npgsql;
 using NpgsqlTypes;
 using Relayer.Outbox.PostgreSql;
+using Relayer.Transports;
 
 namespace Relayer.Benchmarks;
 
@@ -42,7 +42,11 @@ public class PostgreSqlTransactionalCompletionBenchmarks
         await using var transaction = await _connection.BeginTransactionAsync();
         await using var command = new NpgsqlCommand(_delete, _connection, transaction);
         AddClaims(command);
-        if (await command.ExecuteScalarAsync() is not true) throw new InvalidOperationException("Benchmark claim was lost.");
+
+        if (await command.ExecuteScalarAsync() is not true)
+        {
+            throw new InvalidOperationException("Benchmark claim was lost.");
+        }
         // Restore the same claimed row so every measured invocation performs a live deletion.
         await transaction.RollbackAsync();
     }
@@ -51,7 +55,12 @@ public class PostgreSqlTransactionalCompletionBenchmarks
     public async ValueTask StoreCompletion()
     {
         await using var transaction = await _connection.BeginTransactionAsync();
-        if (!await _store.CompleteAsync(_claim, transaction, default)) throw new InvalidOperationException("Benchmark claim was lost.");
+
+        if (!await _store.CompleteAsync(_claim, transaction, default))
+        {
+            throw new InvalidOperationException("Benchmark claim was lost.");
+        }
+
         await transaction.RollbackAsync();
     }
 

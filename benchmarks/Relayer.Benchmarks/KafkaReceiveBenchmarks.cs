@@ -1,5 +1,3 @@
-using Relayer.Transports;
-using Relayer.Pipeline;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using BenchmarkDotNet.Attributes;
@@ -9,7 +7,9 @@ using Dekaf.Consumer;
 using Dekaf.Serialization;
 using Microsoft.Extensions.DependencyInjection;
 using Relayer.Kafka;
+using Relayer.Pipeline;
 using Relayer.Serialization;
+using Relayer.Transports;
 
 namespace Relayer.Benchmarks;
 
@@ -33,10 +33,16 @@ public class KafkaReceiveBenchmarks
     private string _topic = null!;
 
     [Params(false, true)]
-    public bool HealthEnabled { get; set; }
+    public bool HealthEnabled
+    {
+        get; set;
+    }
 
     [Params(32, 500)]
-    public int MaxPollRecords { get; set; }
+    public int MaxPollRecords
+    {
+        get; set;
+    }
 
     [GlobalSetup]
     public async Task Setup()
@@ -46,12 +52,24 @@ public class KafkaReceiveBenchmarks
         _topic = "relayer-receive-benchmark-" + Guid.NewGuid().ToString("N");
         _admin = new AdminClientBuilder().WithBootstrapServers(bootstrap).Build();
         await _admin.CreateTopicsAsync([new() { Name = _topic, NumPartitions = 1, ReplicationFactor = 1 }]);
+
         await using (var producer = await new ProducerBuilder<byte[], byte[]>().WithBootstrapServers(bootstrap).BuildAsync())
         {
             var headers = new Headers().Add("ce_id", "benchmark").Add("ce_type", "benchmarks.kafka-receive;v=1");
             var body = "{\"Value\":42}"u8.ToArray();
-            for (var i = 0; i < Records; i++) await producer.ProduceAsync(new() { Topic = _topic, Key = null, Value = body, Headers = headers });
+
+            for (var i = 0; i < Records; i++)
+            {
+                await producer.ProduceAsync(new()
+                {
+                    Topic = _topic,
+                    Key = null,
+                    Value = body,
+                    Headers = headers
+                });
+            }
         }
+
         _raw = await BuildConsumer(bootstrap, "raw");
         _native = await BuildConsumer(bootstrap, "relayer");
         var services = new ServiceCollection();
@@ -76,10 +94,15 @@ public class KafkaReceiveBenchmarks
         var endpoint = new MessagingEndpoint { System = "kafka", Destination = _topic, ConsumerGroup = _topic + "relayer" };
         var telemetry = _provider.GetRequiredService<RelayerInstrumentation>().CreateEndpoint(new()
         {
-            System = endpoint.System, Destination = endpoint.Destination, ConsumerGroup = endpoint.ConsumerGroup,
+            System = endpoint.System,
+            Destination = endpoint.Destination,
+            ConsumerGroup = endpoint.ConsumerGroup,
         });
         var failures = new FailurePipeline(_provider, "benchmark", _topic, endpoint.ConsumerGroup,
-            new() { DeadLetterEndpoint = _topic + ".dead-letter" }, KafkaHostedService.Copy);
+            new()
+            {
+                DeadLetterEndpoint = _topic + ".dead-letter"
+            }, KafkaHostedService.Copy);
         var pipeline = new ConsumePipelineBuilder(_provider.GetRequiredService<IServiceScopeFactory>(),
             _provider.GetRequiredService<MessageTypeRegistry>(), _provider.GetRequiredService<IMessageSerializer>(),
             failures, _provider.GetService<IFailureClassifier>())
@@ -91,7 +114,8 @@ public class KafkaReceiveBenchmarks
         // The raw run uses the same native ordering, limits and commit policy without Relayer's observer.
         _rawOptions = new()
         {
-            Ordering = PartitionedProcessingOrder.Key, MaxConcurrentHandlers = 1,
+            Ordering = PartitionedProcessingOrder.Key,
+            MaxConcurrentHandlers = 1,
             CommitPolicy = PartitionCommitPolicy.CommitCompletedPeriodically,
             Monitor = HealthEnabled ? new PartitionedProcessingMonitor() : null,
         };
@@ -115,25 +139,45 @@ public class KafkaReceiveBenchmarks
     }
 
     [Benchmark(Baseline = true, OperationsPerInvoke = Records)]
-    public Task<int> RawDekaf() => RunAsync(_raw, _rawProcessor, _rawOptions);
+    public Task<int> RawDekaf()
+    {
+        return RunAsync(_raw, _rawProcessor, _rawOptions);
+    }
 
     [Benchmark(OperationsPerInvoke = Records)]
-    public Task<int> Relayer() => RunAsync(_native, _adapter.Processor, _adapter.Options);
+    public Task<int> Relayer()
+    {
+        return RunAsync(_native, _adapter.Processor, _adapter.Options);
+    }
 
     private async Task<int> RunAsync(IKafkaConsumer<byte[], byte[]> consumer, PartitionRecordProcessor<byte[], byte[]> processor,
         PartitionedProcessingOptions options)
     {
         _count = 0;
         using var run = _run = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-        try { await consumer.RunPartitionedAsync(processor, options, run.Token); }
-        catch (OperationCanceledException) when (_count >= Records) { }
-        if (_count < Records) throw new InvalidOperationException("Native run ended before all benchmark records.");
+
+        try
+        {
+            await consumer.RunPartitionedAsync(processor, options, run.Token);
+        }
+        catch (OperationCanceledException) when (_count >= Records)
+        {
+        }
+
+        if (_count < Records)
+        {
+            throw new InvalidOperationException("Native run ended before all benchmark records.");
+        }
+
         return _count;
     }
 
     private void Completed()
     {
-        if (++_count == Records) _run.Cancel();
+        if (++_count == Records)
+        {
+            _run.Cancel();
+        }
     }
 
     private async ValueTask RawAsync(PartitionRecordProcessorContext<byte[], byte[]> context, ConsumeResult<byte[], byte[]> record,
@@ -155,23 +199,48 @@ public class KafkaReceiveBenchmarks
     [GlobalCleanup]
     public async Task Cleanup()
     {
-        if (_adapter is not null) await _adapter.DisposeAsync();
-        if (_raw is not null) await _raw.DisposeAsync();
-        if (_provider is not null) await _provider.DisposeAsync();
+        if (_adapter is not null)
+        {
+            await _adapter.DisposeAsync();
+        }
+
+        if (_raw is not null)
+        {
+            await _raw.DisposeAsync();
+        }
+
+        if (_provider is not null)
+        {
+            await _provider.DisposeAsync();
+        }
+
         if (_admin is not null)
         {
-            try { if (_topic is not null) await _admin.DeleteTopicsAsync([_topic]); }
-            finally { await _admin.DisposeAsync(); }
+            try
+            {
+                if (_topic is not null)
+                {
+                    await _admin.DeleteTopicsAsync([_topic]);
+                }
+            }
+            finally
+            {
+                await _admin.DisposeAsync();
+            }
         }
     }
 }
 
 [Message("benchmarks.kafka-receive")]
 public readonly record struct KafkaBenchmarkPayload(int Value);
+
 public sealed class KafkaBenchmarkHandler : IHandler<KafkaBenchmarkPayload>
 {
     public ValueTask HandleAsync(KafkaBenchmarkPayload message, MessageContext context, CancellationToken cancellationToken)
-        => message.Value == 42 ? default : ValueTask.FromException(new InvalidOperationException("Unexpected benchmark payload."));
+    {
+        return message.Value == 42 ? default : ValueTask.FromException(new InvalidOperationException("Unexpected benchmark payload."));
+    }
 }
+
 [JsonSerializable(typeof(KafkaBenchmarkPayload))]
 internal partial class KafkaReceiveBenchmarkJson : JsonSerializerContext;

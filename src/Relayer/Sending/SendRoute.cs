@@ -28,7 +28,10 @@ internal sealed class FanOutSendTarget<TMessage>(SendRoute<TMessage>[] routes) :
     {
         // Direct sends to several destinations cannot be atomic, so only the outbox fans out.
         if (outbox is null)
+        {
             throw new InvalidOperationException($"Message '{routes[0].MessageType}' has {routes.Length} send routes, and sending to several routes requires an active outbox transaction. Begin an outbox transaction and use SendAsync or SendViaOutboxAsync.");
+        }
+
         return SendAllAsync(message, configure, outbox, callerToken, reply, tenant);
     }
 
@@ -38,6 +41,7 @@ internal sealed class FanOutSendTarget<TMessage>(SendRoute<TMessage>[] routes) :
         IOutboxEnlistment outbox, CancellationToken callerToken, ReplyMetadata reply, WireString tenant)
     {
         var metadata = MessageEnvelopeMetadata.Create(Activity.Current?.Context ?? default);
+
         for (var i = 0; i < routes.Length; i++)
         {
             // Rows need distinct keys; the first keeps the message ID so lookups by ID still find a row.
@@ -68,24 +72,37 @@ internal sealed class SendRoute<TMessage> : SendTarget<TMessage>
     private FrozenDictionary<string, SendRoute<TMessage>>? _targets;
 
     internal SendRouteOptions Options => _options;
+
     internal MessageType MessageType => _messageType;
+
     // A selected destination does not come from the reply address, so selector routes cannot carry replies.
-    internal bool MatchesDestination(WireString address) => _selector is null && (address.Text is { } text
-        ? string.Equals(text, _destination, StringComparison.Ordinal)
-        : address.Utf8.Span.SequenceEqual(_destinationUtf8));
+    internal bool MatchesDestination(WireString address)
+    {
+        return _selector is null && (address.Text is { } text
+                ? string.Equals(text, _destination, StringComparison.Ordinal)
+                : address.Utf8.Span.SequenceEqual(_destinationUtf8));
+    }
 
     internal void RouteBy(Func<TMessage, string> selector, SendRoute<TMessage>[] targets)
     {
         var map = new Dictionary<string, SendRoute<TMessage>>(targets.Length, StringComparer.Ordinal);
-        foreach (var target in targets) map.Add(target._destination, target);
+
+        foreach (var target in targets)
+        {
+            map.Add(target._destination, target);
+        }
+
         _targets = map.ToFrozenDictionary(StringComparer.Ordinal);
         _selector = selector;
     }
 
     // A tombstone carries only a key, so a per-message destination cannot be selected for it.
-    internal SendRoute<Tombstone<TMessage>>? CreateTombstoneRoute() => _selector is null && _capabilities.Tombstones
-        ? new(_transport, _destination, _messageType, _options, new TombstoneKeySelector<TMessage>(),
-            _serializer, _pipeline, _capabilities, isTombstone: true) : null;
+    internal SendRoute<Tombstone<TMessage>>? CreateTombstoneRoute()
+    {
+        return _selector is null && _capabilities.Tombstones
+                ? new(_transport, _destination, _messageType, _options, new TombstoneKeySelector<TMessage>(),
+                    _serializer, _pipeline, _capabilities, isTombstone: true) : null;
+    }
 
     internal SendRoute(ITransport transport, string destination, MessageType messageType, SendRouteOptions options,
         IOrderingKeySelector<TMessage>? orderingKey, IMessageSerializer serializer, SendDelegate pipeline,
@@ -109,26 +126,42 @@ internal sealed class SendRoute<TMessage> : SendTarget<TMessage>
     internal override ValueTask SendAsync(TMessage message, Action<SendOptions>? configure,
         IOutboxEnlistment? outbox, CancellationToken callerToken, AttemptSendBuffer? buffer,
         ReplyMetadata reply = default, WireString tenant = default)
-        => (_selector is null ? this : Select(message)).Rent().Start(message, configure, outbox, callerToken, buffer, reply, tenant, default, default);
+    {
+        return (_selector is null ? this : Select(message)).Rent().Start(message, configure, outbox, callerToken, buffer, reply, tenant, default, default);
+    }
 
     internal ValueTask SendAsync(TMessage message, Action<SendOptions>? configure,
         IOutboxEnlistment? outbox, CancellationToken callerToken, AttemptSendBuffer? buffer,
         ReplyMetadata reply, WireString tenant, MessageEnvelopeMetadata metadata, Guid rowId)
-        => (_selector is null ? this : Select(message)).Rent().Start(message, configure, outbox, callerToken, buffer, reply, tenant, metadata, rowId);
+    {
+        return (_selector is null ? this : Select(message)).Rent().Start(message, configure, outbox, callerToken, buffer, reply, tenant, metadata, rowId);
+    }
 
     private SendRoute<TMessage> Select(TMessage message)
     {
         var destination = _selector!(message);
-        if (destination is not null && _targets!.TryGetValue(destination, out var route)) return route;
+
+        if (destination is not null && _targets!.TryGetValue(destination, out var route))
+        {
+            return route;
+        }
+
         throw new InvalidOperationException($"The destination selector for '{_messageType}' on transport '{_transport.Name}' returned {(destination is null ? "null" : $"'{destination}'")}, which the route does not declare. Add it to the route's destinations.");
     }
 
-    private Operation Rent() => _operations.TryRentGuarded() ?? new Operation(this);
+    private Operation Rent()
+    {
+        return _operations.TryRentGuarded() ?? new Operation(this);
+    }
 
     private void Return(Operation operation)
     {
         // Large messages and bursts cannot permanently enlarge the idle pool (D52).
-        if (operation.CanRetain && _operations.TryReturnGuarded(operation)) return;
+        if (operation.CanRetain && _operations.TryReturnGuarded(operation))
+        {
+            return;
+        }
+
         operation.Timeout.Dispose();
     }
 
@@ -163,14 +196,28 @@ internal sealed class SendRoute<TMessage> : SendTarget<TMessage>
         internal bool CanRetain => _body.Capacity <= 64 * 1024 && _key.Capacity <= 4 * 1024 &&
             _headers.CanRetain && Options.CanRetain;
 
-        internal CancellationTokenSource Timeout { get; private set; } = new();
+        internal CancellationTokenSource Timeout
+        {
+            get; private set;
+        } = new();
+
         public override object Message => _message!;
+
         public string TransportName => _route._transport.Name;
+
         public string Destination => _route._destination;
+
         public bool UsesOutbox => _outbox is not null;
+
         public override MessageType MessageType => _route._messageType;
+
         public override string MessageId => _messageId ??= _metadata.MessageId.ToString("D");
-        public override SendOptions Options { get; } = new();
+
+        public override SendOptions Options
+        {
+            get;
+        } = new();
+
         public override CancellationToken CancellationToken => Timeout.Token;
 
         internal ValueTask Start(TMessage message, Action<SendOptions>? configure, IOutboxEnlistment? outbox, CancellationToken callerToken, AttemptSendBuffer? buffer, ReplyMetadata reply, WireString tenant,
@@ -186,6 +233,7 @@ internal sealed class SendRoute<TMessage> : SendTarget<TMessage>
             _rowId = rowId == Guid.Empty ? _metadata.MessageId : rowId;
             var previousActivity = Activity.Current;
             Exception? error = null;
+
             try
             {
                 Timeout.CancelAfter(_route._options.Timeout);
@@ -193,6 +241,7 @@ internal sealed class SendRoute<TMessage> : SendTarget<TMessage>
                 configure?.Invoke(Options);
                 CancellationToken.ThrowIfCancellationRequested();
                 _pending = _route._pipeline(this).ConfigureAwait(false).GetAwaiter();
+
                 if (!_pending.IsCompleted)
                 {
                     _completion.Reset();
@@ -200,6 +249,7 @@ internal sealed class SendRoute<TMessage> : SendTarget<TMessage>
                     _pending.UnsafeOnCompleted(_continuation);
                     return new ValueTask(this, version);
                 }
+
                 _pending.GetResult();
             }
             catch (Exception exception)
@@ -207,85 +257,144 @@ internal sealed class SendRoute<TMessage> : SendTarget<TMessage>
                 error = Translate(exception);
                 _route._tracing?.Fail(_activity, error);
             }
-            finally { Activity.Current = previousActivity; }
+            finally
+            {
+                Activity.Current = previousActivity;
+            }
+
             Reset();
             _route.Return(this);
+
             if (error is OperationCanceledException)
             {
                 return ValueTask.FromCanceled(callerToken.IsCancellationRequested ? callerToken : new CancellationToken(true));
             }
+
             return error is null ? ValueTask.CompletedTask : ValueTask.FromException(error);
         }
 
         private void Complete()
         {
             Exception? error = null;
-            try { _pending.GetResult(); }
+
+            try
+            {
+                _pending.GetResult();
+            }
             catch (Exception exception)
             {
                 error = Translate(exception);
                 _route._tracing?.Fail(_activity, error);
             }
+
             Reset();
             // Cleanup precedes completion: an inline caller continuation may immediately rent this operation again.
-            if (error is null) _completion.SetResult(true);
-            else _completion.SetException(error);
+            if (error is null)
+            {
+                _completion.SetResult(true);
+            }
+            else
+            {
+                _completion.SetException(error);
+            }
         }
 
-        private Exception Translate(Exception exception) =>
-            exception is OperationCanceledException && !_callerToken.IsCancellationRequested && Timeout.IsCancellationRequested
-                ? new TimeoutException("The send exceeded its route timeout. Check broker connectivity or increase SendRouteOptions.Timeout.", exception)
-                : exception;
+        private Exception Translate(Exception exception)
+        {
+            return exception is OperationCanceledException && !_callerToken.IsCancellationRequested && Timeout.IsCancellationRequested
+                            ? new TimeoutException("The send exceeded its route timeout. Check broker connectivity or increase SendRouteOptions.Timeout.", exception)
+                            : exception;
+        }
 
         public void GetResult(short token)
         {
             // An operation remains reserved until the caller consumes its ValueTask, even if transport completion was earlier.
-            try { _completion.GetResult(token); }
-            finally { _route.Return(this); }
+            try
+            {
+                _completion.GetResult(token);
+            }
+            finally
+            {
+                _route.Return(this);
+            }
         }
 
-        public ValueTaskSourceStatus GetStatus(short token) => _completion.GetStatus(token);
-        public void OnCompleted(Action<object?> continuation, object? state, short token, ValueTaskSourceOnCompletedFlags flags) =>
+        public ValueTaskSourceStatus GetStatus(short token)
+        {
+            return _completion.GetStatus(token);
+        }
+
+        public void OnCompleted(Action<object?> continuation, object? state, short token, ValueTaskSourceOnCompletedFlags flags)
+        {
             _completion.OnCompleted(continuation, state, token, flags);
+        }
 
         public ValueTask DispatchAsync()
         {
             CancellationToken.ThrowIfCancellationRequested();
+
             if (!_tracingStarted && _route._tracing is { } tracing)
             {
                 var external = default(ActivityContext);
+
                 if (_route._options.EnvelopeMode == MessageEnvelopeMode.Raw &&
                     Options.Headers.TryGetValue(_route._options.HeaderNames.TraceParent, out var parent))
                 {
                     Options.Headers.TryGetValue(_route._options.HeaderNames.TraceState, out var state);
                     ActivityContext.TryParse(parent, state, true, out external);
                 }
+
                 _activity = tracing.Start(external, _outbox is not null || _buffer is not null);
-                _metadata = _metadata with { CreationContext = external != default ? external : _activity?.Context ?? _metadata.CreationContext };
+                _metadata = _metadata with
+                {
+                    CreationContext = external != default ? external : _activity?.Context ?? _metadata.CreationContext
+                };
                 _tracingStarted = true;
             }
+
             if (_route._options.TransactionRequirement == SendTransactionRequirement.Native && _outbox is not null)
+            {
                 throw new InvalidOperationException($"Send route '{_route._messageType}' on transport '{_route._transport.Name}' to endpoint '{_route._destination}' requires native transactions. Use SendWithoutOutboxAsync with the native client's transaction configuration; database outbox durability does not provide native broker transactions.");
+            }
+
             if (_route._options.TransactionRequirement == SendTransactionRequirement.Outbox && _outbox is null)
+            {
                 throw new InvalidOperationException($"Send route '{_route._messageType}' on transport '{_route._transport.Name}' to endpoint '{_route._destination}' requires an active outbox transaction. Begin or select the outbox transaction and use SendAsync or SendViaOutboxAsync.");
+            }
+
             if (Options.OrderingKey is not null && !_route._capabilities.OrderedByKey)
             {
                 throw new InvalidOperationException($"Send route '{_route._messageType}' on transport '{_route._transport.Name}' to endpoint '{_route._destination}' specifies an OrderingKey, but the endpoint does not support OrderedByKey. Configure an endpoint with native ordering or remove the OrderingKey override.");
             }
+
             if (Options.DeliverAt is { } deliverAt)
             {
                 bool supported;
+
                 if (_outbox is null)
+                {
                     supported = _route._capabilities.MaxDeliveryDelay is { } maxDelay && deliverAt - DateTimeOffset.UtcNow <= maxDelay;
+                }
                 else if (Options.OrderingKey is not null || _route._orderingKey is not null)
+                {
                     supported = _outbox.SupportsOrderedScheduling;
+                }
                 else
+                {
                     supported = _outbox.SupportsScheduling;
+                }
+
                 if (!supported)
+                {
                     throw new InvalidOperationException($"Send route '{_route._messageType}' on transport '{_route._transport.Name}' to endpoint '{_route._destination}' cannot execute DeliverAt. Use sufficient native MaxDeliveryDelay for direct sends, or an active outbox transaction with a matching due-row dispatch worker.");
+                }
             }
+
             if (_outbox is not null && _route._isTombstone)
+            {
                 throw new InvalidOperationException("Native tombstones cannot yet be persisted in the outbox. Use SendWithoutOutboxAsync.");
+            }
+
             if (_outbox is not null && Options.HasNativeConfigurators)
             {
                 // Reject before serialization or any durable side effect.
@@ -295,43 +404,86 @@ internal sealed class SendRoute<TMessage> : SendTarget<TMessage>
             _body.Clear();
             _headers.Clear();
             _key.Clear();
-            if (!_route._isTombstone) _route._serializer.Serialize(_message, _body);
+
+            if (!_route._isTombstone)
+            {
+                _route._serializer.Serialize(_message, _body);
+            }
+
             _route._envelope.Write<SendHeaders, SendHeaders>(_headers, _metadata);
-            if (!_route._isTombstone) _headers.Add("content-type", new WireString(_route._serializer.ContentType));
+
+            if (!_route._isTombstone)
+            {
+                _headers.Add("content-type", new WireString(_route._serializer.ContentType));
+            }
+
             foreach (var header in Options.Headers)
             {
                 if (!_tenant.IsEmpty && header.Key == TenantContext.HeaderName)
+                {
                     throw new InvalidOperationException("SendOptions.Headers cannot override the scoped tenant. Set TenantContext.Id in an authorized scope instead.");
+                }
+
                 if (_route._options.EnvelopeMode == MessageEnvelopeMode.CloudEvents && IsEnvelopeHeader(header.Key))
                 {
                     throw new InvalidOperationException("SendOptions.Headers cannot override CloudEvents or creation-context headers. Use route envelope settings or raw mode.");
                 }
+
                 _headers.Add(header.Key, new WireString(header.Value));
             }
-            if (!_tenant.IsEmpty) _headers.Add(TenantContext.HeaderName, _tenant);
-            if (!_reply.ReplyTo.IsEmpty) _headers.Add(_route._options.HeaderNames.ReplyTo, _reply.ReplyTo);
-            if (!_reply.CorrelationId.IsEmpty) _headers.Add(_route._options.HeaderNames.CorrelationId, _reply.CorrelationId);
+
+            if (!_tenant.IsEmpty)
+            {
+                _headers.Add(TenantContext.HeaderName, _tenant);
+            }
+
+            if (!_reply.ReplyTo.IsEmpty)
+            {
+                _headers.Add(_route._options.HeaderNames.ReplyTo, _reply.ReplyTo);
+            }
+
+            if (!_reply.CorrelationId.IsEmpty)
+            {
+                _headers.Add(_route._options.HeaderNames.CorrelationId, _reply.CorrelationId);
+            }
 
             var outgoing = new OutgoingMessage(_route._destination, _body.WrittenMemory, _headers.Written,
                 Options.OrderingKey is { } key ? new WireString(key) : _route._orderingKey?.Select(_message, _key), Options.DeliverAt, Options, _route._isTombstone);
+
             if (_activity is { IsAllDataRequested: true } activity)
             {
                 activity.SetTag("messaging.message.id", MessageId);
                 activity.SetTag("cloudevents.event_type", _route._wireType);
                 activity.SetTag("cloudevents.event_source", _route._options.Source);
-                if (_route._tracing!.IncludeBodySize) activity.SetTag("messaging.message.body.size", _body.WrittenCount);
+
+                if (_route._tracing!.IncludeBodySize)
+                {
+                    activity.SetTag("messaging.message.body.size", _body.WrittenCount);
+                }
+
                 if (!_reply.CorrelationId.IsEmpty)
+                {
                     activity.SetTag("messaging.message.conversation_id", _reply.CorrelationId.ToString());
+                }
                 else if (Options.Headers.TryGetValue(_route._options.HeaderNames.CorrelationId, out var correlation))
+                {
                     activity.SetTag("messaging.message.conversation_id", correlation);
+                }
             }
-            if (_buffer is null && _outbox is null && _route._tracing is not null) outgoing = outgoing.WithTracingStarted();
+
+            if (_buffer is null && _outbox is null && _route._tracing is not null)
+            {
+                outgoing = outgoing.WithTracingStarted();
+            }
+
             CancellationToken.ThrowIfCancellationRequested();
+
             if (_outbox is null && _buffer is not null)
             {
                 _buffer.Add(_route._transport, outgoing, _route._options.Timeout);
                 return ValueTask.CompletedTask;
             }
+
             return _outbox is null
                 ? _route._transport.SendAsync(outgoing, CancellationToken)
                 : _outbox.EnlistAsync(new OutboxRecord(_rowId, _route._transport.Name,
@@ -349,18 +501,25 @@ internal sealed class SendRoute<TMessage> : SendTarget<TMessage>
         {
             var current = Activity.Current;
             _activity?.Dispose();
-            if (!ReferenceEquals(current, _activity)) Activity.Current = current;
+
+            if (!ReferenceEquals(current, _activity))
+            {
+                Activity.Current = current;
+            }
+
             _activity = null;
             _tracingStarted = false;
             // Dispose waits for a caller cancellation callback before its source can be reused.
             _registration.Dispose();
             _registration = default;
             Timeout.CancelAfter(System.Threading.Timeout.InfiniteTimeSpan);
+
             if (!Timeout.TryReset())
             {
                 Timeout.Dispose();
                 Timeout = new();
             }
+
             _message = default!;
             _outbox = null;
             _buffer = null;
@@ -387,6 +546,7 @@ internal sealed class SendHeaders : IMessageHeaderWriter<SendHeaders>, IMessageH
     private byte[]?[] _values = new byte[8][];
     private int _count;
     private bool _oversizedValue;
+
     internal bool CanRetain => _entries.Length <= 64 && !_oversizedValue;
 
     internal ReadOnlyMemory<KeyValuePair<string, WireString>> Written => _entries.AsMemory(0, _count);
@@ -401,28 +561,38 @@ internal sealed class SendHeaders : IMessageHeaderWriter<SendHeaders>, IMessageH
     internal void Add(string name, WireString value)
     {
         var index = Find(name);
+
         if (index < 0)
         {
             index = Append();
         }
+
         _entries[index] = new(name, value);
     }
 
     public static void SetHeader(SendHeaders message, string name, ReadOnlySpan<char> value)
     {
         var index = message.Find(name);
+
         if (index < 0)
         {
             index = message.Append();
         }
+
         var length = Encoding.UTF8.GetByteCount(value);
         var buffer = message._values[index];
+
         if (buffer is null || buffer.Length < length)
         {
             buffer = new byte[Math.Max(128, length)];
             message._values[index] = buffer;
-            if (buffer.Length > 4 * 1024) message._oversizedValue = true;
+
+            if (buffer.Length > 4 * 1024)
+            {
+                message._oversizedValue = true;
+            }
         }
+
         Encoding.UTF8.GetBytes(value, buffer);
         message._entries[index] = new(name, new WireString(buffer.AsMemory(0, length)));
     }
@@ -430,6 +600,7 @@ internal sealed class SendHeaders : IMessageHeaderWriter<SendHeaders>, IMessageH
     public static void RemoveHeader(SendHeaders message, string name)
     {
         var index = message.Find(name);
+
         if (index >= 0)
         {
             // Keep value storage at its index: existing header slices must not be overwritten.
@@ -449,6 +620,7 @@ internal sealed class SendHeaders : IMessageHeaderWriter<SendHeaders>, IMessageH
                 return i;
             }
         }
+
         return -1;
     }
 
@@ -459,6 +631,7 @@ internal sealed class SendHeaders : IMessageHeaderWriter<SendHeaders>, IMessageH
             Array.Resize(ref _entries, _count * 2);
             Array.Resize(ref _values, _count * 2);
         }
+
         return _count++;
     }
 

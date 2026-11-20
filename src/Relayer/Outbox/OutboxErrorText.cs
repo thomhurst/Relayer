@@ -10,12 +10,29 @@ internal static class OutboxErrorText
     internal static string Describe(Exception error)
     {
         var inner = error;
-        while (inner.InnerException is { } next) inner = next;
+
+        while (inner.InnerException is { } next)
+        {
+            inner = next;
+        }
+
         var text = Format(error);
-        if (!ReferenceEquals(inner, error)) text += " ---> " + Format(inner);
-        if (text.Length <= MaxChars) return text;
+
+        if (!ReferenceEquals(inner, error))
+        {
+            text += " ---> " + Format(inner);
+        }
+
+        if (text.Length <= MaxChars)
+        {
+            return text;
+        }
+
         return text[..(char.IsHighSurrogate(text[MaxChars - 1]) ? MaxChars - 1 : MaxChars)];
     }
 
-    private static string Format(Exception error) => (error.GetType().FullName ?? error.GetType().Name) + ": " + error.Message;
+    private static string Format(Exception error)
+    {
+        return (error.GetType().FullName ?? error.GetType().Name) + ": " + error.Message;
+    }
 }

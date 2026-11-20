@@ -28,7 +28,11 @@ public class KafkaTopologyTests(KafkaHeaderSnapshotBroker broker)
             kafka.Options.Configure(options =>
             {
                 options.BootstrapServers.Add(broker.Bootstrap);
-                options.ConfigureAdmin = admin => { configured++; admin.WithClientId("topology-test"); };
+                options.ConfigureAdmin = admin =>
+                {
+                    configured++;
+                    admin.WithClientId("topology-test");
+                };
             });
             kafka.Send<Order>(send);
             kafka.Consume(receive, consumer =>
@@ -48,21 +52,29 @@ public class KafkaTopologyTests(KafkaHeaderSnapshotBroker broker)
         await Assert.That(configured).IsEqualTo(0);
         var missing = await transport.ApplyTopologyAsync(TopologyMode.Validate, token);
         await Assert.That(missing.Differences.Count).IsEqualTo(3);
+
         foreach (var topic in new[] { send, receive, deadLetter })
+        {
             await Assert.That(missing.Differences.Any(diff => diff.Contains("'" + topic + "'", StringComparison.Ordinal))).IsTrue();
+        }
+
         await using var admin = new AdminClientBuilder().WithBootstrapServers(broker.Bootstrap).Build();
         var listed = await admin.ListTopicsAsync(cancellationToken: token);
         await Assert.That(listed.Any(topic => topic.Name == send || topic.Name == receive || topic.Name == deadLetter)).IsFalse();
         await admin.CreateTopicsAsync([new() { Name = send, NumPartitions = 1, ReplicationFactor = 1 },
             new() { Name = receive, NumPartitions = 1, ReplicationFactor = 1 },
             new() { Name = deadLetter, NumPartitions = 1, ReplicationFactor = 1 }], cancellationToken: token);
+
         try
         {
             await Assert.That((await transport.ApplyTopologyAsync(TopologyMode.Validate, token)).Differences.Count).IsEqualTo(0);
             // Each of the two Validate calls builds one native admin client.
             await Assert.That(configured).IsEqualTo(2);
         }
-        finally { await admin.DeleteTopicsAsync([send, receive, deadLetter], cancellationToken: token); }
+        finally
+        {
+            await admin.DeleteTopicsAsync([send, receive, deadLetter], cancellationToken: token);
+        }
     }
 
     [Test]
@@ -98,6 +110,7 @@ public class KafkaTopologyTests(KafkaHeaderSnapshotBroker broker)
             });
         });
         using var host = builder.Build();
+
         try
         {
             await host.StartAsync(token);
@@ -105,6 +118,7 @@ public class KafkaTopologyTests(KafkaHeaderSnapshotBroker broker)
             await Assert.That(await handled.Task.WaitAsync(token)).IsEqualTo(new Order("provisioned", 1));
             await using var admin = Admin();
             await admin.ListTopicsAsync(cancellationToken: token);
+
             foreach (var name in new[] { topic, sendOnly, topic + ".dead-letter" })
             {
                 var actual = admin.Metadata.GetTopic(name)!;
@@ -139,14 +153,25 @@ public class KafkaTopologyTests(KafkaHeaderSnapshotBroker broker)
             Configs = new Dictionary<string, string> { ["retention.ms"] = "86400000" },
         })));
         var transport = host.Services.GetServices<ITransport>().Single();
+
         try
         {
             var start = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
             var requests = new Task<TopologyReport>[callers];
-            for (var i = 0; i < callers; i++) requests[i] = ProvisionAsync();
+
+            for (var i = 0; i < callers; i++)
+            {
+                requests[i] = ProvisionAsync();
+            }
+
             start.SetResult();
             var reports = await Task.WhenAll(requests);
-            foreach (var report in reports) await Assert.That(report.Differences).IsEmpty();
+
+            foreach (var report in reports)
+            {
+                await Assert.That(report.Differences).IsEmpty();
+            }
+
             await Assert.That((await transport.ApplyTopologyAsync(TopologyMode.Provision, token)).Differences.Count).IsEqualTo(0);
             await using var admin = Admin();
             await admin.ListTopicsAsync(cancellationToken: token);
@@ -180,14 +205,19 @@ public class KafkaTopologyTests(KafkaHeaderSnapshotBroker broker)
         await using var admin = Admin();
         await admin.CreateTopicsAsync([new()
         {
-            Name = topic, NumPartitions = 2, ReplicationFactor = 1,
+            Name = topic,
+            NumPartitions = 2,
+            ReplicationFactor = 1,
             Configs = new Dictionary<string, string> { ["retention.ms"] = "86400000" },
         }], cancellationToken: token);
         using var host = CreateHost(kafka => kafka.Options.Configure(options => options.Topics.Add(new()
         {
-            Name = topic, NumPartitions = 3, ReplicationFactor = 2,
+            Name = topic,
+            NumPartitions = 3,
+            ReplicationFactor = 2,
             Configs = new Dictionary<string, string> { ["retention.ms"] = "60000" },
         })));
+
         try
         {
             var report = await host.Services.GetServices<ITransport>().Single().ApplyTopologyAsync(mode, token);
@@ -203,7 +233,10 @@ public class KafkaTopologyTests(KafkaHeaderSnapshotBroker broker)
             var configs = await verification.DescribeConfigsAsync([resource], cancellationToken: token);
             await Assert.That(configs[resource].Single(entry => entry.Name == "retention.ms").Value).IsEqualTo("86400000");
         }
-        finally { await admin.DeleteTopicsAsync([topic], cancellationToken: token); }
+        finally
+        {
+            await admin.DeleteTopicsAsync([topic], cancellationToken: token);
+        }
     }
 
     [Test]
@@ -230,12 +263,16 @@ public class KafkaTopologyTests(KafkaHeaderSnapshotBroker broker)
         await using var admin = Admin();
         await admin.CreateTopicsAsync([new() { Name = topic, NumPartitions = 3 }], cancellationToken: token);
         using var host = CreateHost(kafka => kafka.Send<Order>(topic));
+
         try
         {
             await Assert.That((await host.Services.GetServices<ITransport>().Single()
                 .ApplyTopologyAsync(TopologyMode.Provision, token)).Differences.Count).IsEqualTo(0);
         }
-        finally { await admin.DeleteTopicsAsync([topic], cancellationToken: token); }
+        finally
+        {
+            await admin.DeleteTopicsAsync([topic], cancellationToken: token);
+        }
     }
 
     [Test]
@@ -250,9 +287,12 @@ public class KafkaTopologyTests(KafkaHeaderSnapshotBroker broker)
         var brokerId = admin.Metadata.GetBrokers().First().NodeId;
         using var host = CreateHost(kafka => kafka.Options.Configure(options => options.Topics.Add(new()
         {
-            Name = topic, NumPartitions = -10, ReplicationFactor = -10,
+            Name = topic,
+            NumPartitions = -10,
+            ReplicationFactor = -10,
             ReplicaAssignments = new Dictionary<int, IReadOnlyList<int>> { [0] = new[] { brokerId }, [1] = new[] { brokerId } },
         })));
+
         try
         {
             await Assert.That((await host.Services.GetServices<ITransport>().Single()
@@ -265,7 +305,10 @@ public class KafkaTopologyTests(KafkaHeaderSnapshotBroker broker)
             var report = await mismatch.Services.GetServices<ITransport>().Single().ApplyTopologyAsync(TopologyMode.Validate, token);
             await Assert.That(report.Differences.Single()).Contains($"partition 0 replicas expected [{brokerId + 1}], actual [{brokerId}]");
         }
-        finally { await admin.DeleteTopicsAsync([topic], cancellationToken: token); }
+        finally
+        {
+            await admin.DeleteTopicsAsync([topic], cancellationToken: token);
+        }
     }
 
     [Test]
@@ -277,8 +320,11 @@ public class KafkaTopologyTests(KafkaHeaderSnapshotBroker broker)
         var topic = TopicName();
         using var host = CreateHost(kafka => kafka.Options.Configure(options => options.Topics.Add(new()
         {
-            Name = topic, NumPartitions = -1, ReplicationFactor = -1,
+            Name = topic,
+            NumPartitions = -1,
+            ReplicationFactor = -1,
         })));
+
         try
         {
             var transport = host.Services.GetServices<ITransport>().Single();
@@ -300,7 +346,8 @@ public class KafkaTopologyTests(KafkaHeaderSnapshotBroker broker)
         await broker.Started.WaitAsync(token);
         using var host = CreateHost(kafka => kafka.Options.Configure(options => options.Topics.Add(new()
         {
-            Name = TopicName(), ReplicationFactor = 2, // The shared broker has one node.
+            Name = TopicName(),
+            ReplicationFactor = 2, // The shared broker has one node.
         })));
         var error = await Assert.ThrowsAsync<KafkaException>(async () =>
             await host.Services.GetServices<ITransport>().Single().ApplyTopologyAsync(TopologyMode.Provision, token));
@@ -321,6 +368,7 @@ public class KafkaTopologyTests(KafkaHeaderSnapshotBroker broker)
             kafka.Send<Order>(topic);
             kafka.Options.Configure(options => options.TopicCreationOptions = new() { TimeoutMs = 0 });
         });
+
         try
         {
             await Assert.That(async () => await host.Services.GetServices<ITransport>().Single()
@@ -328,12 +376,21 @@ public class KafkaTopologyTests(KafkaHeaderSnapshotBroker broker)
                 .Throws<TimeoutException>().WithMessageContaining("within 0 ms");
             await Assert.That(token.IsCancellationRequested).IsFalse();
         }
-        finally { await admin.DeleteTopicsAsync([topic], cancellationToken: token); }
+        finally
+        {
+            await admin.DeleteTopicsAsync([topic], cancellationToken: token);
+        }
     }
 
-    private static string TopicName() => TestContext.Current!.Isolation.GetIsolatedName("topology").ToLowerInvariant();
+    private static string TopicName()
+    {
+        return TestContext.Current!.Isolation.GetIsolatedName("topology").ToLowerInvariant();
+    }
 
-    private IAdminClient Admin() => new AdminClientBuilder().WithBootstrapServers(broker.Bootstrap).Build();
+    private IAdminClient Admin()
+    {
+        return new AdminClientBuilder().WithBootstrapServers(broker.Bootstrap).Build();
+    }
 
     private IHost CreateHost(Action<TransportBuilder<KafkaTransportOptions, KafkaConsumerOptions>> configure)
     {
@@ -349,7 +406,10 @@ public class KafkaTopologyTests(KafkaHeaderSnapshotBroker broker)
 
 public sealed class KafkaTopologyHandler : IHandler<Order>
 {
-    public ValueTask HandleAsync(Order message, MessageContext context, CancellationToken cancellationToken) => default;
+    public ValueTask HandleAsync(Order message, MessageContext context, CancellationToken cancellationToken)
+    {
+        return default;
+    }
 }
 
 public sealed class KafkaProvisioningHandler(TaskCompletionSource<Order> handled) : IHandler<Order>

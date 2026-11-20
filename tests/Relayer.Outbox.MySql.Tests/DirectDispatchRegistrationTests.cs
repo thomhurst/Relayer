@@ -1,8 +1,8 @@
-using Relayer.Transports;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Options;
+using Relayer.Transports;
 
 namespace Relayer.Outbox.MySql.Tests;
 
@@ -16,12 +16,17 @@ public sealed class DirectDispatchRegistrationTests
         using var source = new MySqlConnector.MySqlDataSource(ConnectionString);
         var configuration = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
         {
-            ["QueueCapacity"] = "3", ["BatchSize"] = "7", ["ClaimDuration"] = "00:02:00"
+            ["QueueCapacity"] = "3",
+            ["BatchSize"] = "7",
+            ["ClaimDuration"] = "00:02:00"
         }).Build();
         var services = new ServiceCollection();
         services.AddLogging();
         services.AddRelayerMySqlDirectDispatch("first", source, configuration);
-        services.AddRelayerMySqlDirectDispatch("second", source, dispatchOptions: new() { BatchSize = 2 });
+        services.AddRelayerMySqlDirectDispatch("second", source, dispatchOptions: new()
+        {
+            BatchSize = 2
+        });
         await using var provider = services.BuildServiceProvider();
         var monitor = provider.GetRequiredService<IOptionsMonitor<MySqlDirectDispatchOptions>>();
         await Assert.That(monitor.Get("first").QueueCapacity).IsEqualTo(3);
@@ -41,11 +46,20 @@ public sealed class DirectDispatchRegistrationTests
         services.AddRelayerMySqlDirectDispatch("store", source);
         await Assert.That(() => services.AddRelayerMySqlDirectDispatch("store", source)).Throws<InvalidOperationException>();
         await Assert.That(() => new ServiceCollection().AddRelayerMySqlDirectDispatch("store", source,
-            dispatchOptions: new() { QueueCapacity = 0 })).Throws<ArgumentOutOfRangeException>();
+            dispatchOptions: new()
+            {
+                QueueCapacity = 0
+            })).Throws<ArgumentOutOfRangeException>();
         await Assert.That(() => new ServiceCollection().AddRelayerMySqlDirectDispatch("store", source,
-            dispatchOptions: new() { BatchSize = 0 })).Throws<ArgumentOutOfRangeException>();
+            dispatchOptions: new()
+            {
+                BatchSize = 0
+            })).Throws<ArgumentOutOfRangeException>();
         await Assert.That(() => new ServiceCollection().AddRelayerMySqlDirectDispatch("store", source,
-            dispatchOptions: new() { ClaimDuration = TimeSpan.Zero })).Throws<ArgumentOutOfRangeException>();
+            dispatchOptions: new()
+            {
+                ClaimDuration = TimeSpan.Zero
+            })).Throws<ArgumentOutOfRangeException>();
         using var noDatabase = new MySqlConnector.MySqlDataSource("Server=localhost");
         await Assert.That(() => new ServiceCollection().AddRelayerMySqlDirectDispatch("store", noDatabase))
             .Throws<ArgumentException>();

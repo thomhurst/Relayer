@@ -14,12 +14,18 @@ internal sealed class PostgreSqlConflictExecutionStrategy(DbContext context)
         // Npgsql's non-retrying strategy wraps transient command failures in InvalidOperationException.
         // A SaveChanges wrapper may be nested inside it; only unwrap these provider/EF wrappers.
         while (exception is InvalidOperationException or DbUpdateException && exception.InnerException is { } inner)
+        {
             exception = inner;
+        }
+
         return exception is PostgresException
         {
             SqlState: PostgresErrorCodes.SerializationFailure or PostgresErrorCodes.DeadlockDetected
         };
     }
 
-    protected override bool ShouldVerifySuccessOn(Exception exception) => false;
+    protected override bool ShouldVerifySuccessOn(Exception exception)
+    {
+        return false;
+    }
 }

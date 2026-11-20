@@ -24,19 +24,27 @@ internal sealed class NatsSendOperation : IValueTaskSource
         _complete = Resume;
     }
 
-    internal NatsPublishHeaders Headers { get; }
+    internal NatsPublishHeaders Headers
+    {
+        get;
+    }
 
     internal ValueTask Publish(NatsJSContext context, OutgoingMessage message, NatsJSPubOpts? options,
         CancellationToken token, SendTracing.NativeSendOperation duration)
     {
         _duration = duration;
         var version = _completion.Version;
+
         try
         {
             return Track(context.PublishAsync(message.Destination, message.Body, Headers,
                 opts: options, headers: Headers, cancellationToken: token), duration);
         }
-        catch (Exception error) { Finish(error); }
+        catch (Exception error)
+        {
+            Finish(error);
+        }
+
         return new(this, version);
     }
 
@@ -46,23 +54,44 @@ internal sealed class NatsSendOperation : IValueTaskSource
         _context = ExecutionContext.Capture();
         var version = _completion.Version;
         _pending = pending.ConfigureAwait(false).GetAwaiter();
-        if (_pending.IsCompleted) Complete();
-        else _pending.UnsafeOnCompleted(_complete);
+
+        if (_pending.IsCompleted)
+        {
+            Complete();
+        }
+        else
+        {
+            _pending.UnsafeOnCompleted(_complete);
+        }
+
         return new(this, version);
     }
 
     private void Resume()
     {
         if (_context is { } context)
+        {
             ExecutionContext.Run(context, static state => ((NatsSendOperation)state!).Complete(), this);
-        else Complete();
+        }
+        else
+        {
+            Complete();
+        }
     }
 
     private void Complete()
     {
         Exception? failure = null;
-        try { _pending.GetResult().EnsureSuccess(); }
-        catch (Exception error) { failure = error; }
+
+        try
+        {
+            _pending.GetResult().EnsureSuccess();
+        }
+        catch (Exception error)
+        {
+            failure = error;
+        }
+
         Finish(failure);
     }
 
@@ -73,20 +102,39 @@ internal sealed class NatsSendOperation : IValueTaskSource
         var duration = _duration;
         _duration = default;
         Headers.Reset();
-        try { duration.Complete(failure is not null); }
-        catch (Exception error) { failure = error; }
+
+        try
+        {
+            duration.Complete(failure is not null);
+        }
+        catch (Exception error)
+        {
+            failure = error;
+        }
         // Completion can run the caller inline, returning this object and starting another
         // publication. Do not access any operation fields after publishing the result.
-        if (failure is null) _completion.SetResult(true);
-        else _completion.SetException(failure);
+        if (failure is null)
+        {
+            _completion.SetResult(true);
+        }
+        else
+        {
+            _completion.SetException(failure);
+        }
     }
 
     public void GetResult(short token)
     {
         // A premature/stale consumer must not return an active operation to the pool.
         if (_completion.GetStatus(token) == ValueTaskSourceStatus.Pending)
+        {
             throw new InvalidOperationException("The NATS publication has not completed.");
-        try { _completion.GetResult(token); }
+        }
+
+        try
+        {
+            _completion.GetResult(token);
+        }
         finally
         {
             _completion.Reset();
@@ -94,7 +142,13 @@ internal sealed class NatsSendOperation : IValueTaskSource
         }
     }
 
-    public ValueTaskSourceStatus GetStatus(short token) => _completion.GetStatus(token);
-    public void OnCompleted(Action<object?> continuation, object? state, short token, ValueTaskSourceOnCompletedFlags flags) =>
+    public ValueTaskSourceStatus GetStatus(short token)
+    {
+        return _completion.GetStatus(token);
+    }
+
+    public void OnCompleted(Action<object?> continuation, object? state, short token, ValueTaskSourceOnCompletedFlags flags)
+    {
         _completion.OnCompleted(continuation, state, token, flags);
+    }
 }

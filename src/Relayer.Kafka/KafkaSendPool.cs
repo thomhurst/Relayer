@@ -34,23 +34,41 @@ internal sealed class KafkaSendOperation
         {
             var previous = States.Length;
             Array.Resize(ref States, count);
-            for (var i = previous; i < count; i++) States[i] = new();
+
+            for (var i = previous; i < count; i++)
+            {
+                States[i] = new();
+            }
         }
+
         Messages.EnsureCapacity(count);
         _count = count;
     }
 
     private int _pendingCount;
+
     internal void EnsurePending(int count)
     {
-        if (Pending.Length < count) Array.Resize(ref Pending, count);
+        if (Pending.Length < count)
+        {
+            Array.Resize(ref Pending, count);
+        }
+
         _pendingCount = count;
     }
 
     internal void Clear()
     {
-        for (var i = 0; i < _count; i++) States[i].Clear();
-        if (_pendingCount != 0) Array.Clear(Pending, 0, _pendingCount);
+        for (var i = 0; i < _count; i++)
+        {
+            States[i].Clear();
+        }
+
+        if (_pendingCount != 0)
+        {
+            Array.Clear(Pending, 0, _pendingCount);
+        }
+
         _pendingCount = 0;
         Messages.Clear();
         _count = 0;

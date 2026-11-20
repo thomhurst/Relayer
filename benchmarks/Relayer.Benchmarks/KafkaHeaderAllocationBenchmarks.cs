@@ -27,43 +27,67 @@ public class KafkaHeaderAllocationBenchmarks
         _topic = "relayer-header-benchmark-" + Guid.NewGuid().ToString("N");
         _admin = new AdminClientBuilder().WithBootstrapServers(bootstrap).Build();
         await _admin.CreateTopicsAsync([new() { Name = _topic, NumPartitions = 1, ReplicationFactor = 1 }]);
+
         await using (var producer = await new ProducerBuilder<byte[], byte[]>().WithBootstrapServers(bootstrap).BuildAsync())
         {
             await producer.ProduceAsync(new()
             {
-                Topic = _topic, Value = "{\"Value\":42}"u8.ToArray(),
+                Topic = _topic,
+                Value = "{\"Value\":42}"u8.ToArray(),
                 Headers = new Headers().Add("ce_id", "benchmark").Add("ce_type", "benchmarks.kafka-receive;v=1"),
             });
         }
+
         _consumer = new ConsumerBuilder<byte[], byte[]>().WithBootstrapServers(bootstrap).WithGroupId(_topic)
             .WithOffsetCommitMode(OffsetCommitMode.Manual).WithAutoOffsetStore(false).WithAutoOffsetReset(AutoOffsetReset.Earliest).Build();
         _consumer.Assign(new TopicPartition(_topic, 0));
         await _consumer.InitializeAsync();
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
         _batches = _consumer.ConsumeBatchAsync(timeout.Token).GetAsyncEnumerator();
-        if (!await _batches.MoveNextAsync()) throw new InvalidOperationException("Missing native fetch batch.");
+
+        if (!await _batches.MoveNextAsync())
+        {
+            throw new InvalidOperationException("Missing native fetch batch.");
+        }
+
         var records = _batches.Current.GetEnumerator();
-        if (!records.MoveNext()) throw new InvalidOperationException("Empty native fetch batch.");
+
+        if (!records.MoveNext())
+        {
+            throw new InvalidOperationException("Empty native fetch batch.");
+        }
+
         _record = records.Current;
         _delivery = new(_record, "0");
+
         if (NativeSingleLookup() != 1 || NativeEnvelopeLookups() != 2 || SharedNativeSnapshot() != 2 || RelayerEnvelopeLookups() != 2)
+        {
             throw new InvalidOperationException("Header controls disagree on the known envelope.");
+        }
     }
 
     [Benchmark(Baseline = true)]
-    public long NativeNoHeaders() => _record.Offset;
+    public long NativeNoHeaders()
+    {
+        return _record.Offset;
+    }
 
     [Benchmark]
-    public int NativeSingleLookup() => Find(_record.Headers, "ce_type") ? 1 : 0;
+    public int NativeSingleLookup()
+    {
+        return Find(_record.Headers, "ce_type") ? 1 : 0;
+    }
 
     // The executable success path validates type/id and reads both failure counters.
     // Each lookup deliberately obtains the native property again to model the former binding.
     [Benchmark]
     public int NativeEnvelopeLookups()
-        => (Find(_record.Headers, "ce_type") ? 1 : 0)
-            + (Find(_record.Headers, "ce_id") ? 1 : 0)
-            + (Find(_record.Headers, FailureHeaders.Attempts) ? 1 : 0)
-            + (Find(_record.Headers, FailureHeaders.Redeliveries) ? 1 : 0);
+    {
+        return (Find(_record.Headers, "ce_type") ? 1 : 0)
+                    + (Find(_record.Headers, "ce_id") ? 1 : 0)
+                    + (Find(_record.Headers, FailureHeaders.Attempts) ? 1 : 0)
+                    + (Find(_record.Headers, FailureHeaders.Redeliveries) ? 1 : 0);
+    }
 
     [Benchmark]
     public int SharedNativeSnapshot()
@@ -77,27 +101,52 @@ public class KafkaHeaderAllocationBenchmarks
 
     [Benchmark]
     public int RelayerEnvelopeLookups()
-        => (KafkaMessageBinding.TryGetHeader(_delivery, "ce_type", out _) ? 1 : 0)
-            + (KafkaMessageBinding.TryGetHeader(_delivery, "ce_id", out _) ? 1 : 0)
-            + (KafkaMessageBinding.TryGetHeader(_delivery, FailureHeaders.Attempts, out _) ? 1 : 0)
-            + (KafkaMessageBinding.TryGetHeader(_delivery, FailureHeaders.Redeliveries, out _) ? 1 : 0);
+    {
+        return (KafkaMessageBinding.TryGetHeader(_delivery, "ce_type", out _) ? 1 : 0)
+                    + (KafkaMessageBinding.TryGetHeader(_delivery, "ce_id", out _) ? 1 : 0)
+                    + (KafkaMessageBinding.TryGetHeader(_delivery, FailureHeaders.Attempts, out _) ? 1 : 0)
+                    + (KafkaMessageBinding.TryGetHeader(_delivery, FailureHeaders.Redeliveries, out _) ? 1 : 0);
+    }
 
     private static bool Find(IReadOnlyList<Header> headers, string name)
     {
         for (var i = 0; i < headers.Count; i++)
-            if (headers[i].Key == name) return true;
+        {
+            if (headers[i].Key == name)
+            {
+                return true;
+            }
+        }
+
         return false;
     }
 
     [GlobalCleanup]
     public async Task Cleanup()
     {
-        if (_batches is not null) await _batches.DisposeAsync();
-        if (_consumer is not null) await _consumer.DisposeAsync();
+        if (_batches is not null)
+        {
+            await _batches.DisposeAsync();
+        }
+
+        if (_consumer is not null)
+        {
+            await _consumer.DisposeAsync();
+        }
+
         if (_admin is not null)
         {
-            try { if (_topic is not null) await _admin.DeleteTopicsAsync([_topic]); }
-            finally { await _admin.DisposeAsync(); }
+            try
+            {
+                if (_topic is not null)
+                {
+                    await _admin.DeleteTopicsAsync([_topic]);
+                }
+            }
+            finally
+            {
+                await _admin.DisposeAsync();
+            }
         }
     }
 }

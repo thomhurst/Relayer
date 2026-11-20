@@ -12,23 +12,41 @@ public sealed class ConformanceLogCapture : ILoggerProvider
     public void AssertClean()
     {
         if (!_failures.IsEmpty)
+        {
             throw new InvalidOperationException("Transport conformance: shutdown logged failures: " + string.Join(Environment.NewLine, _failures));
+        }
     }
 
     /// <inheritdoc />
-    public ILogger CreateLogger(string categoryName) => new CaptureLogger(categoryName, _failures);
+    public ILogger CreateLogger(string categoryName)
+    {
+        return new CaptureLogger(categoryName, _failures);
+    }
+
     /// <inheritdoc />
-    public void Dispose() { } // Capture remains readable after the fixture's logger factory is disposed.
+    public void Dispose()
+    {
+    } // Capture remains readable after the fixture's logger factory is disposed.
 
     private sealed class CaptureLogger(string category, ConcurrentQueue<string> failures) : ILogger
     {
-        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
-        public bool IsEnabled(LogLevel logLevel) => logLevel >= LogLevel.Warning;
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull
+        {
+            return null;
+        }
+
+        public bool IsEnabled(LogLevel logLevel)
+        {
+            return logLevel >= LogLevel.Warning;
+        }
+
         public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception,
             Func<TState, Exception?, string> formatter)
         {
             if (logLevel >= LogLevel.Error || logLevel >= LogLevel.Warning && exception is OperationCanceledException)
+            {
                 failures.Enqueue($"{category} [{logLevel}] {formatter(state, exception)} {exception}");
+            }
         }
     }
 }

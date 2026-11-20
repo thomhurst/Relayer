@@ -1,7 +1,7 @@
-using Relayer.Transports;
 using Azure.Messaging.ServiceBus;
 using Microsoft.Extensions.DependencyInjection;
 using Relayer.AzureServiceBus;
+using Relayer.Transports;
 
 namespace Relayer.Tests;
 
@@ -22,8 +22,13 @@ public sealed class ServiceBusDeadLetterTests
                 o.Subscriptions.Add(new("events", "audit"));
             });
             bus.Consume("orders", c => c.Handler<ServiceBusReceiveEmulatorTests.EmulatorHandler>());
-            bus.Consume("events", c => { c.Options.Subscription = "audit"; c.Handler<ServiceBusReceiveEmulatorTests.EmulatorHandler>(); });
+            bus.Consume("events", c =>
+            {
+                c.Options.Subscription = "audit";
+                c.Handler<ServiceBusReceiveEmulatorTests.EmulatorHandler>();
+            });
         }));
+
         await using (var provider = services.BuildServiceProvider())
         {
             var manager = provider.GetRequiredKeyedService<IDeadLetterManager>("bus");
@@ -33,6 +38,7 @@ public sealed class ServiceBusDeadLetterTests
             await Assert.That(client.Options!.SubQueue).IsEqualTo(SubQueue.DeadLetter);
             await Assert.That(client.Options.ReceiveMode).IsEqualTo(ServiceBusReceiveMode.PeekLock);
         }
+
         await Assert.That(client.Disposed).IsFalse();
     }
 
@@ -88,11 +94,15 @@ public sealed class ServiceBusDeadLetterTests
         client.Receiver.Messages = [Message("rejected", 1), Message("failing", 2), Message("suffix", 3)];
         await Assert.That(async () => await Manager(client).RedriveAsync("orders", message =>
         {
-            if (message.MessageId == "failing") throw new InvalidOperationException("filter failure");
+            if (message.MessageId == "failing")
+            {
+                throw new InvalidOperationException("filter failure");
+            }
+
             return false;
         }, 3)).Throws<InvalidOperationException>();
         await Assert.That(client.Events.ToArray()).IsEquivalentTo(new[]
-            { "abandon:rejected", "abandon:failing", "abandon:suffix" });
+        { "abandon:rejected", "abandon:failing", "abandon:suffix" });
         await Assert.That(client.Receiver.Disposals).IsEqualTo(1);
     }
 
@@ -133,8 +143,14 @@ public sealed class ServiceBusDeadLetterTests
         var manager = Manager(client);
         await Assert.That(async () =>
         {
-            if (purge) await manager.PurgeAsync("orders", 3);
-            else await manager.RedriveAsync("orders", maxMessages: 3);
+            if (purge)
+            {
+                await manager.PurgeAsync("orders", 3);
+            }
+            else
+            {
+                await manager.RedriveAsync("orders", maxMessages: 3);
+            }
         }).Throws<InvalidOperationException>().WithMessage("complete");
         await Assert.That(client.Events.TakeLast(2).ToArray())
             .IsEquivalentTo(new[] { "abandon:fail", "abandon:remaining" });
@@ -156,8 +172,11 @@ public sealed class ServiceBusDeadLetterTests
         await Assert.That(client.Events.ToArray()).IsEquivalentTo(new[] { "abandon:first", "abandon:second" });
     }
 
-    private static ServiceBusDeadLetterManager Manager(Client client) => new(client,
-        [new ConsumerDefinition<ServiceBusConsumerOptions>("orders", new(), [], 1, 1, TimeSpan.Zero)]);
+    private static ServiceBusDeadLetterManager Manager(Client client)
+    {
+        return new(client,
+                [new ConsumerDefinition<ServiceBusConsumerOptions>("orders", new(), [], 1, 1, TimeSpan.Zero)]);
+    }
 
     private static ServiceBusReceivedMessage Message(string id, long sequence)
     {
@@ -172,18 +191,49 @@ public sealed class ServiceBusDeadLetterTests
     private sealed class Client : ServiceBusClient
     {
         internal readonly List<string> Events = [];
-        internal Receiver Receiver { get; }
-        internal Sender Sender { get; }
+
+        internal Receiver Receiver
+        {
+            get;
+        }
+
+        internal Sender Sender
+        {
+            get;
+        }
         internal ServiceBusReceiverOptions? Options;
         internal string? Subscription;
         internal bool Disposed;
-        internal Client() { Receiver = new(Events); Sender = new(Events); }
+
+        internal Client()
+        {
+            Receiver = new(Events);
+            Sender = new(Events);
+        }
+
         public override ServiceBusReceiver CreateReceiver(string queueName, ServiceBusReceiverOptions? options = null)
-        { Options = options; return Receiver; }
+        {
+            Options = options;
+            return Receiver;
+        }
+
         public override ServiceBusReceiver CreateReceiver(string topicName, string subscriptionName, ServiceBusReceiverOptions? options = null)
-        { Subscription = subscriptionName; Options = options; return Receiver; }
-        public override ServiceBusSender CreateSender(string queueOrTopicName) => Sender;
-        public override ValueTask DisposeAsync() { Disposed = true; return default; }
+        {
+            Subscription = subscriptionName;
+            Options = options;
+            return Receiver;
+        }
+
+        public override ServiceBusSender CreateSender(string queueOrTopicName)
+        {
+            return Sender;
+        }
+
+        public override ValueTask DisposeAsync()
+        {
+            Disposed = true;
+            return default;
+        }
     }
 
     private sealed class Receiver(List<string> events) : ServiceBusReceiver
@@ -194,23 +244,55 @@ public sealed class ServiceBusDeadLetterTests
         internal int Disposals;
         internal string? FailComplete;
         internal string? FailAbandon;
+
         public override Task<IReadOnlyList<ServiceBusReceivedMessage>> PeekMessagesAsync(int maxMessages, long? fromSequenceNumber = null, CancellationToken cancellationToken = default)
-        { From = fromSequenceNumber; return Task.FromResult(Messages); }
+        {
+            From = fromSequenceNumber;
+            return Task.FromResult(Messages);
+        }
+
         public override Task<IReadOnlyList<ServiceBusReceivedMessage>> ReceiveMessagesAsync(int maxMessages, TimeSpan? maxWaitTime = null, CancellationToken cancellationToken = default)
-        { cancellationToken.ThrowIfCancellationRequested(); Maximum = maxMessages; return Task.FromResult(Messages); }
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            Maximum = maxMessages;
+            return Task.FromResult(Messages);
+        }
+
         public override Task CompleteMessageAsync(ServiceBusReceivedMessage message, CancellationToken cancellationToken = default)
-        { events.Add("complete:" + message.MessageId); return message.MessageId == FailComplete ? Task.FromException(new InvalidOperationException("complete")) : Task.CompletedTask; }
+        {
+            events.Add("complete:" + message.MessageId);
+            return message.MessageId == FailComplete ? Task.FromException(new InvalidOperationException("complete")) : Task.CompletedTask;
+        }
+
         public override Task AbandonMessageAsync(ServiceBusReceivedMessage message, IDictionary<string, object>? propertiesToModify = null, CancellationToken cancellationToken = default)
-        { cancellationToken.ThrowIfCancellationRequested(); events.Add("abandon:" + message.MessageId); return message.MessageId == FailAbandon ? Task.FromException(new InvalidOperationException("abandon")) : Task.CompletedTask; }
-        public override ValueTask DisposeAsync() { Disposals++; return default; }
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            events.Add("abandon:" + message.MessageId);
+            return message.MessageId == FailAbandon ? Task.FromException(new InvalidOperationException("abandon")) : Task.CompletedTask;
+        }
+
+        public override ValueTask DisposeAsync()
+        {
+            Disposals++;
+            return default;
+        }
     }
 
     private sealed class Sender(List<string> events) : ServiceBusSender
     {
         internal ServiceBusMessage? Sent;
         internal bool Fail;
+
         public override Task SendMessageAsync(ServiceBusMessage message, CancellationToken cancellationToken = default)
-        { Sent = message; events.Add("send:" + message.MessageId); return Fail ? Task.FromException(new InvalidOperationException("send")) : Task.CompletedTask; }
-        public override ValueTask DisposeAsync() => default;
+        {
+            Sent = message;
+            events.Add("send:" + message.MessageId);
+            return Fail ? Task.FromException(new InvalidOperationException("send")) : Task.CompletedTask;
+        }
+
+        public override ValueTask DisposeAsync()
+        {
+            return default;
+        }
     }
 }

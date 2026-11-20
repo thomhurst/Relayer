@@ -1,6 +1,6 @@
-using Relayer.Transports;
-using Relayer.Pipeline;
 using Microsoft.Extensions.DependencyInjection;
+using Relayer.Pipeline;
+using Relayer.Transports;
 
 namespace Relayer.Tests;
 
@@ -40,15 +40,21 @@ public class ConfigurationTests
     [Test]
     public async Task AddRelayer_twice_throws()
     {
-        var services = new ServiceCollection().AddRelayer(_ => { });
+        var services = new ServiceCollection().AddRelayer(_ =>
+        {
+        });
 
-        await Assert.That(() => services.AddRelayer(_ => { })).Throws<InvalidOperationException>();
+        await Assert.That(() => services.AddRelayer(_ =>
+        {
+        })).Throws<InvalidOperationException>();
     }
 
     [Test]
     public async Task Native_configuration_for_the_wrong_transport_type_throws()
     {
-        var options = new SendOptions().ConfigureNative<StringBuilderStandIn>(_ => { });
+        var options = new SendOptions().ConfigureNative<StringBuilderStandIn>(_ =>
+        {
+        });
 
         await Assert.That(() => options.ApplyNative(new object()))
             .Throws<InvalidOperationException>()
@@ -66,6 +72,9 @@ public class ConfigurationTests
 
     private sealed class StringBuilderStandIn
     {
-        public string? Value { get; set; }
+        public string? Value
+        {
+            get; set;
+        }
     }
 }

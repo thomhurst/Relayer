@@ -11,16 +11,23 @@ internal static class TimerQueueWarmup
     // This is setup only: do not replace native timers or exclude bytes from a window.
     internal static void WarmContention()
     {
-        const BindingFlags visibility = BindingFlags.Public | BindingFlags.NonPublic;
+        const BindingFlags Visibility = BindingFlags.Public | BindingFlags.NonPublic;
         var queuesType = typeof(Timer).Assembly.GetType("System.Threading.TimerQueue");
-        var queues = queuesType?.GetProperty("Instances", visibility | BindingFlags.Static)?.GetValue(null) as Array;
-        var sharedLock = queuesType?.GetProperty("SharedLock", visibility | BindingFlags.Instance);
+        var queues = queuesType?.GetProperty("Instances", Visibility | BindingFlags.Static)?.GetValue(null) as Array;
+        var sharedLock = queuesType?.GetProperty("SharedLock", Visibility | BindingFlags.Instance);
+
         if (queues is null || sharedLock is null)
+        {
             throw UnsupportedRuntime();
+        }
 
         foreach (var queue in queues)
         {
-            if (sharedLock.GetValue(queue) is not Lock gate) throw UnsupportedRuntime();
+            if (sharedLock.GetValue(queue) is not Lock gate)
+            {
+                throw UnsupportedRuntime();
+            }
+
             WarmContention(gate);
         }
     }
@@ -36,20 +43,37 @@ internal static class TimerQueueWarmup
             lock (gate)
             {
                 held.Set();
+
                 if (!SpinWait.SpinUntil(() => Volatile.Read(ref entering) != 0 &&
                         (caller.ThreadState & ThreadState.WaitSleepJoin) != 0, TimeSpan.FromSeconds(10)))
+                {
                     failure = new TimeoutException("Timer-queue warmup did not observe the caller waiting for the native Lock.");
+                }
             }
-        }) { IsBackground = true };
+        })
+        {
+            IsBackground = true
+        };
         owner.Start();
         held.Wait();
         Volatile.Write(ref entering, 1);
-        lock (gate) { }
+
+        lock (gate)
+        {
+        }
+
         owner.Join();
-        if (failure is not null) throw failure;
+
+        if (failure is not null)
+        {
+            throw failure;
+        }
     }
 
-    private static InvalidOperationException UnsupportedRuntime() => new(
-        $"Cannot find the native TimerQueue.Instances/SharedLock on {RuntimeInformation.FrameworkDescription}. " +
-        "Update the allocation-test warmup for this runtime; keep exact allocation assertions enabled.");
+    private static InvalidOperationException UnsupportedRuntime()
+    {
+        return new(
+                $"Cannot find the native TimerQueue.Instances/SharedLock on {RuntimeInformation.FrameworkDescription}. " +
+                "Update the allocation-test warmup for this runtime; keep exact allocation assertions enabled.");
+    }
 }

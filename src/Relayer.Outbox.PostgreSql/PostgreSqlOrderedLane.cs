@@ -1,7 +1,7 @@
-using Relayer.Transports;
 using System.Runtime.CompilerServices;
 using Npgsql;
 using NpgsqlTypes;
+using Relayer.Transports;
 
 namespace Relayer.Outbox.PostgreSql;
 
@@ -33,6 +33,7 @@ internal sealed class PostgreSqlOrderedLane : IDisposable
         _claim = CreateMutation($"UPDATE {table} SET claim_token = @token, claim_expires_at = clock_timestamp() + @duration WHERE id = @id AND status = 'pending' AND (deliver_at IS NULL OR deliver_at <= clock_timestamp()) AND (claim_expires_at IS NULL OR claim_expires_at <= clock_timestamp())");
         _claim.Parameters.Add(new NpgsqlParameter<TimeSpan>("duration", NpgsqlDbType.Interval) { TypedValue = duration });
         var complete = $"DELETE FROM {table} WHERE {fenced}";
+
         if (options.RetainSentMessages)
         {
             var sent = PostgreSqlOutboxSchema.QuoteIdentifier(options.Schema ?? "public") + "." +
@@ -40,6 +41,7 @@ internal sealed class PostgreSqlOrderedLane : IDisposable
             // INSERT's affected-row count preserves the existing ExecuteNonQuery completion contract.
             complete = $"WITH deleted AS ({complete} RETURNING id, destination) INSERT INTO {sent} (id, destination, sent_at) SELECT id, destination, clock_timestamp() FROM deleted ON CONFLICT (id) DO UPDATE SET destination = EXCLUDED.destination, sent_at = EXCLUDED.sent_at";
         }
+
         _complete = CreateMutation(complete);
         var dead = PostgreSqlOutboxSchema.QuoteIdentifier(options.Schema ?? "public") + "." +
             PostgreSqlOutboxSchema.QuoteIdentifier(options.TablePrefix + "outbox_dead");
@@ -61,13 +63,28 @@ internal sealed class PostgreSqlOrderedLane : IDisposable
     {
         Array.Clear(ready);
         _assigned.Clear();
+
         for (var lane = 0; lane < assigned.Length; lane++)
-            if (assigned[lane]) _assigned.Add(lane);
-        if (_assigned.Count == 0) return;
+        {
+            if (assigned[lane])
+            {
+                _assigned.Add(lane);
+            }
+        }
+
+        if (_assigned.Count == 0)
+        {
+            return;
+        }
+
         using var command = _source.CreateCommand(_ready);
         command.Parameters.Add(new NpgsqlParameter<List<int>>("lanes", NpgsqlDbType.Array | NpgsqlDbType.Integer) { TypedValue = _assigned });
         await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
-        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false)) ready[reader.GetInt32(0)] = true;
+
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            ready[reader.GetInt32(0)] = true;
+        }
     }
 
     [RuntimeAsyncMethodGeneration(false)]
@@ -82,13 +99,22 @@ internal sealed class PostgreSqlOrderedLane : IDisposable
     }
 
     internal ValueTask<bool> ClaimAsync(NpgsqlConnection connection, NpgsqlTransaction transaction,
-        OutboxClaim claim, CancellationToken cancellationToken) => MutateAsync(connection, transaction, _claim, claim, null, cancellationToken);
+        OutboxClaim claim, CancellationToken cancellationToken)
+    {
+        return MutateAsync(connection, transaction, _claim, claim, null, cancellationToken);
+    }
 
     internal ValueTask<bool> CompleteAsync(NpgsqlConnection connection, NpgsqlTransaction transaction,
-        OutboxClaim claim, CancellationToken cancellationToken) => MutateAsync(connection, transaction, _complete, claim, null, cancellationToken);
+        OutboxClaim claim, CancellationToken cancellationToken)
+    {
+        return MutateAsync(connection, transaction, _complete, claim, null, cancellationToken);
+    }
 
     internal ValueTask<bool> FailAsync(NpgsqlConnection connection, NpgsqlTransaction transaction,
-        OutboxClaim claim, string error, CancellationToken cancellationToken, bool permanent = false, bool retryable = false) => MutateAsync(connection, transaction, permanent ? _failImmediately : retryable ? _retry : _fail, claim, error, cancellationToken);
+        OutboxClaim claim, string error, CancellationToken cancellationToken, bool permanent = false, bool retryable = false)
+    {
+        return MutateAsync(connection, transaction, permanent ? _failImmediately : retryable ? _retry : _fail, claim, error, cancellationToken);
+    }
 
     internal ValueTask<bool> FailLocalAsync(NpgsqlConnection connection, NpgsqlTransaction transaction,
         OutboxClaim claim, string error, int limit, TimeSpan delay, CancellationToken cancellationToken)
@@ -106,17 +132,30 @@ internal sealed class PostgreSqlOrderedLane : IDisposable
         command.Connection = connection;
         command.Transaction = transaction;
         SetClaim(command, claim);
-        if (error is not null) ((NpgsqlParameter<string>)command.Parameters[2]).TypedValue = error;
+
+        if (error is not null)
+        {
+            ((NpgsqlParameter<string>)command.Parameters[2]).TypedValue = error;
+        }
+
         try
         {
-            if (error is not null) return (int)(await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false))! != 0;
+            if (error is not null)
+            {
+                return (int)(await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false))! != 0;
+            }
+
             return await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) == 1;
         }
         finally
         {
             command.Transaction = null;
             command.Connection = null;
-            if (error is not null) ((NpgsqlParameter<string>)command.Parameters[2]).TypedValue = null;
+
+            if (error is not null)
+            {
+                ((NpgsqlParameter<string>)command.Parameters[2]).TypedValue = null;
+            }
         }
     }
 

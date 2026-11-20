@@ -1,4 +1,5 @@
 using Relayer.Transports;
+
 namespace Relayer.Tests;
 
 public class FailureClassifierTests
@@ -25,7 +26,10 @@ public class FailureClassifierTests
             .On<ArgumentException>(FailureAction.Retry, (exception, context) =>
             {
                 if (!ReferenceEquals(exception, error) || !ReferenceEquals(context, _context))
+                {
                     throw new Exception("Wrong arguments");
+                }
+
                 calls++;
                 return context.Attempt < 3;
             })
@@ -47,8 +51,12 @@ public class FailureClassifierTests
             new UnknownMessageTypeException(new("unknown", 1)),
             new MessageDeserializationException(new("invalid", 1), new FormatException()),
         ];
+
         foreach (var error in permanent)
+        {
             await Assert.That(classifier.Classify(error, _context)).IsEqualTo(FailureAction.DeadLetter);
+        }
+
         await Assert.That(classifier.Classify(new InvalidOperationException(), _context)).IsEqualTo(FailureAction.Retry);
     }
 
@@ -103,26 +111,41 @@ public class FailureClassifierTests
             .On<InvalidOperationException>(FailureAction.DeadLetter).Build();
         var matched = new ArgumentException();
         var unmatched = new FormatException();
+
         for (var i = 0; i < 10_000; i++)
         {
             classifier.Classify(matched, _context);
             classifier.Classify(unmatched, _context);
         }
+
         var before = GC.GetAllocatedBytesForCurrentThread();
+
         for (var i = 0; i < 10_000; i++)
         {
             classifier.Classify(matched, _context);
             classifier.Classify(unmatched, _context);
         }
+
         var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
         await Assert.That(allocated).IsEqualTo(0);
     }
 
     private sealed class Fallback : IFailureClassifier
     {
-        internal Exception? Error { get; private set; }
-        internal MessageContext? Context { get; private set; }
-        internal int Calls { get; private set; }
+        internal Exception? Error
+        {
+            get; private set;
+        }
+
+        internal MessageContext? Context
+        {
+            get; private set;
+        }
+
+        internal int Calls
+        {
+            get; private set;
+        }
 
         public FailureAction Classify(Exception exception, MessageContext context)
         {
@@ -136,11 +159,20 @@ public class FailureClassifierTests
     private sealed class Context : MessageContext
     {
         public override string MessageId => "id";
+
         public override MessageType MessageType => new("message", 1);
+
         public override MessageHeaders Headers => throw new NotSupportedException();
+
         public override int Attempt => 4;
+
         public override IServiceProvider Services => throw new NotSupportedException();
-        public override MessageFeatures Features { get; } = new();
+
+        public override MessageFeatures Features
+        {
+            get;
+        } = new();
+
         public override CancellationToken CancellationToken => default;
     }
 }

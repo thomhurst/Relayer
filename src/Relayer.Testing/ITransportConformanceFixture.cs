@@ -11,31 +11,62 @@ namespace Relayer.Testing;
 public interface ITransportConformanceFixture<TIncoming> : IAsyncDisposable
 {
     /// <summary>The adapter under test, including its production send tracing.</summary>
-    ITransport Transport { get; }
+    ITransport Transport
+    {
+        get;
+    }
+
     /// <summary>The isolated native destination and source.</summary>
-    string Destination { get; }
+    string Destination
+    {
+        get;
+    }
+
     /// <summary>The native send span destination, when its semantic format differs from the route address.</summary>
     string SendDestinationName => Destination;
+
     /// <summary>The native process and settlement span destination, when its format differs from the send destination.</summary>
     string ProcessDestinationName => Destination;
+
     /// <summary>The expected OpenTelemetry messaging.system, for example kafka or servicebus.</summary>
-    string MessagingSystem { get; }
+    string MessagingSystem
+    {
+        get;
+    }
+
     /// <summary>The native completion operation, for example ack, complete or commit.</summary>
-    string SettlementOperation { get; }
+    string SettlementOperation
+    {
+        get;
+    }
+
     /// <summary>The adapter's CloudEvents binding names.</summary>
-    HeaderNames HeaderNames { get; }
+    HeaderNames HeaderNames
+    {
+        get;
+    }
+
     /// <summary>Native outage send budget, or null when this fixture cannot inject a real broker outage.</summary>
     TimeSpan? OutageSendTimeout => null;
+
     /// <summary>Recognizes native connectivity failures expected while the broker is stopped, including offline shutdown.</summary>
-    bool IsExpectedOutageFailure(Exception error) => false;
+    bool IsExpectedOutageFailure(Exception error)
+    {
+        return false;
+    }
+
     /// <summary>Registers the supplied core receive pipeline before the first start.</summary>
     void RegisterConsumer(Func<TIncoming, CancellationToken, ValueTask<Disposition>> receive);
+
     /// <summary>Applies a decision using production native settlement, including its instrumentation.</summary>
     ValueTask SettleAsync(TIncoming incoming, Disposition disposition, CancellationToken cancellationToken);
+
     /// <summary>Reads an owned snapshot from the actual native dead-letter destination.</summary>
     ValueTask<ConformanceDeadLetter> ReadDeadLetterAsync(CancellationToken cancellationToken);
+
     /// <summary>Interrupts the broker connection. In-memory fixtures stop their transport instead.</summary>
     Task DisconnectAsync(CancellationToken cancellationToken);
+
     /// <summary>Restores the broker connection and waits for native recovery without replacing the endpoint. A permanently faulted native client requires explicit application recreation, not an adapter retry loop.</summary>
     Task ReconnectAsync(CancellationToken cancellationToken);
 }
@@ -85,7 +116,11 @@ public sealed record TransportConformanceResult(TransportConformanceCase Case, s
 public interface ITransportShutdownConformanceFixture
 {
     /// <summary>Capture owned by this fixture, kept alive through disposal.</summary>
-    ConformanceLogCapture Logs { get; }
+    ConformanceLogCapture Logs
+    {
+        get;
+    }
+
     /// <summary>
     /// Verifies native lifecycle instrumentation saw no settlement, renewal or send after closure,
     /// and that the in-flight delivery completed durably or remains available for native redelivery.

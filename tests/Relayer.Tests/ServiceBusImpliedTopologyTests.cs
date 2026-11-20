@@ -34,7 +34,11 @@ public sealed class ServiceBusImpliedTopologyTests
                 bus.Consume("sessions", consumer =>
                 {
                     consumer.Handler<Handler>();
-                    consumer.Options.SessionProcessorOptions = new() { AutoCompleteMessages = false, MaxConcurrentSessions = 1 };
+                    consumer.Options.SessionProcessorOptions = new()
+                    {
+                        AutoCompleteMessages = false,
+                        MaxConcurrentSessions = 1
+                    };
                 });
             });
         });

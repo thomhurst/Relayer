@@ -1,11 +1,11 @@
-using Relayer.Transports;
-using Relayer.Pipeline;
 using System.Buffers;
 using System.Diagnostics;
 using System.Text;
 using BenchmarkDotNet.Attributes;
 using Microsoft.Extensions.DependencyInjection;
+using Relayer.Pipeline;
 using Relayer.Serialization;
+using Relayer.Transports;
 
 namespace Relayer.Benchmarks;
 
@@ -32,10 +32,16 @@ public class BatchConsumePipelineBenchmarks
     private readonly HeaderNames _headerNames = new();
 
     [Params(1, 10, 100)]
-    public int BatchSize { get; set; }
+    public int BatchSize
+    {
+        get; set;
+    }
 
     [Params(TracingMode.None, TracingMode.Text, TracingMode.Utf8)]
-    public TracingMode Tracing { get; set; }
+    public TracingMode Tracing
+    {
+        get; set;
+    }
 
     [GlobalSetup]
     public void Setup()
@@ -70,11 +76,21 @@ public class BatchConsumePipelineBenchmarks
         ];
         _pipeline = new ConsumePipelineBuilder(_scopes, _provider.GetRequiredService<MessageTypeRegistry>(), _serializer,
             static (_, _, _) => default).BuildBatch(_descriptor, definition, _source);
-        _message = new() { MessageId = "benchmark", MessageType = new("benchmark.batch", 1), Body = ReadOnlySequence<byte>.Empty,
-            Headers = Tracing != TracingMode.None ? new TraceHeaders(Tracing == TracingMode.Utf8) : null };
+        _message = new()
+        {
+            MessageId = "benchmark",
+            MessageType = new("benchmark.batch", 1),
+            Body = ReadOnlySequence<byte>.Empty,
+            Headers = Tracing != TracingMode.None ? new TraceHeaders(Tracing == TracingMode.Utf8) : null
+        };
         _contexts = new DefaultMessageContext[BatchSize];
         var items = new BatchItem<Payload>[BatchSize];
-        for (var i = 0; i < items.Length; i++) items[i] = new(_serializer.Deserialize<Payload>(_message.Body), _directContext);
+
+        for (var i = 0; i < items.Length; i++)
+        {
+            items[i] = new(_serializer.Deserialize<Payload>(_message.Body), _directContext);
+        }
+
         _directBatch = new(items);
     }
 
@@ -84,24 +100,38 @@ public class BatchConsumePipelineBenchmarks
         _handler.FailLastItem = false;
         using var activity = StartDirectActivity();
         var scope = new AsyncServiceScope(_scopes.CreateScope());
+
         try
         {
             _directContext.Provider = scope.ServiceProvider;
             _ = scope.ServiceProvider.GetRequiredService<ISender>();
-            for (var i = 0; i < BatchSize; i++) _ = _serializer.Deserialize<Payload>(_message.Body);
+
+            for (var i = 0; i < BatchSize; i++)
+            {
+                _ = _serializer.Deserialize<Payload>(_message.Body);
+            }
+
             await _descriptor.DispatchAsync(_descriptor.Resolve(scope.ServiceProvider), _directBatch, default).ConfigureAwait(false);
         }
-        finally { await scope.DisposeAsync().ConfigureAwait(false); }
+        finally
+        {
+            await scope.DisposeAsync().ConfigureAwait(false);
+        }
     }
 
     private Activity? StartDirectActivity()
     {
-        if (Tracing == TracingMode.None) return null;
+        if (Tracing == TracingMode.None)
+        {
+            return null;
+        }
+
         for (var i = 0; i < BatchSize; i++)
         {
             var context = MessageCreationContext.Read<MessageHeaders, CreationHeaderReader>(_message.Headers!, _headerNames);
             _links[i] = new(context);
         }
+
         return _source.StartActivity("process source", ActivityKind.Consumer, Activity.Current?.Context ?? default, _tags, _links);
     }
 
@@ -113,11 +143,23 @@ public class BatchConsumePipelineBenchmarks
     {
         _handler.ManualCompletion = manualCompletion;
         _handler.FailLastItem = failLastItem;
-        for (var i = 0; i < BatchSize; i++) _contexts[i] = _pipeline.RentContext(_message);
-        try { await _pipeline.ProcessBatchAsync(_contexts).ConfigureAwait(false); }
+
+        for (var i = 0; i < BatchSize; i++)
+        {
+            _contexts[i] = _pipeline.RentContext(_message);
+        }
+
+        try
+        {
+            await _pipeline.ProcessBatchAsync(_contexts).ConfigureAwait(false);
+        }
         finally
         {
-            for (var i = 0; i < BatchSize; i++) { _contexts[i].Dispose(); _contexts[i] = null!; }
+            for (var i = 0; i < BatchSize; i++)
+            {
+                _contexts[i].Dispose();
+                _contexts[i] = null!;
+            }
         }
     }
 
@@ -129,62 +171,123 @@ public class BatchConsumePipelineBenchmarks
         _source.Dispose();
         _provider.Dispose();
     }
+
     public sealed class Options;
+
     [Message("benchmark.batch")]
-    public sealed class Payload { public int Value => 42; }
+    public sealed class Payload
+    {
+        public int Value => 42;
+    }
+
     public sealed class Handler : IBatchHandler<Payload>
     {
-        public int Total { get; private set; }
-        public bool ManualCompletion { get; set; }
-        public bool FailLastItem { get; set; }
+        public int Total
+        {
+            get; private set;
+        }
+
+        public bool ManualCompletion
+        {
+            get; set;
+        }
+
+        public bool FailLastItem
+        {
+            get; set;
+        }
         private readonly Exception _error = new InvalidOperationException("benchmark failure");
+
         public ValueTask<BatchResult> HandleAsync(Batch<Payload> batch, CancellationToken cancellationToken)
         {
             var total = 0;
+
             for (var i = 0; i < batch.Count; i++)
             {
                 total += batch.Items[i].Message.Value;
-                if (ManualCompletion) batch.Items[i].Context.Features.GetRequired<ISettlementFeature>().Complete();
+
+                if (ManualCompletion)
+                {
+                    batch.Items[i].Context.Features.GetRequired<ISettlementFeature>().Complete();
+                }
             }
-            if (FailLastItem) batch.Items[batch.Count - 1].Fail(_error);
+
+            if (FailLastItem)
+            {
+                batch.Items[batch.Count - 1].Fail(_error);
+            }
+
             Total = total;
             return new(BatchResult.Success);
         }
     }
+
     private sealed class Serializer : IMessageSerializer
     {
         private readonly Payload _payload = new();
+
         public string ContentType => "benchmark/cached";
-        public TMessage Deserialize<TMessage>(ReadOnlySequence<byte> source) => (TMessage)(object)_payload;
-        public void Serialize<TMessage>(TMessage message, IBufferWriter<byte> destination) => throw new NotSupportedException();
+
+        public TMessage Deserialize<TMessage>(ReadOnlySequence<byte> source)
+        {
+            return (TMessage)(object)_payload;
+        }
+
+        public void Serialize<TMessage>(TMessage message, IBufferWriter<byte> destination)
+        {
+            throw new NotSupportedException();
+        }
     }
-    public enum TracingMode { None, Text, Utf8 }
+
+    public enum TracingMode
+    {
+        None,
+        Text,
+        Utf8
+    }
 
     private readonly struct CreationHeaderReader : IMessageHeaderReader<MessageHeaders>
     {
-        public static bool TryGetHeader(MessageHeaders message, string name, out WireString value) =>
-            message.TryGetValue(name, out value);
+        public static bool TryGetHeader(MessageHeaders message, string name, out WireString value)
+        {
+            return message.TryGetValue(name, out value);
+        }
     }
 
     private sealed class TraceHeaders(bool utf8) : MessageHeaders
     {
         internal const string Parent = "00-11111111111111111111111111111111-2222222222222222-01";
         private readonly WireString _parent = utf8 ? new(Encoding.UTF8.GetBytes(Parent)) : new(Parent);
+
         public override bool TryGetValue(string name, out WireString value)
         {
             value = name == "traceparent" ? _parent : default;
             return !value.IsEmpty;
         }
     }
+
     private sealed class DirectContext : MessageContext
     {
-        public IServiceProvider Provider { get; set; } = null!;
+        public IServiceProvider Provider
+        {
+            get; set;
+        } = null!;
+
         public override string MessageId => "benchmark";
+
         public override MessageType MessageType => new("benchmark.batch", 1);
+
         public override MessageHeaders Headers => MessageHeaders.Empty;
+
         public override int Attempt => 1;
+
         public override IServiceProvider Services => Provider;
-        public override MessageFeatures Features { get; } = new();
+
+        public override MessageFeatures Features
+        {
+            get;
+        } = new();
+
         public override CancellationToken CancellationToken => default;
     }
 }

@@ -1,8 +1,8 @@
 using System.Collections.Concurrent;
 using System.Diagnostics.Metrics;
-using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Npgsql;
 using Relayer.Transports;
@@ -21,41 +21,68 @@ public class LocalTransportTests(PostgreSqlLocalSessionFixture server)
         await database.StartAsync();
         await using var source = NpgsqlDataSource.Create(database.ConnectionString);
         await PostgreSqlOutboxStoreTests.CreateSchema(source);
-        await using (var command = source.CreateCommand("CREATE TABLE local_business (value integer PRIMARY KEY)")) await command.ExecuteNonQueryAsync();
+
+        await using (var command = source.CreateCommand("CREATE TABLE local_business (value integer PRIMARY KEY)"))
+        {
+            await command.ExecuteNonQueryAsync();
+        }
+
         await using var provider = Provider(source);
         var instrumentation = provider.GetRequiredService<RelayerInstrumentation>();
         var measurements = new ConcurrentQueue<(string Name, Dictionary<string, object?> Tags)>();
         using var listener = new MeterListener();
         listener.InstrumentPublished = (instrument, capture) =>
         {
-            if (ReferenceEquals(instrument.Meter.Scope, instrumentation)) capture.EnableMeasurementEvents(instrument);
+            if (ReferenceEquals(instrument.Meter.Scope, instrumentation))
+            {
+                capture.EnableMeasurementEvents(instrument);
+            }
         };
         listener.SetMeasurementEventCallback<long>((instrument, _, tags, _) => measurements.Enqueue((instrument.Name, tags.ToArray().ToDictionary(pair => pair.Key, pair => pair.Value))));
         listener.SetMeasurementEventCallback<double>((instrument, _, tags, _) => measurements.Enqueue((instrument.Name, tags.ToArray().ToDictionary(pair => pair.Key, pair => pair.Value))));
         listener.Start();
         var starters = provider.GetServices<IHostedService>().ToArray();
         // Compose the consumer; drive the same dispatcher deterministically below.
-        foreach (var starter in starters) if (starter is not PostgreSqlDirectDispatcher) await starter.StartAsync(default);
+        foreach (var starter in starters)
+        {
+            if (starter is not PostgreSqlDirectDispatcher)
+            {
+                await starter.StartAsync(default);
+            }
+        }
+
         var transport = provider.GetServices<ITransport>().Single();
         await Enqueue(provider, source, new(7), commit: true);
         var store = new PostgreSqlOutboxStore(source);
         var rows = new OutboxRecord[4];
         var count = await store.ReadPendingAsync(new(null, DateTimeOffset.UtcNow), rows, default);
-        using var worker = new PostgreSqlDirectDispatcher(source, new() { MaxDispatchAttempts = 1 }, new(), [transport], provider.GetRequiredService<Microsoft.Extensions.Logging.ILogger<PostgreSqlDirectDispatcher>>());
+        using var worker = new PostgreSqlDirectDispatcher(source, new()
+        {
+            MaxDispatchAttempts = 1
+        }, new(), [transport], provider.GetRequiredService<Microsoft.Extensions.Logging.ILogger<PostgreSqlDirectDispatcher>>());
+
         if (recovered)
         {
             await using var connection = await source.OpenConnectionAsync();
             await using var transaction = await connection.BeginTransactionAsync();
             store.UseDispatchTransaction(connection, transaction);
-            using var recovery = new PostgreSqlDirectDispatcher(source, new() { MaxDispatchAttempts = 1 }, new(), [transport], provider.GetRequiredService<Microsoft.Extensions.Logging.ILogger<PostgreSqlDirectDispatcher>>(), store);
+            using var recovery = new PostgreSqlDirectDispatcher(source, new()
+            {
+                MaxDispatchAttempts = 1
+            }, new(), [transport], provider.GetRequiredService<Microsoft.Extensions.Logging.ILogger<PostgreSqlDirectDispatcher>>(), store);
             await recovery.DispatchRecoveredAsync(rows.AsMemory(0, count), default, propagateDatabaseFailures: true);
             await Assert.That(await Count(source, "local_business")).IsEqualTo(0L);
             await Assert.That(await Count(source, "relayer_outbox")).IsEqualTo(1L);
             await transaction.CommitAsync();
         }
-        else await worker.DispatchRecoveredAsync(rows.AsMemory(0, count), default);
+        else
+        {
+            await worker.DispatchRecoveredAsync(rows.AsMemory(0, count), default);
+        }
+
         await Assert.That(await Count(source, "local_business")).IsEqualTo(1L);
         await Assert.That(await Count(source, "relayer_outbox")).IsEqualTo(0L);
+
         foreach (var metric in new[] { "messaging.client.consumed.messages", "messaging.process.duration", "relayer.critical_time" })
         {
             var measurement = measurements.Single(item => item.Name == metric);
@@ -73,25 +100,38 @@ public class LocalTransportTests(PostgreSqlLocalSessionFixture server)
         await using var source = NpgsqlDataSource.Create(database.ConnectionString);
         await PostgreSqlOutboxStoreTests.CreateSchema(source);
         await using var transport = new PostgreSqlLocalTransport("local", source, new(), ["work"]);
-        using var worker = new PostgreSqlMaintenanceWorker(source, new() { SweepInterval = TimeSpan.FromHours(1) },
+        using var worker = new PostgreSqlMaintenanceWorker(source, new()
+        {
+            SweepInterval = TimeSpan.FromHours(1)
+        },
             [transport], NullLogger<PostgreSqlMaintenanceWorker>.Instance);
         using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(30));
         await worker.StartAsync(deadline.Token);
+
         try
         {
             // Cleanup's committed lease proves the worker passed the stop check and reached its idle boundary.
             while (true)
             {
                 await using var command = source.CreateCommand("SELECT count(*) FROM relayer_leases WHERE name = 'cleanup'");
-                if ((long)(await command.ExecuteScalarAsync(deadline.Token))! == 1) break;
+
+                if ((long)(await command.ExecuteScalarAsync(deadline.Token))! == 1)
+                {
+                    break;
+                }
+
                 await Task.Yield();
             }
+
             using var stopDeadline = new CancellationTokenSource(TimeSpan.FromSeconds(5));
             await worker.StopAsync(stopDeadline.Token);
             await Assert.That(worker.ExecuteTask!.IsCompletedSuccessfully).IsTrue();
             await Assert.That(await Count(source, "relayer_leases")).IsEqualTo(0L);
         }
-        finally { await worker.StopAsync(deadline.Token); }
+        finally
+        {
+            await worker.StopAsync(deadline.Token);
+        }
     }
 
     [Test]
@@ -104,10 +144,16 @@ public class LocalTransportTests(PostgreSqlLocalSessionFixture server)
         await using var transport = new PostgreSqlLocalTransport("local", source, new(), ["work"]);
         var clock = new IdlePollClock();
         using var worker = new PostgreSqlOrderedDispatcher(source,
-            new() { Lanes = 1, PollInterval = TimeSpan.FromMinutes(1), LeaseDuration = TimeSpan.FromMinutes(10) },
+            new()
+            {
+                Lanes = 1,
+                PollInterval = TimeSpan.FromMinutes(1),
+                LeaseDuration = TimeSpan.FromMinutes(10)
+            },
             [transport], NullLogger<PostgreSqlOrderedDispatcher>.Instance, clock);
         using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(30));
         await worker.StartAsync(deadline.Token);
+
         try
         {
             // The timer never fires: only shutdown cancellation can complete this idle wait.
@@ -117,22 +163,40 @@ public class LocalTransportTests(PostgreSqlLocalSessionFixture server)
             await Assert.That(worker.ExecuteTask!.IsCompletedSuccessfully).IsTrue();
             await Assert.That(await Count(source, "relayer_leases")).IsEqualTo(0L);
         }
-        finally { await worker.StopAsync(deadline.Token); }
+        finally
+        {
+            await worker.StopAsync(deadline.Token);
+        }
     }
 
     private sealed class IdlePollClock : TimeProvider
     {
-        internal TaskCompletionSource FirstPoll { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        internal TaskCompletionSource FirstPoll
+        {
+            get;
+        } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
         public override ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period)
         {
             FirstPoll.TrySetResult();
             return new SilentTimer();
         }
+
         private sealed class SilentTimer : ITimer
         {
-            public bool Change(TimeSpan dueTime, TimeSpan period) => true;
-            public void Dispose() { }
-            public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+            public bool Change(TimeSpan dueTime, TimeSpan period)
+            {
+                return true;
+            }
+
+            public void Dispose()
+            {
+            }
+
+            public ValueTask DisposeAsync()
+            {
+                return ValueTask.CompletedTask;
+            }
         }
     }
 
@@ -149,25 +213,47 @@ public class LocalTransportTests(PostgreSqlLocalSessionFixture server)
         await database.StartAsync();
         await using var source = NpgsqlDataSource.Create(database.ConnectionString);
         await PostgreSqlOutboxStoreTests.CreateSchema(source);
-        await using (var command = source.CreateCommand("CREATE TABLE local_business (value integer PRIMARY KEY)")) await command.ExecuteNonQueryAsync();
+
+        await using (var command = source.CreateCommand("CREATE TABLE local_business (value integer PRIMARY KEY)"))
+        {
+            await command.ExecuteNonQueryAsync();
+        }
+
         await using var provider = Provider(source, ordered, failureAction: FailureAction.Retry);
-        foreach (var starter in provider.GetServices<IHostedService>()) if (starter is not PostgreSqlDirectDispatcher) await starter.StartAsync(default);
+
+        foreach (var starter in provider.GetServices<IHostedService>())
+        {
+            if (starter is not PostgreSqlDirectDispatcher)
+            {
+                await starter.StartAsync(default);
+            }
+        }
+
         var transport = provider.GetServices<ITransport>().Single();
         await Enqueue(provider, source, new(value), true);
         await using var original = source.CreateCommand("SELECT id FROM relayer_outbox");
         var parentId = (Guid)(await original.ExecuteScalarAsync())!;
+
         if (ordered)
         {
-            using var worker = new PostgreSqlOrderedDispatcher(source, new() { Lanes = 1, MaxDispatchAttempts = 1 }, [transport], provider.GetRequiredService<ILogger<PostgreSqlOrderedDispatcher>>());
+            using var worker = new PostgreSqlOrderedDispatcher(source, new()
+            {
+                Lanes = 1,
+                MaxDispatchAttempts = 1
+            }, [transport], provider.GetRequiredService<ILogger<PostgreSqlOrderedDispatcher>>());
             await worker.DispatchLaneAsync(0, default);
         }
         else
         {
             var rows = new OutboxRecord[1];
             var count = await new PostgreSqlOutboxStore(source).ReadPendingAsync(new(null, DateTimeOffset.UtcNow), rows, default);
-            using var worker = new PostgreSqlDirectDispatcher(source, new() { MaxDispatchAttempts = 1 }, new(), [transport], provider.GetRequiredService<ILogger<PostgreSqlDirectDispatcher>>());
+            using var worker = new PostgreSqlDirectDispatcher(source, new()
+            {
+                MaxDispatchAttempts = 1
+            }, new(), [transport], provider.GetRequiredService<ILogger<PostgreSqlDirectDispatcher>>());
             await worker.DispatchRecoveredAsync(rows.AsMemory(0, count), default);
         }
+
         await Assert.That(await Count(source, "local_business")).IsEqualTo(value > 0 ? 1L : 0L);
         await Assert.That(await Count(source, "relayer_outbox_dead")).IsEqualTo(value < 0 ? 1L : 0L);
         // Failed attempts must not leave child rows, including sends made during scope disposal.
@@ -197,26 +283,51 @@ public class LocalTransportTests(PostgreSqlLocalSessionFixture server)
         await database.StartAsync();
         await using var source = NpgsqlDataSource.Create(database.ConnectionString);
         await PostgreSqlOutboxStoreTests.CreateSchema(source);
-        await using (var command = source.CreateCommand("CREATE TABLE local_business (value integer PRIMARY KEY)")) await command.ExecuteNonQueryAsync();
+
+        await using (var command = source.CreateCommand("CREATE TABLE local_business (value integer PRIMARY KEY)"))
+        {
+            await command.ExecuteNonQueryAsync();
+        }
+
         await using var provider = Provider(source, ordered, failureAction: FailureAction.Retry);
-        foreach (var starter in provider.GetServices<IHostedService>()) if (starter is not PostgreSqlDirectDispatcher) await starter.StartAsync(default);
+
+        foreach (var starter in provider.GetServices<IHostedService>())
+        {
+            if (starter is not PostgreSqlDirectDispatcher)
+            {
+                await starter.StartAsync(default);
+            }
+        }
+
         var transport = provider.GetServices<ITransport>().Single();
         await Enqueue(provider, source, new(-1), true);
         await Enqueue(provider, source, new(9), true);
+
         if (ordered)
         {
-            using var worker = new PostgreSqlOrderedDispatcher(source, new() { Lanes = 1, MaxDispatchAttempts = 1 }, [transport], provider.GetRequiredService<Microsoft.Extensions.Logging.ILogger<PostgreSqlOrderedDispatcher>>());
+            using var worker = new PostgreSqlOrderedDispatcher(source, new()
+            {
+                Lanes = 1,
+                MaxDispatchAttempts = 1
+            }, [transport], provider.GetRequiredService<Microsoft.Extensions.Logging.ILogger<PostgreSqlOrderedDispatcher>>());
             await worker.DispatchLaneAsync(0, default);
             await worker.DispatchLaneAsync(0, default);
         }
         else
         {
-            var store = new PostgreSqlOutboxStore(source, new() { MaxDispatchAttempts = 1 });
+            var store = new PostgreSqlOutboxStore(source, new()
+            {
+                MaxDispatchAttempts = 1
+            });
             var rows = new OutboxRecord[4];
             var count = await store.ReadPendingAsync(new(null, DateTimeOffset.UtcNow), rows, default);
-            using var worker = new PostgreSqlDirectDispatcher(source, new() { MaxDispatchAttempts = 1 }, new(), [transport], provider.GetRequiredService<Microsoft.Extensions.Logging.ILogger<PostgreSqlDirectDispatcher>>());
+            using var worker = new PostgreSqlDirectDispatcher(source, new()
+            {
+                MaxDispatchAttempts = 1
+            }, new(), [transport], provider.GetRequiredService<Microsoft.Extensions.Logging.ILogger<PostgreSqlDirectDispatcher>>());
             await worker.DispatchRecoveredAsync(rows.AsMemory(0, count), default);
         }
+
         await Assert.That(await Count(source, "local_business")).IsEqualTo(1L);
         await Assert.That(await Count(source, "relayer_outbox_dead")).IsEqualTo(1L);
         await using var check = source.CreateCommand("SELECT value FROM local_business");
@@ -232,10 +343,23 @@ public class LocalTransportTests(PostgreSqlLocalSessionFixture server)
         await database.StartAsync();
         await using var source = NpgsqlDataSource.Create(database.ConnectionString);
         await PostgreSqlOutboxStoreTests.CreateSchema(source);
-        await using (var command = source.CreateCommand("CREATE TABLE local_business (value integer PRIMARY KEY)")) await command.ExecuteNonQueryAsync();
+
+        await using (var command = source.CreateCommand("CREATE TABLE local_business (value integer PRIMARY KEY)"))
+        {
+            await command.ExecuteNonQueryAsync();
+        }
+
         var logs = new ErrorLogs();
         await using var provider = Provider(source, ordered, failureAction: FailureAction.Retry, logs: logs);
-        foreach (var starter in provider.GetServices<IHostedService>()) if (starter is not PostgreSqlDirectDispatcher) await starter.StartAsync(default);
+
+        foreach (var starter in provider.GetServices<IHostedService>())
+        {
+            if (starter is not PostgreSqlDirectDispatcher)
+            {
+                await starter.StartAsync(default);
+            }
+        }
+
         var transport = provider.GetServices<ITransport>().Single();
         await Enqueue(provider, source, new(-1), true);
         using var worker = OrderedWorker(ordered, source, transport, provider);
@@ -254,14 +378,26 @@ public class LocalTransportTests(PostgreSqlLocalSessionFixture server)
         await database.StartAsync();
         await using var source = NpgsqlDataSource.Create(database.ConnectionString);
         await PostgreSqlOutboxStoreTests.CreateSchema(source);
-        await using (var command = source.CreateCommand("CREATE TABLE local_business (value integer PRIMARY KEY)")) await command.ExecuteNonQueryAsync();
+
+        await using (var command = source.CreateCommand("CREATE TABLE local_business (value integer PRIMARY KEY)"))
+        {
+            await command.ExecuteNonQueryAsync();
+        }
         // The store budget is one attempt; the consumer's schedule allows three.
         await using var provider = Provider(source, ordered, failureAction: FailureAction.Retry, consumerOptions: options =>
         {
             options.RedeliveryDelays = [TimeSpan.FromMinutes(1), TimeSpan.FromHours(1)];
             options.MaxAttempts = 3;
         });
-        foreach (var starter in provider.GetServices<IHostedService>()) if (starter is not PostgreSqlDirectDispatcher) await starter.StartAsync(default);
+
+        foreach (var starter in provider.GetServices<IHostedService>())
+        {
+            if (starter is not PostgreSqlDirectDispatcher)
+            {
+                await starter.StartAsync(default);
+            }
+        }
+
         var transport = provider.GetServices<ITransport>().Single();
         await Enqueue(provider, source, new(-1), true);
         using var worker = OrderedWorker(ordered, source, transport, provider);
@@ -285,18 +421,33 @@ public class LocalTransportTests(PostgreSqlLocalSessionFixture server)
         await database.StartAsync();
         await using var source = NpgsqlDataSource.Create(database.ConnectionString);
         await PostgreSqlOutboxStoreTests.CreateSchema(source);
-        await using (var command = source.CreateCommand("CREATE TABLE local_business (value integer PRIMARY KEY)")) await command.ExecuteNonQueryAsync();
+
+        await using (var command = source.CreateCommand("CREATE TABLE local_business (value integer PRIMARY KEY)"))
+        {
+            await command.ExecuteNonQueryAsync();
+        }
+
         await using var provider = Provider(source, ordered, failureAction: FailureAction.Retry, consumerOptions: options => options.MaxAttempts = int.MaxValue);
-        foreach (var starter in provider.GetServices<IHostedService>()) if (starter is not PostgreSqlDirectDispatcher) await starter.StartAsync(default);
+
+        foreach (var starter in provider.GetServices<IHostedService>())
+        {
+            if (starter is not PostgreSqlDirectDispatcher)
+            {
+                await starter.StartAsync(default);
+            }
+        }
+
         var transport = provider.GetServices<ITransport>().Single();
         await Enqueue(provider, source, new(-1), true);
         using var worker = OrderedWorker(ordered, source, transport, provider);
+
         for (var attempt = 1; attempt <= 3; attempt++)
         {
             var window = await Attempt(worker, source, transport, provider);
             // Without delays the row is due again at once.
             await Assert.That(await Pending(source, window, TimeSpan.Zero)).IsEqualTo((attempt, true, true));
         }
+
         await Assert.That(await Count(source, "relayer_outbox_dead")).IsEqualTo(0L);
     }
 
@@ -309,28 +460,54 @@ public class LocalTransportTests(PostgreSqlLocalSessionFixture server)
         await using var provider = Provider(source, consumerOptions: options => options.RedeliveryDelays = [TimeSpan.FromSeconds(-1)]);
         await Assert.That(async () =>
         {
-            foreach (var starter in provider.GetServices<IHostedService>()) if (starter is not PostgreSqlDirectDispatcher) await starter.StartAsync(default);
+            foreach (var starter in provider.GetServices<IHostedService>())
+            {
+                if (starter is not PostgreSqlDirectDispatcher)
+                {
+                    await starter.StartAsync(default);
+                }
+            }
         }).Throws<ArgumentOutOfRangeException>();
     }
 
-    private static PostgreSqlOrderedDispatcher? OrderedWorker(bool ordered, NpgsqlDataSource source, ITransport transport, ServiceProvider provider) =>
-        ordered ? new(source, new() { Lanes = 1, MaxDispatchAttempts = 1 }, [transport], provider.GetRequiredService<ILogger<PostgreSqlOrderedDispatcher>>()) : null;
+    private static PostgreSqlOrderedDispatcher? OrderedWorker(bool ordered, NpgsqlDataSource source, ITransport transport, ServiceProvider provider)
+    {
+        return ordered ? new(source, new()
+        {
+            Lanes = 1,
+            MaxDispatchAttempts = 1
+        }, [transport], provider.GetRequiredService<ILogger<PostgreSqlOrderedDispatcher>>()) : null;
+    }
 
     // Returns the database clock before and after the attempt; any failure is recorded between the two.
     private static async Task<(DateTime Start, DateTime End)> Attempt(PostgreSqlOrderedDispatcher? ordered, NpgsqlDataSource source, ITransport transport, ServiceProvider provider)
     {
         // Make a delayed row due; the delay itself is asserted from the row before this runs.
-        await using (var due = source.CreateCommand("UPDATE relayer_outbox SET deliver_at = NULL")) await due.ExecuteNonQueryAsync();
+        await using (var due = source.CreateCommand("UPDATE relayer_outbox SET deliver_at = NULL"))
+        {
+            await due.ExecuteNonQueryAsync();
+        }
+
         var start = await DatabaseNow(source);
         // One ordered worker keeps its lane lease across attempts.
-        if (ordered is not null) await ordered.DispatchLaneAsync(0, default);
+        if (ordered is not null)
+        {
+            await ordered.DispatchLaneAsync(0, default);
+        }
         else
         {
             var rows = new OutboxRecord[1];
-            var count = await new PostgreSqlOutboxStore(source, new() { MaxDispatchAttempts = 1 }).ReadPendingAsync(new(null, DateTimeOffset.UtcNow), rows, default);
-            using var worker = new PostgreSqlDirectDispatcher(source, new() { MaxDispatchAttempts = 1 }, new(), [transport], provider.GetRequiredService<ILogger<PostgreSqlDirectDispatcher>>());
+            var count = await new PostgreSqlOutboxStore(source, new()
+            {
+                MaxDispatchAttempts = 1
+            }).ReadPendingAsync(new(null, DateTimeOffset.UtcNow), rows, default);
+            using var worker = new PostgreSqlDirectDispatcher(source, new()
+            {
+                MaxDispatchAttempts = 1
+            }, new(), [transport], provider.GetRequiredService<ILogger<PostgreSqlDirectDispatcher>>());
             await worker.DispatchRecoveredAsync(rows.AsMemory(0, count), default);
         }
+
         return (start, await DatabaseNow(source));
     }
 
@@ -348,7 +525,12 @@ public class LocalTransportTests(PostgreSqlLocalSessionFixture server)
         command.Parameters.AddWithValue("end", attempt.End);
         command.Parameters.AddWithValue("delay", delay);
         await using var reader = await command.ExecuteReaderAsync();
-        if (!await reader.ReadAsync()) throw new InvalidOperationException("The row is no longer in the outbox.");
+
+        if (!await reader.ReadAsync())
+        {
+            throw new InvalidOperationException("The row is no longer in the outbox.");
+        }
+
         return (reader.GetInt32(0), reader.GetBoolean(1), reader.GetBoolean(2));
     }
 
@@ -359,31 +541,58 @@ public class LocalTransportTests(PostgreSqlLocalSessionFixture server)
         await database.StartAsync();
         await using var source = NpgsqlDataSource.Create(database.ConnectionString);
         await PostgreSqlOutboxStoreTests.CreateSchema(source);
-        await using (var command = source.CreateCommand("CREATE TABLE local_business (value integer PRIMARY KEY)")) await command.ExecuteNonQueryAsync();
+
+        await using (var command = source.CreateCommand("CREATE TABLE local_business (value integer PRIMARY KEY)"))
+        {
+            await command.ExecuteNonQueryAsync();
+        }
+
         await using var provider = Provider(source);
         await Enqueue(provider, source, new(42), true);
+
         using (var killed = StartProbe(database.ConnectionString, "block"))
         {
             var errors = killed.StandardError.ReadToEndAsync();
+
             try
             {
                 var signal = await killed.StandardOutput.ReadLineAsync().WaitAsync(TimeSpan.FromSeconds(30));
+
                 if (signal != "LOCAL_BUSINESS_WRITTEN")
                 {
-                    if (!killed.HasExited) killed.Kill(entireProcessTree: true);
+                    if (!killed.HasExited)
+                    {
+                        killed.Kill(entireProcessTree: true);
+                    }
+
                     await killed.WaitForExitAsync();
                     throw new InvalidOperationException($"Local crash probe did not enter handler: {signal}; {await errors}");
                 }
+
                 killed.Kill(entireProcessTree: true);
                 await killed.WaitForExitAsync();
             }
-            finally { if (!killed.HasExited) { killed.Kill(entireProcessTree: true); await killed.WaitForExitAsync(); } }
+            finally
+            {
+                if (!killed.HasExited)
+                {
+                    killed.Kill(entireProcessTree: true);
+                    await killed.WaitForExitAsync();
+                }
+            }
         }
+
         await Assert.That(await Count(source, "local_business")).IsEqualTo(0L);
         await Assert.That(await Count(source, "relayer_outbox")).IsEqualTo(1L);
-        await using (var expire = source.CreateCommand("UPDATE relayer_outbox SET claim_expires_at = clock_timestamp() - interval '1 second' WHERE claim_token IS NOT NULL; UPDATE relayer_leases SET expires_at = clock_timestamp() - interval '1 second'")) await expire.ExecuteNonQueryAsync();
+
+        await using (var expire = source.CreateCommand("UPDATE relayer_outbox SET claim_expires_at = clock_timestamp() - interval '1 second' WHERE claim_token IS NOT NULL; UPDATE relayer_leases SET expires_at = clock_timestamp() - interval '1 second'"))
+        {
+            await expire.ExecuteNonQueryAsync();
+        }
+
         using var recovered = StartProbe(database.ConnectionString, "complete");
         var recoveredErrors = recovered.StandardError.ReadToEndAsync();
+
         try
         {
             using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(40));
@@ -394,9 +603,27 @@ public class LocalTransportTests(PostgreSqlLocalSessionFixture server)
             await Assert.That(await Count(source, "local_business")).IsEqualTo(1L);
             await Assert.That(await Count(source, "relayer_outbox")).IsEqualTo(0L);
         }
-        catch (Exception error) { if (!recovered.HasExited) { recovered.Kill(entireProcessTree: true); await recovered.WaitForExitAsync(); } error.Data["ProbeError"] = await recoveredErrors; throw; }
-        finally { if (!recovered.HasExited) { recovered.Kill(entireProcessTree: true); await recovered.WaitForExitAsync(); } }
+        catch (Exception error)
+        {
+            if (!recovered.HasExited)
+            {
+                recovered.Kill(entireProcessTree: true);
+                await recovered.WaitForExitAsync();
+            }
+
+            error.Data["ProbeError"] = await recoveredErrors;
+            throw;
+        }
+        finally
+        {
+            if (!recovered.HasExited)
+            {
+                recovered.Kill(entireProcessTree: true);
+                await recovered.WaitForExitAsync();
+            }
+        }
     }
+
     private static System.Diagnostics.Process StartProbe(string connectionString, string mode)
     {
         var start = new System.Diagnostics.ProcessStartInfo("dotnet") { RedirectStandardOutput = true, RedirectStandardError = true, CreateNoWindow = true };
@@ -406,7 +633,9 @@ public class LocalTransportTests(PostgreSqlLocalSessionFixture server)
         start.ArgumentList.Add("--depsfile");
         start.ArgumentList.Add(Path.ChangeExtension(typeof(LocalTransportTests).Assembly.Location, ".deps.json"));
         start.ArgumentList.Add(typeof(CrashProbeMarker).Assembly.Location);
-        start.ArgumentList.Add("local"); start.ArgumentList.Add(connectionString); start.ArgumentList.Add(mode);
+        start.ArgumentList.Add("local");
+        start.ArgumentList.Add(connectionString);
+        start.ArgumentList.Add(mode);
         return System.Diagnostics.Process.Start(start)!;
     }
 
@@ -417,10 +646,20 @@ public class LocalTransportTests(PostgreSqlLocalSessionFixture server)
         await database.StartAsync();
         await using var source = NpgsqlDataSource.Create(database.ConnectionString);
         await PostgreSqlOutboxStoreTests.CreateSchema(source);
-        await using (var command = source.CreateCommand("CREATE TABLE local_business (value integer PRIMARY KEY)")) await command.ExecuteNonQueryAsync();
+
+        await using (var command = source.CreateCommand("CREATE TABLE local_business (value integer PRIMARY KEY)"))
+        {
+            await command.ExecuteNonQueryAsync();
+        }
+
         await using var provider = Provider(source, directHandoff: true);
         var services = provider.GetServices<IHostedService>().ToArray();
-        foreach (var service in services) await service.StartAsync(default);
+
+        foreach (var service in services)
+        {
+            await service.StartAsync(default);
+        }
+
         try
         {
             await Enqueue(provider, source, new(77), true);
@@ -429,7 +668,13 @@ public class LocalTransportTests(PostgreSqlLocalSessionFixture server)
             await Assert.That(await Count(source, "local_business")).IsEqualTo(1L);
             await Assert.That(await Count(source, "relayer_outbox")).IsEqualTo(0L);
         }
-        finally { for (var index = services.Length - 1; index >= 0; index--) await services[index].StopAsync(default); }
+        finally
+        {
+            for (var index = services.Length - 1; index >= 0; index--)
+            {
+                await services[index].StopAsync(default);
+            }
+        }
     }
 
     [Test]
@@ -441,14 +686,30 @@ public class LocalTransportTests(PostgreSqlLocalSessionFixture server)
         await database.StartAsync();
         await using var source = NpgsqlDataSource.Create(database.ConnectionString);
         await PostgreSqlOutboxStoreTests.CreateSchema(source);
-        await using (var command = source.CreateCommand("CREATE TABLE local_business (value integer PRIMARY KEY)")) await command.ExecuteNonQueryAsync();
+
+        await using (var command = source.CreateCommand("CREATE TABLE local_business (value integer PRIMARY KEY)"))
+        {
+            await command.ExecuteNonQueryAsync();
+        }
+
         await using var provider = Provider(source);
-        foreach (var service in provider.GetServices<IHostedService>()) if (service is not PostgreSqlDirectDispatcher) await service.StartAsync(default);
+
+        foreach (var service in provider.GetServices<IHostedService>())
+        {
+            if (service is not PostgreSqlDirectDispatcher)
+            {
+                await service.StartAsync(default);
+            }
+        }
+
         await Enqueue(provider, source, new(kind == "expired" ? -2 : -3), true);
         var store = new PostgreSqlOutboxStore(source);
         var rows = new OutboxRecord[1];
         await store.ReadPendingAsync(new(null, DateTimeOffset.UtcNow), rows, default);
-        using var worker = new PostgreSqlDirectDispatcher(source, new() { MaxDispatchAttempts = 1 }, new(), provider.GetServices<ITransport>(), provider.GetRequiredService<ILogger<PostgreSqlDirectDispatcher>>());
+        using var worker = new PostgreSqlDirectDispatcher(source, new()
+        {
+            MaxDispatchAttempts = 1
+        }, new(), provider.GetServices<ITransport>(), provider.GetRequiredService<ILogger<PostgreSqlDirectDispatcher>>());
         await worker.DispatchRecoveredAsync(rows, default);
         await Assert.That(await Count(source, "local_business")).IsEqualTo(0L);
         await Assert.That(await Count(source, "relayer_outbox")).IsEqualTo(1L);
@@ -459,6 +720,7 @@ public class LocalTransportTests(PostgreSqlLocalSessionFixture server)
     public async Task Unsupported_envelopes_batch_handlers_and_missing_consumers_fail_at_startup()
     {
         await using var source = NpgsqlDataSource.Create("Host=unused");
+
         foreach (var kind in new[] { "raw", "batch", "missing", "failure" })
         {
             var services = new ServiceCollection().AddLogging();
@@ -467,8 +729,34 @@ public class LocalTransportTests(PostgreSqlLocalSessionFixture server)
                 builder.AddMessageTypesFromThisAssembly();
                 builder.PostgreSqlLocal("local", source, transport =>
                 {
-                    transport.Send<LocalWork>("work", route => { if (kind == "raw") route.SendOptions = new() { EnvelopeMode = MessageEnvelopeMode.Raw }; });
-                    if (kind != "missing") transport.Consume("work", consumer => { consumer.Handler<LocalHandler>(); if (kind == "batch") consumer.Batch(2, TimeSpan.FromSeconds(1)); if (kind == "failure") consumer.Failures(FailureOptions.None); });
+                    transport.Send<LocalWork>("work", route =>
+                    {
+                        if (kind == "raw")
+                        {
+                            route.SendOptions = new()
+                            {
+                                EnvelopeMode = MessageEnvelopeMode.Raw
+                            };
+                        }
+                    });
+
+                    if (kind != "missing")
+                    {
+                        transport.Consume("work", consumer =>
+                        {
+                            consumer.Handler<LocalHandler>();
+
+                            if (kind == "batch")
+                            {
+                                consumer.Batch(2, TimeSpan.FromSeconds(1));
+                            }
+
+                            if (kind == "failure")
+                            {
+                                consumer.Failures(FailureOptions.None);
+                            }
+                        });
+                    }
                 });
             });
             services.AddSingleton(source);
@@ -477,7 +765,13 @@ public class LocalTransportTests(PostgreSqlLocalSessionFixture server)
             await using var provider = services.BuildServiceProvider();
             await Assert.ThrowsAsync<Exception>(async () =>
             {
-                foreach (var service in provider.GetServices<IHostedService>()) if (service is not PostgreSqlDirectDispatcher) await service.StartAsync(default);
+                foreach (var service in provider.GetServices<IHostedService>())
+                {
+                    if (service is not PostgreSqlDirectDispatcher)
+                    {
+                        await service.StartAsync(default);
+                    }
+                }
             });
         }
     }
@@ -493,13 +787,31 @@ public class LocalTransportTests(PostgreSqlLocalSessionFixture server)
         await database.StartAsync();
         await using var source = NpgsqlDataSource.Create(database.ConnectionString);
         await PostgreSqlOutboxStoreTests.CreateSchema(source);
-        await using (var command = source.CreateCommand("CREATE TABLE local_business (value integer PRIMARY KEY)")) await command.ExecuteNonQueryAsync();
+
+        await using (var command = source.CreateCommand("CREATE TABLE local_business (value integer PRIMARY KEY)"))
+        {
+            await command.ExecuteNonQueryAsync();
+        }
+
         await using var provider = Provider(source, ordered, maxAttempts: 10, failureAction: action);
-        foreach (var service in provider.GetServices<IHostedService>()) if (service is not PostgreSqlDirectDispatcher) await service.StartAsync(default);
+
+        foreach (var service in provider.GetServices<IHostedService>())
+        {
+            if (service is not PostgreSqlDirectDispatcher)
+            {
+                await service.StartAsync(default);
+            }
+        }
+
         await Enqueue(provider, source, new(-1), true);
+
         if (ordered)
         {
-            using var worker = new PostgreSqlOrderedDispatcher(source, new() { Lanes = 1, MaxDispatchAttempts = 10 }, provider.GetServices<ITransport>(), provider.GetRequiredService<ILogger<PostgreSqlOrderedDispatcher>>());
+            using var worker = new PostgreSqlOrderedDispatcher(source, new()
+            {
+                Lanes = 1,
+                MaxDispatchAttempts = 10
+            }, provider.GetServices<ITransport>(), provider.GetRequiredService<ILogger<PostgreSqlOrderedDispatcher>>());
             await worker.DispatchLaneAsync(0, default);
         }
         else
@@ -509,13 +821,18 @@ public class LocalTransportTests(PostgreSqlLocalSessionFixture server)
             using var worker = new PostgreSqlDirectDispatcher(source, new(), new(), provider.GetServices<ITransport>(), provider.GetRequiredService<ILogger<PostgreSqlDirectDispatcher>>());
             await worker.DispatchRecoveredAsync(rows, default);
         }
+
         await Assert.That(await Count(source, "local_business")).IsEqualTo(0L);
         await Assert.That(await Count(source, "relayer_outbox_dead")).IsEqualTo(action == FailureAction.DeadLetter ? 1L : 0L);
         await Assert.That(await Count(source, "relayer_outbox")).IsEqualTo(action == FailureAction.DeadLetter && ordered ? 1L : 0L);
     }
+
     private sealed class FixedClassifier(FailureAction action) : IFailureClassifier
     {
-        public FailureAction Classify(Exception exception, MessageContext context) => action;
+        public FailureAction Classify(Exception exception, MessageContext context)
+        {
+            return action;
+        }
     }
 
     [Test]
@@ -531,7 +848,8 @@ public class LocalTransportTests(PostgreSqlLocalSessionFixture server)
         first!.Exit();
         var replacement = transport.TryEnter("work");
         await Assert.That(replacement is not null).IsTrue();
-        replacement!.Exit(); second!.Exit();
+        replacement!.Exit();
+        second!.Exit();
     }
 
     [Test]
@@ -543,26 +861,33 @@ public class LocalTransportTests(PostgreSqlLocalSessionFixture server)
         await using var source = NpgsqlDataSource.Create(connectionString);
         await PostgreSqlOutboxStoreTests.CreateSchema(source);
         await using var transport = new PostgreSqlLocalTransport("local", source, new(), ["work"]);
-        const int concurrency = 33;
+        const int Concurrency = 33;
+
         for (var wave = 0; wave < 2; wave++)
         {
             // Holding the only native connection forces every send to rent its own state
             // before any of them can finish; there is no scheduler timing assumption.
             var blocker = await source.OpenConnectionAsync();
-            var sends = new Task[concurrency];
+            var sends = new Task[Concurrency];
+
             try
             {
-                for (var i = 0; i < concurrency; i++)
+                for (var i = 0; i < Concurrency; i++)
                 {
                     KeyValuePair<string, WireString>[] headers = [new("ce_id", new(Guid.CreateVersion7().ToString())), new("ce_type", new("local.work;v=1"))];
-                    sends[i] = transport.SendAsync(new("work", new byte[] { (byte)(wave * concurrency + i) }, headers), default).AsTask();
+                    sends[i] = transport.SendAsync(new("work", new byte[] { (byte)(wave * Concurrency + i) }, headers), default).AsTask();
                 }
             }
-            finally { await blocker.DisposeAsync(); }
+            finally
+            {
+                await blocker.DisposeAsync();
+            }
+
             await Task.WhenAll(sends);
         }
+
         await using var check = source.CreateCommand("SELECT count(DISTINCT body) FROM relayer_outbox");
-        await Assert.That((long)(await check.ExecuteScalarAsync())!).IsEqualTo(2L * concurrency);
+        await Assert.That((long)(await check.ExecuteScalarAsync())!).IsEqualTo(2L * Concurrency);
     }
 
     [Test]
@@ -572,7 +897,7 @@ public class LocalTransportTests(PostgreSqlLocalSessionFixture server)
         await database.StartAsync();
         await using var source = NpgsqlDataSource.Create(database.ConnectionString);
         await using var transport = new PostgreSqlLocalTransport("local", source, new(), ["work"]);
-        const int concurrency = 65;
+        const int Concurrency = 65;
         var stores = new HashSet<PostgreSqlOutboxStore>();
         var firstWave = new HashSet<PostgreSqlOutboxStore>();
         var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -582,22 +907,51 @@ public class LocalTransportTests(PostgreSqlLocalSessionFixture server)
         {
             lock (stores)
             {
-                if (!stores.Add(delivery.CompletionStore)) throw new InvalidOperationException("A live completion store was shared.");
-                if (++count == concurrency) entered.SetResult();
+                if (!stores.Add(delivery.CompletionStore))
+                {
+                    throw new InvalidOperationException("A live completion store was shared.");
+                }
+
+                if (++count == Concurrency)
+                {
+                    entered.SetResult();
+                }
             }
+
             await release.Task;
             return Disposition.SettledByHandler;
-        }, concurrency);
+        }, Concurrency);
+
         for (var wave = 0; wave < 2; wave++)
         {
-            var attempts = new Task[concurrency];
-            for (var i = 0; i < concurrency; i++)
+            var attempts = new Task[Concurrency];
+
+            for (var i = 0; i < Concurrency; i++)
+            {
                 attempts[i] = transport.ConsumeAsync(new("work", default), new(Guid.CreateVersion7(), Guid.NewGuid()), 1, null, default).AsTask();
-            try { await entered.Task.WaitAsync(TimeSpan.FromSeconds(30)); }
-            finally { release.TrySetResult(); await Task.WhenAll(attempts); }
-            if (wave == 0) firstWave.UnionWith(stores);
-            else await Assert.That(stores.SetEquals(firstWave)).IsTrue();
-            stores.Clear(); count = 0;
+            }
+
+            try
+            {
+                await entered.Task.WaitAsync(TimeSpan.FromSeconds(30));
+            }
+            finally
+            {
+                release.TrySetResult();
+                await Task.WhenAll(attempts);
+            }
+
+            if (wave == 0)
+            {
+                firstWave.UnionWith(stores);
+            }
+            else
+            {
+                await Assert.That(stores.SetEquals(firstWave)).IsTrue();
+            }
+
+            stores.Clear();
+            count = 0;
             release = new(TaskCreationOptions.RunContinuationsAsynchronously);
             entered = new(TaskCreationOptions.RunContinuationsAsynchronously);
         }
@@ -609,57 +963,121 @@ public class LocalTransportTests(PostgreSqlLocalSessionFixture server)
         var services = new ServiceCollection().AddLogging(logging =>
         {
             logging.AddConsole();
-            if (logs is not null) logging.AddProvider(logs);
+
+            if (logs is not null)
+            {
+                logging.AddProvider(logs);
+            }
         });
         services.AddSingleton(source);
         services.AddScoped<FailingCleanup>();
         services.AddSingleton<LocalAtLeastOnceTests.Probe>();
-        if (failureAction is { } action) services.AddSingleton<IFailureClassifier>(new FixedClassifier(action));
+
+        if (failureAction is { } action)
+        {
+            services.AddSingleton<IFailureClassifier>(new FixedClassifier(action));
+        }
+
         services.AddRelayer(builder =>
         {
             builder.AddMessageTypesFromThisAssembly();
             builder.PostgreSqlLocal("local", source, transport =>
             {
-                transport.Send<LocalWork>("work", route => { if (ordered) route.OrderingKey(message => message.Value.ToString()); });
+                transport.Send<LocalWork>("work", route =>
+                {
+                    if (ordered)
+                    {
+                        route.OrderingKey(message => message.Value.ToString());
+                    }
+                });
                 transport.Consume("work", consumer =>
                 {
                     consumerOptions?.Invoke(consumer.Options);
                     consumer.Concurrency(concurrency);
                     consumer.Handler<LocalHandler>();
                 });
-            }, new() { Lanes = 1, MaxDispatchAttempts = maxAttempts });
+            }, new()
+            {
+                Lanes = 1,
+                MaxDispatchAttempts = maxAttempts
+            });
         });
-        if (directHandoff) services.AddRelayerPostgreSqlOutbox("local", new() { Lanes = 1, MaxDispatchAttempts = maxAttempts });
-        else services.AddRelayerPostgreSqlOutbox(new PostgreSqlOutboxOptions() { Lanes = 1, MaxDispatchAttempts = maxAttempts });
+
+        if (directHandoff)
+        {
+            services.AddRelayerPostgreSqlOutbox("local", new()
+            {
+                Lanes = 1,
+                MaxDispatchAttempts = maxAttempts
+            });
+        }
+        else
+        {
+            services.AddRelayerPostgreSqlOutbox(new PostgreSqlOutboxOptions() { Lanes = 1, MaxDispatchAttempts = maxAttempts });
+        }
+
         services.AddRelayerPostgreSqlDirectDispatch("local", source, new PostgreSqlOutboxOptions() { MaxDispatchAttempts = maxAttempts });
         return services.BuildServiceProvider();
     }
+
     internal static async Task Enqueue(ServiceProvider provider, NpgsqlDataSource source, LocalWork message, bool commit)
     {
         await using var scope = provider.CreateAsyncScope();
         var outbox = scope.ServiceProvider.GetRequiredService<PostgreSqlOutbox>();
         await using var transaction = await outbox.BeginTransactionAsync(source);
         await scope.ServiceProvider.GetRequiredService<ISender>().SendAsync(message);
-        if (commit) await transaction.CommitAsync();
-        else await transaction.RollbackAsync();
+
+        if (commit)
+        {
+            await transaction.CommitAsync();
+        }
+        else
+        {
+            await transaction.RollbackAsync();
+        }
     }
+
     internal static async Task<long> Count(NpgsqlDataSource source, string table)
     {
         await using var command = source.CreateCommand("SELECT count(*) FROM " + table);
         return (long)(await command.ExecuteScalarAsync())!;
     }
+
     private sealed class ErrorLogs : ILoggerProvider, ILogger
     {
-        internal ConcurrentQueue<string> Errors { get; } = new();
-        public ILogger CreateLogger(string categoryName) => this;
-        public void Dispose() { }
-        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
-        public bool IsEnabled(LogLevel logLevel) => true;
+        internal ConcurrentQueue<string> Errors
+        {
+            get;
+        } = new();
+
+        public ILogger CreateLogger(string categoryName)
+        {
+            return this;
+        }
+
+        public void Dispose()
+        {
+        }
+
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull
+        {
+            return null;
+        }
+
+        public bool IsEnabled(LogLevel logLevel)
+        {
+            return true;
+        }
+
         public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter)
         {
-            if (logLevel >= LogLevel.Error) Errors.Enqueue(formatter(state, exception));
+            if (logLevel >= LogLevel.Error)
+            {
+                Errors.Enqueue(formatter(state, exception));
+            }
         }
     }
+
     public sealed class FailingCleanup(ISender sender) : IAsyncDisposable
     {
         public async ValueTask DisposeAsync()
@@ -668,8 +1086,10 @@ public class LocalTransportTests(PostgreSqlLocalSessionFixture server)
             throw new InvalidOperationException("scope cleanup failed");
         }
     }
+
     [Message("local.work")]
     public sealed record LocalWork(int Value);
+
     public sealed class LocalHandler(NpgsqlDataSource source, ISender sender) : IHandler<LocalWork>
     {
         public async ValueTask HandleAsync(LocalWork message, MessageContext context, CancellationToken cancellationToken)
@@ -677,26 +1097,43 @@ public class LocalTransportTests(PostgreSqlLocalSessionFixture server)
             var delivery = context.Features.GetRequired<NativeMessage<PostgreSqlLocalDelivery>>().Message;
             // At-least-once consumers have no delivery transaction and write through their own connection.
             if (delivery.OpenTransaction is null)
+            {
                 await context.Services.GetRequiredService<LocalAtLeastOnceTests.Probe>().ObserveAsync(source, message.Value, delivery, cancellationToken);
+            }
+
             await using var own = delivery.OpenTransaction is null ? await source.OpenConnectionAsync(cancellationToken) : null;
             await using var command = new NpgsqlCommand("INSERT INTO local_business VALUES (@value)", own ?? delivery.Transaction.Connection, delivery.OpenTransaction);
             command.Parameters.AddWithValue("value", message.Value);
             await command.ExecuteNonQueryAsync(context.CancellationToken);
+
             if (message.Value is 10 or -10 or -11)
             {
                 await sender.SendWithoutOutboxAsync(new LocalWork(1000), cancellationToken);
-                if (message.Value == -11) context.Services.GetRequiredService<FailingCleanup>();
+
+                if (message.Value == -11)
+                {
+                    context.Services.GetRequiredService<FailingCleanup>();
+                }
             }
+
             if (message.Value is -2 or -3)
             {
                 await using var fence = source.CreateCommand(message.Value == -2
                     ? "UPDATE relayer_outbox SET claim_expires_at = clock_timestamp() WHERE id = @id"
                     : "UPDATE relayer_outbox SET claim_token = @token WHERE id = @id");
                 fence.Parameters.AddWithValue("id", delivery.Claim.MessageId);
-                if (message.Value == -3) fence.Parameters.AddWithValue("token", Guid.NewGuid());
+
+                if (message.Value == -3)
+                {
+                    fence.Parameters.AddWithValue("token", Guid.NewGuid());
+                }
+
                 await fence.ExecuteNonQueryAsync(cancellationToken);
             }
-            else if (message.Value < 0 && message.Value != -11) throw new InvalidOperationException("poison");
+            else if (message.Value < 0 && message.Value != -11)
+            {
+                throw new InvalidOperationException("poison");
+            }
         }
     }
 }

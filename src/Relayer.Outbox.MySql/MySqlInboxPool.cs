@@ -1,6 +1,6 @@
-using Relayer.Transports;
 using System.Collections.Concurrent;
 using MySqlConnector;
+using Relayer.Transports;
 
 namespace Relayer.Outbox.MySql;
 
@@ -10,12 +10,18 @@ internal sealed class MySqlInboxPools : IDisposable
 {
     private readonly ConcurrentDictionary<string, MySqlInboxPool> _pools = new(StringComparer.Ordinal);
 
-    internal MySqlInboxPool Get(string prefix) => _pools.GetOrAdd(prefix,
-        static value => new(new MySqlOutboxOptions { TablePrefix = value }));
+    internal MySqlInboxPool Get(string prefix)
+    {
+        return _pools.GetOrAdd(prefix,
+                static value => new(new MySqlOutboxOptions { TablePrefix = value }));
+    }
 
     public void Dispose()
     {
-        foreach (var pool in _pools.Values) pool.Dispose();
+        foreach (var pool in _pools.Values)
+        {
+            pool.Dispose();
+        }
     }
 }
 
@@ -28,38 +34,61 @@ internal sealed class MySqlInboxPool(MySqlOutboxOptions options) : IDisposable
     internal Scratch Rent()
     {
         var segment = _items;
+
         while (true)
         {
             for (var i = 0; i < segment.Items.Length; i++)
             {
                 var item = Volatile.Read(ref segment.Items[i]);
+
                 if (item is null)
                 {
                     var added = new Scratch(_sql);
                     item = Interlocked.CompareExchange(ref segment.Items[i], added, null);
-                    if (item is null) item = added;
-                    else added.Command.Dispose();
+
+                    if (item is null)
+                    {
+                        item = added;
+                    }
+                    else
+                    {
+                        added.Command.Dispose();
+                    }
                 }
+
                 if (Volatile.Read(ref item.InUse) == 0 &&
-                    Interlocked.CompareExchange(ref item.InUse, 1, 0) == 0) return item;
+                    Interlocked.CompareExchange(ref item.InUse, 1, 0) == 0)
+                {
+                    return item;
+                }
             }
             // Same high-water-mark strategy as SendTracing: warm bursts reuse all observed concurrency.
             var next = Volatile.Read(ref segment.Next);
+
             if (next is null)
             {
                 var added = new Segment();
                 next = Interlocked.CompareExchange(ref segment.Next, added, null) ?? added;
             }
+
             segment = next;
         }
     }
 
-    internal void Return(Scratch item) => Volatile.Write(ref item.InUse, 0);
+    internal void Return(Scratch item)
+    {
+        Volatile.Write(ref item.InUse, 0);
+    }
 
     public void Dispose()
     {
         for (var segment = _items; segment is not null; segment = segment.Next)
-            foreach (var item in segment.Items) item?.Command.Dispose();
+        {
+            foreach (var item in segment.Items)
+            {
+                item?.Command.Dispose();
+            }
+        }
     }
 
     private sealed class Segment
@@ -71,14 +100,25 @@ internal sealed class MySqlInboxPool(MySqlOutboxOptions options) : IDisposable
     internal sealed class Scratch
     {
         internal int InUse;
-        internal byte[] Id { get; } = new byte[16];
-        internal MySqlCommand Command { get; }
+
+        internal byte[] Id
+        {
+            get;
+        } = new byte[16];
+
+        internal MySqlCommand Command
+        {
+            get;
+        }
 
         internal Scratch(string sql)
         {
             Command = new(sql);
             Command.Parameters.Add(new("consumer", MySqlDbType.VarBinary));
-            Command.Parameters.Add(new("id", MySqlDbType.Binary) { Value = Id });
+            Command.Parameters.Add(new("id", MySqlDbType.Binary)
+            {
+                Value = Id
+            });
         }
     }
 }

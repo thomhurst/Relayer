@@ -77,6 +77,7 @@ public class SchemaTests
         string[][] cases = [[], ["db"], ["db", "script"], ["db", "script", "--provider"],
             ["db", "script", "--unknown", "x"], ["db", "script", "--provider", "postgres", "--provider", "postgres"],
             ["db", "script", "--provider", "postgres", "--schema", ""]];
+
         foreach (var args in cases)
         {
             using var output = new StringWriter();

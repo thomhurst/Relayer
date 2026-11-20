@@ -1,16 +1,16 @@
-using Relayer.Pipeline;
 using System.Buffers;
 using System.Collections.Concurrent;
 using System.Data;
 using System.Data.Common;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.EntityFrameworkCore.Metadata;
 using Microsoft.EntityFrameworkCore.Metadata.Conventions;
 using Microsoft.EntityFrameworkCore.Storage;
-using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Npgsql;
 using Relayer.Outbox.EntityFrameworkCore;
+using Relayer.Pipeline;
 using Relayer.Serialization;
 using Relayer.TestFixtures;
 using Relayer.Transports;
@@ -71,7 +71,13 @@ public class InboxTests : InboxContractTests
         await using var provider = database.Services(outbox: true);
         await database.Execute("ALTER TABLE \"Case\"\"Inbox\".\"test_outbox\" ADD CONSTRAINT reject_rows CHECK (false)");
         var settled = 0;
-        var pipeline = Pipeline(provider, isolationLevel: isolationLevel).Settle(_ => { settled++; return default; }).Build();
+        var pipeline = Pipeline(provider, isolationLevel: isolationLevel)
+            .Settle(_ =>
+            {
+                settled++;
+                return default;
+            })
+            .Build();
         var message = Message();
         await Assert.That(async () => await Deliver(pipeline, message)).Throws<PostgresException>();
         await Assert.That(settled).IsEqualTo(0);
@@ -113,23 +119,51 @@ public class InboxTests : InboxContractTests
         var control = provider.GetRequiredService<Control>();
         var failurePipeline = failures ? new FailurePipeline(provider, "events", "source", "orders", new()) : null;
         var settled = 0;
-        var pipeline = Pipeline(provider, failures: failurePipeline).Settle(_ => { settled++; return default; }).Build();
+        var pipeline = Pipeline(provider, failures: failurePipeline)
+            .Settle(_ =>
+            {
+                settled++;
+                return default;
+            })
+            .Build();
         var message = Message();
-        if (duplicate) await Deliver(pipeline, message);
+
+        if (duplicate)
+        {
+            await Deliver(pipeline, message);
+        }
+
         using var context = pipeline.RentContext(message);
         control.OnDispose = () =>
         {
-            if (request == "transient") throw new NpgsqlException("Transient cleanup failure", new TimeoutException());
+            if (request == "transient")
+            {
+                throw new NpgsqlException("Transient cleanup failure", new TimeoutException());
+            }
+
             var settlement = context.Features.GetRequired<ISettlementFeature>();
-            if (request == "retry") settlement.Retry(TimeSpan.Zero);
-            else settlement.DeadLetter("Rejected during disposal");
+
+            if (request == "retry")
+            {
+                settlement.Retry(TimeSpan.Zero);
+            }
+            else
+            {
+                settlement.DeadLetter("Rejected during disposal");
+            }
         };
+
         if (request == "transient")
+        {
             await Assert.That(async () => await pipeline.ProcessAsync(context)).Throws<NpgsqlException>()
                 .WithMessage("Transient cleanup failure");
+        }
         else
+        {
             await Assert.That(async () => await pipeline.ProcessAsync(context)).Throws<InvalidOperationException>()
                 .WithMessage("Only one settlement request is allowed per processing attempt.");
+        }
+
         control.OnDispose = null;
         await Assert.That(settled).IsEqualTo(duplicate ? 1 : 0);
         await Assert.That(await database.Count("inbox")).IsEqualTo(1L);
@@ -157,7 +191,11 @@ public class InboxTests : InboxContractTests
             return context.Attempt == 1 ? ValueTask.FromException(new InvalidOperationException("Retry the entire unit.")) : default;
         };
         var failures = new FailurePipeline(provider, "events", "source", "orders",
-            new() { RetryDelays = new[] { TimeSpan.Zero }, Jitter = 0 });
+            new()
+            {
+                RetryDelays = new[] { TimeSpan.Zero },
+                Jitter = 0
+            });
         var pipeline = Pipeline(provider, failures: failures).Build();
         var message = Message();
         await Deliver(pipeline, message);
@@ -192,12 +230,19 @@ public class InboxTests : InboxContractTests
             attempts.Add((context.MessageId, context.Services, db));
             await Assert.That(db.Database.CurrentTransaction!.GetDbTransaction().IsolationLevel).IsEqualTo(IsolationLevel.Serializable);
             await db.Set<Order>().CountAsync(timeout.Token);
-            if (Interlocked.Increment(ref reads) == 2) bothRead.TrySetResult();
+
+            if (Interlocked.Increment(ref reads) == 2)
+            {
+                bothRead.TrySetResult();
+            }
+
             await bothRead.Task.WaitAsync(timeout.Token);
             // Both snapshots read the same predicate. Finish the winner before the loser writes,
             // so its replay starts after that commit rather than racing an in-flight commit again.
             if (context.MessageId == secondMessage.MessageId)
+            {
                 await firstCommitted.Task.WaitAsync(timeout.Token);
+            }
         };
         var failures = new FailurePipeline(provider, "events", "source", "orders", new());
         var completions = 0;
@@ -205,13 +250,24 @@ public class InboxTests : InboxContractTests
             .Settle(context =>
             {
                 if (context.Features.GetRequired<ISettlementFeature>().RequestedDisposition is { Kind: DispositionKind.Complete })
+                {
                     Interlocked.Increment(ref completions);
+                }
+
                 return default;
             }).Build();
         var first = Deliver(pipeline, firstMessage, timeout.Token);
         var second = Deliver(pipeline, secondMessage, timeout.Token);
-        try { await first; }
-        finally { firstCommitted.TrySetResult(); }
+
+        try
+        {
+            await first;
+        }
+        finally
+        {
+            firstCommitted.TrySetResult();
+        }
+
         await second;
         await Assert.That(control.Invocations).IsEqualTo(3);
         await Assert.That(completions).IsEqualTo(2);
@@ -249,15 +305,26 @@ public class InboxTests : InboxContractTests
             .Settle(context =>
             {
                 if (((DefaultMessageContext)context).ObservedDisposition.Kind == DispositionKind.Complete)
+                {
                     Interlocked.Increment(ref completions);
+                }
+
                 return default;
             }).Build();
         var message = Message();
         var original = Deliver(pipeline, message, timeout.Token);
         await saved.Task.WaitAsync(timeout.Token);
         var duplicate = Deliver(pipeline, message, timeout.Token);
-        try { await database.WaitForInboxLock(); }
-        finally { release.TrySetResult(); }
+
+        try
+        {
+            await database.WaitForInboxLock();
+        }
+        finally
+        {
+            release.TrySetResult();
+        }
+
         await Task.WhenAll(original, duplicate);
         await Assert.That(control.Invocations).IsEqualTo(1);
         await Assert.That(completions).IsEqualTo(2);
@@ -281,6 +348,7 @@ public class InboxTests : InboxContractTests
         control.AfterSave = async context =>
         {
             scopes.Add(context.Services);
+
             try
             {
                 var sql = sqlState == PostgresErrorCodes.SerializationFailure
@@ -288,7 +356,10 @@ public class InboxTests : InboxContractTests
                     : "DO $conflict$ BEGIN RAISE EXCEPTION 'transaction conflict' USING ERRCODE = '40P01'; END $conflict$";
                 await context.Services.GetRequiredService<OrdersContext>().Database.ExecuteSqlRawAsync(sql);
             }
-            catch (PostgresException error) when (wrapped) { throw new DbUpdateException("Save failed", error); }
+            catch (PostgresException error) when (wrapped)
+            {
+                throw new DbUpdateException("Save failed", error);
+            }
         };
         var failures = new FailurePipeline(provider, "events", "source", "orders",
             defaultRetries ? new() : FailureOptions.None);
@@ -332,7 +403,12 @@ public class InboxTests : InboxContractTests
             await context.Services.GetRequiredService<ISender>().SendWithoutOutboxAsync(new Probe(2));
             var db = context.Services.GetRequiredService<OrdersContext>();
             contexts.Add(db);
-            if (scopes.Count != 1) return;
+
+            if (scopes.Count != 1)
+            {
+                return;
+            }
+
             var connection = (NpgsqlConnection)db.Database.GetDbConnection();
             await database.Execute($"SELECT pg_terminate_backend({connection.ProcessID})");
             await using var command = connection.CreateCommand();
@@ -358,7 +434,16 @@ public class InboxTests : InboxContractTests
         var fault = new LostCommitResponse();
         await using var provider = database.Services(outbox: true, retries: true, interceptor: fault);
         var settled = 0;
-        await Deliver(Pipeline(provider).Settle(_ => { settled++; return default; }).Build(), Message());
+        await Deliver(
+            Pipeline(provider)
+                .Settle(_ =>
+                {
+                    settled++;
+                    return default;
+                })
+                .Build(),
+            Message()
+        );
         await Assert.That(fault.Transactions).IsEqualTo(1);
         await Assert.That(fault.Commits).IsEqualTo(1);
         await Assert.That(provider.GetRequiredService<Control>().Invocations).IsEqualTo(1);
@@ -386,7 +471,11 @@ public class InboxTests : InboxContractTests
         var failures = new FailurePipeline(provider, "events", "source", "orders", new());
         var settled = 0;
         await Deliver(Pipeline(provider, inbox: !outbox, failures: failures)
-            .Settle(_ => { settled++; return default; }).Build(), Message());
+            .Settle(_ =>
+            {
+                settled++;
+                return default;
+            }).Build(), Message());
         await Assert.That(fault.Commits).IsEqualTo(1);
         await Assert.That(control.Invocations).IsEqualTo(1);
         await Assert.That(provider.GetRequiredService<Transport>().Sends).IsEqualTo(1);
@@ -403,15 +492,29 @@ public class InboxTests : InboxContractTests
         var fault = new LostCommitResponse();
         await using var provider = database.Services(outbox: true, retries: true, interceptor: committed ? fault : null);
         var control = provider.GetRequiredService<Control>();
-        if (!committed) control.AfterSave = _ => throw new NpgsqlException("Unknown transaction outcome", new IOException());
+
+        if (!committed)
+        {
+            control.AfterSave = _ => throw new NpgsqlException("Unknown transaction outcome", new IOException());
+        }
+
         var disposals = 0;
         control.OnDispose = () =>
         {
-            if (++disposals == 2) throw new NpgsqlException("Verification cleanup failure", new TimeoutException());
+            if (++disposals == 2)
+            {
+                throw new NpgsqlException("Verification cleanup failure", new TimeoutException());
+            }
         };
         var failures = new FailurePipeline(provider, "events", "source", "orders", new());
         var settled = 0;
-        var pipeline = Pipeline(provider, failures: failures).Settle(_ => { settled++; return default; }).Build();
+        var pipeline = Pipeline(provider, failures: failures)
+            .Settle(_ =>
+            {
+                settled++;
+                return default;
+            })
+            .Build();
         var message = Message();
         await Assert.That(async () => await Deliver(pipeline, message)).Throws<NpgsqlException>()
             .WithMessage("Verification cleanup failure");
@@ -432,16 +535,21 @@ public class InboxTests : InboxContractTests
     {
         internal int Transactions;
         internal int Commits;
+
         public override ValueTask<DbTransaction> TransactionStartedAsync(DbConnection connection, TransactionEndEventData eventData,
             DbTransaction result, CancellationToken cancellationToken = default)
         {
             Transactions++;
             return new(result);
         }
+
         public override async Task TransactionCommittedAsync(DbTransaction transaction, TransactionEndEventData eventData,
             CancellationToken cancellationToken = default)
         {
-            if (++Commits != 1) return;
+            if (++Commits != 1)
+            {
+                return;
+            }
             // The database has committed, but the client cannot observe a successful response.
             await eventData.Context!.Database.GetDbConnection().CloseAsync();
             throw new NpgsqlException("Injected lost commit response", new IOException("Connection lost after commit"));
@@ -459,8 +567,16 @@ public class InboxTests : InboxContractTests
         await using var provider = database.Services(outbox: true, retries: nativeRetries, contextOptions: () => options,
             interceptor: nativeRetries ? new LostCommitResponse() : null);
         var pipeline = Pipeline(provider).Build();
-        options = new() { Schema = Database.Options.Schema, TablePrefix = "reloaded_" };
-        await database.Execute(PostgreSqlOutboxSchema.CreateScript(new() { Schema = options.Schema, TablePrefix = options.TablePrefix }));
+        options = new()
+        {
+            Schema = Database.Options.Schema,
+            TablePrefix = "reloaded_"
+        };
+        await database.Execute(PostgreSqlOutboxSchema.CreateScript(new()
+        {
+            Schema = options.Schema,
+            TablePrefix = options.TablePrefix
+        }));
         var message = Message();
         await Deliver(pipeline, message);
         await Deliver(pipeline, message);
@@ -474,6 +590,7 @@ public class InboxTests : InboxContractTests
     protected override async Task<InboxFixture> CreateFixtureAsync()
     {
         var database = new Database();
+
         try
         {
             await database.Start();
@@ -488,11 +605,25 @@ public class InboxTests : InboxContractTests
 
     private sealed class ContractFixture(Database database) : InboxFixture
     {
-        public override InboxConsumer Consumer(string name = "orders") => new ContractConsumer(database.Services(outbox: true), name);
-        public override async Task<DurableState> ReadStateAsync() =>
-            new(await database.Orders(), await database.Count("inbox"), await database.Count("outbox"));
-        public override Task WaitForContentionAsync() => database.WaitForInboxLock();
-        public override ValueTask DisposeAsync() => database.DisposeAsync();
+        public override InboxConsumer Consumer(string name = "orders")
+        {
+            return new ContractConsumer(database.Services(outbox: true), name);
+        }
+
+        public override async Task<DurableState> ReadStateAsync()
+        {
+            return new(await database.Orders(), await database.Count("inbox"), await database.Count("outbox"));
+        }
+
+        public override Task WaitForContentionAsync()
+        {
+            return database.WaitForInboxLock();
+        }
+
+        public override ValueTask DisposeAsync()
+        {
+            return database.DisposeAsync();
+        }
     }
 
     private sealed class ContractConsumer : InboxConsumer
@@ -508,17 +639,33 @@ public class InboxTests : InboxContractTests
             _control.AfterSave = async context =>
             {
                 await Assert.That(context.Services.GetRequiredService<OrdersContext>().Database.CurrentTransaction).IsNotNull();
-                if (AfterSave is { } after) await after(context);
+
+                if (AfterSave is { } after)
+                {
+                    await after(context);
+                }
             };
             _pipeline = Pipeline(provider, name).Settle(_ => Settlement?.Invoke() ?? default).Build();
         }
 
         public override RelayerInstrumentation Instrumentation => _provider.GetRequiredService<RelayerInstrumentation>();
+
         public override int Invocations => _control.Invocations;
+
         public override int DirectSends => _provider.GetRequiredService<Transport>().Sends;
-        public override Task DeliverAsync(Guid messageId, CancellationToken cancellation = default) =>
-            Deliver(_pipeline, Message() with { MessageId = messageId.ToString("D") }, cancellation);
-        public override ValueTask DisposeAsync() => _provider.DisposeAsync();
+
+        public override Task DeliverAsync(Guid messageId, CancellationToken cancellation = default)
+        {
+            return Deliver(_pipeline, Message() with
+            {
+                MessageId = messageId.ToString("D")
+            }, cancellation);
+        }
+
+        public override ValueTask DisposeAsync()
+        {
+            return _provider.DisposeAsync();
+        }
     }
 
     private static ConsumePipelineBuilder Pipeline(ServiceProvider provider, string consumer = "orders", bool inbox = false,
@@ -535,10 +682,15 @@ public class InboxTests : InboxContractTests
             .ConfigureConsumer(provider, declaration.Build());
     }
 
-    private static ConsumeMessage Message() => new()
+    private static ConsumeMessage Message()
     {
-        MessageType = new("inbox.probe", 1), MessageId = Guid.CreateVersion7().ToString("D"), Body = new ReadOnlySequence<byte>(new byte[] { 1 })
-    };
+        return new()
+        {
+            MessageType = new("inbox.probe", 1),
+            MessageId = Guid.CreateVersion7().ToString("D"),
+            Body = new ReadOnlySequence<byte>(new byte[] { 1 })
+        };
+    }
 
     private static async Task Deliver(ConsumePipeline pipeline, ConsumeMessage message, CancellationToken cancellation = default)
     {
@@ -560,26 +712,47 @@ public class InboxTests : InboxContractTests
         public async ValueTask HandleAsync(Probe message, MessageContext context, CancellationToken cancellationToken)
         {
             var call = Interlocked.Increment(ref control.Invocations);
-            if (control.BeforeSave is { } before) await before(context);
+
+            if (control.BeforeSave is { } before)
+            {
+                await before(context);
+            }
+
             db.Add(new Order { Id = Guid.CreateVersion7() });
-            if (control.Outbox) await sender.SendAsync(new Probe(call), cancellationToken);
+
+            if (control.Outbox)
+            {
+                await sender.SendAsync(new Probe(call), cancellationToken);
+            }
+
             await db.SaveChangesAsync(cancellationToken);
-            if (control.AfterSave is { } after) await after(context);
+
+            if (control.AfterSave is { } after)
+            {
+                await after(context);
+            }
         }
     }
 
     public sealed class OrdersContext(DbContextOptions<OrdersContext> options, Control control) : DbContext(options)
     {
-        protected override void ConfigureConventions(ModelConfigurationBuilder configurationBuilder) =>
+        protected override void ConfigureConventions(ModelConfigurationBuilder configurationBuilder)
+        {
             configurationBuilder.Conventions.Add(static _ => new InitializeRelationalModel());
+        }
 
-        protected override void OnModelCreating(ModelBuilder modelBuilder) => modelBuilder.Entity<Order>().ToTable("orders").HasKey(x => x.Id);
+        protected override void OnModelCreating(ModelBuilder modelBuilder)
+        {
+            modelBuilder.Entity<Order>().ToTable("orders").HasKey(x => x.Id);
+        }
+
         public override async ValueTask DisposeAsync()
         {
             await base.DisposeAsync();
             control.OnDispose?.Invoke();
         }
     }
+
     // EF 10.0.15 has a first-use relational-model race (dotnet/efcore#39214).
     // Build it in EF's existing model-construction pipeline before publishing the cached
     // runtime model. Tests still execute concurrently; remove after upgrading to 10.0.16.
@@ -593,41 +766,98 @@ public class InboxTests : InboxContractTests
     }
 
     public sealed class OtherContext(DbContextOptions<OtherContext> options) : DbContext(options);
-    public sealed class Order { public Guid Id { get; set; } }
+
+    public sealed class Order
+    {
+        public Guid Id
+        {
+            get; set;
+        }
+    }
+
     [Message("inbox.probe")]
     public sealed record Probe(int Value);
+
     public sealed class Empty;
 
     private sealed class Serializer : IMessageSerializer
     {
         public string ContentType => "application/test";
+
         public void Serialize<TMessage>(TMessage message, IBufferWriter<byte> destination)
-        { destination.GetSpan(1)[0] = 1; destination.Advance(1); }
-        public TMessage Deserialize<TMessage>(ReadOnlySequence<byte> source) => (TMessage)(object)new Probe(1);
+        {
+            destination.GetSpan(1)[0] = 1;
+            destination.Advance(1);
+        }
+
+        public TMessage Deserialize<TMessage>(ReadOnlySequence<byte> source)
+        {
+            return (TMessage)(object)new Probe(1);
+        }
     }
+
     private sealed class Transport : ITransport
     {
         public int Sends;
+
         public string Name => "events";
-        public TransportCapabilities GetCapabilities(string endpoint) => new() { DeadLetter = true };
-        public ValueTask SendAsync(OutgoingMessage message, CancellationToken cancellationToken) { Interlocked.Increment(ref Sends); return default; }
-        public ValueTask SendBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken) => throw new NotSupportedException();
-        public ValueTask<TopologyReport> ApplyTopologyAsync(TopologyMode mode, CancellationToken cancellationToken) => new(new TopologyReport([]));
-        public Task StartAsync(CancellationToken cancellationToken) => Task.CompletedTask;
-        public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
-        public ValueTask DisposeAsync() => default;
+
+        public TransportCapabilities GetCapabilities(string endpoint)
+        {
+            return new()
+            {
+                DeadLetter = true
+            };
+        }
+
+        public ValueTask SendAsync(OutgoingMessage message, CancellationToken cancellationToken)
+        {
+            Interlocked.Increment(ref Sends);
+            return default;
+        }
+
+        public ValueTask SendBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken)
+        {
+            throw new NotSupportedException();
+        }
+
+        public ValueTask<TopologyReport> ApplyTopologyAsync(TopologyMode mode, CancellationToken cancellationToken)
+        {
+            return new(new TopologyReport([]));
+        }
+
+        public Task StartAsync(CancellationToken cancellationToken)
+        {
+            return Task.CompletedTask;
+        }
+
+        public Task StopAsync(CancellationToken cancellationToken)
+        {
+            return Task.CompletedTask;
+        }
+
+        public ValueTask DisposeAsync()
+        {
+            return default;
+        }
     }
 
     private sealed class Database : IAsyncDisposable
     {
         internal static EntityFrameworkCoreOutboxOptions Options => new() { Schema = "Case\"Inbox", TablePrefix = "test_" };
         private readonly PostgreSqlFixture _fixture = new();
+
         internal async Task Start()
         {
             await _fixture.StartAsync();
-            await Execute(PostgreSqlOutboxSchema.CreateScript(new() { Schema = Options.Schema, TablePrefix = Options.TablePrefix }) +
+            await Execute(PostgreSqlOutboxSchema.CreateScript(new()
+            {
+                Schema = Options.Schema,
+                TablePrefix = Options.TablePrefix
+            }) +
                 "CREATE TABLE orders (\"Id\" uuid PRIMARY KEY)");
         }
+
         internal ServiceProvider Services(bool outbox, bool retries = false, Func<EntityFrameworkCoreOutboxOptions>? contextOptions = null, IInterceptor? interceptor = null)
         {
             var services = new ServiceCollection();
@@ -639,9 +869,23 @@ public class InboxTests : InboxContractTests
             services.AddDbContext<OrdersContext>((sp, o) =>
             {
                 o.UseNpgsql(string.IsNullOrEmpty(_fixture.ConnectionString) ? "Host=unused" : _fixture.ConnectionString,
-                    native => { if (retries) native.EnableRetryOnFailure(3, TimeSpan.Zero, null); });
-                if (interceptor is not null) o.AddInterceptors(interceptor);
-                if (outbox) o.AddRelayerOutbox(sp, contextOptions?.Invoke() ?? Options);
+                    native =>
+                    {
+                        if (retries)
+                        {
+                            native.EnableRetryOnFailure(3, TimeSpan.Zero, null);
+                        }
+                    });
+
+                if (interceptor is not null)
+                {
+                    o.AddInterceptors(interceptor);
+                }
+
+                if (outbox)
+                {
+                    o.AddRelayerOutbox(sp, contextOptions?.Invoke() ?? Options);
+                }
             });
             // Outbox on another context must not turn on the inbox for OrdersContext.
             services.AddDbContext<OtherContext>((sp, o) => o.UseNpgsql("Host=unused").AddRelayerOutbox(sp));
@@ -653,8 +897,17 @@ public class InboxTests : InboxContractTests
             });
             return services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
         }
-        internal Task<long> Count(string table) => Scalar($"SELECT count(*) FROM \"Case\"\"Inbox\".\"test_{table}\"");
-        internal Task<long> Orders() => Scalar("SELECT count(*) FROM orders");
+
+        internal Task<long> Count(string table)
+        {
+            return Scalar($"SELECT count(*) FROM \"Case\"\"Inbox\".\"test_{table}\"");
+        }
+
+        internal Task<long> Orders()
+        {
+            return Scalar("SELECT count(*) FROM orders");
+        }
+
         internal async Task<long> Scalar(string sql)
         {
             await using var connection = new NpgsqlConnection(_fixture.ConnectionString);
@@ -662,6 +915,7 @@ public class InboxTests : InboxContractTests
             await using var command = new NpgsqlCommand(sql, connection);
             return (long)(await command.ExecuteScalarAsync())!;
         }
+
         internal async Task Execute(string sql)
         {
             await using var connection = new NpgsqlConnection(_fixture.ConnectionString);
@@ -669,18 +923,29 @@ public class InboxTests : InboxContractTests
             await using var command = new NpgsqlCommand(sql, connection);
             await command.ExecuteNonQueryAsync();
         }
+
         internal async Task WaitForInboxLock()
         {
             using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(20));
             await using var connection = new NpgsqlConnection(_fixture.ConnectionString);
             await connection.OpenAsync(timeout.Token);
+
             while (true)
             {
                 await using var command = new NpgsqlCommand("SELECT count(*) FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND query LIKE 'INSERT INTO %test_inbox%' AND datname = current_database()", connection);
-                if ((long)(await command.ExecuteScalarAsync(timeout.Token))! > 0) return;
+
+                if ((long)(await command.ExecuteScalarAsync(timeout.Token))! > 0)
+                {
+                    return;
+                }
+
                 await Task.Delay(10, timeout.Token);
             }
         }
-        public ValueTask DisposeAsync() => _fixture.DisposeAsync();
+
+        public ValueTask DisposeAsync()
+        {
+            return _fixture.DisposeAsync();
+        }
     }
 }

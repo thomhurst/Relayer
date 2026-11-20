@@ -1,10 +1,10 @@
-using Relayer.Pipeline;
 using System.Buffers;
-using Microsoft.Extensions.Options;
-using Microsoft.Extensions.Configuration;
 using Dapper;
 using Microsoft.Data.SqlClient;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Options;
+using Relayer.Pipeline;
 using Relayer.Serialization;
 using Relayer.TestFixtures;
 using Relayer.Transports;
@@ -44,12 +44,18 @@ public class InboxTests(SqlServerFixture server) : InboxContractTests
         await using var database = new Database(isolated.ConnectionString);
         await database.Start();
         await database.Execute("EXEC sp_configure 'user options', 512; RECONFIGURE");
-        using (var pool = new SqlConnection(isolated.ConnectionString)) SqlConnection.ClearPool(pool);
+
+        using (var pool = new SqlConnection(isolated.ConnectionString))
+        {
+            SqlConnection.ClearPool(pool);
+        }
+
         await using (var connection = new SqlConnection(isolated.ConnectionString))
         {
             await connection.OpenAsync();
             await Assert.That(await connection.ExecuteScalarAsync<int>("SELECT @@OPTIONS & 512")).IsEqualTo(512);
         }
+
         await using var consumer = new Consumer(database, "orders");
         var id = Guid.CreateVersion7();
         await consumer.DeliverAsync(id);
@@ -81,10 +87,16 @@ public class InboxTests(SqlServerFixture server) : InboxContractTests
         await using var database = new Database(server.ConnectionString);
         await database.Start();
         await using var consumer = new Consumer(database, "orders");
+
         if (id.Length == 0)
+        {
             await Assert.That(async () => await consumer.DeliverRawAsync(id)).Throws<ArgumentException>();
+        }
         else
+        {
             await Assert.That(async () => await consumer.DeliverRawAsync(id)).Throws<MessageEnvelopeException>();
+        }
+
         await Assert.That(consumer.Invocations).IsEqualTo(0);
         await Assert.That(await database.ReadStateAsync()).IsEqualTo(new DurableState(0, 0, 0));
     }
@@ -99,9 +111,14 @@ public class InboxTests(SqlServerFixture server) : InboxContractTests
         var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-        first.AfterSave = async _ => { entered.SetResult(); await release.Task.WaitAsync(deadline.Token); };
+        first.AfterSave = async _ =>
+        {
+            entered.SetResult();
+            await release.Task.WaitAsync(deadline.Token);
+        };
         var id = Guid.CreateVersion7();
         var owner = first.DeliverAsync(id, deadline.Token);
+
         try
         {
             await entered.Task.WaitAsync(deadline.Token);
@@ -110,14 +127,22 @@ public class InboxTests(SqlServerFixture server) : InboxContractTests
             await database.WaitForContentionAsync();
             cancellation.Cancel();
             var cancelled = false;
-            try { await blocked; }
-            catch (OperationCanceledException) { cancelled = true; }
+
+            try
+            {
+                await blocked;
+            }
+            catch (OperationCanceledException)
+            {
+                cancelled = true;
+            }
             catch (SqlException error) when (cancellation.IsCancellationRequested &&
                 error.Message.Contains("Operation cancelled by user", StringComparison.Ordinal))
             {
                 // SqlClient can return its native server-attention error for cancellation during a lock wait.
                 cancelled = true;
             }
+
             await Assert.That(cancelled).IsTrue();
             await Assert.That(second.Invocations).IsEqualTo(0);
         }
@@ -126,6 +151,7 @@ public class InboxTests(SqlServerFixture server) : InboxContractTests
             release.TrySetResult();
             await owner;
         }
+
         await second.DeliverAsync(id);
         await Assert.That(second.Invocations).IsEqualTo(0);
         await Assert.That(await database.ReadStateAsync()).IsEqualTo(new DurableState(1, 1, 1));
@@ -154,8 +180,12 @@ public class InboxTests(SqlServerFixture server) : InboxContractTests
         using var provider = new ServiceCollection().BuildServiceProvider();
         var builder = new ConsumePipelineBuilder(provider.GetRequiredService<IServiceScopeFactory>(),
             new MessageTypeRegistry(), new Serializer(), static (_, error, _) => ValueTask.FromException(error));
+
         foreach (var name in new[] { " ", "orders ", new string('x', 257) })
+        {
             await Assert.That(() => builder.SqlServer(name, "Server=unused")).Throws<ArgumentException>();
+        }
+
         await Assert.That(() => builder.SqlServer("orders", "NotANativeKeyword=value")).Throws<ArgumentException>();
         await Assert.That(() => builder.SqlServer("orders", "Server=unused")).Throws<InvalidOperationException>();
     }
@@ -175,14 +205,27 @@ public class InboxTests(SqlServerFixture server) : InboxContractTests
         consumer.AfterSave = async context =>
         {
             var transaction = context.Services.GetRequiredService<SqlServerOutbox>().CurrentTransaction!;
+
             switch (operation)
             {
-                case "commit": transaction.Commit(); break;
-                case "commitAsync": await transaction.CommitAsync(); break;
-                case "rollback": transaction.Rollback(); break;
-                case "rollbackAsync": await transaction.RollbackAsync(); break;
-                case "dispose": transaction.Dispose(); break;
-                case "disposeAsync": await transaction.DisposeAsync(); break;
+                case "commit":
+                    transaction.Commit();
+                    break;
+                case "commitAsync":
+                    await transaction.CommitAsync();
+                    break;
+                case "rollback":
+                    transaction.Rollback();
+                    break;
+                case "rollbackAsync":
+                    await transaction.RollbackAsync();
+                    break;
+                case "dispose":
+                    transaction.Dispose();
+                    break;
+                case "disposeAsync":
+                    await transaction.DisposeAsync();
+                    break;
             }
         };
         await Assert.That(async () => await consumer.DeliverAsync(Guid.CreateVersion7())).Throws<InvalidOperationException>();
@@ -198,7 +241,12 @@ public class InboxTests(SqlServerFixture server) : InboxContractTests
         await database.Start();
         await using var consumer = new Consumer(database, "orders");
         var id = Guid.CreateVersion7();
-        if (duplicate) await consumer.DeliverAsync(id);
+
+        if (duplicate)
+        {
+            await consumer.DeliverAsync(id);
+        }
+
         consumer.Control.OnDispose = () =>
         {
             // A committed Complete disposition is immutable even before broker settlement.
@@ -223,18 +271,37 @@ public class InboxTests(SqlServerFixture server) : InboxContractTests
 
     private sealed class Database(string connectionString) : InboxFixture
     {
-        internal string Prefix { get; } = TestContext.Current!.Isolation.GetIsolatedName("inbox") + "_";
+        internal string Prefix
+        {
+            get;
+        } = TestContext.Current!.Isolation.GetIsolatedName("inbox") + "_";
+
         internal string ConnectionString => connectionString;
+
         internal SqlServerOutboxOptions Options => new() { TablePrefix = Prefix };
-        internal string Table(string name) => $"[dbo].[{Prefix}{name}]";
-        internal Task Start() => Execute(SqlServerOutboxSchema.CreateScript(Options) + $"CREATE TABLE {Table("business")} (id int NOT NULL)");
+
+        internal string Table(string name)
+        {
+            return $"[dbo].[{Prefix}{name}]";
+        }
+
+        internal Task Start()
+        {
+            return Execute(SqlServerOutboxSchema.CreateScript(Options) + $"CREATE TABLE {Table("business")} (id int NOT NULL)");
+        }
+
         internal async Task Execute(string sql)
         {
             await using var connection = new SqlConnection(connectionString);
             await connection.OpenAsync();
             await connection.ExecuteAsync(sql);
         }
-        public override InboxConsumer Consumer(string name = "orders") => new Consumer(this, name);
+
+        public override InboxConsumer Consumer(string name = "orders")
+        {
+            return new Consumer(this, name);
+        }
+
         public override async Task<DurableState> ReadStateAsync()
         {
             await using var connection = new SqlConnection(connectionString);
@@ -243,27 +310,46 @@ public class InboxTests(SqlServerFixture server) : InboxContractTests
                 await connection.ExecuteScalarAsync<long>($"SELECT COUNT_BIG(*) FROM {Table("inbox")} WITH (READPAST)"),
                 await connection.ExecuteScalarAsync<long>($"SELECT COUNT_BIG(*) FROM {Table("outbox")} WITH (READPAST)"));
         }
+
         public override async Task WaitForContentionAsync()
         {
             using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(20));
             await using var connection = new SqlConnection(connectionString);
             await connection.OpenAsync(deadline.Token);
+
             while (true)
             {
                 var command = new CommandDefinition("SELECT COUNT_BIG(*) FROM sys.dm_exec_requests r CROSS APPLY sys.dm_exec_sql_text(r.sql_handle) t WHERE r.wait_type LIKE 'LCK%' AND t.text LIKE @pattern",
-                    new { pattern = "%" + Prefix + "inbox%" }, cancellationToken: deadline.Token);
-                if (await connection.ExecuteScalarAsync<long>(command) > 0) return;
+                    new
+                    {
+                        pattern = "%" + Prefix + "inbox%"
+                    }, cancellationToken: deadline.Token);
+
+                if (await connection.ExecuteScalarAsync<long>(command) > 0)
+                {
+                    return;
+                }
+
                 await Task.Delay(10, deadline.Token);
             }
         }
-        public override async ValueTask DisposeAsync() => await Execute($"DROP TABLE {Table("business")}, {Table("inbox")}, {Table("outbox")}");
+
+        public override async ValueTask DisposeAsync()
+        {
+            await Execute($"DROP TABLE {Table("business")}, {Table("inbox")}, {Table("outbox")}");
+        }
     }
 
     private sealed class Consumer : InboxConsumer
     {
         private readonly ServiceProvider _provider;
         private readonly ConsumePipeline _pipeline;
-        internal Control Control { get; } = new();
+
+        internal Control Control
+        {
+            get;
+        } = new();
+
         internal Consumer(Database database, string name, bool inbox = true, IConfiguration? configuration = null)
         {
             var services = new ServiceCollection();
@@ -272,8 +358,16 @@ public class InboxTests(SqlServerFixture server) : InboxContractTests
             services.AddSingleton<Transport>();
             services.AddSingleton<ITransport>(static sp => sp.GetRequiredService<Transport>());
             services.AddSingleton<IMessageSerializer, Serializer>();
-            if (configuration is null) services.AddRelayerSqlServerOutbox(database.Options);
-            else services.AddRelayerSqlServerOutbox(configuration);
+
+            if (configuration is null)
+            {
+                services.AddRelayerSqlServerOutbox(database.Options);
+            }
+            else
+            {
+                services.AddRelayerSqlServerOutbox(configuration);
+            }
+
             services.AddScoped<SqlServerOutbox>(sp =>
             {
                 _ = sp.GetRequiredService<Disposer>();
@@ -294,21 +388,34 @@ public class InboxTests(SqlServerFixture server) : InboxContractTests
                 .Handler(_provider.GetRequiredService<HandlerRegistry>().GetHandler<Probe, Handler>())
                 .Settle(_ => Settlement?.Invoke() ?? default).Build();
         }
+
         public override RelayerInstrumentation Instrumentation => _provider.GetRequiredService<RelayerInstrumentation>();
+
         public override int Invocations => Control.Invocations;
+
         public override int DirectSends => _provider.GetRequiredService<Transport>().Sends;
-        public override Task DeliverAsync(Guid messageId, CancellationToken cancellation = default) => DeliverRawAsync(messageId.ToString("D"), cancellation);
+
+        public override Task DeliverAsync(Guid messageId, CancellationToken cancellation = default)
+        {
+            return DeliverRawAsync(messageId.ToString("D"), cancellation);
+        }
+
         internal async Task DeliverRawAsync(string messageId, CancellationToken cancellation = default)
         {
             using var context = _pipeline.RentContext(new ConsumeMessage
             {
-                MessageType = new("inbox.probe", 1), MessageId = messageId,
+                MessageType = new("inbox.probe", 1),
+                MessageId = messageId,
                 Body = new ReadOnlySequence<byte>(new byte[] { 1 })
             }, cancellation);
             Control.Context = context;
             await _pipeline.ProcessAsync(context);
         }
-        public override ValueTask DisposeAsync() => _provider.DisposeAsync();
+
+        public override ValueTask DisposeAsync()
+        {
+            return _provider.DisposeAsync();
+        }
     }
 
     public sealed class Control
@@ -319,11 +426,21 @@ public class InboxTests(SqlServerFixture server) : InboxContractTests
         public Action? OnDispose;
         public MessageContext? Context;
     }
+
     public sealed class Disposer(Control control) : IDisposable, IAsyncDisposable
     {
-        public void Dispose() => control.OnDispose?.Invoke();
-        public ValueTask DisposeAsync() { Dispose(); return default; }
+        public void Dispose()
+        {
+            control.OnDispose?.Invoke();
+        }
+
+        public ValueTask DisposeAsync()
+        {
+            Dispose();
+            return default;
+        }
     }
+
     public sealed class Handler(SqlServerOutbox outbox, ISender sender, Control control) : IHandler<Probe>
     {
         public async ValueTask HandleAsync(Probe message, MessageContext context, CancellationToken cancellationToken)
@@ -331,31 +448,83 @@ public class InboxTests(SqlServerFixture server) : InboxContractTests
             var invocation = Interlocked.Increment(ref control.Invocations);
             var transaction = outbox.CurrentTransaction!;
             await transaction.Connection!.ExecuteAsync(new CommandDefinition($"INSERT INTO {control.Business} VALUES (@id)",
-                new { id = invocation }, transaction, cancellationToken: cancellationToken));
+                new
+                {
+                    id = invocation
+                }, transaction, cancellationToken: cancellationToken));
             await sender.SendAsync(new Probe(invocation), cancellationToken);
-            if (control.AfterSave is { } after) await after(context);
+
+            if (control.AfterSave is { } after)
+            {
+                await after(context);
+            }
         }
     }
+
     [Message("inbox.probe")]
     public sealed record Probe(int Value);
+
     public sealed class Empty;
+
     private sealed class Serializer : IMessageSerializer
     {
         public string ContentType => "application/test";
+
         public void Serialize<TMessage>(TMessage message, IBufferWriter<byte> destination)
-        { destination.GetSpan(1)[0] = 1; destination.Advance(1); }
-        public TMessage Deserialize<TMessage>(ReadOnlySequence<byte> source) => (TMessage)(object)new Probe(1);
+        {
+            destination.GetSpan(1)[0] = 1;
+            destination.Advance(1);
+        }
+
+        public TMessage Deserialize<TMessage>(ReadOnlySequence<byte> source)
+        {
+            return (TMessage)(object)new Probe(1);
+        }
     }
+
     private sealed class Transport : ITransport
     {
         public int Sends;
+
         public string Name => "events";
-        public TransportCapabilities GetCapabilities(string endpoint) => new() { DeadLetter = true };
-        public ValueTask SendAsync(OutgoingMessage message, CancellationToken cancellationToken) { Interlocked.Increment(ref Sends); return default; }
-        public ValueTask SendBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken) => throw new NotSupportedException();
-        public ValueTask<TopologyReport> ApplyTopologyAsync(TopologyMode mode, CancellationToken cancellationToken) => new(new TopologyReport([]));
-        public Task StartAsync(CancellationToken cancellationToken) => Task.CompletedTask;
-        public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
-        public ValueTask DisposeAsync() => default;
+
+        public TransportCapabilities GetCapabilities(string endpoint)
+        {
+            return new()
+            {
+                DeadLetter = true
+            };
+        }
+
+        public ValueTask SendAsync(OutgoingMessage message, CancellationToken cancellationToken)
+        {
+            Interlocked.Increment(ref Sends);
+            return default;
+        }
+
+        public ValueTask SendBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken)
+        {
+            throw new NotSupportedException();
+        }
+
+        public ValueTask<TopologyReport> ApplyTopologyAsync(TopologyMode mode, CancellationToken cancellationToken)
+        {
+            return new(new TopologyReport([]));
+        }
+
+        public Task StartAsync(CancellationToken cancellationToken)
+        {
+            return Task.CompletedTask;
+        }
+
+        public Task StopAsync(CancellationToken cancellationToken)
+        {
+            return Task.CompletedTask;
+        }
+
+        public ValueTask DisposeAsync()
+        {
+            return default;
+        }
     }
 }

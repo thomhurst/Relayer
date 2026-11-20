@@ -1,6 +1,6 @@
-using Relayer.Transports;
 using System.Diagnostics;
 using BenchmarkDotNet.Attributes;
+using Relayer.Transports;
 
 namespace Relayer.Benchmarks;
 
@@ -20,7 +20,10 @@ public class HeaderReadBenchmarks
     }
 
     [Benchmark(Baseline = true)]
-    public WireString NativeLookup() => _headers[_key];
+    public WireString NativeLookup()
+    {
+        return _headers[_key];
+    }
 
     [Benchmark]
     public WireString LazyLookup()
@@ -31,12 +34,17 @@ public class HeaderReadBenchmarks
     }
 
     [Benchmark]
-    public MessageHeaders<Dictionary<string, WireString>, NativeReader> UnaccessedHeaders() => new(_headers, _names);
+    public MessageHeaders<Dictionary<string, WireString>, NativeReader> UnaccessedHeaders()
+    {
+        return new(_headers, _names);
+    }
 
     public readonly struct NativeReader : IMessageHeaderReader<Dictionary<string, WireString>>
     {
-        public static bool TryGetHeader(Dictionary<string, WireString> message, string name, out WireString value) =>
-            message.TryGetValue(name, out value);
+        public static bool TryGetHeader(Dictionary<string, WireString> message, string name, out WireString value)
+        {
+            return message.TryGetValue(name, out value);
+        }
     }
 }
 
@@ -65,12 +73,22 @@ public class EnvelopeWriteBenchmarks
     }
 
     [Benchmark]
-    public MessageEnvelopeMetadata CreateMetadata() => MessageEnvelopeMetadata.Create();
+    public MessageEnvelopeMetadata CreateMetadata()
+    {
+        return MessageEnvelopeMetadata.Create();
+    }
 
     public sealed class NativeBuffer
     {
-        public char[] Buffer { get; } = new char[512];
-        public int Length { get; set; }
+        public char[] Buffer
+        {
+            get;
+        } = new char[512];
+
+        public int Length
+        {
+            get; set;
+        }
     }
 
     public readonly struct NativeWriter : IMessageHeaderWriter<NativeBuffer>
@@ -81,6 +99,8 @@ public class EnvelopeWriteBenchmarks
             message.Length += value.Length;
         }
 
-        public static void RemoveHeader(NativeBuffer message, string name) { }
+        public static void RemoveHeader(NativeBuffer message, string name)
+        {
+        }
     }
 }

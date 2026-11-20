@@ -1,8 +1,8 @@
-using Relayer.Transports;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Options;
+using Relayer.Transports;
 
 namespace Relayer.Outbox.SqlServer.Tests;
 
@@ -15,12 +15,17 @@ public sealed class DirectDispatchRegistrationTests
     {
         var configuration = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
         {
-            ["QueueCapacity"] = "3", ["BatchSize"] = "7", ["ClaimDuration"] = "00:02:00"
+            ["QueueCapacity"] = "3",
+            ["BatchSize"] = "7",
+            ["ClaimDuration"] = "00:02:00"
         }).Build();
         var services = new ServiceCollection();
         services.AddLogging();
         services.AddRelayerSqlServerDirectDispatch("first", ConnectionString, configuration);
-        services.AddRelayerSqlServerDirectDispatch("second", ConnectionString, dispatchOptions: new() { BatchSize = 2 });
+        services.AddRelayerSqlServerDirectDispatch("second", ConnectionString, dispatchOptions: new()
+        {
+            BatchSize = 2
+        });
         await using var provider = services.BuildServiceProvider();
         var monitor = provider.GetRequiredService<IOptionsMonitor<SqlServerDirectDispatchOptions>>();
         await Assert.That(monitor.Get("first").QueueCapacity).IsEqualTo(3);
@@ -39,11 +44,20 @@ public sealed class DirectDispatchRegistrationTests
         services.AddRelayerSqlServerDirectDispatch("store", ConnectionString);
         await Assert.That(() => services.AddRelayerSqlServerDirectDispatch("store", ConnectionString)).Throws<InvalidOperationException>();
         await Assert.That(() => new ServiceCollection().AddRelayerSqlServerDirectDispatch("store", ConnectionString,
-            dispatchOptions: new() { QueueCapacity = 0 })).Throws<ArgumentOutOfRangeException>();
+            dispatchOptions: new()
+            {
+                QueueCapacity = 0
+            })).Throws<ArgumentOutOfRangeException>();
         await Assert.That(() => new ServiceCollection().AddRelayerSqlServerDirectDispatch("store", ConnectionString,
-            dispatchOptions: new() { BatchSize = 0 })).Throws<ArgumentOutOfRangeException>();
+            dispatchOptions: new()
+            {
+                BatchSize = 0
+            })).Throws<ArgumentOutOfRangeException>();
         await Assert.That(() => new ServiceCollection().AddRelayerSqlServerDirectDispatch("store", ConnectionString,
-            dispatchOptions: new() { ClaimDuration = TimeSpan.Zero })).Throws<ArgumentOutOfRangeException>();
+            dispatchOptions: new()
+            {
+                ClaimDuration = TimeSpan.Zero
+            })).Throws<ArgumentOutOfRangeException>();
         await Assert.That(() => new ServiceCollection().AddRelayerSqlServerDirectDispatch("store", "Server=localhost;Integrated Security=True"))
             .Throws<ArgumentException>();
     }

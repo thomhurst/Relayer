@@ -1,9 +1,9 @@
-using Relayer.Transports;
-using Relayer.Pipeline;
 using System.Buffers;
 using System.Collections.Frozen;
 using Microsoft.Extensions.DependencyInjection;
+using Relayer.Pipeline;
 using Relayer.Serialization;
+using Relayer.Transports;
 
 namespace Relayer.Tests;
 
@@ -44,19 +44,37 @@ public class ReceivePipelineTests
         var errors = new List<Exception>();
         var dispatch = new Dictionary<MessageType, ConsumeDelegate>
         {
-            [new("payload", 1)] = _ => { calls.Add(1); return default; },
-            [new("payload", 2)] = _ => { calls.Add(2); return default; },
-            [new("other", 1)] = _ => { calls.Add(3); return default; }
+            [new("payload", 1)] = _ =>
+            {
+                calls.Add(1);
+                return default;
+            },
+            [new("payload", 2)] = _ =>
+            {
+                calls.Add(2);
+                return default;
+            },
+            [new("other", 1)] = _ =>
+            {
+                calls.Add(3);
+                return default;
+            }
         };
         var consumer = new ConsumePipeline(provider.GetRequiredService<IServiceScopeFactory>(),
-            dispatch.ToFrozenDictionary(), [], (_, error, _) => { errors.Add(error); return default; },
+            dispatch.ToFrozenDictionary(), [], (_, error, _) =>
+            {
+                errors.Add(error);
+                return default;
+            },
             new DefaultFailureClassifier(), 1, null, null, null, null);
         var receive = new ReceivePipeline<Incoming, Binding>(consumer, new HeaderNames(), 1);
+
         foreach (var type in new[] { "payload;v=2", "other;v=1", "unknown;v=1", "payload;v=1", "malformed", "payload;v=2" })
         {
             await receive.ProcessAsync(new Incoming { Type = new(type) });
             await receive.ProcessAsync(new Incoming { Type = new(System.Text.Encoding.UTF8.GetBytes(type)) });
         }
+
         await Assert.That(calls).IsEquivalentTo(new[] { 2, 2, 3, 3, 1, 1, 2, 2 });
         await Assert.That(errors.Count).IsEqualTo(4);
         await Assert.That(errors[0]).IsTypeOf<UnknownMessageTypeException>();
@@ -94,14 +112,31 @@ public class ReceivePipelineTests
         control.Invoke = context =>
         {
             if (!ReferenceEquals(context.Features.GetRequired<NativeMessage<Incoming>>().Message, native))
+            {
                 throw new InvalidOperationException("Native delivery was replaced.");
+            }
+
             if (context.Attempt != 7 || context.MessageType != new MessageType("payload", 1))
+            {
                 throw new InvalidOperationException("Metadata was changed.");
-            if (native.HeaderReads != 2) throw new InvalidOperationException("Headers beyond required identity were read.");
+            }
+
+            if (native.HeaderReads != 2)
+            {
+                throw new InvalidOperationException("Headers beyond required identity were read.");
+            }
+
             if (!context.Headers.TryGetValue("tenant", out var tenant) || tenant.Text is not null ||
-                !tenant.Utf8.Span.SequenceEqual("東京"u8)) throw new InvalidOperationException("Header was decoded.");
+                !tenant.Utf8.Span.SequenceEqual("東京"u8))
+            {
+                throw new InvalidOperationException("Header was decoded.");
+            }
+
             if (context.MessageId != "id" || context.MessageId != "id" || native.IdReads != 1)
+            {
                 throw new InvalidOperationException("ID was not cached lazily.");
+            }
+
             return default;
         };
         var pipeline = Pipeline(provider);
@@ -136,7 +171,10 @@ public class ReceivePipelineTests
         {
             if (!ReferenceEquals(first, context) || !ReferenceEquals(feature, context.Features.GetRequired<NativeMessage<Incoming>>()) ||
                 !ReferenceEquals(feature.Message, second) || context.Attempt != 1)
+            {
                 throw new InvalidOperationException("Context or feature was not reused cleanly.");
+            }
+
             return default;
         };
         await Assert.That((await pipeline.ProcessAsync(second)).Kind).IsEqualTo(DispositionKind.Complete);
@@ -154,15 +192,28 @@ public class ReceivePipelineTests
         {
             observed = context.Features.GetRequired<NativeMessage<Incoming>>();
             observed.Disposition = Disposition.SettledByHandler;
-            if (asynchronous) await Task.Yield();
+
+            if (asynchronous)
+            {
+                await Task.Yield();
+            }
+
             throw error;
         };
         var ordinary = Pipeline(provider);
         await Assert.That(async () => await ordinary.ProcessAsync(new Incoming())).Throws<ApplicationException>();
         var optedIn = new ReceivePipeline<Incoming, Binding>(PipelineConsumer(provider), new HeaderNames(), 1, preserveSettledFailures: true);
         SettledReceiveException? signal = null;
-        try { await optedIn.ProcessAsync(new Incoming()); }
-        catch (SettledReceiveException failure) { signal = failure; }
+
+        try
+        {
+            await optedIn.ProcessAsync(new Incoming());
+        }
+        catch (SettledReceiveException failure)
+        {
+            signal = failure;
+        }
+
         await Assert.That(signal).IsNotNull();
         await Assert.That(signal!.InnerException).IsSameReferenceAs(error);
         await Assert.That(observed!.Message).IsNull();
@@ -178,7 +229,11 @@ public class ReceivePipelineTests
         var headers = new[] { new KeyValuePair<string, WireString>("ce_error", new("bad payload")) };
         var pipeline = Pipeline(provider, (context, _, action) =>
         {
-            if (action != FailureAction.Retry) throw new InvalidOperationException("Wrong classifier action.");
+            if (action != FailureAction.Retry)
+            {
+                throw new InvalidOperationException("Wrong classifier action.");
+            }
+
             observed = context.Features.GetRequired<NativeMessage<Incoming>>();
             observed.Disposition = Disposition.DeadLettered(new("invalid", "description", headers));
             return default;
@@ -213,12 +268,21 @@ public class ReceivePipelineTests
         var pipeline = Pipeline(provider, (context, error, action) =>
         {
             errors.Add(error);
-            if (action != FailureAction.DeadLetter) throw new InvalidOperationException("Poison metadata was retried.");
+
+            if (action != FailureAction.DeadLetter)
+            {
+                throw new InvalidOperationException("Poison metadata was retried.");
+            }
+
             context.Features.GetRequired<NativeMessage<Incoming>>().Disposition = Disposition.DeadLettered(new("invalid envelope"));
             return default;
         });
+
         foreach (var type in new[] { "unknown;v=2", "missing-version", "payload;v=0", "" })
+        {
             await Assert.That((await pipeline.ProcessAsync(new Incoming { Type = new(type) })).Kind).IsEqualTo(DispositionKind.DeadLetter);
+        }
+
         await Assert.That((await pipeline.ProcessAsync(new Incoming { Id = default })).Kind).IsEqualTo(DispositionKind.DeadLetter);
         await Assert.That(errors.Count).IsEqualTo(5);
         await Assert.That(errors[0] is UnknownMessageTypeException).IsTrue();
@@ -333,21 +397,35 @@ public class ReceivePipelineTests
         var pipeline = Pipeline(provider);
         var native = new Incoming { TrackReads = false };
         var scopes = provider.GetRequiredService<IServiceScopeFactory>();
+
         for (var i = 0; i < 1000; i++)
         {
             await pipeline.ProcessAsync(native);
             scopes.CreateScope().Dispose();
         }
+
         var start = GC.GetAllocatedBytesForCurrentThread();
-        for (var i = 0; i < 1000; i++) scopes.CreateScope().Dispose();
+
+        for (var i = 0; i < 1000; i++)
+        {
+            scopes.CreateScope().Dispose();
+        }
+
         var nativeBytes = GC.GetAllocatedBytesForCurrentThread() - start;
         start = GC.GetAllocatedBytesForCurrentThread();
+
         for (var i = 0; i < 1000; i++)
         {
             var pending = pipeline.ProcessAsync(native);
-            if (!pending.IsCompletedSuccessfully) throw new InvalidOperationException("Expected synchronous completion.");
+
+            if (!pending.IsCompletedSuccessfully)
+            {
+                throw new InvalidOperationException("Expected synchronous completion.");
+            }
+
             await pending;
         }
+
         var receiveBytes = GC.GetAllocatedBytesForCurrentThread() - start;
         await Assert.That(receiveBytes).IsEqualTo(nativeBytes);
     }
@@ -375,13 +453,25 @@ public class ReceivePipelineTests
         provider.GetRequiredService<Control>().Invoke = context =>
         {
             var settlement = context.Features.GetRequired<ISettlementFeature>();
+
             switch (kind)
             {
-                case DispositionKind.Complete: settlement.Complete(); break;
-                case DispositionKind.Redeliver: settlement.Retry(TimeSpan.Zero); break;
-                case DispositionKind.DeadLetter: settlement.DeadLetter("manual"); break;
+                case DispositionKind.Complete:
+                    settlement.Complete();
+                    break;
+                case DispositionKind.Redeliver:
+                    settlement.Retry(TimeSpan.Zero);
+                    break;
+                case DispositionKind.DeadLetter:
+                    settlement.DeadLetter("manual");
+                    break;
             }
-            if (fail) throw new InvalidOperationException("handler failed");
+
+            if (fail)
+            {
+                throw new InvalidOperationException("handler failed");
+            }
+
             return default;
         };
         var pipeline = Pipeline(provider, static (context, _, _) =>
@@ -391,8 +481,11 @@ public class ReceivePipelineTests
         });
         var result = await pipeline.ProcessAsync(new());
         await Assert.That(result.Kind).IsEqualTo(fail ? DispositionKind.DeadLetter : kind);
+
         if (result.Kind == DispositionKind.DeadLetter)
+        {
             await Assert.That(result.DeadLetter.Reason).IsEqualTo(fail ? "failure" : "manual");
+        }
     }
 
     private static ServiceProvider Provider()
@@ -401,12 +494,18 @@ public class ReceivePipelineTests
         services.AddSingleton<Control>();
         services.AddScoped<Lifetime>();
         services.AddSingleton<Handler>();
-        services.AddRelayer(r => { r.Infrastructure().MessageTypes.Add<Payload>("payload"); new ConsumerBuilder<object>(r.Services, r.Infrastructure().Handlers, "manual").Handler<Handler>(); });
+        services.AddRelayer(r =>
+        {
+            r.Infrastructure().MessageTypes.Add<Payload>("payload");
+            new ConsumerBuilder<object>(r.Services, r.Infrastructure().Handlers, "manual").Handler<Handler>();
+        });
         return services.BuildServiceProvider();
     }
 
     private static ReceivePipeline<Incoming, Binding> Pipeline(ServiceProvider provider, ConsumeFailureDelegate? failure = null)
-        => new(PipelineConsumer(provider, failure), new HeaderNames(), 1);
+    {
+        return new(PipelineConsumer(provider, failure), new HeaderNames(), 1);
+    }
 
     private static ConsumePipeline PipelineConsumer(ServiceProvider provider, ConsumeFailureDelegate? failure = null)
     {
@@ -419,15 +518,40 @@ public class ReceivePipelineTests
 
     [Message("payload")]
     public sealed class Payload;
+
     public sealed class Control
     {
-        public Func<MessageContext, ValueTask>? Invoke { get; set; }
-        public int Calls { get; set; }
-        public int Deleted { get; set; }
-        public ReadOnlySequence<byte> Body { get; set; }
-        public TaskCompletionSource? DisposalStarted { get; set; }
-        public Task? Disposal { get; set; }
+        public Func<MessageContext, ValueTask>? Invoke
+        {
+            get; set;
+        }
+
+        public int Calls
+        {
+            get; set;
+        }
+
+        public int Deleted
+        {
+            get; set;
+        }
+
+        public ReadOnlySequence<byte> Body
+        {
+            get; set;
+        }
+
+        public TaskCompletionSource? DisposalStarted
+        {
+            get; set;
+        }
+
+        public Task? Disposal
+        {
+            get; set;
+        }
     }
+
     private sealed class Lifetime(Control control) : IAsyncDisposable
     {
         public ValueTask DisposeAsync()
@@ -436,6 +560,7 @@ public class ReceivePipelineTests
             return control.Disposal is { } task ? new(task) : default;
         }
     }
+
     public sealed class Handler(Control control) : IHandler<Payload>
     {
         public ValueTask HandleAsync(Payload message, MessageContext context, CancellationToken cancellationToken)
@@ -444,6 +569,7 @@ public class ReceivePipelineTests
             return control.Invoke?.Invoke(context) ?? default;
         }
     }
+
     public sealed class DeletedHandler(Control control) : IHandler<Tombstone<Payload>>
     {
         public ValueTask HandleAsync(Tombstone<Payload> message, MessageContext context, CancellationToken cancellationToken)
@@ -452,38 +578,102 @@ public class ReceivePipelineTests
             return default;
         }
     }
+
     private sealed class Serializer(Control control) : IMessageSerializer
     {
         private readonly Payload _payload = new();
+
         public string ContentType => "test/cached";
+
         public TMessage Deserialize<TMessage>(ReadOnlySequence<byte> source)
         {
             control.Body = source;
             return (TMessage)(object)_payload;
         }
-        public void Serialize<TMessage>(TMessage message, IBufferWriter<byte> destination) => throw new NotSupportedException();
+
+        public void Serialize<TMessage>(TMessage message, IBufferWriter<byte> destination)
+        {
+            throw new NotSupportedException();
+        }
     }
+
     private sealed class Incoming
     {
-        public bool Tombstone { get; init; }
-        public ReadOnlySequence<byte> Body { get; init; } = new(new byte[] { 1 });
-        public WireString Type { get; init; } = new("payload;v=1"u8.ToArray());
-        public WireString Id { get; init; } = new("id"u8.ToArray());
-        public WireString Tenant { get; } = new("東京"u8.ToArray());
-        public int? Count { get; init; } = 1;
-        public int HeaderReads { get; set; }
-        public int IdReads { get; set; }
-        public bool TrackReads { get; init; } = true;
+        public bool Tombstone
+        {
+            get; init;
+        }
+
+        public ReadOnlySequence<byte> Body
+        {
+            get; init;
+        } = new(new byte[] { 1 });
+
+        public WireString Type
+        {
+            get; init;
+        } = new("payload;v=1"u8.ToArray());
+
+        public WireString Id
+        {
+            get; init;
+        } = new("id"u8.ToArray());
+
+        public WireString Tenant
+        {
+            get;
+        } = new("東京"u8.ToArray());
+
+        public int? Count
+        {
+            get; init;
+        } = 1;
+
+        public int HeaderReads
+        {
+            get; set;
+        }
+
+        public int IdReads
+        {
+            get; set;
+        }
+
+        public bool TrackReads
+        {
+            get; init;
+        } = true;
     }
+
     private readonly struct Binding : IMessageBinding<Incoming>
     {
-        public static bool IsTombstone(Incoming message) => message.Tombstone;
-        public static WireString? GetTombstoneKey(Incoming message) => new WireString("key");
-        public static ReadOnlySequence<byte> GetBody(Incoming message) => message.Body;
-        public static int? GetDeliveryCount(Incoming message) => message.Count;
+        public static bool IsTombstone(Incoming message)
+        {
+            return message.Tombstone;
+        }
+
+        public static WireString? GetTombstoneKey(Incoming message)
+        {
+            return new WireString("key");
+        }
+
+        public static ReadOnlySequence<byte> GetBody(Incoming message)
+        {
+            return message.Body;
+        }
+
+        public static int? GetDeliveryCount(Incoming message)
+        {
+            return message.Count;
+        }
+
         public static bool TryGetHeader(Incoming message, string name, out WireString value)
         {
-            if (message.TrackReads) message.HeaderReads++;
+            if (message.TrackReads)
+            {
+                message.HeaderReads++;
+            }
+
             value = name switch
             {
                 "ce_type" => message.Type,
@@ -491,7 +681,12 @@ public class ReceivePipelineTests
                 "tenant" => message.Tenant,
                 _ => default,
             };
-            if (name == "ce_id") message.IdReads++;
+
+            if (name == "ce_id")
+            {
+                message.IdReads++;
+            }
+
             return !value.IsEmpty;
         }
     }

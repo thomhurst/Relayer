@@ -1,9 +1,9 @@
-using Relayer.Transports;
 using BenchmarkDotNet.Attributes;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
 using Relayer.Outbox.EntityFrameworkCore;
 using Relayer.Outbox.PostgreSql;
+using Relayer.Transports;
 
 namespace Relayer.Benchmarks;
 
@@ -40,10 +40,16 @@ public class OutboxScopeResolutionBenchmarks
     }
 
     [Benchmark(Baseline = true)]
-    public bool PreviousFactory() => Resolve(_legacy);
+    public bool PreviousFactory()
+    {
+        return Resolve(_legacy);
+    }
 
     [Benchmark]
-    public bool CachedCapabilities() => Resolve(_cached);
+    public bool CachedCapabilities()
+    {
+        return Resolve(_cached);
+    }
 
     private static bool Resolve(ServiceProvider provider)
     {

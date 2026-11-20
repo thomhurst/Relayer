@@ -6,10 +6,12 @@ namespace Relayer.SourceGenerators;
 /// <summary>Loads the pinned JSON generator independently of the compiler's analyzer dependencies.</summary>
 internal static class JsonGeneratorLoader
 {
-    private static readonly Type GeneratorType = LoadGeneratorType();
+    private static readonly Type s_generatorType = LoadGeneratorType();
 
-    public static IIncrementalGenerator Create() =>
-        (IIncrementalGenerator)Activator.CreateInstance(GeneratorType)!;
+    public static IIncrementalGenerator Create()
+    {
+        return (IIncrementalGenerator)Activator.CreateInstance(s_generatorType)!;
+    }
 
     private static Type LoadGeneratorType()
     {
@@ -18,9 +20,11 @@ internal static class JsonGeneratorLoader
             ?? throw new InvalidOperationException("The embedded System.Text.Json generator is missing. Rebuild or reinstall the Relayer analyzer package.");
         var bytes = new byte[resource.Length];
         var offset = 0;
+
         while (offset < bytes.Length)
         {
             var read = resource.Read(bytes, offset, bytes.Length - offset);
+
             if (read == 0)
             {
                 throw new InvalidOperationException("The embedded System.Text.Json generator is truncated. Rebuild or reinstall the Relayer analyzer package.");

@@ -7,8 +7,14 @@ internal sealed record PostgreSqlSchedulingRegistration(string? Schema, string T
         string prefix, int? orderedLanes = null)
     {
         foreach (var worker in workers)
+        {
             if ((worker.Schema ?? "public") == (schema ?? "public") && worker.TablePrefix == prefix &&
-                worker.OrderedLanes == orderedLanes) return true;
+                worker.OrderedLanes == orderedLanes)
+            {
+                return true;
+            }
+        }
+
         return false;
     }
 }

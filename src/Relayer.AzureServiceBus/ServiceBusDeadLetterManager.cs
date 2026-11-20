@@ -1,6 +1,6 @@
-using Relayer.Transports;
 using System.Globalization;
 using Azure.Messaging.ServiceBus;
+using Relayer.Transports;
 
 namespace Relayer.AzureServiceBus;
 
@@ -13,6 +13,7 @@ internal sealed class ServiceBusDeadLetterManager : IDeadLetterManager
     internal ServiceBusDeadLetterManager(ServiceBusClient client, IReadOnlyList<IConsumerDefinition> consumers)
     {
         _client = client;
+
         foreach (var declaration in consumers)
         {
             var consumer = (ConsumerDefinition<ServiceBusConsumerOptions>)declaration;
@@ -20,37 +21,55 @@ internal sealed class ServiceBusDeadLetterManager : IDeadLetterManager
             var id = subscription is null ? consumer.Source : consumer.Source + "/Subscriptions/" + subscription;
             _sources.TryAdd(id, new(consumer.Source, subscription));
         }
+
         _listed = Array.AsReadOnly(_sources.Select(item => new DeadLetterSource(item.Key, item.Value.Entity)).ToArray());
     }
 
-    public IReadOnlyList<DeadLetterSource> List() => _listed;
+    public IReadOnlyList<DeadLetterSource> List()
+    {
+        return _listed;
+    }
 
     public async ValueTask<DeadLetterPage> PeekAsync(string source, int maxMessages = 20, string? cursor = null,
         CancellationToken cancellationToken = default)
     {
         var endpoint = GetSource(source, maxMessages);
         long? sequence = null;
+
         if (cursor is not null)
         {
             if (!long.TryParse(cursor, NumberStyles.None, CultureInfo.InvariantCulture, out var parsed) || parsed < 0)
+            {
                 throw new ArgumentException("Service Bus peek cursor must be a non-negative sequence number.", nameof(cursor));
+            }
+
             sequence = parsed;
         }
+
         await using var receiver = CreateReceiver(endpoint);
         var messages = await receiver.PeekMessagesAsync(maxMessages, sequence, cancellationToken).ConfigureAwait(false);
         var result = new DeadLetterMessage[messages.Count];
-        for (var i = 0; i < result.Length; i++) result[i] = Snapshot(messages[i]);
+
+        for (var i = 0; i < result.Length; i++)
+        {
+            result[i] = Snapshot(messages[i]);
+        }
+
         var next = messages.Count == 0 || messages[^1].SequenceNumber == long.MaxValue ? null
             : (messages[^1].SequenceNumber + 1).ToString(CultureInfo.InvariantCulture);
         return new(Array.AsReadOnly(result), next);
     }
 
     public ValueTask<int> RedriveAsync(string source, Func<DeadLetterMessage, bool>? filter = null,
-        int maxMessages = 20, CancellationToken cancellationToken = default) =>
-        MaintainAsync(source, filter, maxMessages, false, cancellationToken);
+        int maxMessages = 20, CancellationToken cancellationToken = default)
+    {
+        return MaintainAsync(source, filter, maxMessages, false, cancellationToken);
+    }
 
-    public ValueTask<int> PurgeAsync(string source, int maxMessages = 20, CancellationToken cancellationToken = default) =>
-        MaintainAsync(source, null, maxMessages, true, cancellationToken);
+    public ValueTask<int> PurgeAsync(string source, int maxMessages = 20, CancellationToken cancellationToken = default)
+    {
+        return MaintainAsync(source, null, maxMessages, true, cancellationToken);
+    }
 
     private async ValueTask<int> MaintainAsync(string source, Func<DeadLetterMessage, bool>? filter,
         int maxMessages, bool purge, CancellationToken cancellationToken)
@@ -62,13 +81,16 @@ internal sealed class ServiceBusDeadLetterManager : IDeadLetterManager
         var messages = await receiver.ReceiveMessagesAsync(maxMessages, TimeSpan.FromSeconds(1), cancellationToken).ConfigureAwait(false);
         var next = 0;
         ServiceBusSender? sender = null;
+
         try
         {
             var changed = 0;
+
             for (; next < messages.Count; next++)
             {
                 var message = messages[next];
                 cancellationToken.ThrowIfCancellationRequested();
+
                 if (!purge)
                 {
                     if (filter is not null && !filter(Snapshot(message)))
@@ -76,6 +98,7 @@ internal sealed class ServiceBusDeadLetterManager : IDeadLetterManager
                         await receiver.AbandonMessageAsync(message, cancellationToken: cancellationToken).ConfigureAwait(false);
                         continue;
                     }
+
                     sender ??= _client.CreateSender(endpoint.Entity);
                     // Native copy preserves payload, application properties, identity, session and partition keys.
                     var outgoing = new ServiceBusMessage(message);
@@ -84,9 +107,11 @@ internal sealed class ServiceBusDeadLetterManager : IDeadLetterManager
                     outgoing.GetRawAmqpMessage().Properties.CreationTime = null;
                     await sender.SendMessageAsync(outgoing, cancellationToken).ConfigureAwait(false);
                 }
+
                 await receiver.CompleteMessageAsync(message, cancellationToken).ConfigureAwait(false);
                 changed++;
             }
+
             return changed;
         }
         catch
@@ -99,13 +124,19 @@ internal sealed class ServiceBusDeadLetterManager : IDeadLetterManager
                 {
                     await receiver.AbandonMessageAsync(messages[next], cancellationToken: CancellationToken.None).ConfigureAwait(false);
                 }
-                catch (Exception) { }
+                catch (Exception)
+                {
+                }
             }
+
             throw;
         }
         finally
         {
-            if (sender is not null) await sender.DisposeAsync().ConfigureAwait(false);
+            if (sender is not null)
+            {
+                await sender.DisposeAsync().ConfigureAwait(false);
+            }
         }
     }
 

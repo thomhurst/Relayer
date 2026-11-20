@@ -32,7 +32,11 @@ internal sealed class KafkaRestartableBroker : IAsyncDisposable
         done
         """;
 
-    internal KafkaContainer Container { get; }
+    internal KafkaContainer Container
+    {
+        get;
+    }
+
     internal string Bootstrap => Container.GetBootstrapAddress();
 
     internal KafkaRestartableBroker()
@@ -54,31 +58,39 @@ internal sealed class KafkaRestartableBroker : IAsyncDisposable
                 parameters.Entrypoint = ["/bin/bash", "-c"];
                 parameters.Cmd = [Supervisor.ReplaceLineEndings("\n")];
             });
+
         if (OperatingSystem.IsLinux())
         {
             // Docker selects and binds the port atomically, outside Linux's outbound ephemeral range.
             builder = builder.WithPortBinding("20000-29999", "9092").WithPortBinding("20000-29999", "9093");
         }
+
         Container = builder.Build();
     }
 
-    internal Task StartAsync(CancellationToken token) =>
-        RunLifecycleAsync("start", async () =>
-        {
-            await Container.StartAsync(token);
-            await StartBrokerAsync(token);
-        });
+    internal Task StartAsync(CancellationToken token)
+    {
+        return RunLifecycleAsync("start", async () =>
+                {
+                    await Container.StartAsync(token);
+                    await StartBrokerAsync(token);
+                });
+    }
 
-    internal Task StopAsync(CancellationToken token) =>
-        RunLifecycleAsync("stop", async () =>
-        {
-            await ExecuteAsync("touch /tmp/relayer-kafka-stop; kill -TERM \"$(cat /tmp/relayer-kafka.pid)\"", token);
-            // The supervisor acknowledges only after wait has reaped the process and closed its sockets.
-            await WaitAsync("test -f /tmp/relayer-kafka-stopped", token);
-        });
+    internal Task StopAsync(CancellationToken token)
+    {
+        return RunLifecycleAsync("stop", async () =>
+                {
+                    await ExecuteAsync("touch /tmp/relayer-kafka-stop; kill -TERM \"$(cat /tmp/relayer-kafka.pid)\"", token);
+                    // The supervisor acknowledges only after wait has reaped the process and closed its sockets.
+                    await WaitAsync("test -f /tmp/relayer-kafka-stopped", token);
+                });
+    }
 
-    internal Task RestartAsync(CancellationToken token, Action? onWaiting = null) =>
-        RunLifecycleAsync("restart", () => StartBrokerAsync(token, onWaiting));
+    internal Task RestartAsync(CancellationToken token, Action? onWaiting = null)
+    {
+        return RunLifecycleAsync("restart", () => StartBrokerAsync(token, onWaiting));
+    }
 
     private async Task StartBrokerAsync(CancellationToken token, Action? onWaiting = null)
     {
@@ -91,13 +103,18 @@ internal sealed class KafkaRestartableBroker : IAsyncDisposable
     private async Task ExecuteAsync(string command, CancellationToken token)
     {
         var result = await Container.ExecAsync(["/bin/bash", "-ec", command], token);
+
         if (result.ExitCode != 0)
+        {
             throw new InvalidOperationException($"Kafka lifecycle command failed ({result.ExitCode}): {result.Stderr}");
+        }
     }
 
     // Keep the 100 ms readiness checks inside one exec to avoid competing with concurrent broker JVMs.
-    private Task WaitAsync(string condition, CancellationToken token) =>
-        ExecuteAsync($"until {condition}; do sleep 0.1; done", token);
+    private Task WaitAsync(string condition, CancellationToken token)
+    {
+        return ExecuteAsync($"until {condition}; do sleep 0.1; done", token);
+    }
 
     private async Task RunLifecycleAsync(string operation, Func<Task> action)
     {
@@ -118,6 +135,7 @@ internal sealed class KafkaRestartableBroker : IAsyncDisposable
         var diagnosticTimeout = TimeSpan.FromSeconds(5);
         using var timeout = new CancellationTokenSource(diagnosticTimeout);
         string diagnostic;
+
         try
         {
             // Use an independent deadline even when the lifecycle operation was cancelled.
@@ -139,5 +157,8 @@ internal sealed class KafkaRestartableBroker : IAsyncDisposable
         return new InvalidOperationException($"Kafka broker {operation} failed. {diagnostic}", error);
     }
 
-    public ValueTask DisposeAsync() => Container.DisposeAsync();
+    public ValueTask DisposeAsync()
+    {
+        return Container.DisposeAsync();
+    }
 }

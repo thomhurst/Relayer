@@ -21,7 +21,10 @@ public class PostgreSqlChangeCaptureBenchmarks
     private byte[] _headers = [];
 
     [Params(1, 100)]
-    public int MessageCount { get; set; }
+    public int MessageCount
+    {
+        get; set;
+    }
 
     [GlobalSetup]
     public void Setup()
@@ -29,12 +32,20 @@ public class PostgreSqlChangeCaptureBenchmarks
         var connectionString = Environment.GetEnvironmentVariable("RELAYER_BENCHMARK_POSTGRES")
             ?? throw new InvalidOperationException("Set RELAYER_BENCHMARK_POSTGRES to a disposable PostgreSQL database.");
         _source = NpgsqlDataSource.Create(connectionString);
-        using var schema = _source.CreateCommand(PostgreSqlOutboxSchema.CreateScript(new() { Schema = _schema }));
+        using var schema = _source.CreateCommand(PostgreSqlOutboxSchema.CreateScript(new()
+        {
+            Schema = _schema
+        }));
         schema.ExecuteNonQuery();
         var headers = new ArrayBufferWriter<byte>();
         OutboxHeaderCodec.Write(headers, []);
         _headers = headers.WrittenMemory.ToArray();
-        _worker = new(_source, new() { Schema = _schema, RecoveryDelay = TimeSpan.Zero, BatchSize = 100 },
+        _worker = new(_source, new()
+        {
+            Schema = _schema,
+            RecoveryDelay = TimeSpan.Zero,
+            BatchSize = 100
+        },
             [_transport], NullLogger<PostgreSqlMaintenanceWorker>.Instance);
         Populate();
         _worker.DispatchCommittedAsync(default).AsTask().GetAwaiter().GetResult();
@@ -54,40 +65,91 @@ public class PostgreSqlChangeCaptureBenchmarks
     }
 
     [Benchmark(Baseline = true)]
-    public ValueTask<int> PollingRecovery() => _worker.SweepAsync(default);
+    public ValueTask<int> PollingRecovery()
+    {
+        return _worker.SweepAsync(default);
+    }
 
     [Benchmark]
-    public ValueTask CdcRecovery() => _worker.DispatchCommittedAsync(default);
+    public ValueTask CdcRecovery()
+    {
+        return _worker.DispatchCommittedAsync(default);
+    }
 
     [IterationCleanup]
     public void Verify()
     {
-        if (_transport.Count != MessageCount) throw new InvalidOperationException("Recovery did not send every seeded row.");
+        if (_transport.Count != MessageCount)
+        {
+            throw new InvalidOperationException("Recovery did not send every seeded row.");
+        }
     }
 
     [GlobalCleanup]
     public void Cleanup()
     {
         _worker?.Dispose();
-        if (_source is null) return;
+
+        if (_source is null)
+        {
+            return;
+        }
+
         try
         {
             using var command = _source.CreateCommand($"DROP SCHEMA {_schema} CASCADE");
             command.ExecuteNonQuery();
         }
-        finally { _source.Dispose(); }
+        finally
+        {
+            _source.Dispose();
+        }
     }
 
     private sealed class CountingTransport : ITransport
     {
         internal int Count;
+
         public string Name => "events";
-        public TransportCapabilities GetCapabilities(string endpoint) => new() { MaxBatchSize = 100 };
-        public ValueTask SendAsync(OutgoingMessage message, CancellationToken cancellationToken) { Count++; return default; }
-        public ValueTask SendBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken) { Count += messages.Length; return default; }
-        public ValueTask<TopologyReport> ApplyTopologyAsync(TopologyMode mode, CancellationToken cancellationToken) => new(new TopologyReport([]));
-        public Task StartAsync(CancellationToken cancellationToken) => Task.CompletedTask;
-        public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
-        public ValueTask DisposeAsync() => default;
+
+        public TransportCapabilities GetCapabilities(string endpoint)
+        {
+            return new()
+            {
+                MaxBatchSize = 100
+            };
+        }
+
+        public ValueTask SendAsync(OutgoingMessage message, CancellationToken cancellationToken)
+        {
+            Count++;
+            return default;
+        }
+
+        public ValueTask SendBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken)
+        {
+            Count += messages.Length;
+            return default;
+        }
+
+        public ValueTask<TopologyReport> ApplyTopologyAsync(TopologyMode mode, CancellationToken cancellationToken)
+        {
+            return new(new TopologyReport([]));
+        }
+
+        public Task StartAsync(CancellationToken cancellationToken)
+        {
+            return Task.CompletedTask;
+        }
+
+        public Task StopAsync(CancellationToken cancellationToken)
+        {
+            return Task.CompletedTask;
+        }
+
+        public ValueTask DisposeAsync()
+        {
+            return default;
+        }
     }
 }

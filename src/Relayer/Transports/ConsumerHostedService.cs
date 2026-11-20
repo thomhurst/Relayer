@@ -15,16 +15,26 @@ internal abstract class ConsumerHostedService(string transport) : BackgroundServ
 
     /// <summary>Composes and validates the consumers once; a retried host start must not compose them twice.</summary>
     protected abstract Task ComposeAsync(CancellationToken cancellationToken);
-    protected abstract bool AutoStartConsumers { get; }
+
+    protected abstract bool AutoStartConsumers
+    {
+        get;
+    }
+
     protected abstract Task StartConsumersAsync(CancellationToken cancellationToken);
+
     /// <summary>Stops and drains the consumers. Called on host shutdown even when nothing was composed.</summary>
     protected abstract Task StopConsumersAsync(CancellationToken cancellationToken);
 
-    protected override Task ExecuteAsync(CancellationToken stoppingToken) => Task.CompletedTask;
+    protected override Task ExecuteAsync(CancellationToken stoppingToken)
+    {
+        return Task.CompletedTask;
+    }
 
     public override async Task StartAsync(CancellationToken cancellationToken)
     {
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+
         try
         {
             if (_shutdown.IsCancellationRequested)
@@ -32,11 +42,21 @@ internal abstract class ConsumerHostedService(string transport) : BackgroundServ
                 _shutdown.Dispose();
                 _shutdown = new();
             }
+
             await ComposeAsync(cancellationToken).ConfigureAwait(false);
-            if (AutoStartConsumers) await StartAsyncCore(cancellationToken).ConfigureAwait(false);
+
+            if (AutoStartConsumers)
+            {
+                await StartAsyncCore(cancellationToken).ConfigureAwait(false);
+            }
+
             _hostRunning = true;
         }
-        finally { _gate.Release(); }
+        finally
+        {
+            _gate.Release();
+        }
+
         await base.StartAsync(cancellationToken).ConfigureAwait(false);
     }
 
@@ -47,6 +67,7 @@ internal abstract class ConsumerHostedService(string transport) : BackgroundServ
         Volatile.Write(ref _hostRunning, false);
         _shutdown.Cancel();
         var entered = false;
+
         try
         {
             try
@@ -54,8 +75,14 @@ internal abstract class ConsumerHostedService(string transport) : BackgroundServ
                 await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
                 entered = true;
             }
-            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { }
-            if (entered) await StopAsyncCore(cancellationToken).ConfigureAwait(false);
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+            }
+
+            if (entered)
+            {
+                await StopAsyncCore(cancellationToken).ConfigureAwait(false);
+            }
             else
             {
                 _consuming = false;
@@ -64,7 +91,11 @@ internal abstract class ConsumerHostedService(string transport) : BackgroundServ
         }
         finally
         {
-            if (entered) _gate.Release();
+            if (entered)
+            {
+                _gate.Release();
+            }
+
             await base.StopAsync(cancellationToken).ConfigureAwait(false);
         }
     }
@@ -72,33 +103,54 @@ internal abstract class ConsumerHostedService(string transport) : BackgroundServ
     async Task IConsumerControl.StartAsync(CancellationToken cancellationToken)
     {
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+
         try
         {
             if (!Volatile.Read(ref _hostRunning))
+            {
                 throw new InvalidOperationException($"{transport}: start the host before starting its consumers.");
+            }
+
             using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _shutdown.Token);
             await StartAsyncCore(linked.Token).ConfigureAwait(false);
         }
-        finally { _gate.Release(); }
+        finally
+        {
+            _gate.Release();
+        }
     }
 
     async Task IConsumerControl.StopAsync(CancellationToken cancellationToken)
     {
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
-        try { await StopAsyncCore(cancellationToken).ConfigureAwait(false); }
-        finally { _gate.Release(); }
+
+        try
+        {
+            await StopAsyncCore(cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            _gate.Release();
+        }
     }
 
     private async Task StartAsyncCore(CancellationToken cancellationToken)
     {
-        if (_consuming) return;
+        if (_consuming)
+        {
+            return;
+        }
+
         await StartConsumersAsync(cancellationToken).ConfigureAwait(false);
         _consuming = true;
     }
 
     private async Task StopAsyncCore(CancellationToken cancellationToken)
     {
-        if (!_consuming) return;
+        if (!_consuming)
+        {
+            return;
+        }
         // A failed or expired drain still counts as stopped; the consumer itself rejects a restart after an abort.
         _consuming = false;
         await StopConsumersAsync(cancellationToken).ConfigureAwait(false);

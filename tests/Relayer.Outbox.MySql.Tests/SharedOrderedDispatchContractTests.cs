@@ -11,8 +11,17 @@ public sealed class SharedOrderedDispatchContractTests : OutboxOrderedDispatchCo
     protected override async Task<OrderedFixture> CreateFixtureAsync()
     {
         var fixture = new Fixture();
-        try { await fixture.Start(); return fixture; }
-        catch { await fixture.DisposeAsync(); throw; }
+
+        try
+        {
+            await fixture.Start();
+            return fixture;
+        }
+        catch
+        {
+            await fixture.DisposeAsync();
+            throw;
+        }
     }
 
     private sealed class Fixture : OrderedFixture
@@ -26,8 +35,14 @@ public sealed class SharedOrderedDispatchContractTests : OutboxOrderedDispatchCo
             _source = _database.Source;
         }
 
-        public override OrderedWorker Worker(RecordingTransport transport) => new WorkerAdapter(
-            new(_source!, new() { Lanes = 1 }, [transport], NullLogger<MySqlOrderedDispatcher>.Instance));
+        public override OrderedWorker Worker(RecordingTransport transport)
+        {
+            return new WorkerAdapter(
+                        new(_source!, new()
+                        {
+                            Lanes = 1
+                        }, [transport], NullLogger<MySqlOrderedDispatcher>.Instance));
+        }
 
         public override async Task Insert(Guid id, int? lane, string orderingKey = "customer-Ã©")
         {
@@ -82,11 +97,13 @@ public sealed class SharedOrderedDispatchContractTests : OutboxOrderedDispatchCo
             await using var reader = await command.ExecuteReaderAsync();
             var rows = new List<Row>();
             var id = new byte[16];
+
             while (await reader.ReadAsync())
             {
                 reader.GetBytes(0, 0, id, 0, 16);
                 rows.Add(new(new Guid(id, bigEndian: true), reader.GetInt32(1), reader.IsDBNull(2) ? null : reader.GetString(2), !reader.IsDBNull(3), !reader.IsDBNull(4)));
             }
+
             return rows.ToArray();
         }
 
@@ -98,7 +115,14 @@ public sealed class SharedOrderedDispatchContractTests : OutboxOrderedDispatchCo
 
     private sealed class WorkerAdapter(MySqlOrderedDispatcher worker) : OrderedWorker
     {
-        public override ValueTask<int> DispatchLaneAsync(int lane, CancellationToken cancellationToken = default) => worker.DispatchLaneAsync(lane, cancellationToken);
-        public override void Dispose() => worker.Dispose();
+        public override ValueTask<int> DispatchLaneAsync(int lane, CancellationToken cancellationToken = default)
+        {
+            return worker.DispatchLaneAsync(lane, cancellationToken);
+        }
+
+        public override void Dispose()
+        {
+            worker.Dispose();
+        }
     }
 }

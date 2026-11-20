@@ -4,5 +4,8 @@ namespace Relayer.Sagas.EntityFrameworkCore;
 public abstract class EntityFrameworkCoreSagaData : SagaData
 {
     /// <summary>The native concurrency token. Configure Property(s => s.Version).IsRowVersion().</summary>
-    public uint Version { get; set; }
+    public uint Version
+    {
+        get; set;
+    }
 }

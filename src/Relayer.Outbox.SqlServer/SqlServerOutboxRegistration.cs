@@ -1,10 +1,10 @@
-using Relayer.Transports;
-using Microsoft.Extensions.Configuration;
-using Microsoft.Extensions.DependencyInjection.Extensions;
-using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Options;
 using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Options;
+using Relayer.Transports;
 
 namespace Relayer.Outbox.SqlServer;
 
@@ -17,10 +17,18 @@ public static class SqlServerOutboxRegistration
     public static IServiceCollection AddRelayerSqlServerOutbox(this IServiceCollection services, SqlServerOutboxOptions? options = null)
     {
         ArgumentNullException.ThrowIfNull(services);
+
         if (services.Any(static descriptor => descriptor.ServiceType == typeof(IOutboxEnlistment)) &&
             !services.Any(static descriptor => descriptor.ServiceType == typeof(SqlServerOutbox)))
+        {
             throw new InvalidOperationException("A different IOutboxEnlistment is already registered. Configure one scoped outbox integration.");
-        if (options is not null) SqlServerOutbox.ValidateOptions(options);
+        }
+
+        if (options is not null)
+        {
+            SqlServerOutbox.ValidateOptions(options);
+        }
+
         services.TryAddScoped<SqlServerOutbox>(provider =>
         {
             var snapshot = provider.GetRequiredService<IOptionsSnapshot<SqlServerOutboxOptions>>();
@@ -31,7 +39,12 @@ public static class SqlServerOutboxRegistration
         services.TryAddScoped<IOutboxEnlistment>(static provider => provider.GetRequiredService<SqlServerOutbox>());
         services.TryAddSingleton<IValidateOptions<SqlServerOutboxOptions>, Validator>();
         services.AddOptions<SqlServerOutboxOptions>().ValidateOnStart();
-        if (options is not null) AddFactory(services, options, null);
+
+        if (options is not null)
+        {
+            AddFactory(services, options, null);
+        }
+
         return services;
     }
 
@@ -48,18 +61,27 @@ public static class SqlServerOutboxRegistration
         return services;
     }
 
-    private static void AddFactory(IServiceCollection services, SqlServerOutboxOptions options, IConfiguration? configuration) =>
+    private static void AddFactory(IServiceCollection services, SqlServerOutboxOptions options, IConfiguration? configuration)
+    {
         services.AddSingleton<IOptionsFactory<SqlServerOutboxOptions>>(provider => new Factory(options, configuration,
-            provider.GetServices<IConfigureOptions<SqlServerOutboxOptions>>(),
-            provider.GetServices<IPostConfigureOptions<SqlServerOutboxOptions>>(),
-            provider.GetServices<IValidateOptions<SqlServerOutboxOptions>>()));
+                    provider.GetServices<IConfigureOptions<SqlServerOutboxOptions>>(),
+                    provider.GetServices<IPostConfigureOptions<SqlServerOutboxOptions>>(),
+                    provider.GetServices<IValidateOptions<SqlServerOutboxOptions>>()));
+    }
 
     private sealed class Validator : IValidateOptions<SqlServerOutboxOptions>
     {
         public ValidateOptionsResult Validate(string? name, SqlServerOutboxOptions options)
         {
-            try { SqlServerOutbox.ValidateOptions(options); return ValidateOptionsResult.Success; }
-            catch (ArgumentException error) { return ValidateOptionsResult.Fail(error.Message); }
+            try
+            {
+                SqlServerOutbox.ValidateOptions(options);
+                return ValidateOptionsResult.Success;
+            }
+            catch (ArgumentException error)
+            {
+                return ValidateOptionsResult.Fail(error.Message);
+            }
         }
     }
 
@@ -70,20 +92,32 @@ public static class SqlServerOutboxRegistration
         IEnumerable<IValidateOptions<SqlServerOutboxOptions>> validations)
         : OptionsFactory<SqlServerOutboxOptions>(setups, postConfigures, validations)
     {
-        protected override SqlServerOutboxOptions CreateInstance(string name) => new()
+        protected override SqlServerOutboxOptions CreateInstance(string name)
         {
-            DispatchStoreName = configuration?[nameof(defaults.DispatchStoreName)] ?? defaults.DispatchStoreName,
-            Schema = configuration?[nameof(defaults.Schema)] ?? defaults.Schema,
-            TablePrefix = configuration?[nameof(defaults.TablePrefix)] ?? defaults.TablePrefix,
-            MaxDispatchAttempts = Read(nameof(defaults.MaxDispatchAttempts), defaults.MaxDispatchAttempts),
-            Lanes = Read(nameof(defaults.Lanes), defaults.Lanes)
-        };
+            return new()
+            {
+                DispatchStoreName = configuration?[nameof(defaults.DispatchStoreName)] ?? defaults.DispatchStoreName,
+                Schema = configuration?[nameof(defaults.Schema)] ?? defaults.Schema,
+                TablePrefix = configuration?[nameof(defaults.TablePrefix)] ?? defaults.TablePrefix,
+                MaxDispatchAttempts = Read(nameof(defaults.MaxDispatchAttempts), defaults.MaxDispatchAttempts),
+                Lanes = Read(nameof(defaults.Lanes), defaults.Lanes)
+            };
+        }
 
         private T Read<T>(string key, T fallback) where T : IParsable<T>
         {
             var value = configuration?[key];
-            if (value is null) return fallback;
-            if (T.TryParse(value, CultureInfo.InvariantCulture, out var parsed)) return parsed;
+
+            if (value is null)
+            {
+                return fallback;
+            }
+
+            if (T.TryParse(value, CultureInfo.InvariantCulture, out var parsed))
+            {
+                return parsed;
+            }
+
             throw new OptionsValidationException(Options.DefaultName, typeof(SqlServerOutboxOptions), [$"{key}: '{value}' is invalid."]);
         }
     }

@@ -15,14 +15,34 @@ public class PubSubStreamReadinessTests
         var writer = new PendingWriter();
         using var call = interceptor.AsyncDuplexStreamingCall<StreamingPullRequest, StreamingPullResponse>(
             new ClientInterceptorContext<StreamingPullRequest, StreamingPullResponse>(null!, null!, default),
-            _ => new(writer, null!, Task.FromResult(new Metadata()), () => Status.DefaultSuccess, () => new(), () => { }));
-        var writing = call.RequestStream.WriteAsync(new() { Subscription = "projects/test/subscriptions/test" });
+            _ => new(writer, null!, Task.FromResult(new Metadata()), () => Status.DefaultSuccess, () => new(), () =>
+            {
+            }));
+        var writing = call.RequestStream.WriteAsync(new()
+        {
+            Subscription = "projects/test/subscriptions/test"
+        });
         await Assert.That(interceptor.InitialWriteCompleted.Task.IsCompleted).IsFalse();
         var failure = new IOException("native write failed");
-        if (fail) writer.Completion.SetException(failure);
-        else writer.Completion.SetResult();
-        if (fail) await Assert.That(async () => await writing).Throws<IOException>();
-        else await writing;
+
+        if (fail)
+        {
+            writer.Completion.SetException(failure);
+        }
+        else
+        {
+            writer.Completion.SetResult();
+        }
+
+        if (fail)
+        {
+            await Assert.That(async () => await writing).Throws<IOException>();
+        }
+        else
+        {
+            await writing;
+        }
+
         await interceptor.InitialWriteCompleted.Task;
     }
 
@@ -36,24 +56,38 @@ public class PubSubStreamReadinessTests
         var previous = new PendingWriter();
         using var previousCall = interceptor.AsyncDuplexStreamingCall<StreamingPullRequest, StreamingPullResponse>(
             new ClientInterceptorContext<StreamingPullRequest, StreamingPullResponse>(null!, null!, default),
-            _ => new(previous, null!, Task.FromResult(new Metadata()), () => Status.DefaultSuccess, () => new(), () => { }));
-        var previousWrite = previousCall.RequestStream.WriteAsync(new() { Subscription = "projects/test/subscriptions/test" });
+            _ => new(previous, null!, Task.FromResult(new Metadata()), () => Status.DefaultSuccess, () => new(), () =>
+            {
+            }));
+        var previousWrite = previousCall.RequestStream.WriteAsync(new()
+        {
+            Subscription = "projects/test/subscriptions/test"
+        });
+
         if (completePreviousBeforeRestart)
         {
             previous.Completion.SetResult();
             await previousWrite;
         }
+
         interceptor.ReceiverStarting();
         var current = new PendingWriter();
         using var currentCall = interceptor.AsyncDuplexStreamingCall<StreamingPullRequest, StreamingPullResponse>(
             new ClientInterceptorContext<StreamingPullRequest, StreamingPullResponse>(null!, null!, default),
-            _ => new(current, null!, Task.FromResult(new Metadata()), () => Status.DefaultSuccess, () => new(), () => { }));
-        var currentWrite = currentCall.RequestStream.WriteAsync(new() { Subscription = "projects/test/subscriptions/test" });
+            _ => new(current, null!, Task.FromResult(new Metadata()), () => Status.DefaultSuccess, () => new(), () =>
+            {
+            }));
+        var currentWrite = currentCall.RequestStream.WriteAsync(new()
+        {
+            Subscription = "projects/test/subscriptions/test"
+        });
+
         if (!completePreviousBeforeRestart)
         {
             previous.Completion.SetResult();
             await previousWrite;
         }
+
         await Assert.That(interceptor.InitialWriteCompleted.Task.IsCompleted).IsFalse();
         current.Completion.SetResult();
         await currentWrite;
@@ -62,9 +96,24 @@ public class PubSubStreamReadinessTests
 
     private sealed class PendingWriter : IClientStreamWriter<StreamingPullRequest>
     {
-        internal TaskCompletionSource Completion { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        public WriteOptions? WriteOptions { get; set; }
-        public Task WriteAsync(StreamingPullRequest message) => Completion.Task;
-        public Task CompleteAsync() => Task.CompletedTask;
+        internal TaskCompletionSource Completion
+        {
+            get;
+        } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public WriteOptions? WriteOptions
+        {
+            get; set;
+        }
+
+        public Task WriteAsync(StreamingPullRequest message)
+        {
+            return Completion.Task;
+        }
+
+        public Task CompleteAsync()
+        {
+            return Task.CompletedTask;
+        }
     }
 }

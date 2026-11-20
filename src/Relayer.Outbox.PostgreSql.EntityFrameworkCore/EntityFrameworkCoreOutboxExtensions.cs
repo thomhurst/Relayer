@@ -1,4 +1,3 @@
-using Relayer.Transports;
 using System.Globalization;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
@@ -7,6 +6,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Options;
 using Relayer.Outbox.PostgreSql;
+using Relayer.Transports;
 
 namespace Relayer.Outbox.EntityFrameworkCore;
 
@@ -17,9 +17,13 @@ public static class EntityFrameworkCoreOutboxExtensions
     public static IServiceCollection AddRelayerEntityFrameworkCoreOutbox(this IServiceCollection services)
     {
         ArgumentNullException.ThrowIfNull(services);
+
         if (services.Any(static descriptor => descriptor.ServiceType == typeof(IOutboxEnlistment)) &&
             !services.Any(static descriptor => descriptor.ServiceType == typeof(EntityFrameworkCoreOutbox)))
+        {
             throw new InvalidOperationException("A different IOutboxEnlistment is already registered. Configure one scoped outbox integration.");
+        }
+
         services.TryAddSingleton<RootProvider>(static provider => new(provider));
         services.TryAddSingleton<DefaultOutboxCapabilities>();
         services.TryAddScoped<EntityFrameworkCoreOutbox>(static provider =>
@@ -60,39 +64,60 @@ public static class EntityFrameworkCoreOutboxExtensions
         // that provider even when DI scope validation is disabled or EF's provider cache is warm.
         if (ReferenceEquals(services.GetRequiredService<IServiceProvider>(),
                 services.GetRequiredService<RootProvider>().Provider))
+        {
             throw new InvalidOperationException("Relayer EF Core interceptors must bind to the current ISender scope, " +
                 "not the root service provider. Use AddDbContext instead of AddDbContextPool or AddPooledDbContextFactory " +
                 "and configure AddRelayerOutbox with its scoped provider.");
+        }
+
         if (builder.Options.HasRelayerOutbox())
+        {
             throw new InvalidOperationException("AddRelayerOutbox is already configured on these DbContext options.");
+        }
+
         options ??= services.GetRequiredService<IOptionsSnapshot<EntityFrameworkCoreOutboxOptions>>().Value;
+
         if (services.GetService<TenantContext>() is { } tenant)
         {
             if (options.TenantBinding is null)
+            {
                 throw new InvalidOperationException("Configure TenantBinding on AddRelayerOutbox in the authorized native DbContext factory when using AddRelayerTenancy.");
+            }
+
             options.TenantBinding.ValidateContext(tenant);
         }
+
         var outbox = services.GetRequiredService<EntityFrameworkCoreOutbox>();
         PostgreSqlDirectDispatcher? dispatcher = null;
         IEnumerable<PostgreSqlSchedulingRegistration> workers = services.GetServices<PostgreSqlSchedulingRegistration>();
+
         if (options.DispatchStoreName is { } name)
         {
             dispatcher = services.GetKeyedService<PostgreSqlDirectDispatcher>(name);
+
             if (dispatcher is null && services.GetService<PostgreSqlTenantDispatcher>() is { } catalog)
             {
                 dispatcher = catalog.GetDispatcher(name, out var catalogWorkers);
                 workers = catalogWorkers;
             }
+
             if (dispatcher is null)
+            {
                 throw new InvalidOperationException($"PostgreSQL dispatch store '{name}' is not registered.");
+            }
         }
+
         var configuration = new PostgreSqlOutboxConfiguration(options, dispatcher, workers);
+
         foreach (var extension in builder.Options.Extensions)
+        {
             if (extension.Info.IsDatabaseProvider)
             {
                 configuration.Validate(builder.Options);
                 break;
             }
+        }
+
         ((IDbContextOptionsBuilderInfrastructure)builder).AddOrUpdateExtension(configuration);
         builder.AddInterceptors(new OutboxSaveChangesInterceptor(outbox, configuration, services),
             new OutboxTransactionInterceptor(outbox, configuration));
@@ -103,28 +128,49 @@ public static class EntityFrameworkCoreOutboxExtensions
     public static bool HasRelayerOutbox(this DbContextOptions options)
     {
         ArgumentNullException.ThrowIfNull(options);
+
         if (options.FindExtension<CoreOptionsExtension>()?.Interceptors is { } interceptors)
+        {
             foreach (var interceptor in interceptors)
+            {
                 if (interceptor is OutboxSaveChangesInterceptor)
+                {
                     return true;
+                }
+            }
+        }
+
         return false;
     }
 
     /// <summary>Selects the context that owns sends. Retained for callers compiled against the disposable return type.</summary>
     [System.ComponentModel.EditorBrowsable(System.ComponentModel.EditorBrowsableState.Never)]
-    public static IDisposable EnlistRelayerOutbox(DbContext context) => DbContextOutboxExtensions.EnlistRelayerOutbox(context);
+    public static IDisposable EnlistRelayerOutbox(DbContext context)
+    {
+        return DbContextOutboxExtensions.EnlistRelayerOutbox(context);
+    }
 
     private sealed class RootProvider(IServiceProvider provider)
     {
-        public IServiceProvider Provider { get; } = provider;
+        public IServiceProvider Provider
+        {
+            get;
+        } = provider;
     }
 
     private sealed class OutboxOptionsValidator : IValidateOptions<EntityFrameworkCoreOutboxOptions>
     {
         public ValidateOptionsResult Validate(string? name, EntityFrameworkCoreOutboxOptions options)
         {
-            try { _ = new PostgreSqlOutboxConfiguration(options); return ValidateOptionsResult.Success; }
-            catch (ArgumentException error) { return ValidateOptionsResult.Fail(error.Message); }
+            try
+            {
+                _ = new PostgreSqlOutboxConfiguration(options);
+                return ValidateOptionsResult.Success;
+            }
+            catch (ArgumentException error)
+            {
+                return ValidateOptionsResult.Fail(error.Message);
+            }
         }
     }
 
@@ -152,8 +198,17 @@ public static class EntityFrameworkCoreOutboxExtensions
         private T Read<T>(string key, T fallback) where T : IParsable<T>
         {
             var value = configuration[key];
-            if (value is null) return fallback;
-            if (T.TryParse(value, CultureInfo.InvariantCulture, out var parsed)) return parsed;
+
+            if (value is null)
+            {
+                return fallback;
+            }
+
+            if (T.TryParse(value, CultureInfo.InvariantCulture, out var parsed))
+            {
+                return parsed;
+            }
+
             throw new OptionsValidationException(Options.DefaultName, typeof(EntityFrameworkCoreOutboxOptions),
                 [$"{key}: '{value}' is invalid."]);
         }

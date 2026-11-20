@@ -13,25 +13,41 @@ public sealed class SagaExecution<TState, TMessage> where TState : SagaData
     internal ValueTask Start(Saga<TState, TMessage> handler, TMessage message, MessageContext context, CancellationToken cancellation)
     {
         for (var segment = _operations; segment is not null; segment = Volatile.Read(ref segment.Next))
+        {
             for (var i = 0; i < segment.Items.Length; i++)
+            {
                 if (Interlocked.Exchange(ref segment.Items[i], null) is { } operation)
+                {
                     return operation.Start(handler, message, context, cancellation);
+                }
+            }
+        }
+
         return new Operation(this).Start(handler, message, context, cancellation);
     }
 
     private void Return(Operation operation)
     {
         var segment = _operations;
+
         while (true)
         {
             for (var i = 0; i < segment.Items.Length; i++)
-                if (Interlocked.CompareExchange(ref segment.Items[i], operation, null) is null) return;
+            {
+                if (Interlocked.CompareExchange(ref segment.Items[i], operation, null) is null)
+                {
+                    return;
+                }
+            }
+
             var next = Volatile.Read(ref segment.Next);
+
             if (next is null)
             {
                 var added = new Segment();
                 next = Interlocked.CompareExchange(ref segment.Next, added, null) ?? added;
             }
+
             segment = next;
         }
     }
@@ -79,7 +95,12 @@ public sealed class SagaExecution<TState, TMessage> where TState : SagaData
             var runner = new Runner(this);
             var builder = AsyncTaskMethodBuilder.Create();
             builder.Start(ref runner);
-            if (_suspended) return new ValueTask(this, _completion.Version);
+
+            if (_suspended)
+            {
+                return new ValueTask(this, _completion.Version);
+            }
+
             var error = _error;
             _error = null;
             _owner.Return(this);
@@ -90,8 +111,11 @@ public sealed class SagaExecution<TState, TMessage> where TState : SagaData
         {
             var executionContext = _executionContext;
             _executionContext = null;
+
             if (executionContext is not null)
+            {
                 ExecutionContext.Run(executionContext, static state => ((Operation)state!).MoveNext(), this);
+            }
             else
             {
                 var runner = new Runner(this);
@@ -109,6 +133,7 @@ public sealed class SagaExecution<TState, TMessage> where TState : SagaData
                 _pending.UnsafeOnCompleted(_continuation);
                 return false;
             }
+
             var pending = _pending;
             _pending = default;
             pending.GetResult();
@@ -134,28 +159,48 @@ public sealed class SagaExecution<TState, TMessage> where TState : SagaData
                             _load.UnsafeOnCompleted(_continuation);
                             return;
                         }
+
                         var state = _load.GetResult();
                         _load = default;
-                        if (state is { IsCompleted: true }) { Finish(null); return; }
+                        if (state is { IsCompleted: true })
+                        {
+                            Finish(null);
+                            return;
+                        }
+
                         _isNew = state is null;
                         _state = state ?? _handler.New(_message);
                         if (_isNew && _state.Id == Guid.Empty)
+                        {
                             throw new InvalidOperationException("A new saga state requires a non-empty correlation Id.");
+                        }
+
                         _stage = Stage.Transition;
                         _pending = _handler.Apply(_state, _message, _context, _cancellation).ConfigureAwait(false).GetAwaiter();
                         goto case Stage.Transition;
                     case Stage.Transition:
-                        if (!AwaitPending()) return;
+                        if (!AwaitPending())
+                        {
+                            return;
+                        }
+
                         _stage = Stage.Save;
                         _pending = _handler.Save(_state, _isNew, _cancellation).ConfigureAwait(false).GetAwaiter();
                         goto case Stage.Save;
                     case Stage.Save:
-                        if (!AwaitPending()) return;
+                        if (!AwaitPending())
+                        {
+                            return;
+                        }
+
                         Finish(null);
                         return;
                 }
             }
-            catch (Exception error) { Finish(error); }
+            catch (Exception error)
+            {
+                Finish(error);
+            }
         }
 
         private void Finish(Exception? error)
@@ -168,32 +213,66 @@ public sealed class SagaExecution<TState, TMessage> where TState : SagaData
             _pending = default;
             _load = default;
             _executionContext = null;
+
             if (_suspended)
             {
-                if (error is null) _completion.SetResult(true);
-                else _completion.SetException(error);
+                if (error is null)
+                {
+                    _completion.SetResult(true);
+                }
+                else
+                {
+                    _completion.SetException(error);
+                }
             }
-            else _error = error;
+            else
+            {
+                _error = error;
+            }
         }
 
         public void GetResult(short token)
         {
-            try { _completion.GetResult(token); }
+            try
+            {
+                _completion.GetResult(token);
+            }
             finally
             {
                 _completion.Reset();
                 _owner.Return(this);
             }
         }
-        public ValueTaskSourceStatus GetStatus(short token) => _completion.GetStatus(token);
-        public void OnCompleted(Action<object?> continuation, object? state, short token, ValueTaskSourceOnCompletedFlags flags)
-            => _completion.OnCompleted(continuation, state, token, flags);
 
-        private enum Stage { Start, Load, Transition, Save }
+        public ValueTaskSourceStatus GetStatus(short token)
+        {
+            return _completion.GetStatus(token);
+        }
+
+        public void OnCompleted(Action<object?> continuation, object? state, short token, ValueTaskSourceOnCompletedFlags flags)
+        {
+            _completion.OnCompleted(continuation, state, token, flags);
+        }
+
+        private enum Stage
+        {
+            Start,
+            Load,
+            Transition,
+            Save
+        }
+
         private struct Runner(Operation operation) : IAsyncStateMachine
         {
-            public void MoveNext() => operation.MoveNext();
-            public void SetStateMachine(IAsyncStateMachine stateMachine) => throw new NotSupportedException();
+            public void MoveNext()
+            {
+                operation.MoveNext();
+            }
+
+            public void SetStateMachine(IAsyncStateMachine stateMachine)
+            {
+                throw new NotSupportedException();
+            }
         }
     }
 }

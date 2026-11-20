@@ -21,11 +21,35 @@ public class PostgreSqlTenantDispatchBenchmarks
     private readonly CountingTransport _transport = new();
     private byte[] _headers = [];
 
-    [Params(false, true)] public bool RetainSentMessages { get; set; }
-    [Params(1, 16)] public int TenantCount { get; set; }
-    [Params(1, 100)] public int MessagesPerTenant { get; set; }
-    [Params(1, 4)] public int LaneCount { get; set; }
-    [Params(1, 4)] public int DestinationCount { get; set; }
+    [Params(false, true)]
+    public bool RetainSentMessages
+    {
+        get; set;
+    }
+
+    [Params(1, 16)]
+    public int TenantCount
+    {
+        get; set;
+    }
+
+    [Params(1, 100)]
+    public int MessagesPerTenant
+    {
+        get; set;
+    }
+
+    [Params(1, 4)]
+    public int LaneCount
+    {
+        get; set;
+    }
+
+    [Params(1, 4)]
+    public int DestinationCount
+    {
+        get; set;
+    }
 
     [GlobalSetup]
     public void Setup()
@@ -39,6 +63,7 @@ public class PostgreSqlTenantDispatchBenchmarks
         _entries = new PostgreSqlTenantStore[TenantCount];
         _fixed = new PostgreSqlMaintenanceWorker[TenantCount];
         _ordered = new PostgreSqlOrderedDispatcher[TenantCount];
+
         for (var i = 0; i < TenantCount; i++)
         {
             var schema = _prefix + "_" + i;
@@ -46,11 +71,26 @@ public class PostgreSqlTenantDispatchBenchmarks
             _entries[i] = new(i.ToString(), _source, options);
             using var create = _source.CreateCommand($"CREATE SCHEMA {schema};" + PostgreSqlOutboxSchema.CreateScript(options));
             create.ExecuteNonQuery();
-            _fixed[i] = new(_source, new() { Schema = schema, RetainSentMessages = RetainSentMessages, RecoveryDelay = TimeSpan.Zero }, [_transport], NullLogger<PostgreSqlMaintenanceWorker>.Instance);
-            _ordered[i] = new(_source, new() { Schema = schema, Lanes = LaneCount, RetainSentMessages = RetainSentMessages }, [_transport], NullLogger<PostgreSqlOrderedDispatcher>.Instance);
+            _fixed[i] = new(_source, new()
+            {
+                Schema = schema,
+                RetainSentMessages = RetainSentMessages,
+                RecoveryDelay = TimeSpan.Zero
+            }, [_transport], NullLogger<PostgreSqlMaintenanceWorker>.Instance);
+            _ordered[i] = new(_source, new()
+            {
+                Schema = schema,
+                Lanes = LaneCount,
+                RetainSentMessages = RetainSentMessages
+            }, [_transport], NullLogger<PostgreSqlOrderedDispatcher>.Instance);
         }
-        _catalog = new(new Catalog(_entries), new() { MaxConnections = 1, RecoveryDelay = TimeSpan.Zero,
-            CleanupInterval = TimeSpan.FromDays(1) }, [_transport], NullLoggerFactory.Instance);
+
+        _catalog = new(new Catalog(_entries), new()
+        {
+            MaxConnections = 1,
+            RecoveryDelay = TimeSpan.Zero,
+            CleanupInterval = TimeSpan.FromDays(1)
+        }, [_transport], NullLoggerFactory.Instance);
         _catalog.PassAsync(default).GetAwaiter().GetResult(); // Warm retention outside measurement.
     }
 
@@ -58,6 +98,7 @@ public class PostgreSqlTenantDispatchBenchmarks
     public void Populate()
     {
         _transport.Count = 0;
+
         foreach (var entry in _entries)
         {
             var schema = entry.Options.Schema;
@@ -75,11 +116,13 @@ public class PostgreSqlTenantDispatchBenchmarks
     public async Task FixedStorePasses()
     {
         for (var pass = 0; pass < 2; pass++)
+        {
             for (var i = 0; i < _fixed.Length; i++)
             {
                 await _fixed[i].SweepAsync(default);
                 await _ordered[i].DispatchPassAsync(TimeSpan.MaxValue, default);
             }
+        }
     }
 
     [Benchmark]
@@ -96,11 +139,17 @@ public class PostgreSqlTenantDispatchBenchmarks
         foreach (var entry in _entries)
         {
             using var command = _source.CreateCommand($"SELECT count(*) FROM {entry.Options.Schema}.relayer_outbox_sent");
+
             if ((long)command.ExecuteScalar()! != (RetainSentMessages ? MessagesPerTenant : 0))
+            {
                 throw new InvalidOperationException("Sent-history capture did not match the configured completion policy.");
+            }
         }
+
         if (_transport.Count != TenantCount * MessagesPerTenant)
+        {
             throw new InvalidOperationException("Dispatch did not send every seeded row.");
+        }
     }
 
     [GlobalCleanup]
@@ -108,9 +157,22 @@ public class PostgreSqlTenantDispatchBenchmarks
     {
         _catalog?.ReleaseAllAsync().GetAwaiter().GetResult();
         _catalog?.Dispose();
-        foreach (var worker in _fixed) worker.Dispose();
-        foreach (var worker in _ordered) worker.Dispose();
-        if (_source is null) return;
+
+        foreach (var worker in _fixed)
+        {
+            worker.Dispose();
+        }
+
+        foreach (var worker in _ordered)
+        {
+            worker.Dispose();
+        }
+
+        if (_source is null)
+        {
+            return;
+        }
+
         try
         {
             foreach (var entry in _entries)
@@ -119,23 +181,65 @@ public class PostgreSqlTenantDispatchBenchmarks
                 command.ExecuteNonQuery();
             }
         }
-        finally { _source.Dispose(); }
+        finally
+        {
+            _source.Dispose();
+        }
     }
 
     private sealed class Catalog(PostgreSqlTenantStore[] entries) : ITenantSource
     {
-        public IReadOnlyList<PostgreSqlTenantStore> GetTenants() => entries;
+        public IReadOnlyList<PostgreSqlTenantStore> GetTenants()
+        {
+            return entries;
+        }
     }
+
     private sealed class CountingTransport : ITransport
     {
         internal int Count;
+
         public string Name => "events";
-        public TransportCapabilities GetCapabilities(string endpoint) => new() { MaxBatchSize = 100, OrderedByKey = true };
-        public ValueTask SendAsync(OutgoingMessage message, CancellationToken cancellationToken) { Count++; return default; }
-        public ValueTask SendBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken) { Count += messages.Length; return default; }
-        public ValueTask<TopologyReport> ApplyTopologyAsync(TopologyMode mode, CancellationToken cancellationToken) => new(new TopologyReport([]));
-        public Task StartAsync(CancellationToken cancellationToken) => Task.CompletedTask;
-        public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
-        public ValueTask DisposeAsync() => default;
+
+        public TransportCapabilities GetCapabilities(string endpoint)
+        {
+            return new()
+            {
+                MaxBatchSize = 100,
+                OrderedByKey = true
+            };
+        }
+
+        public ValueTask SendAsync(OutgoingMessage message, CancellationToken cancellationToken)
+        {
+            Count++;
+            return default;
+        }
+
+        public ValueTask SendBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken)
+        {
+            Count += messages.Length;
+            return default;
+        }
+
+        public ValueTask<TopologyReport> ApplyTopologyAsync(TopologyMode mode, CancellationToken cancellationToken)
+        {
+            return new(new TopologyReport([]));
+        }
+
+        public Task StartAsync(CancellationToken cancellationToken)
+        {
+            return Task.CompletedTask;
+        }
+
+        public Task StopAsync(CancellationToken cancellationToken)
+        {
+            return Task.CompletedTask;
+        }
+
+        public ValueTask DisposeAsync()
+        {
+            return default;
+        }
     }
 }

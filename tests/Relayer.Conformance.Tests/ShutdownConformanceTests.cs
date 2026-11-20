@@ -113,6 +113,7 @@ public class ShutdownConformanceTests
                 })));
 
         var run = suite.RunAsync(TransportConformanceCase.CleanShutdown, cancellation.Token);
+
         try
         {
             await verificationStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
@@ -144,6 +145,7 @@ public class ShutdownConformanceTests
                 new BrokenFixture(tracing, false, false, false, startEntered: startEntered, startRelease: startRelease)));
 
         var run = suite.RunAsync(TransportConformanceCase.SendReceiveSettle, cancellation.Token);
+
         try
         {
             await startEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
@@ -173,38 +175,96 @@ public class ShutdownConformanceTests
         private readonly TaskCompletionSource _pendingLifecycle = new(TaskCreationOptions.RunContinuationsAsynchronously);
         private int _startCalls;
         private int _stopCalls;
-        public bool PendingLifecycleReleasedByCleanup { get; private set; }
-        public void ReleasePendingLifecycle() => _pendingLifecycle.TrySetResult();
+
+        public bool PendingLifecycleReleasedByCleanup
+        {
+            get; private set;
+        }
+
+        public void ReleasePendingLifecycle()
+        {
+            _pendingLifecycle.TrySetResult();
+        }
+
         public int StopCalls => Volatile.Read(ref _stopCalls);
-        public bool Disposed { get; private set; }
+
+        public bool Disposed
+        {
+            get; private set;
+        }
+
         public bool PendingStopReleased => _stopRelease.Task.IsCompletedSuccessfully;
+
         public ConformanceLogCapture Logs => _inner.Logs;
+
         public ITransport Transport => this;
+
         public string Name => _inner.Transport.Name;
+
         public string Destination => _inner.Destination;
+
         public string MessagingSystem => _inner.MessagingSystem;
+
         public string SettlementOperation => _inner.SettlementOperation;
+
         public HeaderNames HeaderNames => _inner.HeaderNames;
-        public void RegisterConsumer(Func<InMemoryDelivery, CancellationToken, ValueTask<Disposition>> receive) =>
+
+        public void RegisterConsumer(Func<InMemoryDelivery, CancellationToken, ValueTask<Disposition>> receive)
+        {
             _inner.RegisterConsumer(async (delivery, token) =>
-            {
-                var disposition = await receive(delivery, token);
-                cancelScenarioAfterReceive?.Invoke();
-                return disposition;
-            });
+                        {
+                            var disposition = await receive(delivery, token);
+                            cancelScenarioAfterReceive?.Invoke();
+                            return disposition;
+                        });
+        }
+
         public async ValueTask SettleAsync(InMemoryDelivery incoming, Disposition disposition, CancellationToken token)
         {
             // Hold native completion until cleanup, so scheduling cannot hide the premature stop.
-            if (asynchronousEarlyStop) await _settlementRelease.Task.WaitAsync(token);
+            if (asynchronousEarlyStop)
+            {
+                await _settlementRelease.Task.WaitAsync(token);
+            }
+
             await _inner.SettleAsync(incoming, disposition, token);
         }
-        public ValueTask<ConformanceDeadLetter> ReadDeadLetterAsync(CancellationToken token) => _inner.ReadDeadLetterAsync(token);
-        public Task DisconnectAsync(CancellationToken token) => _inner.DisconnectAsync(token);
-        public Task ReconnectAsync(CancellationToken token) => _inner.ReconnectAsync(token);
-        public TransportCapabilities GetCapabilities(string endpoint) => _inner.Transport.GetCapabilities(endpoint);
-        public ValueTask SendAsync(OutgoingMessage message, CancellationToken token) => _inner.Transport.SendAsync(message, token);
-        public ValueTask SendBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken token) => _inner.Transport.SendBatchAsync(messages, token);
-        public ValueTask<TopologyReport> ApplyTopologyAsync(TopologyMode mode, CancellationToken token) => _inner.Transport.ApplyTopologyAsync(mode, token);
+
+        public ValueTask<ConformanceDeadLetter> ReadDeadLetterAsync(CancellationToken token)
+        {
+            return _inner.ReadDeadLetterAsync(token);
+        }
+
+        public Task DisconnectAsync(CancellationToken token)
+        {
+            return _inner.DisconnectAsync(token);
+        }
+
+        public Task ReconnectAsync(CancellationToken token)
+        {
+            return _inner.ReconnectAsync(token);
+        }
+
+        public TransportCapabilities GetCapabilities(string endpoint)
+        {
+            return _inner.Transport.GetCapabilities(endpoint);
+        }
+
+        public ValueTask SendAsync(OutgoingMessage message, CancellationToken token)
+        {
+            return _inner.Transport.SendAsync(message, token);
+        }
+
+        public ValueTask SendBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken token)
+        {
+            return _inner.Transport.SendBatchAsync(messages, token);
+        }
+
+        public ValueTask<TopologyReport> ApplyTopologyAsync(TopologyMode mode, CancellationToken token)
+        {
+            return _inner.Transport.ApplyTopologyAsync(mode, token);
+        }
+
         public Task StartAsync(CancellationToken token)
         {
             if (startRelease is not null)
@@ -214,7 +274,10 @@ public class ShutdownConformanceTests
             }
 
             if (stallRestart && ++_startCalls == 2)
+            {
                 return StallLifecycle();
+            }
+
             return _inner.Transport.StartAsync(token);
         }
 
@@ -223,42 +286,62 @@ public class ShutdownConformanceTests
             cancelPendingLifecycle!.Invoke();
             return _pendingLifecycle.Task;
         }
+
         public async Task StopAsync(CancellationToken token)
         {
             var firstStop = Interlocked.Increment(ref _stopCalls) == 1;
+
             if (firstStop && cancelScenarioAfterReceive is not null)
             {
                 await _stopRelease.Task;
                 return;
             }
+
             if (firstStop && cancelPendingLifecycle is not null && !stallRestart)
             {
                 await StallLifecycle();
                 return;
             }
+
             if (!firstStop && cancelPendingLifecycle is not null)
             {
                 PendingLifecycleReleasedByCleanup = token.CanBeCanceled && !token.IsCancellationRequested;
                 ReleasePendingLifecycle();
             }
+
             startRelease?.TrySetResult();
             _stopRelease.TrySetResult();
+
             if (firstStop && asynchronousEarlyStop)
             {
                 await Task.Yield();
                 return;
             }
+
             _settlementRelease.TrySetResult();
-            if (!earlyStop) await _inner.Transport.StopAsync(token);
+
+            if (!earlyStop)
+            {
+                await _inner.Transport.StopAsync(token);
+            }
         }
-        public ValueTask VerifyShutdownAsync(CancellationToken token) => nativeViolation
-            ? ValueTask.FromException(new InvalidOperationException("settlement after native close"))
-            : verifyShutdown?.Invoke() ?? _inner.VerifyShutdownAsync(token);
+
+        public ValueTask VerifyShutdownAsync(CancellationToken token)
+        {
+            return nativeViolation
+                        ? ValueTask.FromException(new InvalidOperationException("settlement after native close"))
+                        : verifyShutdown?.Invoke() ?? _inner.VerifyShutdownAsync(token);
+        }
+
         public async ValueTask DisposeAsync()
         {
             await _inner.DisposeAsync();
             Disposed = true;
-            if (disposalError) Logs.CreateLogger("native").LogError("receiver disposal failed");
+
+            if (disposalError)
+            {
+                Logs.CreateLogger("native").LogError("receiver disposal failed");
+            }
         }
     }
 }

@@ -1,9 +1,9 @@
-using Relayer.Transports;
-using Relayer.Pipeline;
 using System.Buffers;
 using System.Threading.Tasks.Sources;
 using Microsoft.Extensions.DependencyInjection;
+using Relayer.Pipeline;
 using Relayer.Serialization;
+using Relayer.Transports;
 
 namespace Relayer.TestFixtures;
 
@@ -28,73 +28,133 @@ public sealed class ConcurrentReceiveFixture : IDisposable
     private bool _stopping;
     private int _nextWorker;
     private long _workerBytes;
-    public long CallerBytes { get; private set; }
+
+    public long CallerBytes
+    {
+        get; private set;
+    }
+
     public long WorkerBytes => _workerBytes;
 
-    public ConcurrentReceiveFixture() : this(null) { }
+    public ConcurrentReceiveFixture() : this(null)
+    {
+    }
 
     public ConcurrentReceiveFixture(Action<int>? workerStarted)
     {
         var services = new ServiceCollection();
         services.AddSingleton(_handler);
-        services.AddRelayer(r => { r.Infrastructure().MessageTypes.Add<Payload>("pending"); r.AddTransport<object, object>("manual-1", transport => transport.Consume("source", consumer => consumer.Handler<Handler>())); });
+        services.AddRelayer(r =>
+        {
+            r.Infrastructure().MessageTypes.Add<Payload>("pending");
+            r.AddTransport<object, object>("manual-1", transport => transport.Consume("source", consumer => consumer.Handler<Handler>()));
+        });
         _provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
         _consumer = new ConsumePipelineBuilder(_provider.GetRequiredService<IServiceScopeFactory>(),
             _provider.GetRequiredService<MessageTypeRegistry>(), new Serializer(),
             static (_, error, _) => ValueTask.FromException(error))
             .Handler(_provider.GetRequiredService<HandlerRegistry>().GetHandler<Payload, Handler>()).Build(Count);
         _receive = new(_consumer, new HeaderNames(), Count);
-        _workers = [new(() => { workerStarted?.Invoke(0); Work(0); }),
-            new(() => { workerStarted?.Invoke(1); Work(1); })];
-        foreach (var worker in _workers) { worker.IsBackground = true; worker.Start(); }
+        _workers = [new(() =>
+            {
+                workerStarted?.Invoke(0);
+                Work(0);
+            }),
+            new(() =>
+            {
+                workerStarted?.Invoke(1);
+                Work(1);
+            })];
+
+        foreach (var worker in _workers)
+        {
+            worker.IsBackground = true;
+            worker.Start();
+        }
     }
 
-    public enum Mode { Scoped, Consumer, Receive }
+    public enum Mode
+    {
+        Scoped,
+        Consumer,
+        Receive
+    }
 
     // Return exact inclusive allocations from the driver and the completing worker. MemoryDiagnoser
     // remains enabled separately; this counter also covers work on the dedicated completion thread.
     public long Run(Mode mode)
     {
         var start = GC.GetAllocatedBytesForCurrentThread();
+
         for (var i = 0; i < Count; i++)
         {
             if (mode == Mode.Receive)
             {
                 _received[i] = _receive.ProcessAsync(_incoming);
-                if (_received[i].IsCompleted) throw new InvalidOperationException("Receive must suspend.");
+
+                if (_received[i].IsCompleted)
+                {
+                    throw new InvalidOperationException("Receive must suspend.");
+                }
             }
             else if (mode == Mode.Consumer)
             {
                 var context = _consumer.RentContext(_message);
                 _contexts[i] = context;
                 _pending[i] = _consumer.ProcessAsync(context);
-                if (_pending[i].IsCompleted) throw new InvalidOperationException("Consumer must suspend.");
+
+                if (_pending[i].IsCompleted)
+                {
+                    throw new InvalidOperationException("Consumer must suspend.");
+                }
             }
             else
             {
                 _scopes[i] = _provider.CreateAsyncScope();
                 _pending[i] = _scopes[i].ServiceProvider.GetRequiredService<Handler>()
                     .HandleAsync(Serializer.Value, null!, CancellationToken.None);
-                if (_pending[i].IsCompleted) throw new InvalidOperationException("Handler must suspend.");
+
+                if (_pending[i].IsCompleted)
+                {
+                    throw new InvalidOperationException("Handler must suspend.");
+                }
             }
         }
+
         _release[_nextWorker].Set();
         _nextWorker ^= 1;
-        if (!_finished.WaitOne(TimeSpan.FromSeconds(30))) throw new TimeoutException("Completion worker did not finish.");
+
+        if (!_finished.WaitOne(TimeSpan.FromSeconds(30)))
+        {
+            throw new TimeoutException("Completion worker did not finish.");
+        }
+
         for (var i = 0; i < Count; i++)
         {
             if (mode == Mode.Receive)
             {
-                if (!_received[i].IsCompleted) throw new InvalidOperationException("Receive did not complete.");
+                if (!_received[i].IsCompleted)
+                {
+                    throw new InvalidOperationException("Receive did not complete.");
+                }
+
                 if (_received[i].GetAwaiter().GetResult().Kind != DispositionKind.Complete)
+                {
                     throw new InvalidOperationException("Unexpected settlement.");
+                }
+
                 _received[i] = default;
             }
             else
             {
-                if (!_pending[i].IsCompleted) throw new InvalidOperationException("Consumer did not complete.");
+                if (!_pending[i].IsCompleted)
+                {
+                    throw new InvalidOperationException("Consumer did not complete.");
+                }
+
                 _pending[i].GetAwaiter().GetResult();
                 _pending[i] = default;
+
                 if (mode == Mode.Consumer)
                 {
                     _contexts[i].Dispose();
@@ -103,12 +163,18 @@ public sealed class ConcurrentReceiveFixture : IDisposable
                 else
                 {
                     var disposal = _scopes[i].DisposeAsync();
-                    if (!disposal.IsCompletedSuccessfully) throw new InvalidOperationException("Empty native scope must dispose synchronously.");
+
+                    if (!disposal.IsCompletedSuccessfully)
+                    {
+                        throw new InvalidOperationException("Empty native scope must dispose synchronously.");
+                    }
+
                     disposal.GetAwaiter().GetResult();
                     _scopes[i] = default;
                 }
             }
         }
+
         CallerBytes = GC.GetAllocatedBytesForCurrentThread() - start;
         return CallerBytes + _workerBytes;
     }
@@ -118,9 +184,19 @@ public sealed class ConcurrentReceiveFixture : IDisposable
         while (true)
         {
             _release[index].WaitOne();
-            if (_stopping) return;
+
+            if (_stopping)
+            {
+                return;
+            }
+
             var start = GC.GetAllocatedBytesForCurrentThread();
-            foreach (var source in _handler.Sources) source.Complete();
+
+            foreach (var source in _handler.Sources)
+            {
+                source.Complete();
+            }
+
             _workerBytes = GC.GetAllocatedBytesForCurrentThread() - start;
             _finished.Set();
         }
@@ -129,19 +205,34 @@ public sealed class ConcurrentReceiveFixture : IDisposable
     public void Dispose()
     {
         _stopping = true;
-        foreach (var release in _release) release.Set();
-        foreach (var worker in _workers) worker.Join();
-        foreach (var release in _release) release.Dispose();
+
+        foreach (var release in _release)
+        {
+            release.Set();
+        }
+
+        foreach (var worker in _workers)
+        {
+            worker.Join();
+        }
+
+        foreach (var release in _release)
+        {
+            release.Dispose();
+        }
+
         _finished.Dispose();
         _provider.Dispose();
     }
 
     [Message("pending")]
     public sealed class Payload;
+
     public sealed class Handler : IHandler<Payload>
     {
         internal readonly Source[] Sources = Enumerable.Range(0, Count).Select(_ => new Source()).ToArray();
         private int _next;
+
         public ValueTask HandleAsync(Payload message, MessageContext context, CancellationToken cancellationToken)
         {
             var source = Sources[_next];
@@ -149,31 +240,77 @@ public sealed class ConcurrentReceiveFixture : IDisposable
             return source.Wait();
         }
     }
+
     internal sealed class Source : IValueTaskSource
     {
         private ManualResetValueTaskSourceCore<bool> _completion;
-        internal ValueTask Wait() { _completion.Reset(); return new ValueTask(this, _completion.Version); }
-        internal void Complete() => _completion.SetResult(true);
-        public void GetResult(short token) => _completion.GetResult(token);
-        public ValueTaskSourceStatus GetStatus(short token) => _completion.GetStatus(token);
+
+        internal ValueTask Wait()
+        {
+            _completion.Reset();
+            return new ValueTask(this, _completion.Version);
+        }
+
+        internal void Complete()
+        {
+            _completion.SetResult(true);
+        }
+
+        public void GetResult(short token)
+        {
+            _completion.GetResult(token);
+        }
+
+        public ValueTaskSourceStatus GetStatus(short token)
+        {
+            return _completion.GetStatus(token);
+        }
+
         public void OnCompleted(Action<object?> continuation, object? state, short token, ValueTaskSourceOnCompletedFlags flags)
-            => _completion.OnCompleted(continuation, state, token, flags);
+        {
+            _completion.OnCompleted(continuation, state, token, flags);
+        }
     }
+
     private sealed class Serializer : IMessageSerializer
     {
         internal static readonly Payload Value = new();
+
         public string ContentType => "test/cached";
-        public TMessage Deserialize<TMessage>(ReadOnlySequence<byte> source) => (TMessage)(object)Value;
-        public void Serialize<TMessage>(TMessage message, IBufferWriter<byte> destination) => throw new NotSupportedException();
+
+        public TMessage Deserialize<TMessage>(ReadOnlySequence<byte> source)
+        {
+            return (TMessage)(object)Value;
+        }
+
+        public void Serialize<TMessage>(TMessage message, IBufferWriter<byte> destination)
+        {
+            throw new NotSupportedException();
+        }
     }
+
     private sealed class Incoming;
+
     private readonly struct Binding : IMessageBinding<Incoming>
     {
-        public static ReadOnlySequence<byte> GetBody(Incoming message) => ReadOnlySequence<byte>.Empty;
-        public static int? GetDeliveryCount(Incoming message) => 1;
+        public static ReadOnlySequence<byte> GetBody(Incoming message)
+        {
+            return ReadOnlySequence<byte>.Empty;
+        }
+
+        public static int? GetDeliveryCount(Incoming message)
+        {
+            return 1;
+        }
+
         public static bool TryGetHeader(Incoming message, string name, out WireString value)
         {
-            value = name switch { "ce_id" => new("id"), "ce_type" => new("pending;v=1"), _ => default };
+            value = name switch
+            {
+                "ce_id" => new("id"),
+                "ce_type" => new("pending;v=1"),
+                _ => default
+            };
             return !value.IsEmpty;
         }
     }

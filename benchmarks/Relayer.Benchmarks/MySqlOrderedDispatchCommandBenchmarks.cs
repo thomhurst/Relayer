@@ -1,7 +1,7 @@
-using Relayer.Transports;
 using BenchmarkDotNet.Attributes;
 using MySqlConnector;
 using Relayer.Outbox.MySql;
+using Relayer.Transports;
 
 namespace Relayer.Benchmarks;
 
@@ -12,6 +12,7 @@ public class MySqlOrderedDispatchCommandBenchmarks
     private readonly OutboxClaim _claim = new(Guid.CreateVersion7(), Guid.NewGuid());
     private readonly MySqlStoreParameters _operation = new("UPDATE outbox SET claim_token = @token WHERE id = @id");
     private MySqlCommand _native = null!;
+
     [GlobalSetup]
     public void Setup()
     {
@@ -19,6 +20,7 @@ public class MySqlOrderedDispatchCommandBenchmarks
         _native.Parameters.Add("id", MySqlDbType.Binary);
         _native.Parameters.Add("token", MySqlDbType.Binary);
     }
+
     [Benchmark(Baseline = true)]
     public MySqlCommand NativeObjectValues()
     {
@@ -26,12 +28,18 @@ public class MySqlOrderedDispatchCommandBenchmarks
         _native.Parameters["token"].Value = _claim.Token.ToByteArray(bigEndian: true);
         return _native;
     }
+
     [Benchmark]
     public MySqlCommand ReusedBuffers()
     {
         _operation.Claim(_claim);
         return _operation.Command;
     }
+
     [GlobalCleanup]
-    public void Cleanup() { _operation.Command.Dispose(); _native.Dispose(); }
+    public void Cleanup()
+    {
+        _operation.Command.Dispose();
+        _native.Dispose();
+    }
 }

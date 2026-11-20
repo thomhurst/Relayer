@@ -1,9 +1,9 @@
-using Relayer.Transports;
 using System.Reflection;
 using System.Runtime.Loader;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Relayer.SourceGenerators;
+using Relayer.Transports;
 
 namespace Relayer.SourceGenerators.Tests;
 
@@ -40,6 +40,7 @@ public class MessageTypeGeneratorTests
             .IsEqualTo("");
         var generated = UserFacingSource(driver);
         await Assert.That(generated).DoesNotContain("InvalidOrder");
+
         if (includeValid)
         {
             await Assert.That(generated).Contains("Add<global::ValidOrder>(\"orders.valid\", 1)");
@@ -62,8 +63,12 @@ public class MessageTypeGeneratorTests
         foreach (var includeValid in new[] { false, true })
         {
             var source = $"[Relayer.Message({arguments})] public sealed record Invalid(int Id);";
+
             if (includeValid)
+            {
                 source += "[Relayer.Message(\" valid \")] public sealed record Valid(int Id);";
+            }
+
             var references = ((string)AppContext.GetData("TRUSTED_PLATFORM_ASSEMBLIES")!)
                 .Split(Path.PathSeparator).Select(static p => MetadataReference.CreateFromFile(p)).ToList();
             references.Add(MetadataReference.CreateFromFile(typeof(MessageAttribute).Assembly.Location));
@@ -83,13 +88,17 @@ public class MessageTypeGeneratorTests
                 .IsEqualTo($"https://relayer.tomlonghurst.dev/docs/reference/diagnostics#{diagnosticId.ToLowerInvariant()}");
             var generated = UserFacingSource(driver);
             await Assert.That(generated).DoesNotContain("global::Invalid");
+
             if (includeValid)
             {
                 await Assert.That(generated).Contains("Add<global::Valid>(\" valid \", 1)");
                 await Assert.That(generated).Contains("typeof(global::Valid)");
             }
             else
+            {
                 await Assert.That(generated).IsEqualTo("");
+            }
+
             await Assert.That(string.Join("\n", output.GetDiagnostics().Where(d => d.Severity == DiagnosticSeverity.Error)))
                 .IsEqualTo("");
         }
@@ -125,6 +134,7 @@ public class MessageTypeGeneratorTests
         GeneratorDriver driver = CSharpGeneratorDriver.Create(new MessageTypeGenerator());
         driver = driver.RunGeneratorsAndUpdateCompilation(compilation, out var output, out var diagnostics);
         await Assert.That(diagnostics.Length).IsEqualTo(5);
+
         foreach (var diagnostic in diagnostics)
         {
             await Assert.That(diagnostic.Id).IsEqualTo("RLYM002");
@@ -133,6 +143,7 @@ public class MessageTypeGeneratorTests
             await Assert.That(diagnostic.Descriptor.HelpLinkUri)
                 .IsEqualTo("https://relayer.tomlonghurst.dev/docs/reference/diagnostics#rlym002");
         }
+
         await Assert.That(string.Join("\n", output.GetDiagnostics()
             .Where(d => d.Severity == DiagnosticSeverity.Error))).IsEqualTo("");
         var sources = string.Join("\n", driver.GetRunResult().GeneratedTrees.Select(t => t.ToString()));
@@ -321,18 +332,18 @@ public class MessageTypeGeneratorTests
     [Test]
     public async Task Unchanged_open_generic_declarations_reuse_incremental_models_after_tree_replacement()
     {
-        const string source = "[Relayer.Message(\"invalid\")] public sealed record Order<T>(T Value);";
+        const string Source = "[Relayer.Message(\"invalid\")] public sealed record Order<T>(T Value);";
         var references = ((string)AppContext.GetData("TRUSTED_PLATFORM_ASSEMBLIES")!)
             .Split(Path.PathSeparator).Select(static p => MetadataReference.CreateFromFile(p)).ToList();
         references.Add(MetadataReference.CreateFromFile(typeof(MessageAttribute).Assembly.Location));
-        var tree = CSharpSyntaxTree.ParseText(source, path: "Message.cs");
+        var tree = CSharpSyntaxTree.ParseText(Source, path: "Message.cs");
         var compilation = CSharpCompilation.Create("IncrementalMessageConsumer", [tree], references,
             new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
         GeneratorDriver driver = CSharpGeneratorDriver.Create(
             [new MessageTypeGenerator().AsSourceGenerator()],
             driverOptions: new GeneratorDriverOptions(IncrementalGeneratorOutputKind.None, trackIncrementalGeneratorSteps: true));
         driver = driver.RunGenerators(compilation);
-        compilation = compilation.ReplaceSyntaxTree(tree, CSharpSyntaxTree.ParseText(source, path: "Message.cs"));
+        compilation = compilation.ReplaceSyntaxTree(tree, CSharpSyntaxTree.ParseText(Source, path: "Message.cs"));
         driver = driver.RunGenerators(compilation);
 
         var result = driver.GetRunResult().Results.Single();
@@ -392,6 +403,7 @@ public class MessageTypeGeneratorTests
         await Assert.That(result.Success).IsTrue();
 
         var loader = new AssemblyLoadContext(compilation.AssemblyName, isCollectible: true);
+
         try
         {
             image.Position = 0;
@@ -399,6 +411,7 @@ public class MessageTypeGeneratorTests
             var identity = (MessageType)assembly.GetType("Registration")!.GetMethod("Register")!.Invoke(null, null)!;
             await Assert.That(identity.Name).IsEqualTo(name);
             await Assert.That(identity.Version).IsEqualTo(2);
+
             if (name == "orders.placed")
             {
                 var registration = driver.GetRunResult().GeneratedTrees
@@ -507,6 +520,7 @@ public class MessageTypeGeneratorTests
         var emitted = host.Emit(hostImage);
         await Assert.That(string.Join("\n", emitted.Diagnostics.Where(d => d.Severity >= DiagnosticSeverity.Warning))).IsEqualTo("");
         var loader = new AssemblyLoadContext(host.AssemblyName, isCollectible: true);
+
         try
         {
             ordersImage.Position = billingImage.Position = hostImage.Position = 0;
@@ -518,7 +532,10 @@ public class MessageTypeGeneratorTests
                 ? "'orders.placed;v=2' is already registered to Orders.Order."
                 : "{\"orderId\":42}");
         }
-        finally { loader.Unload(); }
+        finally
+        {
+            loader.Unload();
+        }
     }
 
     [Test]
@@ -545,8 +562,11 @@ public class MessageTypeGeneratorTests
         await Assert.That(string.Join("\n", friend.GetDiagnostics().Where(static d => d.Severity == DiagnosticSeverity.Error))).IsEqualTo("");
     }
 
-    private static string UserFacingSource(GeneratorDriver driver) => string.Join("\n", driver.GetRunResult().GeneratedTrees
-        .Where(static t => !t.FilePath.EndsWith("Microsoft.CodeAnalysis.EmbeddedAttribute.cs", StringComparison.Ordinal)).Select(static t => t.ToString()));
+    private static string UserFacingSource(GeneratorDriver driver)
+    {
+        return string.Join("\n", driver.GetRunResult().GeneratedTrees
+                .Where(static t => !t.FilePath.EndsWith("Microsoft.CodeAnalysis.EmbeddedAttribute.cs", StringComparison.Ordinal)).Select(static t => t.ToString()));
+    }
 
     private static CSharpCompilation CreateCompilation(string name, string source)
     {
@@ -562,15 +582,22 @@ public class MessageTypeGeneratorTests
         GeneratorDriver driver = CSharpGeneratorDriver.Create(new MessageTypeGenerator());
         driver.RunGeneratorsAndUpdateCompilation(compilation, out var output, out var diagnostics);
         var errors = diagnostics.Where(d => d.Severity == DiagnosticSeverity.Error);
-        if (errors.Any()) throw new InvalidOperationException(string.Join("\n", errors));
+
+        if (errors.Any())
+        {
+            throw new InvalidOperationException(string.Join("\n", errors));
+        }
+
         return output;
     }
 
     private sealed class CompetingGeneratorLoadContext(byte[] competingImage) : AssemblyLoadContext
     {
-        protected override Assembly? Load(AssemblyName assemblyName) =>
-            assemblyName.Name == "System.Text.Json.SourceGeneration"
-                ? LoadFromStream(new MemoryStream(competingImage))
-                : null;
+        protected override Assembly? Load(AssemblyName assemblyName)
+        {
+            return assemblyName.Name == "System.Text.Json.SourceGeneration"
+                            ? LoadFromStream(new MemoryStream(competingImage))
+                            : null;
+        }
     }
 }

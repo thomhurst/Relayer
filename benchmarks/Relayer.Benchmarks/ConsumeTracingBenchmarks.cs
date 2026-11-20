@@ -28,7 +28,10 @@ public class ConsumeTracingBenchmarks
     private readonly Incoming _incoming = new();
 
     [Params("NoListener", "Drop", "Record")]
-    public string Mode { get; set; } = "NoListener";
+    public string Mode
+    {
+        get; set;
+    } = "NoListener";
 
     [GlobalSetup]
     public void Setup()
@@ -46,6 +49,7 @@ public class ConsumeTracingBenchmarks
         });
         _provider = services.BuildServiceProvider();
         _tracing = new(Options.Create(new TracingOptions()), []);
+
         if (Mode != "NoListener")
         {
             _listener = new()
@@ -56,6 +60,7 @@ public class ConsumeTracingBenchmarks
             };
             ActivitySource.AddActivityListener(_listener);
         }
+
         var endpoint = new MessagingEndpoint { System = "kafka", Destination = "orders", ConsumerGroup = "billing" };
         _baseline = new(Builder().Settle(static _ => default).Build(1), new(), 1);
         var complete = new MessageOperationTracing(_tracing, endpoint, MessagingOperation.Settle, "commit").WrapSettlement(static _ => default);
@@ -67,28 +72,46 @@ public class ConsumeTracingBenchmarks
         Array.Fill(_batch, _incoming);
     }
 
-    private ConsumePipelineBuilder Builder() => new ConsumePipelineBuilder(_provider.GetRequiredService<IServiceScopeFactory>(),
-            _provider.GetRequiredService<MessageTypeRegistry>(), new Serializer(), static (_, error, _) => ValueTask.FromException(error))
-        .Handler(_provider.GetRequiredService<HandlerRegistry>().GetHandler<Payload, Handler>());
+    private ConsumePipelineBuilder Builder()
+    {
+        return new ConsumePipelineBuilder(_provider.GetRequiredService<IServiceScopeFactory>(),
+                    _provider.GetRequiredService<MessageTypeRegistry>(), new Serializer(), static (_, error, _) => ValueTask.FromException(error))
+                .Handler(_provider.GetRequiredService<HandlerRegistry>().GetHandler<Payload, Handler>());
+    }
 
-    private ConsumePipelineBuilder BatchBuilder() => new(_provider.GetRequiredService<IServiceScopeFactory>(),
-        _provider.GetRequiredService<MessageTypeRegistry>(), new Serializer(), static (_, error, _) => ValueTask.FromException(error));
+    private ConsumePipelineBuilder BatchBuilder()
+    {
+        return new(_provider.GetRequiredService<IServiceScopeFactory>(),
+                _provider.GetRequiredService<MessageTypeRegistry>(), new Serializer(), static (_, error, _) => ValueTask.FromException(error));
+    }
 
     [Benchmark(Baseline = true)]
     [BenchmarkCategory("Single")]
-    public ValueTask<Disposition> NativeDelivery() => _baseline.ProcessAsync(_incoming);
+    public ValueTask<Disposition> NativeDelivery()
+    {
+        return _baseline.ProcessAsync(_incoming);
+    }
 
     [Benchmark]
     [BenchmarkCategory("Single")]
-    public ValueTask<Disposition> TracedNativeDelivery() => _traced.ProcessAsync(_incoming);
+    public ValueTask<Disposition> TracedNativeDelivery()
+    {
+        return _traced.ProcessAsync(_incoming);
+    }
 
     [Benchmark(Baseline = true)]
     [BenchmarkCategory("Batch")]
-    public ValueTask NativeBatch() => _batchBaseline.ProcessBatchAsync(_batch, _dispositions);
+    public ValueTask NativeBatch()
+    {
+        return _batchBaseline.ProcessBatchAsync(_batch, _dispositions);
+    }
 
     [Benchmark]
     [BenchmarkCategory("Batch")]
-    public ValueTask TracedNativeBatch() => _batchTraced.ProcessBatchAsync(_batch, _dispositions);
+    public ValueTask TracedNativeBatch()
+    {
+        return _batchTraced.ProcessBatchAsync(_batch, _dispositions);
+    }
 
     [GlobalCleanup]
     public void Cleanup()
@@ -100,41 +123,91 @@ public class ConsumeTracingBenchmarks
 
     private sealed class Incoming
     {
-        internal byte[] TraceParent { get; } = "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01"u8.ToArray();
-        internal byte[] Type { get; } = "benchmark.payload;v=1"u8.ToArray();
-        internal byte[] Id { get; } = "message"u8.ToArray();
+        internal byte[] TraceParent
+        {
+            get;
+        } = "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01"u8.ToArray();
+
+        internal byte[] Type
+        {
+            get;
+        } = "benchmark.payload;v=1"u8.ToArray();
+
+        internal byte[] Id
+        {
+            get;
+        } = "message"u8.ToArray();
     }
+
     private readonly struct Binding : IMessageBinding<Incoming>
     {
-        public static ReadOnlySequence<byte> GetBody(Incoming message) => default;
-        public static int? GetDeliveryCount(Incoming message) => 1;
-        public static string? GetPartitionId(Incoming message) => "3";
-        public static void EnrichActivity(Activity activity, Incoming message) => activity.SetTag("messaging.kafka.offset", 42L);
+        public static ReadOnlySequence<byte> GetBody(Incoming message)
+        {
+            return default;
+        }
+
+        public static int? GetDeliveryCount(Incoming message)
+        {
+            return 1;
+        }
+
+        public static string? GetPartitionId(Incoming message)
+        {
+            return "3";
+        }
+
+        public static void EnrichActivity(Activity activity, Incoming message)
+        {
+            activity.SetTag("messaging.kafka.offset", 42L);
+        }
+
         public static bool TryGetHeader(Incoming message, string name, out WireString value)
         {
             value = name switch
             {
-                "traceparent" => new(message.TraceParent), "ce_type" => new(message.Type), "ce_id" => new(message.Id),
+                "traceparent" => new(message.TraceParent),
+                "ce_type" => new(message.Type),
+                "ce_id" => new(message.Id),
                 _ => default,
             };
             return !value.IsEmpty;
         }
     }
+
     public sealed class Payload;
+
     public sealed class BatchOptions;
+
     public sealed class BatchHandler : IBatchHandler<Payload>
     {
-        public ValueTask<BatchResult> HandleAsync(Batch<Payload> batch, CancellationToken cancellationToken) => new(BatchResult.Success);
+        public ValueTask<BatchResult> HandleAsync(Batch<Payload> batch, CancellationToken cancellationToken)
+        {
+            return new(BatchResult.Success);
+        }
     }
+
     public sealed class Handler : IHandler<Payload>
     {
-        public ValueTask HandleAsync(Payload message, MessageContext context, CancellationToken cancellationToken) => default;
+        public ValueTask HandleAsync(Payload message, MessageContext context, CancellationToken cancellationToken)
+        {
+            return default;
+        }
     }
+
     private sealed class Serializer : IMessageSerializer
     {
         private readonly Payload _payload = new();
+
         public string ContentType => "benchmark/cached";
-        public T Deserialize<T>(ReadOnlySequence<byte> source) => (T)(object)_payload;
-        public void Serialize<T>(T message, IBufferWriter<byte> destination) => throw new NotSupportedException();
+
+        public T Deserialize<T>(ReadOnlySequence<byte> source)
+        {
+            return (T)(object)_payload;
+        }
+
+        public void Serialize<T>(T message, IBufferWriter<byte> destination)
+        {
+            throw new NotSupportedException();
+        }
     }
 }

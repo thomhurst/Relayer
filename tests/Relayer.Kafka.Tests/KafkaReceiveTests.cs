@@ -20,7 +20,10 @@ public class KafkaReceiveTests
 {
     // Tests that leave the broker running share one broker and isolate their topics and groups.
     [ClassDataSource<KafkaHeaderSnapshotBroker>(Shared = SharedType.PerTestSession)]
-    public required KafkaHeaderSnapshotBroker Broker { get; init; }
+    public required KafkaHeaderSnapshotBroker Broker
+    {
+        get; init;
+    }
 
     [Test]
     public async Task Handled_observation_preserves_receiver_failure_and_releases_the_pending_read()
@@ -28,6 +31,7 @@ public class KafkaReceiveTests
         using var cancellation = new CancellationTokenSource();
         var control = new KafkaReceiveControl();
         var failure = new InvalidOperationException("receiver failed");
+
         try
         {
             var read = control.ReadHandledAsync(Task.FromException(failure), cancellation.Token)
@@ -38,7 +42,10 @@ public class KafkaReceiveTests
             await Assert.That(next.IsCompleted).IsTrue();
             await Assert.That(await next).IsEqualTo(42);
         }
-        finally { await cancellation.CancelAsync(); }
+        finally
+        {
+            await cancellation.CancelAsync();
+        }
     }
 
     [Test]
@@ -48,6 +55,7 @@ public class KafkaReceiveTests
         using var receiver = new CancellationTokenSource();
         await receiver.CancelAsync();
         var control = new KafkaReceiveControl();
+
         try
         {
             var read = control.ReadHandledAsync(Task.FromCanceled(receiver.Token), cancellation.Token)
@@ -56,7 +64,10 @@ public class KafkaReceiveTests
             await Assert.That(error!.CancellationToken).IsEqualTo(receiver.Token);
             await Assert.That(cancellation.IsCancellationRequested).IsFalse();
         }
-        finally { await cancellation.CancelAsync(); }
+        finally
+        {
+            await cancellation.CancelAsync();
+        }
     }
 
     [Test]
@@ -81,14 +92,20 @@ public class KafkaReceiveTests
     {
         var channelFailure = new InvalidOperationException("channel failed while receiver completed");
         var unobserved = new ConcurrentQueue<Exception>();
+
         void OnUnobserved(object? sender, UnobservedTaskExceptionEventArgs args)
         {
             foreach (var error in args.Exception.InnerExceptions)
+            {
                 if (error is ChannelClosedException && ReferenceEquals(error.InnerException, channelFailure))
+                {
                     unobserved.Enqueue(error);
+                }
+            }
         }
 
         TaskScheduler.UnobservedTaskException += OnUnobserved;
+
         try
         {
             await ExerciseFaultedHandledReadAsync(receiverStatus, channelFailure);
@@ -97,7 +114,10 @@ public class KafkaReceiveTests
             GC.WaitForPendingFinalizers();
             await Assert.That(unobserved.IsEmpty).IsTrue();
         }
-        finally { TaskScheduler.UnobservedTaskException -= OnUnobserved; }
+        finally
+        {
+            TaskScheduler.UnobservedTaskException -= OnUnobserved;
+        }
     }
 
     [Test]
@@ -105,6 +125,7 @@ public class KafkaReceiveTests
     {
         using var cancellation = new CancellationTokenSource();
         var control = new KafkaReceiveControl();
+
         try
         {
             var read = control.ReadHandledAsync(Task.CompletedTask, cancellation.Token)
@@ -112,7 +133,10 @@ public class KafkaReceiveTests
             await Assert.That(async () => await read).Throws<InvalidOperationException>()
                 .WithMessageContaining("stopped before handling the expected message");
         }
-        finally { await cancellation.CancelAsync(); }
+        finally
+        {
+            await cancellation.CancelAsync();
+        }
     }
 
     [Test]
@@ -203,7 +227,9 @@ public class KafkaReceiveTests
         await rawProducer.InitializeAsync(token);
         await rawProducer.ProduceAsync(new()
         {
-            Topic = source, Key = "customer-1"u8.ToArray(), Value = [],
+            Topic = source,
+            Key = "customer-1"u8.ToArray(),
+            Value = [],
             Headers = new Dekaf.Serialization.Headers().Add("ce_id", "empty-with-marker")
                 .Add("ce_type", "tests.kafka.receive;v=1").Add("traceparent", Creation)
                 .Add(KafkaSendState.TombstoneHeader, "true")
@@ -353,6 +379,7 @@ public class KafkaReceiveTests
             _ => Task.CompletedTask,
         };
         var read = control.ReadHandledAsync(receiver, CancellationToken.None);
+
         if (receiverStatus == TaskStatus.Canceled)
         {
             var error = await Assert.ThrowsAsync<OperationCanceledException>(() => read);
@@ -361,10 +388,15 @@ public class KafkaReceiveTests
         else
         {
             var error = await Assert.ThrowsAsync<InvalidOperationException>(() => read);
+
             if (receiverStatus == TaskStatus.Faulted)
+            {
                 await Assert.That(error).IsSameReferenceAs(receiverFailure);
+            }
             else
+            {
                 await Assert.That(error!.Message).Contains("stopped before handling the expected message");
+            }
         }
     }
 
@@ -386,12 +418,20 @@ public class KafkaReceiveTests
         using var meter = new System.Diagnostics.Metrics.MeterListener();
         meter.InstrumentPublished = (instrument, listener) =>
         {
-            if (instrument.Meter.Name == "Relayer" && instrument.Name == "relayer.circuit.state") listener.EnableMeasurementEvents(instrument);
+            if (instrument.Meter.Name == "Relayer" && instrument.Name == "relayer.circuit.state")
+            {
+                listener.EnableMeasurementEvents(instrument);
+            }
         };
         meter.SetMeasurementEventCallback<int>((_, state, tags, _) =>
         {
             foreach (var tag in tags)
-                if (tag.Key == "messaging.destination.name" && Equals(tag.Value, fixture.Destination)) states.Writer.TryWrite(state);
+            {
+                if (tag.Key == "messaging.destination.name" && Equals(tag.Value, fixture.Destination))
+                {
+                    states.Writer.TryWrite(state);
+                }
+            }
         });
         meter.Start();
         using var host = BuildHost(fixture.Bootstrap, fixture.Destination, control, circuitClock: clock, circuitRetry: retry);
@@ -399,7 +439,12 @@ public class KafkaReceiveTests
         var receiver = host.Services.GetRequiredKeyedService<KafkaProducerTransport>("events").Consumers[0];
         await fixture.Transport.StartAsync(token);
         var retainedOffset = permanentPoison ? 1L : 0L;
-        if (permanentPoison) await fixture.Transport.SendAsync(Message(fixture.Destination, 6), token);
+
+        if (permanentPoison)
+        {
+            await fixture.Transport.SendAsync(Message(fixture.Destination, 6), token);
+        }
+
         await fixture.Transport.SendAsync(Message(fixture.Destination, 5), token);
         await State(1);
         await fixture.Transport.SendAsync(Message(fixture.Destination, 3), token);
@@ -413,6 +458,7 @@ public class KafkaReceiveTests
             .SeekAsync(fixture.Destination, new TopicPartitionOffset(fixture.Destination, 0, retainedOffset), token);
         await Assert.That(receiver.Completion.IsCompleted).IsFalse();
         await Assert.That(control.CircuitAttempts).IsEqualTo(retry ? 2 : 1);
+
         if (stopOpen)
         {
             await host.StopAsync(token);
@@ -422,6 +468,7 @@ public class KafkaReceiveTests
             await Assert.That(await offsets.GetCommittedOffsetAsync(new(fixture.Destination, 0), token) is null or < 0).IsTrue();
             return;
         }
+
         clock.Recover();
         await State(2);
         await State(1);
@@ -444,7 +491,9 @@ public class KafkaReceiveTests
 
         async Task State(int expected)
         {
-            while (await states.Reader.ReadAsync(token) != expected) { }
+            while (await states.Reader.ReadAsync(token) != expected)
+            {
+            }
         }
     }
 
@@ -455,22 +504,37 @@ public class KafkaReceiveTests
         var token = timeout.Token;
         await Broker.Started.WaitAsync(token);
         var topic = TestContext.Current!.Isolation.GetIsolatedName("held").ToLowerInvariant();
+
         await using (var admin = new AdminClientBuilder().WithBootstrapServers(Broker.Bootstrap).Build())
+        {
             await admin.CreateTopicsAsync([new() { Name = topic, NumPartitions = 2, ReplicationFactor = 1 },
                 new() { Name = topic + ".dead-letter", NumPartitions = 1, ReplicationFactor = 1 }], cancellationToken: token);
+        }
+
         var heldControl = new KafkaReceiveControl { CircuitFailure = true };
         using var held = BuildHost(Broker.Bootstrap, topic, heldControl, circuitClock: new CircuitClock(), concurrency: 2);
         await held.StartAsync(token);
         var receiver = held.Services.GetRequiredKeyedService<KafkaProducerTransport>("events").Consumers[0];
         // The first record opens the circuit; both partitions then hold a record, so whichever moves is held.
         await using (var producer = await new ProducerBuilder<byte[], byte[]>().WithBootstrapServers(Broker.Bootstrap).BuildAsync(token))
+        {
             for (var partition = 0; partition < 2; partition++)
+            {
                 await producer.ProduceAsync(new()
                 {
-                    Topic = topic, Partition = partition, Key = [(byte)partition], Value = "{\"Number\":5}"u8.ToArray(),
+                    Topic = topic,
+                    Partition = partition,
+                    Key = [(byte)partition],
+                    Value = "{\"Number\":5}"u8.ToArray(),
                     Headers = new Dekaf.Serialization.Headers().Add("ce_id", "held-" + partition).Add("ce_type", "tests.kafka.receive;v=1"),
                 }, token);
-        while (Volatile.Read(ref heldControl.CircuitAttempts) == 0) await Task.Delay(20, token);
+            }
+        }
+
+        while (Volatile.Read(ref heldControl.CircuitAttempts) == 0)
+        {
+            await Task.Delay(20, token);
+        }
 
         // A second member takes one partition, revoking it from the held lane.
         var ownerControl = new KafkaReceiveControl();
@@ -486,33 +550,73 @@ public class KafkaReceiveTests
         await owner.StopAsync(token);
     }
 
-    private static string Topic() => TestContext.Current!.Isolation.GetIsolatedName("receive").ToLowerInvariant();
+    private static string Topic()
+    {
+        return TestContext.Current!.Isolation.GetIsolatedName("receive").ToLowerInvariant();
+    }
 
     internal sealed class CircuitClock : TimeProvider
     {
         private ManualTimer? _recovery;
+
         public override ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period)
-            => new ManualTimer(this, callback, state);
-        internal void Recover() => (_recovery ?? throw new InvalidOperationException("No recovery is scheduled.")).Fire();
+        {
+            return new ManualTimer(this, callback, state);
+        }
+
+        internal void Recover()
+        {
+            (_recovery ?? throw new InvalidOperationException("No recovery is scheduled.")).Fire();
+        }
+
         private sealed class ManualTimer(CircuitClock clock, TimerCallback callback, object? state) : ITimer
         {
             private bool _disposed;
+
             public bool Change(TimeSpan dueTime, TimeSpan period)
             {
-                if (_disposed) return false;
-                if (dueTime != Timeout.InfiniteTimeSpan && period == Timeout.InfiniteTimeSpan) clock._recovery = this;
+                if (_disposed)
+                {
+                    return false;
+                }
+
+                if (dueTime != Timeout.InfiniteTimeSpan && period == Timeout.InfiniteTimeSpan)
+                {
+                    clock._recovery = this;
+                }
+
                 return true;
             }
-            public void Dispose() => _disposed = true;
-            public ValueTask DisposeAsync() { Dispose(); return default; }
-            internal void Fire() { if (!_disposed) callback(state); }
+
+            public void Dispose()
+            {
+                _disposed = true;
+            }
+
+            public ValueTask DisposeAsync()
+            {
+                Dispose();
+                return default;
+            }
+
+            internal void Fire()
+            {
+                if (!_disposed)
+                {
+                    callback(state);
+                }
+            }
         }
     }
 
     private const string Creation = "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01";
-    private static OutgoingMessage Message(string topic, int number) => new(topic, Encoding.UTF8.GetBytes($"{{\"Number\":{number}}}"),
-        new KeyValuePair<string, WireString>[] { new("ce_id", new("record-" + number)), new("ce_type", new("tests.kafka.receive;v=1")),
+
+    private static OutgoingMessage Message(string topic, int number)
+    {
+        return new(topic, Encoding.UTF8.GetBytes($"{{\"Number\":{number}}}"),
+                new KeyValuePair<string, WireString>[] { new("ce_id", new("record-" + number)), new("ce_type", new("tests.kafka.receive;v=1")),
             new("traceparent", new(Creation)), new("tracestate", new("tenant=original")) }, new WireString("customer-1"));
+    }
 
     private static IHost BuildHost(string bootstrap, string destination, KafkaReceiveControl control, bool missingDeadLetter = false,
         bool healthySibling = false, CircuitClock? circuitClock = null, bool circuitRetry = false, int concurrency = 1)
@@ -526,7 +630,12 @@ public class KafkaReceiveTests
         });
         builder.Services.Configure<HostOptions>(options => options.BackgroundServiceExceptionBehavior = BackgroundServiceExceptionBehavior.Ignore);
         builder.Services.AddSingleton(control);
-        if (circuitClock is not null) builder.Services.AddSingleton<TimeProvider>(circuitClock);
+
+        if (circuitClock is not null)
+        {
+            builder.Services.AddSingleton<TimeProvider>(circuitClock);
+        }
+
         builder.Services.AddRelayer(relayer =>
         {
             relayer.AddMessageTypesFromThisAssembly();
@@ -545,31 +654,42 @@ public class KafkaReceiveTests
                 {
                     consumer.Options.Group = destination;
                     consumer.Concurrency(concurrency);
+
                     if (circuitClock is not null)
                     {
-                        consumer.Options.CircuitBreaker = new() { MinimumThroughput = 1 };
+                        consumer.Options.CircuitBreaker = new()
+                        {
+                            MinimumThroughput = 1
+                        };
                         // Expiry fails the run. A held record must leave a stopping lane long before it, within the test deadline.
                         consumer.Options.Processing = new()
                         {
-                            Ordering = PartitionedProcessingOrder.Key, MaxConcurrentHandlersPerPartition = concurrency,
-                            CommitPolicy = PartitionCommitPolicy.CommitCompletedPeriodically, StopTimeout = TimeSpan.FromMinutes(1),
+                            Ordering = PartitionedProcessingOrder.Key,
+                            MaxConcurrentHandlersPerPartition = concurrency,
+                            CommitPolicy = PartitionCommitPolicy.CommitCompletedPeriodically,
+                            StopTimeout = TimeSpan.FromMinutes(1),
                         };
                     }
+
                     consumer.Failures(new()
                     {
-                        RetryDelays = circuitClock is null || circuitRetry ? new[] { TimeSpan.Zero } : [], Jitter = 0,
+                        RetryDelays = circuitClock is null || circuitRetry ? new[] { TimeSpan.Zero } : [],
+                        Jitter = 0,
                         DeadLetterEndpoint = missingDeadLetter ? destination + ".missing" : null,
                         // Only missing-topic scenarios need a short failure-injection deadline.
                         CopyTimeout = missingDeadLetter ? TimeSpan.FromSeconds(1) : new FailureOptions().CopyTimeout,
                     });
                     consumer.Handler<KafkaReceiveHandler>();
                 });
+
                 if (healthySibling)
+                {
                     kafka.Consume(destination, consumer =>
                     {
                         consumer.Options.Group = destination + ".sibling";
                         consumer.Handler<KafkaReceiveHandler>();
                     });
+                }
             });
         });
         return builder.Build();
@@ -578,11 +698,23 @@ public class KafkaReceiveTests
 
 [Message("tests.kafka.receive")]
 public sealed record KafkaReceiveMessage(int Number);
+
 public sealed class KafkaReceiveControl
 {
-    internal TaskCompletionSource Entered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
-    internal TaskCompletionSource Release { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
-    internal Channel<int> Handled { get; } = Channel.CreateUnbounded<int>();
+    internal TaskCompletionSource Entered
+    {
+        get;
+    } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+    internal TaskCompletionSource Release
+    {
+        get;
+    } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+    internal Channel<int> Handled
+    {
+        get;
+    } = Channel.CreateUnbounded<int>();
     internal int FirstAttempts;
     internal volatile bool CircuitFailure;
     internal int CircuitAttempts;
@@ -592,21 +724,28 @@ public sealed class KafkaReceiveControl
     {
         using var readCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         var read = Handled.Reader.ReadAsync(readCancellation.Token).AsTask();
+
         try
         {
             await Task.WhenAny(read, receiverCompletion);
+
             if (receiverCompletion.IsCompleted)
             {
                 await receiverCompletion;
                 throw new InvalidOperationException("Kafka receiver stopped before handling the expected message.");
             }
+
             cancellationToken.ThrowIfCancellationRequested();
             return await read;
         }
         finally
         {
             readCancellation.Cancel();
-            try { await read; }
+
+            try
+            {
+                await read;
+            }
             catch (Exception error) when (error is OperationCanceledException or ChannelClosedException)
             {
                 // Observe the losing read without replacing the receiver's exception or cancellation.
@@ -614,26 +753,43 @@ public sealed class KafkaReceiveControl
         }
     }
 }
+
 public sealed class KafkaReceiveHandler(KafkaReceiveControl control) : IHandler<KafkaReceiveMessage>
 {
     public async ValueTask HandleAsync(KafkaReceiveMessage message, MessageContext context, CancellationToken cancellationToken)
     {
         control.LastFeature = context.Kafka();
+
         if (message.Number == 1 && Interlocked.Increment(ref control.FirstAttempts) == 1)
         {
             control.Entered.SetResult();
             await control.Release.Task.WaitAsync(cancellationToken);
             throw new InvalidOperationException("retry me");
         }
-        if (message.Number == 6) throw new MessageEnvelopeException("permanent poison");
+
+        if (message.Number == 6)
+        {
+            throw new MessageEnvelopeException("permanent poison");
+        }
+
         if (message.Number == 5)
         {
             Interlocked.Increment(ref control.CircuitAttempts);
-            if (control.CircuitFailure) throw new InvalidOperationException("dependency unavailable");
+
+            if (control.CircuitFailure)
+            {
+                throw new InvalidOperationException("dependency unavailable");
+            }
         }
-        if (message.Number == 2) throw new InvalidOperationException("poison record");
+
+        if (message.Number == 2)
+        {
+            throw new InvalidOperationException("poison record");
+        }
+
         control.Handled.Writer.TryWrite(message.Number);
     }
 }
+
 [JsonSerializable(typeof(KafkaReceiveMessage))]
 internal partial class KafkaReceiveJson : JsonSerializerContext;

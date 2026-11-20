@@ -6,11 +6,22 @@ namespace Relayer.Transports;
 public interface IRelayerInfrastructure
 {
     /// <summary>The explicitly registered wire identities.</summary>
-    MessageTypeRegistry MessageTypes { get; }
+    MessageTypeRegistry MessageTypes
+    {
+        get;
+    }
+
     /// <summary>The source-generated handler descriptors.</summary>
-    HandlerRegistry Handlers { get; }
+    HandlerRegistry Handlers
+    {
+        get;
+    }
+
     /// <summary>The explicitly registered message upgrades.</summary>
-    UpcasterRegistry Upcasters { get; }
+    UpcasterRegistry Upcasters
+    {
+        get;
+    }
 
     /// <summary>Declares a named transport. Transport packages wrap this method in typed extension methods.</summary>
     IRelayerBuilder AddTransport<TTransportOptions, TConsumerOptions>(string name,
@@ -35,5 +46,7 @@ public static class RelayerInfrastructureExtensions
         string name, Action<TransportBuilder<TTransportOptions, TConsumerOptions>> configure)
         where TTransportOptions : class, new()
         where TConsumerOptions : class, new()
-        => builder.Infrastructure().AddTransport(name, configure);
+    {
+        return builder.Infrastructure().AddTransport(name, configure);
+    }
 }

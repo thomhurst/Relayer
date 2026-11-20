@@ -16,8 +16,14 @@ public class PendingReadBarrierTests
         var awaiter = new PendingReadBarrier(new ValueTask<byte>(source, 0), entered.Writer).GetAwaiter();
         var resumed = false;
 
-        if (unsafeContinuation) awaiter.UnsafeOnCompleted(() => resumed = true);
-        else awaiter.OnCompleted(() => resumed = true);
+        if (unsafeContinuation)
+        {
+            awaiter.UnsafeOnCompleted(() => resumed = true);
+        }
+        else
+        {
+            awaiter.OnCompleted(() => resumed = true);
+        }
 
         await Assert.That(source.EntryVisibleDuringRegistration).IsFalse();
         await Assert.That(entered.Reader.TryRead(out _)).IsTrue();
@@ -39,10 +45,27 @@ public class PendingReadBarrierTests
     private sealed class ObservedRead(ChannelReader<byte> entered) : IValueTaskSource<byte>
     {
         private ManualResetValueTaskSourceCore<byte> _source;
-        public bool EntryVisibleDuringRegistration { get; private set; }
-        public void Complete(byte value) => _source.SetResult(value);
-        public byte GetResult(short token) => _source.GetResult(token);
-        public ValueTaskSourceStatus GetStatus(short token) => _source.GetStatus(token);
+
+        public bool EntryVisibleDuringRegistration
+        {
+            get; private set;
+        }
+
+        public void Complete(byte value)
+        {
+            _source.SetResult(value);
+        }
+
+        public byte GetResult(short token)
+        {
+            return _source.GetResult(token);
+        }
+
+        public ValueTaskSourceStatus GetStatus(short token)
+        {
+            return _source.GetStatus(token);
+        }
+
         public void OnCompleted(Action<object?> continuation, object? state, short token,
             ValueTaskSourceOnCompletedFlags flags)
         {

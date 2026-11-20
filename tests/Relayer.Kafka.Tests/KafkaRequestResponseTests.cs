@@ -51,6 +51,7 @@ public class KafkaRequestResponseTests
         });
         using var host = hostBuilder.Build();
         await host.StartAsync(token);
+
         try
         {
             using var scope = host.Services.CreateScope();
@@ -59,16 +60,23 @@ public class KafkaRequestResponseTests
             var responses = await Task.WhenAll(pending);
             await Assert.That(responses.Select(response => response.Value).SequenceEqual(Enumerable.Range(0, 8))).IsTrue();
         }
-        finally { await host.StopAsync(token); }
+        finally
+        {
+            await host.StopAsync(token);
+        }
     }
 }
 
 [Message("tests.kafka.request")]
 public sealed record KafkaRequest(int Value);
+
 [Message("tests.kafka.response")]
 public sealed record KafkaResponse(int Value);
+
 public sealed class KafkaRequestHandler : IHandler<KafkaRequest>
 {
-    public ValueTask HandleAsync(KafkaRequest message, MessageContext context, CancellationToken cancellationToken) =>
-        context.ReplyAsync(new KafkaResponse(message.Value), cancellationToken);
+    public ValueTask HandleAsync(KafkaRequest message, MessageContext context, CancellationToken cancellationToken)
+    {
+        return context.ReplyAsync(new KafkaResponse(message.Value), cancellationToken);
+    }
 }

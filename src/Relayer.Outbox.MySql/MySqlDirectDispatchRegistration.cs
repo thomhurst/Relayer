@@ -26,11 +26,19 @@ public static partial class MySqlOutboxServiceCollectionExtensions
         ArgumentException.ThrowIfNullOrWhiteSpace(storeName);
         ArgumentNullException.ThrowIfNull(dataSource);
         _ = MySqlDirectDispatcher.ValidateDataSource(dataSource);
+
         if (services.Any(descriptor => descriptor.ServiceType == typeof(MySqlDirectDispatcher) && Equals(descriptor.ServiceKey, storeName)))
+        {
             throw new InvalidOperationException($"Direct outbox dispatch store '{storeName}' is already registered.");
+        }
+
         dispatchOptions ??= new();
+
         if (dispatchOptions.QueueCapacity is <= 0 or int.MaxValue || dispatchOptions.BatchSize <= 0 || dispatchOptions.ClaimDuration <= TimeSpan.Zero)
+        {
             throw new ArgumentOutOfRangeException(nameof(dispatchOptions), "QueueCapacity and BatchSize must be positive, QueueCapacity must be below Int32.MaxValue, and ClaimDuration must be positive.");
+        }
+
         storeOptions ??= new();
         var snapshot = new MySqlOutboxOptions { MaxDispatchAttempts = storeOptions.MaxDispatchAttempts, TablePrefix = storeOptions.TablePrefix, Lanes = storeOptions.Lanes };
         _ = MySqlOutboxSchema.CreateScript(snapshot);
@@ -66,8 +74,17 @@ public static partial class MySqlOutboxServiceCollectionExtensions
     private static T Read<T>(IConfiguration configuration, string key, T fallback) where T : IParsable<T>
     {
         var value = configuration[key];
-        if (value is null) return fallback;
-        if (T.TryParse(value, CultureInfo.InvariantCulture, out var parsed)) return parsed;
+
+        if (value is null)
+        {
+            return fallback;
+        }
+
+        if (T.TryParse(value, CultureInfo.InvariantCulture, out var parsed))
+        {
+            return parsed;
+        }
+
         throw new OptionsValidationException(Options.DefaultName, typeof(MySqlDirectDispatchOptions), [$"{key}: '{value}' is invalid."]);
     }
 
@@ -82,9 +99,14 @@ public static partial class MySqlOutboxServiceCollectionExtensions
         protected override MySqlDirectDispatchOptions CreateInstance(string name)
         {
             foreach (var setting in settings)
-                if (setting.Name == name) return setting.Options;
+            {
+                if (setting.Name == name)
+                {
+                    return setting.Options;
+                }
+            }
+
             return new();
         }
     }
-
 }

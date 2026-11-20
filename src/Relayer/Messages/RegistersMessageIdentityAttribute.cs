@@ -10,5 +10,8 @@ namespace Relayer;
 public sealed class RegistersMessageIdentityAttribute(string typeParameterName) : Attribute
 {
     /// <summary>The name of the registered method type parameter.</summary>
-    public string TypeParameterName { get; } = typeParameterName;
+    public string TypeParameterName
+    {
+        get;
+    } = typeParameterName;
 }

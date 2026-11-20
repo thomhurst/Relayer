@@ -54,63 +54,135 @@ public sealed class FailurePipeline
         _retries = _options.RetryDelays?.ToArray() ??
             [TimeSpan.FromMilliseconds(100), TimeSpan.FromMilliseconds(500), TimeSpan.FromSeconds(1)];
         _redeliveries = _options.RedeliveryDelays.ToArray();
+
         if (!double.IsFinite(_options.Jitter) || _options.Jitter < 0 || _options.Jitter > 1)
+        {
             throw new ArgumentOutOfRangeException(nameof(options), "Jitter must be between zero and one.");
+        }
+
         if (_copyTimeout <= TimeSpan.Zero || _copyTimeout.TotalMilliseconds > uint.MaxValue - 1)
+        {
             throw new ArgumentOutOfRangeException(nameof(options), "CopyTimeout must be positive and fit a CancellationTokenSource timer.");
+        }
+
         foreach (var delay in _retries)
+        {
             if (delay < TimeSpan.Zero || delay.TotalMilliseconds > uint.MaxValue - 1)
+            {
                 throw new ArgumentOutOfRangeException(nameof(options), "RetryDelays must be non-negative and fit a timer.");
+            }
+        }
+
         foreach (var delay in _redeliveries)
+        {
             if (delay < TimeSpan.Zero || delay > DateTimeOffset.MaxValue - _time.GetUtcNow())
+            {
                 throw new ArgumentOutOfRangeException(nameof(options), "RedeliveryDelays must be non-negative and fit a delivery timestamp.");
+            }
+        }
 
         ITransport? selected = null;
+
         foreach (var transport in services.GetServices<ITransport>())
         {
-            if (transport.Name != transportName) continue;
-            if (selected is not null) throw Invalid("ITransport", "Register exactly one adapter for this transport name.");
+            if (transport.Name != transportName)
+            {
+                continue;
+            }
+
+            if (selected is not null)
+            {
+                throw Invalid("ITransport", "Register exactly one adapter for this transport name.");
+            }
+
             selected = transport;
         }
+
         _transport = selected ?? throw Invalid("ITransport", "Register a named ITransport adapter.");
         var failures = new List<string>();
         var cache = services.GetRequiredService<EndpointCapabilityCache>();
         var validator = new EndpointCapabilityValidator([_transport], failures, cache);
         var capabilities = validator.GetCapabilities(_transport, source);
-        if (failures.Count != 0) throw new InvalidOperationException(string.Join(Environment.NewLine, failures));
-        if (capabilities is null) throw Invalid("TransportCapabilities", "Return a valid endpoint capability declaration.");
+
+        if (failures.Count != 0)
+        {
+            throw new InvalidOperationException(string.Join(Environment.NewLine, failures));
+        }
+
+        if (capabilities is null)
+        {
+            throw Invalid("TransportCapabilities", "Return a valid endpoint capability declaration.");
+        }
+
         _capabilities = capabilities;
         _nativeDeadLetter = capabilities.DeadLetter;
+
         if (!_nativeDeadLetter)
         {
             if (string.IsNullOrWhiteSpace(_options.DeadLetterEndpoint) || copy is null)
+            {
                 throw Invalid("DeadLetter", "Enable native DeadLetter with error metadata, or configure DeadLetterEndpoint and a message copy executor.");
+            }
+
             _deadLetterMaxBytes = validator.GetCapabilities(_transport, _options.DeadLetterEndpoint)?.MaxMessageBytes;
         }
+
         _paths = new RedeliveryPath[_redeliveries.Length];
-        for (var i = 0; i < _paths.Length; i++) _paths[i] = ResolveRedelivery(_redeliveries[i]);
-        if (failures.Count != 0) throw new InvalidOperationException(string.Join(Environment.NewLine, failures));
+
+        for (var i = 0; i < _paths.Length; i++)
+        {
+            _paths[i] = ResolveRedelivery(_redeliveries[i]);
+        }
+
+        if (failures.Count != 0)
+        {
+            throw new InvalidOperationException(string.Join(Environment.NewLine, failures));
+        }
         // Compose direct-send routes before receives can resolve their scoped sender.
         services.GetRequiredService<SenderPool>().Enable();
 
-        InvalidOperationException Invalid(string capability, string remedy) => new(
-            $"Consumer '{consumer}' from '{source}' on transport '{transportName}': {capability} is unavailable. {remedy}");
+        InvalidOperationException Invalid(string capability, string remedy)
+        {
+            return new(
+                        $"Consumer '{consumer}' from '{source}' on transport '{transportName}': {capability} is unavailable. {remedy}");
+        }
     }
 
     internal void ValidateSettlement(Disposition disposition)
     {
-        if (disposition.Kind == DispositionKind.Redeliver) ResolveRedelivery(disposition.Delay);
+        if (disposition.Kind == DispositionKind.Redeliver)
+        {
+            ResolveRedelivery(disposition.Delay);
+        }
     }
 
     private RedeliveryPath ResolveRedelivery(TimeSpan delay)
     {
         if (delay > DateTimeOffset.MaxValue - _time.GetUtcNow())
+        {
             throw new ArgumentOutOfRangeException(nameof(delay), "The retry delay must fit a delivery timestamp.");
-        if (_capabilities.MaxRedeliveryDelay is { } native && delay <= native) return RedeliveryPath.Native;
+        }
+
+        if (_capabilities.MaxRedeliveryDelay is { } native && delay <= native)
+        {
+            return RedeliveryPath.Native;
+        }
+
         if (_nativeRedeliveryOnly)
+        {
             throw new InvalidOperationException($"Consumer '{_consumer}' from '{_source}' on transport '{_transport.Name}': redelivery delay {delay} exceeds native MaxRedeliveryDelay. In-memory retries must retain their group and admission credit; increase MaxRedeliveryDelay or shorten the delay. Copy and outbox redelivery fallbacks are unavailable.");
-        if (_copy is not null && _capabilities.MaxDeliveryDelay is { } scheduled && delay <= scheduled) return RedeliveryPath.Copy;
-        if (_copy is not null && _scheduler is not null) return RedeliveryPath.Outbox;
+        }
+
+        if (_copy is not null && _capabilities.MaxDeliveryDelay is { } scheduled && delay <= scheduled)
+        {
+            return RedeliveryPath.Copy;
+        }
+
+        if (_copy is not null && _scheduler is not null)
+        {
+            return RedeliveryPath.Outbox;
+        }
+
         throw new InvalidOperationException($"Consumer '{_consumer}' from '{_source}' on transport '{_transport.Name}': redelivery delay {delay} has no executor. Shorten the delay, enable native redelivery/scheduling, or configure a message copy executor and durable IFailureScheduler.");
     }
 
@@ -119,13 +191,17 @@ public sealed class FailurePipeline
     internal async ValueTask HandleSettlementAsync(DefaultMessageContext context, Disposition request)
     {
         context.CancellationToken.ThrowIfCancellationRequested();
+
         if (request.Kind == DispositionKind.Redeliver)
         {
             var path = ResolveRedelivery(request.Delay);
             // A manual retry is not an exception. Preserve prior error history without inventing a failure.
             var headers = FailureMetadata.SettlementHeaders(context, checked(context.Redeliveries + 1), maxBytes: path == RedeliveryPath.Native ? MetadataBudget(context) : null);
+
             if (path == RedeliveryPath.Native)
+            {
                 context.FailureDisposition = Disposition.Redeliver(request.Delay, headers);
+            }
             else
             {
                 await CopyAsync(context, _source, _time.GetUtcNow() + request.Delay, headers,
@@ -136,8 +212,11 @@ public sealed class FailurePipeline
         else
         {
             var headers = FailureMetadata.SettlementHeaders(context, context.Redeliveries, request.DeadLetter.Reason, _nativeDeadLetter ? MetadataBudget(context, System.Text.Encoding.UTF8.GetByteCount(request.DeadLetter.Reason)) : null);
+
             if (_nativeDeadLetter)
+            {
                 context.FailureDisposition = Disposition.DeadLettered(new(request.DeadLetter.Reason, headers: headers));
+            }
             else
             {
                 await CopyAsync(context, _options.DeadLetterEndpoint!, null, headers, false).ConfigureAwait(false);
@@ -146,46 +225,73 @@ public sealed class FailurePipeline
         }
     }
 
-    internal void Record(DefaultMessageContext context, Exception error) => FailureMetadata.Record(context, error, _consumer, _time);
-    internal bool CanRetry(int retry) => retry < _retries.Length;
+    internal void Record(DefaultMessageContext context, Exception error)
+    {
+        FailureMetadata.Record(context, error, _consumer, _time);
+    }
+
+    internal bool CanRetry(int retry)
+    {
+        return retry < _retries.Length;
+    }
+
     internal ValueTask WaitRetryAsync(int retry, CancellationToken cancellationToken)
     {
         var delay = Jitter(_retries[retry]);
         return delay == TimeSpan.Zero ? ValueTask.CompletedTask : new(Task.Delay(delay, _time, cancellationToken));
     }
-    private TimeSpan Jitter(TimeSpan delay) => _options.Jitter == 0 || delay == TimeSpan.Zero ? delay
-        : TimeSpan.FromTicks((long)(delay.Ticks * (1 - Random.Shared.NextDouble() * _options.Jitter)));
+
+    private TimeSpan Jitter(TimeSpan delay)
+    {
+        return _options.Jitter == 0 || delay == TimeSpan.Zero ? delay
+                : TimeSpan.FromTicks((long)(delay.Ticks * (1 - Random.Shared.NextDouble() * _options.Jitter)));
+    }
 
     [RuntimeAsyncMethodGeneration(false)]
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
     internal async ValueTask HandleAsync(DefaultMessageContext context, Exception error, FailureAction action)
     {
         context.CancellationToken.ThrowIfCancellationRequested();
-        if (!Enum.IsDefined(action)) throw new InvalidOperationException("IFailureClassifier returned an undefined FailureAction.");
+
+        if (!Enum.IsDefined(action))
+        {
+            throw new InvalidOperationException("IFailureClassifier returned an undefined FailureAction.");
+        }
+
         if (action == FailureAction.Discard)
         {
             context.FailureDisposition = Disposition.Complete;
             return;
         }
+
         var redelivery = context.Redeliveries;
+
         if (action == FailureAction.Retry && redelivery < _paths.Length)
         {
             var headers = FailureMetadata.Headers(context, redelivery + 1, _paths[redelivery] == RedeliveryPath.Native ? MetadataBudget(context) : null);
             var delay = Jitter(_redeliveries[redelivery]);
+
             if (_paths[redelivery] == RedeliveryPath.Native)
+            {
                 context.FailureDisposition = Disposition.Redeliver(delay, headers);
+            }
             else
             {
                 await CopyAsync(context, _source, _time.GetUtcNow() + delay, headers,
                     _paths[redelivery] == RedeliveryPath.Outbox).ConfigureAwait(false);
                 context.FailureDisposition = Disposition.Complete;
             }
+
             return;
         }
+
         var description = FailureMetadata.Description(error);
         var deadHeaders = FailureMetadata.Headers(context, redelivery, _nativeDeadLetter ? MetadataBudget(context, System.Text.Encoding.UTF8.GetByteCount(description) + System.Text.Encoding.UTF8.GetByteCount("Processing failed")) : null);
+
         if (_nativeDeadLetter)
+        {
             context.FailureDisposition = Disposition.DeadLettered(new("Processing failed", description, deadHeaders));
+        }
         else
         {
             await CopyAsync(context, _options.DeadLetterEndpoint!, null, deadHeaders, false).ConfigureAwait(false);
@@ -200,36 +306,68 @@ public sealed class FailurePipeline
     {
         var original = _copy!(context);
         var headers = new List<KeyValuePair<string, WireString>>(original.Headers.Length + metadata.Length);
+
         foreach (var header in original.Headers.Span)
         {
             // A deliberately omitted history must not resurrect an oversized incoming value.
-            if (header.Key == FailureHeaders.History) continue;
+            if (header.Key == FailureHeaders.History)
+            {
+                continue;
+            }
+
             var replaced = false;
+
             foreach (var replacement in metadata)
             {
-                if (header.Key != replacement.Key) continue;
+                if (header.Key != replacement.Key)
+                {
+                    continue;
+                }
+
                 replaced = true;
                 break;
             }
-            if (!replaced) headers.Add(header);
+
+            if (!replaced)
+            {
+                headers.Add(header);
+            }
         }
+
         headers.AddRange(metadata);
         FailureMetadata.FitCopyHistory(headers, original,
             destination == _source ? _capabilities.MaxMessageBytes : _deadLetterMaxBytes, context.FailureHistory);
         var copy = original.Forward(destination, headers.ToArray(), deliverAt);
-        if (schedule) copy.ValidateForOutbox();
+
+        if (schedule)
+        {
+            copy.ValidateForOutbox();
+        }
         // Fallback work is on the error path. Its timeout covers the whole durable operation.
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(context.CancellationToken);
         timeout.CancelAfter(_copyTimeout);
+
         if (schedule)
+        {
             await _scheduler!.ScheduleAsync(_transport.Name, copy, timeout.Token).ConfigureAwait(false);
+        }
         else
+        {
             await context.RedirectSend(_transport).SendAsync(copy, timeout.Token).ConfigureAwait(false);
+        }
+
         timeout.Token.ThrowIfCancellationRequested();
     }
 
-    private long? MetadataBudget(DefaultMessageContext context, int nativeFieldBytes = 0) =>
-        _capabilities.MaxMessageBytes is { } maximum ? Math.Max(0, maximum - context.Body.Length - nativeFieldBytes) : null;
+    private long? MetadataBudget(DefaultMessageContext context, int nativeFieldBytes = 0)
+    {
+        return _capabilities.MaxMessageBytes is { } maximum ? Math.Max(0, maximum - context.Body.Length - nativeFieldBytes) : null;
+    }
 
-    private enum RedeliveryPath { Native, Copy, Outbox }
+    private enum RedeliveryPath
+    {
+        Native,
+        Copy,
+        Outbox
+    }
 }

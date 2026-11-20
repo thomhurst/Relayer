@@ -4,7 +4,10 @@ namespace Relayer.Transports;
 public interface IOutboxEnlistment
 {
     /// <summary>Whether this scope owns an active outbox transaction or a selected pending unit of work.</summary>
-    bool IsActive { get; }
+    bool IsActive
+    {
+        get;
+    }
 
     /// <summary>Whether registered dispatch workers deliver future-due unordered rows from this outbox.</summary>
     bool SupportsScheduling => false;

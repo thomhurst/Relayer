@@ -10,8 +10,12 @@ public sealed class SagaDiagramBuilder
     public SagaDiagramBuilder State(string name, bool initial = false, bool final = false)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(name);
+
         if (!_states.TryAdd(name, new(name, initial, final)))
+        {
             throw new ArgumentException($"State '{name}' is already declared. Declare each state once.", nameof(name));
+        }
+
         return this;
     }
 
@@ -21,8 +25,12 @@ public sealed class SagaDiagramBuilder
         ArgumentException.ThrowIfNullOrWhiteSpace(from);
         ArgumentException.ThrowIfNullOrWhiteSpace(to);
         ArgumentException.ThrowIfNullOrWhiteSpace(trigger);
+
         if (!_transitions.Add(new(from, to, trigger)))
+        {
             throw new ArgumentException($"Transition '{from}' to '{to}' for '{trigger}' is already declared.", nameof(trigger));
+        }
+
         return this;
     }
 
@@ -30,19 +38,36 @@ public sealed class SagaDiagramBuilder
     public SagaDiagram Build()
     {
         var initialCount = 0;
+
         foreach (var state in _states.Values)
-            if (state.IsInitial) initialCount++;
+        {
+            if (state.IsInitial)
+            {
+                initialCount++;
+            }
+        }
+
         if (initialCount != 1)
+        {
             throw new InvalidOperationException("Declare exactly one initial state with State(name, initial: true).");
+        }
 
         foreach (var transition in _transitions)
         {
             if (!_states.TryGetValue(transition.From, out var source))
+            {
                 throw new InvalidOperationException($"Transition source '{transition.From}' is not declared. Add it with State(name).");
+            }
+
             if (!_states.ContainsKey(transition.To))
+            {
                 throw new InvalidOperationException($"Transition destination '{transition.To}' is not declared. Add it with State(name).");
+            }
+
             if (source.IsFinal)
+            {
                 throw new InvalidOperationException($"Final state '{source.Name}' cannot have outgoing transitions. Remove the transition or mark the state as non-final.");
+            }
         }
 
         var states = new List<SagaState>(_states.Values);
@@ -51,7 +76,12 @@ public sealed class SagaDiagramBuilder
         transitions.Sort(static (left, right) =>
         {
             var order = StringComparer.Ordinal.Compare(left.From, right.From);
-            if (order != 0) return order;
+
+            if (order != 0)
+            {
+                return order;
+            }
+
             order = StringComparer.Ordinal.Compare(left.To, right.To);
             return order != 0 ? order : StringComparer.Ordinal.Compare(left.Trigger, right.Trigger);
         });

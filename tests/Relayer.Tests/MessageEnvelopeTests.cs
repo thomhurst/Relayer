@@ -1,7 +1,7 @@
-using Relayer.Transports;
 using System.Diagnostics;
 using System.Globalization;
 using System.Text;
+using Relayer.Transports;
 
 namespace Relayer.Tests;
 
@@ -82,6 +82,7 @@ public class MessageEnvelopeTests
 
         await Assert.That(message.Values.ContainsKey(names.TraceState)).IsFalse();
         await Assert.That(message.Values.ContainsKey(names.TraceParent)).IsEqualTo(hasContext);
+
         if (hasContext)
         {
             await Assert.That(Get(new(message, names), names.TraceParent).EndsWith("-00", StringComparison.Ordinal)).IsTrue();
@@ -152,11 +153,11 @@ public class MessageEnvelopeTests
     [Arguments(true)]
     public async Task WireString_formats_unicode_into_caller_storage(bool utf8)
     {
-        const string text = "héllo 東京 😀";
-        var value = utf8 ? new WireString(Encoding.UTF8.GetBytes(text)) : new WireString(text);
+        const string Text = "héllo 東京 😀";
+        var value = utf8 ? new WireString(Encoding.UTF8.GetBytes(Text)) : new WireString(Text);
         var formatted = Format(value);
-        await Assert.That(formatted).IsEqualTo(text);
-        await Assert.That(value.ToString()).IsEqualTo(text);
+        await Assert.That(formatted).IsEqualTo(Text);
+        await Assert.That(value.ToString()).IsEqualTo(Text);
         await Assert.That(value.TryFormat(new char[2], out var written)).IsFalse();
         await Assert.That(written).IsEqualTo(0);
     }
@@ -193,15 +194,19 @@ public class MessageEnvelopeTests
         HeaderBuffer buffer, MessageEnvelopeMetadata metadata)
     {
         var count = 0;
+
         for (var i = 0; i < 1000; i++)
         {
             var headers = new MessageHeaders<NativeMessage, NativeBinding>(message, names);
+
             if (!headers.GetMessageType(MessageEnvelopeMode.Raw, new WireString("orders;v=1")).IsEmpty)
             {
                 count++;
             }
+
             envelope.Write<HeaderBuffer, BufferWriter>(buffer, metadata);
         }
+
         return count;
     }
 
@@ -211,18 +216,42 @@ public class MessageEnvelopeTests
         return value.TryFormat(buffer, out var written) ? new string(buffer[..written]) : "failed";
     }
 
-    private static string Get(MessageHeaders<NativeMessage, NativeBinding> headers, string name) =>
-        headers.TryGetValue(name, out var value) ? value.ToString() : throw new InvalidOperationException(name);
+    private static string Get(MessageHeaders<NativeMessage, NativeBinding> headers, string name)
+    {
+        return headers.TryGetValue(name, out var value) ? value.ToString() : throw new InvalidOperationException(name);
+    }
 
-    private static ActivityContext CreateContext() => new(ActivityTraceId.CreateRandom(), ActivitySpanId.CreateRandom(), ActivityTraceFlags.Recorded, "vendor=value");
+    private static ActivityContext CreateContext()
+    {
+        return new(ActivityTraceId.CreateRandom(), ActivitySpanId.CreateRandom(), ActivityTraceFlags.Recorded, "vendor=value");
+    }
 
     private sealed class NativeMessage(bool utf8)
     {
-        public Dictionary<string, WireString> Values { get; } = new(StringComparer.Ordinal);
-        public bool Utf8 { get; } = utf8;
-        public int ReadCount { get; set; }
-        public int WriteCount { get; set; }
-        public int RemoveCount { get; set; }
+        public Dictionary<string, WireString> Values
+        {
+            get;
+        } = new(StringComparer.Ordinal);
+
+        public bool Utf8
+        {
+            get;
+        } = utf8;
+
+        public int ReadCount
+        {
+            get; set;
+        }
+
+        public int WriteCount
+        {
+            get; set;
+        }
+
+        public int RemoveCount
+        {
+            get; set;
+        }
     }
 
     private readonly struct NativeBinding : IMessageHeaderReader<NativeMessage>, IMessageHeaderWriter<NativeMessage>
@@ -236,6 +265,7 @@ public class MessageEnvelopeTests
         public static void SetHeader(NativeMessage message, string name, ReadOnlySpan<char> value)
         {
             message.WriteCount++;
+
             if (message.Utf8)
             {
                 var bytes = new byte[Encoding.UTF8.GetByteCount(value)];
@@ -257,12 +287,21 @@ public class MessageEnvelopeTests
 
     private sealed class HeaderBuffer
     {
-        public char[] Buffer { get; } = new char[64];
+        public char[] Buffer
+        {
+            get;
+        } = new char[64];
     }
 
     private readonly struct BufferWriter : IMessageHeaderWriter<HeaderBuffer>
     {
-        public static void SetHeader(HeaderBuffer message, string name, ReadOnlySpan<char> value) => value.CopyTo(message.Buffer);
-        public static void RemoveHeader(HeaderBuffer message, string name) { }
+        public static void SetHeader(HeaderBuffer message, string name, ReadOnlySpan<char> value)
+        {
+            value.CopyTo(message.Buffer);
+        }
+
+        public static void RemoveHeader(HeaderBuffer message, string name)
+        {
+        }
     }
 }

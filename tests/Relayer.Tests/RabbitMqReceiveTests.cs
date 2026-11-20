@@ -32,15 +32,23 @@ public class RabbitMqReceiveTests
         await host.StartAsync(token);
         await host.Services.GetRequiredService<ITransport>().SendAsync(
             new("orders", "{\"Value\":42}"u8.ToArray(), Headers()), token);
+
         for (var i = 0; i < 4; i++)
+        {
             await Assert.That(await control.Values.Reader.ReadAsync(token)).IsEqualTo(42);
+        }
+
         await host.StopAsync(token);
         await Assert.That(attempts).IsEqualTo(4);
         await using var connection = await broker.Factory().CreateConnectionAsync(token);
         await using var channel = await connection.CreateChannelAsync(cancellationToken: token);
         await Assert.That((await channel.QueueDeclarePassiveAsync("orders", token)).MessageCount).IsEqualTo(0u);
         var dead = await channel.BasicGetAsync("orders.dead-letter", true, token);
-        if (recover) await Assert.That(dead).IsNull();
+
+        if (recover)
+        {
+            await Assert.That(dead).IsNull();
+        }
         else
         {
             await Assert.That(dead).IsNotNull();
@@ -100,7 +108,12 @@ public class RabbitMqReceiveTests
         // Repair the destination while the original remains owned by the live consumer.
         await channel.QueueDeclareAsync("orders.dead-letter", true, false, false, cancellationToken: token);
         BasicGetResult? poison;
-        while ((poison = await channel.BasicGetAsync("orders.dead-letter", true, token)) is null) await Task.Delay(10, token);
+
+        while ((poison = await channel.BasicGetAsync("orders.dead-letter", true, token)) is null)
+        {
+            await Task.Delay(10, token);
+        }
+
         await Assert.That(System.Text.Encoding.UTF8.GetString(poison.Body.Span)).IsEqualTo("bad-json");
         await transport.SendAsync(new("orders", "{\"Value\":42}"u8.ToArray(), Headers()), token);
         await Assert.That(await control.Values.Reader.ReadAsync(token)).IsEqualTo(42);
@@ -122,7 +135,11 @@ public class RabbitMqReceiveTests
             NativeCallback = context => current = context,
             Handle = async value =>
             {
-                if (value != 1) return;
+                if (value != 1)
+                {
+                    return;
+                }
+
                 var native = current!.Features.GetRequired<NativeMessage<RabbitMqDelivery>>();
                 await native.Message.Channel.BasicAckAsync(native.Message.Message.DeliveryTag, false, token);
                 native.Disposition = Disposition.SettledByHandler;
@@ -165,12 +182,18 @@ public class RabbitMqReceiveTests
         var consumer = new RabbitMqConsumer(declaration, options, (_, _) =>
         {
             var call = Interlocked.Increment(ref calls);
-            if (call == 1) throw new InvalidOperationException("copy failed");
+
+            if (call == 1)
+            {
+                throw new InvalidOperationException("copy failed");
+            }
+
             if (call == 3)
             {
                 redelivered.TrySetResult();
                 return new(finishRedelivery.Task);
             }
+
             succeeded.TrySetResult();
             return new(Disposition.Complete);
         }, tracing, clock);
@@ -178,6 +201,7 @@ public class RabbitMqReceiveTests
         await transport.StartAsync(token);
         await transport.SendAsync(new("backoff", "first"u8.ToArray(), Headers()), token);
         var timer = await clock.Timers.Reader.ReadAsync(token);
+
         try
         {
             await transport.SendAsync(new("backoff", "second"u8.ToArray(), Headers()), token);
@@ -186,7 +210,11 @@ public class RabbitMqReceiveTests
             await WaitAsync(() => Task.FromResult(consumer.ActiveCallbackCount == 1), token);
             await Assert.That(() => consumer.GetHealthState()).Throws<InvalidOperationException>();
         }
-        finally { timer.Fire(); }
+        finally
+        {
+            timer.Fire();
+        }
+
         try
         {
             await redelivered.Task.WaitAsync(token);
@@ -195,7 +223,11 @@ public class RabbitMqReceiveTests
             await WaitAsync(() => Task.FromResult(consumer.ActiveCallbackCount == 1), token);
             await Assert.That(consumer.GetHealthState()!.Value.IsIdle).IsFalse();
         }
-        finally { finishRedelivery.TrySetResult(Disposition.Complete); }
+        finally
+        {
+            finishRedelivery.TrySetResult(Disposition.Complete);
+        }
+
         await WaitAsync(() => Task.FromResult(consumer.GetHealthState()?.IsIdle == true), token);
         await Assert.That(consumer.Completion.IsCompleted).IsFalse();
         await transport.StopAsync(token);
@@ -203,7 +235,11 @@ public class RabbitMqReceiveTests
 
     private sealed class BackoffClock : TimeProvider
     {
-        internal Channel<BackoffTimer> Timers { get; } = Channel.CreateUnbounded<BackoffTimer>();
+        internal Channel<BackoffTimer> Timers
+        {
+            get;
+        } = Channel.CreateUnbounded<BackoffTimer>();
+
         public override ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period)
         {
             var timer = new BackoffTimer(callback, state);
@@ -211,12 +247,27 @@ public class RabbitMqReceiveTests
             return timer;
         }
     }
+
     private sealed class BackoffTimer(TimerCallback callback, object? state) : ITimer
     {
-        internal void Fire() => callback(state);
-        public bool Change(TimeSpan dueTime, TimeSpan period) => true;
-        public void Dispose() { }
-        public ValueTask DisposeAsync() => default;
+        internal void Fire()
+        {
+            callback(state);
+        }
+
+        public bool Change(TimeSpan dueTime, TimeSpan period)
+        {
+            return true;
+        }
+
+        public void Dispose()
+        {
+        }
+
+        public ValueTask DisposeAsync()
+        {
+            return default;
+        }
     }
 
     [Test]
@@ -280,10 +331,19 @@ public class RabbitMqReceiveTests
             Sample = (ref ActivityCreationOptions<ActivityContext> options) =>
             {
                 if (options.Name.StartsWith("process "))
+                {
                     sampler.TrySetResult(options.Tags?.First(tag => tag.Key == "messaging.destination.name").Value as string);
+                }
+
                 return ActivitySamplingResult.AllDataAndRecorded;
             },
-            ActivityStopped = activity => { if (activity.OperationName.StartsWith("ack ")) ack.TrySetResult(activity); },
+            ActivityStopped = activity =>
+            {
+                if (activity.OperationName.StartsWith("ack "))
+                {
+                    ack.TrySetResult(activity);
+                }
+            },
         };
         ActivitySource.AddActivityListener(listener);
         await host.StartAsync(token);
@@ -317,13 +377,25 @@ public class RabbitMqReceiveTests
                 if (options.Name is "process orders" or "ack orders")
                 {
                     Interlocked.Increment(ref samples);
+
                     foreach (var tag in options.Tags!)
                     {
-                        if (tag.Key == "messaging.destination.name" && !Equals(tag.Value, "orders")) invalidSamplerInput = true;
-                        if (tag.Key == "messaging.rabbitmq.destination.routing_key") invalidSamplerInput = true;
+                        if (tag.Key == "messaging.destination.name" && !Equals(tag.Value, "orders"))
+                        {
+                            invalidSamplerInput = true;
+                        }
+
+                        if (tag.Key == "messaging.rabbitmq.destination.routing_key")
+                        {
+                            invalidSamplerInput = true;
+                        }
                     }
                 }
-                else invalidSamplerInput = true;
+                else
+                {
+                    invalidSamplerInput = true;
+                }
+
                 return recorded ? ActivitySamplingResult.AllDataAndRecorded : ActivitySamplingResult.None;
             },
             ActivityStopped = activity => spans.Writer.TryWrite(activity),
@@ -331,31 +403,53 @@ public class RabbitMqReceiveTests
         ActivitySource.AddActivityListener(listener);
         // TUnit also listens globally. Dispose only this provider's source to exercise the
         // no-listener path without changing any process-wide listener configuration.
-        if (!recorded) tracing.Source.Dispose();
+        if (!recorded)
+        {
+            tracing.Source.Dispose();
+        }
+
         await host.StartAsync(token);
         await using var connection = await broker.Factory().CreateConnectionAsync(token);
         await using var channel = await connection.CreateChannelAsync(new(true, true), token);
         await channel.ExchangeDeclareAsync("events", "topic", cancellationToken: token);
         await channel.QueueBindAsync("orders", "events", "order.#", cancellationToken: token);
-        var properties = new BasicProperties { ContentType = "application/json", Headers = new Dictionary<string, object?>
-        { ["cloudEvents:id"] = "wildcard", ["cloudEvents:type"] = "rabbit.receive;v=1" } };
-        const int count = 512;
-        for (var i = 0; i < count; i++)
+        var properties = new BasicProperties
+        {
+            ContentType = "application/json",
+            Headers = new Dictionary<string, object?>
+            {
+                ["cloudEvents:id"] = "wildcard",
+                ["cloudEvents:type"] = "rabbit.receive;v=1"
+            }
+        };
+        const int Count = 512;
+
+        for (var i = 0; i < Count; i++)
+        {
             await channel.BasicPublishAsync("events", "order." + i, true, properties, "{\"Value\":42}"u8.ToArray(), token);
+        }
         // A passive declare on the publisher channel does not order consumer acknowledgements.
         // Wait for all handler callbacks, then stop drains the native settlements.
         var control = host.Services.GetRequiredService<RabbitMqReceiveControl>();
-        for (var i = 0; i < count; i++) await control.Values.Reader.ReadAsync(token);
+
+        for (var i = 0; i < Count; i++)
+        {
+            await control.Values.Reader.ReadAsync(token);
+        }
+
         await host.StopAsync(token);
-        await Assert.That(samples).IsEqualTo(recorded ? count * 2 : 0);
+        await Assert.That(samples).IsEqualTo(recorded ? Count * 2 : 0);
         await Assert.That(invalidSamplerInput).IsFalse();
+
         if (!recorded)
         {
             await Assert.That(spans.Reader.TryRead(out _)).IsFalse();
             return;
         }
+
         var processKeys = new HashSet<string>();
         var ackKeys = new HashSet<string>();
+
         while (spans.Reader.TryRead(out var span))
         {
             await Assert.That(span.GetTagItem("messaging.destination.name")).IsEqualTo("orders");
@@ -364,7 +458,8 @@ public class RabbitMqReceiveTests
             await Assert.That(span.GetTagItem("messaging.operation.type")).IsEqualTo(span.OperationName == "process orders" ? "process" : "settle");
             keys.Add((string)span.GetTagItem("messaging.rabbitmq.destination.routing_key")!);
         }
-        await Assert.That(processKeys.Count).IsEqualTo(count);
+
+        await Assert.That(processKeys.Count).IsEqualTo(Count);
         await Assert.That(ackKeys.SetEquals(processKeys)).IsTrue();
     }
 
@@ -385,10 +480,19 @@ public class RabbitMqReceiveTests
         {
             ShouldListenTo = source => ReferenceEquals(source, tracing.Source),
             Sample = static (ref ActivityCreationOptions<ActivityContext> _) => ActivitySamplingResult.AllDataAndRecorded,
-            ActivityStopped = activity => { if (activity.OperationName.StartsWith("nack ")) nacks.Writer.TryWrite(activity); },
+            ActivityStopped = activity =>
+            {
+                if (activity.OperationName.StartsWith("nack "))
+                {
+                    nacks.Writer.TryWrite(activity);
+                }
+            },
         };
         ActivitySource.AddActivityListener(listener);
-        await using var transport = new RabbitMqNativeTransport("native", new() { ConnectionFactory = broker.Factory() }, ["native.source"], tracing);
+        await using var transport = new RabbitMqNativeTransport("native", new()
+        {
+            ConnectionFactory = broker.Factory()
+        }, ["native.source"], tracing);
         var options = new RabbitMqConsumerOptions();
         var declaration = new ConsumerDefinition<RabbitMqConsumerOptions>("native.source", options, [], 1, 1, TimeSpan.Zero);
         var attempts = 0;
@@ -406,7 +510,12 @@ public class RabbitMqReceiveTests
         await Assert.That(dead.GetTagItem("messaging.rabbitmq.message.delivery_tag")).IsNotNull();
         await transport.StopAsync(token);
         BasicGetResult? result;
-        while ((result = await channel.BasicGetAsync("native.dead", true, token)) is null) await Task.Delay(10, token);
+
+        while ((result = await channel.BasicGetAsync("native.dead", true, token)) is null)
+        {
+            await Task.Delay(10, token);
+        }
+
         await Assert.That(System.Text.Encoding.UTF8.GetString(result.Body.Span)).IsEqualTo("unchanged");
         await Assert.That(requeued).IsTrue();
         await Assert.That(attempts).IsEqualTo(2);
@@ -444,6 +553,7 @@ public class RabbitMqReceiveTests
         await WaitAsync(async () => (await probe.CheckAsync(token)).Status == HealthStatus.Unhealthy, token);
         finish.TrySetResult();
         await Assert.That(await failedAck.Task.WaitAsync(token)).IsTypeOf<AlreadyClosedException>();
+
         if (!automaticRecovery)
         {
             await Assert.That(consumer.Completion.IsFaulted).IsTrue();
@@ -455,6 +565,7 @@ public class RabbitMqReceiveTests
 #endif
             return;
         }
+
         await Assert.That(consumer.Completion.IsCompleted).IsFalse();
         await Assert.That(host.Services.GetRequiredService<IHostApplicationLifetime>().ApplicationStopping.IsCancellationRequested).IsFalse();
         await broker.CommandAsync(["rabbitmqctl", "start_app"], token);
@@ -497,6 +608,7 @@ public class RabbitMqReceiveTests
         var consumer = transport.Consumers.Single();
         await WaitAsync(() => Task.FromResult(consumer.GetHealthState()?.IsIdle == true), token);
         await broker.CommandAsync(["rabbitmqctl", "stop_app"], token);
+
         if (!automaticRecovery)
         {
             await Assert.That(async () => await consumer.Completion.WaitAsync(token)).Throws<AlreadyClosedException>();
@@ -513,13 +625,22 @@ public class RabbitMqReceiveTests
             await Assert.That(await control.Values.Reader.ReadAsync(token)).IsEqualTo(42);
             await Assert.That(consumer.Completion.IsCompleted).IsFalse();
         }
+
 #if NET11_0_OR_GREATER
         if (!automaticRecovery)
+        {
             await Assert.That(async () => await host.StopAsync(token)).Throws<AlreadyClosedException>();
+        }
         else
 #endif
+        {
             await host.StopAsync(token);
-        if (automaticRecovery) await Assert.That(consumer.Completion.IsCompletedSuccessfully).IsTrue();
+        }
+
+        if (automaticRecovery)
+        {
+            await Assert.That(consumer.Completion.IsCompletedSuccessfully).IsTrue();
+        }
     }
 
     [Test]
@@ -550,57 +671,109 @@ public class RabbitMqReceiveTests
         await host.StopAsync(token);
     }
 
-    internal static IHost Host(ConnectionFactory factory, RabbitMqReceiveControl control, bool declareDeadLetter = true, RabbitMqClock? clock = null, int concurrency = 1, bool autoStart = true, bool secondConsumer = false, bool thirdConsumer = false) =>
-        new HostBuilder().ConfigureServices(services =>
-        {
-            services.AddSingleton(control);
-            if (clock is not null) services.AddSingleton<TimeProvider>(clock);
-            services.AddRelayerRabbitMqHealthProviders("rabbit");
-            services.AddRelayerHealthChecks(new RelayerHealthCheckOptions { ConsumerStallTimeout = TimeSpan.FromSeconds(30) });
-            services.AddRelayer(builder =>
-            {
-                builder.Infrastructure().MessageTypes.Add<RabbitMqReceivePayload>("rabbit.receive");
-                builder.UseJsonSerializer(RabbitMqReceiveJson.Default);
-                builder.RabbitMQ("rabbit", rabbit =>
+    internal static IHost Host(ConnectionFactory factory, RabbitMqReceiveControl control, bool declareDeadLetter = true, RabbitMqClock? clock = null, int concurrency = 1, bool autoStart = true, bool secondConsumer = false, bool thirdConsumer = false)
+    {
+        return new HostBuilder().ConfigureServices(services =>
                 {
-                    rabbit.TopologyMode = TopologyMode.Provision;
-                    rabbit.Options.Configure(options =>
-                    {
-                        options.ConnectionFactory = factory;
-                        options.AutoStartConsumers = autoStart;
-                        options.Queues.Add(new("orders"));
-                        if (declareDeadLetter) options.Queues.Add(new("orders.dead-letter"));
-                        if (secondConsumer) { options.Queues.Add(new("audit")); options.Queues.Add(new("audit.dead-letter")); }
-                        if (thirdConsumer) { options.Queues.Add(new("billing")); options.Queues.Add(new("billing.dead-letter")); }
-                    });
-                    if (secondConsumer) rabbit.Consume("audit", consumer => consumer.Handler<RabbitMqReceiveHandler>());
-                    rabbit.Consume("orders", consumer =>
-                    {
-                        consumer.Concurrency(concurrency);
-                        consumer.Options.ChannelOptions = new(false, false, consumerDispatchConcurrency: (ushort)concurrency);
-                        consumer.Options.PrefetchCount = (ushort)concurrency;
-                        consumer.Handler<RabbitMqReceiveHandler>();
-                    });
-                    if (thirdConsumer) rabbit.Consume("billing", consumer => consumer.Handler<RabbitMqReceiveHandler>());
-                });
-            });
-        }).Build();
+                    services.AddSingleton(control);
 
-    internal static KeyValuePair<string, WireString>[] Headers() => [new("cloudEvents:id", new("receive-id")),
+                    if (clock is not null)
+                    {
+                        services.AddSingleton<TimeProvider>(clock);
+                    }
+
+                    services.AddRelayerRabbitMqHealthProviders("rabbit");
+                    services.AddRelayerHealthChecks(new RelayerHealthCheckOptions { ConsumerStallTimeout = TimeSpan.FromSeconds(30) });
+                    services.AddRelayer(builder =>
+                    {
+                        builder.Infrastructure().MessageTypes.Add<RabbitMqReceivePayload>("rabbit.receive");
+                        builder.UseJsonSerializer(RabbitMqReceiveJson.Default);
+                        builder.RabbitMQ("rabbit", rabbit =>
+                        {
+                            rabbit.TopologyMode = TopologyMode.Provision;
+                            rabbit.Options.Configure(options =>
+                            {
+                                options.ConnectionFactory = factory;
+                                options.AutoStartConsumers = autoStart;
+                                options.Queues.Add(new("orders"));
+
+                                if (declareDeadLetter)
+                                {
+                                    options.Queues.Add(new("orders.dead-letter"));
+                                }
+
+                                if (secondConsumer)
+                                {
+                                    options.Queues.Add(new("audit"));
+                                    options.Queues.Add(new("audit.dead-letter"));
+                                }
+
+                                if (thirdConsumer)
+                                {
+                                    options.Queues.Add(new("billing"));
+                                    options.Queues.Add(new("billing.dead-letter"));
+                                }
+                            });
+
+                            if (secondConsumer)
+                            {
+                                rabbit.Consume("audit", consumer => consumer.Handler<RabbitMqReceiveHandler>());
+                            }
+
+                            rabbit.Consume("orders", consumer =>
+                            {
+                                consumer.Concurrency(concurrency);
+                                consumer.Options.ChannelOptions = new(false, false, consumerDispatchConcurrency: (ushort)concurrency);
+                                consumer.Options.PrefetchCount = (ushort)concurrency;
+                                consumer.Handler<RabbitMqReceiveHandler>();
+                            });
+
+                            if (thirdConsumer)
+                            {
+                                rabbit.Consume("billing", consumer => consumer.Handler<RabbitMqReceiveHandler>());
+                            }
+                        });
+                    });
+                }).Build();
+    }
+
+    internal static KeyValuePair<string, WireString>[] Headers()
+    {
+        return [new("cloudEvents:id", new("receive-id")),
         new("cloudEvents:type", new("rabbit.receive;v=1")), new("content-type", new("application/json")),
         new("traceparent", new("00-0123456789abcdef0123456789abcdef-0123456789abcdef-01"))];
+    }
+
     private static async Task WaitAsync(Func<Task<bool>> condition, CancellationToken token)
-    { while (!await condition()) await Task.Delay(10, token); }
+    {
+        while (!await condition())
+        {
+            await Task.Delay(10, token);
+        }
+    }
 }
 
 public sealed class RabbitMqReceiveControl
 {
-    public Channel<int> Values { get; } = Channel.CreateUnbounded<int>();
-    public Func<int, ValueTask>? Handle { get; init; }
-    public Action<MessageContext>? NativeCallback { get; set; }
+    public Channel<int> Values
+    {
+        get;
+    } = Channel.CreateUnbounded<int>();
+
+    public Func<int, ValueTask>? Handle
+    {
+        get; init;
+    }
+
+    public Action<MessageContext>? NativeCallback
+    {
+        get; set;
+    }
 }
+
 [Message("rabbit.receive")]
 public sealed record RabbitMqReceivePayload(int Value);
+
 public sealed class RabbitMqReceiveHandler(RabbitMqReceiveControl control) : IHandler<RabbitMqReceivePayload>
 {
     public ValueTask HandleAsync(RabbitMqReceivePayload message, MessageContext context, CancellationToken cancellationToken)
@@ -610,11 +783,21 @@ public sealed class RabbitMqReceiveHandler(RabbitMqReceiveControl control) : IHa
         return control.Handle?.Invoke(message.Value) ?? default;
     }
 }
+
 internal sealed class RabbitMqClock : TimeProvider
 {
     private long _ticks = new DateTimeOffset(2030, 1, 1, 0, 0, 0, TimeSpan.Zero).UtcTicks;
-    public override DateTimeOffset GetUtcNow() => new(Volatile.Read(ref _ticks), TimeSpan.Zero);
-    internal void Advance(TimeSpan by) => Interlocked.Add(ref _ticks, by.Ticks);
+
+    public override DateTimeOffset GetUtcNow()
+    {
+        return new(Volatile.Read(ref _ticks), TimeSpan.Zero);
+    }
+
+    internal void Advance(TimeSpan by)
+    {
+        Interlocked.Add(ref _ticks, by.Ticks);
+    }
 }
+
 [JsonSerializable(typeof(RabbitMqReceivePayload))]
 internal partial class RabbitMqReceiveJson : JsonSerializerContext;

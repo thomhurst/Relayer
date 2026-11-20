@@ -22,6 +22,7 @@ public class KafkaRecordSendTests(KafkaHeaderSnapshotBroker broker)
         var topic = TestContext.Current!.Isolation.GetIsolatedName("records").ToLowerInvariant();
         await using var admin = new AdminClientBuilder().WithBootstrapServers(broker.Bootstrap).Build();
         await admin.CreateTopicsAsync([new() { Name = topic, NumPartitions = 3, ReplicationFactor = 1 }], cancellationToken: token);
+
         try
         {
             var producer = await new ProducerBuilder<WireString?, (ReadOnlyMemory<byte> Body, Headers Headers)?>()
@@ -33,14 +34,23 @@ public class KafkaRecordSendTests(KafkaHeaderSnapshotBroker broker)
             var options = new SendOptions().Kafka(static h => h.Add("native", "yes"))
                 .KafkaRecord(record => record with { Partition = 2, Timestamp = timestamp });
             var message = new OutgoingMessage(topic, "value"u8.ToArray(), orderingKey: new("key"), options: options, isTombstone: tombstone);
-            if (batch) await transport.SendBatchAsync(new[] { message, message }, token);
-            else await transport.SendAsync(message, token);
+
+            if (batch)
+            {
+                await transport.SendBatchAsync(new[] { message, message }, token);
+            }
+            else
+            {
+                await transport.SendAsync(message, token);
+            }
+
             await using var consumer = new ConsumerBuilder<byte[], byte[]>().WithBootstrapServers(broker.Bootstrap)
                 .WithGroupId(topic).WithAutoOffsetReset(AutoOffsetReset.Earliest)
                 .WithOffsetCommitMode(OffsetCommitMode.Manual).Build();
             consumer.Assign(new TopicPartition(topic, 2));
             await consumer.InitializeAsync(token);
             var count = 0;
+
             await foreach (var records in consumer.ConsumeBatchAsync(token))
             {
                 foreach (var record in records)
@@ -49,12 +59,24 @@ public class KafkaRecordSendTests(KafkaHeaderSnapshotBroker broker)
                     await Assert.That(record.Timestamp).IsEqualTo(timestamp);
                     await Assert.That(record.Headers!.Single(header => header.Key == "native").GetValueAsString()).IsEqualTo("yes");
                     await Assert.That(record.Value is null).IsEqualTo(tombstone);
-                    if (!tombstone) await Assert.That(System.Text.Encoding.UTF8.GetString(record.Value!)).IsEqualTo("value");
+
+                    if (!tombstone)
+                    {
+                        await Assert.That(System.Text.Encoding.UTF8.GetString(record.Value!)).IsEqualTo("value");
+                    }
+
                     count++;
                 }
-                if (count == (batch ? 2 : 1)) break;
+
+                if (count == (batch ? 2 : 1))
+                {
+                    break;
+                }
             }
         }
-        finally { await admin.DeleteTopicsAsync([topic], cancellationToken: token); }
+        finally
+        {
+            await admin.DeleteTopicsAsync([topic], cancellationToken: token);
+        }
     }
 }

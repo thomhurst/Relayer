@@ -1,7 +1,7 @@
-using Relayer.Transports;
 using Azure.Messaging.ServiceBus;
 using Microsoft.Extensions.DependencyInjection;
 using Relayer.AzureServiceBus;
+using Relayer.Transports;
 
 namespace Relayer.Tests;
 
@@ -16,7 +16,10 @@ public sealed class ServiceBusReceiveTopologyTests
         options.Topics.Add(new("events"));
         options.Subscriptions.Add(new("events", "audit"));
         var queue = new ConsumerDefinition<ServiceBusConsumerOptions>("orders", new(), [], 1, 1, TimeSpan.FromMilliseconds(100));
-        var subscription = new ConsumerDefinition<ServiceBusConsumerOptions>("events", new() { Subscription = "audit" }, [], 1, 1, TimeSpan.FromMilliseconds(100));
+        var subscription = new ConsumerDefinition<ServiceBusConsumerOptions>("events", new()
+        {
+            Subscription = "audit"
+        }, [], 1, 1, TimeSpan.FromMilliseconds(100));
         await using var transport = new ServiceBusSendTransport("listen", client, false, options, [], TopologyMode.Validate,
             consumers: [queue, subscription]);
         var report = await transport.ApplyTopologyAsync(TopologyMode.Validate, default);
@@ -32,9 +35,15 @@ public sealed class ServiceBusReceiveTopologyTests
         var client = new ListenClient();
         var options = new ServiceBusTransportOptions { Client = client };
         options.Topics.Add(new("events"));
-        options.Subscriptions.Add(new("events", "audit") { RequiresSession = true });
+        options.Subscriptions.Add(new("events", "audit")
+        {
+            RequiresSession = true
+        });
         options.TrustedSessionEntities.Add("events/Subscriptions/audit");
-        var subscription = new ConsumerDefinition<ServiceBusConsumerOptions>("events", new() { Subscription = "audit" },
+        var subscription = new ConsumerDefinition<ServiceBusConsumerOptions>("events", new()
+        {
+            Subscription = "audit"
+        },
             [], 1, 1, TimeSpan.FromMilliseconds(100));
         await using var transport = new ServiceBusSendTransport("listen", client, false, options, [], TopologyMode.Validate,
             consumers: [subscription]);
@@ -48,7 +57,9 @@ public sealed class ServiceBusReceiveTopologyTests
     {
         var client = new ServiceBusReceiveTests.NativeClient();
         await using var provider = ServiceBusReceiveTests.Provider(client, consumer => consumer.Failures(new()
-        { RedeliveryDelays = new[] { TimeSpan.FromSeconds(1) } }));
+        {
+            RedeliveryDelays = new[] { TimeSpan.FromSeconds(1) }
+        }));
         await Assert.That(async () => await ServiceBusReceiveTests.Start(provider)).Throws<InvalidOperationException>();
         await Assert.That(client.Processors.Count).IsEqualTo(0);
     }
@@ -66,11 +77,29 @@ public sealed class ServiceBusReceiveTopologyTests
 
     private sealed class ListenClient : ServiceBusClient
     {
-        internal ServiceBusSendTests.NativeReceiver Receiver { get; } = new();
-        public override ServiceBusSender CreateSender(string queueOrTopicName) =>
+        internal ServiceBusSendTests.NativeReceiver Receiver
+        {
+            get;
+        } = new();
+
+        public override ServiceBusSender CreateSender(string queueOrTopicName)
+        {
             throw new InvalidOperationException("A receive-only identity has no Send permission.");
-        public override ServiceBusReceiver CreateReceiver(string queueName) => Receiver;
-        public override ServiceBusReceiver CreateReceiver(string queueName, ServiceBusReceiverOptions? options = null) => Receiver;
-        public override ServiceBusReceiver CreateReceiver(string topicName, string subscriptionName, ServiceBusReceiverOptions? options = null) => Receiver;
+        }
+
+        public override ServiceBusReceiver CreateReceiver(string queueName)
+        {
+            return Receiver;
+        }
+
+        public override ServiceBusReceiver CreateReceiver(string queueName, ServiceBusReceiverOptions? options = null)
+        {
+            return Receiver;
+        }
+
+        public override ServiceBusReceiver CreateReceiver(string topicName, string subscriptionName, ServiceBusReceiverOptions? options = null)
+        {
+            return Receiver;
+        }
     }
 }

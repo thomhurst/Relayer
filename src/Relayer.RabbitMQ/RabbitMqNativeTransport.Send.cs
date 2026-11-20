@@ -22,55 +22,96 @@ internal sealed partial class RabbitMqNativeTransport : ITransportSendTracing, I
         ArgumentNullException.ThrowIfNull(options.ConnectionFactory);
         ArgumentOutOfRangeException.ThrowIfLessThan(options.PublisherCount, 1);
         ArgumentNullException.ThrowIfNull(options.PublisherChannelOptions);
+
         if (!options.PublisherChannelOptions.PublisherConfirmationsEnabled ||
             !options.PublisherChannelOptions.PublisherConfirmationTrackingEnabled)
+        {
             throw new ArgumentException("RabbitMQ publisher channels require native publisher confirmations and confirmation tracking.");
+        }
+
         _factory = options.ConnectionFactory;
         _topology = new(options);
         _options = options;
         _publisherCount = options.PublisherCount;
         _publisherChannelOptions = options.PublisherChannelOptions;
+
         foreach (var declaration in options.DelayedExchanges.Values)
         {
             ArgumentNullException.ThrowIfNull(declaration);
             ArgumentException.ThrowIfNullOrWhiteSpace(declaration.Name);
+
             if (declaration.Type != "x-delayed-message")
+            {
                 throw new ArgumentException("RabbitMQ DelayedExchanges declarations must use Type = 'x-delayed-message'.");
+            }
         }
+
         var endpoints = new Dictionary<string, RabbitMqSendEndpoint>(StringComparer.Ordinal);
+
         foreach (var destination in destinations)
         {
             if (!endpoints.ContainsKey(destination))
+            {
                 endpoints.Add(destination, new(destination, _factory, tracing, instrumentation, SendCoreAsync, SendBatchCoreAsync));
+            }
         }
+
         _endpoints = endpoints.ToFrozenDictionary(StringComparer.Ordinal);
     }
 
-    public SendTracing? GetSendTracing(string destination) => Endpoint(destination).Tracing;
+    public SendTracing? GetSendTracing(string destination)
+    {
+        return Endpoint(destination).Tracing;
+    }
 
-    private RabbitMqSendEndpoint Endpoint(string destination) => _endpoints.TryGetValue(destination, out var endpoint)
-        ? endpoint : throw new InvalidOperationException($"RabbitMQ transport '{Name}': undeclared destination '{destination}'. Declare a send route first.");
+    private RabbitMqSendEndpoint Endpoint(string destination)
+    {
+        return _endpoints.TryGetValue(destination, out var endpoint)
+                ? endpoint : throw new InvalidOperationException($"RabbitMQ transport '{Name}': undeclared destination '{destination}'. Declare a send route first.");
+    }
 
     public async ValueTask InitializeCapabilitiesAsync(TopologyMode mode, CancellationToken cancellationToken)
     {
-        if (!Enum.IsDefined(mode)) throw new ArgumentOutOfRangeException(nameof(mode));
+        if (!Enum.IsDefined(mode))
+        {
+            throw new ArgumentOutOfRangeException(nameof(mode));
+        }
+
         await _lifecycle.WaitAsync(cancellationToken).ConfigureAwait(false);
+
         try
         {
             ObjectDisposedException.ThrowIf(_disposed, this);
-            if (_initialized) return;
+
+            if (_initialized)
+            {
+                return;
+            }
+
             _connection ??= await _factory.CreateConnectionAsync(cancellationToken).ConfigureAwait(false);
+
             foreach (var endpoint in _endpoints.Values)
+            {
                 await endpoint.InitializeAsync(_connection, _options, mode, cancellationToken).ConfigureAwait(false);
+            }
+
             _initialized = true;
         }
-        finally { _lifecycle.Release(); }
+        finally
+        {
+            _lifecycle.Release();
+        }
     }
 
     public ValueTask SendAsync(OutgoingMessage message, CancellationToken cancellationToken)
     {
         var endpoint = Endpoint(message.Destination);
-        if (endpoint.TraceEnabled) return endpoint.Tracing!.SendAsync(message, cancellationToken);
+
+        if (endpoint.TraceEnabled)
+        {
+            return endpoint.Tracing!.SendAsync(message, cancellationToken);
+        }
+
         return SendCoreAsync(message, cancellationToken);
     }
 
@@ -79,8 +120,17 @@ internal sealed partial class RabbitMqNativeTransport : ITransportSendTracing, I
         ObjectDisposedException.ThrowIf(_disposed, this);
         cancellationToken.ThrowIfCancellationRequested();
         var endpoint = Endpoint(message.Destination);
-        if (message.IsTombstone) throw new NotSupportedException("RabbitMQ does not support native tombstones.");
-        if (message.OrderingKey is not null) throw new NotSupportedException("RabbitMQ publishing does not provide ordering by key.");
+
+        if (message.IsTombstone)
+        {
+            throw new NotSupportedException("RabbitMQ does not support native tombstones.");
+        }
+
+        if (message.OrderingKey is not null)
+        {
+            throw new NotSupportedException("RabbitMQ publishing does not provide ordering by key.");
+        }
+
         var delay = endpoint.Delay(message.DeliverAt);
         var publishers = Volatile.Read(ref _publishers) ?? throw new InvalidOperationException("Start the RabbitMQ transport before sending.");
         var connection = _connection ?? throw new InvalidOperationException("Start the RabbitMQ transport before sending.");
@@ -111,8 +161,17 @@ internal sealed partial class RabbitMqNativeTransport : ITransportSendTracing, I
     internal ValueTask SendBatchItemAsync(OutgoingMessage message, RabbitMqBatchSlot slot, CancellationToken token, bool trace)
     {
         var endpoint = Endpoint(message.Destination);
-        if (message.IsTombstone) throw new NotSupportedException("RabbitMQ does not support native tombstones.");
-        if (message.OrderingKey is not null) throw new NotSupportedException("RabbitMQ publishing does not provide ordering by key.");
+
+        if (message.IsTombstone)
+        {
+            throw new NotSupportedException("RabbitMQ does not support native tombstones.");
+        }
+
+        if (message.OrderingKey is not null)
+        {
+            throw new NotSupportedException("RabbitMQ publishing does not provide ordering by key.");
+        }
+
         return slot.Send(this, endpoint, message, token, trace);
     }
 

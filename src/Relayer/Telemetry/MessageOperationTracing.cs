@@ -1,6 +1,6 @@
-using Relayer.Pipeline;
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
+using Relayer.Pipeline;
 
 namespace Relayer.Transports;
 
@@ -33,10 +33,22 @@ public sealed class MessageOperationTracing
             MessagingOperation.Settle => "settle",
             _ => throw new ArgumentOutOfRangeException(nameof(operation)),
         };
-        if (operation == MessagingOperation.Settle) ArgumentException.ThrowIfNullOrWhiteSpace(nativeOperation);
+
+        if (operation == MessagingOperation.Settle)
+        {
+            ArgumentException.ThrowIfNullOrWhiteSpace(nativeOperation);
+        }
+
         if (nativeOperation is not null && operation is not (MessagingOperation.Send or MessagingOperation.Settle))
+        {
             throw new ArgumentException("Only send and settle operations have native operation names.", nameof(nativeOperation));
-        if (nativeOperation is not null) ArgumentException.ThrowIfNullOrWhiteSpace(nativeOperation);
+        }
+
+        if (nativeOperation is not null)
+        {
+            ArgumentException.ThrowIfNullOrWhiteSpace(nativeOperation);
+        }
+
         _tracing = tracing;
         _operation = operation;
         var operationName = nativeOperation ?? type;
@@ -50,18 +62,40 @@ public sealed class MessageOperationTracing
             { "messaging.destination.name", endpoint.Destination },
         };
         Add(tags, "messaging.destination.template", endpoint.DestinationTemplate);
-        if (endpoint.Temporary) tags.Add("messaging.destination.temporary", true);
-        if (endpoint.Anonymous) tags.Add("messaging.destination.anonymous", true);
+
+        if (endpoint.Temporary)
+        {
+            tags.Add("messaging.destination.temporary", true);
+        }
+
+        if (endpoint.Anonymous)
+        {
+            tags.Add("messaging.destination.anonymous", true);
+        }
+
         Add(tags, "messaging.client.id", endpoint.ClientId);
         Add(tags, "server.address", endpoint.ServerAddress);
-        if (endpoint.ServerPort is { } port) tags.Add("server.port", port);
+
+        if (endpoint.ServerPort is { } port)
+        {
+            tags.Add("server.port", port);
+        }
+
         if (operation == MessagingOperation.Process)
         {
             Add(tags, "messaging.consumer.group.name", endpoint.ConsumerGroup);
         }
+
         if (operation is MessagingOperation.Process or MessagingOperation.Settle)
+        {
             Add(tags, "messaging.destination.subscription.name", endpoint.Subscription);
-        foreach (var tag in endpoint.Attributes.Span) tags.Add(tag.Key, tag.Value);
+        }
+
+        foreach (var tag in endpoint.Attributes.Span)
+        {
+            tags.Add(tag.Key, tag.Value);
+        }
+
         _tags = tags.ToArray();
         _states.TryReturn(new(_tags));
     }
@@ -75,15 +109,32 @@ public sealed class MessageOperationTracing
     /// </remarks>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public Activity? Start(in MessageTraceData data = default)
-        => Start(data, enrich: true);
+    {
+        return Start(data, enrich: true);
+    }
 
     internal Activity? Start(in MessageTraceData data, bool enrich, bool client = false)
     {
-        if (data.BatchCount is < 1) throw new ArgumentOutOfRangeException(nameof(data), "Batch count must be positive.");
+        if (data.BatchCount is < 1)
+        {
+            throw new ArgumentOutOfRangeException(nameof(data), "Batch count must be positive.");
+        }
+
         if (_operation == MessagingOperation.Create && data.BatchCount is not null)
+        {
             throw new ArgumentException("A create span describes one message, never a batch.", nameof(data));
-        if (!_tracing.Source.HasListeners()) return null;
-        if (_operation == MessagingOperation.Create && data.CreationContext != default) return null;
+        }
+
+        if (!_tracing.Source.HasListeners())
+        {
+            return null;
+        }
+
+        if (_operation == MessagingOperation.Create && data.CreationContext != default)
+        {
+            return null;
+        }
+
         return StartActivity(data, enrich, client);
     }
 
@@ -97,52 +148,86 @@ public sealed class MessageOperationTracing
             _ => client || data.CreationContext != default || !data.Links.IsEmpty ? ActivityKind.Client : ActivityKind.Producer,
         };
         var parent = Activity.Current?.Context ?? default;
+
         if (_operation == MessagingOperation.Process && parent == default && data.BatchCount is null &&
-            _tracing.Options.CreationContextAsParent) parent = data.CreationContext;
+            _tracing.Options.CreationContextAsParent)
+        {
+            parent = data.CreationContext;
+        }
+
         var hasLinks = _operation is MessagingOperation.Send or MessagingOperation.Process &&
             (!data.Links.IsEmpty || data.CreationContext != default);
         var hasPartition = data.BatchCount is null && data.PartitionId is not null;
         SamplingState? state = null;
+
         try
         {
             IEnumerable<KeyValuePair<string, object?>> tags = _tags;
             IEnumerable<ActivityLink>? links = null;
+
             if (hasPartition || hasLinks)
             {
                 state = Rent();
+
                 if (hasPartition)
                 {
                     state.Tags[^1] = new("messaging.destination.partition.id", data.PartitionId);
                     tags = state.Tags;
                 }
+
                 if (hasLinks)
                 {
-                    if (data.Links.IsEmpty) state.Links.Add(new ActivityLink(data.CreationContext));
+                    if (data.Links.IsEmpty)
+                    {
+                        state.Links.Add(new ActivityLink(data.CreationContext));
+                    }
                     else
-                        foreach (var link in data.Links.Span) state.Links.Add(link);
+                    {
+                        foreach (var link in data.Links.Span)
+                        {
+                            state.Links.Add(link);
+                        }
+                    }
+
                     links = state.Links;
                 }
             }
             // ActivitySource consumes tags and links synchronously, including sampling and its own copies.
             var activity = _tracing.Source.StartActivity(_name, kind, parent, tags, links);
+
             if (activity is { IsAllDataRequested: true })
             {
-                if (data.BatchCount is { } count) activity.SetTag("messaging.batch.message_count", count);
+                if (data.BatchCount is { } count)
+                {
+                    activity.SetTag("messaging.batch.message_count", count);
+                }
                 else
                 {
                     activity.SetTag("messaging.message.id", data.MessageId);
                     activity.SetTag("messaging.message.conversation_id", data.ConversationId);
                     activity.SetTag("cloudevents.event_type", data.EventType);
                     activity.SetTag("cloudevents.event_source", data.EventSource);
-                    if (_tracing.Options.IncludeBodySize && data.BodySize is { } size) activity.SetTag("messaging.message.body.size", size);
+
+                    if (_tracing.Options.IncludeBodySize && data.BodySize is { } size)
+                    {
+                        activity.SetTag("messaging.message.body.size", size);
+                    }
                 }
             }
-            if (enrich && activity is not null) _tracing.Enrich(activity);
+
+            if (enrich && activity is not null)
+            {
+                _tracing.Enrich(activity);
+            }
+
             return activity;
         }
         finally
         {
-            if (state is not null) Return(state);
+            if (state is not null)
+            {
+                Return(state);
+            }
         }
     }
 
@@ -154,8 +239,12 @@ public sealed class MessageOperationTracing
     public ConsumeDelegate WrapSettlement(ConsumeDelegate settlement)
     {
         ArgumentNullException.ThrowIfNull(settlement);
+
         if (_operation != MessagingOperation.Settle)
+        {
             throw new InvalidOperationException("WrapSettlement requires a settle operation with the native operation name.");
+        }
+
         return new Settlement(this, settlement).InvokeAsync;
     }
 
@@ -164,16 +253,28 @@ public sealed class MessageOperationTracing
         internal ValueTask InvokeAsync(MessageContext context)
         {
             ArgumentNullException.ThrowIfNull(context);
-            if (operation._tracing.Source.HasListeners()) return InvokeTracedAsync(context);
+
+            if (operation._tracing.Source.HasListeners())
+            {
+                return InvokeTracedAsync(context);
+            }
+
             try
             {
                 var pending = settlement(context);
-                if (!pending.IsCompletedSuccessfully) return AwaitUntracedAsync(context, pending);
+
+                if (!pending.IsCompletedSuccessfully)
+                {
+                    return AwaitUntracedAsync(context, pending);
+                }
                 // Consume a completed ValueTask without creating an async state machine.
                 pending.GetAwaiter().GetResult();
                 return default;
             }
-            catch (OperationCanceledException) when (context.CancellationToken.IsCancellationRequested) { throw; }
+            catch (OperationCanceledException) when (context.CancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
             catch (Exception error)
             {
                 (context as DefaultMessageContext)?.LogSettlementFailure(error);
@@ -185,8 +286,14 @@ public sealed class MessageOperationTracing
         [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
         private static async ValueTask AwaitUntracedAsync(MessageContext context, ValueTask pending)
         {
-            try { await pending.ConfigureAwait(false); }
-            catch (OperationCanceledException) when (context.CancellationToken.IsCancellationRequested) { throw; }
+            try
+            {
+                await pending.ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (context.CancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
             catch (Exception error)
             {
                 (context as DefaultMessageContext)?.LogSettlementFailure(error);
@@ -202,11 +309,15 @@ public sealed class MessageOperationTracing
             using var activity = native is not null
                 ? ConsumeTracing.Start(operation._tracing, operation, native, linkCreation: false)
                 : operation.Start();
+
             try
             {
                 await settlement(context).ConfigureAwait(false);
             }
-            catch (OperationCanceledException) when (context.CancellationToken.IsCancellationRequested) { throw; }
+            catch (OperationCanceledException) when (context.CancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
             catch (Exception error)
             {
                 Fail(activity, "_OTHER");
@@ -226,7 +337,12 @@ public sealed class MessageOperationTracing
     internal Activity? StartBatch(KeyValuePair<string, object?>[] tags, List<ActivityLink> links)
     {
         var activity = _tracing.Source.StartActivity(_name, ActivityKind.Consumer, Activity.Current?.Context ?? default, tags, links);
-        if (activity is not null) _tracing.Enrich(activity);
+
+        if (activity is not null)
+        {
+            _tracing.Enrich(activity);
+        }
+
         return activity;
     }
 
@@ -244,8 +360,15 @@ public sealed class MessageOperationTracing
 
     private sealed class SamplingState
     {
-        internal KeyValuePair<string, object?>[] Tags { get; }
-        internal List<ActivityLink> Links { get; } = new(4);
+        internal KeyValuePair<string, object?>[] Tags
+        {
+            get;
+        }
+
+        internal List<ActivityLink> Links
+        {
+            get;
+        } = new(4);
 
         internal SamplingState(KeyValuePair<string, object?>[] tags)
         {
@@ -258,13 +381,20 @@ public sealed class MessageOperationTracing
     /// <remarks>Missing or whitespace error types use _OTHER so diagnostics never mask the original failure.</remarks>
     public static void Fail(Activity? activity, string errorType)
     {
-        if (activity is not { IsAllDataRequested: true }) return;
+        if (activity is not { IsAllDataRequested: true })
+        {
+            return;
+        }
+
         activity.SetTag("error.type", string.IsNullOrWhiteSpace(errorType) ? "_OTHER" : errorType);
         activity.SetStatus(ActivityStatusCode.Error);
     }
 
     private static void Add(ActivityTagsCollection tags, string name, string? value)
     {
-        if (value is not null) tags.Add(name, value);
+        if (value is not null)
+        {
+            tags.Add(name, value);
+        }
     }
 }

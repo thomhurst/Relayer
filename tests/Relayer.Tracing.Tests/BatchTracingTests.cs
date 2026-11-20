@@ -1,10 +1,10 @@
-using Relayer.Transports;
-using Relayer.Pipeline;
 using System.Buffers;
 using System.Diagnostics;
 using System.Text;
 using Microsoft.Extensions.DependencyInjection;
+using Relayer.Pipeline;
 using Relayer.Serialization;
+using Relayer.Transports;
 
 namespace Relayer.Tests;
 
@@ -45,32 +45,64 @@ public class BatchTracingTests
         using var ambient = new Activity("request").Start();
         var consumer = new ConsumePipelineBuilder(scopes, provider.GetRequiredService<MessageTypeRegistry>(),
             provider.GetRequiredService<IMessageSerializer>(), static (_, error, _) => ValueTask.FromException(error))
-            .Tracing(tracing, new() { System = "relayer.inmemory", Destination = "source" })
+            .Tracing(tracing, new()
+            {
+                System = "relayer.inmemory",
+                Destination = "source"
+            })
             .BuildBatch(provider.GetRequiredService<HandlerRegistry>().GetBatchHandler<Payload, Handler>(),
                 provider.GetRequiredService<RelayerConfiguration>().Transports[0].Consumers[0]);
         var message = new ConsumeMessage
         {
-            MessageId = "allocation", MessageType = new("batch.tracing", 1), Body = ReadOnlySequence<byte>.Empty,
+            MessageId = "allocation",
+            MessageType = new("batch.tracing", 1),
+            Body = ReadOnlySequence<byte>.Empty,
             Headers = links ? new TraceHeaders(utf8) : null
         };
         var contexts = new DefaultMessageContext[size];
+
         for (var iteration = 0; iteration < 1000; iteration++)
         {
-            for (var i = 0; i < size; i++) contexts[i] = consumer.RentContext(message);
+            for (var i = 0; i < size; i++)
+            {
+                contexts[i] = consumer.RentContext(message);
+            }
+
             await consumer.ProcessBatchAsync(contexts);
-            for (var i = 0; i < size; i++) contexts[i].Dispose();
+
+            for (var i = 0; i < size; i++)
+            {
+                contexts[i].Dispose();
+            }
+
             Baseline();
         }
+
         var start = GC.GetAllocatedBytesForCurrentThread();
-        for (var iteration = 0; iteration < 1000; iteration++) Baseline();
-        var baseline = GC.GetAllocatedBytesForCurrentThread() - start;
-        start = GC.GetAllocatedBytesForCurrentThread();
+
         for (var iteration = 0; iteration < 1000; iteration++)
         {
-            for (var i = 0; i < size; i++) contexts[i] = consumer.RentContext(message);
-            await consumer.ProcessBatchAsync(contexts);
-            for (var i = 0; i < size; i++) contexts[i].Dispose();
+            Baseline();
         }
+
+        var baseline = GC.GetAllocatedBytesForCurrentThread() - start;
+        start = GC.GetAllocatedBytesForCurrentThread();
+
+        for (var iteration = 0; iteration < 1000; iteration++)
+        {
+            for (var i = 0; i < size; i++)
+            {
+                contexts[i] = consumer.RentContext(message);
+            }
+
+            await consumer.ProcessBatchAsync(contexts);
+
+            for (var i = 0; i < size; i++)
+            {
+                contexts[i].Dispose();
+            }
+        }
+
         var composed = GC.GetAllocatedBytesForCurrentThread() - start;
         await Assert.That(composed).IsEqualTo(baseline);
 
@@ -78,8 +110,14 @@ public class BatchTracingTests
         {
             using var scope = scopes.CreateScope();
             _ = scope.ServiceProvider.GetRequiredService<ScopedBaseline>();
+
             if (links && listenerAttached)
-                for (var i = 0; i < size; i++) ActivityContext.TryParse(TraceHeaders.Parent, null, true, out _);
+            {
+                for (var i = 0; i < size; i++)
+                {
+                    ActivityContext.TryParse(TraceHeaders.Parent, null, true, out _);
+                }
+            }
         }
     }
 
@@ -89,23 +127,40 @@ public class BatchTracingTests
     }
 
     public sealed class Options;
+
     [Message("batch.tracing")]
     public sealed class Payload;
+
     public sealed class Handler : IBatchHandler<Payload>
     {
-        public ValueTask<BatchResult> HandleAsync(Batch<Payload> batch, CancellationToken cancellationToken) => new(BatchResult.Success);
+        public ValueTask<BatchResult> HandleAsync(Batch<Payload> batch, CancellationToken cancellationToken)
+        {
+            return new(BatchResult.Success);
+        }
     }
+
     private sealed class Serializer : IMessageSerializer
     {
         private readonly Payload _payload = new();
+
         public string ContentType => "test/cached";
-        public TMessage Deserialize<TMessage>(ReadOnlySequence<byte> source) => (TMessage)(object)_payload;
-        public void Serialize<TMessage>(TMessage message, IBufferWriter<byte> destination) => throw new NotSupportedException();
+
+        public TMessage Deserialize<TMessage>(ReadOnlySequence<byte> source)
+        {
+            return (TMessage)(object)_payload;
+        }
+
+        public void Serialize<TMessage>(TMessage message, IBufferWriter<byte> destination)
+        {
+            throw new NotSupportedException();
+        }
     }
+
     private sealed class TraceHeaders(bool utf8) : MessageHeaders
     {
         internal const string Parent = "00-11111111111111111111111111111111-2222222222222222-01";
         private readonly WireString _parent = utf8 ? new(Encoding.UTF8.GetBytes(Parent)) : new(Parent);
+
         public override bool TryGetValue(string name, out WireString value)
         {
             value = name == "traceparent" ? _parent : default;

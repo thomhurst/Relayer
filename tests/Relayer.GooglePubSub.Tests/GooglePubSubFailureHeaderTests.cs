@@ -54,7 +54,12 @@ public class GooglePubSubFailureHeaderTests
     public async Task Insufficient_native_attribute_capacity_fails_without_truncating_history()
     {
         var message = new PubsubMessage();
-        for (var i = 0; i < 99; i++) message.Attributes["application-" + i] = "value";
+
+        for (var i = 0; i < 99; i++)
+        {
+            message.Attributes["application-" + i] = "value";
+        }
+
         GooglePubSubFailureHeaders.Write(message, new string('x', 2048));
         await Assert.That(() => GooglePubSubFailureHeaders.Validate(message)).Throws<InvalidOperationException>().WithMessageContaining("100 native attributes");
     }

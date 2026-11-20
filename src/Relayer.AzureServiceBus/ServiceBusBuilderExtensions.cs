@@ -23,7 +23,10 @@ public static class ServiceBusBuilderExtensions
         builder.Services.TryAddSingleton<ServiceBusTopologyExporter>();
         builder.AddTransport<ServiceBusTransportOptions, ServiceBusConsumerOptions>(name, transport =>
         {
-            transport.SendDefaults = new() { HeaderNames = new("cloudEvents:") };
+            transport.SendDefaults = new()
+            {
+                HeaderNames = new("cloudEvents:")
+            };
             configure(transport);
         });
         builder.Services.AddKeyedSingleton<ServiceBusSendTransport>(name, (provider, _) =>
@@ -31,20 +34,34 @@ public static class ServiceBusBuilderExtensions
             var configuration = provider.GetRequiredService<RelayerConfiguration>();
             var definition = configuration.Transports.Single(item => item.Name == name);
             var options = provider.GetRequiredService<IOptionsMonitor<ServiceBusTransportOptions>>().Get(name);
+
             if ((options.Client is null) == string.IsNullOrWhiteSpace(options.ConnectionString))
+            {
                 throw new InvalidOperationException($"Service Bus transport '{name}': configure exactly one of Client or ConnectionString.");
+            }
+
             ArgumentNullException.ThrowIfNull(options.ClientOptions);
             var mode = definition.TopologyMode ?? configuration.TopologyMode;
             // With no topology checks, the routes and consumers already name every entity (#853).
             if (mode == TopologyMode.None)
+            {
                 options = options.WithImpliedDeclarations(definition.Routes.Select(route => route.Destination), definition.Consumers);
+            }
+
             ServiceBusSendTransport.ValidateDeclarations(name, options, definition.Routes.Select(route => route.Destination));
+
             foreach (var consumer in definition.Consumers)
+            {
                 ServiceBusConsumer.ValidateDeclaration(name, options, (ConsumerDefinition<ServiceBusConsumerOptions>)consumer);
+            }
+
             var admin = options.AdministrationClient;
+
             if (mode == TopologyMode.Provision && admin is null)
+            {
                 admin = options.ConnectionString is { } connection ? new ServiceBusAdministrationClient(connection)
                     : throw new InvalidOperationException($"Service Bus transport '{name}': Provision requires AdministrationClient when using a caller-owned Client.");
+            }
             // Validate never constructs or calls an administration client.
             var client = options.Client ?? new ServiceBusClient(options.ConnectionString!, options.ClientOptions);
             var logging = provider.GetService<ILoggerFactory>() ?? NullLoggerFactory.Instance;
@@ -67,8 +84,10 @@ public static class ServiceBusBuilderExtensions
     }
 
     /// <summary>Customises the native outgoing Service Bus message immediately before sending.</summary>
-    public static SendOptions ServiceBus(this SendOptions options, Action<ServiceBusMessage> configure) =>
-        options.ConfigureNative(configure);
+    public static SendOptions ServiceBus(this SendOptions options, Action<ServiceBusMessage> configure)
+    {
+        return options.ConfigureNative(configure);
+    }
 
     /// <summary>
     /// Customises the native Service Bus message for every send on this route, including outbox dispatch of stored rows.
@@ -88,15 +107,29 @@ public static class ServiceBusBuilderExtensions
 public sealed class ServiceBusConsumerOptions
 {
     /// <summary>The subscription when Source names a topic; null means Source names a queue.</summary>
-    public string? Subscription { get; set; }
+    public string? Subscription
+    {
+        get; set;
+    }
 
     /// <summary>Native non-session options, passed unchanged. Auto-complete and ReceiveAndDelete are unsupported.</summary>
-    public ServiceBusProcessorOptions ProcessorOptions { get; set; } = new() { AutoCompleteMessages = false };
+    public ServiceBusProcessorOptions ProcessorOptions
+    {
+        get; set;
+    } = new()
+    {
+        AutoCompleteMessages = false
+    };
 
     /// <summary>Selects a native session processor when non-null. Disable AutoCompleteMessages and use PeekLock.</summary>
-    public ServiceBusSessionProcessorOptions? SessionProcessorOptions { get; set; }
-
+    public ServiceBusSessionProcessorOptions? SessionProcessorOptions
+    {
+        get; set;
+    }
 
     /// <summary>Optional failure-rate circuit. Stops native processing while open and admits one recovery probe.</summary>
-    public ConsumerCircuitOptions? CircuitBreaker { get; set; }
+    public ConsumerCircuitOptions? CircuitBreaker
+    {
+        get; set;
+    }
 }

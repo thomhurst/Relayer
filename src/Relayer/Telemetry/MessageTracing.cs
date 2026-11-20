@@ -1,10 +1,10 @@
-using Relayer.Pipeline;
 using System.Diagnostics;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
+using Relayer.Pipeline;
 
 namespace Relayer.Transports;
 
@@ -12,10 +12,22 @@ namespace Relayer.Transports;
 public sealed class MessageTracing : IDisposable
 {
     private readonly IActivityEnricher[] _enrichers;
+
     /// <summary>The immutable policy used by operations and batch send composition.</summary>
-    public TracingOptions Options { get; }
-    internal ILogger Logger { get; }
-    internal RelayerInstrumentation? Instrumentation { get; }
+    public TracingOptions Options
+    {
+        get;
+    }
+
+    internal ILogger Logger
+    {
+        get;
+    }
+
+    internal RelayerInstrumentation? Instrumentation
+    {
+        get;
+    }
 
     /// <summary>Creates an isolated source owner; DI disposes it with its service provider.</summary>
     public MessageTracing(IOptions<TracingOptions> options, IEnumerable<IActivityEnricher> enrichers, ILoggerFactory? loggerFactory = null, RelayerInstrumentation? instrumentation = null)
@@ -33,11 +45,18 @@ public sealed class MessageTracing : IDisposable
     }
 
     /// <summary>The source to enable with AddSource("Relayer").</summary>
-    public ActivitySource Source { get; }
+    public ActivitySource Source
+    {
+        get;
+    }
 
     internal void Enrich(Activity activity)
     {
-        if (!activity.Recorded) return;
+        if (!activity.Recorded)
+        {
+            return;
+        }
+
         foreach (var enricher in _enrichers)
         {
             try
@@ -52,5 +71,8 @@ public sealed class MessageTracing : IDisposable
     }
 
     /// <summary>Disposes this owner's activity source.</summary>
-    public void Dispose() => Source.Dispose();
+    public void Dispose()
+    {
+        Source.Dispose();
+    }
 }

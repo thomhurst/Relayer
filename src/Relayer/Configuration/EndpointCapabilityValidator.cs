@@ -17,14 +17,17 @@ internal sealed class EndpointCapabilityValidator
         _failures = failures;
         _outbox = outbox;
         _cache = cache;
+
         foreach (var transport in transports)
         {
             _hasRuntimeTransports = true;
+
             if (string.IsNullOrWhiteSpace(transport.Name))
             {
                 failures.Add("An ITransport adapter name must not be blank.");
                 continue;
             }
+
             if (!_transports.TryAdd(transport.Name, transport))
             {
                 failures.Add($"ITransport adapter '{transport.Name}' is registered more than once. Register exactly one adapter per transport name.");
@@ -36,45 +39,79 @@ internal sealed class EndpointCapabilityValidator
     internal void Validate(TransportDefinition definition, bool deferInitialization = false)
     {
         // Configuration-only applications can inspect declarations without installing native adapters.
-        if (!_hasRuntimeTransports || string.IsNullOrWhiteSpace(definition.Name)) return;
+        if (!_hasRuntimeTransports || string.IsNullOrWhiteSpace(definition.Name))
+        {
+            return;
+        }
+
         if (!_transports.TryGetValue(definition.Name, out var transport))
         {
             _failures.Add($"Transport '{definition.Name}': register a named ITransport adapter before starting runtime transports.");
             return;
         }
-        if (transport is null) return; // Duplicate names have already been reported; neither adapter is authoritative.
-        if (deferInitialization && transport is ITransportCapabilityInitializer) return;
+
+        if (transport is null)
+        {
+            return; // Duplicate names have already been reported; neither adapter is authoritative.
+        }
+
+        if (deferInitialization && transport is ITransportCapabilityInitializer)
+        {
+            return;
+        }
 
         foreach (var route in definition.Routes)
         {
             var capabilities = GetCapabilities(transport, route.Destination);
+
             if (capabilities is not null && route is ISendRouteDefinition send && _outbox is not null)
+            {
                 SendCapabilityValidator.Validate(send.SendOptions, capabilities, route.HasOrderingKey, _outbox,
                     $"Route for '{route.MessageType}' to '{route.Destination}' on transport '{definition.Name}'", _failures);
+            }
+
             if (route.HasOrderingKey && capabilities is { OrderedByKey: false })
             {
                 _failures.Add($"Route for '{route.MessageType}' to '{route.Destination}' on transport '{definition.Name}': " +
                     "OrderedByKey is unavailable. Use an endpoint with native ordering support or remove the ordering key; ordering has no fallback.");
             }
         }
-        foreach (var consumer in definition.Consumers) GetCapabilities(transport, consumer.Source);
+
+        foreach (var consumer in definition.Consumers)
+        {
+            GetCapabilities(transport, consumer.Source);
+        }
     }
 
     internal TransportCapabilities? GetCapabilities(ITransport transport, string endpoint)
     {
-        if (string.IsNullOrWhiteSpace(endpoint)) return null; // Declaration validation reports blank endpoints.
+        if (string.IsNullOrWhiteSpace(endpoint))
+        {
+            return null; // Declaration validation reports blank endpoints.
+        }
+
         var key = (transport.Name, endpoint);
-        if (_endpoints.TryGetValue(key, out var cached)) return cached;
+
+        if (_endpoints.TryGetValue(key, out var cached))
+        {
+            return cached;
+        }
 
         var location = $"Endpoint '{endpoint}' on transport '{transport.Name}'";
         TransportCapabilities? capabilities = null;
+
         try
         {
             capabilities = _cache.GetCapabilities(transport, endpoint);
+
             if (capabilities is null)
+            {
                 _failures.Add($"{location}: GetCapabilities must return a TransportCapabilities declaration.");
+            }
             else if (!ValidateValues(capabilities, location))
+            {
                 capabilities = null;
+            }
         }
         catch (Exception error) when (error is ArgumentException or InvalidOperationException or NotSupportedException)
         {
@@ -88,16 +125,32 @@ internal sealed class EndpointCapabilityValidator
     private bool ValidateValues(TransportCapabilities capabilities, string location)
     {
         var previousCount = _failures.Count;
+
         if (capabilities.MaxDeliveryDelay < TimeSpan.Zero)
+        {
             _failures.Add($"{location}: MaxDeliveryDelay must be null or non-negative.");
+        }
+
         if (capabilities.MaxRedeliveryDelay < TimeSpan.Zero)
+        {
             _failures.Add($"{location}: MaxRedeliveryDelay must be null or non-negative (zero permits immediate redelivery only).");
+        }
+
         if (capabilities.MaxBatchSize < 1)
+        {
             _failures.Add($"{location}: MaxBatchSize must be at least 1.");
+        }
+
         if (capabilities.MaxMessageBytes <= 0)
+        {
             _failures.Add($"{location}: MaxMessageBytes must be null or positive.");
+        }
+
         if (!Enum.IsDefined(capabilities.ConsumptionModel))
+        {
             _failures.Add($"{location}: ConsumptionModel must be a defined value.");
+        }
+
         return _failures.Count == previousCount;
     }
 }

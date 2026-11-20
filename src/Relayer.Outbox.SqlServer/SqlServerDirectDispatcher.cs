@@ -36,20 +36,29 @@ internal sealed class SqlServerDirectDispatcher : OutboxDirectDispatchWorker<Out
         _prefix = storeOptions.TablePrefix;
         _options = options;
         // An in-process ordered worker for the same tables is woken after commit instead of waiting for its poll.
-        if (ordered is not null && ordered.Matches(_schema, _prefix)) _ordered = ordered;
+        if (ordered is not null && ordered.Matches(_schema, _prefix))
+        {
+            _ordered = ordered;
+        }
     }
 
     internal void ValidateStore(string? schema, string prefix)
     {
         if (_schema != (schema ?? "dbo") || _prefix != prefix)
+        {
             throw new InvalidOperationException("The SQL Server outbox and its direct dispatcher must use identical schema and table prefix settings.");
+        }
     }
 
     internal static SqlConnectionStringBuilder ValidateConnectionString(string connectionString)
     {
         var target = new SqlConnectionStringBuilder(connectionString);
+
         if (string.IsNullOrWhiteSpace(target.InitialCatalog))
+        {
             throw new ArgumentException("SQL Server direct dispatch requires an explicit Initial Catalog (Database) in its connection string so writer and dispatcher targets can be validated without opening a second pooled connection.", nameof(connectionString));
+        }
+
         return target;
     }
 
@@ -57,7 +66,9 @@ internal sealed class SqlServerDirectDispatcher : OutboxDirectDispatchWorker<Out
     {
         if (!StringComparer.OrdinalIgnoreCase.Equals(writer.DataSource, _dataSource) ||
             !StringComparer.Ordinal.Equals(writer.Database, _database))
+        {
             throw new InvalidOperationException("The SQL Server outbox transaction and its direct dispatcher must use the same server and database.");
+        }
     }
 
     // Called only after durable commit. Queue pressure and shutdown cannot make a committed transaction fail.
@@ -70,23 +81,54 @@ internal sealed class SqlServerDirectDispatcher : OutboxDirectDispatchWorker<Out
         Enqueue(batch);
     }
 
-    protected override void LogFailure(Exception error) => DirectDispatchLog.Failed(_logger, error);
+    protected override void LogFailure(Exception error)
+    {
+        DirectDispatchLog.Failed(_logger, error);
+    }
 
-    protected override OutboxDispatchBatch CreateBatch() => new();
-    protected override int Count(OutboxDispatchBatch batch) => batch.Count;
-    protected override void Append(OutboxDispatchBatch batch, OutboxDispatchBatch source) => batch.Append(source);
-    protected override void Sort(OutboxDispatchBatch batch) => batch.Sort();
-    protected override void Clear(OutboxDispatchBatch batch) => batch.Clear();
-    protected override (string Transport, string Destination) Endpoint(OutboxDispatchBatch batch, int offset) =>
-        (batch.Rows[offset].Transport, batch.Rows[offset].Destination);
+    protected override OutboxDispatchBatch CreateBatch()
+    {
+        return new();
+    }
+
+    protected override int Count(OutboxDispatchBatch batch)
+    {
+        return batch.Count;
+    }
+
+    protected override void Append(OutboxDispatchBatch batch, OutboxDispatchBatch source)
+    {
+        batch.Append(source);
+    }
+
+    protected override void Sort(OutboxDispatchBatch batch)
+    {
+        batch.Sort();
+    }
+
+    protected override void Clear(OutboxDispatchBatch batch)
+    {
+        batch.Clear();
+    }
+
+    protected override (string Transport, string Destination) Endpoint(OutboxDispatchBatch batch, int offset)
+    {
+        return (batch.Rows[offset].Transport, batch.Rows[offset].Destination);
+    }
 
     protected override void PrepareGroup(OutboxDispatchBatch batch, ref int offset, int limit, ref int count)
     {
         var first = batch.Rows[offset];
+
         while (offset < batch.Count && count < limit)
         {
             var row = batch.Rows[offset];
-            if (row.Transport != first.Transport || row.Destination != first.Destination) break;
+
+            if (row.Transport != first.Transport || row.Destination != first.Destination)
+            {
+                break;
+            }
+
             offset++;
             _claims[count] = new(row.Id, Guid.NewGuid());
             _created[count] = row.CreatedAt;
@@ -104,29 +146,45 @@ internal sealed class SqlServerDirectDispatcher : OutboxDirectDispatchWorker<Out
         do
         {
             var id = batch.Rows[offset++].Id;
-            if (!recovery) continue;
+
+            if (!recovery)
+            {
+                continue;
+            }
+
             var claim = new OutboxClaim(id, Guid.NewGuid());
             var now = DateTimeOffset.UtcNow;
+
             if (await _store.TryClaimAsync(claim, now, now + _options.ClaimDuration, cancellationToken).ConfigureAwait(false))
+            {
                 await RecordFailureAsync(claim, OutboxErrorText.Describe(error), cancellationToken).ConfigureAwait(false);
+            }
         }
         while (offset < batch.Count && batch.Rows[offset].Transport == first.Transport &&
             batch.Rows[offset].Destination == first.Destination);
+
         return offset;
     }
 
-    protected override ValueTask ClaimAsync(int count, DateTimeOffset now, DateTimeOffset expires, CancellationToken cancellationToken) =>
-        _store.ClaimBatchAsync(_claims.AsMemory(0, count), _claimed.AsMemory(0, count), now, expires, cancellationToken);
+    protected override ValueTask ClaimAsync(int count, DateTimeOffset now, DateTimeOffset expires, CancellationToken cancellationToken)
+    {
+        return _store.ClaimBatchAsync(_claims.AsMemory(0, count), _claimed.AsMemory(0, count), now, expires, cancellationToken);
+    }
 
-    protected override ValueTask<long> CompleteAsync(int offset, int count, CancellationToken cancellationToken) =>
-        _store.CompleteBatchAsync(_claims.AsMemory(offset, count), DateTimeOffset.UtcNow, cancellationToken);
+    protected override ValueTask<long> CompleteAsync(int offset, int count, CancellationToken cancellationToken)
+    {
+        return _store.CompleteBatchAsync(_claims.AsMemory(offset, count), DateTimeOffset.UtcNow, cancellationToken);
+    }
 
     // The base worker ignores the result; a stale claim is recovered after expiry either way.
     protected override async ValueTask<bool> RecordSendFailureAsync(OutboxDispatchBatch batch, int index, Exception error,
         CancellationToken cancellationToken, bool propagateDatabaseFailures, bool retryable = true)
     {
         if (SqlServerSendFailure.IsRetryable(_retrySendFailure, error, _logger))
+        {
             return await _store.RecordRetryAsync(_claims[index], OutboxErrorText.Describe(error), DateTimeOffset.UtcNow, cancellationToken).ConfigureAwait(false);
+        }
+
         await RecordFailureAsync(_claims[index], OutboxErrorText.Describe(error), cancellationToken).ConfigureAwait(false);
         return true;
     }
@@ -134,26 +192,53 @@ internal sealed class SqlServerDirectDispatcher : OutboxDirectDispatchWorker<Out
     // An exhausted row moves to dead storage. Recovery records it once its transaction commits.
     private async ValueTask RecordFailureAsync(OutboxClaim claim, string error, CancellationToken cancellationToken)
     {
-        if (!await _store.RecordDispatchFailureAsync(claim, error, DateTimeOffset.UtcNow, cancellationToken).ConfigureAwait(false)) return;
-        if (_recovering) _recoveredPoison++;
-        else Poisoned(1);
+        if (!await _store.RecordDispatchFailureAsync(claim, error, DateTimeOffset.UtcNow, cancellationToken).ConfigureAwait(false))
+        {
+            return;
+        }
+
+        if (_recovering)
+        {
+            _recoveredPoison++;
+        }
+        else
+        {
+            Poisoned(1);
+        }
     }
 
     private void Poisoned(long count)
     {
-        if (_instrumentation is null) return;
+        if (_instrumentation is null)
+        {
+            return;
+        }
+
         _instrumentation.AddOutboxPending(-count);
-        for (var i = 0; i < count; i++) _instrumentation.RecordOutboxPoison();
+
+        for (var i = 0; i < count; i++)
+        {
+            _instrumentation.RecordOutboxPoison();
+        }
     }
 
     protected override void Completed(long count, bool recovery, bool single = false)
     {
-        if (recovery) _recoveredCompletions += count;
-        else base.Completed(count, recovery, single);
+        if (recovery)
+        {
+            _recoveredCompletions += count;
+        }
+        else
+        {
+            base.Completed(count, recovery, single);
+        }
     }
 
     // Recovery reads only unordered rows, so a quarantined row has moved to dead storage; it settles with the transaction.
-    internal void RecoveredQuarantine() => _recoveredPoison++;
+    internal void RecoveredQuarantine()
+    {
+        _recoveredPoison++;
+    }
 
     // The maintenance worker owns this dispatcher and calls this once per transaction.
     internal void FinishRecovery(bool committed)
@@ -162,9 +247,21 @@ internal sealed class SqlServerDirectDispatcher : OutboxDirectDispatchWorker<Out
         var poisoned = _recoveredPoison;
         _recoveredCompletions = 0;
         _recoveredPoison = 0;
-        if (!committed) return;
-        if (completed != 0) _instrumentation?.AddOutboxPending(-completed);
-        if (poisoned != 0) Poisoned(poisoned);
+
+        if (!committed)
+        {
+            return;
+        }
+
+        if (completed != 0)
+        {
+            _instrumentation?.AddOutboxPending(-completed);
+        }
+
+        if (poisoned != 0)
+        {
+            Poisoned(poisoned);
+        }
     }
 
     [RuntimeAsyncMethodGeneration(false)]
@@ -172,10 +269,16 @@ internal sealed class SqlServerDirectDispatcher : OutboxDirectDispatchWorker<Out
     internal async ValueTask DispatchRecoveredAsync(OutboxDispatchBatch batch, CancellationToken cancellationToken)
     {
         _recovering = true;
-        try { await DispatchAsync(batch, cancellationToken, recovery: true).ConfigureAwait(false); }
-        finally { _recovering = false; }
-    }
 
+        try
+        {
+            await DispatchAsync(batch, cancellationToken, recovery: true).ConfigureAwait(false);
+        }
+        finally
+        {
+            _recovering = false;
+        }
+    }
 }
 
 internal static partial class DirectDispatchLog

@@ -5,16 +5,33 @@ public sealed class RequestBuilder<TRequest, TConsumerOptions>
     where TConsumerOptions : class, new()
 {
     private RequestOptions _options = new();
-    internal Action<RouteBuilder<TRequest>>? ConfigureSend { get; private set; }
-    internal Action<ConsumerBuilder<TConsumerOptions>>? ConfigureReplies { get; private set; }
 
-    internal RequestBuilder() { }
+    internal Action<RouteBuilder<TRequest>>? ConfigureSend
+    {
+        get; private set;
+    }
+
+    internal Action<ConsumerBuilder<TConsumerOptions>>? ConfigureReplies
+    {
+        get; private set;
+    }
+
+    internal RequestBuilder()
+    {
+    }
 
     /// <summary>Bounds pending requests and selects their deadline clock. Each call still supplies its timeout.</summary>
     public RequestOptions Options
     {
-        get => _options;
-        set { ArgumentNullException.ThrowIfNull(value); _options = value; }
+        get
+        {
+            return _options;
+        }
+        set
+        {
+            ArgumentNullException.ThrowIfNull(value);
+            _options = value;
+        }
     }
 
     /// <summary>Configures the ordinary request send route and its portable send settings.</summary>

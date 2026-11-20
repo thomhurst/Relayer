@@ -1,9 +1,9 @@
-using Relayer.Pipeline;
 using System.Buffers;
 using Azure.Core.Amqp;
 using Azure.Messaging.ServiceBus;
 using Microsoft.Extensions.DependencyInjection;
 using Relayer.AzureServiceBus;
+using Relayer.Pipeline;
 using Relayer.Serialization;
 using Relayer.Transports;
 
@@ -29,8 +29,11 @@ public partial class ServiceBusMessageBindingTests
         var message = ServiceBusModelFactory.ServiceBusReceivedMessage(body: body, deliveryCount: 7,
             properties: new Dictionary<string, object>
             {
-                ["cloudEvents:type"] = text, ["binary"] = binary, ["memory"] = (ReadOnlyMemory<byte>)binary,
-                ["segment"] = new ArraySegment<byte>(binary), ["number"] = 42,
+                ["cloudEvents:type"] = text,
+                ["binary"] = binary,
+                ["memory"] = (ReadOnlyMemory<byte>)binary,
+                ["segment"] = new ArraySegment<byte>(binary),
+                ["number"] = 42,
             });
         var args = new ProcessMessageEventArgs(message, new RecordingReceiver(), "test", default);
 
@@ -38,12 +41,14 @@ public partial class ServiceBusMessageBindingTests
         await Assert.That(ServiceBusMessageBinding.GetDeliveryCount(args)).IsEqualTo(7);
         await Assert.That(ServiceBusMessageBinding.TryGetHeader(args, "cloudEvents:type", out var value)).IsTrue();
         await Assert.That(value.Text).IsSameReferenceAs(text);
+
         foreach (var name in new[] { "binary", "memory", "segment" })
         {
             await Assert.That(ServiceBusMessageBinding.TryGetHeader(args, name, out value)).IsTrue();
             await Assert.That(value.Text).IsNull();
             await Assert.That(value.Utf8.Equals((ReadOnlyMemory<byte>)binary)).IsTrue();
         }
+
         await Assert.That(ServiceBusMessageBinding.TryGetHeader(args, "missing", out value)).IsFalse();
         await Assert.That(value.IsEmpty).IsTrue();
         await Assert.That(ServiceBusMessageBinding.TryGetHeader(args, "number", out _)).IsFalse();
@@ -59,7 +64,12 @@ public partial class ServiceBusMessageBindingTests
     public async Task Binding_reads_native_content_type_before_application_property(string? native, string? fallback)
     {
         var properties = new Dictionary<string, object> { ["other"] = "unchanged" };
-        if (fallback is not null) properties["content-type"] = fallback;
+
+        if (fallback is not null)
+        {
+            properties["content-type"] = fallback;
+        }
+
         var message = ServiceBusModelFactory.ServiceBusReceivedMessage(contentType: native, properties: properties);
         var args = new ProcessMessageEventArgs(message, new RecordingReceiver(), "content-type", default);
 
@@ -96,11 +106,28 @@ public partial class ServiceBusMessageBindingTests
     public async Task Binding_does_not_allocate_after_warmup(bool nativeContentType)
     {
         var args = Args(new RecordingReceiver());
-        if (nativeContentType) args.Message.GetRawAmqpMessage().Properties.ContentType = "application/cbor";
-        else args.Message.GetRawAmqpMessage().ApplicationProperties["content-type"] = "application/cbor";
-        for (var i = 0; i < 1_000; i++) Read(args);
+
+        if (nativeContentType)
+        {
+            args.Message.GetRawAmqpMessage().Properties.ContentType = "application/cbor";
+        }
+        else
+        {
+            args.Message.GetRawAmqpMessage().ApplicationProperties["content-type"] = "application/cbor";
+        }
+
+        for (var i = 0; i < 1_000; i++)
+        {
+            Read(args);
+        }
+
         var before = GC.GetAllocatedBytesForCurrentThread();
-        for (var i = 0; i < 10_000; i++) Read(args);
+
+        for (var i = 0; i < 10_000; i++)
+        {
+            Read(args);
+        }
+
         var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
         await Assert.That(allocated).IsEqualTo(0);
 
@@ -108,8 +135,16 @@ public partial class ServiceBusMessageBindingTests
         {
             _ = ServiceBusMessageBinding.GetBody(args);
             _ = ServiceBusMessageBinding.GetDeliveryCount(args);
-            if (!ServiceBusMessageBinding.TryGetHeader(args, "cloudEvents:type", out _)) throw new InvalidOperationException();
-            if (!ServiceBusMessageBinding.TryGetHeader(args, "content-type", out _)) throw new InvalidOperationException();
+
+            if (!ServiceBusMessageBinding.TryGetHeader(args, "cloudEvents:type", out _))
+            {
+                throw new InvalidOperationException();
+            }
+
+            if (!ServiceBusMessageBinding.TryGetHeader(args, "content-type", out _))
+            {
+                throw new InvalidOperationException();
+            }
         }
     }
 
@@ -138,6 +173,7 @@ public partial class ServiceBusMessageBindingTests
         };
         var pipeline = Pipeline(provider);
         var processing = pipeline.ProcessAsync(args, stop.Token).AsTask();
+
         try
         {
             await receiver.Entered.Task.WaitAsync(TimeSpan.FromSeconds(10));
@@ -146,14 +182,23 @@ public partial class ServiceBusMessageBindingTests
             await Assert.That(receiver.Message).IsSameReferenceAs(args.Message);
             await Assert.That(receiver.Token).IsEqualTo(stop.Token);
             await Assert.That(receiver.Operation).IsEqualTo(operation);
-            if (operation != "complete") await Assert.That(receiver.Properties).IsSameReferenceAs(properties);
+
+            if (operation != "complete")
+            {
+                await Assert.That(receiver.Properties).IsSameReferenceAs(properties);
+            }
+
             if (operation == "dead_letter")
             {
                 await Assert.That(receiver.Reason).IsEqualTo("poison");
                 await Assert.That(receiver.Description).IsEqualTo("details");
             }
         }
-        finally { receiver.Pending.SetResult(); }
+        finally
+        {
+            receiver.Pending.SetResult();
+        }
+
         await Assert.That((await processing).Kind).IsEqualTo(DispositionKind.SettledByHandler);
         await Assert.That(feature!.Message).IsNull();
     }
@@ -170,7 +215,12 @@ public partial class ServiceBusMessageBindingTests
     public async Task Failed_or_cancelled_settlement_does_not_mark_settled(string operation, bool cancel)
     {
         using var stop = new CancellationTokenSource();
-        if (cancel) stop.Cancel();
+
+        if (cancel)
+        {
+            stop.Cancel();
+        }
+
         var failure = new ServiceBusException("lock lost", ServiceBusFailureReason.MessageLockLost);
         var receiver = new RecordingReceiver { Error = failure };
         await using var provider = Provider();
@@ -181,14 +231,29 @@ public partial class ServiceBusMessageBindingTests
             try
             {
                 // Exercise cancellation inside the native call, after the pipeline starts.
-                if (cancel) receiver.Error = new OperationCanceledException(stop.Token);
+                if (cancel)
+                {
+                    receiver.Error = new OperationCanceledException(stop.Token);
+                }
+
                 await Settle(context.ServiceBus(), operation, null);
             }
-            finally { observed = context.Features.GetRequired<NativeMessage<ProcessMessageEventArgs>>().Disposition.Kind; }
+            finally
+            {
+                observed = context.Features.GetRequired<NativeMessage<ProcessMessageEventArgs>>().Disposition.Kind;
+            }
         };
         var processing = Pipeline(provider).ProcessAsync(Args(receiver)).AsTask();
-        if (cancel) await Assert.That(async () => await processing).Throws<OperationCanceledException>();
-        else await Assert.That(async () => await processing).Throws<ServiceBusException>();
+
+        if (cancel)
+        {
+            await Assert.That(async () => await processing).Throws<OperationCanceledException>();
+        }
+        else
+        {
+            await Assert.That(async () => await processing).Throws<ServiceBusException>();
+        }
+
         await Assert.That(observed).IsEqualTo(DispositionKind.Complete);
     }
 
@@ -206,25 +271,35 @@ public partial class ServiceBusMessageBindingTests
         await Assert.That(receiver.Calls).IsEqualTo(1);
     }
 
-    private static ValueTask Settle(ServiceBusMessageContext native, string operation, IDictionary<string, object>? properties) => operation switch
+    private static ValueTask Settle(ServiceBusMessageContext native, string operation, IDictionary<string, object>? properties)
     {
-        "complete" => native.CompleteAsync(),
-        "abandon" => native.AbandonAsync(properties),
-        "defer" => native.DeferAsync(properties),
-        "dead_letter" => native.DeadLetterAsync("poison", "details", properties),
-        _ => throw new ArgumentOutOfRangeException(nameof(operation)),
-    };
+        return operation switch
+        {
+            "complete" => native.CompleteAsync(),
+            "abandon" => native.AbandonAsync(properties),
+            "defer" => native.DeferAsync(properties),
+            "dead_letter" => native.DeadLetterAsync("poison", "details", properties),
+            _ => throw new ArgumentOutOfRangeException(nameof(operation)),
+        };
+    }
 
-    private static ProcessMessageEventArgs Args(ServiceBusReceiver receiver, CancellationToken token = default) => new(
-        ServiceBusModelFactory.ServiceBusReceivedMessage(body: new BinaryData(new byte[] { 42 }), deliveryCount: 3,
-            properties: new Dictionary<string, object> { ["cloudEvents:id"] = "id", ["cloudEvents:type"] = "servicebus.payload;v=1" }),
-        receiver, "test", token);
+    private static ProcessMessageEventArgs Args(ServiceBusReceiver receiver, CancellationToken token = default)
+    {
+        return new(
+                ServiceBusModelFactory.ServiceBusReceivedMessage(body: new BinaryData(new byte[] { 42 }), deliveryCount: 3,
+                    properties: new Dictionary<string, object> { ["cloudEvents:id"] = "id", ["cloudEvents:type"] = "servicebus.payload;v=1" }),
+                receiver, "test", token);
+    }
 
     private static ServiceProvider Provider()
     {
         var services = new ServiceCollection();
         services.AddSingleton<Control>();
-        services.AddRelayer(builder => { builder.Infrastructure().MessageTypes.Add<Payload>("servicebus.payload"); new ConsumerBuilder<object>(builder.Services, builder.Infrastructure().Handlers, "manual").Handler<Handler>(); });
+        services.AddRelayer(builder =>
+        {
+            builder.Infrastructure().MessageTypes.Add<Payload>("servicebus.payload");
+            new ConsumerBuilder<object>(builder.Services, builder.Infrastructure().Handlers, "manual").Handler<Handler>();
+        });
         return services.BuildServiceProvider();
     }
 
@@ -238,30 +313,92 @@ public partial class ServiceBusMessageBindingTests
 
     [Message("servicebus.payload")]
     public sealed class Payload;
-    public sealed class Control { public Func<MessageContext, ValueTask> Handle { get; set; } = static _ => default; }
+
+    public sealed class Control
+    {
+        public Func<MessageContext, ValueTask> Handle
+        {
+            get; set;
+        } = static _ => default;
+    }
+
     public sealed class Handler(Control control) : IHandler<Payload>
     {
-        public ValueTask HandleAsync(Payload message, MessageContext context, CancellationToken cancellationToken) => control.Handle(context);
+        public ValueTask HandleAsync(Payload message, MessageContext context, CancellationToken cancellationToken)
+        {
+            return control.Handle(context);
+        }
     }
+
     private sealed class Serializer : IMessageSerializer
     {
         private readonly Payload _payload = new();
+
         public string ContentType => "test/cached";
-        public TMessage Deserialize<TMessage>(ReadOnlySequence<byte> source) => (TMessage)(object)_payload;
-        public void Serialize<TMessage>(TMessage message, IBufferWriter<byte> destination) => throw new NotSupportedException();
+
+        public TMessage Deserialize<TMessage>(ReadOnlySequence<byte> source)
+        {
+            return (TMessage)(object)_payload;
+        }
+
+        public void Serialize<TMessage>(TMessage message, IBufferWriter<byte> destination)
+        {
+            throw new NotSupportedException();
+        }
     }
+
     private sealed class RecordingReceiver : ServiceBusReceiver
     {
-        internal TaskCompletionSource Entered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        internal TaskCompletionSource? Pending { get; init; }
-        internal Exception? Error { get; set; }
-        internal ServiceBusReceivedMessage? Message { get; private set; }
-        internal CancellationToken Token { get; private set; }
-        internal string? Operation { get; private set; }
-        internal IDictionary<string, object>? Properties { get; private set; }
-        internal string? Reason { get; private set; }
-        internal string? Description { get; private set; }
-        internal int Calls { get; private set; }
+        internal TaskCompletionSource Entered
+        {
+            get;
+        } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        internal TaskCompletionSource? Pending
+        {
+            get; init;
+        }
+
+        internal Exception? Error
+        {
+            get; set;
+        }
+
+        internal ServiceBusReceivedMessage? Message
+        {
+            get; private set;
+        }
+
+        internal CancellationToken Token
+        {
+            get; private set;
+        }
+
+        internal string? Operation
+        {
+            get; private set;
+        }
+
+        internal IDictionary<string, object>? Properties
+        {
+            get; private set;
+        }
+
+        internal string? Reason
+        {
+            get; private set;
+        }
+
+        internal string? Description
+        {
+            get; private set;
+        }
+
+        internal int Calls
+        {
+            get; private set;
+        }
+
         private Task Record(string operation, ServiceBusReceivedMessage message, IDictionary<string, object>? properties, CancellationToken token,
             string? reason = null, string? description = null)
         {
@@ -275,17 +412,34 @@ public partial class ServiceBusMessageBindingTests
             Entered.TrySetResult();
             return Error is { } error ? Task.FromException(error) : Pending?.Task ?? Task.CompletedTask;
         }
+
         public override Task CompleteMessageAsync(ServiceBusReceivedMessage message, CancellationToken cancellationToken = default)
-            => Record("complete", message, null, cancellationToken);
+        {
+            return Record("complete", message, null, cancellationToken);
+        }
+
         public override Task AbandonMessageAsync(ServiceBusReceivedMessage message, IDictionary<string, object>? propertiesToModify = null,
-            CancellationToken cancellationToken = default) => Record("abandon", message, propertiesToModify, cancellationToken);
+            CancellationToken cancellationToken = default)
+        {
+            return Record("abandon", message, propertiesToModify, cancellationToken);
+        }
+
         public override Task DeferMessageAsync(ServiceBusReceivedMessage message, IDictionary<string, object>? propertiesToModify = null,
-            CancellationToken cancellationToken = default) => Record("defer", message, propertiesToModify, cancellationToken);
+            CancellationToken cancellationToken = default)
+        {
+            return Record("defer", message, propertiesToModify, cancellationToken);
+        }
+
         public override Task DeadLetterMessageAsync(ServiceBusReceivedMessage message, string deadLetterReason,
             string? deadLetterErrorDescription = null, CancellationToken cancellationToken = default)
-            => Record("dead_letter", message, null, cancellationToken, deadLetterReason, deadLetterErrorDescription);
+        {
+            return Record("dead_letter", message, null, cancellationToken, deadLetterReason, deadLetterErrorDescription);
+        }
+
         public override Task DeadLetterMessageAsync(ServiceBusReceivedMessage message, IDictionary<string, object>? propertiesToModify,
             string deadLetterReason, string? deadLetterErrorDescription = null, CancellationToken cancellationToken = default)
-            => Record("dead_letter", message, propertiesToModify, cancellationToken, deadLetterReason, deadLetterErrorDescription);
+        {
+            return Record("dead_letter", message, propertiesToModify, cancellationToken, deadLetterReason, deadLetterErrorDescription);
+        }
     }
 }

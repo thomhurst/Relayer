@@ -16,22 +16,49 @@ public sealed class AmazonSqsBatchException : AmazonSQSException, IBatchSendFail
     }
 
     /// <summary>The unmodified native response, including successful and failed entry IDs.</summary>
-    public SendMessageBatchResponse Response { get; }
+    public SendMessageBatchResponse Response
+    {
+        get;
+    }
+
     /// <summary>The starting index of this native batch within its contiguous destination group.</summary>
-    public int BatchOffset { get; }
-    internal int GroupOffset { get; set; }
+    public int BatchOffset
+    {
+        get;
+    }
+
+    internal int GroupOffset
+    {
+        get; set;
+    }
 
     /// <inheritdoc />
     public bool IsConfirmed(int messageIndex)
     {
-        if (messageIndex < 0) return false;
+        if (messageIndex < 0)
+        {
+            return false;
+        }
         // Earlier native chunks completed before this chunk failed.
-        if (messageIndex < GroupOffset + BatchOffset) return true;
-        if (Response.Successful is not { } successful) return false;
+        if (messageIndex < GroupOffset + BatchOffset)
+        {
+            return true;
+        }
+
+        if (Response.Successful is not { } successful)
+        {
+            return false;
+        }
+
         foreach (var entry in successful)
+        {
             if (int.TryParse(entry.Id, System.Globalization.NumberStyles.None,
                 System.Globalization.CultureInfo.InvariantCulture, out var index) && index == messageIndex - GroupOffset - BatchOffset)
+            {
                 return true;
+            }
+        }
+
         return false;
     }
 }

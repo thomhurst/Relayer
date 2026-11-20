@@ -1,4 +1,3 @@
-using Relayer.Transports;
 using System.Runtime.CompilerServices;
 using BenchmarkDotNet.Attributes;
 using Microsoft.EntityFrameworkCore;
@@ -7,6 +6,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Npgsql;
 using Relayer.Outbox.EntityFrameworkCore;
 using Relayer.Outbox.PostgreSql;
+using Relayer.Transports;
 
 namespace Relayer.Benchmarks;
 
@@ -24,7 +24,10 @@ public class InboxBenchmarks
     private readonly string _duplicate = Guid.CreateVersion7().ToString("D");
 
     [Params(false, true)]
-    public bool Duplicate { get; set; }
+    public bool Duplicate
+    {
+        get; set;
+    }
 
     [GlobalSetup]
     public async Task Setup()
@@ -40,9 +43,16 @@ public class InboxBenchmarks
         _scope = _provider.CreateScope();
         _db = _scope.ServiceProvider.GetRequiredService<DbContext>();
         await _db.Database.OpenConnectionAsync();
-        await using (var create = new NpgsqlCommand(PostgreSqlOutboxSchema.CreateScript(new() { Schema = _schema }),
+
+        await using (var create = new NpgsqlCommand(PostgreSqlOutboxSchema.CreateScript(new()
+        {
+            Schema = _schema
+        }),
             (NpgsqlConnection)_db.Database.GetDbConnection()))
+        {
             await create.ExecuteNonQueryAsync();
+        }
+
         var configuration = new PostgreSqlOutboxConfiguration(options);
         _insert = configuration.InboxInsertSql;
         _middleware = new EntityFrameworkCoreConsumer<DbContext>("benchmark", true, false, configuration,
@@ -57,6 +67,7 @@ public class InboxBenchmarks
     {
         var id = Guid.Parse(Duplicate ? _duplicate : Guid.CreateVersion7().ToString("D"));
         var transaction = await _db.Database.BeginTransactionAsync().ConfigureAwait(false);
+
         try
         {
             await using var command = new NpgsqlCommand(_insert, (NpgsqlConnection)_db.Database.GetDbConnection(),
@@ -66,7 +77,10 @@ public class InboxBenchmarks
             await command.ExecuteNonQueryAsync().ConfigureAwait(false);
             await transaction.CommitAsync().ConfigureAwait(false);
         }
-        finally { await transaction.DisposeAsync().ConfigureAwait(false); }
+        finally
+        {
+            await transaction.DisposeAsync().ConfigureAwait(false);
+        }
     }
 
     [Benchmark]
@@ -81,20 +95,36 @@ public class InboxBenchmarks
     {
         await using (var drop = new NpgsqlCommand($"DROP SCHEMA {PostgreSqlOutboxSchema.QuoteIdentifier(_schema)} CASCADE",
             (NpgsqlConnection)_db.Database.GetDbConnection()))
+        {
             await drop.ExecuteNonQueryAsync();
+        }
+
         await new AsyncServiceScope(_scope).DisposeAsync();
         await _provider.DisposeAsync();
     }
 
     private sealed class Context(IServiceProvider services) : MessageContext
     {
-        internal string Id { get; set; } = "";
+        internal string Id
+        {
+            get; set;
+        } = "";
+
         public override string MessageId => Id;
+
         public override MessageType MessageType => new("benchmark", 1);
+
         public override MessageHeaders Headers => MessageHeaders.Empty;
+
         public override int Attempt => 1;
+
         public override IServiceProvider Services => services;
-        public override MessageFeatures Features { get; } = new();
+
+        public override MessageFeatures Features
+        {
+            get;
+        } = new();
+
         public override CancellationToken CancellationToken => default;
     }
 }

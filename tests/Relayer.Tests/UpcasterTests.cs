@@ -1,7 +1,7 @@
-using Relayer.Pipeline;
 using System.Buffers;
 using Microsoft.Extensions.DependencyInjection;
 using Relayer.InMemory;
+using Relayer.Pipeline;
 using Relayer.Serialization;
 using Relayer.Transports;
 
@@ -14,11 +14,13 @@ public class UpcasterTests
     {
         await using var provider = Provider();
         var pipeline = Builder(provider).Handler(provider.GetRequiredService<HandlerRegistry>().GetHandler<V3, Handler>()).Build(1);
+
         foreach (var version in new[] { 1, 2, 3 })
         {
             using var context = pipeline.RentContext(Message(provider, version));
             await pipeline.ProcessAsync(context);
         }
+
         var observed = provider.GetRequiredService<Observed>();
         await Assert.That(observed.Messages).IsEquivalentTo(new[] { new V3(42, "GBP"), new V3(42, "GBP"), new V3(42, "GBP") });
         await Assert.That(observed.Versions).IsEquivalentTo(new[] { 1, 2, 3 });
@@ -30,7 +32,11 @@ public class UpcasterTests
     {
         await using var provider = Provider();
         var failures = new List<(Exception Error, FailureAction Action)>();
-        var pipeline = Builder(provider, (_, error, action) => { failures.Add((error, action)); return default; })
+        var pipeline = Builder(provider, (_, error, action) =>
+        {
+            failures.Add((error, action));
+            return default;
+        })
             .Handler(provider.GetRequiredService<HandlerRegistry>().GetHandler<V3, Handler>()).Build(1);
         var receive = new ReceivePipeline<Incoming, Binding>(pipeline, new(), 1);
         var old = Message(provider, 1);
@@ -56,13 +62,23 @@ public class UpcasterTests
         await using var provider = Provider();
         var failures = new List<FailureAction>();
         var definition = provider.GetRequiredService<RelayerConfiguration>().Transports[0].Consumers[0];
-        var pipeline = Builder(provider, (_, _, action) => { failures.Add(action); return default; })
+        var pipeline = Builder(provider, (_, _, action) =>
+        {
+            failures.Add(action);
+            return default;
+        })
             .BuildBatch(provider.GetRequiredService<HandlerRegistry>().GetBatchHandler<V3, BatchHandler>(), definition);
         using var first = pipeline.RentContext(Message(provider, 1));
         using var second = pipeline.RentContext(Message(provider, 2));
         using var third = pipeline.RentContext(Message(provider, 3));
-        using var unknown = pipeline.RentContext(Message(provider, 3) with { MessageType = new("upgrade", 99) });
-        using var invalid = pipeline.RentContext(Message(provider, 1) with { Body = new("invalid"u8.ToArray()) });
+        using var unknown = pipeline.RentContext(Message(provider, 3) with
+        {
+            MessageType = new("upgrade", 99)
+        });
+        using var invalid = pipeline.RentContext(Message(provider, 1) with
+        {
+            Body = new("invalid"u8.ToArray())
+        });
         await pipeline.ProcessBatchAsync(new[] { first, second, third, unknown, invalid });
         await Assert.That(provider.GetRequiredService<Observed>().Messages.Count).IsEqualTo(3);
         await Assert.That(failures).IsEquivalentTo(new[] { FailureAction.DeadLetter, FailureAction.DeadLetter });
@@ -74,12 +90,26 @@ public class UpcasterTests
         var error = new ApplicationException("upgrade failed");
         await using var provider = Provider(new ThrowingUpcaster(error));
         var failures = new List<(Exception Error, FailureAction Action)>();
-        ConsumeFailureDelegate failure = (_, exception, action) => { failures.Add((exception, action)); return default; };
+        ConsumeFailureDelegate failure = (_, exception, action) =>
+        {
+            failures.Add((exception, action));
+            return default;
+        };
         var pipeline = Builder(provider, failure).Handler(provider.GetRequiredService<HandlerRegistry>().GetHandler<V3, Handler>()).Build();
-        using (var context = pipeline.RentContext(Message(provider, 1))) await pipeline.ProcessAsync(context);
+
+        using (var context = pipeline.RentContext(Message(provider, 1)))
+        {
+            await pipeline.ProcessAsync(context);
+        }
+
         var batch = Builder(provider, failure).BuildBatch(provider.GetRequiredService<HandlerRegistry>().GetBatchHandler<V3, BatchHandler>(),
             provider.GetRequiredService<RelayerConfiguration>().Transports[0].Consumers[0]);
-        using (var context = batch.RentContext(Message(provider, 1))) await batch.ProcessBatchAsync(new[] { context });
+
+        using (var context = batch.RentContext(Message(provider, 1)))
+        {
+            await batch.ProcessBatchAsync(new[] { context });
+        }
+
         await Assert.That(failures.Count).IsEqualTo(2);
         await Assert.That(failures.All(f => ReferenceEquals(f.Error, error) && f.Action == FailureAction.Retry)).IsTrue();
     }
@@ -89,6 +119,7 @@ public class UpcasterTests
     {
         await Assert.That(() => new ServiceCollection().AddRelayer(r => r.Infrastructure().Upcasters.Add(new FirstUpgrade())))
             .Throws<InvalidOperationException>();
+
         foreach (var identity in new[] { new MessageType("other", 2), new MessageType("upgrade", 1), new MessageType("upgrade", 2) })
         {
             await Assert.That(() => new ServiceCollection().AddRelayer(r =>
@@ -117,7 +148,11 @@ public class UpcasterTests
         await Assert.That(() => Builder(provider).Handler(handlers.GetHandler<V1, OldHandler>())
             .Handler(handlers.GetHandler<V3, Handler>()).Build()).Throws<InvalidOperationException>();
         var failures = new List<Exception>();
-        var pipeline = Builder(provider, (_, error, _) => { failures.Add(error); return default; })
+        var pipeline = Builder(provider, (_, error, _) =>
+        {
+            failures.Add(error);
+            return default;
+        })
             .Handler(handlers.GetHandler<V1, OldHandler>()).Build();
         using var unknown = pipeline.RentContext(Message(provider, 2));
         await pipeline.ProcessAsync(unknown);
@@ -132,30 +167,47 @@ public class UpcasterTests
         var converter = new RetryUpgrade();
         await using var provider = Provider(converter);
         var failures = new FailurePipeline(provider, "native", "versions", "upgrade-consumer",
-            new() { RetryDelays = new[] { TimeSpan.Zero }, Jitter = 0 });
+            new()
+            {
+                RetryDelays = new[] { TimeSpan.Zero },
+                Jitter = 0
+            });
         var builder = new ConsumePipelineBuilder(provider.GetRequiredService<IServiceScopeFactory>(),
             provider.GetRequiredService<MessageTypeRegistry>(), provider.GetRequiredService<IMessageSerializer>(), failures);
         var handlers = provider.GetRequiredService<HandlerRegistry>();
         var pipeline = batch
             ? builder.BuildBatch(handlers.GetBatchHandler<V3, BatchHandler>(), provider.GetRequiredService<RelayerConfiguration>().Transports[0].Consumers[0])
             : builder.Handler(handlers.GetHandler<V3, Handler>()).Build();
+
         using (var context = pipeline.RentContext(Message(provider, 1)))
         {
-            if (batch) await pipeline.ProcessBatchAsync(new[] { context });
-            else await pipeline.ProcessAsync(context);
+            if (batch)
+            {
+                await pipeline.ProcessBatchAsync(new[] { context });
+            }
+            else
+            {
+                await pipeline.ProcessAsync(context);
+            }
         }
+
         await Assert.That(converter.Inputs).IsEquivalentTo(new[] { new V1(42), new V1(42) });
         await Assert.That(provider.GetRequiredService<Observed>().Messages.Single()).IsEqualTo(new V3(42, "GBP"));
         var receive = new ReceivePipeline<Incoming, Binding>(pipeline, new(), 1);
         var unknown = new Incoming(Message(provider, 1).Body, "upgrade;v=99"u8.ToArray());
         Disposition disposition;
+
         if (batch)
         {
             var dispositions = new Disposition[1];
             await receive.ProcessBatchAsync(new[] { unknown }, dispositions);
             disposition = dispositions[0];
         }
-        else disposition = await receive.ProcessAsync(unknown);
+        else
+        {
+            disposition = await receive.ProcessAsync(unknown);
+        }
+
         await Assert.That(disposition.Kind).IsEqualTo(DispositionKind.DeadLetter);
         await Assert.That(disposition.DeadLetter.Description).Contains("upgrade;v=99");
     }
@@ -172,7 +224,11 @@ public class UpcasterTests
         });
         await using var provider = services.BuildServiceProvider();
         var failures = new List<FailureAction>();
-        var pipeline = Builder(provider, (_, _, action) => { failures.Add(action); return default; })
+        var pipeline = Builder(provider, (_, _, action) =>
+        {
+            failures.Add(action);
+            return default;
+        })
             .Handler(provider.GetRequiredService<HandlerRegistry>().GetHandler<V3, Handler>()).Build();
         using var context = pipeline.RentContext(Message(provider, 1));
         await pipeline.ProcessAsync(context);
@@ -200,81 +256,181 @@ public class UpcasterTests
     }
 
     private static ConsumePipelineBuilder Builder(ServiceProvider provider, ConsumeFailureDelegate? failure = null)
-        => new(provider.GetRequiredService<IServiceScopeFactory>(), provider.GetRequiredService<MessageTypeRegistry>(),
-            provider.GetRequiredService<IMessageSerializer>(), failure ?? (static (_, error, _) => ValueTask.FromException(error)));
+    {
+        return new(provider.GetRequiredService<IServiceScopeFactory>(), provider.GetRequiredService<MessageTypeRegistry>(),
+                    provider.GetRequiredService<IMessageSerializer>(), failure ?? (static (_, error, _) => ValueTask.FromException(error)));
+    }
 
     private static ConsumeMessage Message(ServiceProvider provider, int version)
     {
         var serializer = provider.GetRequiredService<IMessageSerializer>();
         var buffer = new ArrayBufferWriter<byte>();
+
         switch (version)
         {
-            case 1: serializer.Serialize(new V1(42), buffer); break;
-            case 2: serializer.Serialize(new V2(42), buffer); break;
-            default: serializer.Serialize(new V3(42, "GBP"), buffer); break;
+            case 1:
+                serializer.Serialize(new V1(42), buffer);
+                break;
+            case 2:
+                serializer.Serialize(new V2(42), buffer);
+                break;
+            default:
+                serializer.Serialize(new V3(42, "GBP"), buffer);
+                break;
         }
-        return new() { MessageId = "original", MessageType = new("upgrade", version), Body = new(buffer.WrittenMemory) };
+
+        return new()
+        {
+            MessageId = "original",
+            MessageType = new("upgrade", version),
+            Body = new(buffer.WrittenMemory)
+        };
     }
 
-    [Message("upgrade", Version = 1)] public readonly record struct V1(int Value);
-    [Message("upgrade", Version = 2)] public readonly record struct V2(long Value);
-    [Message("upgrade", Version = 3)] public readonly record struct V3(long Value, string Currency);
-    public sealed class FirstUpgrade : IUpcaster<V1, V2> { public V2 Upcast(V1 message) => new(message.Value); }
-    public sealed class SecondUpgrade : IUpcaster<V2, V3> { public V3 Upcast(V2 message) => new(message.Value, "GBP"); }
-    private sealed class ThrowingUpcaster(Exception error) : IUpcaster<V1, V2> { public V2 Upcast(V1 message) => throw error; }
-    private sealed class RetryUpgrade : IUpcaster<V1, V2>
+    [Message("upgrade", Version = 1)]
+    public readonly record struct V1(int Value);
+
+    [Message("upgrade", Version = 2)]
+    public readonly record struct V2(long Value);
+
+    [Message("upgrade", Version = 3)]
+    public readonly record struct V3(long Value, string Currency);
+
+    public sealed class FirstUpgrade : IUpcaster<V1, V2>
     {
-        public List<V1> Inputs { get; } = [];
         public V2 Upcast(V1 message)
         {
-            Inputs.Add(message);
-            if (Inputs.Count == 1) throw new InvalidOperationException("retry upgrade");
             return new(message.Value);
         }
     }
+
+    public sealed class SecondUpgrade : IUpcaster<V2, V3>
+    {
+        public V3 Upcast(V2 message)
+        {
+            return new(message.Value, "GBP");
+        }
+    }
+
+    private sealed class ThrowingUpcaster(Exception error) : IUpcaster<V1, V2>
+    {
+        public V2 Upcast(V1 message)
+        {
+            throw error;
+        }
+    }
+
+    private sealed class RetryUpgrade : IUpcaster<V1, V2>
+    {
+        public List<V1> Inputs
+        {
+            get;
+        } = [];
+
+        public V2 Upcast(V1 message)
+        {
+            Inputs.Add(message);
+
+            if (Inputs.Count == 1)
+            {
+                throw new InvalidOperationException("retry upgrade");
+            }
+
+            return new(message.Value);
+        }
+    }
+
     public sealed class Options;
+
     public sealed class Observed
     {
-        public List<V3> Messages { get; } = [];
-        public List<int> Versions { get; } = [];
-        public int DisposedScopes { get; set; }
+        public List<V3> Messages
+        {
+            get;
+        } = [];
+
+        public List<int> Versions
+        {
+            get;
+        } = [];
+
+        public int DisposedScopes
+        {
+            get; set;
+        }
     }
+
     public sealed class Scope(Observed observed) : IDisposable
     {
-        public void Dispose() => observed.DisposedScopes++;
+        public void Dispose()
+        {
+            observed.DisposedScopes++;
+        }
     }
+
     public sealed class Handler(Observed observed, Scope scope) : IHandler<V3>
     {
         public ValueTask HandleAsync(V3 message, MessageContext context, CancellationToken cancellationToken)
         {
             if (context.MessageId != "original" || !ReferenceEquals(context.Services.GetRequiredService<Scope>(), scope))
+            {
                 throw new InvalidOperationException("Original metadata or scope was lost.");
+            }
+
             observed.Messages.Add(message);
             observed.Versions.Add(context.MessageType.Version);
             return default;
         }
     }
+
     public sealed class OldHandler : IHandler<V1>
     {
-        public ValueTask HandleAsync(V1 message, MessageContext context, CancellationToken cancellationToken) => default;
+        public ValueTask HandleAsync(V1 message, MessageContext context, CancellationToken cancellationToken)
+        {
+            return default;
+        }
     }
+
     public sealed class BatchHandler(Observed observed) : IBatchHandler<V3>
     {
         public ValueTask<BatchResult> HandleAsync(Batch<V3> batch, CancellationToken cancellationToken)
         {
-            for (var i = 0; i < batch.Count; i++) observed.Messages.Add(batch.Items[i].Message);
+            for (var i = 0; i < batch.Count; i++)
+            {
+                observed.Messages.Add(batch.Items[i].Message);
+            }
+
             return new(BatchResult.Success);
         }
     }
+
     private sealed record Incoming(ReadOnlySequence<byte> Body, byte[] Type);
+
     private readonly struct Binding : IMessageBinding<Incoming>
     {
-        public static ReadOnlySequence<byte> GetBody(Incoming message) => message.Body;
-        public static int? GetDeliveryCount(Incoming message) => 1;
-        public static string? GetPartitionId(Incoming message) => null;
+        public static ReadOnlySequence<byte> GetBody(Incoming message)
+        {
+            return message.Body;
+        }
+
+        public static int? GetDeliveryCount(Incoming message)
+        {
+            return 1;
+        }
+
+        public static string? GetPartitionId(Incoming message)
+        {
+            return null;
+        }
+
         public static bool TryGetHeader(Incoming message, string name, out WireString value)
         {
-            value = name switch { "ce_type" => new(message.Type), "ce_id" => new("original"), _ => default };
+            value = name switch
+            {
+                "ce_type" => new(message.Type),
+                "ce_id" => new("original"),
+                _ => default
+            };
             return !value.IsEmpty;
         }
     }

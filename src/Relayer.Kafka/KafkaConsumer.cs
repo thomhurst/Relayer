@@ -1,11 +1,11 @@
-using Relayer.Pipeline;
-using Relayer.Transports;
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Globalization;
 using System.Runtime.CompilerServices;
 using Dekaf;
 using Dekaf.Consumer;
+using Relayer.Pipeline;
+using Relayer.Transports;
 
 namespace Relayer.Kafka;
 
@@ -13,7 +13,7 @@ namespace Relayer.Kafka;
 // runtime-managed commits, rebalance drain, backpressure, seek control and outstanding-record monitoring.
 internal sealed class KafkaConsumer : IAsyncDisposable
 {
-    private static readonly Func<int, string> PartitionText = static partition => partition.ToString(CultureInfo.InvariantCulture);
+    private static readonly Func<int, string> s_partitionText = static partition => partition.ToString(CultureInfo.InvariantCulture);
     private readonly Func<IKafkaConsumer<byte[], byte[]>> _create;
     private IKafkaConsumer<byte[], byte[]> _native;
     private bool _ran;
@@ -36,10 +36,23 @@ internal sealed class KafkaConsumer : IAsyncDisposable
 
     // Benchmarks run the composed native processor directly.
     internal PartitionedProcessingOptions Options => _options;
+
     internal PartitionRecordProcessor<byte[], byte[]> Processor => _process;
-    internal string Topic { get; }
-    internal string? Group { get; }
-    internal Task Completion { get; private set; } = Task.CompletedTask;
+
+    internal string Topic
+    {
+        get;
+    }
+
+    internal string? Group
+    {
+        get;
+    }
+
+    internal Task Completion
+    {
+        get; private set;
+    } = Task.CompletedTask;
 
     // Each start runs a new native consumer: a stopped run discards records it fetched but did not process, so
     // only a fresh member resumes at the committed offset without skipping them.
@@ -91,22 +104,35 @@ internal sealed class KafkaConsumer : IAsyncDisposable
     internal async Task StartAsync(CancellationToken cancellationToken)
     {
         if (!Completion.IsCompleted)
+        {
             throw new InvalidOperationException(_stop.IsCancellationRequested
                 ? "The Kafka consumer is still draining after a stop. Wait for the stop to finish before starting it again."
                 : "The Kafka consumer is already running.");
+        }
+
         if (Completion.IsFaulted || Completion.IsCanceled)
+        {
             throw new InvalidOperationException("Recreate the application host after a failed Kafka receive. A new native consumer resumes at the broker's committed offset.");
+        }
+
         if (_stop.IsCancellationRequested)
         {
             _stop.Dispose();
             _stop = new();
         }
-        if (_ran) _native = _create();
+
+        if (_ran)
+        {
+            _native = _create();
+        }
+
         _ran = true;
         KafkaProducerTransport? transactional = null;
+
         try
         {
             await _native.InitializeAsync(cancellationToken).ConfigureAwait(false);
+
             if (_createTransactional is not null)
             {
                 transactional = _createTransactional();
@@ -119,31 +145,60 @@ internal sealed class KafkaConsumer : IAsyncDisposable
         }
         catch
         {
-            try { await _native.DisposeAsync().ConfigureAwait(false); }
-            finally { if (transactional is not null) await transactional.DisposeAsync().ConfigureAwait(false); }
+            try
+            {
+                await _native.DisposeAsync().ConfigureAwait(false);
+            }
+            finally
+            {
+                if (transactional is not null)
+                {
+                    await transactional.DisposeAsync().ConfigureAwait(false);
+                }
+            }
+
             throw;
         }
+
         if (_health is not null)
         {
             var monitor = _monitor!;
             _health.Start(() => monitor.OldestOutstandingRecordAt);
         }
         // Polling and processing never inherit the application's startup Activity.
-        if (ExecutionContext.IsFlowSuppressed()) Completion = Task.Run(RunAsync);
-        else { using (ExecutionContext.SuppressFlow()) Completion = Task.Run(RunAsync); }
+        if (ExecutionContext.IsFlowSuppressed())
+        {
+            Completion = Task.Run(RunAsync);
+        }
+        else
+        {
+            using (ExecutionContext.SuppressFlow())
+            {
+                Completion = Task.Run(RunAsync);
+            }
+        }
     }
 
     private async Task RunAsync()
     {
         var native = _native;
         var transactional = _transactionalSends?.Run;
-        try { await native.RunPartitionedAsync(_process, _runOptions, _stop.Token).ConfigureAwait(false); }
-        catch (OperationCanceledException) when (_stop.IsCancellationRequested) { }
+
+        try
+        {
+            await native.RunPartitionedAsync(_process, _runOptions, _stop.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (_stop.IsCancellationRequested)
+        {
+        }
         finally
         {
             _health?.Unavailable();
             // Leave the group once the drain has committed, so the stopped member's partitions move to the others.
-            try { await native.DisposeAsync().ConfigureAwait(false); }
+            try
+            {
+                await native.DisposeAsync().ConfigureAwait(false);
+            }
             finally
             {
                 // The run has committed or aborted its last transaction.
@@ -162,14 +217,22 @@ internal sealed class KafkaConsumer : IAsyncDisposable
     internal async ValueTask ProcessAsync(PartitionRecordProcessorContext<byte[], byte[]> context,
         ConsumeResult<byte[], byte[]> record, CancellationToken cancellationToken)
     {
-        var delivery = new KafkaDelivery(record, _partitions.GetOrAdd(record.Partition, PartitionText));
+        var delivery = new KafkaDelivery(record, _partitions.GetOrAdd(record.Partition, s_partitionText));
+
         while (true)
         {
             var changed = _circuit is null ? null : Volatile.Read(ref _circuitChanged);
             var disposition = await _receive(delivery, cancellationToken).ConfigureAwait(false);
-            if (disposition.Kind is DispositionKind.Complete or DispositionKind.SettledByHandler) return;
+
+            if (disposition.Kind is DispositionKind.Complete or DispositionKind.SettledByHandler)
+            {
+                return;
+            }
+
             if (changed is null || disposition.Kind != DispositionKind.Redeliver)
+            {
                 throw new InvalidOperationException("Kafka receive must complete durable failure handling before returning Complete. Kafka has no native redelivery or dead-letter settlement.");
+            }
             // Hold this record in its key lane until the circuit admits another attempt. When the lane starts stopping
             // (revoke, seek or shutdown), the native stop-requested token leaves it unprocessed for replay.
             await changed.Task.WaitAsync(context.StopRequestedToken).ConfigureAwait(false);
@@ -179,20 +242,34 @@ internal sealed class KafkaConsumer : IAsyncDisposable
     internal async ValueTask SeekAsync(TopicPartitionOffset offset, TopicPartitionTimestamp? timestamp, CancellationToken cancellationToken)
     {
         ArgumentOutOfRangeException.ThrowIfNegative(offset.Partition);
-        if (timestamp is null) ArgumentOutOfRangeException.ThrowIfNegative(offset.Offset);
+
+        if (timestamp is null)
+        {
+            ArgumentOutOfRangeException.ThrowIfNegative(offset.Offset);
+        }
+
         cancellationToken.ThrowIfCancellationRequested();
+
         if (_stop.IsCancellationRequested || Completion.IsCompleted)
+        {
             throw new InvalidOperationException("Kafka consumer is not running. Seek only after startup and before shutdown.");
+        }
+
         if (timestamp is { } search)
         {
             // Dekaf's timestamp seek moves to the partition end when nothing matches. Replay must not
             // silently skip records, so resolve with the same native lookup and fail instead.
             var partition = search.TopicPartition;
             var offsets = await _native.GetOffsetsForTimesAsync([search], cancellationToken).ConfigureAwait(false);
+
             if (!offsets.TryGetValue(partition, out var found) || found < 0)
+            {
                 throw new InvalidOperationException($"Kafka has no matching timestamp offset for '{partition}'. No seek was applied.");
+            }
+
             offset = new(partition.Topic, partition.Partition, found);
         }
+
         await _control.SeekAsync(offset, cancellationToken).ConfigureAwait(false);
     }
 
@@ -207,8 +284,15 @@ internal sealed class KafkaConsumer : IAsyncDisposable
     public async ValueTask DisposeAsync()
     {
         _stop.Cancel();
-        try { await Completion.ConfigureAwait(false); }
-        catch (Exception) when (Completion.IsFaulted || Completion.IsCanceled) { /* Hosted service reports failures. */ }
+
+        try
+        {
+            await Completion.ConfigureAwait(false);
+        }
+        catch (Exception) when (Completion.IsFaulted || Completion.IsCanceled)
+        { /* Hosted service reports failures. */
+        }
+
         _circuit?.Dispose();
         await _native.DisposeAsync().ConfigureAwait(false);
         _stop.Dispose();
@@ -223,19 +307,27 @@ internal sealed class KafkaCommitObserver(MessageOperationTracing commit) : IOff
         var count = observation.CompletedRecordCount;
         // Commits are ambient work on the runtime loop; never leave the span current for lanes it starts.
         var previous = Activity.Current;
-        var activity = commit.Start(new() { BatchCount = count > 0 ? (int)Math.Min(count, int.MaxValue) : null });
+        var activity = commit.Start(new()
+        {
+            BatchCount = count > 0 ? (int)Math.Min(count, int.MaxValue) : null
+        });
         Activity.Current = previous;
         return activity;
     }
 
     public void OnCommitCompleted(OffsetCommitObservation observation, object? state, Exception? exception)
     {
-        if (state is not Activity activity) return;
+        if (state is not Activity activity)
+        {
+            return;
+        }
+
         if (exception is not null)
         {
             activity.SetStatus(ActivityStatusCode.Error);
             activity.SetTag("error.type", "_OTHER");
         }
+
         var current = Activity.Current;
         activity.Dispose();
         Activity.Current = current;
@@ -244,55 +336,80 @@ internal sealed class KafkaCommitObserver(MessageOperationTracing commit) : IOff
 
 internal static class KafkaProcessing
 {
-    internal static bool IsExactlyOnce(KafkaConsumerOptions options) =>
-        options.Processing?.CommitPolicy == PartitionCommitPolicy.CommitCompletedInTransaction;
+    internal static bool IsExactlyOnce(KafkaConsumerOptions options)
+    {
+        return options.Processing?.CommitPolicy == PartitionCommitPolicy.CommitCompletedInTransaction;
+    }
 
     // Relayer's defaults when the declaration supplies no native options.
-    internal static PartitionedProcessingOptions Defaults(int concurrency) => new()
+    internal static PartitionedProcessingOptions Defaults(int concurrency)
     {
-        Ordering = PartitionedProcessingOrder.Key,
-        MaxConcurrentHandlersPerPartition = concurrency,
-        CommitPolicy = PartitionCommitPolicy.CommitCompletedPeriodically,
-    };
+        return new()
+        {
+            Ordering = PartitionedProcessingOrder.Key,
+            MaxConcurrentHandlersPerPartition = concurrency,
+            CommitPolicy = PartitionCommitPolicy.CommitCompletedPeriodically,
+        };
+    }
 
     internal static void Validate(string source, PartitionedProcessingOptions options, int concurrency)
     {
         if (options.MaxConcurrentHandlers is { } handlers && handlers != concurrency)
+        {
             throw Invalid($"Processing.MaxConcurrentHandlers ({handlers}) must be unset or equal Concurrency({concurrency}); Concurrency sets the native consumer-wide limit.");
-        if (options.CommitPolicy == PartitionCommitPolicy.UserManaged)
-            throw Invalid("Processing.CommitPolicy must be runtime-managed. Relayer commits only offsets the native runtime has seen complete.");
-        if (options.ErrorPolicy != PartitionWorkerErrorPolicy.StopConsumer)
-            throw Invalid("Processing.ErrorPolicy must be StopConsumer. Other policies skip or stall records after failure handling itself fails.");
-        if (options.Monitor is not null || options.Control is not null || options.CommitObserver is not null || options.TransactionalProducer is not null)
-            throw Invalid("leave Processing.Monitor, Control, CommitObserver and TransactionalProducer unset. Relayer supplies them for health, replay, commit telemetry and exactly-once sends.");
-        if (options.MaxHandlerBatchSize != 1)
-            throw Invalid("Processing.MaxHandlerBatchSize must be 1. Kafka batch handlers are not implemented yet.");
+        }
 
-        InvalidOperationException Invalid(string reason) => new($"Kafka consumer '{source}': {reason}");
+        if (options.CommitPolicy == PartitionCommitPolicy.UserManaged)
+        {
+            throw Invalid("Processing.CommitPolicy must be runtime-managed. Relayer commits only offsets the native runtime has seen complete.");
+        }
+
+        if (options.ErrorPolicy != PartitionWorkerErrorPolicy.StopConsumer)
+        {
+            throw Invalid("Processing.ErrorPolicy must be StopConsumer. Other policies skip or stall records after failure handling itself fails.");
+        }
+
+        if (options.Monitor is not null || options.Control is not null || options.CommitObserver is not null || options.TransactionalProducer is not null)
+        {
+            throw Invalid("leave Processing.Monitor, Control, CommitObserver and TransactionalProducer unset. Relayer supplies them for health, replay, commit telemetry and exactly-once sends.");
+        }
+
+        if (options.MaxHandlerBatchSize != 1)
+        {
+            throw Invalid("Processing.MaxHandlerBatchSize must be 1. Kafka batch handlers are not implemented yet.");
+        }
+
+        InvalidOperationException Invalid(string reason)
+        {
+            return new($"Kafka consumer '{source}': {reason}");
+        }
     }
 
     // PartitionedProcessingOptions is init-only, so pass every native setting through on a new instance.
     internal static PartitionedProcessingOptions Compose(PartitionedProcessingOptions options, int concurrency,
         PartitionedProcessingControl control, PartitionedProcessingMonitor? monitor, IOffsetCommitObserver observer,
-        PartitionedTransactionalProducer? transactionalProducer = null) => new()
+        PartitionedTransactionalProducer? transactionalProducer = null)
     {
-        MaxBufferedRecordsPerPartition = options.MaxBufferedRecordsPerPartition,
-        Ordering = options.Ordering,
-        MaxConcurrentHandlersPerPartition = options.MaxConcurrentHandlersPerPartition,
-        MaxConcurrentHandlers = concurrency,
-        MaxBufferedRecords = options.MaxBufferedRecords,
-        MaxHandlerBatchSize = options.MaxHandlerBatchSize,
-        BackpressureMode = options.BackpressureMode,
-        StopPolicy = options.StopPolicy,
-        StopTimeout = options.StopTimeout,
-        ErrorPolicy = options.ErrorPolicy,
-        IgnoreRestartBackoff = options.IgnoreRestartBackoff,
-        IgnoreRestartBackoffMax = options.IgnoreRestartBackoffMax,
-        CommitPolicy = options.CommitPolicy,
-        CommitInterval = options.CommitInterval,
-        Monitor = monitor,
-        Control = control,
-        CommitObserver = observer,
-        TransactionalProducer = transactionalProducer,
-    };
+        return new()
+        {
+            MaxBufferedRecordsPerPartition = options.MaxBufferedRecordsPerPartition,
+            Ordering = options.Ordering,
+            MaxConcurrentHandlersPerPartition = options.MaxConcurrentHandlersPerPartition,
+            MaxConcurrentHandlers = concurrency,
+            MaxBufferedRecords = options.MaxBufferedRecords,
+            MaxHandlerBatchSize = options.MaxHandlerBatchSize,
+            BackpressureMode = options.BackpressureMode,
+            StopPolicy = options.StopPolicy,
+            StopTimeout = options.StopTimeout,
+            ErrorPolicy = options.ErrorPolicy,
+            IgnoreRestartBackoff = options.IgnoreRestartBackoff,
+            IgnoreRestartBackoffMax = options.IgnoreRestartBackoffMax,
+            CommitPolicy = options.CommitPolicy,
+            CommitInterval = options.CommitInterval,
+            Monitor = monitor,
+            Control = control,
+            CommitObserver = observer,
+            TransactionalProducer = transactionalProducer,
+        };
+    }
 }

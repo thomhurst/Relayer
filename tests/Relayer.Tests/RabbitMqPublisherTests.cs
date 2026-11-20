@@ -1,6 +1,6 @@
-using Relayer.Transports;
-using Relayer.RabbitMQ;
 using RabbitMQ.Client;
+using Relayer.RabbitMQ;
+using Relayer.Transports;
 
 namespace Relayer.Tests;
 
@@ -12,7 +12,12 @@ public class RabbitMqPublisherTests
         var publisher = new RabbitMqPublisher(null!);
         publisher.BatchSlot(0);
         var before = GC.GetAllocatedBytesForCurrentThread();
-        for (var i = 1; i <= 1000; i++) publisher.BatchSlot(i);
+
+        for (var i = 1; i <= 1000; i++)
+        {
+            publisher.BatchSlot(i);
+        }
+
         var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
         // Allows small slot state and list growth, but rejects 256-entry caches per slot.
         await Assert.That(allocated < 2_000_000L).IsTrue();
@@ -34,8 +39,12 @@ public class RabbitMqPublisherTests
     {
         var publisher = new RabbitMqPublisher(null!);
         var headers = new KeyValuePair<string, WireString>[RabbitMqPublisher.CacheCapacity + 1];
+
         for (var i = 0; i < headers.Length; i++)
+        {
             headers[i] = new($"header-{i}", new(new byte[] { 0, (byte)i, 0 }.AsMemory(1, 1)));
+        }
+
         var message = new OutgoingMessage("orders", default, headers);
         publisher.Prepare(message, 0);
         var first = (byte[])publisher.Properties.Headers!["header-0"]!;
@@ -52,12 +61,14 @@ public class RabbitMqPublisherTests
     {
         var publisher = new RabbitMqPublisher(null!);
         var headers = new KeyValuePair<string, WireString>[] { new("id", new(new byte[3].AsMemory(1, 1))) };
+
         for (var i = 1; i <= RabbitMqPublisher.CacheCapacity; i++)
         {
             headers[0] = new("id", new(new byte[i + 2].AsMemory(1, i)));
             publisher.Prepare(new("orders", default, headers), 0);
             publisher.Clear();
         }
+
         var value = new WireString(new byte[1026].AsMemory(1, 1024));
         headers[0] = new("id", value);
         var message = new OutgoingMessage("orders", default, headers);
@@ -78,14 +89,21 @@ public class RabbitMqPublisherTests
         var publisher = new RabbitMqPublisher(null!);
         var headers = new KeyValuePair<string, WireString>[1];
         string? first = null;
+
         for (var i = 0; i <= RabbitMqPublisher.CacheCapacity; i++)
         {
             headers[0] = new("content-type", new(System.Text.Encoding.UTF8.GetBytes($"application/type-{i}")));
             publisher.Prepare(new("orders", default, headers), 0);
-            if (i == 0) first = publisher.Properties.ContentType;
+
+            if (i == 0)
+            {
+                first = publisher.Properties.ContentType;
+            }
+
             await Assert.That(publisher.Properties.ContentType).IsEqualTo($"application/type-{i}");
             publisher.Clear();
         }
+
         headers[0] = new("content-type", new("application/type-0"u8.ToArray()));
         publisher.Prepare(new("orders", default, headers), 0);
         await Assert.That(publisher.Properties.ContentType).IsEqualTo(first);
@@ -97,7 +115,9 @@ public class RabbitMqPublisherTests
     {
         var endpoint = new RabbitMqSendEndpoint("orders", new ConnectionFactory(), null, null,
             static (_, _) => ValueTask.CompletedTask, static (_, _) => ValueTask.CompletedTask)
-        { DelayedExchange = "verified.delayed" };
+        {
+            DelayedExchange = "verified.delayed"
+        };
         // The plugin accepts positive delays strictly below 2^32 milliseconds.
         var maximum = endpoint.Delay(DateTimeOffset.UtcNow.AddMilliseconds(uint.MaxValue));
         await Assert.That(maximum <= uint.MaxValue && maximum > uint.MaxValue - 1000L).IsTrue();
@@ -119,17 +139,21 @@ public class RabbitMqPublisherTests
             new("cloudEvents:id", new("__second__"u8.ToArray().AsMemory(2, 6))),
             new("content-type", new("application/octet-stream"u8.ToArray())),
         });
+
         for (var i = 0; i < 1000; i++)
         {
             publisher.Prepare(i % 2 == 0 ? first : second, i);
             publisher.Clear();
         }
+
         var before = GC.GetAllocatedBytesForCurrentThread();
+
         for (var i = 0; i < 1000; i++)
         {
             publisher.Prepare(i % 2 == 0 ? first : second, i);
             publisher.Clear();
         }
+
         var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
         await Assert.That(allocated).IsEqualTo(0L);
     }

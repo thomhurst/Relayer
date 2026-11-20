@@ -10,5 +10,8 @@ namespace Relayer;
 public sealed class MessageIdentitiesRegisteredAtStartupAttribute(Type messageType) : Attribute
 {
     /// <summary>The generic type definition or type whose identities are registered at startup.</summary>
-    public Type MessageType { get; } = messageType;
+    public Type MessageType
+    {
+        get;
+    } = messageType;
 }

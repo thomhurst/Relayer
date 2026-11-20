@@ -1,4 +1,5 @@
 using Relayer.Transports;
+
 namespace Relayer;
 
 // Failure-enabled consumers attach one scoped sender to each attempt and return it through EndAttempt.
@@ -12,25 +13,40 @@ internal sealed class SenderPool(SendPipeline pipeline)
     internal void Enable()
     {
         if (Volatile.Read(ref _senders) is null)
+        {
             Interlocked.CompareExchange(ref _senders, CreatePool(), null);
+        }
     }
 
     internal Sender Rent(IOutboxEnlistment? outbox, TenantContext? tenant = null)
     {
         var first = Volatile.Read(ref _senders);
-        if (first is null) return new Sender(_pipeline, outbox) { Tenant = tenant };
+
+        if (first is null)
+        {
+            return new Sender(_pipeline, outbox) { Tenant = tenant };
+        }
+
         var sender = first.TryRentGuarded() ?? new PooledSender(this, _pipeline);
         sender.Outbox = outbox;
         sender.Tenant = tenant;
         return sender;
     }
 
-    private void Return(PooledSender sender) => _senders!.TryReturnGuarded(sender);
+    private void Return(PooledSender sender)
+    {
+        _senders!.TryReturnGuarded(sender);
+    }
 
     private SlotPool<PooledSender> CreatePool()
     {
         var pool = new SlotPool<PooledSender>(capacity: 64);
-        for (var i = 0; i < 64; i++) pool.TryReturn(new(this, _pipeline), i);
+
+        for (var i = 0; i < 64; i++)
+        {
+            pool.TryReturn(new(this, _pipeline), i);
+        }
+
         return pool;
     }
 

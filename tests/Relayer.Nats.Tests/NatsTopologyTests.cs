@@ -28,8 +28,14 @@ public class NatsTopologyTests
             nats.Options.Configure(options =>
             {
                 options.ConnectionOptions = nativeOptions;
-                options.Streams.Add(new("orders") { Configuration = stream });
-                options.Consumers.Add(new("orders", "handler") { Configuration = consumer });
+                options.Streams.Add(new("orders")
+                {
+                    Configuration = stream
+                });
+                options.Consumers.Add(new("orders", "handler")
+                {
+                    Configuration = consumer
+                });
             });
         }))).Build();
         await using var hostLifetime = (IAsyncDisposable)host;
@@ -51,9 +57,25 @@ public class NatsTopologyTests
         await using var drift = NatsConfigurationTests.Provider(options =>
         {
             options.ConnectionOptions = broker.Options();
-            options.Streams.Add(new("orders") { Configuration = stream with { Storage = StreamConfigStorage.File } });
-            options.Consumers.Add(new("orders", "handler") { Configuration = consumer with { AckWait = TimeSpan.FromSeconds(5), Backoff = new[] { TimeSpan.FromSeconds(5) } } });
-            options.Streams.Add(new("after_error") { Configuration = new("after_error", ["after.error"]) });
+            options.Streams.Add(new("orders")
+            {
+                Configuration = stream with
+                {
+                    Storage = StreamConfigStorage.File
+                }
+            });
+            options.Consumers.Add(new("orders", "handler")
+            {
+                Configuration = consumer with
+                {
+                    AckWait = TimeSpan.FromSeconds(5),
+                    Backoff = new[] { TimeSpan.FromSeconds(5) }
+                }
+            });
+            options.Streams.Add(new("after_error")
+            {
+                Configuration = new("after_error", ["after.error"])
+            });
         });
         var report = await drift.GetRequiredService<ITransport>().ApplyTopologyAsync(TopologyMode.Provision, token);
         await Assert.That(report.Differences.Count).IsEqualTo(2);
@@ -90,15 +112,21 @@ public class NatsTopologyTests
             options.Consumers.Add(new("events", "handler"));
         });
         var transport = names.GetRequiredService<ITransport>();
+
         for (var attempt = 0; attempt < 2; attempt++)
+        {
             await Assert.That((await transport.ApplyTopologyAsync(TopologyMode.Validate, token)).Differences.Count).IsEqualTo(0);
+        }
 
         await using var missing = NatsConfigurationTests.Provider(options =>
         {
             options.ConnectionOptions = broker.Options();
             options.Streams.Add(new("missing"));
             options.Consumers.Add(new("events", "missing"));
-            options.Streams.Add(new("events") { Configuration = new("events", ["different.>"]) });
+            options.Streams.Add(new("events")
+            {
+                Configuration = new("events", ["different.>"])
+            });
         });
         var differences = (await missing.GetRequiredService<ITransport>().ApplyTopologyAsync(TopologyMode.Validate, token)).Differences;
         await Assert.That(differences.Count).IsEqualTo(3);
@@ -143,8 +171,14 @@ public class NatsTopologyTests
         await using var provider = NatsConfigurationTests.Provider(options =>
         {
             options.ConnectionOptions = broker.Options("reader");
-            options.Streams.Add(new("events") { Configuration = new("events", ["events.>"]) });
-            options.Consumers.Add(new("events", "handler") { Configuration = new("handler") });
+            options.Streams.Add(new("events")
+            {
+                Configuration = new("events", ["events.>"])
+            });
+            options.Consumers.Add(new("events", "handler")
+            {
+                Configuration = new("handler")
+            });
         });
         var transport = (NatsNativeTransport)provider.GetRequiredService<ITransport>();
         await transport.StartAsync(token);
@@ -162,10 +196,18 @@ public class NatsTopologyTests
         {
             var disconnected = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
             var reopened = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-            connection.ConnectionDisconnected += (_, _) => { disconnected.TrySetResult(); return default; };
+            connection.ConnectionDisconnected += (_, _) =>
+            {
+                disconnected.TrySetResult();
+                return default;
+            };
             connection.ConnectionOpened += (_, _) =>
             {
-                if (disconnected.Task.IsCompleted) reopened.TrySetResult();
+                if (disconnected.Task.IsCompleted)
+                {
+                    reopened.TrySetResult();
+                }
+
                 return default;
             };
             return reopened.Task;
@@ -179,8 +221,12 @@ public class NatsTopologyTests
             var builder = new ContainerBuilder("nats:2.15.2-alpine")
                 .WithPortBinding(4222, true)
                 .WithWaitStrategy(Wait.ForUnixContainer().UntilMessageIsLogged("Server is ready"));
+
             if (configuration is not null)
+            {
                 builder = builder.WithResourceMapping(Encoding.UTF8.GetBytes(configuration), FilePath.Of("/etc/nats.conf"));
+            }
+
             var arguments = configuration is null ? "-js" : "-js -c /etc/nats.conf";
             // Docker stop/start reallocates random published ports. Restart only the broker process
             // so the recovery test preserves the endpoint every existing native client uses.
@@ -194,33 +240,65 @@ public class NatsTopologyTests
                     wait "$broker"
                 done
                 """.ReplaceLineEndings("\n"));
-            if (OperatingSystem.IsLinux()) builder = builder.WithPortBinding("20000-29999", "4222");
+
+            if (OperatingSystem.IsLinux())
+            {
+                builder = builder.WithPortBinding("20000-29999", "4222");
+            }
+
             var container = builder.Build();
-            try { await container.StartAsync(token); return new(container); }
-            catch { await container.DisposeAsync(); throw; }
+
+            try
+            {
+                await container.StartAsync(token);
+                return new(container);
+            }
+            catch
+            {
+                await container.DisposeAsync();
+                throw;
+            }
         }
 
-        internal NatsOpts Options(string? username = null) => new()
+        internal NatsOpts Options(string? username = null)
         {
-            Url = $"nats://{container.Hostname}:{container.GetMappedPublicPort(4222)}",
-            ConnectTimeout = TimeSpan.FromSeconds(5),
-            RequestTimeout = TimeSpan.FromSeconds(5),
-            AuthOpts = username is null ? new() : new() { Username = username, Password = username },
-        };
+            return new()
+            {
+                Url = $"nats://{container.Hostname}:{container.GetMappedPublicPort(4222)}",
+                ConnectTimeout = TimeSpan.FromSeconds(5),
+                RequestTimeout = TimeSpan.FromSeconds(5),
+                AuthOpts = username is null ? new() : new()
+                {
+                    Username = username,
+                    Password = username
+                },
+            };
+        }
 
         internal async Task RestartAsync(CancellationToken token)
         {
             var result = await container.ExecAsync(["killall", "-TERM", "nats-server"], token);
-            if (result.ExitCode != 0) throw new InvalidOperationException(result.Stderr);
+
+            if (result.ExitCode != 0)
+            {
+                throw new InvalidOperationException(result.Stderr);
+            }
         }
 
         internal async Task SetConnectedAsync(bool connected, CancellationToken token)
         {
             var command = connected ? "rm -f /tmp/relayer-offline" : "touch /tmp/relayer-offline && killall -TERM nats-server";
             var result = await container.ExecAsync(["/bin/sh", "-c", command], token);
-            if (result.ExitCode != 0) throw new InvalidOperationException(result.Stderr);
+
+            if (result.ExitCode != 0)
+            {
+                throw new InvalidOperationException(result.Stderr);
+            }
         }
 
-        public ValueTask DisposeAsync() => container.DisposeAsync();
+        public ValueTask DisposeAsync()
+        {
+            return container.DisposeAsync();
+        }
     }
 }

@@ -40,18 +40,31 @@ public sealed class SqsReceiveFlociTests
                 sqs.Options.Configure(options =>
                 {
                     options.SqsClient = client;
-                    options.Queues.Add(Queue(source, fifo)); options.Queues.Add(Queue(dead, fifo));
+                    options.Queues.Add(Queue(source, fifo));
+                    options.Queues.Add(Queue(dead, fifo));
                 });
                 sqs.Consume(source, consumer =>
                 {
                     consumer.Handler<Handler>();
                     consumer.Options.HeaderNames = names;
-                    consumer.Options.ConfigureReceive = request => { request.WaitTimeSeconds = 1; request.VisibilityTimeout = 60; request.MaxNumberOfMessages = fifo ? 1 : 10; };
-                    consumer.Failures(new() { RetryDelays = [], DeadLetterEndpoint = dead, RedeliveryDelays = new[] { TimeSpan.FromSeconds(1) }, Jitter = 0 });
+                    consumer.Options.ConfigureReceive = request =>
+                    {
+                        request.WaitTimeSeconds = 1;
+                        request.VisibilityTimeout = 60;
+                        request.MaxNumberOfMessages = fifo ? 1 : 10;
+                    };
+                    consumer.Failures(new()
+                    {
+                        RetryDelays = [],
+                        DeadLetterEndpoint = dead,
+                        RedeliveryDelays = new[] { TimeSpan.FromSeconds(1) },
+                        Jitter = 0
+                    });
                 });
             });
         });
         using var host = builder.Build();
+
         try
         {
             await host.StartAsync(token);
@@ -61,6 +74,7 @@ public sealed class SqsReceiveFlociTests
             var declaration = host.Services.GetRequiredService<RelayerConfiguration>().Transports.Single().Consumers.Single();
             await Assert.That((await probe.CheckAsync(token)).Status).IsEqualTo(HealthStatus.Healthy);
             await Assert.That((await liveness.GetStateAsync(declaration, token))!.Value.IsIdle).IsTrue();
+
             async Task Send(int value)
             {
                 var headers = new KeyValuePair<string, WireString>[]
@@ -74,14 +88,28 @@ public sealed class SqsReceiveFlociTests
                     {
                         request.MessageGroupId = "group";
                         request.MessageDeduplicationId = fifo ? "event-" + value : null;
-                        request.MessageAttributes["native-binary"] = new() { DataType = "Binary", BinaryValue = new MemoryStream(new byte[] { 1, 2, 3 }) };
-                        request.MessageAttributes["native-number"] = new() { DataType = "Number", StringValue = "42" };
+                        request.MessageAttributes["native-binary"] = new()
+                        {
+                            DataType = "Binary",
+                            BinaryValue = new MemoryStream(new byte[] { 1, 2, 3 })
+                        };
+                        request.MessageAttributes["native-number"] = new()
+                        {
+                            DataType = "Number",
+                            StringValue = "42"
+                        };
                     })), token);
             }
+
             await Send(1);
             var deadUrl = (await client.GetQueueUrlAsync(dead, token)).QueueUrl;
             var poisoned = await client.ReceiveMessageAsync(new ReceiveMessageRequest
-            { QueueUrl = deadUrl, WaitTimeSeconds = 10, MessageAttributeNames = ["All"], MessageSystemAttributeNames = ["All"] }, token);
+            {
+                QueueUrl = deadUrl,
+                WaitTimeSeconds = 10,
+                MessageAttributeNames = ["All"],
+                MessageSystemAttributeNames = ["All"]
+            }, token);
             var copy = poisoned.Messages.Single();
             await Assert.That(copy.Attributes["MessageGroupId"]).IsEqualTo("group");
             await Assert.That(copy.Body).IsEqualTo("{\"Value\":1}");
@@ -93,18 +121,24 @@ public sealed class SqsReceiveFlociTests
             await Assert.That(copy.MessageAttributes[FailureHeaders.Redeliveries].StringValue).IsEqualTo("1");
             await Assert.That(control.Attempts.ToArray()).IsEquivalentTo(new[] { 1, 2 });
             await client.DeleteMessageAsync(deadUrl, copy.ReceiptHandle, token);
+
             if (fifo)
             {
                 // A malformed envelope still needs native deduplication on a FIFO poison copy.
                 var sourceUrlForPoison = (await client.GetQueueUrlAsync(source, token)).QueueUrl;
                 await client.SendMessageAsync(new SendMessageRequest
                 {
-                    QueueUrl = sourceUrlForPoison, MessageBody = "malformed", MessageGroupId = "malformed-group",
+                    QueueUrl = sourceUrlForPoison,
+                    MessageBody = "malformed",
+                    MessageGroupId = "malformed-group",
                     MessageDeduplicationId = "native-poison-id",
                 }, token);
                 var malformed = await client.ReceiveMessageAsync(new ReceiveMessageRequest
                 {
-                    QueueUrl = deadUrl, WaitTimeSeconds = 10, MessageAttributeNames = ["All"], MessageSystemAttributeNames = ["All"],
+                    QueueUrl = deadUrl,
+                    WaitTimeSeconds = 10,
+                    MessageAttributeNames = ["All"],
+                    MessageSystemAttributeNames = ["All"],
                 }, token);
                 var malformedCopy = malformed.Messages.Single();
                 await Assert.That(malformedCopy.Body).IsEqualTo("malformed");
@@ -112,21 +146,28 @@ public sealed class SqsReceiveFlociTests
                 await Assert.That(malformedCopy.MessageAttributes.ContainsKey(FailureHeaders.History)).IsTrue();
                 await client.DeleteMessageAsync(deadUrl, malformedCopy.ReceiptHandle, token);
             }
+
             if (fifo)
             {
                 var sourceUrlForTyped = (await client.GetQueueUrlAsync(source, token)).QueueUrl;
+
                 foreach (var (dataType, identity) in new[] { ("Number", "42"), ("String.eventId", "42"), ("String", " "), ("String", "event 1"), ("String", new string('a', 129)), ("String", "évent") })
                 {
                     var nativeId = "native-typed-" + Guid.NewGuid().ToString("N");
                     await client.SendMessageAsync(new SendMessageRequest
                     {
-                        QueueUrl = sourceUrlForTyped, MessageBody = "malformed", MessageGroupId = "typed-group",
+                        QueueUrl = sourceUrlForTyped,
+                        MessageBody = "malformed",
+                        MessageGroupId = "typed-group",
                         MessageDeduplicationId = nativeId,
                         MessageAttributes = new() { [names.Id] = new() { DataType = dataType, StringValue = identity } },
                     }, token);
                     var typed = await client.ReceiveMessageAsync(new ReceiveMessageRequest
                     {
-                        QueueUrl = deadUrl, WaitTimeSeconds = 10, MessageAttributeNames = ["All"], MessageSystemAttributeNames = ["All"],
+                        QueueUrl = deadUrl,
+                        WaitTimeSeconds = 10,
+                        MessageAttributeNames = ["All"],
+                        MessageSystemAttributeNames = ["All"],
                     }, token);
                     var typedCopy = typed.Messages.Single();
                     await Assert.That(typedCopy.Attributes["MessageDeduplicationId"]).IsEqualTo(nativeId);
@@ -136,6 +177,7 @@ public sealed class SqsReceiveFlociTests
                     await client.DeleteMessageAsync(deadUrl, typedCopy.ReceiptHandle, token);
                 }
             }
+
             await Send(2);
             await control.Healthy.Task.WaitAsync(token);
             await Send(3);
@@ -157,10 +199,24 @@ public sealed class SqsReceiveFlociTests
             await broker.ResumeAsync(token);
             await Assert.That((await probe.CheckAsync(token)).Status).IsEqualTo(HealthStatus.Healthy);
         }
-        finally { control.Release.TrySetResult(); await host.StopAsync(CancellationToken.None); }
+        finally
+        {
+            control.Release.TrySetResult();
+            await host.StopAsync(CancellationToken.None);
+        }
     }
 
-    private static CreateQueueRequest Queue(string name, bool fifo) => new(name) { Attributes = fifo ? new() { ["FifoQueue"] = "true" } : [] };
+    private static CreateQueueRequest Queue(string name, bool fifo)
+    {
+        return new(name)
+        {
+            Attributes = fifo ? new()
+            {
+                ["FifoQueue"] = "true"
+            } : []
+        };
+    }
+
     internal sealed class Control
     {
         internal readonly ConcurrentQueue<int> Attempts = new();
@@ -168,14 +224,26 @@ public sealed class SqsReceiveFlociTests
         internal readonly TaskCompletionSource Stalled = new(TaskCreationOptions.RunContinuationsAsynchronously);
         internal readonly TaskCompletionSource Release = new(TaskCreationOptions.RunContinuationsAsynchronously);
     }
+
     [Message("sqs.receive")]
     public sealed record Payload(int Value);
+
     internal sealed class Handler(Control control) : IHandler<Payload>
     {
         public async ValueTask HandleAsync(Payload message, MessageContext context, CancellationToken cancellationToken)
         {
-            if (message.Value == 1) { control.Attempts.Enqueue(context.Attempt); throw new InvalidOperationException("poison"); }
-            if (message.Value == 2) { control.Healthy.TrySetResult(); return; }
+            if (message.Value == 1)
+            {
+                control.Attempts.Enqueue(context.Attempt);
+                throw new InvalidOperationException("poison");
+            }
+
+            if (message.Value == 2)
+            {
+                control.Healthy.TrySetResult();
+                return;
+            }
+
             control.Stalled.TrySetResult();
             await control.Release.Task.WaitAsync(context.CancellationToken);
         }

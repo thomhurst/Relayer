@@ -74,13 +74,25 @@ public static class MySqlOutboxSchema
             """;
     }
 
-    internal static string DeadTable(MySqlOutboxOptions options) => Identifier(options, "dead");
+    internal static string DeadTable(MySqlOutboxOptions options)
+    {
+        return Identifier(options, "dead");
+    }
 
-    internal static string LeaseTable(MySqlOutboxOptions options) => Identifier(options, "leases");
+    internal static string LeaseTable(MySqlOutboxOptions options)
+    {
+        return Identifier(options, "leases");
+    }
 
-    internal static string InboxTable(MySqlOutboxOptions options) => Identifier(options, "inbox");
+    internal static string InboxTable(MySqlOutboxOptions options)
+    {
+        return Identifier(options, "inbox");
+    }
 
-    internal static string Table(MySqlOutboxOptions options) => Identifier(options, "outbox");
+    internal static string Table(MySqlOutboxOptions options)
+    {
+        return Identifier(options, "outbox");
+    }
 
     private static string Identifier(MySqlOutboxOptions options, string suffix)
     {
@@ -88,10 +100,18 @@ public static class MySqlOutboxSchema
         var identifier = options.TablePrefix + suffix;
         // MySQL appends _chk_1 ... _chk_6 to the table name for these native CHECK constraints.
         if (identifier.Length > 58 || identifier.Contains('\0') || identifier.EndsWith(' '))
+        {
             throw new ArgumentException("MySQL outbox table identifiers must fit in 58 characters (52 for TablePrefix), reserve 6 for generated CHECK names, contain no NUL, and not end in a space.", nameof(options));
+        }
+
         foreach (var character in identifier)
+        {
             if (char.IsSurrogate(character))
+            {
                 throw new ArgumentException("MySQL identifiers cannot contain supplementary Unicode characters.", nameof(options));
+            }
+        }
+
         return "`" + identifier.Replace("`", "``", StringComparison.Ordinal) + "`";
     }
 }

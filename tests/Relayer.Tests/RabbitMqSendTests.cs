@@ -28,10 +28,18 @@ public class RabbitMqSendTests
         await using var reader = await connection.CreateChannelAsync(cancellationToken: token);
         await reader.QueueDeclareAsync("orders", true, false, false, cancellationToken: token);
         var publisher = new RabbitMqPublisher(await connection.CreateChannelAsync(new(true, true), token));
+
         try
         {
-            if (replaceChannel) await publisher.Channel.CloseAsync(token);
-            await using var transport = new RabbitMqNativeTransport("rabbit", new() { ConnectionFactory = factory }, ["orders"]);
+            if (replaceChannel)
+            {
+                await publisher.Channel.CloseAsync(token);
+            }
+
+            await using var transport = new RabbitMqNativeTransport("rabbit", new()
+            {
+                ConnectionFactory = factory
+            }, ["orders"]);
             var endpoint = new RabbitMqSendEndpoint("orders", factory, null, null,
                 static (_, _) => ValueTask.CompletedTask, static (_, _) => ValueTask.CompletedTask)
             {
@@ -47,14 +55,20 @@ public class RabbitMqSendTests
             // Timer completion alone does not prove that the wall-clock delivery deadline elapsed.
             // Keep the publisher unavailable until the same deadline predicate used by the send is zero.
             while (endpoint.Delay(message.DeliverAt) is var remainingDelay && remainingDelay > 0)
+            {
                 await Task.Delay(TimeSpan.FromMilliseconds(remainingDelay), token);
+            }
+
             await publishers.Writer.WriteAsync(publisher, token);
             await send;
             var received = (await reader.BasicGetAsync("orders", true, token))!;
             await Assert.That(received.Body.Span[0]).IsEqualTo((byte)42);
             await Assert.That(received.BasicProperties.Headers?.ContainsKey("x-delay") == true).IsFalse();
         }
-        finally { await publisher.Channel.DisposeAsync(); }
+        finally
+        {
+            await publisher.Channel.DisposeAsync();
+        }
     }
 
     [Test]
@@ -79,15 +93,16 @@ public class RabbitMqSendTests
             properties.Headers!["traceparent"] = "wrong";
             properties.Headers["native"] = "value";
         });
-        const string creation = "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01";
+        const string Creation = "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01";
         var bytes = Encoding.UTF8.GetBytes("__id-123__");
         KeyValuePair<string, WireString>[] headers = [new("cloudEvents:id", new(bytes.AsMemory(2, 6))),
             new("cloudEvents:type", new("orders.placed;v=1")), new("content-type", new("application/json")),
-            new("traceparent", new(creation))];
+            new("traceparent", new(Creation))];
         await Task.WhenAll(Enumerable.Range(0, 100).Select(index => transport.SendAsync(
             new("events:placed", BitConverter.GetBytes(index), headers, options: options), token).AsTask()));
         await Assert.That(calls).IsEqualTo(100);
         var received = new HashSet<int>();
+
         for (var i = 0; i < 100; i++)
         {
             var message = (await channel.BasicGetAsync("orders", true, token))!;
@@ -96,12 +111,14 @@ public class RabbitMqSendTests
             await Assert.That(message.BasicProperties.Priority).IsEqualTo((byte)3);
             await Assert.That(message.BasicProperties.ContentType).IsEqualTo("application/json");
             await Assert.That(Header(message, "cloudEvents:id")).IsEqualTo("id-123");
-            await Assert.That(Header(message, "traceparent")).IsEqualTo(creation);
+            await Assert.That(Header(message, "traceparent")).IsEqualTo(Creation);
             await Assert.That(Header(message, "native")).IsEqualTo("value");
         }
+
         await Assert.That(received.Count).IsEqualTo(100);
         await transport.SendBatchAsync(new[] { new OutgoingMessage("orders", new byte[] { 1 }),
             new OutgoingMessage("events:placed", new byte[] { 2 }) }, token);
+
         for (var i = 0; i < 2; i++)
         {
             var message = (await channel.BasicGetAsync("orders", true, token))!;
@@ -109,6 +126,7 @@ public class RabbitMqSendTests
             await Assert.That(message.BasicProperties.ContentType).IsNull();
             await Assert.That(message.BasicProperties.Headers?.ContainsKey("native") == true).IsFalse();
         }
+
         await transport.StopAsync(token);
         await Assert.That(async () => await transport.SendAsync(new("orders", default), token)).Throws<InvalidOperationException>();
     }
@@ -124,7 +142,8 @@ public class RabbitMqSendTests
         await channel.QueueDeclareAsync("orders", true, false, false, cancellationToken: token);
         await channel.QueueDeclareAsync("full", true, false, false, new Dictionary<string, object?>
         {
-            ["x-max-length"] = 1, ["x-overflow"] = "reject-publish",
+            ["x-max-length"] = 1,
+            ["x-overflow"] = "reject-publish",
         }, cancellationToken: token);
         await using var nackProvider = Provider(broker.Factory(), ["full"]);
         var nackTransport = nackProvider.GetRequiredService<ITransport>();
@@ -165,12 +184,16 @@ public class RabbitMqSendTests
         {
             options.DelayedExchanges.Add("", new("orders.delayed")
             {
-                Type = "x-delayed-message", Arguments = new Dictionary<string, object?> { ["x-delayed-type"] = "direct" },
+                Type = "x-delayed-message",
+                Arguments = new Dictionary<string, object?> { ["x-delayed-type"] = "direct" },
             });
         }, outbox, TopologyMode.Provision);
         using var host = new HostBuilder().ConfigureServices(collection =>
         {
-            foreach (var service in services) collection.Add(service);
+            foreach (var service in services)
+            {
+                collection.Add(service);
+            }
         }).Build();
         await using var hostLifetime = (IAsyncDisposable)host;
         await host.StartAsync(token);
@@ -178,6 +201,7 @@ public class RabbitMqSendTests
         var transport = provider.GetRequiredService<ITransport>();
         await Assert.That(transport.GetCapabilities("orders").MaxDeliveryDelay is not null).IsEqualTo(plugin);
         await transport.StartAsync(token);
+
         if (plugin)
         {
             await channel.QueueBindAsync("orders", "orders.delayed", "orders", cancellationToken: token);
@@ -191,6 +215,7 @@ public class RabbitMqSendTests
                     deliveredAt = Stopwatch.GetTimestamp();
                     delivery.TrySetResult(args);
                 }
+
                 return Task.CompletedTask;
             };
             await channel.BasicConsumeAsync("orders", true, consumer, token);
@@ -253,7 +278,9 @@ public class RabbitMqSendTests
             InstrumentPublished = (instrument, listener) =>
             {
                 if (ReferenceEquals(instrument.Meter.Scope, instrumentation) && instrument.Name == "messaging.client.sent.messages")
+                {
                     listener.EnableMeasurementEvents(instrument);
+                }
             },
         };
         meter.SetMeasurementEventCallback<long>((_, value, _, _) => Interlocked.Add(ref attempts, value));
@@ -275,8 +302,7 @@ public class RabbitMqSendTests
         using var cancelled = new CancellationTokenSource();
         cancelled.Cancel();
         await Assert.That(async () => await transport.SendAsync(new("orders", default), cancelled.Token)).Throws<OperationCanceledException>();
-        await Assert.That(async () => await transport.SendAsync(new("orders", default, options:
-            new SendOptions().RabbitMQ(_ => throw new InvalidOperationException("Rejected before publish"))), token)).Throws<InvalidOperationException>();
+        await Assert.That(async () => await transport.SendAsync(new("orders", default, options: new SendOptions().RabbitMQ(_ => throw new InvalidOperationException("Rejected before publish"))), token)).Throws<InvalidOperationException>();
         await Assert.That(attempts).IsEqualTo(4L);
     }
 
@@ -299,13 +325,23 @@ public class RabbitMqSendTests
             InstrumentPublished = (instrument, listener) =>
             {
                 if (ReferenceEquals(instrument.Meter.Scope, instrumentation) && instrument.Name == "messaging.client.operation.duration")
+                {
                     listener.EnableMeasurementEvents(instrument);
+                }
             },
         };
         meter.SetMeasurementEventCallback<double>((_, value, tags, _) =>
         {
             var failed = false;
-            foreach (var tag in tags) if (tag.Key == "error.type" && Equals(tag.Value, "_OTHER")) failed = true;
+
+            foreach (var tag in tags)
+            {
+                if (tag.Key == "error.type" && Equals(tag.Value, "_OTHER"))
+                {
+                    failed = true;
+                }
+            }
+
             durations.Enqueue((value, failed));
         });
         meter.Start();
@@ -316,7 +352,10 @@ public class RabbitMqSendTests
             Sample = (ref ActivityCreationOptions<ActivityContext> options) =>
             {
                 if (options.Source == tracing.Source)
+                {
                     sampledRoutingKey = options.Tags?.FirstOrDefault(tag => tag.Key == "messaging.rabbitmq.destination.routing_key").Value as string;
+                }
+
                 return ActivitySamplingResult.AllDataAndRecorded;
             },
             ActivityStopped = spans.Enqueue,
@@ -324,10 +363,10 @@ public class RabbitMqSendTests
         ActivitySource.AddActivityListener(listener);
         var transport = provider.GetRequiredService<ITransport>();
         await transport.StartAsync(token);
-        const string original = "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01";
-        await transport.SendAsync(new("orders", new byte[] { 1 }, new KeyValuePair<string, WireString>[] { new("traceparent", new(original)) }), token);
+        const string Original = "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01";
+        await transport.SendAsync(new("orders", new byte[] { 1 }, new KeyValuePair<string, WireString>[] { new("traceparent", new(Original)) }), token);
         var sent = (await channel.BasicGetAsync("orders", true, token))!;
-        await Assert.That(Header(sent, "traceparent")).IsEqualTo(original);
+        await Assert.That(Header(sent, "traceparent")).IsEqualTo(Original);
         var span = spans.Single(item => ReferenceEquals(item.Source, tracing.Source));
         await Assert.That(span.DisplayName).IsEqualTo("send :orders");
         await Assert.That(span.Kind).IsEqualTo(ActivityKind.Client);
@@ -361,9 +400,13 @@ public class RabbitMqSendTests
         await transport.StartAsync(token);
         var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         using var release = new ManualResetEventSlim();
-        var send = Task.Run(async () => await transport.SendAsync(new("orders", new byte[] { 1 }, options:
-            new SendOptions().RabbitMQ(_ => { entered.SetResult(); release.Wait(token); })), token), token);
+        var send = Task.Run(async () => await transport.SendAsync(new("orders", new byte[] { 1 }, options: new SendOptions().RabbitMQ(_ =>
+        {
+            entered.SetResult();
+            release.Wait(token);
+        })), token), token);
         await entered.Task.WaitAsync(token);
+
         using (var waitingToken = new CancellationTokenSource())
         {
             var waiting = transport.SendAsync(new("orders", new byte[] { 2 }), waitingToken.Token);
@@ -371,13 +414,19 @@ public class RabbitMqSendTests
             waitingToken.Cancel();
             await Assert.That(async () => await waiting).Throws<OperationCanceledException>();
         }
+
         var stop = transport.StopAsync(token);
+
         try
         {
             await Assert.That(stop.IsCompleted).IsFalse();
             await Assert.That(async () => await transport.SendAsync(new("orders", default), token)).Throws<InvalidOperationException>();
         }
-        finally { release.Set(); }
+        finally
+        {
+            release.Set();
+        }
+
         await send;
         await stop;
         await Assert.That((await channel.QueueDeclarePassiveAsync("orders", token)).MessageCount).IsEqualTo(1u);
@@ -395,16 +444,22 @@ public class RabbitMqSendTests
         await using var reader = await connection.CreateChannelAsync(cancellationToken: token);
         await reader.QueueDeclareAsync("orders", true, false, false, cancellationToken: token);
         var publisher = new RabbitMqPublisher(await connection.CreateChannelAsync(new(true, true), token));
+
         try
         {
-            await using var transport = new RabbitMqNativeTransport("rabbit", new() { ConnectionFactory = factory }, ["orders"]);
+            await using var transport = new RabbitMqNativeTransport("rabbit", new()
+            {
+                ConnectionFactory = factory
+            }, ["orders"]);
             var publishers = Channel.CreateBounded<RabbitMqPublisher>(1);
+
             foreach (var outcome in new[] { "success", "preparation", "cancellation", "success" })
             {
                 using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(token);
                 var prepared = 0;
                 var messages = new OutgoingMessage[8];
                 var lastPrepared = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
                 for (var i = 0; i < messages.Length; i++)
                 {
                     var index = i;
@@ -415,10 +470,23 @@ public class RabbitMqSendTests
                         {
                             Interlocked.Increment(ref prepared);
                             properties.Priority = (byte)index;
-                            if (index != messages.Length - 1) return;
+
+                            if (index != messages.Length - 1)
+                            {
+                                return;
+                            }
+
                             lastPrepared.SetResult();
-                            if (outcome == "preparation") throw new InvalidOperationException("preparation failed");
-                            if (outcome == "cancellation") cancellation.Cancel();
+
+                            if (outcome == "preparation")
+                            {
+                                throw new InvalidOperationException("preparation failed");
+                            }
+
+                            if (outcome == "cancellation")
+                            {
+                                cancellation.Cancel();
+                            }
                         }));
                 }
                 // The broker withholds confirmations while its memory alarm is active.
@@ -426,10 +494,12 @@ public class RabbitMqSendTests
                 await publishers.Writer.WriteAsync(publisher, token);
                 var batch = new RabbitMqSendPool().Rent().StartBatch(transport, messages, connection,
                     publishers, cancellation.Token, traceMessages: false);
+
                 try
                 {
                     await lastPrepared.Task.WaitAsync(token);
                     await Assert.That(prepared).IsEqualTo(messages.Length);
+
                     if (outcome != "cancellation")
                     {
                         await Assert.That(batch.IsCompleted).IsFalse();
@@ -440,13 +510,25 @@ public class RabbitMqSendTests
                 {
                     await broker.CommandAsync(["rabbitmqctl", "set_vm_memory_high_watermark", "0.6"], token);
                 }
-                if (outcome == "success") await batch;
+
+                if (outcome == "success")
+                {
+                    await batch;
+                }
                 else if (outcome == "preparation")
+                {
                     await Assert.That(async () => await batch).Throws<InvalidOperationException>();
-                else await Assert.That(async () => await batch).Throws<OperationCanceledException>();
+                }
+                else
+                {
+                    await Assert.That(async () => await batch).Throws<OperationCanceledException>();
+                }
+
                 await Assert.That(publishers.Reader.TryRead(out var returned)).IsTrue();
                 await Assert.That(ReferenceEquals(returned, publisher)).IsTrue();
+
                 if (outcome == "success")
+                {
                     for (var i = 0; i < messages.Length; i++)
                     {
                         var received = (await reader.BasicGetAsync("orders", true, token))!;
@@ -454,10 +536,15 @@ public class RabbitMqSendTests
                         await Assert.That(received.BasicProperties.Priority).IsEqualTo((byte)i);
                         await Assert.That(((byte[])received.BasicProperties.Headers!["id"]!)[0]).IsEqualTo((byte)i);
                     }
+                }
+
                 await reader.QueuePurgeAsync("orders", token);
             }
         }
-        finally { await publisher.Channel.DisposeAsync(); }
+        finally
+        {
+            await publisher.Channel.DisposeAsync();
+        }
     }
 
     [Test]
@@ -473,15 +560,24 @@ public class RabbitMqSendTests
         await using var reader = await connection.CreateChannelAsync(cancellationToken: token);
         await reader.QueueDeclareAsync("orders", true, false, false, cancellationToken: token);
         await reader.QueueDeclareAsync("full", true, false, false, new Dictionary<string, object?>
-        { ["x-max-length"] = 1, ["x-overflow"] = "reject-publish" }, cancellationToken: token);
+        {
+            ["x-max-length"] = 1,
+            ["x-overflow"] = "reject-publish"
+        }, cancellationToken: token);
         await using var provider = Provider(broker.Factory(), ["orders", failedDestination], options => options.PublisherCount = 1);
         var transport = provider.GetRequiredService<ITransport>();
         await transport.StartAsync(token);
-        if (failedDestination == "full") await transport.SendAsync(new("full", new byte[] { 0 }), token);
+
+        if (failedDestination == "full")
+        {
+            await transport.SendAsync(new("full", new byte[] { 0 }), token);
+        }
+
         var error = await Assert.That(async () => await transport.SendBatchAsync(new OutgoingMessage[]
         {
             new("orders", new byte[] { 1 }), new(failedDestination, new byte[] { 2 }), new("orders", new byte[] { 3 }),
         }, token)).Throws<Exception>();
+
         if (failedDestination != "absent:key")
         {
             await Assert.That(error is PublishException).IsTrue();
@@ -490,11 +586,19 @@ public class RabbitMqSendTests
         // A failed batch must drain and return its sole channel, recovering a protocol-closed one.
         await transport.SendBatchAsync(new OutgoingMessage[] { new("orders", new byte[] { 4 }) }, token);
         var bodies = new List<byte>();
-        while (await reader.BasicGetAsync("orders", true, token) is { } received) bodies.Add(received.Body.Span[0]);
+
+        while (await reader.BasicGetAsync("orders", true, token) is { } received)
+        {
+            bodies.Add(received.Body.Span[0]);
+        }
+
         await Assert.That(bodies.Contains(4)).IsTrue();
     }
 
-    private static string Header(BasicGetResult message, string name) => Encoding.UTF8.GetString((byte[])message.BasicProperties.Headers![name]!);
+    private static string Header(BasicGetResult message, string name)
+    {
+        return Encoding.UTF8.GetString((byte[])message.BasicProperties.Headers![name]!);
+    }
 
     private static ServiceProvider Provider(ConnectionFactory factory, string[] destinations,
         Action<RabbitMqTransportOptions>? configure = null, ScheduledOutbox? outbox = null)
@@ -507,35 +611,55 @@ public class RabbitMqSendTests
     private static void Register(IServiceCollection services, ConnectionFactory factory, string[] destinations,
         Action<RabbitMqTransportOptions>? configure, ScheduledOutbox? outbox, TopologyMode mode = TopologyMode.None)
     {
-        if (outbox is not null) services.AddScoped<IOutboxEnlistment>(_ => outbox);
+        if (outbox is not null)
+        {
+            services.AddScoped<IOutboxEnlistment>(_ => outbox);
+        }
+
         services.AddRelayer(builder =>
         {
             builder.AddMessageTypesFromThisAssembly();
             builder.RabbitMQ("rabbit", rabbit =>
             {
                 rabbit.TopologyMode = mode;
-                rabbit.Options.Configure(options => { options.ConnectionFactory = factory; configure?.Invoke(options); });
+                rabbit.Options.Configure(options =>
+                {
+                    options.ConnectionFactory = factory;
+                    configure?.Invoke(options);
+                });
                 // Distinct message types keep the ordinary send API's one-route-per-type contract.
                 rabbit.Send<Sample>(destinations[0]);
-                if (destinations.Length > 1) rabbit.Send<Other>(destinations[1]);
-                if (destinations.Length > 2) rabbit.Send<Third>(destinations[2]);
+
+                if (destinations.Length > 1)
+                {
+                    rabbit.Send<Other>(destinations[1]);
+                }
+
+                if (destinations.Length > 2)
+                {
+                    rabbit.Send<Third>(destinations[2]);
+                }
             });
         });
     }
 
     [Message("rabbitmq.send.sample")]
     public sealed record Sample(int Value);
+
     [Message("rabbitmq.send.other")]
     public sealed record Other;
+
     [Message("rabbitmq.send.third")]
     public sealed record Third;
 
     private sealed class ScheduledOutbox : IOutboxEnlistment
     {
         public bool IsActive => true;
+
         public bool SupportsScheduling => true;
         public DateTimeOffset? DeliverAt;
         public int Count;
+
         public ValueTask EnlistAsync(OutboxRecord record, CancellationToken cancellationToken)
         {
             DeliverAt = record.Message.DeliverAt;

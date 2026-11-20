@@ -1,68 +1,134 @@
-using Relayer.Transports;
 using System.Text;
 using Amazon.SimpleNotificationService.Model;
+using Relayer.Transports;
 
 namespace Relayer.AmazonSqs;
 
 // Native requests borrow these objects until the SDK task completes. Each concurrent operation rents its own state.
 internal sealed class SnsSendState
 {
-    private static readonly UTF8Encoding Utf8 = new(false, true);
+    private static readonly UTF8Encoding s_utf8 = new(false, true);
     private readonly Dictionary<string, MessageAttributeValue> _attributes = new(10, StringComparer.Ordinal);
     private readonly MessageAttributeValue[] _values = new MessageAttributeValue[10];
-    internal PublishRequest Request { get; } = new();
-    internal PublishBatchRequestEntry Entry { get; }
+
+    internal PublishRequest Request
+    {
+        get;
+    } = new();
+
+    internal PublishBatchRequestEntry Entry
+    {
+        get;
+    }
 
     internal SnsSendState(string id)
     {
-        Entry = new() { Id = id };
-        for (var i = 0; i < _values.Length; i++) _values[i] = new() { DataType = "String" };
+        Entry = new()
+        {
+            Id = id
+        };
+
+        for (var i = 0; i < _values.Length; i++)
+        {
+            _values[i] = new()
+            {
+                DataType = "String"
+            };
+        }
     }
 
     internal int Prepare(OutgoingMessage outgoing, string topicArn, bool fifo, string identityHeader = "ce_id")
     {
         Request.TopicArn = topicArn;
         // SNS has a native text body. Reject invalid UTF-8 rather than silently replacing serializer bytes.
-        Request.Message = Utf8.GetString(outgoing.Body.Span);
+        Request.Message = s_utf8.GetString(outgoing.Body.Span);
         var groupId = outgoing.OrderingKey?.ToString();
-        if (groupId is not null) Request.MessageGroupId = groupId;
+
+        if (groupId is not null)
+        {
+            Request.MessageGroupId = groupId;
+        }
+
         Request.MessageAttributes = _attributes;
         outgoing.ApplyNative(Request);
         // Keep caller-supplied attribute dictionaries caller-owned, while retaining reusable transport storage.
         if (!ReferenceEquals(Request.MessageAttributes, _attributes))
         {
             if (Request.MessageAttributes is { } native)
-                foreach (var attribute in native) _attributes.Add(attribute.Key, attribute.Value);
+            {
+                foreach (var attribute in native)
+                {
+                    _attributes.Add(attribute.Key, attribute.Value);
+                }
+            }
+
             Request.MessageAttributes = _attributes;
         }
+
         var index = 0;
+
         foreach (var header in outgoing.Headers.Span)
         {
             if (index == _values.Length)
+            {
                 throw new InvalidOperationException("SNS supports at most 10 message attributes, including CloudEvents and tracing headers.");
+            }
+
             var value = _values[index++];
             value.StringValue = header.Value.ToString();
             _attributes[header.Key] = value;
-            if (fifo && header.Key == identityHeader) Request.MessageDeduplicationId = value.StringValue;
+
+            if (fifo && header.Key == identityHeader)
+            {
+                Request.MessageDeduplicationId = value.StringValue;
+            }
         }
+
         if (_attributes.Count > 10)
+        {
             throw new InvalidOperationException("SNS supports at most 10 message attributes, including CloudEvents and tracing headers.");
+        }
+
         Request.TopicArn = topicArn;
-        if (groupId is not null) Request.MessageGroupId = groupId;
+
+        if (groupId is not null)
+        {
+            Request.MessageGroupId = groupId;
+        }
+
         if (outgoing.DeliverAt > DateTimeOffset.UtcNow)
+        {
             throw new NotSupportedException("SNS has no native delivery timer. Use the durable outbox for scheduling.");
+        }
+
         if (fifo && string.IsNullOrWhiteSpace(Request.MessageGroupId))
+        {
             throw new InvalidOperationException("SNS FIFO sends require MessageGroupId.");
+        }
+
         if (Request.TargetArn is not null || Request.PhoneNumber is not null || Request.MessageStructure is not null)
+        {
             throw new InvalidOperationException("SNS topic routes require a plain message; TargetArn, PhoneNumber and MessageStructure are unsupported.");
-        var size = Utf8.GetByteCount(Request.Message);
+        }
+
+        var size = s_utf8.GetByteCount(Request.Message);
+
         foreach (var attribute in _attributes)
         {
             var value = attribute.Value;
-            size = checked(size + Utf8.GetByteCount(attribute.Key) + Utf8.GetByteCount(value.DataType));
-            if (value.StringValue is { } text) size = checked(size + Utf8.GetByteCount(text));
-            if (value.BinaryValue is { } binary) size = checked(size + (int)binary.Length);
+            size = checked(size + s_utf8.GetByteCount(attribute.Key) + s_utf8.GetByteCount(value.DataType));
+
+            if (value.StringValue is { } text)
+            {
+                size = checked(size + s_utf8.GetByteCount(text));
+            }
+
+            if (value.BinaryValue is { } binary)
+            {
+                size = checked(size + (int)binary.Length);
+            }
         }
+
         return size;
     }
 
@@ -78,7 +144,12 @@ internal sealed class SnsSendState
     internal void Clear()
     {
         _attributes.Clear();
-        foreach (var value in _values) value.StringValue = null;
+
+        foreach (var value in _values)
+        {
+            value.StringValue = null;
+        }
+
         Request.TopicArn = null;
         Request.Message = null;
         Request.TargetArn = null;
@@ -102,14 +173,22 @@ internal sealed class SnsOperationState
     internal readonly string[] Ids = ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9"];
     internal readonly PublishBatchRequest Batch = new() { PublishBatchRequestEntries = new(10) };
     internal int Used;
+
     internal SnsOperationState()
     {
-        for (var i = 0; i < Messages.Length; i++) Messages[i] = new(i.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        for (var i = 0; i < Messages.Length; i++)
+        {
+            Messages[i] = new(i.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        }
     }
 
     internal void Clear()
     {
-        for (var i = 0; i < Used; i++) Messages[i].Clear();
+        for (var i = 0; i < Used; i++)
+        {
+            Messages[i].Clear();
+        }
+
         Used = 0;
         Batch.PublishBatchRequestEntries.Clear();
         Batch.TopicArn = null;
@@ -120,7 +199,11 @@ internal sealed class SnsOperationState
 internal sealed class SnsOperationPool
 {
     private readonly SlotPool<SnsOperationState> _states = new(pageSize: 32, capacity: 256);
-    internal SnsOperationState Rent() => _states.TryRent() ?? new();
+
+    internal SnsOperationState Rent()
+    {
+        return _states.TryRent() ?? new();
+    }
 
     internal void Return(SnsOperationState state)
     {

@@ -1,8 +1,8 @@
-using Relayer.Transports;
 using System.Collections.Concurrent;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Relayer.InMemory;
+using Relayer.Transports;
 
 namespace Relayer.Tests;
 
@@ -35,6 +35,7 @@ public class ConsumerMiddlewareTests
             });
         }).Build();
         await host.StartAsync();
+
         try
         {
             using var scope = host.Services.CreateScope();
@@ -49,7 +50,10 @@ public class ConsumerMiddlewareTests
             await Assert.That(calls.Scopes.Distinct().Count()).IsEqualTo(2);
             await Assert.That(host.Services.GetRequiredService<LocalMiddleware>().Invocations).IsEqualTo(1);
         }
-        finally { await host.StopAsync(); }
+        finally
+        {
+            await host.StopAsync();
+        }
     }
 
     [Test]
@@ -68,7 +72,9 @@ public class ConsumerMiddlewareTests
         });
         await Assert.That(() => saved!.UseConsumeMiddleware<GlobalMiddleware>()).Throws<InvalidOperationException>();
         await Assert.That(() => consumer!.Use<LocalMiddleware>()).Throws<InvalidOperationException>();
-        await Assert.That(() => consumer!.ConfigurePipeline(_ => { })).Throws<InvalidOperationException>();
+        await Assert.That(() => consumer!.ConfigurePipeline(_ =>
+        {
+        })).Throws<InvalidOperationException>();
     }
 
     [Test]
@@ -94,10 +100,26 @@ public class ConsumerMiddlewareTests
 
     public sealed class Calls
     {
-        public ConcurrentQueue<string> Events { get; } = new();
-        public ConcurrentQueue<Guid> Scopes { get; } = new();
-        public TaskCompletionSource Completed { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        public TaskCompletionSource OtherCompleted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public ConcurrentQueue<string> Events
+        {
+            get;
+        } = new();
+
+        public ConcurrentQueue<Guid> Scopes
+        {
+            get;
+        } = new();
+
+        public TaskCompletionSource Completed
+        {
+            get;
+        } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public TaskCompletionSource OtherCompleted
+        {
+            get;
+        } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
         public void Add(string value, MessageContext context)
         {
             Events.Enqueue(value);
@@ -105,10 +127,18 @@ public class ConsumerMiddlewareTests
         }
     }
 
-    public sealed class DeliveryService { public Guid Id { get; } = Guid.NewGuid(); }
+    public sealed class DeliveryService
+    {
+        public Guid Id
+        {
+            get;
+        } = Guid.NewGuid();
+    }
+
     public sealed class LocalMiddleware(Calls calls) : IConsumeMiddleware
     {
         public int Invocations;
+
         public async ValueTask InvokeAsync(MessageContext context, ConsumeDelegate next)
         {
             Interlocked.Increment(ref Invocations);
@@ -118,6 +148,7 @@ public class ConsumerMiddlewareTests
             calls.Completed.TrySetResult();
         }
     }
+
     public sealed class GlobalMiddleware(Calls calls) : IConsumeMiddleware
     {
         public async ValueTask InvokeAsync(MessageContext context, ConsumeDelegate next)
@@ -125,17 +156,26 @@ public class ConsumerMiddlewareTests
             calls.Add("global-before", context);
             await next(context);
             calls.Add("global-after", context);
-            if (context.MessageType.Name == "tests.consumer-other") calls.OtherCompleted.TrySetResult();
+
+            if (context.MessageType.Name == "tests.consumer-other")
+            {
+                calls.OtherCompleted.TrySetResult();
+            }
         }
     }
+
     private sealed class Boundary : IConsumeTransactionMiddleware
     {
-        public ValueTask InvokeAsync(MessageContext context, ConsumeDelegate next) => next(context);
+        public ValueTask InvokeAsync(MessageContext context, ConsumeDelegate next)
+        {
+            return next(context);
+        }
     }
 }
 
 [Message("tests.consumer-middleware")]
 public sealed record MiddlewareMessage;
+
 public sealed class MiddlewareHandler(ConsumerMiddlewareTests.Calls calls) : IHandler<MiddlewareMessage>
 {
     public ValueTask HandleAsync(MiddlewareMessage message, MessageContext context, CancellationToken cancellationToken)
@@ -147,6 +187,7 @@ public sealed class MiddlewareHandler(ConsumerMiddlewareTests.Calls calls) : IHa
 
 [Message("tests.consumer-other")]
 public sealed record OtherMiddlewareMessage;
+
 public sealed class OtherMiddlewareHandler(ConsumerMiddlewareTests.Calls calls) : IHandler<OtherMiddlewareMessage>
 {
     public ValueTask HandleAsync(OtherMiddlewareMessage message, MessageContext context, CancellationToken cancellationToken)

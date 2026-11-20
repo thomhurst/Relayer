@@ -11,11 +11,16 @@ public sealed class SqlServerFixture : IAsyncInitializer, IAsyncDisposable
     private readonly string _name = "relayer-sqlserver-" + Guid.NewGuid().ToString("N");
     private readonly DockerCommand _docker = new(TimeSpan.FromMinutes(3));
     private bool _started;
-    public string ConnectionString { get; private set; } = "";
+
+    public string ConnectionString
+    {
+        get; private set;
+    } = "";
 
     public async Task InitializeAsync()
     {
         _started = true;
+
         try
         {
             await _docker.RunAsync(["run", "--detach", "--rm", "--name", _name, "--publish", "127.0.0.1::1433",
@@ -30,6 +35,7 @@ public sealed class SqlServerFixture : IAsyncInitializer, IAsyncDisposable
                 Pooling = false
             }.ConnectionString;
             var deadline = Stopwatch.StartNew();
+
             while (true)
             {
                 try
@@ -46,17 +52,33 @@ public sealed class SqlServerFixture : IAsyncInitializer, IAsyncDisposable
         }
         catch (Exception exception)
         {
-            try { await DisposeAsync(); }
-            catch (Exception cleanupFailure) { exception.Data["CleanupFailure"] = cleanupFailure; }
+            try
+            {
+                await DisposeAsync();
+            }
+            catch (Exception cleanupFailure)
+            {
+                exception.Data["CleanupFailure"] = cleanupFailure;
+            }
+
             throw;
         }
     }
 
     public async ValueTask DisposeAsync()
     {
-        if (!_started) return;
+        if (!_started)
+        {
+            return;
+        }
+
         _started = false;
-        using (var pool = new SqlConnection(ConnectionString)) SqlConnection.ClearPool(pool);
+
+        using (var pool = new SqlConnection(ConnectionString))
+        {
+            SqlConnection.ClearPool(pool);
+        }
+
         await _docker.RunAsync(["rm", "--force", "--volumes", _name]);
     }
 }

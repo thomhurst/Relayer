@@ -33,12 +33,14 @@ public class AdoNetEnlistmentTests(SqlServerFixture fixture)
     {
         await using var database = new Database(fixture);
         await database.Start();
+
         await using (var setup = await database.Open())
         {
             await setup.ExecuteAsync($"CREATE TABLE {database.BatchLog} (rows_inserted bigint NOT NULL)");
             await setup.ExecuteAsync($"CREATE TRIGGER [" + database.Options.Schema!.Replace("]", "]]") + "].[" + database.Options.TablePrefix +
                 $"insert_log] ON {database.Table} AFTER INSERT AS INSERT INTO {database.BatchLog} SELECT COUNT_BIG(*) FROM inserted");
         }
+
         await using var provider = database.Services();
         await using var scope = provider.CreateAsyncScope();
         var outbox = scope.ServiceProvider.GetRequiredService<SqlServerOutbox>();
@@ -47,22 +49,47 @@ public class AdoNetEnlistmentTests(SqlServerFixture fixture)
         await using var transaction = await outbox.BeginTransactionAsync(connection, IsolationLevel.ReadCommitted);
         await Assert.That(transaction.IsolationLevel).IsEqualTo(IsolationLevel.ReadCommitted);
         await Assert.That(enlistment.IsActive).IsTrue();
+
         if (synchronous)
-            transaction.Connection!.Execute($"INSERT INTO {database.Business} VALUES (@id)", new { id = 1 }, transaction);
+        {
+            transaction.Connection!.Execute($"INSERT INTO {database.Business} VALUES (@id)", new
+            {
+                id = 1
+            }, transaction);
+        }
         else
-            await transaction.Connection!.ExecuteAsync($"INSERT INTO {database.Business} VALUES (@id)", new { id = 1 }, transaction);
+        {
+            await transaction.Connection!.ExecuteAsync($"INSERT INTO {database.Business} VALUES (@id)", new
+            {
+                id = 1
+            }, transaction);
+        }
         // The trigger must observe all rows in one invocation, rather than one invocation per row.
         // This is a batching/atomicity contract test, not a throughput test; keep its fixture small
         // so concurrent CI work cannot turn the native bulk-copy timeout into a load assertion.
-        const int rowCount = 16;
-        for (var i = 0; i < rowCount; i++) await enlistment.EnlistAsync(Record(), default);
+        const int RowCount = 16;
+
+        for (var i = 0; i < RowCount; i++)
+        {
+            await enlistment.EnlistAsync(Record(), default);
+        }
+
         await Assert.That(await database.Count()).IsEqualTo(0L);
-        if (synchronous) transaction.Commit(); else await transaction.CommitAsync();
+
+        if (synchronous)
+        {
+            transaction.Commit();
+        }
+        else
+        {
+            await transaction.CommitAsync();
+        }
+
         await Assert.That(enlistment.IsActive).IsFalse();
         await Assert.That(connection.State).IsEqualTo(ConnectionState.Open);
-        await Assert.That(await database.Count()).IsEqualTo((long)rowCount);
+        await Assert.That(await database.Count()).IsEqualTo((long)RowCount);
         await Assert.That(await database.Scalar($"SELECT count_big(*) FROM {database.BatchLog}")).IsEqualTo(1L);
-        await Assert.That(await database.Scalar($"SELECT SUM(rows_inserted) FROM {database.BatchLog}")).IsEqualTo((long)rowCount);
+        await Assert.That(await database.Scalar($"SELECT SUM(rows_inserted) FROM {database.BatchLog}")).IsEqualTo((long)RowCount);
         await Assert.That(await database.Scalar($"SELECT count_big(*) FROM {database.Business}")).IsEqualTo(1L);
     }
 
@@ -78,19 +105,43 @@ public class AdoNetEnlistmentTests(SqlServerFixture fixture)
         var outbox = scope.ServiceProvider.GetRequiredService<SqlServerOutbox>();
         var enlistment = scope.ServiceProvider.GetRequiredService<IOutboxEnlistment>();
         await using var connection = await database.Open();
+
         await using (var transaction = await outbox.BeginTransactionAsync(connection))
         {
             await transaction.Connection!.ExecuteAsync($"INSERT INTO {database.Business} VALUES (1)", transaction: transaction);
             await enlistment.EnlistAsync(Record(), default);
-            if (synchronous) transaction.Rollback(); else await transaction.RollbackAsync();
+
+            if (synchronous)
+            {
+                transaction.Rollback();
+            }
+            else
+            {
+                await transaction.RollbackAsync();
+            }
         }
+
         var abandoned = await outbox.BeginTransactionAsync(connection);
         await abandoned.Connection!.ExecuteAsync($"INSERT INTO {database.Business} VALUES (2)", transaction: abandoned);
         await enlistment.EnlistAsync(Record(), default);
-        if (synchronous) abandoned.Dispose(); else await abandoned.DisposeAsync();
+
+        if (synchronous)
+        {
+            abandoned.Dispose();
+        }
+        else
+        {
+            await abandoned.DisposeAsync();
+        }
+
         await Assert.That(enlistment.IsActive).IsFalse();
         await Assert.That(connection.State).IsEqualTo(ConnectionState.Open);
-        await using (var next = await outbox.BeginTransactionAsync(connection)) await next.CommitAsync();
+
+        await using (var next = await outbox.BeginTransactionAsync(connection))
+        {
+            await next.CommitAsync();
+        }
+
         await Assert.That(await database.Count()).IsEqualTo(0L);
         await Assert.That(await database.Scalar($"SELECT count_big(*) FROM {database.Business}")).IsEqualTo(0L);
     }
@@ -107,20 +158,35 @@ public class AdoNetEnlistmentTests(SqlServerFixture fixture)
         var outbox = scope.ServiceProvider.GetRequiredService<SqlServerOutbox>();
         var enlistment = scope.ServiceProvider.GetRequiredService<IOutboxEnlistment>();
         var duplicate = Record();
+
         await using (var first = await outbox.BeginTransactionAsync(database.ConnectionString))
         {
             await enlistment.EnlistAsync(duplicate, default);
             await first.CommitAsync();
         }
+
         await using (var failedInsert = await outbox.BeginTransactionAsync(database.ConnectionString))
         {
             await failedInsert.Connection!.ExecuteAsync($"INSERT INTO {database.Business} VALUES (1)", transaction: failedInsert);
             await enlistment.EnlistAsync(duplicate, default);
-            if (synchronous) await Assert.That(() => failedInsert.Commit()).Throws<SqlException>();
-            else await Assert.That(async () => await failedInsert.CommitAsync()).Throws<SqlException>();
+
+            if (synchronous)
+            {
+                await Assert.That(() => failedInsert.Commit()).Throws<SqlException>();
+            }
+            else
+            {
+                await Assert.That(async () => await failedInsert.CommitAsync()).Throws<SqlException>();
+            }
         }
+
         await Assert.That(enlistment.IsActive).IsFalse();
-        await using (var next = await outbox.BeginTransactionAsync(database.ConnectionString)) await next.CommitAsync();
+
+        await using (var next = await outbox.BeginTransactionAsync(database.ConnectionString))
+        {
+            await next.CommitAsync();
+        }
+
         await Assert.That(await database.Count()).IsEqualTo(1L);
         await Assert.That(await database.Scalar($"SELECT count_big(*) FROM {database.Business}")).IsEqualTo(0L);
     }
@@ -139,6 +205,7 @@ public class AdoNetEnlistmentTests(SqlServerFixture fixture)
         await Assert.That(async () => await outbox.BeginTransactionAsync(database.ConnectionString, cancellationToken: canceled.Token))
             .Throws<OperationCanceledException>();
         await using var connection = await database.Open();
+
         await using (var transaction = await outbox.BeginTransactionAsync(connection))
         {
             await transaction.Connection!.ExecuteAsync($"INSERT INTO {database.Business} VALUES (1)", transaction: transaction);
@@ -146,9 +213,15 @@ public class AdoNetEnlistmentTests(SqlServerFixture fixture)
             await enlistment.EnlistAsync(Record(), default);
             await Assert.That(async () => await transaction.CommitAsync(canceled.Token)).Throws<OperationCanceledException>();
         }
+
         await Assert.That(enlistment.IsActive).IsFalse();
         await Assert.That(connection.State).IsEqualTo(ConnectionState.Open);
-        await using (var next = await outbox.BeginTransactionAsync(connection)) await next.CommitAsync();
+
+        await using (var next = await outbox.BeginTransactionAsync(connection))
+        {
+            await next.CommitAsync();
+        }
+
         await Assert.That(await database.Count()).IsEqualTo(0L);
         await Assert.That(await database.Scalar($"SELECT count_big(*) FROM {database.Business}")).IsEqualTo(0L);
     }
@@ -169,6 +242,7 @@ public class AdoNetEnlistmentTests(SqlServerFixture fixture)
         byte[] key = System.Text.Encoding.UTF8.GetBytes("café");
         byte[] value = [0xff, 0, 0xfe];
         KeyValuePair<string, WireString>[] headers = [new("duplicate", new WireString("first")), new("duplicate", new WireString(value)), new("empty", new WireString(""))];
+
         await using (var transaction = await outbox.BeginTransactionAsync(database.ConnectionString))
         {
             var outgoing = new OutgoingMessage("original-destination", body, headers, new WireString(key), delivery);
@@ -179,6 +253,7 @@ public class AdoNetEnlistmentTests(SqlServerFixture fixture)
             headers.AsSpan().Clear();
             await transaction.CommitAsync();
         }
+
         var lane = (int)await database.Scalar($"SELECT CAST(lane AS bigint) FROM {database.Table}");
         var store = new SqlServerOutboxStore(database.ConnectionString, database.Options);
         var rows = new OutboxRecord[1];
@@ -236,7 +311,9 @@ public class AdoNetEnlistmentTests(SqlServerFixture fixture)
         await Assert.That(async () => await enlistment.EnlistAsync(Record() with { Id = Guid.NewGuid() }, default)).Throws<InvalidOperationException>();
         await Assert.That(async () => await enlistment.EnlistAsync(Record() with { MessageType = "" }, default)).Throws<InvalidOperationException>();
         await Assert.That(async () => await enlistment.EnlistAsync(Record() with { Attempts = 1 }, default)).Throws<ArgumentException>();
-        var native = new OutgoingMessage("destination", new byte[] { 1 }, options: new SendOptions().ConfigureNative<object>(static _ => { }));
+        var native = new OutgoingMessage("destination", new byte[] { 1 }, options: new SendOptions().ConfigureNative<object>(static _ =>
+        {
+        }));
         await Assert.That(async () => await enlistment.EnlistAsync(Record() with { Message = native }, default)).Throws<InvalidOperationException>();
         await transaction.CommitAsync();
         await Assert.That(await database.Count()).IsEqualTo(0L);
@@ -262,7 +339,9 @@ public class AdoNetEnlistmentTests(SqlServerFixture fixture)
     {
         var configuration = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
         {
-            ["Schema"] = "configured", ["TablePrefix"] = "prefix_", ["Lanes"] = "8"
+            ["Schema"] = "configured",
+            ["TablePrefix"] = "prefix_",
+            ["Lanes"] = "8"
         }).Build();
         var services = new ServiceCollection().AddRelayerSqlServerOutbox(configuration);
         await using var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
@@ -341,6 +420,7 @@ public class AdoNetEnlistmentTests(SqlServerFixture fixture)
         await Assert.That(transport.Sends).IsEqualTo(0);
         await sender.SendWithoutOutboxAsync(new Probe(1));
         await Assert.That(transport.Sends).IsEqualTo(1);
+
         await using (var transaction = await outbox.BeginTransactionAsync(database.ConnectionString))
         {
             await sender.SendAsync(new Probe(2));
@@ -349,6 +429,7 @@ public class AdoNetEnlistmentTests(SqlServerFixture fixture)
             await Assert.That(await database.Count()).IsEqualTo(0L);
             await transaction.CommitAsync();
         }
+
         await Assert.That(await database.Count()).IsEqualTo(2L);
         await Assert.That(transport.Sends).IsEqualTo(1);
         var rows = new OutboxRecord[2];
@@ -373,7 +454,16 @@ public class AdoNetEnlistmentTests(SqlServerFixture fixture)
         var view = abandoned.Connection!;
         await view.ExecuteAsync($"INSERT INTO {database.Business} VALUES (1)", transaction: abandoned);
         await outbox.EnlistAsync(Record(), default);
-        if (synchronous) scope.Dispose(); else await ((IAsyncDisposable)scope).DisposeAsync();
+
+        if (synchronous)
+        {
+            scope.Dispose();
+        }
+        else
+        {
+            await ((IAsyncDisposable)scope).DisposeAsync();
+        }
+
         await Assert.That(view.State).IsEqualTo(ConnectionState.Closed);
         await abandoned.DisposeAsync();
         await Assert.That(await database.Count()).IsEqualTo(0L);
@@ -395,16 +485,27 @@ public class AdoNetEnlistmentTests(SqlServerFixture fixture)
         await outbox.EnlistAsync(Record(), default);
         await using var blocker = await database.Open();
         await using var blockingTransaction = (SqlTransaction)await blocker.BeginTransactionAsync();
+
         using (var block = new SqlCommand($"SELECT COUNT_BIG(*) FROM {database.Table} WITH (TABLOCKX, HOLDLOCK)", blocker, blockingTransaction))
+        {
             await block.ExecuteScalarAsync();
+        }
+
         using var cancellation = new CancellationTokenSource();
         var commit = transaction.CommitAsync(cancellation.Token);
         using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(15));
         await using var observer = await database.Open();
+
         while (await observer.ExecuteScalarAsync<int>(new CommandDefinition(
             "SELECT count(*) FROM sys.dm_exec_requests WHERE session_id=@session AND blocking_session_id > 0",
-            new { session }, cancellationToken: deadline.Token)) == 0)
+            new
+            {
+                session
+            }, cancellationToken: deadline.Token)) == 0)
+        {
             await Task.Delay(10, deadline.Token);
+        }
+
         cancellation.Cancel();
         // SqlClient 7.1.1 does not interrupt every server-side bulk-copy wait. Release the observed
         // blocker so the native operation can finish; canceled commit must still roll back the whole unit.
@@ -425,8 +526,12 @@ public class AdoNetEnlistmentTests(SqlServerFixture fixture)
         await using var provider = database.Services();
         await using var scope = provider.CreateAsyncScope();
         var outbox = scope.ServiceProvider.GetRequiredService<SqlServerOutbox>();
+
         using (var ambient = new System.Transactions.TransactionScope(System.Transactions.TransactionScopeAsyncFlowOption.Enabled))
+        {
             await Assert.That(async () => await outbox.BeginTransactionAsync(database.ConnectionString)).Throws<InvalidOperationException>();
+        }
+
         await using var transaction = await outbox.BeginTransactionAsync(database.ConnectionString);
         await Assert.That(async () => await scope.ServiceProvider.GetRequiredService<ISender>().SendAsync(new Probe(1),
             options => options.DeliverAt = DateTimeOffset.UtcNow.AddDays(1))).Throws<InvalidOperationException>();
@@ -442,18 +547,24 @@ public class AdoNetEnlistmentTests(SqlServerFixture fixture)
         await using var provider = database.Services();
         await using var scope = provider.CreateAsyncScope();
         var outbox = scope.ServiceProvider.GetRequiredService<SqlServerOutbox>();
+
         foreach (var size in new[] { 100_000, 0, 3 })
         {
             var body = new byte[size];
             Array.Fill(body, (byte)255);
             var key = new string('x', size);
             KeyValuePair<string, WireString>[] headers = [new("large", new WireString(body))];
+
             await using (var transaction = await outbox.BeginTransactionAsync(database.ConnectionString))
             {
-                await outbox.EnlistAsync(Record() with { Message = new OutgoingMessage("destination", body, headers, new WireString(key)) }, default);
+                await outbox.EnlistAsync(Record() with
+                {
+                    Message = new OutgoingMessage("destination", body, headers, new WireString(key))
+                }, default);
                 Array.Clear(body);
                 await transaction.CommitAsync();
             }
+
             var lane = await database.Scalar($"SELECT CAST(lane AS bigint) FROM {database.Table}");
             var rows = new OutboxRecord[1];
             var store = new SqlServerOutboxStore(database.ConnectionString, database.Options);
@@ -467,18 +578,35 @@ public class AdoNetEnlistmentTests(SqlServerFixture fixture)
         }
     }
 
-    private static OutboxRecord Record() => new(Guid.CreateVersion7(), "events", "ado.probe;v=1",
-        new OutgoingMessage("destination", new byte[] { 1 }), DateTimeOffset.UtcNow);
+    private static OutboxRecord Record()
+    {
+        return new(Guid.CreateVersion7(), "events", "ado.probe;v=1",
+                new OutgoingMessage("destination", new byte[] { 1 }), DateTimeOffset.UtcNow);
+    }
 
     private sealed class Database(SqlServerFixture fixture) : IAsyncDisposable
     {
         private readonly string _name = TestContext.Current!.Isolation.GetIsolatedName("ado");
         private bool _created;
-        internal SqlServerOutboxOptions Options { get; } = new() { Schema = "ADO]" + TestContext.Current!.Isolation.GetIsolatedName("schema"), TablePrefix = TestContext.Current!.Isolation.GetIsolatedName("ado") + "_", Lanes = 8 };
+
+        internal SqlServerOutboxOptions Options
+        {
+            get;
+        } = new()
+        {
+            Schema = "ADO]" + TestContext.Current!.Isolation.GetIsolatedName("schema"),
+            TablePrefix = TestContext.Current!.Isolation.GetIsolatedName("ado") + "_",
+            Lanes = 8
+        };
+
         internal string Table => "[" + Options.Schema!.Replace("]", "]]") + "].[" + Options.TablePrefix + "outbox]";
+
         internal string BatchLog => "[" + Options.Schema!.Replace("]", "]]") + "].[" + Options.TablePrefix + "batch_log]";
+
         internal string Business => "[" + Options.Schema!.Replace("]", "]]") + "].[" + Options.TablePrefix + "business]";
+
         internal string ConnectionString => new SqlConnectionStringBuilder(fixture.ConnectionString) { InitialCatalog = _name }.ConnectionString;
+
         internal async Task Start()
         {
             // Bulk copy and concurrent schema creation must not contend in the shared master database.
@@ -490,6 +618,7 @@ public class AdoNetEnlistmentTests(SqlServerFixture fixture)
                 // model database (1807). Retry that native provisioning conflict only; tests
                 // and their isolated databases still run concurrently.
                 var provisioning = Stopwatch.StartNew();
+
                 while (true)
                 {
                     try
@@ -502,19 +631,23 @@ public class AdoNetEnlistmentTests(SqlServerFixture fixture)
                         await Task.Delay(100);
                     }
                 }
+
                 _created = true;
             }
+
             await using var connection = await Open();
             await using var command = new SqlCommand(SqlServerOutboxSchema.CreateScript(Options) +
                 $"CREATE TABLE {Business} (id int PRIMARY KEY);", connection);
             await command.ExecuteNonQueryAsync();
         }
+
         internal async Task<SqlConnection> Open()
         {
             var connection = new SqlConnection(ConnectionString);
             await connection.OpenAsync();
             return connection;
         }
+
         internal ServiceProvider Services()
         {
             var services = new ServiceCollection();
@@ -529,17 +662,31 @@ public class AdoNetEnlistmentTests(SqlServerFixture fixture)
             });
             return services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
         }
-        internal Task<long> Count() => Scalar($"SELECT count_big(*) FROM {Table}");
+
+        internal Task<long> Count()
+        {
+            return Scalar($"SELECT count_big(*) FROM {Table}");
+        }
+
         internal async Task<long> Scalar(string sql)
         {
             await using var connection = await Open();
             await using var command = new SqlCommand(sql, connection);
             return (long)(await command.ExecuteScalarAsync())!;
         }
+
         public async ValueTask DisposeAsync()
         {
-            if (!_created) return;
-            using (var pool = new SqlConnection(ConnectionString)) SqlConnection.ClearPool(pool);
+            if (!_created)
+            {
+                return;
+            }
+
+            using (var pool = new SqlConnection(ConnectionString))
+            {
+                SqlConnection.ClearPool(pool);
+            }
+
             await using var admin = new SqlConnection(fixture.ConnectionString);
             await admin.OpenAsync();
             var identifier = "[" + _name.Replace("]", "]]") + "]";
@@ -552,27 +699,71 @@ public class AdoNetEnlistmentTests(SqlServerFixture fixture)
 
     [Message("ado.probe")]
     public sealed record Probe(byte Value);
+
     public sealed class Empty;
+
     private sealed class Serializer : IMessageSerializer
     {
         public string ContentType => "application/test";
+
         public void Serialize<TMessage>(TMessage message, IBufferWriter<byte> destination)
         {
             destination.GetSpan(1)[0] = ((Probe)(object)message!).Value;
             destination.Advance(1);
         }
-        public TMessage Deserialize<TMessage>(ReadOnlySequence<byte> source) => throw new NotSupportedException();
+
+        public TMessage Deserialize<TMessage>(ReadOnlySequence<byte> source)
+        {
+            throw new NotSupportedException();
+        }
     }
+
     private sealed class Transport : ITransport
     {
-        public int Sends { get; private set; }
+        public int Sends
+        {
+            get; private set;
+        }
+
         public string Name => "events";
-        public TransportCapabilities GetCapabilities(string endpoint) => new() { OrderedByKey = true };
-        public ValueTask SendAsync(OutgoingMessage message, CancellationToken cancellationToken) { Sends++; return default; }
-        public ValueTask SendBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken) => throw new NotSupportedException();
-        public ValueTask<TopologyReport> ApplyTopologyAsync(TopologyMode mode, CancellationToken cancellationToken) => new(new TopologyReport([]));
-        public Task StartAsync(CancellationToken cancellationToken) => Task.CompletedTask;
-        public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
-        public ValueTask DisposeAsync() => default;
+
+        public TransportCapabilities GetCapabilities(string endpoint)
+        {
+            return new()
+            {
+                OrderedByKey = true
+            };
+        }
+
+        public ValueTask SendAsync(OutgoingMessage message, CancellationToken cancellationToken)
+        {
+            Sends++;
+            return default;
+        }
+
+        public ValueTask SendBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken)
+        {
+            throw new NotSupportedException();
+        }
+
+        public ValueTask<TopologyReport> ApplyTopologyAsync(TopologyMode mode, CancellationToken cancellationToken)
+        {
+            return new(new TopologyReport([]));
+        }
+
+        public Task StartAsync(CancellationToken cancellationToken)
+        {
+            return Task.CompletedTask;
+        }
+
+        public Task StopAsync(CancellationToken cancellationToken)
+        {
+            return Task.CompletedTask;
+        }
+
+        public ValueTask DisposeAsync()
+        {
+            return default;
+        }
     }
 }

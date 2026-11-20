@@ -12,18 +12,32 @@ public sealed class TenantContext : IDisposable
     private bool _active;
     private WireString _id;
 
-    internal TenantContext(TenantContextPool owner) => _owner = owner;
+    internal TenantContext(TenantContextPool owner)
+    {
+        _owner = owner;
+    }
 
     /// <summary>The current tenant, or an empty value for an unassigned scope. Native UTF-8 is not decoded.</summary>
     /// <remarks>Values must remain valid until the scope and its sends finish. Set this only after authorizing the tenant.</remarks>
     public WireString Id
     {
-        get { ObjectDisposedException.ThrowIf(!_active, this); return _id; }
-        set { ObjectDisposedException.ThrowIf(!_active, this); _id = value; }
+        get
+        {
+            ObjectDisposedException.ThrowIf(!_active, this);
+            return _id;
+        }
+        set
+        {
+            ObjectDisposedException.ThrowIf(!_active, this);
+            _id = value;
+        }
     }
 
     // A binding must not become valid again when this pooled object is rented by another scope.
-    internal long LeaseVersion { get; private set; }
+    internal long LeaseVersion
+    {
+        get; private set;
+    }
 
     internal void Activate()
     {
@@ -34,7 +48,11 @@ public sealed class TenantContext : IDisposable
     /// <summary>Returns this service to its provider-owned pool. DI owns disposal.</summary>
     public void Dispose()
     {
-        if (!_active) return;
+        if (!_active)
+        {
+            return;
+        }
+
         _id = default;
         _active = false;
         _owner.Return(this);
@@ -48,7 +66,11 @@ internal sealed class TenantContextPool
     internal TenantContextPool(int capacity)
     {
         _items = new(capacity, capacity);
-        for (var i = 0; i < capacity; i++) _items.TryReturn(new(this), i);
+
+        for (var i = 0; i < capacity; i++)
+        {
+            _items.TryReturn(new(this), i);
+        }
     }
 
     internal TenantContext Rent()

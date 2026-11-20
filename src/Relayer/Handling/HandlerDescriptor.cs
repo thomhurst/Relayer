@@ -1,5 +1,5 @@
-using Relayer.Serialization;
 using System.Buffers;
+using Relayer.Serialization;
 
 namespace Relayer.Pipeline;
 
@@ -10,13 +10,22 @@ namespace Relayer.Pipeline;
 public abstract class HandlerDescriptor(Type handlerType, Type messageType, bool isBatch)
 {
     /// <summary>The concrete handler type.</summary>
-    public Type HandlerType { get; } = handlerType;
+    public Type HandlerType
+    {
+        get;
+    } = handlerType;
 
     /// <summary>The handled CLR type, never the wire identity.</summary>
-    public Type MessageType { get; } = messageType;
+    public Type MessageType
+    {
+        get;
+    } = messageType;
 
     /// <summary>Whether this descriptor dispatches batches.</summary>
-    public bool IsBatch { get; } = isBatch;
+    public bool IsBatch
+    {
+        get;
+    } = isBatch;
 
     /// <summary>Resolves the handler from the message's DI scope before dispatch.</summary>
     public abstract IHandlerMarker Resolve(IServiceProvider services);
@@ -24,14 +33,20 @@ public abstract class HandlerDescriptor(Type handlerType, Type messageType, bool
     internal virtual bool IsTombstone => false;
 
     internal virtual ConsumeDelegate CreateConsumeDelegate(IMessageSerializer serializer)
-        => throw new InvalidOperationException("A batch handler cannot be composed as a single-message consumer.");
+    {
+        throw new InvalidOperationException("A batch handler cannot be composed as a single-message consumer.");
+    }
 
     internal virtual ConsumeDelegate CreateUpcastDelegate(UpcastReader reader)
-        => throw new InvalidOperationException("A batch handler cannot be composed as a single-message consumer.");
+    {
+        throw new InvalidOperationException("A batch handler cannot be composed as a single-message consumer.");
+    }
 
     internal virtual BatchDispatcher CreateBatchDispatcher(IMessageSerializer serializer, int size, int concurrency,
         Dictionary<MessageType, UpcastReader> readers)
-        => throw new InvalidOperationException("Select a generated batch handler when composing batch consumption.");
+    {
+        throw new InvalidOperationException("Select a generated batch handler when composing batch consumption.");
+    }
 }
 
 /// <summary>A generated, typed single-message dispatcher. Cache it when composing the pipeline.</summary>
@@ -43,11 +58,15 @@ public abstract class HandlerDescriptor<TMessage>(Type handlerType)
         IHandlerMarker handler, TMessage message, MessageContext context, CancellationToken cancellationToken);
 
     internal override ConsumeDelegate CreateConsumeDelegate(IMessageSerializer serializer)
-        => new Dispatch(serializer is JsonMessageSerializer json
-            ? json.CreateDeserializer<TMessage>() : serializer.Deserialize<TMessage>, this).InvokeAsync;
+    {
+        return new Dispatch(serializer is JsonMessageSerializer json
+                    ? json.CreateDeserializer<TMessage>() : serializer.Deserialize<TMessage>, this).InvokeAsync;
+    }
 
     internal sealed override ConsumeDelegate CreateUpcastDelegate(UpcastReader reader)
-        => new UpcastDispatch((UpcastReader<TMessage>)reader, this).InvokeAsync;
+    {
+        return new UpcastDispatch((UpcastReader<TMessage>)reader, this).InvokeAsync;
+    }
 
     private sealed class UpcastDispatch(UpcastReader<TMessage> reader, HandlerDescriptor<TMessage> descriptor)
     {
@@ -66,15 +85,20 @@ public abstract class HandlerDescriptor<TMessage>(Type handlerType)
         {
             var incoming = (DefaultMessageContext)context;
             TMessage message;
+
             try
             {
                 message = deserialize(incoming.Body);
             }
-            catch (OperationCanceledException) when (context.CancellationToken.IsCancellationRequested) { throw; }
+            catch (OperationCanceledException) when (context.CancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
             catch (Exception error)
             {
                 throw new MessageDeserializationException(context.MessageType, error);
             }
+
             var handler = descriptor.Resolve(incoming.HandlerServices);
             return descriptor.DispatchAsync(handler, message, context, context.CancellationToken);
         }
@@ -91,14 +115,20 @@ public abstract class BatchHandlerDescriptor<TMessage>(Type handlerType)
 
     internal sealed override BatchDispatcher CreateBatchDispatcher(IMessageSerializer serializer, int size, int concurrency,
         Dictionary<MessageType, UpcastReader> readers)
-        => new BatchDispatcher<TMessage>(this, serializer, size, concurrency, readers);
+    {
+        return new BatchDispatcher<TMessage>(this, serializer, size, concurrency, readers);
+    }
 }
 
 /// <summary>A generated dispatcher for a native null-value record, without body deserialization.</summary>
 public abstract class TombstoneHandlerDescriptor<T>(Type handlerType) : HandlerDescriptor<Tombstone<T>>(handlerType)
 {
     internal sealed override bool IsTombstone => true;
-    internal sealed override ConsumeDelegate CreateConsumeDelegate(IMessageSerializer serializer) => InvokeAsync;
+
+    internal sealed override ConsumeDelegate CreateConsumeDelegate(IMessageSerializer serializer)
+    {
+        return InvokeAsync;
+    }
 
     private ValueTask InvokeAsync(MessageContext context)
     {

@@ -11,8 +11,16 @@ namespace Relayer.Transports;
 public readonly struct OutgoingMessage
 {
     private readonly SendOptions? _options;
-    internal bool TracingStarted { get; private init; }
-    internal bool IsOutboxDispatch { get; private init; }
+
+    internal bool TracingStarted
+    {
+        get; private init;
+    }
+
+    internal bool IsOutboxDispatch
+    {
+        get; private init;
+    }
 
     /// <summary>Creates a send without copying its body, headers, or native options.</summary>
     /// <param name="destination">The native destination on the selected named transport.</param>
@@ -39,22 +47,40 @@ public readonly struct OutgoingMessage
     }
 
     /// <summary>The native destination on the selected named transport.</summary>
-    public string Destination { get; }
+    public string Destination
+    {
+        get;
+    }
 
     /// <summary>Whether the native value is null rather than a non-null, possibly empty body.</summary>
-    public bool IsTombstone { get; }
+    public bool IsTombstone
+    {
+        get;
+    }
 
     /// <summary>The serialized body, borrowed until send completion.</summary>
-    public ReadOnlyMemory<byte> Body { get; }
+    public ReadOnlyMemory<byte> Body
+    {
+        get;
+    }
 
     /// <summary>Resolved native header names and values, borrowed until send completion.</summary>
-    public ReadOnlyMemory<KeyValuePair<string, WireString>> Headers { get; }
+    public ReadOnlyMemory<KeyValuePair<string, WireString>> Headers
+    {
+        get;
+    }
 
     /// <summary>The native ordering key as borrowed text or UTF-8 memory, or null when none is specified.</summary>
-    public WireString? OrderingKey { get; }
+    public WireString? OrderingKey
+    {
+        get;
+    }
 
     /// <summary>The earliest delivery time, or null for immediate delivery.</summary>
-    public DateTimeOffset? DeliverAt { get; }
+    public DateTimeOffset? DeliverAt
+    {
+        get;
+    }
 
     /// <summary>Applies callbacks to the native outgoing object immediately before sending.</summary>
     public void ApplyNative<TNative>(TNative nativeMessage) where TNative : class
@@ -76,12 +102,27 @@ public readonly struct OutgoingMessage
     }
 
     internal OutgoingMessage Forward(string destination, ReadOnlyMemory<KeyValuePair<string, WireString>> headers,
-        DateTimeOffset? deliverAt) => new(destination, Body, headers, OrderingKey, deliverAt, _options, IsTombstone);
+        DateTimeOffset? deliverAt)
+    {
+        return new(destination, Body, headers, OrderingKey, deliverAt, _options, IsTombstone);
+    }
 
-    internal OutgoingMessage WithTracingStarted() => new(Destination, Body, Headers, OrderingKey, DeliverAt, _options, IsTombstone) { TracingStarted = true };
+    internal OutgoingMessage WithTracingStarted()
+    {
+        return new(Destination, Body, Headers, OrderingKey, DeliverAt, _options, IsTombstone)
+        {
+            TracingStarted = true
+        };
+    }
 
     // A new send span must link to stored creation headers, even when enqueue was already traced.
-    internal OutgoingMessage ForOutboxDispatch() => new(Destination, Body, Headers, OrderingKey, DeliverAt, _options, IsTombstone) { IsOutboxDispatch = true };
+    internal OutgoingMessage ForOutboxDispatch()
+    {
+        return new(Destination, Body, Headers, OrderingKey, DeliverAt, _options, IsTombstone)
+        {
+            IsOutboxDispatch = true
+        };
+    }
 
     internal void CopyNativeOptionsTo(SendOptions target)
     {
@@ -94,7 +135,10 @@ public readonly struct OutgoingMessage
     public void ValidateForOutbox()
     {
         if (IsTombstone)
+        {
             throw new InvalidOperationException("Native tombstones cannot yet be persisted in the outbox. Use SendWithoutOutboxAsync.");
+        }
+
         if (_options is { HasNativeConfigurators: true })
         {
             throw new InvalidOperationException(

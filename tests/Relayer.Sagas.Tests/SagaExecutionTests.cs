@@ -1,5 +1,5 @@
-using Relayer.Transports;
 using Microsoft.Extensions.DependencyInjection;
+using Relayer.Transports;
 
 namespace Relayer.Sagas.Tests;
 
@@ -23,17 +23,37 @@ public class SagaExecutionTests
         var saves = 0;
         var handler = new Process
         {
-            Load = () => { loads++; return stage == "load" && asynchronous ? new(loaded.Task) : new(state); },
-            Transition = _ => { transitions++; return stage == "transition" && asynchronous ? new(completed.Task) : default; },
-            Save = (_, _) => { saves++; return stage == "save" && asynchronous ? new(completed.Task) : default; }
+            Load = () =>
+            {
+                loads++;
+                return stage == "load" && asynchronous ? new(loaded.Task) : new(state);
+            },
+            Transition = _ =>
+            {
+                transitions++;
+                return stage == "transition" && asynchronous ? new(completed.Task) : default;
+            },
+            Save = (_, _) =>
+            {
+                saves++;
+                return stage == "save" && asynchronous ? new(completed.Task) : default;
+            }
         };
         var work = handler.HandleAsync(new(), new Context(services), default);
         await Assert.That(work.IsCompleted).IsEqualTo(!asynchronous);
+
         if (asynchronous)
         {
-            if (stage == "load") loaded.SetResult(state);
-            else completed.SetResult();
+            if (stage == "load")
+            {
+                loaded.SetResult(state);
+            }
+            else
+            {
+                completed.SetResult();
+            }
         }
+
         await work;
         await Assert.That(loads).IsEqualTo(1);
         await Assert.That(transitions).IsEqualTo(1);
@@ -53,13 +73,23 @@ public class SagaExecutionTests
         await using var services = Services();
         var error = new InvalidOperationException("Synchronous stage failure.");
         var handler = new Process();
+
         switch (stage)
         {
-            case "validate": handler.Validate = () => throw error; break;
-            case "load": handler.Load = () => faultedTask ? ValueTask.FromException<Data?>(error) : throw error; break;
-            case "transition": handler.Transition = _ => faultedTask ? ValueTask.FromException(error) : throw error; break;
-            case "save": handler.Save = (_, _) => faultedTask ? ValueTask.FromException(error) : throw error; break;
+            case "validate":
+                handler.Validate = () => throw error;
+                break;
+            case "load":
+                handler.Load = () => faultedTask ? ValueTask.FromException<Data?>(error) : throw error;
+                break;
+            case "transition":
+                handler.Transition = _ => faultedTask ? ValueTask.FromException(error) : throw error;
+                break;
+            case "save":
+                handler.Save = (_, _) => faultedTask ? ValueTask.FromException(error) : throw error;
+                break;
         }
+
         var context = new Context(services);
         var work = handler.HandleAsync(new(), context, default);
         await Assert.That(work.IsCompleted).IsTrue();
@@ -116,19 +146,52 @@ public class SagaExecutionTests
         var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var handler = new Process
         {
-            Load = stage == "load" ? () => { entered.SetResult(); return new(loaded.Task); } : static () => new(NewData()),
-            Transition = stage == "transition" ? _ => { entered.SetResult(); return new(completed.Task); } : static _ => default,
-            Save = stage == "save" ? (_, _) => { entered.SetResult(); return new(completed.Task); } : static (_, _) => default
+            Load = stage == "load"
+                ? () =>
+                {
+                    entered.SetResult();
+                    return new(loaded.Task);
+                }
+            : static () => new(NewData()),
+            Transition = stage == "transition"
+                ? _ =>
+                {
+                    entered.SetResult();
+                    return new(completed.Task);
+                }
+            : static _ => default,
+            Save = stage == "save"
+                ? (_, _) =>
+                {
+                    entered.SetResult();
+                    return new(completed.Task);
+                }
+            : static (_, _) => default
         };
         var work = handler.HandleAsync(new(), context, default).AsTask();
         await entered.Task.WaitAsync(TimeSpan.FromSeconds(10));
         var error = new InvalidOperationException("Suspended stage failed.");
-        if (stage == "load") loaded.SetException(error);
-        else completed.SetException(error);
+
+        if (stage == "load")
+        {
+            loaded.SetException(error);
+        }
+        else
+        {
+            completed.SetException(error);
+        }
+
         await Assert.That(async () => await work).Throws<InvalidOperationException>().WithMessage(error.Message);
 
         var saves = 0;
-        var next = new Process { Save = (_, _) => { saves++; return default; } };
+        var next = new Process
+        {
+            Save = (_, _) =>
+            {
+                saves++;
+                return default;
+            }
+        };
         await next.HandleAsync(new(), context, default);
         await Assert.That(saves).IsEqualTo(1);
     }
@@ -144,7 +207,11 @@ public class SagaExecutionTests
         {
             Validate = () => local.Value = "transition",
             Load = () => new(loaded.Task),
-            Transition = _ => { observed = local.Value; return default; }
+            Transition = _ =>
+            {
+                observed = local.Value;
+                return default;
+            }
         };
         var work = handler.HandleAsync(new(), new Context(services), default);
         await Assert.That(local.Value).IsEqualTo("caller");
@@ -163,8 +230,24 @@ public class SagaExecutionTests
         var firstState = NewData();
         var secondState = NewData();
         Data? firstSaved = null, secondSaved = null;
-        var first = new Process { Load = () => new(firstLoad.Task), Save = (state, _) => { firstSaved = state; return default; } };
-        var second = new Process { Load = () => new(secondLoad.Task), Save = (state, _) => { secondSaved = state; return default; } };
+        var first = new Process
+        {
+            Load = () => new(firstLoad.Task),
+            Save = (state, _) =>
+            {
+                firstSaved = state;
+                return default;
+            }
+        };
+        var second = new Process
+        {
+            Load = () => new(secondLoad.Task),
+            Save = (state, _) =>
+            {
+                secondSaved = state;
+                return default;
+            }
+        };
         var firstWork = first.HandleAsync(new(), new Context(services), default);
         var secondWork = second.HandleAsync(new(), new Context(services), default);
         secondLoad.SetResult(secondState);
@@ -183,7 +266,11 @@ public class SagaExecutionTests
         var handler = new Process
         {
             Load = static () => new((Data?)null),
-            Save = (_, created) => { isNew = created; return default; }
+            Save = (_, created) =>
+            {
+                isNew = created;
+                return default;
+            }
         };
         await handler.HandleAsync(new(), new Context(services), default);
         await Assert.That(isNew).IsTrue();
@@ -208,30 +295,73 @@ public class SagaExecutionTests
         await new Process().HandleAsync(new(), new Context(services), default);
     }
 
-    private static ServiceProvider Services() => new ServiceCollection().AddSingleton<SagaExecution<Data, Input>>().BuildServiceProvider();
-    private static Data NewData() => new() { Id = Guid.NewGuid() };
+    private static ServiceProvider Services()
+    {
+        return new ServiceCollection().AddSingleton<SagaExecution<Data, Input>>().BuildServiceProvider();
+    }
+
+    private static Data NewData()
+    {
+        return new()
+        {
+            Id = Guid.NewGuid()
+        };
+    }
+
     private sealed class Data : SagaData;
+
     private sealed class Input;
+
     private sealed class Process : Saga<Data, Input>
     {
         internal Action? Validate;
         internal Func<ValueTask<Data?>> Load = static () => new(NewData());
         internal Func<Data, ValueTask> Transition = static _ => default;
         internal Func<Data, bool, ValueTask> Save = static (_, _) => default;
-        protected override void ValidateTransaction() => Validate?.Invoke();
-        protected override ValueTask<Data?> LoadAsync(Input message, CancellationToken cancellationToken) => Load();
-        protected override Data Create(Input message) => NewData();
-        protected override ValueTask TransitionAsync(Data state, Input message, MessageContext context, CancellationToken cancellationToken) => Transition(state);
-        protected override ValueTask SaveAsync(Data state, bool isNew, CancellationToken cancellationToken) => Save(state, isNew);
+
+        protected override void ValidateTransaction()
+        {
+            Validate?.Invoke();
+        }
+
+        protected override ValueTask<Data?> LoadAsync(Input message, CancellationToken cancellationToken)
+        {
+            return Load();
+        }
+
+        protected override Data Create(Input message)
+        {
+            return NewData();
+        }
+
+        protected override ValueTask TransitionAsync(Data state, Input message, MessageContext context, CancellationToken cancellationToken)
+        {
+            return Transition(state);
+        }
+
+        protected override ValueTask SaveAsync(Data state, bool isNew, CancellationToken cancellationToken)
+        {
+            return Save(state, isNew);
+        }
     }
+
     private sealed class Context(IServiceProvider services) : MessageContext
     {
         public override string MessageId => "018f0000-0000-7000-8000-000000000001";
+
         public override MessageType MessageType => new("saga.execution", 1);
+
         public override MessageHeaders Headers => MessageHeaders.Empty;
+
         public override int Attempt => 1;
+
         public override IServiceProvider Services => services;
-        public override MessageFeatures Features { get; } = new();
+
+        public override MessageFeatures Features
+        {
+            get;
+        } = new();
+
         public override CancellationToken CancellationToken => default;
     }
 }

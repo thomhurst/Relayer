@@ -7,8 +7,16 @@ namespace Relayer.Outbox.PostgreSql.Tests;
 internal sealed class PostgreSqlFixture : IAsyncDisposable
 {
     private NpgsqlDataSource? _admin;
-    public string Database { get; } = TestContext.Current!.Isolation.GetIsolatedName(Guid.NewGuid().ToString("N")[..8]);
-    public string ConnectionString { get; private set; } = "";
+
+    public string Database
+    {
+        get;
+    } = TestContext.Current!.Isolation.GetIsolatedName(Guid.NewGuid().ToString("N")[..8]);
+
+    public string ConnectionString
+    {
+        get; private set;
+    } = "";
 
     public async Task StartAsync()
     {
@@ -20,18 +28,31 @@ internal sealed class PostgreSqlFixture : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
-        if (_admin is null) return;
+        if (_admin is null)
+        {
+            return;
+        }
+
         try
         {
             // Includes databases a test created with this one's name as their prefix.
             var databases = new List<string>();
+
             await using (var command = _admin.CreateCommand("SELECT datname FROM pg_database WHERE starts_with(datname, $1)"))
             {
                 command.Parameters.AddWithValue(Database);
                 await using var reader = await command.ExecuteReaderAsync();
-                while (await reader.ReadAsync()) databases.Add(reader.GetString(0));
+
+                while (await reader.ReadAsync())
+                {
+                    databases.Add(reader.GetString(0));
+                }
             }
-            foreach (var database in databases) await Execute($"DROP DATABASE {database} WITH (FORCE)");
+
+            foreach (var database in databases)
+            {
+                await Execute($"DROP DATABASE {database} WITH (FORCE)");
+            }
         }
         catch (Exception exception)
         {
@@ -52,9 +73,9 @@ internal sealed class PostgreSqlFixture : IAsyncDisposable
 public static class PostgreSqlSession
 {
     // Started by the first test that needs a database, so filtered runs of pure unit tests start no container.
-    private static Lazy<Task<Session>> _shared = new(StartAsync);
+    private static Lazy<Task<Session>> s_shared = new(StartAsync);
 
-    internal static Task<Session> Current => Volatile.Read(ref _shared).Value;
+    internal static Task<Session> Current => Volatile.Read(ref s_shared).Value;
 
     // Admin is pooled, unlike the tests' own connections: creating and dropping databases should not add connection churn.
     internal sealed record Session(PostgreSqlServer Server, NpgsqlDataSource Admin, List<Exception> CleanupFailures);
@@ -67,6 +88,7 @@ public static class PostgreSqlSession
             Console.Error.WriteLine(failure);
             failures.Add(failure);
         });
+
         try
         {
             await server.StartAsync();
@@ -83,15 +105,31 @@ public static class PostgreSqlSession
     public static async Task StopAsync()
     {
         // Like TUnit's own per-session instances, a later session in this process starts afresh.
-        var shared = Interlocked.Exchange(ref _shared, new(StartAsync));
-        if (!shared.IsValueCreated) return;
+        var shared = Interlocked.Exchange(ref s_shared, new(StartAsync));
+
+        if (!shared.IsValueCreated)
+        {
+            return;
+        }
         // Wait for a startup still in flight (every test may have given up on it) so its container is not left behind.
         Session session;
-        try { session = await shared.Value; }
+
+        try
+        {
+            session = await shared.Value;
+        }
         // A failed startup already removed its container and failed the tests that needed it.
-        catch { return; }
+        catch
+        {
+            return;
+        }
+
         await session.Admin.DisposeAsync();
         await session.Server.DisposeAsync();
-        if (session.CleanupFailures.Count > 0) throw new AggregateException("PostgreSQL server cleanup failed.", session.CleanupFailures);
+
+        if (session.CleanupFailures.Count > 0)
+        {
+            throw new AggregateException("PostgreSQL server cleanup failed.", session.CleanupFailures);
+        }
     }
 }

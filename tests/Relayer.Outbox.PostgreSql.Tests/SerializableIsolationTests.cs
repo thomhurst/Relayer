@@ -1,4 +1,3 @@
-using Relayer.Pipeline;
 using System.Buffers;
 using System.Collections.Concurrent;
 using System.Data;
@@ -10,6 +9,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Npgsql;
 using Relayer.Outbox.EntityFrameworkCore;
+using Relayer.Pipeline;
 using Relayer.Serialization;
 using Relayer.Transports;
 
@@ -29,7 +29,10 @@ public class SerializableIsolationTests
         await using var fixture = new PostgreSqlFixture();
         await fixture.StartAsync();
         await using var source = NpgsqlDataSource.Create(new NpgsqlConnectionStringBuilder(fixture.ConnectionString)
-        { Pooling = true, MaxPoolSize = Writers + 8 }.ConnectionString);
+        {
+            Pooling = true,
+            MaxPoolSize = Writers + 8
+        }.ConnectionString);
         await CreateTables(source);
 
         // Both arms run identical business work, snapshot/commit barriers and maintenance.
@@ -50,7 +53,10 @@ public class SerializableIsolationTests
         await using var fixture = new PostgreSqlFixture();
         await fixture.StartAsync();
         await using var source = NpgsqlDataSource.Create(new NpgsqlConnectionStringBuilder(fixture.ConnectionString)
-        { Pooling = true, MaxPoolSize = Writers + 8 }.ConnectionString);
+        {
+            Pooling = true,
+            MaxPoolSize = Writers + 8
+        }.ConnectionString);
         await CreateTables(source);
         // Read the next writer's row before updating our own: a real Serializable
         // dependency cycle proves that the counter does not mask aborted attempts.
@@ -84,11 +90,16 @@ public class SerializableIsolationTests
         var transport = new Transport();
         using var direct = new PostgreSqlDirectDispatcher(source, new(), new(), [transport], NullLogger<PostgreSqlDirectDispatcher>.Instance);
         using var maintenance = new PostgreSqlMaintenanceWorker(source,
-            new() { RecoveryDelay = TimeSpan.Zero, InboxRetention = TimeSpan.FromDays(1) },
+            new()
+            {
+                RecoveryDelay = TimeSpan.Zero,
+                InboxRetention = TimeSpan.FromDays(1)
+            },
             [transport], NullLogger<PostgreSqlMaintenanceWorker>.Instance);
         var failures = new ConcurrentQueue<string>();
         var committed = 0;
         var cleaned = 0;
+
         try
         {
             for (var batch = 0; batch < Batches; batch++)
@@ -98,6 +109,7 @@ public class SerializableIsolationTests
                 var seed = Record();
                 await Seed(source, seed, cancellation);
                 var attempts = Enumerable.Range(0, Writers).Select(Attempt).ToArray();
+
                 try
                 {
                     await state.Batch.Prepared.Task.WaitAsync(cancellation);
@@ -128,7 +140,10 @@ public class SerializableIsolationTests
             return new(committed, failures.Count(x => x == PostgresErrorCodes.SerializationFailure),
                 failures.Count(x => x == PostgresErrorCodes.DeadlockDetected));
         }
-        finally { await maintenance.ReleaseAsync(CancellationToken.None); }
+        finally
+        {
+            await maintenance.ReleaseAsync(CancellationToken.None);
+        }
 
         async Task Maintain()
         {
@@ -144,7 +159,8 @@ public class SerializableIsolationTests
                 {
                     using var context = pipeline.RentContext(new ConsumeMessage
                     {
-                        MessageType = new("serializable.probe", 1), MessageId = Guid.CreateVersion7().ToString("D"),
+                        MessageType = new("serializable.probe", 1),
+                        MessageId = Guid.CreateVersion7().ToString("D"),
                         Body = new ReadOnlySequence<byte>(new[] { (byte)writer })
                     }, cancellation);
                     await pipeline.ProcessAsync(context);
@@ -173,25 +189,39 @@ public class SerializableIsolationTests
                     parameter.Value = writer * 1024;
                     update.Parameters.Add(parameter);
                     await Assert.That(await update.ExecuteNonQueryAsync(cancellation)).IsEqualTo(1);
-                    if (relayer) await outbox.EnlistAsync(Record(), cancellation);
+
+                    if (relayer)
+                    {
+                        await outbox.EnlistAsync(Record(), cancellation);
+                    }
+
                     await state.Batch.Prepare(writer, cancellation);
                     await transaction.CommitAsync(cancellation);
                 }
+
                 Interlocked.Increment(ref committed);
             }
             catch (Exception error) when (Conflict(error) is { } sqlState)
             {
                 failures.Enqueue(sqlState);
             }
-            finally { state.Batch.ReportPrepared(writer); }
+            finally
+            {
+                state.Batch.ReportPrepared(writer);
+            }
         }
     }
 
     private static string? Conflict(Exception error)
     {
         for (Exception? current = error; current is not null; current = current.InnerException)
+        {
             if (current is PostgresException { SqlState: PostgresErrorCodes.SerializationFailure or PostgresErrorCodes.DeadlockDetected } postgres)
+            {
                 return postgres.SqlState;
+            }
+        }
+
         return null;
     }
 
@@ -204,7 +234,11 @@ public class SerializableIsolationTests
         services.AddDbContext<BusinessContext>((sp, options) =>
         {
             options.UseNpgsql(source).AddInterceptors(new SerializableTransactions(state));
-            if (state.Relayer) options.AddRelayerOutbox(sp);
+
+            if (state.Relayer)
+            {
+                options.AddRelayerOutbox(sp);
+            }
         });
         services.AddRelayer(builder =>
         {
@@ -218,16 +252,27 @@ public class SerializableIsolationTests
     private static async Task Write(BusinessContext db, IServiceProvider services, int writer, Workload state, CancellationToken cancellation)
     {
         if (state.ConflictProbe)
+        {
             _ = await db.Set<Business>().FindAsync(new object[] { (writer + 1) % Writers * 1024 }, cancellation);
+        }
+
         var row = await db.Set<Business>().FindAsync(new object[] { writer * 1024 }, cancellation);
         row!.Value++;
-        if (state.Relayer) await services.GetRequiredService<IOutboxEnlistment>().EnlistAsync(Record(), cancellation);
+
+        if (state.Relayer)
+        {
+            await services.GetRequiredService<IOutboxEnlistment>().EnlistAsync(Record(), cancellation);
+        }
+
         await db.SaveChangesAsync(cancellation);
         await state.Batch.Prepare(writer, cancellation);
     }
 
-    private static OutboxRecord Record() => new(Guid.CreateVersion7(), "events", "serializable.probe;v=1",
-        new("destination", new byte[] { 1 }), DateTimeOffset.UtcNow);
+    private static OutboxRecord Record()
+    {
+        return new(Guid.CreateVersion7(), "events", "serializable.probe;v=1",
+                new("destination", new byte[] { 1 }), DateTimeOffset.UtcNow);
+    }
 
     private static async Task Seed(NpgsqlDataSource source, OutboxRecord record, CancellationToken cancellation)
     {
@@ -261,30 +306,50 @@ public class SerializableIsolationTests
         private int _prepared;
         private readonly int[] _reported = new int[Writers];
         private readonly TaskCompletionSource _start = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        internal TaskCompletionSource Prepared { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        internal TaskCompletionSource Commit { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        internal TaskCompletionSource Prepared
+        {
+            get;
+        } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        internal TaskCompletionSource Commit
+        {
+            get;
+        } = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         internal async Task Snapshot(DbConnection connection, DbTransaction transaction, CancellationToken cancellation)
         {
             await using var command = connection.CreateCommand();
             command.Transaction = transaction;
             command.CommandText = "SET LOCAL enable_seqscan = off; SELECT current_setting('transaction_isolation'), pg_current_snapshot()::text";
+
             await using (var reader = await command.ExecuteReaderAsync(cancellation))
             {
                 await reader.ReadAsync(cancellation);
                 await Assert.That(reader.GetString(0)).IsEqualTo("serializable");
             }
+
             var started = Interlocked.Increment(ref _snapshots);
+
             if (started > Writers)
+            {
                 throw new InvalidOperationException("A transaction was replayed. Conflict retries must not hide rejected Serializable attempts.");
-            if (started == Writers) _start.TrySetResult();
+            }
+
+            if (started == Writers)
+            {
+                _start.TrySetResult();
+            }
+
             await _start.Task.WaitAsync(cancellation);
         }
 
         internal void ReportPrepared(int writer)
         {
             if (Interlocked.Exchange(ref _reported[writer], 1) == 0 && Interlocked.Increment(ref _prepared) == Writers)
+            {
                 Prepared.TrySetResult();
+            }
         }
 
         internal async Task Prepare(int writer, CancellationToken cancellation)
@@ -296,46 +361,127 @@ public class SerializableIsolationTests
 
     public sealed class Workload
     {
-        public bool Relayer { get; init; }
-        public bool ConflictProbe { get; init; }
-        internal Batch Batch { get; set; } = new();
+        public bool Relayer
+        {
+            get; init;
+        }
+
+        public bool ConflictProbe
+        {
+            get; init;
+        }
+
+        internal Batch Batch
+        {
+            get; set;
+        } = new();
     }
 
     private sealed record Counts(int Committed, int SerializationFailures, int Deadlocks);
+
     private sealed class Snapshot : IOptionsSnapshot<PostgreSqlOutboxOptions>
     {
-        public PostgreSqlOutboxOptions Value { get; } = new();
-        public PostgreSqlOutboxOptions Get(string? name) => Value;
+        public PostgreSqlOutboxOptions Value
+        {
+            get;
+        } = new();
+
+        public PostgreSqlOutboxOptions Get(string? name)
+        {
+            return Value;
+        }
     }
 
     public sealed class BusinessContext(DbContextOptions<BusinessContext> options) : DbContext(options)
     {
-        protected override void OnModelCreating(ModelBuilder modelBuilder) => modelBuilder.Entity<Business>().ToTable("business").HasKey(x => x.Id);
+        protected override void OnModelCreating(ModelBuilder modelBuilder)
+        {
+            modelBuilder.Entity<Business>().ToTable("business").HasKey(x => x.Id);
+        }
     }
-    public sealed class Business { public int Id { get; set; } public int Value { get; set; } }
+
+    public sealed class Business
+    {
+        public int Id
+        {
+            get; set;
+        }
+
+        public int Value
+        {
+            get; set;
+        }
+    }
+
     [Message("serializable.probe")]
     public sealed record Probe(int Writer);
+
     public sealed class Handler(BusinessContext db, Workload state) : IHandler<Probe>
     {
         public async ValueTask HandleAsync(Probe message, MessageContext context, CancellationToken cancellationToken)
-            => await Write(db, context.Services, message.Writer, state, cancellationToken);
+        {
+            await Write(db, context.Services, message.Writer, state, cancellationToken);
+        }
     }
+
     private sealed class Serializer : IMessageSerializer
     {
         public string ContentType => "application/test";
-        public void Serialize<TMessage>(TMessage message, IBufferWriter<byte> destination) => throw new NotSupportedException();
-        public TMessage Deserialize<TMessage>(ReadOnlySequence<byte> source) => (TMessage)(object)new Probe(source.FirstSpan[0]);
+
+        public void Serialize<TMessage>(TMessage message, IBufferWriter<byte> destination)
+        {
+            throw new NotSupportedException();
+        }
+
+        public TMessage Deserialize<TMessage>(ReadOnlySequence<byte> source)
+        {
+            return (TMessage)(object)new Probe(source.FirstSpan[0]);
+        }
     }
+
     private sealed class Transport : ITransport
     {
         public int Sends;
+
         public string Name => "events";
-        public TransportCapabilities GetCapabilities(string endpoint) => new() { MaxBatchSize = 1 };
-        public ValueTask SendAsync(OutgoingMessage message, CancellationToken cancellationToken) { Interlocked.Increment(ref Sends); return default; }
-        public ValueTask SendBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken) => throw new NotSupportedException();
-        public ValueTask<TopologyReport> ApplyTopologyAsync(TopologyMode mode, CancellationToken cancellationToken) => new(new TopologyReport([]));
-        public Task StartAsync(CancellationToken cancellationToken) => Task.CompletedTask;
-        public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
-        public ValueTask DisposeAsync() => default;
+
+        public TransportCapabilities GetCapabilities(string endpoint)
+        {
+            return new()
+            {
+                MaxBatchSize = 1
+            };
+        }
+
+        public ValueTask SendAsync(OutgoingMessage message, CancellationToken cancellationToken)
+        {
+            Interlocked.Increment(ref Sends);
+            return default;
+        }
+
+        public ValueTask SendBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken)
+        {
+            throw new NotSupportedException();
+        }
+
+        public ValueTask<TopologyReport> ApplyTopologyAsync(TopologyMode mode, CancellationToken cancellationToken)
+        {
+            return new(new TopologyReport([]));
+        }
+
+        public Task StartAsync(CancellationToken cancellationToken)
+        {
+            return Task.CompletedTask;
+        }
+
+        public Task StopAsync(CancellationToken cancellationToken)
+        {
+            return Task.CompletedTask;
+        }
+
+        public ValueTask DisposeAsync()
+        {
+            return default;
+        }
     }
 }

@@ -34,7 +34,12 @@ public static class KafkaInboxProbe
                 // No dispatcher runs, so outgoing messages stay as outbox rows the test can count.
                 kafka.Send<KafkaInboxOutput>(settings.Topic + ".out");
                 kafka.Send<KafkaInboxWork>(settings.Topic);
-                if (!consume) return;
+
+                if (!consume)
+                {
+                    return;
+                }
+
                 kafka.Consume(settings.Topic, consumer =>
                 {
                     consumer.Options.Group = settings.Topic;
@@ -45,7 +50,11 @@ public static class KafkaInboxProbe
                         CommitInterval = settings.CommitInterval,
                         StopTimeout = TimeSpan.FromSeconds(1),
                     };
-                    consumer.Failures(new() { RetryDelays = [TimeSpan.Zero], Jitter = 0 });
+                    consumer.Failures(new()
+                    {
+                        RetryDelays = [TimeSpan.Zero],
+                        Jitter = 0
+                    });
                     consumer.EntityFrameworkCore<KafkaInboxContext>("kafka.inbox");
                     consumer.Handler<KafkaInboxHandler>();
                 });
@@ -57,17 +66,50 @@ public static class KafkaInboxProbe
 public sealed class KafkaInboxSettings(string bootstrap, string connectionString, string topic, TimeSpan commitInterval)
 {
     private int _invocations;
-    public string Bootstrap { get; } = bootstrap;
-    public string ConnectionString { get; } = connectionString;
-    public string Topic { get; } = topic;
-    public TimeSpan CommitInterval { get; } = commitInterval;
+
+    public string Bootstrap
+    {
+        get;
+    } = bootstrap;
+
+    public string ConnectionString
+    {
+        get;
+    } = connectionString;
+
+    public string Topic
+    {
+        get;
+    } = topic;
+
+    public TimeSpan CommitInterval
+    {
+        get;
+    } = commitInterval;
+
     /// <summary>Wait inside the open transaction after saving, until killed or cancelled.</summary>
-    public bool Block { get; init; }
+    public bool Block
+    {
+        get; init;
+    }
+
     /// <summary>Throw after saving on the first attempt.</summary>
-    public bool FailFirst { get; init; }
+    public bool FailFirst
+    {
+        get; init;
+    }
+
     public int Invocations => Volatile.Read(ref _invocations);
-    public TaskCompletionSource Entered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
-    internal int Invoke() => Interlocked.Increment(ref _invocations);
+
+    public TaskCompletionSource Entered
+    {
+        get;
+    } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+    internal int Invoke()
+    {
+        return Interlocked.Increment(ref _invocations);
+    }
 }
 
 [Message("crash.kafka.work")]
@@ -86,19 +128,31 @@ internal sealed class KafkaInboxHandler(KafkaInboxContext db, ISender sender, Ka
         await db.SaveChangesAsync(cancellationToken);
         Console.WriteLine(KafkaInboxProbe.Saved);
         settings.Entered.TrySetResult();
-        if (settings.Block) await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
-        if (settings.FailFirst && attempt == 1) throw new InvalidOperationException("Simulated failure after saving.");
+
+        if (settings.Block)
+        {
+            await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+        }
+
+        if (settings.FailFirst && attempt == 1)
+        {
+            throw new InvalidOperationException("Simulated failure after saving.");
+        }
     }
 }
 
 public sealed class KafkaInboxContext(DbContextOptions<KafkaInboxContext> options) : DbContext(options)
 {
     // EF 10.0.15 has a first-use relational-model race (dotnet/efcore#39214); tests build this model concurrently.
-    protected override void ConfigureConventions(ModelConfigurationBuilder configurationBuilder) =>
+    protected override void ConfigureConventions(ModelConfigurationBuilder configurationBuilder)
+    {
         configurationBuilder.Conventions.Add(static _ => new InitializeRelationalModel());
+    }
 
-    protected override void OnModelCreating(ModelBuilder modelBuilder) =>
+    protected override void OnModelCreating(ModelBuilder modelBuilder)
+    {
         modelBuilder.Entity<KafkaInboxOrder>().ToTable("kafka_orders").HasKey(order => order.Id);
+    }
 
     private sealed class InitializeRelationalModel : IModelFinalizedConvention
     {
@@ -112,6 +166,13 @@ public sealed class KafkaInboxContext(DbContextOptions<KafkaInboxContext> option
 
 public sealed class KafkaInboxOrder
 {
-    public Guid Id { get; set; }
-    public int Value { get; set; }
+    public Guid Id
+    {
+        get; set;
+    }
+
+    public int Value
+    {
+        get; set;
+    }
 }

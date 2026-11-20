@@ -1,9 +1,9 @@
-using Relayer.Transports;
 using System.Data;
 using System.Data.Common;
 using System.Runtime.CompilerServices;
 using Microsoft.Extensions.Options;
 using MySqlConnector;
+using Relayer.Transports;
 
 namespace Relayer.Outbox.MySql;
 
@@ -25,7 +25,9 @@ public sealed class MySqlOutbox : IOutboxEnlistment, IDisposable, IAsyncDisposab
 
     /// <summary>Creates an enlistment using this scope's validated options.</summary>
     public MySqlOutbox(IOptionsSnapshot<MySqlOutboxOptions> options, RelayerInstrumentation? instrumentation = null)
-        : this(options, instrumentation, null) { }
+        : this(options, instrumentation, null)
+    {
+    }
 
     internal MySqlOutbox(IOptionsSnapshot<MySqlOutboxOptions> options, RelayerInstrumentation? instrumentation,
         MySqlDirectDispatcher? dispatcher, MySqlInboxPools? inboxPools = null)
@@ -33,8 +35,12 @@ public sealed class MySqlOutbox : IOutboxEnlistment, IDisposable, IAsyncDisposab
         ArgumentNullException.ThrowIfNull(options);
         var value = options.Value;
         ValidateOptions(value);
+
         if (value.DispatchStoreName is not null && dispatcher is null)
+        {
             throw new InvalidOperationException("Resolve a MySQL outbox with DispatchStoreName through its registered service provider.");
+        }
+
         _inboxPools = inboxPools;
         _dispatcher = dispatcher;
         dispatcher?.ValidateStore(value.TablePrefix);
@@ -72,6 +78,7 @@ public sealed class MySqlOutbox : IOutboxEnlistment, IDisposable, IAsyncDisposab
         EnsureAvailable();
         RejectAmbientTransaction();
         var connection = await dataSource.OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+
         try
         {
             _dispatcher?.ValidateConnection(connection);
@@ -88,14 +95,19 @@ public sealed class MySqlOutbox : IOutboxEnlistment, IDisposable, IAsyncDisposab
     private static void RejectAmbientTransaction()
     {
         if (System.Transactions.Transaction.Current is not null)
+        {
             throw new InvalidOperationException("MySQL outbox transactions require explicit ownership. Call outside an ambient TransactionScope.");
+        }
     }
 
     private void EnsureAvailable()
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
+
         if (_transaction is not null)
+        {
             throw new InvalidOperationException("Complete or dispose the current MySQL outbox transaction before beginning another.");
+        }
     }
 
     /// <inheritdoc />
@@ -103,9 +115,19 @@ public sealed class MySqlOutbox : IOutboxEnlistment, IDisposable, IAsyncDisposab
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         cancellationToken.ThrowIfCancellationRequested();
-        if (!IsActive) throw new InvalidOperationException("Begin a MySQL outbox transaction before sending via the outbox.");
+
+        if (!IsActive)
+        {
+            throw new InvalidOperationException("Begin a MySQL outbox transaction before sending via the outbox.");
+        }
+
         BufferedOutboxMessage.Validate(record);
-        if (_count == _rows.Count) _rows.Add(new());
+
+        if (_count == _rows.Count)
+        {
+            _rows.Add(new());
+        }
+
         _rows[_count].Copy(record, _lanes);
         _count++;
         return ValueTask.CompletedTask;
@@ -119,6 +141,7 @@ public sealed class MySqlOutbox : IOutboxEnlistment, IDisposable, IAsyncDisposab
         var pool = _inboxPool ??= _inboxPools?.Get(_options.TablePrefix) ?? new MySqlInboxPool(_options);
         var scratch = pool.Rent();
         var command = scratch.Command;
+
         try
         {
             var native = transaction.Unwrap(transaction.Connection);
@@ -139,9 +162,18 @@ public sealed class MySqlOutbox : IOutboxEnlistment, IDisposable, IAsyncDisposab
 
     internal MySqlOutboxBatch? Prepare(MySqlTransaction transaction)
     {
-        if (_count == 0) return null;
+        if (_count == 0)
+        {
+            return null;
+        }
+
         _batch.Prepare(transaction);
-        for (var i = 0; i < _count; i++) _batch.Add(_rows[i]);
+
+        for (var i = 0; i < _count; i++)
+        {
+            _batch.Add(_rows[i]);
+        }
+
         return _batch;
     }
 
@@ -153,8 +185,16 @@ public sealed class MySqlOutbox : IOutboxEnlistment, IDisposable, IAsyncDisposab
 
     internal void Ended(MySqlOutboxTransaction transaction)
     {
-        if (!ReferenceEquals(_transaction, transaction)) return;
-        for (var i = 0; i < _count; i++) _rows[i].Clear();
+        if (!ReferenceEquals(_transaction, transaction))
+        {
+            return;
+        }
+
+        for (var i = 0; i < _count; i++)
+        {
+            _rows[i].Clear();
+        }
+
         _count = 0;
         _transaction = null;
     }
@@ -163,27 +203,66 @@ public sealed class MySqlOutbox : IOutboxEnlistment, IDisposable, IAsyncDisposab
     {
         _ = MySqlOutboxSchema.Table(options);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(options.MaxDispatchAttempts);
+
         if (options.DispatchStoreName is not null && string.IsNullOrWhiteSpace(options.DispatchStoreName))
+        {
             throw new ArgumentException("DispatchStoreName must be nonempty when supplied.", nameof(options));
-        if (options.Lanes <= 0) throw new ArgumentOutOfRangeException(nameof(options), "Lanes must be positive.");
+        }
+
+        if (options.Lanes <= 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(options), "Lanes must be positive.");
+        }
     }
 
     /// <inheritdoc />
     public void Dispose()
     {
-        if (_disposed) return;
-        try { _transaction?.Dispose(); }
-        finally { _disposed = true; _batch.Dispose(); if (_inboxPools is null) _inboxPool?.Dispose(); }
+        if (_disposed)
+        {
+            return;
+        }
+
+        try
+        {
+            _transaction?.Dispose();
+        }
+        finally
+        {
+            _disposed = true;
+            _batch.Dispose();
+
+            if (_inboxPools is null)
+            {
+                _inboxPool?.Dispose();
+            }
+        }
     }
 
     /// <inheritdoc />
     public async ValueTask DisposeAsync()
     {
-        if (_disposed) return;
+        if (_disposed)
+        {
+            return;
+        }
+
         try
         {
-            if (_transaction is not null) await _transaction.DisposeAsync().ConfigureAwait(false);
+            if (_transaction is not null)
+            {
+                await _transaction.DisposeAsync().ConfigureAwait(false);
+            }
         }
-        finally { _disposed = true; _batch.Dispose(); if (_inboxPools is null) _inboxPool?.Dispose(); }
+        finally
+        {
+            _disposed = true;
+            _batch.Dispose();
+
+            if (_inboxPools is null)
+            {
+                _inboxPool?.Dispose();
+            }
+        }
     }
 }

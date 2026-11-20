@@ -1,11 +1,11 @@
+using OpenTelemetry;
+using OpenTelemetry.Logs;
+using OpenTelemetry.Trace;
 using Relayer;
 using Relayer.Aspire;
 using Relayer.AzureServiceBus;
 using Relayer.HealthChecks;
 using Relayer.Kafka;
-using OpenTelemetry;
-using OpenTelemetry.Logs;
-using OpenTelemetry.Trace;
 
 var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddRelayer(relayer =>
@@ -54,5 +54,6 @@ app.Run();
 
 [Message("sample.kafka-order")]
 public sealed record KafkaOrder(string Id);
+
 [Message("sample.servicebus-order")]
 public sealed record ServiceBusOrder(string Id);

@@ -41,11 +41,19 @@ public static partial class PostgreSqlOutboxServiceCollectionExtensions
         ArgumentNullException.ThrowIfNull(services);
         ArgumentException.ThrowIfNullOrWhiteSpace(storeName);
         ArgumentNullException.ThrowIfNull(dataSource);
+
         if (services.Any(descriptor => descriptor.ServiceType == typeof(PostgreSqlDirectDispatcher) && Equals(descriptor.ServiceKey, storeName)))
+        {
             throw new InvalidOperationException($"Direct outbox dispatch store '{storeName}' is already registered.");
+        }
+
         dispatchOptions ??= new();
+
         if (dispatchOptions.QueueCapacity is <= 0 or int.MaxValue || dispatchOptions.BatchSize <= 0 || dispatchOptions.ClaimDuration <= TimeSpan.Zero)
+        {
             throw new ArgumentOutOfRangeException(nameof(dispatchOptions), "QueueCapacity and BatchSize must be positive, QueueCapacity must be below Int32.MaxValue, and ClaimDuration must be positive.");
+        }
+
         storeOptions ??= new();
         var snapshot = new PostgreSqlOutboxOptions { Schema = storeOptions.Schema, TablePrefix = storeOptions.TablePrefix, MaxDispatchAttempts = storeOptions.MaxDispatchAttempts, RetainSentMessages = storeOptions.RetainSentMessages };
         _ = PostgreSqlOutboxSchema.CreateScript(snapshot);
@@ -83,8 +91,17 @@ public static partial class PostgreSqlOutboxServiceCollectionExtensions
     private static T Read<T>(IConfiguration configuration, string key, T fallback) where T : IParsable<T>
     {
         var value = configuration[key];
-        if (value is null) return fallback;
-        if (T.TryParse(value, CultureInfo.InvariantCulture, out var parsed)) return parsed;
+
+        if (value is null)
+        {
+            return fallback;
+        }
+
+        if (T.TryParse(value, CultureInfo.InvariantCulture, out var parsed))
+        {
+            return parsed;
+        }
+
         throw new OptionsValidationException(Options.DefaultName, typeof(PostgreSqlDirectDispatchOptions), [$"{key}: '{value}' is invalid."]);
     }
 
@@ -99,7 +116,13 @@ public static partial class PostgreSqlOutboxServiceCollectionExtensions
         protected override PostgreSqlDirectDispatchOptions CreateInstance(string name)
         {
             foreach (var setting in settings)
-                if (setting.Name == name) return setting.Options;
+            {
+                if (setting.Name == name)
+                {
+                    return setting.Options;
+                }
+            }
+
             return new();
         }
     }
@@ -132,9 +155,15 @@ public static partial class PostgreSqlOutboxServiceCollectionExtensions
         ArgumentNullException.ThrowIfNull(dataSource);
         options ??= new();
         _ = options.Validate();
+
         foreach (var descriptor in services)
+        {
             if (descriptor.ServiceType == typeof(PostgreSqlOrderedDispatcher) && Equals(descriptor.ServiceKey, name))
+            {
                 throw new InvalidOperationException($"Ordered outbox dispatcher '{name}' is already registered.");
+            }
+        }
+
         var snapshot = options;
         services.AddOptions<PostgreSqlOrderedDispatchOptions>(name);
         services.AddSingleton(new OrderedRegistration(name, snapshot));
@@ -178,8 +207,17 @@ public static partial class PostgreSqlOutboxServiceCollectionExtensions
     private static T ReadOrdered<T>(IConfiguration configuration, string key, T fallback) where T : IParsable<T>
     {
         var value = configuration[key];
-        if (value is null) return fallback;
-        if (T.TryParse(value, CultureInfo.InvariantCulture, out var result)) return result;
+
+        if (value is null)
+        {
+            return fallback;
+        }
+
+        if (T.TryParse(value, CultureInfo.InvariantCulture, out var result))
+        {
+            return result;
+        }
+
         throw new ArgumentException($"Ordered dispatch {key}: '{value}' is invalid.", nameof(configuration));
     }
 
@@ -194,9 +232,14 @@ public static partial class PostgreSqlOutboxServiceCollectionExtensions
         protected override PostgreSqlOrderedDispatchOptions CreateInstance(string requestedName)
         {
             foreach (var registration in registrations)
-                if (registration.Name == requestedName) return registration.Options;
+            {
+                if (registration.Name == requestedName)
+                {
+                    return registration.Options;
+                }
+            }
+
             return new();
         }
     }
-
 }

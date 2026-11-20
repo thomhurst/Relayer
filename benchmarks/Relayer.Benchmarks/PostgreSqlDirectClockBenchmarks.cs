@@ -18,7 +18,10 @@ public class PostgreSqlDirectClockBenchmarks
     private string _table = null!;
 
     [Params(1, 100)]
-    public int MessageCount { get; set; }
+    public int MessageCount
+    {
+        get; set;
+    }
 
     [GlobalSetup]
     public async Task Setup()
@@ -28,12 +31,21 @@ public class PostgreSqlDirectClockBenchmarks
         _connection = await _source.OpenConnectionAsync();
         _store = new(_source, _options);
         _table = "public." + PostgreSqlOutboxSchema.QuoteIdentifier(_options.TablePrefix + "outbox");
+
         await using (var schema = new NpgsqlCommand(PostgreSqlOutboxSchema.CreateScript(_options), _connection))
+        {
             await schema.ExecuteNonQueryAsync();
+        }
+
         _claims = new OutboxClaim[MessageCount];
         _claimed = new bool[MessageCount];
         var ids = new Guid[MessageCount];
-        for (var i = 0; i < MessageCount; i++) _claims[i] = new(ids[i] = Guid.CreateVersion7(), Guid.NewGuid());
+
+        for (var i = 0; i < MessageCount; i++)
+        {
+            _claims[i] = new(ids[i] = Guid.CreateVersion7(), Guid.NewGuid());
+        }
+
         await using var insert = new NpgsqlCommand($"""
             INSERT INTO {_table} (id, transport, destination, message_type, body, headers, created_at)
             SELECT id, 'events', 'work', 'probe', ''::bytea, ''::bytea, clock_timestamp() FROM unnest(@ids) AS row(id)
@@ -50,9 +62,17 @@ public class PostgreSqlDirectClockBenchmarks
         var now = DateTimeOffset.UtcNow;
         var expires = now.AddMinutes(1);
         await _store.ClaimBatchAsync(_claims, _claimed, now, expires, default);
-        if (expires <= DateTimeOffset.UtcNow || !_claimed[0]) throw new InvalidOperationException("Benchmark claim expired.");
+
+        if (expires <= DateTimeOffset.UtcNow || !_claimed[0])
+        {
+            throw new InvalidOperationException("Benchmark claim expired.");
+        }
+
         if (await _store.CompleteBatchAsync(_claims, DateTimeOffset.UtcNow, default) != MessageCount)
+        {
             throw new InvalidOperationException("Benchmark completion failed.");
+        }
+
         await transaction.RollbackAsync();
         _store.UseDispatchTransaction(null, null);
     }
@@ -64,10 +84,17 @@ public class PostgreSqlDirectClockBenchmarks
         _store.UseDispatchTransaction(_connection, transaction);
         var started = TimeProvider.System.GetTimestamp();
         await _store.ClaimDirectBatchAsync(_claims, _claimed, TimeSpan.FromMinutes(1), default);
+
         if (TimeProvider.System.GetElapsedTime(started) >= TimeSpan.FromMinutes(1) || !_claimed[0])
+        {
             throw new InvalidOperationException("Benchmark claim expired.");
+        }
+
         if (await _store.CompleteDirectBatchAsync(_claims, default) != MessageCount)
+        {
             throw new InvalidOperationException("Benchmark completion failed.");
+        }
+
         await transaction.RollbackAsync();
         _store.UseDispatchTransaction(null, null);
     }
@@ -80,6 +107,7 @@ public class PostgreSqlDirectClockBenchmarks
             await using var command = new NpgsqlCommand($"DROP TABLE IF EXISTS public.{PostgreSqlOutboxSchema.QuoteIdentifier(_options.TablePrefix + suffix)}", _connection);
             await command.ExecuteNonQueryAsync();
         }
+
         await _connection.DisposeAsync();
         await _source.DisposeAsync();
     }

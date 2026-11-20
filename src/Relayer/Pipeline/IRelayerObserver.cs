@@ -1,21 +1,32 @@
 using Relayer.Transports;
+
 namespace Relayer.Pipeline;
 
 // Optional test-only observation. Production pipelines retain their existing execution path.
 internal interface IRelayerObserver
 {
     ValueTask ProcessAsync(DefaultMessageContext context, ConsumeDelegate next);
+
     ValueTask ProcessBatchAsync(ConsumePipeline owner, ReadOnlyMemory<DefaultMessageContext> contexts, CancellationToken cancellationToken);
+
     ConsumeDelegate WrapSettlement(ConsumeDelegate next);
+
     void Failed(DefaultMessageContext context, Exception error);
+
     void WorkStarted();
+
     void WorkCompleted();
+
     void DeadLettered(InMemory.InMemoryDelivery delivery, DeadLetterInfo error);
+
     // Committed (positive) or settled (negative) durable outbox rows of this instance.
     void OutboxPending(long delta);
 }
 
 internal interface ITransportWrapper
 {
-    Transports.ITransport InnerTransport { get; }
+    Transports.ITransport InnerTransport
+    {
+        get;
+    }
 }

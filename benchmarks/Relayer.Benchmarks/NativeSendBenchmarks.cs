@@ -1,5 +1,5 @@
-using Relayer.Transports;
 using BenchmarkDotNet.Attributes;
+using Relayer.Transports;
 
 namespace Relayer.Benchmarks;
 
@@ -35,6 +35,9 @@ public class NativeSendBenchmarks
 
     public sealed class NativeOutgoing
     {
-        public int Value { get; set; }
+        public int Value
+        {
+            get; set;
+        }
     }
 }

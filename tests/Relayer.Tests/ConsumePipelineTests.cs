@@ -25,7 +25,11 @@ public class ConsumePipelineTests
         builder.Use(new Middleware("inner", [], []));
         var pipeline = builder.Build();
         var invoked = false;
-        await Assert.That(() => builder.Use(_ => { invoked = true; return new TransactionMiddleware(); })).Throws<InvalidOperationException>();
+        await Assert.That(() => builder.Use(_ =>
+        {
+            invoked = true;
+            return new TransactionMiddleware();
+        })).Throws<InvalidOperationException>();
         await Assert.That(invoked).IsFalse();
         using var context = pipeline.RentContext(Message());
         await pipeline.ProcessAsync(context);
@@ -35,13 +39,23 @@ public class ConsumePipelineTests
 
     private sealed class StartupDependency : IDisposable
     {
-        internal bool Disposed { get; private set; }
-        public void Dispose() => Disposed = true;
+        internal bool Disposed
+        {
+            get; private set;
+        }
+
+        public void Dispose()
+        {
+            Disposed = true;
+        }
     }
 
     private sealed class TransactionMiddleware : IConsumeTransactionMiddleware
     {
-        public ValueTask InvokeAsync(MessageContext context, ConsumeDelegate next) => next(context);
+        public ValueTask InvokeAsync(MessageContext context, ConsumeDelegate next)
+        {
+            return next(context);
+        }
     }
 
     [Test]
@@ -52,7 +66,11 @@ public class ConsumePipelineTests
         services.AddScoped<Dependency>();
         services.AddSingleton<Control>();
         services.AddSingleton(events);
-        services.AddRelayer(r => { r.Infrastructure().MessageTypes.Add<int>("number"); new ConsumerBuilder<object>(r.Services, r.Infrastructure().Handlers, "manual").Handler<Handler>().Handler<TextHandler>(); });
+        services.AddRelayer(r =>
+        {
+            r.Infrastructure().MessageTypes.Add<int>("number");
+            new ConsumerBuilder<object>(r.Services, r.Infrastructure().Handlers, "manual").Handler<Handler>().Handler<TextHandler>();
+        });
         await using var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
         var dependencies = new List<Dependency>();
         var pipeline = Builder(provider).Handler(Descriptor(provider))
@@ -90,7 +108,10 @@ public class ConsumePipelineTests
         await Assert.That(pending.IsCompleted).IsFalse();
         await Assert.That(control.Dependency!.Disposed).IsFalse();
         await Assert.That(() => context.Dispose()).Throws<InvalidOperationException>();
-        await Assert.That(() => { _ = pipeline.ProcessAsync(context); }).Throws<InvalidOperationException>();
+        await Assert.That(() =>
+        {
+            _ = pipeline.ProcessAsync(context);
+        }).Throws<InvalidOperationException>();
         handlerDone.SetResult();
         await disposalStarted.Task;
         await Assert.That(pending.IsCompleted).IsFalse();
@@ -98,7 +119,10 @@ public class ConsumePipelineTests
         await pending;
         await Assert.That(control.Dependency.Disposed).IsTrue();
         await Assert.That(() => context.Services).Throws<InvalidOperationException>();
-        await Assert.That(() => { _ = pipeline.ProcessAsync(context); }).Throws<InvalidOperationException>();
+        await Assert.That(() =>
+        {
+            _ = pipeline.ProcessAsync(context);
+        }).Throws<InvalidOperationException>();
     }
 
     [Test]
@@ -127,22 +151,38 @@ public class ConsumePipelineTests
     {
         await using var provider = Provider();
         var failures = 0;
-        var pipeline = Builder(provider, (_, _, _) => { failures++; return default; }).Handler(Descriptor(provider)).Build();
+        var pipeline = Builder(provider, (_, _, _) =>
+        {
+            failures++;
+            return default;
+        }).Handler(Descriptor(provider)).Build();
         using var cancellation = new CancellationTokenSource();
         cancellation.Cancel();
+
         using (var context = pipeline.RentContext(Message(), cancellation.Token))
+        {
             await Assert.That(async () => await pipeline.ProcessAsync(context)).Throws<OperationCanceledException>();
+        }
+
         await Assert.That(failures).IsEqualTo(0);
 
         using var handlerCancellation = new CancellationTokenSource();
         provider.GetRequiredService<Control>().Invoke = context =>
         {
-            if (context.CancellationToken != handlerCancellation.Token) throw new InvalidOperationException("Wrong token.");
+            if (context.CancellationToken != handlerCancellation.Token)
+            {
+                throw new InvalidOperationException("Wrong token.");
+            }
+
             handlerCancellation.Cancel();
             return ValueTask.FromCanceled(handlerCancellation.Token);
         };
+
         using (var context = pipeline.RentContext(Message(), handlerCancellation.Token))
+        {
             await Assert.That(async () => await pipeline.ProcessAsync(context)).Throws<OperationCanceledException>();
+        }
+
         await Assert.That(failures).IsEqualTo(0);
         await Assert.That(provider.GetRequiredService<Control>().Dependency!.Disposed).IsTrue();
     }
@@ -153,12 +193,20 @@ public class ConsumePipelineTests
         await using var provider = Provider();
         var pipeline = Builder(provider).Handler(Descriptor(provider)).Build(contextPoolCapacity: 1);
         var headers = new UnreadHeaders();
-        var first = pipeline.RentContext(Message() with { MessageId = "first", Attempt = 5, Headers = headers });
+        var first = pipeline.RentContext(Message() with
+        {
+            MessageId = "first",
+            Attempt = 5,
+            Headers = headers
+        });
         first.Features.Set(new object());
         provider.GetRequiredService<Control>().Invoke = context =>
         {
             if (context.MessageId != "first" || context.Attempt != 5 || !ReferenceEquals(context.Headers, headers))
+            {
                 throw new InvalidOperationException("Metadata was not forwarded.");
+            }
+
             return default;
         };
         await pipeline.ProcessAsync(first);
@@ -179,7 +227,11 @@ public class ConsumePipelineTests
         var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var dependencies = new List<Dependency>();
         var control = provider.GetRequiredService<Control>();
-        control.Invoke = _ => { dependencies.Add(control.Dependency!); return new ValueTask(release.Task); };
+        control.Invoke = _ =>
+        {
+            dependencies.Add(control.Dependency!);
+            return new ValueTask(release.Task);
+        };
         var pipeline = Builder(provider).Handler(Descriptor(provider)).Build(contextPoolCapacity: 1);
         using var first = pipeline.RentContext(Message());
         using var second = pipeline.RentContext(Message());
@@ -206,7 +258,10 @@ public class ConsumePipelineTests
         await Assert.That(() => builder.Handler(Descriptor(provider))).Throws<InvalidOperationException>();
         var other = Builder(provider).Handler(Descriptor(provider)).Build();
         using var context = pipeline.RentContext(Message());
-        await Assert.That(() => { _ = other.ProcessAsync(context); }).Throws<InvalidOperationException>();
+        await Assert.That(() =>
+        {
+            _ = other.ProcessAsync(context);
+        }).Throws<InvalidOperationException>();
         // Wrong-owner rejection must leave the rental usable by its owner.
         await pipeline.ProcessAsync(context);
     }
@@ -221,10 +276,22 @@ public class ConsumePipelineTests
             failures.Add((error, action));
             return default;
         }).Handler(Descriptor(provider)).Build();
-        using (var unknown = pipeline.RentContext(Message() with { MessageType = new("unknown", 2) }))
+
+        using (var unknown = pipeline.RentContext(Message() with
+        {
+            MessageType = new("unknown", 2)
+        }))
+        {
             await pipeline.ProcessAsync(unknown);
-        using (var invalid = pipeline.RentContext(Message() with { Body = new ReadOnlySequence<byte>(new byte[] { 0 }) }))
+        }
+
+        using (var invalid = pipeline.RentContext(Message() with
+        {
+            Body = new ReadOnlySequence<byte>(new byte[] { 0 })
+        }))
+        {
             await pipeline.ProcessAsync(invalid);
+        }
 
         await Assert.That(failures.Count).IsEqualTo(2);
         await Assert.That(failures[0].Error is UnknownMessageTypeException).IsTrue();
@@ -249,13 +316,40 @@ public class ConsumePipelineTests
         var failures = new List<Exception>();
         var builder = new ConsumePipelineBuilder(provider.GetRequiredService<IServiceScopeFactory>(),
                 provider.GetRequiredService<MessageTypeRegistry>(),
-                new Serializer(), (_, error, _) => { failures.Add(error); return default; });
+                new Serializer(), (_, error, _) =>
+                {
+                    failures.Add(error);
+                    return default;
+                });
         // Transport configuration knows only erased descriptors. Composition must not need reflection.
-        foreach (var descriptor in provider.GetRequiredService<HandlerRegistry>().Descriptors) builder.Handler(descriptor);
+        foreach (var descriptor in provider.GetRequiredService<HandlerRegistry>().Descriptors)
+        {
+            builder.Handler(descriptor);
+        }
+
         var pipeline = builder.Build();
-        using (var number = pipeline.RentContext(Message())) await pipeline.ProcessAsync(number);
-        using (var text = pipeline.RentContext(Message() with { MessageType = new("text", 2) })) await pipeline.ProcessAsync(text);
-        using (var version = pipeline.RentContext(Message() with { MessageType = new("number", 2) })) await pipeline.ProcessAsync(version);
+
+        using (var number = pipeline.RentContext(Message()))
+        {
+            await pipeline.ProcessAsync(number);
+        }
+
+        using (var text = pipeline.RentContext(Message() with
+        {
+            MessageType = new("text", 2)
+        }))
+        {
+            await pipeline.ProcessAsync(text);
+        }
+
+        using (var version = pipeline.RentContext(Message() with
+        {
+            MessageType = new("number", 2)
+        }))
+        {
+            await pipeline.ProcessAsync(version);
+        }
+
         await Assert.That(string.Join(",", events)).IsEqualTo("handler,text:hello");
         await Assert.That(failures.Count).IsEqualTo(1);
         await Assert.That(failures[0] is UnknownMessageTypeException).IsTrue();
@@ -266,13 +360,22 @@ public class ConsumePipelineTests
     {
         var services = new ServiceCollection();
         services.AddScoped<Handler>(_ => throw new InvalidOperationException("resolution failed"));
-        services.AddRelayer(r => { r.Infrastructure().MessageTypes.Add<int>("number"); new ConsumerBuilder<object>(r.Services, r.Infrastructure().Handlers, "manual").Handler<Handler>().Handler<TextHandler>(); });
+        services.AddRelayer(r =>
+        {
+            r.Infrastructure().MessageTypes.Add<int>("number");
+            new ConsumerBuilder<object>(r.Services, r.Infrastructure().Handlers, "manual").Handler<Handler>().Handler<TextHandler>();
+        });
         await using var provider = services.BuildServiceProvider();
         Exception? failure = null;
         FailureAction? result = null;
         var pipeline = new ConsumePipelineBuilder(provider.GetRequiredService<IServiceScopeFactory>(),
                 provider.GetRequiredService<MessageTypeRegistry>(),
-                new Serializer(), (_, error, action) => { failure = error; result = action; return default; }, new Classifier())
+                new Serializer(), (_, error, action) =>
+                {
+                    failure = error;
+                    result = action;
+                    return default;
+                }, new Classifier())
             .Handler(Descriptor(provider)).Build();
         using var context = pipeline.RentContext(Message());
         await pipeline.ProcessAsync(context);
@@ -293,9 +396,16 @@ public class ConsumePipelineTests
             .Build();
         var pipeline = new ConsumePipelineBuilder(provider.GetRequiredService<IServiceScopeFactory>(),
                 provider.GetRequiredService<MessageTypeRegistry>(), new Serializer(),
-                (_, _, action) => { observed = action; return default; }, classifier)
+                (_, _, action) =>
+                {
+                    observed = action;
+                    return default;
+                }, classifier)
             .Handler(Descriptor(provider)).Build();
-        using var context = pipeline.RentContext(Message() with { Attempt = 5 });
+        using var context = pipeline.RentContext(Message() with
+        {
+            Attempt = 5
+        });
 
         await pipeline.ProcessAsync(context);
 
@@ -309,18 +419,26 @@ public class ConsumePipelineTests
         await using var provider = Provider();
         provider.GetRequiredService<Control>().Disposal = ValueTask.FromException(new ApplicationException("disposal failed"));
         var failures = 0;
-        var pipeline = Builder(provider, (_, _, _) => { failures++; return default; }).Handler(Descriptor(provider)).Build();
+        var pipeline = Builder(provider, (_, _, _) =>
+        {
+            failures++;
+            return default;
+        }).Handler(Descriptor(provider)).Build();
         using var context = pipeline.RentContext(Message());
         await Assert.That(async () => await pipeline.ProcessAsync(context)).Throws<ApplicationException>().WithMessage("disposal failed");
         await Assert.That(failures).IsEqualTo(0);
         await Assert.That(() => context.Services).Throws<InvalidOperationException>();
     }
 
-    internal static ConsumeMessage Message() => new()
+    internal static ConsumeMessage Message()
     {
-        MessageId = "id", MessageType = new("number", 1),
-        Body = new ReadOnlySequence<byte>(new byte[] { 42 }),
-    };
+        return new()
+        {
+            MessageId = "id",
+            MessageType = new("number", 1),
+            Body = new ReadOnlySequence<byte>(new byte[] { 42 }),
+        };
+    }
 
     private static ServiceProvider Provider()
     {
@@ -329,23 +447,43 @@ public class ConsumePipelineTests
         services.AddScoped<Dependency>();
         services.AddSingleton<Control>();
         services.AddSingleton(new List<string>());
-        services.AddRelayer(r => { r.Infrastructure().MessageTypes.Add<int>("number"); new ConsumerBuilder<object>(r.Services, r.Infrastructure().Handlers, "manual").Handler<Handler>().Handler<TextHandler>(); });
+        services.AddRelayer(r =>
+        {
+            r.Infrastructure().MessageTypes.Add<int>("number");
+            new ConsumerBuilder<object>(r.Services, r.Infrastructure().Handlers, "manual").Handler<Handler>().Handler<TextHandler>();
+        });
         return services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
     }
 
     private static HandlerDescriptor Descriptor(ServiceProvider provider)
-        => provider.GetRequiredService<HandlerRegistry>().GetHandler<int, Handler>();
+    {
+        return provider.GetRequiredService<HandlerRegistry>().GetHandler<int, Handler>();
+    }
 
     private static ConsumePipelineBuilder Builder(ServiceProvider provider, ConsumeFailureDelegate? failure = null)
-        => new(provider.GetRequiredService<IServiceScopeFactory>(), provider.GetRequiredService<MessageTypeRegistry>(),
-            new Serializer(),
-            failure ?? (static (_, error, _) => ValueTask.FromException(error)));
+    {
+        return new(provider.GetRequiredService<IServiceScopeFactory>(), provider.GetRequiredService<MessageTypeRegistry>(),
+                    new Serializer(),
+                    failure ?? (static (_, error, _) => ValueTask.FromException(error)));
+    }
 
     public sealed class Dependency : IAsyncDisposable
     {
-        public bool Disposed { get; private set; }
-        public ValueTask PendingDisposal { get; set; }
-        public TaskCompletionSource? DisposalStarted { get; set; }
+        public bool Disposed
+        {
+            get; private set;
+        }
+
+        public ValueTask PendingDisposal
+        {
+            get; set;
+        }
+
+        public TaskCompletionSource? DisposalStarted
+        {
+            get; set;
+        }
+
         public async ValueTask DisposeAsync()
         {
             DisposalStarted?.SetResult();
@@ -356,10 +494,25 @@ public class ConsumePipelineTests
 
     public sealed class Control
     {
-        public Func<MessageContext, ValueTask>? Invoke { get; set; }
-        public Dependency? Dependency { get; set; }
-        public ValueTask Disposal { get; set; }
-        public TaskCompletionSource? DisposalStarted { get; set; }
+        public Func<MessageContext, ValueTask>? Invoke
+        {
+            get; set;
+        }
+
+        public Dependency? Dependency
+        {
+            get; set;
+        }
+
+        public ValueTask Disposal
+        {
+            get; set;
+        }
+
+        public TaskCompletionSource? DisposalStarted
+        {
+            get; set;
+        }
     }
 
     public sealed class Handler(Dependency dependency, List<string> events, Control control) : IHandler<int>
@@ -367,7 +520,10 @@ public class ConsumePipelineTests
         public ValueTask HandleAsync(int message, MessageContext context, CancellationToken cancellationToken)
         {
             if (message != 42 || dependency.Disposed || !ReferenceEquals(context.Services.GetRequiredService<Dependency>(), dependency))
+            {
                 throw new InvalidOperationException("Invalid message scope.");
+            }
+
             events.Add("handler");
             control.Dependency = dependency;
             dependency.PendingDisposal = control.Disposal;
@@ -387,12 +543,18 @@ public class ConsumePipelineTests
 
     private sealed class Classifier : IFailureClassifier
     {
-        public FailureAction Classify(Exception exception, MessageContext context) => FailureAction.Discard;
+        public FailureAction Classify(Exception exception, MessageContext context)
+        {
+            return FailureAction.Discard;
+        }
     }
 
     private sealed class UnreadHeaders : MessageHeaders
     {
-        public override bool TryGetValue(string name, out WireString value) => throw new InvalidOperationException("Headers were read eagerly.");
+        public override bool TryGetValue(string name, out WireString value)
+        {
+            throw new InvalidOperationException("Headers were read eagerly.");
+        }
     }
 
     private sealed class Middleware(string name, List<string> events, List<Dependency> dependencies) : IConsumeMiddleware
@@ -409,10 +571,18 @@ public class ConsumePipelineTests
     internal sealed class Serializer : IMessageSerializer
     {
         public string ContentType => "test/byte";
-        public void Serialize<TMessage>(TMessage message, IBufferWriter<byte> destination) => throw new NotSupportedException();
+
+        public void Serialize<TMessage>(TMessage message, IBufferWriter<byte> destination)
+        {
+            throw new NotSupportedException();
+        }
+
         public TMessage Deserialize<TMessage>(ReadOnlySequence<byte> source)
         {
-            if (source.FirstSpan[0] == 0) throw new FormatException("Invalid body.");
+            if (source.FirstSpan[0] == 0)
+            {
+                throw new FormatException("Invalid body.");
+            }
             // Test serializer only. The pipeline itself retains typed values without boxing.
             return typeof(TMessage) == typeof(string) ? (TMessage)(object)"hello" : (TMessage)(object)(int)source.FirstSpan[0];
         }

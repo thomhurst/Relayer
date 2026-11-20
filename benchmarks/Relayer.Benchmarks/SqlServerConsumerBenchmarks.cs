@@ -23,7 +23,10 @@ public class SqlServerConsumerBenchmarks
     private ConsumePipeline _pipeline = null!;
 
     [Params(false, true)]
-    public bool Duplicate { get; set; }
+    public bool Duplicate
+    {
+        get; set;
+    }
 
     [GlobalSetup]
     public async Task Setup()
@@ -35,21 +38,33 @@ public class SqlServerConsumerBenchmarks
         _id = Guid.CreateVersion7().ToString("D");
         var services = new ServiceCollection();
         services.AddRelayerSqlServerOutbox(_options);
-        services.AddRelayer(r => { r.Infrastructure().MessageTypes.Add<Probe>("benchmark.sql-consumer"); new ConsumerBuilder<object>(r.Services, r.Infrastructure().Handlers, "manual").Handler<Handler>(); });
+        services.AddRelayer(r =>
+        {
+            r.Infrastructure().MessageTypes.Add<Probe>("benchmark.sql-consumer");
+            new ConsumerBuilder<object>(r.Services, r.Infrastructure().Handlers, "manual").Handler<Handler>();
+        });
         _provider = services.BuildServiceProvider();
         _pipeline = new ConsumePipelineBuilder(_provider.GetRequiredService<IServiceScopeFactory>(),
                 _provider.GetRequiredService<MessageTypeRegistry>(), new Serializer(), static (_, error, _) => ValueTask.FromException(error))
             .SqlServer("benchmark", _connection, inbox: true)
             .Handler(_provider.GetRequiredService<HandlerRegistry>().GetHandler<Probe, Handler>()).Build(contextPoolCapacity: 1);
         await Execute(SqlServerOutboxSchema.CreateScript(_options));
-        if (Duplicate) await NativeInbox();
+
+        if (Duplicate)
+        {
+            await NativeInbox();
+        }
     }
 
     // IterationSetup limits invocation count to one, keeping fresh-key measurements bounded.
     [IterationSetup]
     public void Reset()
     {
-        if (Duplicate) return;
+        if (Duplicate)
+        {
+            return;
+        }
+
         using var connection = new SqlConnection(_connection);
         connection.Open();
         using var command = new SqlCommand($"DELETE FROM {_table}", connection);
@@ -74,7 +89,9 @@ public class SqlServerConsumerBenchmarks
     {
         using var context = _pipeline.RentContext(new ConsumeMessage
         {
-            MessageId = _id, MessageType = new("benchmark.sql-consumer", 1), Body = ReadOnlySequence<byte>.Empty
+            MessageId = _id,
+            MessageType = new("benchmark.sql-consumer", 1),
+            Body = ReadOnlySequence<byte>.Empty
         });
         await _pipeline.ProcessAsync(context);
     }
@@ -93,16 +110,31 @@ public class SqlServerConsumerBenchmarks
         await _provider.DisposeAsync();
         await Execute($"DROP TABLE {_table}, [dbo].[{_options.TablePrefix}outbox], [dbo].[{_options.TablePrefix}outbox_dead], [dbo].[{_options.TablePrefix}leases]");
     }
+
     public sealed class Probe;
+
     public sealed class Handler : IHandler<Probe>
     {
-        public ValueTask HandleAsync(Probe message, MessageContext context, CancellationToken cancellationToken) => default;
+        public ValueTask HandleAsync(Probe message, MessageContext context, CancellationToken cancellationToken)
+        {
+            return default;
+        }
     }
+
     private sealed class Serializer : IMessageSerializer
     {
         private readonly Probe _probe = new();
+
         public string ContentType => "benchmark/cached";
-        public TMessage Deserialize<TMessage>(ReadOnlySequence<byte> source) => (TMessage)(object)_probe;
-        public void Serialize<TMessage>(TMessage message, IBufferWriter<byte> destination) => throw new NotSupportedException();
+
+        public TMessage Deserialize<TMessage>(ReadOnlySequence<byte> source)
+        {
+            return (TMessage)(object)_probe;
+        }
+
+        public void Serialize<TMessage>(TMessage message, IBufferWriter<byte> destination)
+        {
+            throw new NotSupportedException();
+        }
     }
 }

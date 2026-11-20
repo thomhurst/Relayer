@@ -26,7 +26,10 @@ public class RabbitMqSendBenchmarks
     private ValueTask[] _batchSends = null!;
 
     [Params(100, 10_000)]
-    public int BatchSize { get; set; }
+    public int BatchSize
+    {
+        get; set;
+    }
     private BasicProperties[] _batchProperties = null!;
     private string _queue = null!;
     private RelayerInstrumentation _instrumentation = null!;
@@ -50,7 +53,11 @@ public class RabbitMqSendBenchmarks
         var services = new ServiceCollection();
         services.AddRelayer(builder => builder.RabbitMQ("benchmark", rabbit =>
         {
-            rabbit.Options.Configure(options => { options.ConnectionFactory = factory; options.PublisherCount = 1; });
+            rabbit.Options.Configure(options =>
+            {
+                options.ConnectionFactory = factory;
+                options.PublisherCount = 1;
+            });
             rabbit.Send<Payload>(_queue);
         }));
         _provider = services.BuildServiceProvider();
@@ -62,22 +69,43 @@ public class RabbitMqSendBenchmarks
             new("cloudEvents:type", new("benchmarks.order;v=1")), new("cloudEvents:source", new("/benchmarks")),
             new("cloudEvents:specversion", new("1.0")), new("content-type", new("application/json"))];
         _message = new(_queue, "{\"orderId\":42}"u8.ToArray(), headers);
-        _properties = new() { Persistent = true, ContentType = "application/json", Headers = new Dictionary<string, object?>() };
+        _properties = new()
+        {
+            Persistent = true,
+            ContentType = "application/json",
+            Headers = new Dictionary<string, object?>()
+        };
+
         foreach (var header in headers)
-            if (header.Key != "content-type") _properties.Headers[header.Key] = header.Value.Text ?? (object)header.Value.Utf8.ToArray();
+        {
+            if (header.Key != "content-type")
+            {
+                _properties.Headers[header.Key] = header.Value.Text ?? (object)header.Value.Utf8.ToArray();
+            }
+        }
+
         _batch = new OutgoingMessage[BatchSize];
         _batchSends = new ValueTask[BatchSize];
         _batchProperties = new BasicProperties[BatchSize];
+
         for (var i = 0; i < _batch.Length; i++)
         {
             _batch[i] = _message;
-            _batchProperties[i] = new(_properties) { Headers = new Dictionary<string, object?>(_properties.Headers!) };
+            _batchProperties[i] = new(_properties)
+            {
+                Headers = new Dictionary<string, object?>(_properties.Headers!)
+            };
         }
+
         _instrumentation = new();
         _json = new(_instrumentation, builder => builder.RabbitMQ("benchmark-json", rabbit =>
         {
             rabbit.TopologyMode = TopologyMode.None;
-            rabbit.Options.Configure(options => { options.ConnectionFactory = factory; options.PublisherCount = 1; });
+            rabbit.Options.Configure(options =>
+            {
+                options.ConnectionFactory = factory;
+                options.PublisherCount = 1;
+            });
             rabbit.Send<DirectJsonOrder>(_queue);
         }), "cloudEvents:");
         await _json.StartAsync();
@@ -88,10 +116,16 @@ public class RabbitMqSendBenchmarks
     }
 
     [Benchmark(Baseline = true), BenchmarkCategory("Single")]
-    public async Task Raw() => await _channel.BasicPublishAsync("", _queue, true, _properties, _message.Body);
+    public async Task Raw()
+    {
+        await _channel.BasicPublishAsync("", _queue, true, _properties, _message.Body);
+    }
 
     [Benchmark, BenchmarkCategory("Single")]
-    public async Task Relayer() => await _transport.SendAsync(_message, default);
+    public async Task Relayer()
+    {
+        await _transport.SendAsync(_message, default);
+    }
 
     [Benchmark(Baseline = true), BenchmarkCategory("DefaultJson")]
     public ValueTask RawJsonSingle()
@@ -103,13 +137,17 @@ public class RabbitMqSendBenchmarks
     }
 
     [Benchmark, BenchmarkCategory("DefaultJson")]
-    public ValueTask RelayerJsonSingle() => _json.Sender.SendAsync(_json.Order);
+    public ValueTask RelayerJsonSingle()
+    {
+        return _json.Sender.SendAsync(_json.Order);
+    }
 
     [Benchmark(Baseline = true), BenchmarkCategory("Batch")]
     public async Task RawBatch()
     {
         Exception? error = null;
         var admitted = 0;
+
         try
         {
             for (var i = 0; i < _batch.Length; i++)
@@ -118,36 +156,84 @@ public class RabbitMqSendBenchmarks
                 admitted++;
             }
         }
-        catch (Exception exception) { error = exception; }
+        catch (Exception exception)
+        {
+            error = exception;
+        }
+
         for (var i = 0; i < admitted; i++)
         {
-            try { await _batchSends[i]; }
-            catch (Exception exception) { error ??= exception; }
+            try
+            {
+                await _batchSends[i];
+            }
+            catch (Exception exception)
+            {
+                error ??= exception;
+            }
+
             _batchSends[i] = default;
         }
-        if (error is not null) System.Runtime.ExceptionServices.ExceptionDispatchInfo.Throw(error);
+
+        if (error is not null)
+        {
+            System.Runtime.ExceptionServices.ExceptionDispatchInfo.Throw(error);
+        }
     }
 
     [Benchmark, BenchmarkCategory("Batch")]
-    public async Task RelayerBatch() => await _transport.SendBatchAsync(_batch, default);
+    public async Task RelayerBatch()
+    {
+        await _transport.SendBatchAsync(_batch, default);
+    }
 
     private sealed class NativeHeaders : IMessageHeaderWriter<BasicProperties>
     {
-        public static void SetHeader(BasicProperties properties, string name, ReadOnlySpan<char> value) =>
+        public static void SetHeader(BasicProperties properties, string name, ReadOnlySpan<char> value)
+        {
             properties.Headers![name] = value.ToString();
-        public static void RemoveHeader(BasicProperties properties, string name) => properties.Headers!.Remove(name);
+        }
+
+        public static void RemoveHeader(BasicProperties properties, string name)
+        {
+            properties.Headers!.Remove(name);
+        }
     }
 
     [GlobalCleanup]
     public async Task Cleanup()
     {
-        if (_json is not null) await _json.DisposeAsync();
+        if (_json is not null)
+        {
+            await _json.DisposeAsync();
+        }
+
         _instrumentation?.Dispose();
-        if (_provider is not null) await _provider.DisposeAsync();
-        if (_channel is not null) await _channel.DisposeAsync();
-        if (_consumerChannel is not null) await _consumerChannel.DisposeAsync();
-        if (_consumerConnection is not null) await _consumerConnection.DisposeAsync();
-        if (_connection is not null) await _connection.DisposeAsync();
+
+        if (_provider is not null)
+        {
+            await _provider.DisposeAsync();
+        }
+
+        if (_channel is not null)
+        {
+            await _channel.DisposeAsync();
+        }
+
+        if (_consumerChannel is not null)
+        {
+            await _consumerChannel.DisposeAsync();
+        }
+
+        if (_consumerConnection is not null)
+        {
+            await _consumerConnection.DisposeAsync();
+        }
+
+        if (_connection is not null)
+        {
+            await _connection.DisposeAsync();
+        }
     }
 
     [Message("benchmarks.rabbitmq.payload")]

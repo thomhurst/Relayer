@@ -21,6 +21,7 @@ public class DatabaseSchemaTests
         PostgreSqlOutboxOptions[] configurations = [new(), new() { Schema = "custom", TablePrefix = "orders_" },
             new() { Schema = new string('s', 63), TablePrefix = "" },
             new() { Schema = "Case\";--{{schema}}", TablePrefix = "é\".{{outbox}}_" }];
+
         foreach (var options in configurations)
         {
             var script = PostgreSqlOutboxSchema.CreateScript(options);
@@ -31,11 +32,13 @@ public class DatabaseSchemaTests
             // Execute the EF migration operation in its caller-owned transaction as EF would.
             var migration = new MigrationBuilder("Npgsql.EntityFrameworkCore.PostgreSQL");
             migration.CreateRelayerPostgreSqlSchema(options);
+
             await using (var transaction = await connection.BeginTransactionAsync())
             {
                 await Execute(connection, ((SqlOperation)migration.Operations[0]).Sql);
                 await transaction.CommitAsync();
             }
+
             await VerifyRowsAndHealth(connection, options);
             await Execute(connection, script);
             await Assert.That(await Scalar<long>(connection, $"SELECT count(*) FROM {Table(options, "outbox")}")).IsEqualTo(23L);
@@ -61,23 +64,30 @@ public class DatabaseSchemaTests
         await Execute(connection, "DROP INDEX " + Table(options, "outbox_unordered_idx"));
         var table = Table(options, "outbox");
         var insert = $"INSERT INTO {table} (id, transport, destination, message_type, headers, body, created_at) VALUES ";
-        const string rest = ", 'events', 'orders', 'probe', ''::bytea, ''::bytea, clock_timestamp())";
+        const string Rest = ", 'events', 'orders', 'probe', ''::bytea, ''::bytea, clock_timestamp())";
+
         if (populated)
         {
-            await Execute(connection, insert + "('01900000-0000-7000-8000-000000000002'" + rest);
-            await Execute(connection, insert + "('01900000-0000-7000-8000-000000000001'" + rest);
+            await Execute(connection, insert + "('01900000-0000-7000-8000-000000000002'" + Rest);
+            await Execute(connection, insert + "('01900000-0000-7000-8000-000000000001'" + Rest);
         }
+
         await using (var transaction = await connection.BeginTransactionAsync())
         {
             await Execute(connection, PostgreSqlOutboxSchema.CreateInsertSequenceMigrationScript(options));
             await transaction.CommitAsync();
         }
-        await Execute(connection, insert + "('01900000-0000-7000-8000-000000000003'" + rest);
+
+        await Execute(connection, insert + "('01900000-0000-7000-8000-000000000003'" + Rest);
         await Assert.That(await Scalar<long>(connection, $"SELECT seq FROM {table} WHERE id = '01900000-0000-7000-8000-000000000003'"))
             .IsEqualTo(populated ? 3L : 1L);
+
         if (populated)
+        {
             await Assert.That(await Scalar<string>(connection, $"SELECT string_agg(id::text, ',' ORDER BY seq) FROM {table}"))
                 .IsEqualTo("01900000-0000-7000-8000-000000000001,01900000-0000-7000-8000-000000000002,01900000-0000-7000-8000-000000000003");
+        }
+
         await VerifyCatalog(connection, options);
         await Assert.That(await Scalar<string>(connection,
             $"SELECT attidentity::text FROM pg_attribute WHERE attrelid = '{table.Replace("'", "''", StringComparison.Ordinal)}'::regclass AND attname = 'seq'"))
@@ -98,6 +108,7 @@ public class DatabaseSchemaTests
             ["inbox"] = ["consumer:text", "message_id:uuid", "processed_at:timestamp with time zone"],
             ["leases"] = ["name:text", "owner:text", "expires_at:timestamp with time zone"]
         };
+
         foreach (var (table, columns) in expected)
         {
             await using var command = new NpgsqlCommand("""
@@ -108,12 +119,18 @@ public class DatabaseSchemaTests
             command.Parameters.AddWithValue("table", options.TablePrefix + table);
             await Assert.That((string)(await command.ExecuteScalarAsync())!).IsEqualTo(string.Join(',', columns.Order(StringComparer.Ordinal)));
         }
+
         await using var indexes = new NpgsqlCommand("SELECT indexdef FROM pg_indexes WHERE schemaname = @schema AND tablename = @table", connection);
         indexes.Parameters.AddWithValue("schema", options.Schema ?? "public");
         indexes.Parameters.AddWithValue("table", options.TablePrefix + "outbox");
         await using var reader = await indexes.ExecuteReaderAsync();
         var definitions = new List<string>();
-        while (await reader.ReadAsync()) definitions.Add(reader.GetString(0));
+
+        while (await reader.ReadAsync())
+        {
+            definitions.Add(reader.GetString(0));
+        }
+
         await Assert.That(definitions.Count).IsEqualTo(5);
         await Assert.That(definitions.Any(x => x.Contains("(lane, seq) WHERE ((status = 'pending'::text) AND (lane IS NOT NULL))"))).IsTrue();
         await Assert.That(definitions.Any(x => x.Contains("(id) WHERE ((status = 'pending'::text) AND (lane IS NULL))"))).IsTrue();
@@ -124,51 +141,59 @@ public class DatabaseSchemaTests
     private static async Task VerifyRowsAndHealth(NpgsqlConnection connection, PostgreSqlOutboxOptions options)
     {
         var outbox = Table(options, "outbox");
-        const string now = "'2026-11-01T12:00:00Z'::timestamptz";
+        const string Now = "'2026-11-01T12:00:00Z'::timestamptz";
         var insert = $"INSERT INTO {outbox} (id, transport, destination, message_type, headers, body, created_at";
-        const string values = "gen_random_uuid(), 'kafka', 'orders', 'order.placed.v1', decode('0102','hex'), decode('0304','hex'), ";
-        await Execute(connection, $"{insert}, deliver_at) VALUES ({values}{now}, {now} + interval '1 second')");
-        await Execute(connection, $"{insert}, status) VALUES ({values}{now}, 'parked')");
-        await Execute(connection, $"{insert}, claim_token, claim_expires_at) VALUES ({values}{now}, gen_random_uuid(), {now} + interval '1 second')");
-        await Execute(connection, $"INSERT INTO {Table(options, "outbox_dead")} (id, transport, destination, message_type, headers, body, created_at, failed_at) VALUES ({values}{now}, {now})");
+        const string Values = "gen_random_uuid(), 'kafka', 'orders', 'order.placed.v1', decode('0102','hex'), decode('0304','hex'), ";
+        await Execute(connection, $"{insert}, deliver_at) VALUES ({Values}{Now}, {Now} + interval '1 second')");
+        await Execute(connection, $"{insert}, status) VALUES ({Values}{Now}, 'parked')");
+        await Execute(connection, $"{insert}, claim_token, claim_expires_at) VALUES ({Values}{Now}, gen_random_uuid(), {Now} + interval '1 second')");
+        await Execute(connection, $"INSERT INTO {Table(options, "outbox_dead")} (id, transport, destination, message_type, headers, body, created_at, failed_at) VALUES ({Values}{Now}, {Now})");
 
         var query = $"SELECT count(*) FROM {outbox} WHERE status = 'pending' AND (deliver_at IS NULL OR deliver_at <= @now) AND (claim_expires_at IS NULL OR claim_expires_at <= @now)";
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddRelayer(_ => { });
+        services.AddRelayer(_ =>
+        {
+        });
         services.AddKeyedSingleton<IOutboxHealthProvider>("database", new DatabaseCountProvider(connection, query));
         services.AddRelayerHealthChecks(new RelayerHealthCheckOptions
         {
-            OutboxNames = ["database"], OutboxDegradedThreshold = 10, OutboxUnhealthyThreshold = 20
+            OutboxNames = ["database"],
+            OutboxDegradedThreshold = 10,
+            OutboxUnhealthyThreshold = 20
         });
         await using var provider = services.BuildServiceProvider();
         await CheckHealth(provider, 0, HealthStatus.Healthy);
 
         // Both scheduling and claim expiry are inclusive at the supplied UTC instant.
-        await Execute(connection, $"{insert}, deliver_at, tenant_id, lane, ordering_key) VALUES ({values}{now}, {now}, 'tenant-a', 7, 'key')");
-        await Execute(connection, $"{insert}, claim_token, claim_expires_at) VALUES ({values}{now}, gen_random_uuid(), {now})");
+        await Execute(connection, $"{insert}, deliver_at, tenant_id, lane, ordering_key) VALUES ({Values}{Now}, {Now}, 'tenant-a', 7, 'key')");
+        await Execute(connection, $"{insert}, claim_token, claim_expires_at) VALUES ({Values}{Now}, gen_random_uuid(), {Now})");
         await CheckHealth(provider, 2, HealthStatus.Healthy);
-        await Execute(connection, $"{insert}, claim_token, claim_expires_at) VALUES ({values}{now}, gen_random_uuid(), {now} - interval '1 second')");
+        await Execute(connection, $"{insert}, claim_token, claim_expires_at) VALUES ({Values}{Now}, gen_random_uuid(), {Now} - interval '1 second')");
         await CheckHealth(provider, 3, HealthStatus.Healthy);
         var current = 3;
+
         foreach (var (count, status) in new[] { (9, HealthStatus.Healthy), (10, HealthStatus.Degraded), (19, HealthStatus.Degraded), (20, HealthStatus.Unhealthy) })
         {
-            await Execute(connection, $"{insert}) SELECT {values}{now} FROM generate_series(1, {count - current})");
+            await Execute(connection, $"{insert}) SELECT {Values}{Now} FROM generate_series(1, {count - current})");
             current = count;
             await CheckHealth(provider, count, status);
         }
 
         foreach (var (columns, data) in new[] { ("attempts", "-1"), ("status", "'dead'"), ("lane", "-1"),
-            ("claim_token", "gen_random_uuid()"), ("claim_expires_at", now),
-            ("claim_token, claim_expires_at", $"'00000000-0000-0000-0000-000000000000', {now}") })
-            await ExpectViolation(connection, $"{insert}, {columns}) VALUES ({values}{now}, {data})", PostgresErrorCodes.CheckViolation);
+            ("claim_token", "gen_random_uuid()"), ("claim_expires_at", Now),
+            ("claim_token, claim_expires_at", $"'00000000-0000-0000-0000-000000000000', {Now}") })
+        {
+            await ExpectViolation(connection, $"{insert}, {columns}) VALUES ({Values}{Now}, {data})", PostgresErrorCodes.CheckViolation);
+        }
+
         await ExpectViolation(connection, $"INSERT INTO {outbox} DEFAULT VALUES", PostgresErrorCodes.NotNullViolation);
 
-        var inboxInsert = $"INSERT INTO {Table(options, "inbox")} VALUES ('consumer', '00000000-0000-7000-8000-000000000001', {now})";
+        var inboxInsert = $"INSERT INTO {Table(options, "inbox")} VALUES ('consumer', '00000000-0000-7000-8000-000000000001', {Now})";
         await Execute(connection, inboxInsert);
         await ExpectViolation(connection, inboxInsert, PostgresErrorCodes.UniqueViolation);
-        await Execute(connection, $"INSERT INTO {Table(options, "inbox")} VALUES ('other-consumer', '00000000-0000-7000-8000-000000000001', {now})");
-        var leaseInsert = $"INSERT INTO {Table(options, "leases")} VALUES ('lane:7', 'instance-a', {now})";
+        await Execute(connection, $"INSERT INTO {Table(options, "inbox")} VALUES ('other-consumer', '00000000-0000-7000-8000-000000000001', {Now})");
+        var leaseInsert = $"INSERT INTO {Table(options, "leases")} VALUES ('lane:7', 'instance-a', {Now})";
         await Execute(connection, leaseInsert);
         await ExpectViolation(connection, leaseInsert, PostgresErrorCodes.UniqueViolation);
         await Assert.That(await Scalar<string>(connection, $"SELECT encode(headers, 'hex') || ':' || encode(body, 'hex') || ':' || tenant_id FROM {outbox} WHERE tenant_id = 'tenant-a'"))

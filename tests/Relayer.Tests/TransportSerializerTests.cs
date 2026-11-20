@@ -1,9 +1,9 @@
-using Relayer.Transports;
 using System.Buffers;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Relayer.InMemory;
 using Relayer.Serialization;
+using Relayer.Transports;
 
 namespace Relayer.Tests;
 
@@ -21,16 +21,25 @@ public class TransportSerializerTests
                 transport.UseSerializer(_ => custom);
                 Assert.Throws<InvalidOperationException>(() => transport.UseSerializer(_ => custom));
             });
-            builder.InMemory("default", _ => { });
+            builder.InMemory("default", _ =>
+            {
+            });
         });
         await using var provider = services.BuildServiceProvider();
         await Assert.That(provider.GetMessageSerializer("custom")).IsSameReferenceAs(custom);
         await Assert.That(provider.GetMessageSerializer("default")).IsSameReferenceAs(provider.GetRequiredService<IMessageSerializer>());
+
         foreach (var service in provider.GetServices<IHostedService>())
+        {
             await service.StartAsync(default);
+        }
+
         await Assert.That(custom.Initializations).IsEqualTo(1);
+
         foreach (var service in provider.GetServices<IHostedService>().Reverse())
+        {
             await service.StopAsync(default);
+        }
     }
 
     [Test]
@@ -72,26 +81,46 @@ public class TransportSerializerTests
     {
         public int Initializations;
         public bool Fail;
+
         public string ContentType => "application/test";
+
         public async ValueTask InitializeAsync(CancellationToken cancellationToken)
         {
             await Task.Yield();
-            if (Fail) throw new InvalidOperationException("registry unavailable");
+
+            if (Fail)
+            {
+                throw new InvalidOperationException("registry unavailable");
+            }
+
             Interlocked.Increment(ref Initializations);
         }
-        public void Serialize<TMessage>(TMessage message, IBufferWriter<byte> destination) => throw new NotSupportedException();
-        public TMessage Deserialize<TMessage>(ReadOnlySequence<byte> source) => throw new NotSupportedException();
+
+        public void Serialize<TMessage>(TMessage message, IBufferWriter<byte> destination)
+        {
+            throw new NotSupportedException();
+        }
+
+        public TMessage Deserialize<TMessage>(ReadOnlySequence<byte> source)
+        {
+            throw new NotSupportedException();
+        }
     }
 
     private sealed class StartupProbe(PreparedSerializer serializer) : IHostedService
     {
         public bool Started;
+
         public Task StartAsync(CancellationToken cancellationToken)
         {
             Started = true;
             return serializer.Initializations == 1 ? Task.CompletedTask
                 : throw new InvalidOperationException("Serializer was not prepared before service startup.");
         }
-        public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+
+        public Task StopAsync(CancellationToken cancellationToken)
+        {
+            return Task.CompletedTask;
+        }
     }
 }

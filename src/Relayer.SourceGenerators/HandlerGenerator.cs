@@ -10,7 +10,7 @@ namespace Relayer.SourceGenerators;
 [Generator(LanguageNames.CSharp)]
 public sealed class HandlerGenerator : IIncrementalGenerator
 {
-    private static readonly DiagnosticDescriptor InaccessibleMessage = new(
+    private static readonly DiagnosticDescriptor s_inaccessibleMessage = new(
         "RLYH001", "Handler message type is inaccessible",
         "Handler '{0}' uses message type '{1}', which generated dispatch cannot access. Make the message type assembly-accessible and non-file-local.",
         "Relayer", DiagnosticSeverity.Error, isEnabledByDefault: true,
@@ -35,6 +35,7 @@ public sealed class HandlerGenerator : IIncrementalGenerator
     private static ImmutableArray<DispatchModel> Discover(GeneratorSyntaxContext context, CancellationToken ct)
     {
         INamedTypeSymbol? type;
+
         if (context.Node is TypeDeclarationSyntax declaration)
         {
             type = context.SemanticModel.GetDeclaredSymbol(declaration, ct) as INamedTypeSymbol;
@@ -46,6 +47,7 @@ public sealed class HandlerGenerator : IIncrementalGenerator
         }
 
         var compilation = context.SemanticModel.Compilation;
+
         if (type is null || type.TypeKind != TypeKind.Class || type.IsAbstract || type.IsStatic
             || !CanReference(type, compilation))
         {
@@ -56,12 +58,22 @@ public sealed class HandlerGenerator : IIncrementalGenerator
         var batch = compilation.GetTypeByMetadataName("Relayer.IBatchHandler`1");
         var saga = compilation.GetTypeByMetadataName("Relayer.Sagas.Saga`2");
         INamedTypeSymbol? sagaBase = null;
+
         for (var current = type.BaseType; current is not null; current = current.BaseType)
-            if (SymbolEqualityComparer.Default.Equals(current.OriginalDefinition, saga)) { sagaBase = current; break; }
+        {
+            if (SymbolEqualityComparer.Default.Equals(current.OriginalDefinition, saga))
+            {
+                sagaBase = current;
+                break;
+            }
+        }
+
         var result = ImmutableArray.CreateBuilder<DispatchModel>();
+
         foreach (var contract in type.AllInterfaces)
         {
             var isBatch = SymbolEqualityComparer.Default.Equals(contract.OriginalDefinition, batch);
+
             if (isBatch || SymbolEqualityComparer.Default.Equals(contract.OriginalDefinition, single))
             {
                 result.Add(new DispatchModel(
@@ -81,28 +93,32 @@ public sealed class HandlerGenerator : IIncrementalGenerator
         return result.ToImmutable();
     }
 
-    private static bool CanReference(ITypeSymbol type, Compilation compilation) => type switch
+    private static bool CanReference(ITypeSymbol type, Compilation compilation)
     {
-        ITypeParameterSymbol => false,
-        IArrayTypeSymbol array => CanReference(array.ElementType, compilation),
-        INamedTypeSymbol named => !named.IsUnboundGenericType && !named.IsFileLocal
-            && compilation.IsSymbolAccessibleWithin(named, compilation.Assembly)
-            && named.TypeArguments.All(argument => CanReference(argument, compilation))
-            && (named.ContainingType is null || CanReference(named.ContainingType, compilation)),
-        _ => true
-    };
+        return type switch
+        {
+            ITypeParameterSymbol => false,
+            IArrayTypeSymbol array => CanReference(array.ElementType, compilation),
+            INamedTypeSymbol named => !named.IsUnboundGenericType && !named.IsFileLocal
+                && compilation.IsSymbolAccessibleWithin(named, compilation.Assembly)
+                && named.TypeArguments.All(argument => CanReference(argument, compilation))
+                && (named.ContainingType is null || CanReference(named.ContainingType, compilation)),
+            _ => true
+        };
+    }
 
     private static void Emit(SourceProductionContext context, ImmutableArray<DispatchModel> models)
     {
         foreach (var invalid in models.Where(static m => !m.IsAccessible)
                      .Select(static m => (m.Handler, m.Message)).Distinct())
         {
-            context.ReportDiagnostic(Diagnostic.Create(InaccessibleMessage, Location.None, invalid.Handler, invalid.Message));
+            context.ReportDiagnostic(Diagnostic.Create(s_inaccessibleMessage, Location.None, invalid.Handler, invalid.Message));
         }
 
         var contracts = models.Where(static m => m.IsAccessible).Distinct()
             .OrderBy(static m => m.Handler, StringComparer.Ordinal)
             .ThenBy(static m => m.Message, StringComparer.Ordinal).ThenBy(static m => m.IsBatch).ToArray();
+
         if (contracts.Length == 0)
         {
             return;
@@ -124,11 +140,14 @@ public sealed class HandlerGenerator : IIncrementalGenerator
             builder.Append("            => global::Microsoft.Extensions.DependencyInjection.ServiceProviderServiceExtensions.GetRequiredService<")
                 .Append(model.Handler).AppendLine(">(services);");
             builder.Append("        public override global::System.Threading.Tasks.ValueTask");
+
             if (model.IsBatch)
             {
                 builder.Append("<global::Relayer.BatchResult>");
             }
+
             builder.Append(" DispatchAsync(global::Relayer.IHandlerMarker handler, ");
+
             if (model.IsBatch)
             {
                 builder.Append("global::Relayer.Batch<").Append(model.Message).Append("> batch, ");
@@ -137,12 +156,14 @@ public sealed class HandlerGenerator : IIncrementalGenerator
             {
                 builder.Append(model.Message).Append(" message, global::Relayer.MessageContext context, ");
             }
+
             builder.AppendLine("global::System.Threading.CancellationToken cancellationToken)");
             builder.Append("            => ((global::Relayer.").Append(model.IsBatch ? "IBatchHandler<" : "IHandler<")
                 .Append(model.Message).Append(">)(").Append(model.Handler).Append(")handler).HandleAsync(")
                 .Append(model.IsBatch ? "batch, " : "message, context, ").AppendLine("cancellationToken);");
             builder.AppendLine("    }");
         }
+
         builder.AppendLine("}");
         context.AddSource("RelayerGeneratedHandlers.g.cs", SourceText.From(builder.ToString(), Encoding.UTF8));
     }
@@ -161,16 +182,19 @@ public sealed class HandlerGenerator : IIncrementalGenerator
         builder.AppendLine("        where THandler : class, global::Relayer.IHandlerMarker");
         builder.AppendLine("    {");
         builder.AppendLine("        global::System.ArgumentNullException.ThrowIfNull(builder);");
+
         foreach (var handler in contracts.Select(static m => m.Handler).Distinct())
         {
             builder.Append("        if (typeof(THandler) == typeof(").Append(handler).AppendLine("))");
             builder.AppendLine("        {");
+
             for (var i = 0; i < contracts.Length; i++)
             {
                 if (contracts[i].Handler == handler)
                 {
                     builder.Append("            global::Relayer.Pipeline.ConsumerInfrastructureExtensions.AddHandler(builder, new Dispatcher")
                         .Append(i).AppendLine("());");
+
                     if (contracts[i].SagaState is { } state)
                     {
                         // The user's saga declaration supplies the opt-in; its pragma does not cover generated files.
@@ -181,11 +205,13 @@ public sealed class HandlerGenerator : IIncrementalGenerator
                     }
                 }
             }
+
             builder.Append("            global::Microsoft.Extensions.DependencyInjection.Extensions.ServiceCollectionDescriptorExtensions.TryAddScoped<")
                 .Append(handler).AppendLine(">(builder.Services);");
             builder.AppendLine("            return builder;");
             builder.AppendLine("        }");
         }
+
         builder.AppendLine("        throw new global::System.InvalidOperationException($\"No generated descriptor for handler '{typeof(THandler)}'. Use a concrete, closed, assembly-accessible IHandler<T> or IBatchHandler<T> in Handler<THandler>(), or call Handler<THandler, TMessage>() from generic code.\");");
         builder.AppendLine("    }");
     }

@@ -49,16 +49,35 @@ internal sealed class RabbitMqFixture : ITransportConformanceFixture<RabbitMqDel
     private RabbitMqConsumer? _consumer;
     private int _settlements;
     private int _closed;
-    public ConformanceLogCapture Logs { get; } = new();
+
+    public ConformanceLogCapture Logs
+    {
+        get;
+    } = new();
+
     public string Destination => "conformance";
+
     public string SendDestinationName => ":conformance";
+
     public string ProcessDestinationName => "conformance";
+
     public string MessagingSystem => "rabbitmq";
+
     public string SettlementOperation => "ack";
-    public HeaderNames HeaderNames { get; } = new("cloudEvents:");
+
+    public HeaderNames HeaderNames
+    {
+        get;
+    } = new("cloudEvents:");
+
     public ITransport Transport => _transport;
+
     public TimeSpan? OutageSendTimeout => TimeSpan.FromSeconds(2);
-    public bool IsExpectedOutageFailure(Exception error) => error is AlreadyClosedException or OperationInterruptedException or IOException;
+
+    public bool IsExpectedOutageFailure(Exception error)
+    {
+        return error is AlreadyClosedException or OperationInterruptedException or IOException;
+    }
 
     private RabbitMqFixture(RabbitMqTopologyTests.Broker broker, MessageTracing tracing)
     {
@@ -68,13 +87,23 @@ internal sealed class RabbitMqFixture : ITransportConformanceFixture<RabbitMqDel
         _factory = broker.Factory();
         _factory.NetworkRecoveryInterval = TimeSpan.FromMilliseconds(200);
         _factory.RequestedConnectionTimeout = TimeSpan.FromSeconds(2);
-        _transport = new("rabbit", new() { ConnectionFactory = _factory, PublisherCount = 1 }, [Destination], tracing);
-        _settlement = new(tracing, new() { System = "rabbitmq", Destination = ProcessDestinationName });
+        _transport = new("rabbit", new()
+        {
+            ConnectionFactory = _factory,
+            PublisherCount = 1
+        }, [Destination], tracing);
+        _settlement = new(tracing, new()
+        {
+            System = "rabbitmq",
+            Destination = ProcessDestinationName
+        });
     }
+
     internal static async ValueTask<ITransportConformanceFixture<RabbitMqDelivery>> CreateAsync(MessageTracing tracing, CancellationToken token, bool dedicated)
     {
         var broker = await RabbitMqTopologyTests.Broker.StartAsync(token, dedicated: dedicated);
         var fixture = new RabbitMqFixture(broker, tracing);
+
         try
         {
             await using var connection = await fixture._factory.CreateConnectionAsync(token);
@@ -82,8 +111,13 @@ internal sealed class RabbitMqFixture : ITransportConformanceFixture<RabbitMqDel
             await channel.QueueDeclareAsync(fixture.Destination, true, false, false, cancellationToken: token);
             return fixture;
         }
-        catch { await fixture.DisposeAsync(); throw; }
+        catch
+        {
+            await fixture.DisposeAsync();
+            throw;
+        }
     }
+
     public void RegisterConsumer(Func<RabbitMqDelivery, CancellationToken, ValueTask<Disposition>> receive)
     {
         var options = new RabbitMqConsumerOptions();
@@ -91,25 +125,46 @@ internal sealed class RabbitMqFixture : ITransportConformanceFixture<RabbitMqDel
         _consumer = new(declaration, options, receive, _tracing);
         _transport.Consumers.Add(_consumer);
     }
+
     public async ValueTask SettleAsync(RabbitMqDelivery delivery, Disposition disposition, CancellationToken cancellationToken)
     {
-        if (Volatile.Read(ref _closed) != 0) throw new InvalidOperationException("Settlement after shutdown.");
+        if (Volatile.Read(ref _closed) != 0)
+        {
+            throw new InvalidOperationException("Settlement after shutdown.");
+        }
+
         await _settlement.SettleAsync(delivery, disposition, cancellationToken);
         Interlocked.Increment(ref _settlements);
     }
-    public ValueTask<ConformanceDeadLetter> ReadDeadLetterAsync(CancellationToken cancellationToken) => throw new NotSupportedException();
-    public Task DisconnectAsync(CancellationToken cancellationToken) => _broker.CommandAsync(["rabbitmqctl", "stop_app"], cancellationToken);
+
+    public ValueTask<ConformanceDeadLetter> ReadDeadLetterAsync(CancellationToken cancellationToken)
+    {
+        throw new NotSupportedException();
+    }
+
+    public Task DisconnectAsync(CancellationToken cancellationToken)
+    {
+        return _broker.CommandAsync(["rabbitmqctl", "stop_app"], cancellationToken);
+    }
+
     public async Task ReconnectAsync(CancellationToken cancellationToken)
     {
         await _broker.CommandAsync(["rabbitmqctl", "start_app"], cancellationToken);
+
         if (_consumer?.Completion.IsCompleted == false)
-            while (!_transport.IsConnected) await Task.Delay(20, cancellationToken);
+        {
+            while (!_transport.IsConnected)
+            {
+                await Task.Delay(20, cancellationToken);
+            }
+        }
         // Connection recovery precedes consumer recovery. A passive native query synchronizes broker readiness;
         // the subsequent conformance delivery proves that the registered consumer recovers too.
         await using var connection = await _factory.CreateConnectionAsync(cancellationToken);
         await using var channel = await connection.CreateChannelAsync(cancellationToken: cancellationToken);
         await channel.QueueDeclarePassiveAsync(Destination, cancellationToken);
     }
+
     public async ValueTask VerifyShutdownAsync(CancellationToken cancellationToken)
     {
         await Assert.That(_consumer!.Completion.IsCompletedSuccessfully).IsTrue();
@@ -119,9 +174,13 @@ internal sealed class RabbitMqFixture : ITransportConformanceFixture<RabbitMqDel
         await using var channel = await connection.CreateChannelAsync(cancellationToken: cancellationToken);
         await Assert.That((await channel.QueueDeclarePassiveAsync(Destination, cancellationToken)).MessageCount).IsEqualTo(0u);
     }
+
     public async ValueTask DisposeAsync()
     {
-        try { await _transport.DisposeAsync(); }
+        try
+        {
+            await _transport.DisposeAsync();
+        }
         finally
         {
             _nativeTracing.Dispose();

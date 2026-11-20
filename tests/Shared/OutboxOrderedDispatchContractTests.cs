@@ -7,23 +7,36 @@ public abstract class OutboxOrderedDispatchContractTests
 {
     protected abstract Task<OrderedFixture> CreateFixtureAsync();
 
-    public enum HeadState { Future, Claimed, Parked }
+    public enum HeadState
+    {
+        Future,
+        Claimed,
+        Parked
+    }
+
     protected sealed record Row(Guid Id, int Attempts, string? Error, bool HasClaimToken, bool HasClaimExpiry);
 
     protected abstract class OrderedFixture : IAsyncDisposable
     {
         public abstract OrderedWorker Worker(RecordingTransport transport);
+
         public abstract Task Insert(Guid id, int? lane, string orderingKey = "customer-Ã©");
+
         public abstract Task SetRouting(Guid id, string transport = "events", string? orderingKey = "customer-Ã©", string destination = "orders");
+
         public abstract Task SetHeadState(Guid id, HeadState state);
+
         public abstract Task MakeReady(Guid id);
+
         public abstract Task<Row[]> ReadRows();
+
         public abstract ValueTask DisposeAsync();
     }
 
     protected abstract class OrderedWorker : IDisposable
     {
         public abstract ValueTask<int> DispatchLaneAsync(int lane, CancellationToken cancellationToken = default);
+
         public abstract void Dispose();
     }
 
@@ -62,14 +75,27 @@ public abstract class OutboxOrderedDispatchContractTests
     public async Task Preparation_failure_commits_successful_prefix_and_stops_before_later_rows(string kind)
     {
         await using var fixture = await CreateFixtureAsync();
-        for (var index = 1; index <= 3; index++) await fixture.Insert(Id(index), 0);
+
+        for (var index = 1; index <= 3; index++)
+        {
+            await fixture.Insert(Id(index), 0);
+        }
+
         switch (kind)
         {
-            case "unknown_transport": await fixture.SetRouting(Id(2), transport: "missing"); break;
-            case "missing_key": await fixture.SetRouting(Id(2), orderingKey: null); break;
-            case "unsupported_endpoint": await fixture.SetRouting(Id(2), destination: "unsupported"); break;
-            default: throw new ArgumentOutOfRangeException(nameof(kind));
+            case "unknown_transport":
+                await fixture.SetRouting(Id(2), transport: "missing");
+                break;
+            case "missing_key":
+                await fixture.SetRouting(Id(2), orderingKey: null);
+                break;
+            case "unsupported_endpoint":
+                await fixture.SetRouting(Id(2), destination: "unsupported");
+                break;
+            default:
+                throw new ArgumentOutOfRangeException(nameof(kind));
         }
+
         var transport = new RecordingTransport();
         using var worker = fixture.Worker(transport);
         await Assert.That(await worker.DispatchLaneAsync(0)).IsEqualTo(1);
@@ -149,29 +175,84 @@ public abstract class OutboxOrderedDispatchContractTests
         await Assert.That(rows[1]).IsEqualTo(new Row(Id(2), 0, null, false, false));
     }
 
-    private static Guid Id(int number) => Guid.Parse($"01900000-0000-7000-8000-{number:x12}");
+    private static Guid Id(int number)
+    {
+        return Guid.Parse($"01900000-0000-7000-8000-{number:x12}");
+    }
 
     protected sealed class RecordingTransport(Func<OutgoingMessage, CancellationToken, ValueTask>? send = null) : ITransport
     {
         public string Name => "events";
-        public ConcurrentQueue<Guid> Ids { get; } = new();
-        public byte[]? LastBody { get; private set; }
-        public string? LastKey { get; private set; }
-        public DateTimeOffset? LastDeliverAt { get; private set; }
-        public bool Ordered { get; init; } = true;
-        public TransportCapabilities GetCapabilities(string endpoint) => new() { OrderedByKey = Ordered && endpoint != "unsupported" };
+
+        public ConcurrentQueue<Guid> Ids
+        {
+            get;
+        } = new();
+
+        public byte[]? LastBody
+        {
+            get; private set;
+        }
+
+        public string? LastKey
+        {
+            get; private set;
+        }
+
+        public DateTimeOffset? LastDeliverAt
+        {
+            get; private set;
+        }
+
+        public bool Ordered
+        {
+            get; init;
+        } = true;
+
+        public TransportCapabilities GetCapabilities(string endpoint)
+        {
+            return new()
+            {
+                OrderedByKey = Ordered && endpoint != "unsupported"
+            };
+        }
+
         public async ValueTask SendAsync(OutgoingMessage message, CancellationToken cancellationToken)
         {
-            if (send is not null) await send(message, cancellationToken);
+            if (send is not null)
+            {
+                await send(message, cancellationToken);
+            }
+
             Ids.Enqueue(Guid.Parse(message.Headers.Span[0].Value.ToString()));
             LastBody = message.Body.ToArray();
             LastKey = message.OrderingKey?.ToString();
             LastDeliverAt = message.DeliverAt;
         }
-        public ValueTask SendBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken) => throw new NotSupportedException();
-        public ValueTask<TopologyReport> ApplyTopologyAsync(TopologyMode mode, CancellationToken cancellationToken) => new(new TopologyReport([]));
-        public Task StartAsync(CancellationToken cancellationToken) => Task.CompletedTask;
-        public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
-        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+
+        public ValueTask SendBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken)
+        {
+            throw new NotSupportedException();
+        }
+
+        public ValueTask<TopologyReport> ApplyTopologyAsync(TopologyMode mode, CancellationToken cancellationToken)
+        {
+            return new(new TopologyReport([]));
+        }
+
+        public Task StartAsync(CancellationToken cancellationToken)
+        {
+            return Task.CompletedTask;
+        }
+
+        public Task StopAsync(CancellationToken cancellationToken)
+        {
+            return Task.CompletedTask;
+        }
+
+        public ValueTask DisposeAsync()
+        {
+            return ValueTask.CompletedTask;
+        }
     }
 }

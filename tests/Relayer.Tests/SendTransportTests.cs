@@ -1,4 +1,5 @@
 using Relayer.Transports;
+
 namespace Relayer.Tests;
 
 public class SendTransportTests
@@ -31,7 +32,9 @@ public class SendTransportTests
     [Test]
     public async Task Mismatched_native_callback_fails_instead_of_being_ignored()
     {
-        var options = new SendOptions().ConfigureNative<NativeMessage>(static _ => { });
+        var options = new SendOptions().ConfigureNative<NativeMessage>(static _ =>
+        {
+        });
 
         await Assert.That(() => options.ApplyNative(new object()))
             .Throws<InvalidOperationException>()
@@ -111,16 +114,19 @@ public class SendTransportTests
         var options = new SendOptions().ConfigureNative<NativeMessage>(static native => native.Value = 42);
         var outgoing = new OutgoingMessage("orders", ReadOnlyMemory<byte>.Empty, options: options);
         var native = new NativeMessage();
+
         for (var i = 0; i < 1000; i++)
         {
             outgoing.ApplyNative(native);
         }
 
         var before = GC.GetAllocatedBytesForCurrentThread();
+
         for (var i = 0; i < 1000; i++)
         {
             outgoing.ApplyNative(native);
         }
+
         var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
 
         await Assert.That(allocated).IsEqualTo(0L);
@@ -142,7 +148,10 @@ public class SendTransportTests
 
     private class NativeMessage
     {
-        public int Value { get; set; }
+        public int Value
+        {
+            get; set;
+        }
     }
 
     private sealed class DerivedNativeMessage : NativeMessage;

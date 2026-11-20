@@ -1,4 +1,3 @@
-using Relayer.Pipeline;
 using System.Buffers;
 using System.Diagnostics;
 using System.Text;
@@ -10,6 +9,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using Relayer.Pipeline;
 using Relayer.Serialization;
 using Relayer.Transports;
 
@@ -17,7 +17,10 @@ namespace Relayer.Kafka.Tests;
 
 public class KafkaTombstoneTests
 {
-    private static string Topic() => TestContext.Current!.Isolation.GetIsolatedName("tombstone").ToLowerInvariant();
+    private static string Topic()
+    {
+        return TestContext.Current!.Isolation.GetIsolatedName("tombstone").ToLowerInvariant();
+    }
 
     [Test]
     public async Task Native_null_dispatches_without_deserialization_and_empty_values_ignore_private_headers()
@@ -30,7 +33,12 @@ public class KafkaTombstoneTests
         var serializer = new CountingSerializer(provider.GetRequiredService<IMessageSerializer>());
         var builder = new ConsumePipelineBuilder(provider.GetRequiredService<IServiceScopeFactory>(),
             provider.GetRequiredService<MessageTypeRegistry>(), serializer, static (_, error, _) => ValueTask.FromException(error));
-        foreach (var descriptor in provider.GetRequiredService<HandlerRegistry>().Descriptors) builder.Handler(descriptor);
+
+        foreach (var descriptor in provider.GetRequiredService<HandlerRegistry>().Descriptors)
+        {
+            builder.Handler(descriptor);
+        }
+
         var receive = new ReceivePipeline<KafkaDelivery, KafkaMessageBinding>(builder.Build(), new());
         await receive.ProcessAsync(Record(null));
         await Assert.That(serializer.Reads).IsEqualTo(0);
@@ -95,7 +103,9 @@ public class KafkaTombstoneTests
             ActivityStopped = activity =>
             {
                 if (activity.DisplayName == "commit " + fixture.Destination && activity.Status != ActivityStatusCode.Error)
+                {
                     firstCommit.TrySetResult();
+                }
             },
         };
         ActivitySource.AddActivityListener(listener);
@@ -179,29 +189,55 @@ public class KafkaTombstoneTests
         await Assert.That(empty.Headers.First(h => h.Key == "ce_id").GetValueAsString()).IsEqualTo("batch");
     }
 
-    private static KafkaDelivery Record(byte[]? body, bool nullKey = false) => new(new ConsumeResult<byte[], byte[]>(
-        "orders", 0, 0, "customer-1"u8.ToArray(), nullKey, body!, body is null,
-        new Headers().Add("ce_type", "tests.kafka.tombstone;v=3").Add("ce_id", "record")
-            .Add(KafkaSendState.TombstoneHeader, "true"), 0, TimestampType.CreateTime, null, Serializers.ByteArray, Serializers.ByteArray), "0");
+    private static KafkaDelivery Record(byte[]? body, bool nullKey = false)
+    {
+        return new(new ConsumeResult<byte[], byte[]>(
+                "orders", 0, 0, "customer-1"u8.ToArray(), nullKey, body!, body is null,
+                new Headers().Add("ce_type", "tests.kafka.tombstone;v=3").Add("ce_id", "record")
+                    .Add(KafkaSendState.TombstoneHeader, "true"), 0, TimestampType.CreateTime, null, Serializers.ByteArray, Serializers.ByteArray), "0");
+    }
 
     private sealed class CountingSerializer(IMessageSerializer inner) : IMessageSerializer
     {
         internal int Reads;
+
         public string ContentType => inner.ContentType;
-        public void Serialize<T>(T message, IBufferWriter<byte> destination) => inner.Serialize(message, destination);
-        public T Deserialize<T>(ReadOnlySequence<byte> body) { Reads++; return inner.Deserialize<T>(body); }
+
+        public void Serialize<T>(T message, IBufferWriter<byte> destination)
+        {
+            inner.Serialize(message, destination);
+        }
+
+        public T Deserialize<T>(ReadOnlySequence<byte> body)
+        {
+            Reads++;
+            return inner.Deserialize<T>(body);
+        }
     }
 }
 
 [Message("tests.kafka.tombstone", Version = 3)]
 public sealed record TombstoneOrder(int Id);
+
 public sealed class TombstoneControl
 {
-    internal Channel<string> Handled { get; } = Channel.CreateUnbounded<string>();
+    internal Channel<string> Handled
+    {
+        get;
+    } = Channel.CreateUnbounded<string>();
     internal bool Pause;
-    internal TaskCompletionSource Entered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
-    internal TaskCompletionSource Release { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+    internal TaskCompletionSource Entered
+    {
+        get;
+    } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+    internal TaskCompletionSource Release
+    {
+        get;
+    } = new(TaskCreationOptions.RunContinuationsAsynchronously);
 }
+
 public sealed class TombstoneHandler(TombstoneControl control) : IHandler<TombstoneOrder>, IHandler<Tombstone<TombstoneOrder>>
 {
     public ValueTask HandleAsync(TombstoneOrder message, MessageContext context, CancellationToken token)
@@ -209,6 +245,7 @@ public sealed class TombstoneHandler(TombstoneControl control) : IHandler<Tombst
         control.Handled.Writer.TryWrite("value:" + message.Id);
         return default;
     }
+
     public async ValueTask HandleAsync(Tombstone<TombstoneOrder> message, MessageContext context, CancellationToken token)
     {
         if (control.Pause)
@@ -216,10 +253,15 @@ public sealed class TombstoneHandler(TombstoneControl control) : IHandler<Tombst
             control.Entered.TrySetResult();
             await control.Release.Task.WaitAsync(token);
         }
+
         control.Handled.Writer.TryWrite("deleted:" + message.Key);
     }
 }
+
 public sealed class TombstoneValueHandler : IHandler<TombstoneOrder>
 {
-    public ValueTask HandleAsync(TombstoneOrder message, MessageContext context, CancellationToken token) => default;
+    public ValueTask HandleAsync(TombstoneOrder message, MessageContext context, CancellationToken token)
+    {
+        return default;
+    }
 }

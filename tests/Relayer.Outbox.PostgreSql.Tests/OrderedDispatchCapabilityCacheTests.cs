@@ -10,11 +10,13 @@ public class OrderedDispatchCapabilityCacheTests
         var cache = new OrderedDispatchCapabilityCache();
         var transport = new Transport("events");
         var transports = new Dictionary<string, ITransport> { [transport.Name] = transport };
+
         for (var i = 0; i < 2560; i++)
         {
             PostgreSqlOrderedDispatcher.Prepare(Row(transport.Name, i.ToString(System.Globalization.CultureInfo.InvariantCulture)), transports, cache);
             await Assert.That(cache.Count <= 256).IsTrue();
         }
+
         transport.Ordered = false;
         await Assert.That(() => PostgreSqlOrderedDispatcher.Prepare(Row(transport.Name, "0"), transports, cache)).Throws<InvalidOperationException>();
     }
@@ -38,12 +40,14 @@ public class OrderedDispatchCapabilityCacheTests
         var cache = new OrderedDispatchCapabilityCache();
         var first = new Transport("first");
         var second = new Transport("second") { Limit = 7 };
+
         for (var i = 0; i < 1000; i++)
         {
             await Assert.That(cache.Get(first, "orders").MaxBatchSize).IsEqualTo(1);
             await Assert.That(cache.Get(first, "other").MaxBatchSize).IsEqualTo(2);
             await Assert.That(cache.Get(second, "orders").MaxBatchSize).IsEqualTo(7);
         }
+
         await Assert.That(first.Lookups).IsEqualTo(2);
         await Assert.That(second.Lookups).IsEqualTo(1);
         await Assert.That(cache.Count).IsEqualTo(3);
@@ -56,9 +60,17 @@ public class OrderedDispatchCapabilityCacheTests
     {
         var cache = new OrderedDispatchCapabilityCache();
         var transport = new Transport("events");
+
         for (var i = 0; i < OrderedDispatchCapabilityCache.Capacity; i++)
+        {
             cache.Get(transport, i.ToString(System.Globalization.CultureInfo.InvariantCulture));
-        for (var i = 0; i < 1000; i++) cache.Get(transport, "0");
+        }
+
+        for (var i = 0; i < 1000; i++)
+        {
+            cache.Get(transport, "0");
+        }
+
         cache.Get(transport, "new");
         var before = transport.Lookups;
         cache.Get(transport, "1");
@@ -75,8 +87,12 @@ public class OrderedDispatchCapabilityCacheTests
     {
         var cache = new OrderedDispatchCapabilityCache();
         var transport = new Transport("events");
+
         for (var i = 0; i < OrderedDispatchCapabilityCache.Capacity; i++)
+        {
             cache.Get(transport, i.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        }
+
         transport.Ordered = false;
         transport.Throws = throws;
         await Assert.That(() => cache.Get(transport, "new")).Throws<InvalidOperationException>();
@@ -113,27 +129,76 @@ public class OrderedDispatchCapabilityCacheTests
         await Assert.That(transport.Lookups).IsEqualTo(1);
     }
 
-    private static OutboxRecord Row(string transport, string destination) => new(Guid.CreateVersion7(), transport, "order;v=1",
-        new(destination, new byte[] { 1 }, ReadOnlyMemory<KeyValuePair<string, WireString>>.Empty, new WireString("customer"), DateTimeOffset.UtcNow), DateTimeOffset.UtcNow, 0);
+    private static OutboxRecord Row(string transport, string destination)
+    {
+        return new(Guid.CreateVersion7(), transport, "order;v=1",
+                new(destination, new byte[] { 1 }, ReadOnlyMemory<KeyValuePair<string, WireString>>.Empty, new WireString("customer"), DateTimeOffset.UtcNow), DateTimeOffset.UtcNow, 0);
+    }
 
     private sealed class Transport(string name) : ITransport
     {
-        internal bool Ordered { get; set; } = true;
+        internal bool Ordered
+        {
+            get; set;
+        } = true;
         internal int Lookups;
-        internal int Limit { get; set; } = 1;
-        internal bool Throws { get; set; }
+
+        internal int Limit
+        {
+            get; set;
+        } = 1;
+
+        internal bool Throws
+        {
+            get; set;
+        }
+
         public string Name => name;
+
         public TransportCapabilities GetCapabilities(string endpoint)
         {
             Lookups++;
-            if (Throws) throw new InvalidOperationException("Lookup failed.");
-            return new() { OrderedByKey = Ordered && endpoint != "unsupported", MaxBatchSize = Limit + (endpoint == "other" ? 1 : 0) };
+
+            if (Throws)
+            {
+                throw new InvalidOperationException("Lookup failed.");
+            }
+
+            return new()
+            {
+                OrderedByKey = Ordered && endpoint != "unsupported",
+                MaxBatchSize = Limit + (endpoint == "other" ? 1 : 0)
+            };
         }
-        public ValueTask SendAsync(OutgoingMessage message, CancellationToken cancellationToken) => throw new NotSupportedException();
-        public ValueTask SendBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken) => throw new NotSupportedException();
-        public ValueTask<TopologyReport> ApplyTopologyAsync(TopologyMode mode, CancellationToken cancellationToken) => throw new NotSupportedException();
-        public Task StartAsync(CancellationToken cancellationToken) => Task.CompletedTask;
-        public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
-        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+
+        public ValueTask SendAsync(OutgoingMessage message, CancellationToken cancellationToken)
+        {
+            throw new NotSupportedException();
+        }
+
+        public ValueTask SendBatchAsync(ReadOnlyMemory<OutgoingMessage> messages, CancellationToken cancellationToken)
+        {
+            throw new NotSupportedException();
+        }
+
+        public ValueTask<TopologyReport> ApplyTopologyAsync(TopologyMode mode, CancellationToken cancellationToken)
+        {
+            throw new NotSupportedException();
+        }
+
+        public Task StartAsync(CancellationToken cancellationToken)
+        {
+            return Task.CompletedTask;
+        }
+
+        public Task StopAsync(CancellationToken cancellationToken)
+        {
+            return Task.CompletedTask;
+        }
+
+        public ValueTask DisposeAsync()
+        {
+            return ValueTask.CompletedTask;
+        }
     }
 }

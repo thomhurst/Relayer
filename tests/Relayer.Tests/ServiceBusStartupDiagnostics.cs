@@ -13,7 +13,10 @@ internal static class ServiceBusStartupDiagnostics
     internal static async Task StartAsync(Func<CancellationToken, Task> start,
         IContainer database, IContainer emulator, CancellationToken token)
     {
-        try { await start(token); }
+        try
+        {
+            await start(token);
+        }
         catch (Exception error)
         {
             // Never use the expired provisioning token for diagnostics. Each operation has its
@@ -23,8 +26,15 @@ internal static class ServiceBusStartupDiagnostics
             await CaptureAsync("Service Bus emulator", emulator, evidence);
             var report = evidence.ToString();
             error.Data[EvidenceKey] = report;
-            try { Console.Error.WriteLine(report); }
-            catch (Exception) { /* A broken output sink must not replace the startup error. */ }
+
+            try
+            {
+                Console.Error.WriteLine(report);
+            }
+            catch (Exception)
+            { /* A broken output sink must not replace the startup error. */
+            }
+
             throw;
         }
     }
@@ -32,6 +42,7 @@ internal static class ServiceBusStartupDiagnostics
     private static async Task CaptureAsync(string name, IContainer container, StringBuilder evidence)
     {
         evidence.AppendLine($"{name}:");
+
         try
         {
             using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
@@ -42,13 +53,20 @@ internal static class ServiceBusStartupDiagnostics
                 $"running={state.Running}, exitCode={state.ExitCode}, oomKilled={state.OOMKilled}, " +
                 $"error={state.Error}, startedAt={state.StartedAt}, finishedAt={state.FinishedAt}");
         }
-        catch (Exception error) { evidence.AppendLine($"Docker state unavailable: {error.GetType().Name}: {error.Message}"); }
+        catch (Exception error)
+        {
+            evidence.AppendLine($"Docker state unavailable: {error.GetType().Name}: {error.Message}");
+        }
+
         try
         {
             using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
             var logs = await container.GetLogsAsync(ct: timeout.Token).WaitAsync(timeout.Token);
             evidence.AppendLine("stdout:").AppendLine(logs.Stdout).AppendLine("stderr:").AppendLine(logs.Stderr);
         }
-        catch (Exception error) { evidence.AppendLine($"Startup logs unavailable: {error.GetType().Name}: {error.Message}"); }
+        catch (Exception error)
+        {
+            evidence.AppendLine($"Startup logs unavailable: {error.GetType().Name}: {error.Message}");
+        }
     }
 }
